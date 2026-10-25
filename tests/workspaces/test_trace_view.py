@@ -28,8 +28,8 @@ DATA = Path(__file__).resolve().parent / "data"
 FIXTURE = DATA / "trace_demo" / "out"
 
 #: frame ids/keys in the fixture's trace.json.
-STRIP1, STRIP2, LAYOUT = "aaaa000000000004", "aaaa000000000005", "aaaa000000000003"
-JUNCTION1 = "aaaa000000000008"
+STRIP1, STRIP2, LAYOUT = "c4b52e3b78c8343c", "0109a483c6b46905", "9c2ba7e133c3bae5"
+JUNCTION1 = "1b7377e82e6689d6"
 
 
 def _design(store: Store, slug: str = "ws-trace") -> int:
@@ -116,7 +116,7 @@ def test_frame_selector_modifiers(store: Store, se: SeHandler) -> None:
         range(10)
     )
     assert sorted(
-        se_datums.resolve(tree, "p", "frame:aaaa000000000009/touched").atoms
+        se_datums.resolve(tree, "p", "frame:847e4f54a1451dac/touched").atoms
     ) == [8, 9]
 
 

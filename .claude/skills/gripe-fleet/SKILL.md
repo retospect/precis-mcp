@@ -74,6 +74,9 @@ approval quote for the tier, with its UTC time).
    commit on main, the tree's `.claude/purpose` seeded with the claim,
    and a row in `$FLEET_STATE/claims.tsv` (gr509461). `close` flips the
    claim back to `ready` when the tree is removed or already gone.
+   A builder that picks up a gripe comments `in progress <tree> —
+   covers all asks` on it (or names which asks the tree covers) — the
+   coverage statement is the convention (gr514899).
 5. **Watch.** Run `scripts/fleet-wave watch-done NAME...` and
    `scripts/fleet-wave stuck-watch` under the Monitor tool: one line per
    finish (`<tree> at <sha>` in `.claude/purpose`), per permission

@@ -33,7 +33,7 @@ DATA = Path(__file__).resolve().parent / "data"
 FIXTURE = DATA / "py_join" / "out"
 
 #: frame keys of the three ``main.bundle`` occurrences in the fixture.
-BUNDLE_KEYS = ("bbbb000000000002", "bbbb000000000004", "bbbb000000000006")
+BUNDLE_KEYS = ("573a6ce6953f4993", "684120ef345542e7", "861c07866a4ea87f")
 
 MAIN_PY = (
     "def build(n):\n"

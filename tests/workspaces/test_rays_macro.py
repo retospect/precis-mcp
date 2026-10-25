@@ -73,7 +73,7 @@ def test_bolt_axis_no_standard_length_fits(store: Store) -> None:
     assert ls[0].startswith("ray bolt-a1 · block bracket · port:a1")
     hole = next(ln for ln in ls if ln.startswith("3.0 mm  void bracket.hole1"))
     assert "⌀5.5 mm · 6.0 mm" in hole
-    assert "build.py:44 cut#5 · frame:b200000000000005" in hole
+    assert "build.py:44 cut#5 · frame:19c5c89540c81454" in hole
     # a through hole the bolt runs down is no material: no enter/exit
     assert not any(
         ln.startswith(("3.0 mm  enter bracket", "9.0 mm  exit")) for ln in ls

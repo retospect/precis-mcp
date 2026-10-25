@@ -14,19 +14,19 @@ import json
 import sys
 from pathlib import Path
 
+from precis_geom import trace_schema as ts
+
 XS = (-0.015, -0.005, 0.005, 0.015)  # hole x positions, m
 DEPTHS = (0.008, 0.008, 0.010, 0.006)  # tapped depth from the base top, m
 BASE_H, GAP, BRACKET_H = 0.010, 0.0002, 0.006
 TOP = BASE_H + GAP + BRACKET_H  # bracket top, m
 
-
-def _key(i: int) -> str:
-    return f"b2{i:014x}"
+_ROOT_KEY = ts.sha8("precis-trace-root")
 
 
 def _frame(
     i: int,
-    parent: int | None,
+    parent: str | None,
     qual: str,
     kind: str,
     line: int,
@@ -36,8 +36,8 @@ def _frame(
 ) -> dict:
     return {
         "id": i,
-        "key": _key(i),
-        "parent": _key(parent) if parent is not None else None,
+        "key": _ROOT_KEY if parent is None else ts.frame_key(parent, qual, occ),
+        "parent": parent,
         "qual": qual,
         "file": "build.py",
         "line": line,
@@ -164,22 +164,31 @@ def write(out: Path, h2_dx: float = 0.0) -> None:
     (out / "manifest.json").write_text(
         json.dumps(manifest, indent=1) + "\n", encoding="utf-8"
     )
+    build_key = ts.frame_key(_ROOT_KEY, "main.build", 0)
     frames = [
         _frame(0, None, "main", "root", 1),
-        _frame(1, 0, "main.build", "user", 10),
+        _frame(1, _ROOT_KEY, "main.build", "user", 10),
         _frame(
             2,
-            1,
+            build_key,
             "pga.box",
             "core",
             20,
             line_in_def=10,
             src="base = pga.box(w=40, d=40, h=10)",
         ),
-        _frame(3, 1, "pga.cut", "core", 22, line_in_def=12, src="pga.cut(base, cyl)"),
+        _frame(
+            3,
+            build_key,
+            "pga.cut",
+            "core",
+            22,
+            line_in_def=12,
+            src="pga.cut(base, cyl)",
+        ),
         _frame(
             4,
-            1,
+            build_key,
             "pga.box",
             "core",
             40,
@@ -189,7 +198,7 @@ def write(out: Path, h2_dx: float = 0.0) -> None:
         ),
         _frame(
             5,
-            1,
+            build_key,
             "pga.cut",
             "core",
             44,
@@ -198,7 +207,13 @@ def write(out: Path, h2_dx: float = 0.0) -> None:
             src="pga.cut(bracket, cyl)",
         ),
         _frame(
-            6, 1, "pga.ray", "core", 50, line_in_def=40, src="pga.ray('bolt-a1', ...)"
+            6,
+            build_key,
+            "pga.ray",
+            "core",
+            50,
+            line_in_def=40,
+            src="pga.ray('bolt-a1', ...)",
         ),
     ]
     trace = {

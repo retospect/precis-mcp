@@ -176,10 +176,12 @@ class _FakeStore:
     def update_paper_fields(self, ref_id: int, **kw: Any) -> None:
         self.updates.append({"ref_id": ref_id, **kw})
 
-    def set_ref_identifier(
-        self, ref_id: int, scheme: str, value: str, **kw: Any
-    ) -> None:
-        self.identifiers.append((ref_id, scheme, value))
+    def insert_ref_identifiers(
+        self, ref_id: int, identifiers: list[tuple[str, str, str]], **kw: Any
+    ) -> int:
+        for scheme, value, _source in identifiers:
+            self.identifiers.append((ref_id, scheme, value))
+        return len(identifiers)
 
 
 class TestEnrichRef:
@@ -236,6 +238,99 @@ class TestEnrichRef:
         )
         enrich_ref(store, 42, doi="10.3390/x")
         assert "abstract" not in store.updates[0]["meta_patch"]
+
+
+class TestFetchByIdentifier:
+    """gr514199 — ``enrich_ref`` addresses the work by any scheme
+    :func:`fetch_openalex_work_by_identifier` resolves, and the W-id
+    write is ``insert_ref_identifiers`` (first-write-wins — a claimed
+    id no longer raises, so a bulk backfill survives it)."""
+
+    def _selector_url(self, monkeypatch: pytest.MonkeyPatch, identifier: str) -> str:
+        monkeypatch.delenv("PRECIS_OPENALEX_CONTENT_KEY", raising=False)
+        monkeypatch.setattr(openalex_meta, "get_secret", lambda *a, **k: None)
+        captured = _capture_request(monkeypatch)
+        work = openalex_meta.fetch_openalex_work_by_identifier(identifier)
+        assert work is not None
+        return str(captured["url"])
+
+    def test_doi_selector(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = self._selector_url(monkeypatch, "10.3390/ChemoSensors11090486")
+        assert url.endswith("/works/doi:10.3390/chemosensors11090486")
+
+    def test_w_id_selector(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = self._selector_url(monkeypatch, "W4386410574")
+        assert url.endswith("/works/W4386410574")
+
+    def test_openalex_url_selector(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = self._selector_url(monkeypatch, "https://openalex.org/W4386410574")
+        assert url.endswith("/works/W4386410574")
+
+    def test_lowercase_storage_w_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``ref_identifiers`` stores ``w…`` lowercase — the form a
+        backfill sweep reads; the detector's ``W`` is uppercase-only."""
+        url = self._selector_url(monkeypatch, "w4386410574")
+        assert url.endswith("/works/W4386410574")
+
+    def test_pmid_selector(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = self._selector_url(monkeypatch, "PMID:12345678")
+        assert url.endswith("/works/pmid:12345678")
+
+    def test_arxiv_resolves_through_its_datacite_doi(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OpenAlex has no ``arxiv:`` selector; the id rides its
+        ``10.48550/arXiv.`` DOI (version stripped) instead."""
+        url = self._selector_url(monkeypatch, "arxiv:1705.02630v2")
+        assert url.endswith("/works/doi:10.48550/arXiv.1705.02630")
+
+    def test_unselectable_identifier_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _capture_request(monkeypatch)
+        with pytest.raises(ValueError, match="no OpenAlex selector"):
+            # 40-hex is the S2 paperId shape — detected, but not a selector.
+            openalex_meta.fetch_openalex_work_by_identifier("a" * 40)
+        with pytest.raises(ValueError, match="unrecognised"):
+            openalex_meta.fetch_openalex_work_by_identifier("not-an-id")
+
+    def _recording_fetch(self, monkeypatch: pytest.MonkeyPatch, name: str) -> list[str]:
+        """Stub ``openalex_meta.<name>`` to return ``_WORK``; returns the
+        list it records each call's first argument on."""
+        seen: list[str] = []
+
+        def fake(arg: str, **k: Any) -> dict[str, Any]:
+            seen.append(arg)
+            return _WORK
+
+        monkeypatch.setattr(openalex_meta, name, fake)
+        return seen
+
+    def test_enrich_ref_by_arxiv(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = self._recording_fetch(monkeypatch, "fetch_openalex_work")
+        store = _FakeStore(current_authors=None)
+        enrich_ref(store, 42, identifier="1705.02630v1")
+        assert seen == ["10.48550/arXiv.1705.02630"]
+        assert store.identifiers == [(42, "openalex", "W4386410574")]
+
+    def test_enrich_ref_by_pmid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = self._recording_fetch(monkeypatch, "_fetch_work")
+        store = _FakeStore(current_authors=None)
+        enrich_ref(store, 42, identifier="pubmed:12345678")
+        assert seen == ["pmid:12345678"]
+
+    def test_enrich_ref_by_w_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = self._recording_fetch(monkeypatch, "fetch_openalex_work_by_id")
+        store = _FakeStore(current_authors=None)
+        enrich_ref(store, 42, identifier="https://openalex.org/W4386410574")
+        assert seen == ["w4386410574"]
+
+    def test_refuses_both_and_neither_identifier(self) -> None:
+        store = _FakeStore(current_authors=None)
+        with pytest.raises(ValueError, match="not both"):
+            enrich_ref(store, 42, doi="10.1/x", identifier="10.1/y")
+        with pytest.raises(ValueError, match="needs doi= or identifier="):
+            enrich_ref(store, 42)
 
 
 # Assembled so the source holds no credential-shaped literal.

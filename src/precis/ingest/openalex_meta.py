@@ -19,6 +19,13 @@ What lands where:
   clobbered; ORCID/ROR survive via ``to_author_dicts``.
 * ``ref_identifiers`` — the ``openalex:W…`` id registered.
 
+The fetch side is addressed by *any* scheme OpenAlex can select on —
+DOI, PubMed id, MAG id, the bare ``W…`` id, or an arXiv id (resolved
+through its ``10.48550/arXiv.<id>`` DataCite DOI) — via
+:func:`fetch_openalex_work_by_identifier`, so :func:`enrich_ref` doubles
+as the bulk-backfill door for a ref carrying any of those aliases
+(gr514199).
+
 Topics are captured in ``meta.openalex`` rather than written as ``topic:``
 ``ref_tags`` on purpose — the OPEN-tag namespace is mid-teardown, so
 materializing controlled topic tags waits for that axis to settle.
@@ -33,10 +40,15 @@ credit is used (gr513771).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from precis.secrets import get_secret
+from precis.store._identifiers_ops import (
+    _normalise_identifier,
+    detect_identifier_scheme,
+)
 from precis.utils.authors import to_author_dicts
 from precis.utils.http import call_with_backoff, http_client, request_with_deadline
 
@@ -123,6 +135,53 @@ def fetch_openalex_work(
     free).
     """
     return _fetch_work(f"doi:{doi}", email=email, timeout=timeout)
+
+
+def fetch_openalex_work_by_identifier(
+    identifier: str, *, email: str = "", timeout: float = _TIMEOUT_S
+) -> dict[str, Any] | None:
+    """Fetch the free OpenAlex work object by any recognised identifier.
+
+    The scheme is auto-detected
+    (:func:`~precis.store._identifiers_ops.detect_identifier_scheme`) and
+    mapped onto a ``/works/{selector}`` form: ``doi:``, ``pmid:`` and
+    ``mag:`` are native selectors and a bare ``W…`` goes through
+    :func:`fetch_openalex_work_by_id`; an ``arxiv`` id resolves through
+    its DataCite DOI ``10.48550/arXiv.<id>`` (minted for the whole arXiv
+    backlog), which the ``doi:`` selector matches — OpenAlex has no
+    ``arxiv:`` selector. Same contract as :func:`fetch_openalex_work`:
+    a 404 returns ``None``; other HTTP errors raise. Raises
+    :class:`ValueError` when the string detects no scheme or the scheme
+    has no OpenAlex selector (``s2``, ``pdfsha256``, ``dblp``).
+    """
+    scheme = detect_identifier_scheme(identifier)
+    if scheme is None:
+        # The detector's conservative shapes miss the
+        # ``https://openalex.org/W…`` URL form and the bare lowercase
+        # ``w…`` (``ref_identifiers``' storage case — what a backfill
+        # reads); both still resolve through
+        # :func:`fetch_openalex_work_by_id`.
+        low = identifier.strip().lower()
+        if "openalex.org/" in low or re.match(r"^w\d{6,}$", low):
+            scheme = "openalex"
+    if scheme is None:
+        raise ValueError(f"unrecognised identifier {identifier!r}")
+    value = _normalise_identifier(scheme, identifier)
+    if not value:
+        raise ValueError(f"empty {scheme} identifier {identifier!r}")
+    if scheme == "openalex":
+        return fetch_openalex_work_by_id(value, email=email, timeout=timeout)
+    if scheme == "arxiv":
+        return fetch_openalex_work(
+            f"10.48550/arXiv.{value}", email=email, timeout=timeout
+        )
+    if scheme == "doi":
+        return fetch_openalex_work(value, email=email, timeout=timeout)
+    if scheme == "pubmed":
+        return _fetch_work(f"pmid:{value}", email=email, timeout=timeout)
+    if scheme == "mag":
+        return _fetch_work(f"mag:{value}", email=email, timeout=timeout)
+    raise ValueError(f"no OpenAlex selector for a {scheme!r} identifier")
 
 
 def fetch_openalex_work_by_id(
@@ -290,20 +349,39 @@ def enrich_ref(
     store: Any,
     ref_id: int,
     *,
-    doi: str,
+    doi: str | None = None,
+    identifier: str | None = None,
     email: str = "",
     source: str = "openalex-enrich",
 ) -> OpenAlexEnrichment | None:
     """Fetch + normalize + write OpenAlex metadata onto ``ref_id``.
 
-    Returns the enrichment (for reporting) or ``None`` when OpenAlex has no
-    record for the DOI. Fills the ``authors`` byline column only when the ref
+    The work is addressed by ``identifier`` — any scheme
+    :func:`fetch_openalex_work_by_identifier` resolves (DOI, arXiv id,
+    PubMed id, MAG id, or an OpenAlex ``W…`` id), so a bulk backfill can
+    drive it with whichever alias a ref carries (gr514199). ``doi`` is
+    kept for the DOI sweeps and is equivalent to ``identifier=<doi>``;
+    exactly one of the two is required. Returns the enrichment (for
+    reporting) or ``None`` when OpenAlex has no record for the
+    identifier. Fills the ``authors`` byline column only when the ref
     currently has none, so a good existing byline is preserved. Likewise
     promotes a reconstructed abstract to top-level ``meta['abstract']``
     (what the paper page reads) only when the ref has none yet — a good
     existing abstract is never clobbered.
+
+    The ``openalex:W…`` alias is registered via
+    :meth:`~precis.store.Store.insert_ref_identifiers` (first-write-wins,
+    never raises): an id already claimed by a different ref is a
+    duplicate-ref data problem for the merge path, not a reason to kill
+    a backfill sweep — the earlier ``set_ref_identifier`` write raised
+    ``BadInput`` on exactly that claim (gr514199).
     """
-    work = fetch_openalex_work(doi, email=email)
+    if doi is not None and identifier is not None:
+        raise ValueError("enrich_ref takes doi= or identifier=, not both")
+    ident = identifier if identifier is not None else doi
+    if not ident:
+        raise ValueError("enrich_ref needs doi= or identifier=")
+    work = fetch_openalex_work_by_identifier(ident, email=email)
     if work is None:
         return None
     enr = normalize(work)
@@ -331,7 +409,7 @@ def enrich_ref(
         source=source,
     )
     if enr.openalex_id:
-        store.set_ref_identifier(ref_id, "openalex", enr.openalex_id, source=source)
+        store.insert_ref_identifiers(ref_id, [("openalex", enr.openalex_id, source)])
     return enr
 
 
@@ -341,5 +419,6 @@ __all__ = [
     "enrich_ref",
     "fetch_openalex_work",
     "fetch_openalex_work_by_id",
+    "fetch_openalex_work_by_identifier",
     "normalize",
 ]

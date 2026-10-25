@@ -4,8 +4,10 @@
 Slice 2 is the release check — ``n̂·p ≥ sin α`` per slide pull. Slice 3
 adds the cavity builder (:func:`mold_piece_spec` and the ``MoldLayout``
 helpers below the checks): one stored design per mold piece,
-``Inter(sector_i, Diff(box, scale(part, 1+shrink)))``, driven by the
-se-side ``mold`` op (:mod:`precis_se.mold`).
+``Inter(sector_i, Diff(box, scale(part, 1+shrink)))``. :func:`cut_mold`
+is the whole cut as one library call — part in, stamped piece designs
+out — the function workspace scripts use (gr513564); the se-side
+``mold`` op (:mod:`precis_se.mold`) is a thin wrapper over it.
 
 **The release check.**
 
@@ -61,13 +63,18 @@ from precis.cad.vec import Transform, Vec3, vec3
 
 __all__ = [
     "LeafCheck",
+    "MoldCut",
     "MoldLayout",
+    "MoldUndercut",
     "PullReport",
     "SlideLayout",
     "check_moldable",
     "clip_map",
+    "cut_mold",
     "design_world_aabb",
     "mold_piece_spec",
+    "mold_undercut_reasons",
+    "parting_record",
     "pull_check",
     "render_undercut_png",
     "resolve_mold_layout",
@@ -612,3 +619,149 @@ def mold_piece_spec(
     nodes += _cavity_cuts(part_nodes, factor)
     nodes += _sector_nodes(layout, j)
     return SceneSpec(nodes=nodes, components=["part"])
+
+
+# --------------------------------------------------------------------------
+# ``cut_mold`` — the whole mold cut as one library call (gr513564, the W5
+# code-first ruling: construction ops are legacy, the geometry is a plain
+# function a workspace script calls). The se ``mold`` op wraps it.
+# --------------------------------------------------------------------------
+
+
+#: Default cavity margin as a fraction of the part's largest dimension,
+#: when the caller gives no explicit ``margin`` — a proportionate block
+#: around the cavity, floored so a tiny part still gets a handleable wall.
+_MARGIN_FRACTION = 0.2
+_MARGIN_FLOOR = 1e-3  # 1 mm
+
+
+def mold_undercut_reasons(
+    design: Design, layout: MoldLayout, alpha: float | None
+) -> list[str]:
+    """Formatted refusals for a radial ``layout`` — one line per undercut
+    relief leaf or low-draft face; ``[]`` when the layout clears (and
+    always for an axial sleeve, whose constant-in-z undercut model is a
+    named follow-up). Shared by :func:`cut_mold` and the se finding that
+    reports the same verdict on a stored part."""
+    sl = layout.slide_layout
+    if sl is None:
+        return []
+    report = pull_check(design, sl, alpha)
+    reasons: list[str] = []
+    for c in report.leaves:
+        if c.ok:
+            continue
+        clears = (
+            f"clears at k={c.min_k}"
+            if c.min_k is not None
+            else "no k in {2,3} clears it"
+        )
+        reasons.append(
+            f"{c.label}: {c.undercut_fraction * 100:.1f}% of the surface "
+            f"undercut (~{c.undercut_area * 1e6:.3g} mm²), {clears}"
+        )
+    for f in report.faces:
+        if not f.ok:
+            reasons.append(f"face {f.label}: {f.draft_deg:.2g}° draft < required")
+    return reasons
+
+
+class MoldUndercut(ValueError):
+    """``cut_mold`` refusal for a radial layout the part undercuts.
+
+    Carries the resolved ``layout`` and the formatted ``reasons`` so an
+    op-level caller can re-phrase the refusal with the part's name — the
+    library knows no block name.
+    """
+
+    def __init__(self, layout: MoldLayout, reasons: list[str]) -> None:
+        self.layout = layout
+        self.reasons = reasons
+        super().__init__(
+            f"part undercuts the {layout.kind} k={layout.k} "
+            f"phi={layout.phi:.4g} layout — " + "; ".join(reasons)
+        )
+
+
+def parting_record(layout: MoldLayout, j: int) -> dict[str, Any]:
+    """The parting surface stored on piece ``j``'s design meta: the pull
+    direction and the sector's bounding parting angles (radial) or the
+    axial pull."""
+    if layout.kind == "axial":
+        return {"layout": "axial", "piece": j, "pull": [0.0, 0.0, 1.0]}
+    c = layout.phi + 2.0 * math.pi * j / layout.k
+    parting = [c - math.pi / layout.k, c + math.pi / layout.k]
+    return {
+        "layout": "radial",
+        "k": layout.k,
+        "phi": layout.phi,
+        "piece": j,
+        "pull": [math.cos(c), math.sin(c), 0.0],
+        "parting_angles": parting,
+    }
+
+
+@dataclass(frozen=True)
+class MoldCut:
+    """What :func:`cut_mold` resolved for one part — the piece designs
+    (each stamped ``meta['mold']`` with its :func:`parting_record`) plus
+    the parameters actually applied once defaults are filled in."""
+
+    layout: MoldLayout
+    shrink: float
+    margin: float
+    pieces: tuple[SceneSpec, ...]
+
+
+def cut_mold(
+    part_nodes: list[NodeSpec],
+    design: Design,
+    *,
+    layout: Any = "halves",
+    phi: float = 0.0,
+    alpha: float | None = None,
+    shrink: float = 0.0,
+    margin: float | None = None,
+) -> MoldCut:
+    """Cut a part's mold pieces — the library form of the se ``mold`` op.
+
+    ``part_nodes`` is the part's expanded nodes (the cavity bodies);
+    ``design`` its built design (the bound + the undercut check).
+    ``layout`` accepts anything :func:`resolve_mold_layout` reads —
+    ``'axial'`` | ``'halves'`` | ``2`` | ``3`` — or an already-resolved
+    :class:`MoldLayout`. ``margin`` defaults to
+    ``max(_MARGIN_FLOOR, _MARGIN_FRACTION * part span)``. Raises
+    :class:`ValueError` on an unusable part or argument, and
+    :class:`MoldUndercut` when a radial layout undercuts.
+    """
+    lay = (
+        layout
+        if isinstance(layout, MoldLayout)
+        else resolve_mold_layout(layout, phi=phi)
+    )
+    if shrink < 0.0:
+        raise ValueError(f"'shrink' must be >= 0, got {shrink}")
+    check_moldable(part_nodes)
+    if shrink > 0.0 and any(n.pattern is not None for n in part_nodes):
+        raise ValueError(
+            "shrink > 0 on a patterned part is not supported yet — the "
+            "pattern pitch would not scale with the bodies; mold at shrink 0 "
+            "or flatten the pattern"
+        )
+    lo, hi = design_world_aabb(design)
+    if reasons := mold_undercut_reasons(design, lay, alpha):
+        raise MoldUndercut(lay, reasons)
+    span = max(float(hi[i] - lo[i]) for i in range(3))
+    margin = (
+        margin if margin is not None else max(_MARGIN_FLOOR, _MARGIN_FRACTION * span)
+    )
+    if margin <= 0.0:
+        raise ValueError(f"'margin' must be > 0, got {margin}")
+    pieces: list[SceneSpec] = []
+    for j in range(lay.n_pieces):
+        piece = mold_piece_spec(
+            part_nodes, lo, hi, margin=margin, shrink=shrink, layout=lay, j=j
+        )
+        piece.meta["mold"] = parting_record(lay, j)
+        pieces.append(piece)
+    return MoldCut(layout=lay, shrink=shrink, margin=margin, pieces=tuple(pieces))

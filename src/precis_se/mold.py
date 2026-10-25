@@ -18,20 +18,17 @@ the dangling-binding rule owns that complaint.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.cad.dsl import DslError
 from precis.cad.mold import (
     MoldLayout,
+    MoldUndercut,
     SlideLayout,
     check_leaf,
-    check_moldable,
-    design_world_aabb,
-    mold_piece_spec,
-    pull_check,
-    resolve_mold_layout,
+    cut_mold,
+    mold_undercut_reasons,
 )
 from precis.cad.primitives import CylRelief
 from precis.cad.scene import SceneError, SceneSpec, build_design, expand_instances
@@ -117,6 +114,11 @@ def _layout_for(prim: CylRelief) -> SlideLayout | None:
 # --------------------------------------------------------------------------
 # ``mold`` op (spec slice 3) — cut the mold halves from a molded part.
 #
+# The geometry is the library call :func:`precis.cad.mold.cut_mold`
+# (gr513564, the W5 code-first ruling — a workspace script calls it
+# directly); this op is the thin wrapper that names the piece blocks,
+# binds each to a fresh cad design and stamps the modes.
+#
 # Handler-level and store-write-deferred like ``realize``
 # (:mod:`precis_se.realize`): :func:`prepare_mold` is pure over the tree
 # (loads the part, refuses an undercut layout, mints the piece slugs and
@@ -132,13 +134,6 @@ class PendingMold:
     each keyed by the block that was bound to it in :func:`prepare_mold`."""
 
     saves: list[tuple[str, str, SceneSpec, str]]  # (block_name, slug, spec, card)
-
-
-#: Default cavity margin as a fraction of the part's largest dimension,
-#: when the op gives no explicit ``margin`` — a proportionate block around
-#: the cavity, floored so a tiny part still gets a handleable wall.
-_MARGIN_FRACTION = 0.2
-_MARGIN_FLOOR = 1e-3  # 1 mm
 
 
 def _mold_part_mode(node: SeBlock) -> str:
@@ -193,41 +188,25 @@ def prepare_mold(
             f"mold: cannot resolve part design {node.bound!r}: {exc}"
         ) from exc
 
-    layout = _resolve_layout(op)
-    shrink = _req_float(op, "shrink", 0.0)
-    if shrink < 0.0:
-        raise OpError(f"mold: 'shrink' must be >= 0, got {shrink}")
     try:
-        check_moldable(part_nodes)
-    except ValueError as exc:
-        raise OpError(f"mold: {exc}") from exc
-    if shrink > 0.0 and any(n.pattern is not None for n in part_nodes):
-        raise OpError(
-            "mold: shrink > 0 on a patterned part is not supported yet — the "
-            "pattern pitch would not scale with the bodies; mold at shrink 0 "
-            "or flatten the pattern"
+        cut = cut_mold(
+            part_nodes,
+            design,
+            layout=op.get("layout", "halves"),
+            phi=_req_float(op, "phi", 0.0),
+            alpha=_opt_float(op, "alpha"),
+            shrink=_req_float(op, "shrink", 0.0),
+            margin=_opt_float(op, "margin"),
         )
-    try:
-        lo, hi = design_world_aabb(design)
+    except MoldUndercut as exc:
+        raise _undercut_op_error(exc, key) from exc
     except ValueError as exc:
         raise OpError(f"mold: {exc}") from exc
-
-    alpha = _opt_float(op, "alpha")
-    _refuse_undercut(design, layout, alpha, key)
-
-    span = max(float(hi[i] - lo[i]) for i in range(3))
-    margin_arg = _opt_float(op, "margin")
-    margin = (
-        margin_arg
-        if margin_arg is not None
-        else max(_MARGIN_FLOOR, _MARGIN_FRACTION * span)
-    )
-    if margin <= 0.0:
-        raise OpError(f"mold: 'margin' must be > 0, got {margin}")
+    layout, shrink, margin = cut.layout, cut.shrink, cut.margin
 
     saves: list[tuple[str, str, SceneSpec, str]] = []
     block_ops: list[dict[str, Any]] = []
-    for j in range(layout.n_pieces):
+    for j, piece in enumerate(cut.pieces):
         block_name = f"{key}.mold.{j}"
         if block_name in tree.blocks:
             raise OpError(
@@ -236,10 +215,6 @@ def prepare_mold(
             )
         base_slug = f"{design_slug}-{key}-mold-{j}"
         slug, _note = _unique_cad_slug(store, base_slug)
-        piece = mold_piece_spec(
-            part_nodes, lo, hi, margin=margin, shrink=shrink, layout=layout, j=j
-        )
-        piece.meta["mold"] = _parting_record(layout, j)
         title = f"{block_name} ({design_slug} mold)"
         card = (
             f"{title}: {layout.kind} piece {j + 1}/{layout.n_pieces}, "
@@ -275,13 +250,24 @@ def finish_mold(store: Store, tree: SeTree, pending: PendingMold) -> None:
         )
 
 
-def _resolve_layout(op: dict[str, Any]) -> MoldLayout:
-    raw = op.get("layout", "halves")
-    phi = _req_float(op, "phi", 0.0)
-    try:
-        return resolve_mold_layout(raw, phi=phi)
-    except ValueError as exc:
-        raise OpError(f"mold: {exc}") from exc
+def _undercut_op_error(exc: MoldUndercut, key: str) -> OpError:
+    """The op-level form of :class:`MoldUndercut`: same text the op has
+    always raised (the part's block name in it) plus the ``next=`` the
+    dispatch reads."""
+    layout = exc.layout
+    err = OpError(
+        f"mold: part {key!r} undercuts the {layout.kind} k={layout.k} "
+        f"phi={layout.phi:.4g} layout — "
+        + "; ".join(exc.reasons)
+        + ". view='mold' on the part shows the undercut image; clip the "
+        "relief (args={'relief_fit':'clip'}) or choose a layout that clears it"
+    )
+    # Picked up by the dispatch's ``next=getattr(exc, 'next', None)``;
+    # setattr because the shared OpError type declares no ``next``.
+    setattr(  # noqa: B010
+        err, "next", "run view='mold' on the part, then re-cut the mold"
+    )
+    return err
 
 
 def _opt_float(op: dict[str, Any], key: str) -> float | None:
@@ -305,59 +291,12 @@ def _req_float(op: dict[str, Any], key: str, default: float) -> float:
 def _refuse_undercut(
     design: Any, layout: MoldLayout, alpha: float | None, key: str
 ) -> None:
-    """Run slice 2's :func:`pull_check` for a radial layout and refuse the
-    op when any relief leaf leans out of the release cone — a mold for this
-    layout would not open. Axial's constant-in-z undercut model is a named
-    follow-up, so an axial sleeve is not gated here."""
-    sl = layout.slide_layout
-    if sl is None:
+    """Refuse a radial layout slice 2 finds undercut — the standalone
+    form of the check :func:`precis.cad.mold.cut_mold` also runs: one
+    :func:`precis.cad.mold.mold_undercut_reasons` verdict, phrased here
+    as the op's ``OpError`` + ``next=``. An axial sleeve is not gated
+    (its constant-in-z undercut model is a named follow-up)."""
+    reasons = mold_undercut_reasons(design, layout, alpha)
+    if not reasons:
         return
-    report = pull_check(design, sl, alpha)
-    bad = [c for c in report.leaves if not c.ok]
-    bad_faces = [f for f in report.faces if not f.ok]
-    if not bad and not bad_faces:
-        return
-    parts: list[str] = []
-    for c in bad:
-        clears = (
-            f"clears at k={c.min_k}"
-            if c.min_k is not None
-            else "no k in {2,3} clears it"
-        )
-        parts.append(
-            f"{c.label}: {c.undercut_fraction * 100:.1f}% of the surface undercut "
-            f"(~{c.undercut_area * 1e6:.3g} mm²), {clears}"
-        )
-    for f in bad_faces:
-        parts.append(f"face {f.label}: {f.draft_deg:.2g}° draft < required")
-    err = OpError(
-        f"mold: part {key!r} undercuts the {layout.kind} k={layout.k} "
-        f"phi={layout.phi:.4g} layout — "
-        + "; ".join(parts)
-        + ". view='mold' on the part shows the undercut image; clip the "
-        "relief (args={'relief_fit':'clip'}) or choose a layout that clears it"
-    )
-    # Picked up by the dispatch's ``next=getattr(exc, 'next', None)``;
-    # setattr because the shared OpError type declares no ``next``.
-    setattr(  # noqa: B010
-        err, "next", "run view='mold' on the part, then re-cut the mold"
-    )
-    raise err
-
-
-def _parting_record(layout: MoldLayout, j: int) -> dict[str, Any]:
-    """The parting surface stored on piece ``j``'s design meta: the pull
-    direction and the sector's bounding parting angles (radial) or the
-    axial pull."""
-    if layout.kind == "axial":
-        return {"layout": "axial", "piece": j, "pull": [0.0, 0.0, 1.0]}
-    c = layout.phi + 2.0 * math.pi * j / layout.k
-    parting = [c - math.pi / layout.k, c + math.pi / layout.k]
-    return {
-        "layout": "radial",
-        "k": layout.k,
-        "phi": layout.phi,
-        "piece": j,
-        "pull": [math.cos(c), math.sin(c), 0.0],
-        "parting_angles": parting,
-    }
+    raise _undercut_op_error(MoldUndercut(layout, reasons), key)

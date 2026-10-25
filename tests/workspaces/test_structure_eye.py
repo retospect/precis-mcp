@@ -40,7 +40,7 @@ from precis_se.workspace_import import import_workspace_run
 DATA = Path(__file__).resolve().parent / "data"
 FIXTURE = DATA / "a2_eye" / "out"
 SLUG = "hcol-a2"
-JUNCTION = "a200000000000007"  # keys are f"a2{i:014x}"
+JUNCTION = "903ec1076846da85"  # schema-2 sha8 recipe key
 
 
 @pytest.fixture

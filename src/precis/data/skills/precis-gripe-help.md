@@ -9,6 +9,7 @@ answers:
   - how do I find gripes that are open but untriaged?
   - how do I comment on or correct a gripe thread?
   - how do I mark a gripe ready for someone to fix?
+  - how do I say a tree is working a gripe?
 applies-to: get/search/put/delete/tag/link (kind='gripe')
 tags: workflow, troubleshooting
 kinds: gripe
@@ -286,6 +287,20 @@ tag(kind="gripe", id=42, add=["STATUS:ready_for_fix"])
 The signal that flips it from "thinking about it" to "ready for the
 owning thread's session to fix". Nothing auto-mints a `fix_gripe` job
 from it (lane OFF since 2026-10-02).
+
+## Say a tree is working the gripe
+
+When a session starts work on a gripe it comments the tree doing the
+work, and the comment states the tree's coverage:
+
+```python
+put(kind="gripe", id=42, text="in progress fix-gripe-42 — covers all asks")
+# or partial: "in progress small-feat — covers the enrich_ref ask only"
+```
+
+`covers all asks` when the tree takes the whole gripe; otherwise name
+which asks it covers. A bare `in progress <tree>` makes the next reader
+diff the branch to learn the coverage (gr514899).
 
 ## Who fixes a gripe?
 ## Can I hand a gripe off to an LLM to fix?

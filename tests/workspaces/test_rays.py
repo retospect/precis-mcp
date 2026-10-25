@@ -221,7 +221,7 @@ def test_seam_ray_one_junction_frame_hit(a2: SeHandler) -> None:
     frames = [ln for ln in body.splitlines() if " frame " in f" {ln.split('Å', 1)[-1]}"]
     junction = [ln for ln in frames if "junction#" in ln]
     assert len(junction) == 1, body
-    assert "frame:a200000000000008" in junction[0]
+    assert "frame:1b7377e82e6689d6" in junction[0]
     assert any("fetch#" in ln for ln in frames)  # crossed into block u
     # the pass list crosses the seam: p's aC30 then u's atoms
     assert "pass p#aC30" in body and "pass u#aC1" in body
