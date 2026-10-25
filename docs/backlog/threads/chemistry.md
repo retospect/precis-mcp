@@ -126,6 +126,11 @@ paper needs.
    barriers after 21 sightings. Slice 1 needs no GPU and unblocks its
    endpoints. Draft until Reto answers the open questions; slice 3's
    per-edge job is also the first piece Horizon 1 can reuse.
+5. **backlog/neb-trust-diagnostic.md** (gr515871) — zero-compute
+   `view='gate'` on pathways; prevents qu164903 spending ticks on
+   confirmation reruns whose verdict is already stored (st336035's
+   pw512178/pw513347 were already blocked). Below 4 because Reto ordered 4
+   first; its core `gate_rows` is what 4's slice 3 `view='neb'` reuses.
 
 ## Horizon
 
