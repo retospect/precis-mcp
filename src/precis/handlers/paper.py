@@ -3359,7 +3359,9 @@ class PaperHandler(Handler):
         self._require_reason(reason, "drop_body", kind, handle)
         with self.store.pool.connection() as conn:
             probe = body_ops.probe_body(conn, ref.id)
-        if probe.is_stub:
+        # A stub carrying stale content ids / body meta is still a drop
+        # target — detach_body cleans exactly those (gr515106 LOW).
+        if probe.is_stub and not probe.identifiers and not probe.meta_keys:
             return Response(
                 body=f"no change: {handle} already holds no body and no PDF."
             )

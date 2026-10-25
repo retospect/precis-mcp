@@ -105,7 +105,8 @@ def test_bodiless_stub_survivor_takes_body_pdf_and_content_ids(store: Store) -> 
     assert _one(
         store, "SELECT meta->>'superseded_by' FROM refs WHERE ref_id=%s", twin
     ) == str(stub)
-    # Moved chunks carry no embedding yet: the worker refills them.
+    # Derived rows now copy with the body (gr515106) — the seeded chunks
+    # carry none, so nothing lands.
     assert (
         _one(
             store,
@@ -114,6 +115,115 @@ def test_bodiless_stub_survivor_takes_body_pdf_and_content_ids(store: Store) -> 
             stub,
         )
         == 0
+    )
+
+
+def test_body_move_copies_derived_rows_and_repoints_links(store: Store) -> None:
+    """gr515106: the merge's body move converged on
+    ``body_ops.move_body`` — derived rows copy onto the moved chunks
+    instead of dropping for the workers to re-derive, and chunk-anchored
+    links re-point onto the survivor's copies instead of cascading away
+    with the donor's delete."""
+    stub = int(store.insert_ref(kind="paper", slug="wanted26", title="Wanted").id)
+    twin = _seed_bodied(store, "twin26")
+    tchunk = int(
+        _one(
+            store,
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0",
+            twin,
+        )
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_summaries (chunk_id, summarizer, text) "
+            "VALUES (%s, 'llm-v1', 'a summary')",
+            (tchunk,),
+        )
+        conn.commit()
+    other = int(store.insert_ref(kind="paper", slug="citer26", title="Citer").id)
+    link = store.add_link(
+        src_ref_id=other, dst_ref_id=twin, relation="cites", dst_pos=0
+    )
+
+    _merge(store, stub, twin)
+
+    # The summary followed the moved chunk onto the survivor's copy.
+    assert (
+        _one(
+            store,
+            "SELECT count(*) FROM chunk_summaries s JOIN chunks c "
+            "USING (chunk_id) WHERE c.ref_id = %s AND c.ord >= 0",
+            stub,
+        )
+        == 1
+    )
+    # The anchored link survived the merge: dst_ref_id and dst_chunk_id
+    # re-pointed at the survivor and its ord-0 copy — under the old move
+    # the donor's chunk delete cascaded the link away entirely.
+    schunk = _one(
+        store, "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", stub
+    )
+    assert (
+        _one(store, "SELECT dst_ref_id FROM links WHERE link_id = %s", link.id) == stub
+    )
+    assert (
+        _one(store, "SELECT dst_chunk_id FROM links WHERE link_id = %s", link.id)
+        == schunk
+    )
+
+
+def test_merge_after_stamp_restore_still_restamps_and_records(
+    store: Store,
+) -> None:
+    """Opus review (gr515106): ``body_ops._restore_link_stamp``'s
+    internal door (``precis.trust_internal``) is reset right after the
+    restore UPDATE — left set, it covered the rest of the merge tx, and
+    the refs guard skipped every later write's act and restamp. A
+    version-1 survivor whose title ``inherit_missing_identity`` fills
+    after the move must come out restamped ``computed/hunch`` with a
+    ``revise`` act recorded."""
+    from precis.store.revision_context import revision_context
+
+    # Converted-kind (memory) survivor, version-1 stamped, blank title —
+    # the merge fills the title from the loser AFTER the body move.
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        stub = int(store.insert_ref(kind="memory", slug=None, title="", meta={}).id)
+    twin = _seed_bodied(store, "twinrst24")
+    mem = int(store.insert_ref(kind="memory", slug=None, title="m", meta={}).id)
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        link = store.add_link(
+            src_ref_id=mem, dst_ref_id=twin, relation="cites", dst_pos=0
+        )
+
+    _merge(store, stub, twin)
+
+    # The restore ran — the chunk-anchored link kept its own prior stamp.
+    state = store.trust_state("link", link.id)
+    assert state is not None
+    assert (state.origin, state.confidence, state.version) == (
+        "generated",
+        "hunch",
+        1,
+    )
+    # And the door was closed again for the rest of the merge: the
+    # v1 survivor's later writes restamped it computed/hunch and
+    # recorded their acts — one revise via the body guard for the
+    # moved-in chunks, one for the title fill. A leaked
+    # trust_internal would have skipped them all (the stamp stays
+    # generated, no act lands).
+    state = store.trust_state("ref", stub)
+    assert state is not None
+    assert (state.origin, state.confidence, state.version) == (
+        "computed",
+        "hunch",
+        1,
+    )
+    acts = store.trust_acts_for("ref", stub)
+    assert [a["action"] for a in acts] == ["create", "revise", "revise"]
+    assert "body" in {a.get("via") for a in acts}
+    assert (
+        _one(store, "SELECT title FROM refs WHERE ref_id=%s", stub)
+        == "Bodied twinrst24"
     )
 
 

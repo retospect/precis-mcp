@@ -2,9 +2,11 @@
 
 The agent-facing body doors behind ``edit(kind='paper', args={…})``
 (``drop_body`` / ``move_body_to`` / ``split_body`` / ``clear_abstract``,
-gr514995) share the SQL here. It generalises
-:func:`precis.ingest.dedup._move_body_to_survivor` — which retires the
-donor — to the live-donor, live-target case the wrong-PDF repair needs.
+gr514995) share the SQL here — and since gr515106 so does dedup's
+:func:`precis.ingest.dedup._move_body_to_survivor`, which delegates its
+body move to :func:`move_body` (there is exactly one body-move
+implementation; dedup only keeps the pdf-only branch it can express
+without copying a body).
 
 Two hard rules the module holds:
 
@@ -236,7 +238,10 @@ def detach_body(*, ref_id: int, conn: Any) -> BodyReport:
     union over live and retired chunks: every anchored link dies).
     Retired ``ord >= 0`` rows delete too (``report.retired_chunks``)."""
     report = probe_body(conn, ref_id)
-    if report.is_stub:
+    # A stub still runs when it carries stale content ids or body meta —
+    # the early return must not strand a chunkless, pdf-less ref that has
+    # junk only this op removes (gr515106 LOW).
+    if report.is_stub and not report.identifiers and not report.meta_keys:
         return report
     conn.execute("DELETE FROM chunks WHERE ref_id = %s AND ord >= 0", (ref_id,))
     if report.pdf:
@@ -426,11 +431,16 @@ def _restore_link_stamp(conn: Any, link_id: int) -> bool:
     }
     if any(hashes.get(o) != hashes.get(n) for o, n in moved_pairs):
         return False
-    # set_config's third arg keeps the door transaction-local — commit or
-    # abort clears it, so there is nothing to reset. (A finally-block reset
-    # would run on the aborted transaction and mask the real error with
-    # InFailedSqlTransaction — the caller would lose the CheckViolation's
-    # next=.)
+    # set_config's third arg keeps the door transaction-local — but
+    # move_body runs mid-merge inside dedup's larger transaction, so
+    # commit/abort no longer bounds it: left set, the bypass would cover
+    # every guarded write the merge makes after this (no acts recorded,
+    # stale stamps kept). Reset to '' right after the guarded UPDATE,
+    # like the 0214 body guard's own door use — then the act append runs
+    # back under the caller's context. No finally-block: on an aborted
+    # transaction the door dies with it anyway, and a reset attempt
+    # would mask the real error with InFailedSqlTransaction (the caller
+    # would lose the CheckViolation's next=).
     conn.execute("SELECT set_config('precis.trust_internal', 'on', true)")
     conn.execute(
         "UPDATE links SET trust_origin = %s, trust_confidence = %s, "
@@ -442,6 +452,7 @@ def _restore_link_stamp(conn: Any, link_id: int) -> bool:
             link_id,
         ),
     )
+    conn.execute("SELECT set_config('precis.trust_internal', '', true)")
     conn.execute(
         "SELECT precis_trust_append_act('link', %s, "
         "precis_trust_act_json('link', %s, 'revise', NULL, %s::text[], "
@@ -484,7 +495,15 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
     conn.execute("DELETE FROM chunks WHERE ref_id = %s AND ord >= 0", (src_ref_id,))
     report = replace(report, chunk_links=repointed)
 
-    if report.pdf:
+    # The pdf pointer moves only onto a target that lacks one (dedup's
+    # own rule): the MCP door's target always does, but dedup's survivor
+    # may already hold a pdf — then the donor keeps its pointer and the
+    # target's pdf-kind rows are live, not stale (gr515106).
+    row = conn.execute(
+        "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (dst_ref_id,)
+    ).fetchone()
+    dst_had_pdf = row is not None and row[0] is not None
+    if report.pdf and not dst_had_pdf:
         row = conn.execute(
             "SELECT pdf_sha256, pdf_pages, pdf_role FROM refs WHERE ref_id = %s",
             (src_ref_id,),
@@ -505,15 +524,16 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
 
     # Content identifiers follow the body: pdf_sha256/content_hash
     # always (the file moved), paper_id/pub_id only onto a target that
-    # lacks the kind (single-valued per ref). The door guarantees the
-    # target holds no live pdf and no body, so any pdf-kind rows it
-    # carries describe bytes/text it does not hold: stale, dropped by
-    # the re-home (gr515805).
+    # lacks the kind (single-valued per ref). The target holds no body
+    # (every caller guarantees it — the ``(ref_id, ord)`` uniqueness
+    # would refuse a second body anyway), so any pdf-kind rows it
+    # carries that describe bytes/text it does not hold are stale and
+    # dropped by the re-home (gr515805).
     _rehome_content_identifiers(
         conn,
         src_ref_id=src_ref_id,
         dst_ref_id=dst_ref_id,
-        dst_had_pdf=False,
+        dst_had_pdf=dst_had_pdf,
         dst_had_body=False,
     )
 

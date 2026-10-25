@@ -1968,6 +1968,7 @@ class ChunkStore:
         prefer_body: bool = False,
         pool_per_leg: int = 80,
         ref_counts_out: dict[int, int] | None = None,
+        legs_out: dict[int, dict[str, tuple[int, float]]] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Multi-leg reciprocal-rank fusion for broad/high-recall
         retrieval. Generalises :meth:`search_chunks_fused` (one lexical +
@@ -2007,6 +2008,20 @@ class ChunkStore:
         lexical-lower-bound contract — both describe the retrieved
         universe, not a full corpus scan.
 
+        ``legs_out`` (gr514952) — when a dict is passed, it is cleared and
+        populated with each fused candidate's leg provenance:
+        ``{chunk_id: {leg: (rank, leg_score)}}``. ``leg`` is ``lex<i>``
+        for the i-th non-blank ``q_texts`` leg and ``sem<i>`` for the
+        i-th ``query_vecs`` leg; ``rank`` is the chunk's 0-based position
+        in that leg and ``leg_score`` the leg's own score (ts_rank for
+        lexical, cosine distance for semantic). The map covers the whole
+        fused candidate pool — the same universe ``ref_counts_out``
+        counts — not only the returned slice, so a caller can apply its
+        own corroboration policy (e.g. a semantic-only distance floor,
+        which the SQL-side :meth:`search_chunks_fused` fuses internally
+        but this application-level fusion previously could not express).
+        Empty on the ``literal``/``verbatim`` early-return paths.
+
         Returns ``(ChunkRow, Ref, fused_score)``, best first.
         """
         # Defensive hard ceiling on the fan-out. The MCP surface and the
@@ -2023,6 +2038,8 @@ class ChunkStore:
             )
         if ref_counts_out is not None:
             ref_counts_out.clear()
+        if legs_out is not None:
+            legs_out.clear()
         m = (mode or "hybrid").strip().lower()
         if m == "literal":
             # Same early-return shape as verbatim: nothing to fuse.
@@ -2086,67 +2103,78 @@ class ChunkStore:
         pool = max(pool_per_leg, (offset + limit) * 2)
         clean_q = [qt for qt in q_texts if qt and qt.strip()]
 
-        legs: list[list[tuple[ChunkRow, Ref, float]]] = []
+        legs: list[tuple[str, list[tuple[ChunkRow, Ref, float]]]] = []
         if run_lexical:
-            for qt in clean_q:
+            for i, qt in enumerate(clean_q):
                 legs.append(
-                    self.search_chunks_lexical(
-                        q=qt,
-                        kind=kind,
-                        kinds=kinds,
-                        created_from=created_from,
-                        created_to=created_to,
-                        scope_ref_id=scope_ref_id,
-                        tags=tags,
-                        exclude_tags=exclude_tags,
-                        limit=pool,
-                        exclude_ref_ids=exclude_ref_ids,
-                        include_ref_ids=include_ref_ids,
-                        include_speculative=include_speculative,
-                        year_from=year_from,
-                        year_to=year_to,
-                        chunk_kinds=chunk_kinds,
-                        chunk_ids=chunk_ids,
-                        card_kinds=card_kinds,
-                        has_body=has_body,
+                    (
+                        f"lex{i}",
+                        self.search_chunks_lexical(
+                            q=qt,
+                            kind=kind,
+                            kinds=kinds,
+                            created_from=created_from,
+                            created_to=created_to,
+                            scope_ref_id=scope_ref_id,
+                            tags=tags,
+                            exclude_tags=exclude_tags,
+                            limit=pool,
+                            exclude_ref_ids=exclude_ref_ids,
+                            include_ref_ids=include_ref_ids,
+                            include_speculative=include_speculative,
+                            year_from=year_from,
+                            year_to=year_to,
+                            chunk_kinds=chunk_kinds,
+                            chunk_ids=chunk_ids,
+                            card_kinds=card_kinds,
+                            has_body=has_body,
+                        ),
                     )
                 )
         if run_semantic:
-            for qv in query_vecs:
+            for i, qv in enumerate(query_vecs):
                 legs.append(
-                    self.search_chunks_semantic(
-                        query_vec=qv,
-                        kind=kind,
-                        kinds=kinds,
-                        created_from=created_from,
-                        created_to=created_to,
-                        scope_ref_id=scope_ref_id,
-                        tags=tags,
-                        exclude_tags=exclude_tags,
-                        limit=pool,
-                        max_distance=max_distance,
-                        exclude_ref_ids=exclude_ref_ids,
-                        include_ref_ids=include_ref_ids,
-                        include_speculative=include_speculative,
-                        year_from=year_from,
-                        year_to=year_to,
-                        chunk_kinds=chunk_kinds,
-                        chunk_ids=chunk_ids,
-                        card_kinds=card_kinds,
-                        has_body=has_body,
+                    (
+                        f"sem{i}",
+                        self.search_chunks_semantic(
+                            query_vec=qv,
+                            kind=kind,
+                            kinds=kinds,
+                            created_from=created_from,
+                            created_to=created_to,
+                            scope_ref_id=scope_ref_id,
+                            tags=tags,
+                            exclude_tags=exclude_tags,
+                            limit=pool,
+                            max_distance=max_distance,
+                            exclude_ref_ids=exclude_ref_ids,
+                            include_ref_ids=include_ref_ids,
+                            include_speculative=include_speculative,
+                            year_from=year_from,
+                            year_to=year_to,
+                            chunk_kinds=chunk_kinds,
+                            chunk_ids=chunk_ids,
+                            card_kinds=card_kinds,
+                            has_body=has_body,
+                        ),
                     )
                 )
 
         # Reciprocal-rank fusion: score[cid] = Σ_leg 1/(k + rank_in_leg).
-        # Keep the first-seen (ChunkRow, Ref) per chunk for rendering.
+        # Keep the first-seen (ChunkRow, Ref) per chunk for rendering;
+        # leg_hits records which legs ranked it (gr514952).
         fused: dict[int, float] = {}
         seen: dict[int, tuple[ChunkRow, Ref]] = {}
-        for leg in legs:
-            for rank, (block, ref, _score) in enumerate(leg):
+        leg_hits: dict[int, dict[str, tuple[int, float]]] = {}
+        for leg_name, leg in legs:
+            for rank, (block, ref, leg_score) in enumerate(leg):
                 cid = block.id
                 fused[cid] = fused.get(cid, 0.0) + 1.0 / (k + rank + 1)
                 if cid not in seen:
                     seen[cid] = (block, ref)
+                leg_hits.setdefault(cid, {})[leg_name] = (rank, leg_score)
+        if legs_out is not None:
+            legs_out.update(leg_hits)
 
         # Sort by fused score desc; deterministic tiebreak on chunk id.
         ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -2196,6 +2224,7 @@ class ChunkStore:
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         has_body: bool | None = None,
+        legs_out: dict[int, dict[str, tuple[int, float]]] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
         The source-search primitive behind the unified Drive surface:
@@ -2208,7 +2237,9 @@ class ChunkStore:
         pages. ``exclude_ref_ids`` drops refs from every leg uniformly —
         unlike per-handler cross-kind fan-out
         (``runtime._dispatch_cross_kind``), this runs ONE SQL query over
-        every kind, so exclusion never has a per-handler gap. Returns
+        every kind, so exclusion never has a per-handler gap.
+        ``legs_out`` forwards to :meth:`search_chunks_multi` — per-hit
+        leg provenance over the fused pool (gr514952). Returns
         ``(ChunkRow, Ref, score)`` one per ref; kinds with no embedded
         chunks just contribute nothing."""
         if not kinds:
@@ -2240,6 +2271,7 @@ class ChunkStore:
                 include_ref_ids=include_ref_ids,
                 has_body=has_body,
                 per_paper=1,  # one best chunk per ref (breadth / triage)
+                legs_out=legs_out,
             )
             fused.sort(
                 key=lambda t: (
@@ -2270,6 +2302,7 @@ class ChunkStore:
             include_ref_ids=include_ref_ids,
             has_body=has_body,
             per_paper=1,
+            legs_out=legs_out,
         )
 
     def search_chunks(

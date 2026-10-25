@@ -131,11 +131,11 @@ def build_ref_passes(
 
         def _bib_mark_pass(batch_size: int) -> BatchResult:
             r = run_bib_mark_pass(store, batch_size=batch_size)
-            return BatchResult(
-                handler="bib_mark",
-                claimed=r["chunks_swept"],
-                ok=r["chunks_swept"],
-                failed=r["failed"],
+            # The pass dict names its counters differently — remap onto
+            # the field names and let everything else flow through.
+            return BatchResult.from_dict(
+                "bib_mark",
+                {**r, "claimed": r["chunks_swept"], "ok": r["chunks_swept"]},
             )
 
         ref_passes.append(_bib_mark_pass)
@@ -320,11 +320,9 @@ def build_ref_passes(
             # hubs do).
             _claimed = r["hubs_claimed"]
             _ok = r["hubs_swept"]
-            return _ConflictSearchBatchResult(
-                handler="conflict_search",
-                claimed=_claimed,
-                ok=_ok,
-                failed=_claimed - _ok,
+            return _ConflictSearchBatchResult.from_dict(
+                "conflict_search",
+                {**r, "claimed": _claimed, "ok": _ok, "failed": _claimed - _ok},
             )
 
         ref_passes.append(_conflict_search_pass)
@@ -447,11 +445,14 @@ def build_ref_passes(
 
         def _quest_loop_reconcile_pass(batch_size: int) -> _QBatchResult:
             r = reconcile_quest_loops(store, enabled=True)
-            return _QBatchResult(
-                handler="quest_loop_reconcile",
-                claimed=int(r.get("ensured", 0)),
-                ok=int(r.get("minted", 0)),
-                failed=0,
+            return _QBatchResult.from_dict(
+                "quest_loop_reconcile",
+                {
+                    **r,
+                    "claimed": int(r.get("ensured", 0)),
+                    "ok": int(r.get("minted", 0)),
+                    "failed": 0,
+                },
             )
 
         ref_passes.append(_quest_loop_reconcile_pass)
@@ -1047,11 +1048,14 @@ def build_ref_passes(
                     container_cmd=_ba_cmd,
                     scratch_dir=_ba_scratch,
                 )
-                return _BaBatchResult(
-                    handler="briefing_audio",
-                    claimed=1 if r["published"] else 0,
-                    ok=1 if r["published"] else 0,
-                    failed=0 if r["published"] else 1,
+                return _BaBatchResult.from_dict(
+                    "briefing_audio",
+                    {
+                        **r,
+                        "claimed": 1 if r["published"] else 0,
+                        "ok": 1 if r["published"] else 0,
+                        "failed": 0 if r["published"] else 1,
+                    },
                 )
 
             ref_passes.append(_briefing_audio_pass)
@@ -1098,11 +1102,14 @@ def build_ref_passes(
                     container_cmd=_ca_cmd,
                     scratch_dir=_ca_scratch,
                 )
-                return _CaBatchResult(
-                    handler="cast_audio",
-                    claimed=1 if r["published"] else 0,
-                    ok=1 if r["published"] else 0,
-                    failed=0 if r["published"] else 1,
+                return _CaBatchResult.from_dict(
+                    "cast_audio",
+                    {
+                        **r,
+                        "claimed": 1 if r["published"] else 0,
+                        "ok": 1 if r["published"] else 0,
+                        "failed": 0 if r["published"] else 1,
+                    },
                 )
 
             ref_passes.append(_cast_audio_pass)
@@ -1318,11 +1325,14 @@ def build_ref_passes(
 
         def _briefing_pass(batch_size: int) -> _BatchResult:
             r = run_briefing(store)
-            return _BatchResult(
-                handler="briefing",
-                claimed=r["articles"],
-                ok=1 if r["ref_id"] is not None else 0,
-                failed=0,
+            return _BatchResult.from_dict(
+                "briefing",
+                {
+                    **r,
+                    "claimed": r["articles"],
+                    "ok": 1 if r["ref_id"] is not None else 0,
+                    "failed": 0,
+                },
             )
 
         ref_passes.append(_briefing_pass)

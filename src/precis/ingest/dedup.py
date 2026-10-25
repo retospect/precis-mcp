@@ -125,13 +125,18 @@ def _move_body_to_survivor(
     already holds whatever the duplicate has (the ordinary merge).
 
     * **body**: survivor has no ``ord >= 0`` chunk and the duplicate does.
-      Body chunks are append-only, so each is INSERTed on the survivor and
-      the duplicate's DELETEd (never UPDATEd). Embeddings, summaries and
-      keywords are left to the workers (ingest never fills them); the
-      duplicate's cards (``ord < 0``) stay behind, the survivor keeps its own.
+      Converged on :func:`precis.ingest.body_ops.move_body` (gr515106):
+      body chunks are append-only (INSERTed on the survivor, DELETEd on
+      the duplicate — never UPDATEd), the derived rows (embeddings,
+      summaries, keywords, citations, blobs, tags, review) copy onto the
+      new chunk ids, and ``links`` chunk anchors re-point onto the copies
+      instead of cascading away with the delete. The duplicate's cards
+      (``ord < 0``) stay behind, the survivor keeps its own.
     * **pdf**: survivor has no ``pdf_sha256`` and the duplicate does:
       ``refs.pdf_sha256/pdf_pages/pdf_role`` move (the ``pdfs`` row and its
-      stored file are keyed by sha, so the file follows the sha).
+      stored file are keyed by sha, so the file follows the sha). A
+      survivor that already holds a pdf keeps it — ``move_body`` moves
+      the pointer only onto a pdf-less target.
     * Either move carries the content identifiers (``pdf_sha256``,
       ``content_hash``, and ``paper_id``/``pub_id`` when the survivor has
       none) so a re-ingest of the file probes onto the survivor; the
@@ -153,8 +158,33 @@ def _move_body_to_survivor(
     moved: list[str] = []
     if not (move_body or move_pdf):
         return moved
+    links_repointed = 0
 
-    if move_pdf:
+    if move_body:
+        # One implementation (gr515106): body_ops.move_body also moves the
+        # pdf pointer when the survivor lacks one (move_pdf), re-homes the
+        # content identifiers and carries the body-owned meta keys. Its
+        # target must hold no live body — exactly this branch's predicate.
+        # The copy's chunk_embeddings INSERT feeds one HNSW index
+        # insertion per chunk — a large body outruns the role's
+        # defensive statement_timeout, so the move takes the same 600 s
+        # bound the MCP body doors set (gr516498).
+        conn.execute("SET LOCAL statement_timeout = '600s'")
+        from precis.ingest.body_ops import move_body as _ops_move_body
+
+        report = _ops_move_body(
+            src_ref_id=duplicate_ref_id,
+            dst_ref_id=survivor_ref_id,
+            conn=conn,
+        )
+        links_repointed = report.chunk_links
+        if move_pdf:
+            moved.append("pdf")
+        moved.append("body")
+    else:
+        # pdf-only move: the survivor already holds a body (or the donor
+        # holds none), so move_body can't serve — it copies the donor's
+        # body chunks unconditionally. The pointer move stays inline.
         conn.execute(
             "UPDATE refs SET pdf_sha256 = NULL, updated_at = now() WHERE ref_id = %s",
             (duplicate_ref_id,),
@@ -165,45 +195,24 @@ def _move_body_to_survivor(
             "WHERE ref_id = %s",
             (du[1], du[2], du[3], survivor_ref_id),
         )
+        _rehome_content_identifiers(
+            conn,
+            src_ref_id=duplicate_ref_id,
+            dst_ref_id=survivor_ref_id,
+            dst_had_pdf=False,
+            dst_had_body=bool(sv[5]),
+        )
         moved.append("pdf")
 
-    if move_body:
-        conn.execute(
-            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
-            "  section_path, page_first, page_last, token_count, meta, numerics) "
-            "SELECT %s, set_by, ord, chunk_kind, text, section_path, "
-            "       page_first, page_last, token_count, meta, numerics "
-            "  FROM chunks WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL "
-            " ORDER BY ord",
-            (survivor_ref_id, duplicate_ref_id),
-        )
-        conn.execute(
-            "DELETE FROM chunks WHERE ref_id = %s AND ord >= 0",
-            (duplicate_ref_id,),
-        )
-        # The extraction-describing meta keys belong to the body they describe.
-        from precis.ingest.db_writer import _BODY_OWNED_META_KEYS, _merge_ingest_meta
-
-        dmeta = du[4] if isinstance(du[4], dict) else {}
-        _merge_ingest_meta(
-            survivor_ref_id,
-            {k: v for k, v in dmeta.items() if k in _BODY_OWNED_META_KEYS},
-            conn=conn,
-        )
-        moved.append("body")
-
-    _rehome_content_identifiers(
-        conn,
-        src_ref_id=duplicate_ref_id,
-        dst_ref_id=survivor_ref_id,
-        dst_had_pdf=sv[1] is not None,
-        dst_had_body=bool(sv[5]),
-    )
     store.append_event(
         survivor_ref_id,
         source=source,
         event="body_moved_from_duplicate",
-        payload={"duplicate_ref_id": duplicate_ref_id, "moved": moved},
+        payload={
+            "duplicate_ref_id": duplicate_ref_id,
+            "moved": moved,
+            "chunk_links_repointed": links_repointed,
+        },
         conn=conn,
     )
     return moved

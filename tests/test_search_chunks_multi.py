@@ -137,3 +137,51 @@ def test_multi_semantic_only_degrades_without_vecs(store: Store) -> None:
         limit=10,
     )
     assert hits and any("hydrogen" in b.text.lower() for b, _r, _s in hits)
+
+
+def test_multi_legs_out_records_leg_provenance(store: Store) -> None:
+    """gr514952: the application-level fusion records which legs ranked
+    each fused candidate — ``{chunk_id: {leg: (rank, leg_score)}}`` over
+    the whole pool, so a caller can tell a lexical-corroborated hit from
+    a semantic-only one."""
+    _seed(store, slug="lpA", blocks=_A)
+    _seed(store, slug="lpB", blocks=_B)
+    legs: dict[int, dict[str, tuple[int, float]]] = {}
+    hits = store.chunks.search_chunks_multi(
+        q_texts=["nitrate ammonia", "copper selectivity"],
+        query_vecs=[_vec("single-atom copper ammonia")],
+        kind="paper",
+        limit=10,
+        legs_out=legs,
+    )
+    assert hits and legs
+    # Every returned hit has provenance; the map covers the whole pool.
+    cids = [b.id for b, _r, _s in hits]
+    assert set(cids) <= set(legs)
+    assert len(legs) >= len(cids)
+    # Labels name the executed legs in order: two lexical, one semantic.
+    labels = {label for entry in legs.values() for label in entry}
+    assert labels <= {"lex0", "lex1", "sem0"}
+    assert any(label.startswith("lex") for label in labels)
+    assert "sem0" in labels
+    # Each entry is the chunk's 0-based rank in that leg + the leg score.
+    for entry in legs.values():
+        for _label, (rank, leg_score) in entry.items():
+            assert isinstance(rank, int) and rank >= 0
+            assert isinstance(leg_score, (int, float))
+
+
+def test_multi_legs_out_stays_empty_on_literal(store: Store) -> None:
+    # The literal early-return fuses nothing — no provenance to report,
+    # and a reused dict is still cleared first (same contract as
+    # ``ref_counts_out``).
+    _seed(store, slug="lpV", blocks=_A)
+    legs: dict[int, dict[str, tuple[int, float]]] = {0: {"lex0": (0, 1.0)}}
+    store.chunks.search_chunks_multi(
+        q_texts=["nitrate"],
+        query_vecs=[],
+        mode="literal",
+        kind="paper",
+        legs_out=legs,
+    )
+    assert legs == {}

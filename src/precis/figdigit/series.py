@@ -46,6 +46,16 @@ __all__ = [
 Floats = NDArray[np.float64]
 Bools = NDArray[np.bool_]
 
+#: Spec step 5's "width of the sub-pixel fit" (gr514487): the parabola
+#: fits the contiguous window around the extremum lying within this
+#: fraction of the peak's prominence above the baseline — half
+#: prominence, i.e. the FWHM cut. ``Peak.fwhm_px`` reports that window's
+#: pixel width. The peak sigma term itself is not this width: it is the
+#: fit's vertex standard error plus the vertex↔arg-extremum offset
+#: (``extract_series``), iterated to coverage — the window only bounds
+#: which points the fit sees.
+_PEAK_FIT_PROMINENCE_FRAC = 0.5
+
 
 class SeriesError(ValueError):
     """Extraction refusal: empty mask, no extremum, degenerate peak fit."""
@@ -261,7 +271,7 @@ def find_peak(
     depth = base - s[i0]
     if depth <= 0:
         raise SeriesError("no extremum above the baseline")
-    half = s[i0] + 0.5 * depth
+    half = s[i0] + _PEAK_FIT_PROMINENCE_FRAC * depth
     below = s <= half
     lo = i0
     while lo > 0 and below[lo - 1]:
