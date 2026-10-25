@@ -1657,14 +1657,20 @@ class DraftStore(_AbbrevMixin):
         self, ref_id: int, handles: list[str] | None = None
     ) -> dict[str, dict[str, str]]:
         """Per-block ``{handle: {summary, keywords}}`` for a draft.
-        ``summary`` = the ``llm-v1`` two-part summary (``chunk_summaries``);
-        ``keywords`` = comma-joined KeyBERT terms (``chunks.keywords``,
-        first 12); either is ``''`` before the ``llm_summarize``/
-        ``chunk_keywords`` workers reach the chunk — callers fall back
-        (summary → keywords → truncated text). Shared by the web reader's
-        view slider and the outline render. ``handles`` scopes the result
-        (the on-demand row path must not re-scan the whole draft per row);
-        ``None`` = whole draft."""
+        ``summary`` = the ``llm-v1`` two-part summary (``chunk_summaries``),
+        but only when it still describes the current text — a stored
+        ``content_sha`` matching the chunk's own. An edited chunk keeps its
+        stale summary row until the ``llm_summarize`` worker re-derives it
+        (derived data re-derives on the sha mismatch), and serving it in the
+        meantime hands editors a gist of text that is no longer there
+        (gr514407); unverifiable legacy rows (``content_sha IS NULL``) get
+        the same treatment. ``keywords`` = comma-joined KeyBERT terms
+        (``chunks.keywords``, first 12); either is ``''`` before the
+        ``llm_summarize``/``chunk_keywords`` workers reach the chunk —
+        callers fall back (summary → keywords → truncated text). Shared by
+        the web reader's view slider and the outline render. ``handles``
+        scopes the result (the on-demand row path must not re-scan the
+        whole draft per row); ``None`` = whole draft."""
         where = "c.ref_id = %s AND c.retired_at IS NULL AND c.pos IS NOT NULL AND c.ord >= 0"
         params: tuple[Any, ...] = (ref_id,)
         if handles is not None:
@@ -1678,7 +1684,10 @@ class DraftStore(_AbbrevMixin):
                 SELECT c.handle, c.keywords,
                        (SELECT s.text FROM chunk_summaries s
                           WHERE s.chunk_id = c.chunk_id
-                            AND s.summarizer = 'llm-v1' LIMIT 1) AS summary
+                            AND s.summarizer = 'llm-v1'
+                            AND s.status = 'ok'
+                            AND s.content_sha = c.content_sha
+                          LIMIT 1) AS summary
                   FROM chunks c
                  WHERE {where}
                 """,
@@ -1711,7 +1720,7 @@ class DraftStore(_AbbrevMixin):
                 -- Headings form their own tree (only headings have
                 -- children), so walk chunk_kind='heading' by parent.
                 WITH RECURSIVE h AS (
-                    SELECT chunk_id, handle, text, keywords, pos,
+                    SELECT chunk_id, handle, text, keywords, pos, content_sha,
                            pos AS sort_path, 0 AS depth
                       FROM chunks
                      WHERE ref_id = %s AND chunk_kind = 'heading'
@@ -1719,7 +1728,7 @@ class DraftStore(_AbbrevMixin):
                        AND parent_chunk_id IS NOT DISTINCT FROM %s
                     UNION ALL
                     SELECT c.chunk_id, c.handle, c.text, c.keywords, c.pos,
-                           h.sort_path || '/' || c.pos, h.depth + 1
+                           c.content_sha, h.sort_path || '/' || c.pos, h.depth + 1
                       FROM chunks c JOIN h ON c.parent_chunk_id = h.chunk_id
                      WHERE c.chunk_kind = 'heading' AND c.retired_at IS NULL
                        AND c.pos IS NOT NULL
@@ -1727,7 +1736,10 @@ class DraftStore(_AbbrevMixin):
                 SELECT h.handle, h.depth, h.text, h.keywords,
                        (SELECT s.text FROM chunk_summaries s
                          WHERE s.chunk_id = h.chunk_id
-                           AND s.summarizer = 'llm-v1' LIMIT 1) AS gist,
+                           AND s.summarizer = 'llm-v1'
+                           AND s.status = 'ok'
+                           AND s.content_sha = h.content_sha
+                         LIMIT 1) AS gist,
                        h.chunk_id
                   FROM h ORDER BY h.sort_path COLLATE "C" ASC
                 """,

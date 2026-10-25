@@ -428,9 +428,10 @@ def test_outline_prefers_summary_then_keywords_then_text(
     kw = by_text["Para with keywords."]
     with hub.live_store.pool.connection() as conn:
         conn.execute(
-            "INSERT INTO chunk_summaries (chunk_id, summarizer, text) "
-            "VALUES (%s, 'llm-v1', %s)",
-            (summ.chunk_id, "A crisp one-line gist."),
+            "INSERT INTO chunk_summaries (chunk_id, summarizer, text, "
+            "content_sha) VALUES (%s, 'llm-v1', %s, "
+            "(SELECT content_sha FROM chunks WHERE chunk_id = %s))",
+            (summ.chunk_id, "A crisp one-line gist.", summ.chunk_id),
         )
         conn.execute(
             "UPDATE chunks SET keywords = %s WHERE chunk_id = %s",
@@ -442,6 +443,56 @@ def test_outline_prefers_summary_then_keywords_then_text(
     assert "A crisp one-line gist." in out  # summary wins
     assert "alpha, beta, gamma" in out  # keywords fallback
     assert "Bare paragraph text." in out  # raw-text fallback
+
+
+def test_stale_gist_falls_back_to_text(draft: DraftHandler, hub: Hub) -> None:
+    """gr514407: an llm-v1 gist written against older text used to keep
+    rendering after the chunk changed, so an editor read a summary of
+    prose that is no longer there. ``block_views`` now serves the gist
+    only while its recorded ``content_sha`` still matches the chunk's —
+    a stale (or legacy sha-less) row falls through to keywords/text
+    until the summarize worker re-derives it."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="Fresh proposal text the gist predates.",
+        at={"after": "¶" + title_h},
+    )
+    para = _order(hub, "nt")[1]
+    store = hub.live_store
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_summaries (chunk_id, summarizer, text, "
+            "content_sha) VALUES (%s, 'llm-v1', %s, 'deadbeef'::text)",
+            (
+                para.chunk_id,
+                "Stale gist about replaced text.",
+            ),
+        )
+        conn.commit()
+
+    views = store.drafts.block_views(para.ref_id)
+    assert views[para.handle]["summary"] == ""
+
+    out = draft.get(id="nt").body
+    assert "Stale gist" not in out
+    assert "Fresh proposal text" in out
+
+    # Re-stamp the row at the current sha (what the worker's upsert does)
+    # and the gist renders again.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunk_summaries SET content_sha = "
+            "(SELECT content_sha FROM chunks WHERE chunk_id = %s) "
+            "WHERE chunk_id = %s",
+            (para.chunk_id, para.chunk_id),
+        )
+        conn.commit()
+    out = draft.get(id="nt").body
+    assert "Stale gist about replaced text." in out
 
 
 def test_explicit_outline_view_matches_default_render(
@@ -645,6 +696,39 @@ def test_delete_ref_level_id_soft_deletes_whole_draft(
         draft.delete(id="")  # no target at all is still a clean refusal
 
 
+def test_delete_accepts_reason_audit(draft: DraftHandler, hub: Hub) -> None:
+    """gr514339: ``delete(kind='draft', …, reason=…)`` used to raise
+    BadInput, so draft retirements carried no audit reason. A chunk-level
+    reason= rides ``retire_chunk``'s ``source=`` into the ``retired``
+    ``chunk_events`` row; a ref-level reason= lands as a ``deleted``
+    ``ref_events`` row (the NumericRefHandler tombstone convention)."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="paragraph", text="doomed", at={"after": "¶" + th})
+    doomed = _handle_of(hub, "doomed")
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+
+    draft.delete(id="¶" + doomed, reason="superseded")
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT source FROM chunk_events "
+            "WHERE event_kind = 'retired' ORDER BY event_id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    assert row[0]["reason"] == "superseded"
+
+    draft.delete(id="nt", confirm="delete-draft-nt", reason="merged into nt2")
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT payload FROM ref_events WHERE ref_id = %s AND event = 'deleted'",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0]["reason"] == "merged into nt2"
+
+
 def test_reading_window(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
@@ -742,6 +826,91 @@ def test_span_is_a_reading_order_window(draft: DraftHandler, hub: Hub) -> None:
     # child, so -1..1 reads [Intro, lead, ulist].
     body = draft.get(id=f"{lead}-1..1").body
     assert "Intro" in body and "lead" in body
+
+
+def test_heading_selector_resolves_to_its_chunk(draft: DraftHandler, hub: Hub) -> None:
+    """gr514226: ``id='<draft>~<heading title>'`` resolves the one live
+    heading with that text to its dc<N> — before, the selector only took
+    chunk handles and the agent had to find the dc id via search."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="heading",
+        text="Statement on AI Use",
+        at={"after": "¶" + th},
+    )
+    dc = _dc_of(hub, "Statement on AI Use")
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+
+    got = draft.get(id="nt~Statement on AI Use").body
+    assert got == draft.get(id=dc).body
+    # case-insensitive, and a dr<N> head works too
+    assert draft.get(id="nt~statement on ai use").body == got
+    assert draft.get(id=f"dr{ref.id}~Statement on AI Use").body == got
+
+    with pytest.raises(BadInput, match="no live heading") as ei:
+        draft.get(id="nt~No Such Heading")
+    assert "view='toc'" in str(ei.value.next)
+
+
+def test_heading_selector_ambiguous_names_handles(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Two live headings with the same title: the refusal names each
+    candidate's dc<N> rather than picking one."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Dup", at={"after": "¶" + th})
+    draft.put(id="nt", chunk_kind="heading", text="Dup", at={"after": "¶" + th})
+    dcs = sorted(c.dc for c in _order(hub, "nt") if c.text == "Dup")
+    assert len(dcs) == 2
+    with pytest.raises(BadInput, match="2 live headings") as ei:
+        draft.get(id="nt~Dup")
+    assert sorted(ei.value.options or []) == dcs
+
+
+def test_chunk_handle_in_view_points_at_id_form(draft: DraftHandler, hub: Hub) -> None:
+    """gr514227: ``get(id='<slug>', view='dc<M>')`` used to die on
+    "unknown draft view"; the refusal now names the id='dc<M>' form."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    dc = _order(hub, "nt")[0].dc
+    with pytest.raises(BadInput, match="not a draft view") as ei:
+        draft.get(id="nt", view=dc)
+    assert f"id='{dc}'" in str(ei.value.next)
+
+
+def test_chunk_read_names_live_children(draft: DraftHandler, hub: Hub) -> None:
+    """gr514228: a single-chunk read on a chunk with children used to show
+    the lead-in alone with no sign more exists; the footer now counts the
+    children and names the span read that covers them."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": "¶" + th})
+    intro = _dc_of(hub, "Intro")
+    draft.put(id="nt", chunk_kind="paragraph", text="lead", at={"into": intro})
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="tail",
+        at={"into": intro, "last": True},
+    )
+
+    body = draft.get(id=intro).body
+    assert "2 live child chunk(s)" in body
+    assert f"id='{intro}-0..2'" in body
+    # and the span read the hint names really does cover the subtree
+    span = draft.get(id=f"{intro}-0..2").body
+    assert "lead" in span and "tail" in span
+
+    # a leaf gets no such footer
+    leaf = draft.get(id=_dc_of(hub, "lead")).body
+    assert "child chunk" not in leaf
 
 
 def test_put_via_chunk_anchor_inserts_after(draft: DraftHandler, hub: Hub) -> None:

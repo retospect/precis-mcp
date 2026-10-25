@@ -216,6 +216,36 @@ def test_draft_find_whole_and_section(draft: DraftHandler, hub: Hub) -> None:
     assert "> " in scoped
 
 
+def test_draft_find_scopes_by_heading_title(draft: DraftHandler, hub: Hub) -> None:
+    """gr514226: the ``~`` selector on a find takes a heading title too —
+    the same resolution plain ``get`` has."""
+    proj = hub.live_store.insert_ref(kind="todo", slug=None, title="P").id
+    draft.put(id="findme2", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="findme2")
+    assert ref is not None
+    order = hub.live_store.drafts.reading_order(ref.id)
+    title_h = order[0].handle
+    draft.put(
+        id="findme2",
+        chunk_kind="heading",
+        text="Section A",
+        at={"after": "¶" + title_h},
+    )
+    sec = next(
+        c for c in hub.live_store.drafts.reading_order(ref.id) if c.text == "Section A"
+    )
+    draft.put(
+        id="findme2",
+        chunk_kind="paragraph",
+        text="prose about plaza packing",
+        at={"into": "¶" + sec.handle},
+    )
+    out = draft.get(id="findme2~Section A", q="plaza packing").body
+    assert "plaza packing" in out
+    with pytest.raises(BadInput, match="no live heading"):
+        draft.get(id="findme2~Section Z", q="plaza")
+
+
 # ── paper ─────────────────────────────────────────────────────────────
 
 

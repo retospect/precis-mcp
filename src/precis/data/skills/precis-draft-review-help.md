@@ -35,6 +35,8 @@ delete(id="dc12")  # retire a chunk (un-delete restores)
 delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
 delete(id="dc20", mode="cascade")  # delete heading AND its contents
 delete(id="nanotrans")  # ref-level id → soft-delete the WHOLE draft
+# reason= records why (a 'deleted' ref_events row / the chunk's retire event)
+delete(id="dc12", reason="superseded by dc45")
 ```
 
 Every text edit's ack ends with `sha:<12>`, the sha of the text that

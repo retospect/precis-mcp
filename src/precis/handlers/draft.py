@@ -502,27 +502,60 @@ class DraftHandler(Handler):
 
     def _chunk_of_selector(self, s: str) -> str:
         """``<draft>~dc<N>`` → ``dc<N>``, checking the chunk belongs to that
-        draft. Canonical ``kind:identifier[~selector]`` form; the one parser
-        behind plain ``get`` and the eye ladder (gr495026)."""
+        draft; ``<draft>~<heading title>`` resolves to the dc<N> of the one
+        live heading with that text (gr514226). Canonical
+        ``kind:identifier[~selector]`` form; the one parser behind plain
+        ``get`` and the eye ladder (gr495026)."""
         head, _, sel = s.partition("~")
-        sel = sel.strip()
-        if not head.strip() or not _is_draft_chunk_handle(sel):
+        head, sel = head.strip(), sel.strip()
+        if not head:
             raise BadInput(
-                f"unknown draft selector {sel!r} in id={s!r}",
-                next="selector must be a chunk handle: get(kind='draft', id='dc<N>')",
+                f"unknown draft selector {sel!r} in id={s!r} — nothing before the '~'",
+                next="get(kind='draft', id='<slug>~dc<N>')",
             )
-        head = head.strip()
         m = re.fullmatch(r"dr(\d+)", head)
         owner = self.store.get_ref(kind="draft", id=int(m.group(1))) if m else None
         if owner is None:
             owner = resolve_live_slug_ref(self.store, kind="draft", id=head)
-        chunk = self.store.drafts.get_draft_chunk(sel)
-        if chunk is None or int(chunk.ref_id) != int(owner.id):
-            raise NotFound(
-                f"draft chunk {sel!r} not found in draft {head!r}",
-                next=f"get(kind='draft', id={head!r}, view='toc') lists its chunk handles",
+        if _is_draft_chunk_handle(sel):
+            chunk = self.store.drafts.get_draft_chunk(sel)
+            if chunk is None or int(chunk.ref_id) != int(owner.id):
+                raise NotFound(
+                    f"draft chunk {sel!r} not found in draft {head!r}",
+                    next=f"get(kind='draft', id={head!r}, view='toc') lists "
+                    "its chunk handles",
+                )
+            return sel
+        return self._chunk_of_heading(s, owner, sel)
+
+    def _chunk_of_heading(self, s: str, owner: Any, sel: str) -> str:
+        """The ``~<heading title>`` selector → the dc<N> of the ONE live
+        heading whose text matches (case-insensitive). Zero hits raise
+        BadInput naming ``view='toc``'s heading list; several raise
+        BadInput whose options name each candidate's chunk handle, so an
+        agent that typed a title never has to detour through search to
+        find the dc id (gr514226)."""
+        label = owner.slug or owner.id
+        hits = [
+            e
+            for e in self.store.drafts.draft_toc(int(owner.id))
+            if e.title.strip().casefold() == sel.casefold()
+        ]
+        if len(hits) == 1:
+            return hits[0].dc
+        if hits:
+            raise BadInput(
+                f"{len(hits)} live headings named {sel!r} in draft "
+                f"{label!r} (selector in id={s!r})",
+                next="address the section by its chunk handle: "
+                "get(kind='draft', id='dc<N>')",
+                options=[e.dc for e in hits[:10]],
             )
-        return sel
+        raise BadInput(
+            f"no live heading {sel!r} in draft {label!r} (selector in id={s!r})",
+            next=f"get(kind='draft', id={label!r}, view='toc') lists "
+            "headings with their dc<N> handles",
+        )
 
     def eye(
         self,
@@ -570,10 +603,10 @@ class DraftHandler(Handler):
         if "~" in s:
             s, _, sel = s.partition("~")
             sel = sel.strip()
-            if not s.strip() or not _is_draft_chunk_handle(sel):
+            if not s.strip():
                 raise BadInput(
                     f"unknown draft selector {sel!r} in id={id!r}",
-                    next="selector must be a chunk handle: "
+                    next="selector must be a chunk handle or heading title: "
                     "get(kind='draft', id='dr<N>~dc<M>', q='…')",
                 )
             s = s.strip()
@@ -592,6 +625,10 @@ class DraftHandler(Handler):
             ref_id = int(ref.id)
             root_id = None
             if sel is not None:
+                if not _is_draft_chunk_handle(sel):
+                    # ``~<heading title>`` — the same resolution plain
+                    # get's selector does (gr514226).
+                    sel = self._chunk_of_heading(str(id), ref, sel)
                 only = self.store.drafts.get_draft_chunk(sel)
                 if only is None or only.retired or int(only.ref_id) != ref_id:
                     raise NotFound(
@@ -662,6 +699,14 @@ class DraftHandler(Handler):
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
+        if view is not None and _is_draft_chunk_handle(view):
+            # A chunk handle in view= (gr514227 — ``id='<slug>',
+            # view='dc<M>'`` died on "unknown draft view"): the handle is
+            # the address — it goes in id=.
+            raise BadInput(
+                f"{view!r} is a chunk handle, not a draft view — the chunk goes in id=",
+                next=f"get(kind='draft', id={view!r}')",
+            )
         if "~" in s:
             s = self._chunk_of_selector(s)
         if _is_draft_chunk_handle(s):
@@ -2701,6 +2746,7 @@ class DraftHandler(Handler):
         id: str | int | None = None,
         mode: str | None = None,
         confirm: str | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Soft-delete, at whichever granularity ``id`` addresses.
@@ -2716,6 +2762,13 @@ class DraftHandler(Handler):
         the project. Both granularities refuse a machine-owned body
         (:meth:`_refuse_if_machine_owned`).
 
+        ``reason=`` is the shared delete audit kwarg: on a ref-level
+        delete it lands as a ``deleted`` ``ref_events`` row (the
+        ``NumericRefHandler`` tombstone convention, gr503546); on a chunk
+        delete it rides ``retire_chunk``'s ``source=`` into the
+        ``retired`` ``chunk_events`` row (gr514339 — retirements used to
+        carry no audit reason).
+
         Ref-level delete is what makes the generic per-row delete on
         ``/drive`` work for drafts — that route dispatches this verb with
         the row's slug, and used to bounce off the chunk-only guard.
@@ -2727,6 +2780,7 @@ class DraftHandler(Handler):
                 "(id='dc<chunk_id>') or the whole draft (id='<slug>')",
                 next="delete(kind='draft', id='dc42')",
             )
+        r = (reason or "").strip()
         if not _is_draft_chunk_handle(raw):
             ref = self._resolve_draft_any(raw)  # refuses a machine-owned body
             label = ref.slug or ref.id
@@ -2743,6 +2797,10 @@ class DraftHandler(Handler):
                     ),
                 )
             retired = self.store.drafts.retire_draft(ref.id)
+            if r:
+                self.store.append_event(
+                    ref.id, source="agent", event="deleted", payload={"reason": r}
+                )
             return Response(
                 body=f"deleted draft {label} ({retired} chunks retired) — "
                 "recoverable; the owning project todo is untouched"
@@ -2756,7 +2814,11 @@ class DraftHandler(Handler):
                 "chunk handles",
             )
         self._refuse_if_machine_owned(int(chunk.ref_id))
-        self.store.drafts.retire_chunk(chunk.handle, mode=mode)
+        self.store.drafts.retire_chunk(
+            chunk.handle,
+            mode=mode,
+            source={"actor": "draft-delete", "reason": r} if r else None,
+        )
         self.sync_draft_links(chunk.ref_id)
         return Response(body=f"retired {chunk.dc}")
 
@@ -4499,8 +4561,26 @@ class DraftHandler(Handler):
         body += _draft_lint.dangling_chunk_hint(self.store, window_text)
         body += _draft_lint.tombstone_chunk_hint(self.store, window_text)
         if len(window) == 1:
+            body += self._children_hint(window[0])
             body += self._fisheye_affordance()
         return Response(body=body)
+
+    def _children_hint(self, chunk: Any) -> str:
+        """Pointer on a single-chunk read when the chunk has live children:
+        the plain get renders the addressed chunk alone, so a heading (or
+        any parent) otherwise reads as though the section ended at its
+        lead-in — the bullets and closing line needed a second call to
+        discover (gr514228). Names the span read whose window covers the
+        subtree in DFS order (a node's descendants are contiguous in
+        reading order, so ``-0..K`` lands exactly on them)."""
+        kids = self.store.drafts.descendant_chunk_ids(chunk.chunk_id)
+        if not kids:
+            return ""
+        return (
+            f"\n\n→ {chunk.dc} has {len(kids)} live child chunk(s) not shown "
+            f"here — get(kind='draft', id='{chunk.dc}-0..{len(kids)}') reads "
+            "the whole subtree inline"
+        )
 
     def _fisheye_affordance(self) -> str:
         """Advertise the neighborhood render on the plain chunk read — the

@@ -306,8 +306,10 @@ back to paragraphs.
 
 The outline shows a list as one row (`dc91 [ulist] 3 items: NO side · …`);
 `get(kind='draft', id='dc91')` renders its items in full. The qualified form
-`id='<slug>~dc91'` (or `dr<ref>~dc91`) is equivalent; a chunk outside that
-draft is NotFound, a non-chunk selector is BadInput.
+`id='<slug>~dc91'` (or `dr<ref>~dc91`) is equivalent; the selector also
+takes a heading's exact title (`id='<slug>~Statement on AI Use'`) — it
+resolves to that heading's `dc<N>`, and several headings sharing the title
+refuse with their handles. A chunk outside that draft is NotFound.
 
 ## Add a figure or a data table
 
@@ -319,12 +321,17 @@ See [[precis-draft-rich-content-help]].
 get(kind="draft", id="nanotrans")  # outline: handle | §-path | gist
 get(kind="draft", id="nanotrans", q="amine")  # passages inside it (find-in-ref)
 get(id="dc12")  # one chunk, verbatim source
+get(id="nanotrans~Methods")  # ~<heading title> → that heading's dc chunk
 get(id="dc12-5..3")  # reading-order window: 5 chunks before → 3 after,
                      # crossing headings (not a sibling run); clamped at the ends
 get(id="dc12+1")  # next sibling under the same parent; dc12^ = enclosing heading
 get(id="dc12", view="fisheye")  # verbatim center + reading-order neighbors
 get(id="dc12", view="fisheye+1hop")  # fisheye + everything it points at
 ```
+
+A chunk read shows the addressed chunk alone — when it has children, the
+footer counts them and names the `dc<N>-0..K` span that reads the whole
+subtree inline (children are contiguous in reading order).
 
 Navigate the outline first (cheap), then pull verbatim only for the
 region you act on. `view=` rungs each strictly contain the previous:
