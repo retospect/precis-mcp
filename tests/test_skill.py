@@ -889,6 +889,41 @@ def test_toc_category_names_cover_every_skill(skill: SkillHandler) -> None:
         assert slug in body, f"{slug} missing from the toc"
 
 
+def test_toc_decision_surface_fits_page_one(skill: SkillHandler) -> None:
+    """gr514221 — the shipped design keeps the unfiltered toc ~35 KB
+    but puts the whole decision surface on page 1. Two budgets pin
+    that: the Categories menu must end inside the fold head (the
+    write-time fold keeps ~¾ of ``DEFAULT_FOLD_BODY_BYTES`` as head —
+    a menu past it truncates mid-table, the original symptom), and
+    every drill arg the menu advertises must re-serve within one
+    frame page (``DEFAULT_MAX_BODY_BYTES``)."""
+    import re
+
+    from precis._pagination import (
+        DEFAULT_FOLD_BODY_BYTES,
+        DEFAULT_MAX_BODY_BYTES,
+    )
+
+    body = skill.get(id="toc").body
+    menu_start = body.find("## Categories")
+    menu_end = body.find("\n## ", menu_start)
+    assert menu_start != -1 and menu_end != -1
+    head_budget = DEFAULT_FOLD_BODY_BYTES * 3 // 4
+    assert menu_end <= head_budget, (
+        f"Categories menu ends at byte {menu_end}, past the fold head "
+        f"({head_budget}) — page 1 would cut the drill table mid-menu"
+    )
+    drills = re.findall(r"args=\{'category': '([^']+)'\}", body[:menu_end])
+    assert drills, "Categories menu advertises no drill args"
+    for drill in drills:
+        page = skill.get(id="toc", category=drill).body
+        size = len(page.encode("utf-8"))
+        assert size <= DEFAULT_MAX_BODY_BYTES, (
+            f"category drill {drill!r} serves {size} bytes — over one "
+            f"frame page ({DEFAULT_MAX_BODY_BYTES})"
+        )
+
+
 # ── semantic search via FileCorpusIndex ──────────────────────────────
 
 
