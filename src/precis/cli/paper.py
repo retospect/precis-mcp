@@ -26,6 +26,11 @@ Subcommands:
   ``get(kind='paper', id=…, view='ops')`` (gr517423 slice 1): writes one
   ``precis-paper-dump/1`` JSON with every slice's chunks merged, for
   operator batch runs ahead of body repair doors.
+* ``precis paper restore <file> [--apply] [--target new] [--handle s]``
+  — the slice-2 twin: feeds one merged dump file back through
+  ``paper_dump.restore_slice`` in a single transaction. A dry run unless
+  ``--apply``; on write it appends the same ``paper_restore_slice`` /
+  ``paper_restored`` ref_events the put door records (``source='cli'``).
 """
 
 from __future__ import annotations
@@ -127,6 +132,46 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    rs = psub.add_parser(
+        "restore",
+        help="Rebuild a paper from a precis-paper-dump/1 file (dry run default).",
+        description=(
+            "Feed one merged dump file (what `precis paper dump --out` "
+            "writes) back through the slice-2 restore door as a single "
+            "slice, in one transaction — a dry run unless --apply. The "
+            "target defaults to the dump's own ref (same); 'new' mints a "
+            "fresh ref under --handle or the dump's cite_key."
+        ),
+    )
+    rs.add_argument(
+        "file",
+        help="The merged dump JSON `precis paper dump --out` wrote.",
+    )
+    rs.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually write; the default is a dry run that writes nothing.",
+    )
+    rs.add_argument(
+        "--target",
+        choices=["same", "new"],
+        default="same",
+        help="Restore into the dump's own ref, or mint a fresh one.",
+    )
+    rs.add_argument(
+        "--handle",
+        default=None,
+        help="Slug for a minted ref when the dump's cite_key is taken.",
+    )
+    rs.add_argument(
+        "--reason",
+        default="cli restore",
+        help="Reason stamped on the ref_events (default: 'cli restore').",
+    )
+    rs.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def run(args: argparse.Namespace) -> None:
     if args.paper_cmd == "authors-resplit":
@@ -140,6 +185,9 @@ def run(args: argparse.Namespace) -> None:
         return
     if args.paper_cmd == "dump":
         _run_dump(args)
+        return
+    if args.paper_cmd == "restore":
+        _run_restore(args)
         return
     print(f"paper: unknown subcommand {args.paper_cmd!r}", file=sys.stderr)
     sys.exit(2)
@@ -321,6 +369,94 @@ def _run_dump(args: argparse.Namespace) -> None:
         f"dumped {m['handle']}: {m['chunks_total']} chunk(s), "
         f"body_sha {m['body_sha'][:12]}… → {args.out}"
     )
+
+
+def restore_paper(
+    store: Store,
+    dump: dict[str, Any],
+    *,
+    target: str = "same",
+    handle: str | None = None,
+    reason: str = "cli restore",
+    dry: bool = True,
+) -> Any:
+    """The lib behind ``precis paper restore``: one merged dump file as
+    a single ``restore_slice`` call in one transaction. On a real write
+    the same two ref_events the ``put`` door records land here —
+    ``paper_restore_slice`` always, ``paper_restored`` when the slice
+    completes the body — stamped ``source='cli'``. Returns the
+    :class:`paper_dump.RestoreReport` for the caller to render."""
+    from precis.ingest import paper_dump
+
+    with store.tx() as conn:
+        report = paper_dump.restore_slice(
+            conn, dump, target=target, handle=handle, dry=dry
+        )
+        if dry:
+            return report
+        store.append_event(
+            report.ref_id,
+            source="cli",
+            event="paper_restore_slice",
+            payload={
+                "window": list(report.window),
+                "inserted": report.inserted,
+                "kept": report.kept,
+                "replaced": report.replaced,
+                "chunks_done": report.chunks_done,
+                "chunks_total": report.chunks_total,
+                "reason": reason,
+            },
+            conn=conn,
+        )
+        if report.completed:
+            store.append_event(
+                report.ref_id,
+                source="cli",
+                event="paper_restored",
+                payload={
+                    "dump_body_sha": (dump.get("manifest") or {}).get("body_sha"),
+                    "chunks": report.chunks_total,
+                    "cards": report.cards,
+                    "identifiers": report.identifiers,
+                    "links": report.links_written + report.links_kept,
+                    "skipped_links": report.links_skipped,
+                    "restamped": len(report.links_restamped),
+                    "restamped_links": report.links_restamped,
+                    "reason": reason,
+                },
+                conn=conn,
+            )
+    return report
+
+
+def _run_restore(args: argparse.Namespace) -> None:
+    import json
+
+    from precis.handlers.paper import PaperHandler
+
+    with open(args.file, encoding="utf-8") as fh:
+        dump = json.load(fh)
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        report = restore_paper(
+            store,
+            dump,
+            target=args.target,
+            handle=args.handle,
+            reason=args.reason,
+            dry=not args.apply,
+        )
+    except PrecisError as exc:
+        print(_render_precis_error(exc), file=sys.stderr)
+        sys.exit(REFUSAL_EXIT)
+    finally:
+        store.close()
+    print(PaperHandler._render_restore_ack(report))
+    if report.minted:
+        print(f"minted {report.handle} under slug {report.slug!r}")
+    if not args.apply:
+        print("dry run — re-run with --apply to write")
 
 
 def _render_precis_error(err: PrecisError) -> str:

@@ -12,6 +12,7 @@ answers:
   - a ref holds the wrong paper's body — how do I detach or re-home it?
   - a ref carries one wrong identifier next to right ones — how do I remove just it?
   - the body is another paper's but the attached PDF is right — how do I re-extract it?
+  - how do I undo a drop_body or rebuild a ref from its dump?
   - a worker stamped a paper done/failed — how do I re-run it?
   - how do I attach a legal PDF to a body-less stub?
 applies-to: get/edit/put (kind='paper')
@@ -40,6 +41,7 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` (drop_body takes `'keep_pdf': True` to keep the stored pdf) |
 | export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
+| rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` or `precis paper restore <file> --apply` |
 | convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
 | attach a legal PDF | `put(id=…, args={'pdf_url': '<url>'})` |
@@ -229,6 +231,68 @@ as a fenced `precis-paper-dump/1` block, paged by
 `args={'page': N, 'page_size': K}` (default 100, cap 500, 0 = the rest;
 concatenate the slices' `chunks` arrays). The operator twin
 `precis paper dump <id> --out <file>` writes every slice into one file.
+
+## Undo a body door — restore a ref from its dump
+
+```python
+put(kind="paper", id="pa174214", args={"restore": <one dump slice>, "reason": "undo drop_body gr513878"})
+```
+
+The write half of `view='ops'`: send the dump's slices back **in window
+order**, one `put` per slice (the block a `view='ops'` page or one
+`precis paper dump` file yields — a merged file is one slice).
+`reason` required, `dry_run` previews, one transaction per slice; each
+lands a `paper_restore_slice` ref_event, the completing slice a
+`paper_restored`.
+
+**Target** (`args['target']`, default `'same'`): the dump's own
+`ref_id`. Bodiless or card-only → rebuilt in place; retired → restored
+and un-retired — but the un-retire lands only on the *completing*
+slice, so a half-restored retired ref stays retired (a merge tombstone
+refuses, naming the survivor); gone →
+minted fresh under the dump's cite_key, as with `target='new'`, which
+always mints — `args['handle']` picks the slug when the cite_key is
+taken (the refusal's `next=` suggests a free one). A mint lands
+*retired* too and un-retires at completion, so a half-restored copy
+never reads as live. A minted copy
+carries the dump's byline, tags and retraction state; its bib entries
+are not carried (the ack lists them). A body ord that
+*differs* from the dump refuses toward `drop_body` first; an intact
+body missing only a card (`clear_abstract`'s shape) restores through —
+chunks are INSERT-only, identical ords keep, cards swap DELETE+INSERT.
+
+**Identity** is checked before the first write: a dumped identifier
+owned by another *live* ref refuses with `next=`/`options` pointing at
+the owner (merge it, or retire it first); on `target='new'` that same
+identifier is instead skipped and listed in the ack — a copy cannot
+hold the original's identifiers. A retired owner's row is
+reclaimed; on `'same'` the dumped cite_key is skipped when the ref was
+renamed after the dump (one live slug per ref);
+`pdf_sha256`/`content_hash` land only while the `pdfs` row
+exists. Between slices the frontier lives on the target's
+`meta.restore`, so a resend is idempotent and an out-of-order slice
+refuses naming the expected window. The last slice recomputes
+`body_sha` over the stored rows and rewrites the link lists, remapping
+chunk anchors through `(ref, ord)` — a link whose far end is retired or
+missing is skipped and listed in the ack. Embeddings, keywords and
+summaries stay NULL for the worker pass, as after ingest.
+
+**Abort** an in-flight restore — abandoned, or the source was
+re-exported under a new `body_sha` (that resend refuses naming this
+door):
+
+```python
+put(kind="paper", id="pa174214", args={"restore_abort": True, "reason": "dump went stale"})
+```
+
+Clears `meta.restore` so a fresh slice 0 can start over *and* deletes
+the chunk rows the run inserted — nothing half-restored stays behind.
+Chunks that predate the restore stay, and a retired (or just-minted)
+target stays retired. `dry_run` previews the counts.
+
+CLI twin: `precis paper restore <file> [--apply] [--target new]
+[--handle s]` — a merged `precis paper dump` file as one slice, dry
+run unless `--apply`, events stamped `source='cli'`.
 
 ## A worker stamped a paper as done/failed — how do I re-run it?
 

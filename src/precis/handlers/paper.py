@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import difflib
+import json
 import logging
 import re
 from collections.abc import Iterator
@@ -464,6 +465,15 @@ class PaperHandler(Handler):
                 "citation",
                 "verify",
                 "record_type",
+                # restore door (gr517423, slice 2): args={'restore': <one
+                # precis-paper-dump/1 slice>, 'target': 'same'|'new',
+                # 'handle': <slug for a minted target>} — :meth:`_restore`;
+                # args={'restore_abort': True} clears an in-flight
+                # restore's meta.restore — :meth:`_restore_abort`.
+                "restore",
+                "restore_abort",
+                "target",
+                "handle",
             }
         ),
         # ``redirect_to`` re-points a retired/merged stub's supersede
@@ -581,6 +591,7 @@ class PaperHandler(Handler):
         citation: str | None = None,
         tags: list[str] | None = None,
         record_type: str | None = None,
+        dry_run: bool | str | None = None,
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
@@ -609,6 +620,12 @@ class PaperHandler(Handler):
         ``record_type=`` ('software' | 'dataset', gr514384) types an
         existing *chunkless* record so its whole-ref ``[pa<id>]`` cite is
         legitimate — see :meth:`_set_record_type`.
+
+        ``put(kind='paper', id=<pa>, args={'restore': <one dump slice>,
+        'reason': '…'}, dry_run=…)`` is the slice-2 restore door
+        (gr517423): it rebuilds a ref's body from the ``view='ops'``
+        ``precis-paper-dump/1`` export, sent one slice per call in
+        window order — see :meth:`_restore`.
 
         ``citation=`` resolves a classic journal/volume/page/year string via
         Crossref ``query.bibliographic``: one full-confidence hit is stubbed
@@ -645,6 +662,52 @@ class PaperHandler(Handler):
             # profiles; "false"/"0"/"no" must not read truthy.
             verify = verify.strip().lower() not in ("false", "0", "no")
         pdf_url = extras.get("pdf_url", _kw.get("pdf_url"))
+        restore_abort = extras.get("restore_abort")
+        if isinstance(restore_abort, str):
+            # ``args=`` values can arrive JSON-stringified; "false" must
+            # not read truthy (same shape as ``verify`` above).
+            restore_abort = restore_abort.strip().lower() not in (
+                "false",
+                "0",
+                "no",
+                "",
+            )
+        if extras.get("restore") is not None or restore_abort:
+            if extras.get("restore") is not None and restore_abort:
+                raise BadInput(
+                    "args['restore'] and args['restore_abort'] are two "
+                    "different doors — send them as separate calls",
+                )
+            # The restore door writes a body, so it shares nothing with
+            # the stub-mint fields — a combined call is a caller error.
+            combined = [
+                name
+                for name, val in (
+                    ("doi", doi),
+                    ("arxiv", arxiv),
+                    ("identifier", identifier),
+                    ("title", title),
+                    ("year", year),
+                    ("citation", citation),
+                    ("record_type", record_type),
+                    ("tags", tags),
+                    ("mode", mode),
+                    ("pdf_url", pdf_url),
+                    ("text", _kw.get("text")),
+                )
+                if val is not None and (not isinstance(val, str) or val.strip())
+            ]
+            if combined:
+                door = "restore_abort" if restore_abort else "restore"
+                raise BadInput(
+                    f"args['{door}'] is a restore door; it does "
+                    f"not combine with: {', '.join(combined)}",
+                    next="put(kind='paper', id='<pa-or-slug>', args="
+                    "{'restore': <one dump slice>, 'reason': '<why>'})",
+                )
+            if restore_abort:
+                return self._restore_abort(id, extras, dry_run=dry_run)
+            return self._restore(id, extras, dry_run=dry_run)
         if tags:
             if pdf_url is not None or mode is not None:
                 raise BadInput(
@@ -896,6 +959,246 @@ class PaperHandler(Handler):
                 f"@{rt} and the whole-paper lint skips it"
             )
         )
+
+    def _restore_expected_pin(self, id: str | int | None) -> int | None:
+        """The optional ``id=`` pin on the restore call: the ref_id the
+        caller *believes* the dump is for. ``pa<N>`` / a bare int may name
+        a gone ref (``target='new'`` exists to rebuild one); any other
+        spelling goes through slug resolution and must resolve."""
+        if id is None or (isinstance(id, str) and not id.strip()):
+            return None
+        if isinstance(id, int):
+            return id
+        parsed = handle_registry.parse(str(id).strip())
+        if parsed is not None:
+            kind, is_chunk, pk = parsed
+            if is_chunk or kind != self.spec.kind:
+                raise BadInput(
+                    f"restore id {id!r} is not a {self.spec.kind!r} ref handle",
+                    next=f"put(kind='{self.spec.kind}', id='<{self.spec.kind} "
+                    "handle or slug>', args={'restore': <slice>})",
+                )
+            return pk
+        _slug, ref_id = self._resolve_paper_slug(str(id).strip())
+        return ref_id
+
+    def _restore(
+        self,
+        id: str | int | None,
+        extras: dict[str, Any],
+        *,
+        dry_run: bool | str | None,
+    ) -> Response:
+        """``put(args={'restore': <slice>})`` — rebuild a ref from a
+        ``precis-paper-dump/1`` slice (gr517423, slice 2).
+
+        One transaction per slice inside ``_body_op_tx``; the writes live
+        in :func:`precis.ingest.paper_dump.restore_slice`. The handler
+        owns the ref_events: ``paper_restore_slice`` on every slice,
+        ``paper_restored`` on the completing one. ``dry_run`` runs the
+        whole thing under a savepoint and rolls it back.
+        """
+        from precis.ingest import paper_dump
+
+        example = (
+            f"put(kind='{self.spec.kind}', id='<pa-or-slug>', args="
+            "{'restore': <one dump slice>, 'reason': '<why>'})"
+        )
+        raw: Any = extras["restore"]
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text.startswith("```"):
+                # A pasted fenced block: take the fence's contents.
+                text = (
+                    text.split("\n", 1)[1].rsplit("```", 1)[0] if "\n" in text else text
+                )
+            try:
+                raw = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise BadInput(
+                    f"args['restore'] is not a parseable dump slice: {exc}",
+                    next=example,
+                ) from exc
+        reason = extras.get("reason")
+        dry = normalize_dry_run(dry_run) is not None
+        if not dry and not (reason and str(reason).strip()):
+            raise BadInput(
+                "args['restore'] needs args['reason'] — the ref_events carry it",
+                next=example,
+            )
+        expected = self._restore_expected_pin(id)
+        target = extras.get("target") or "same"
+        handle = extras.get("handle")
+        with _body_op_tx(self.store, "restore") as conn:
+            report = paper_dump.restore_slice(
+                conn,
+                raw,
+                target=str(target).strip(),
+                handle=str(handle).strip() if handle is not None else None,
+                kind=self.spec.kind,
+                expected_ref_id=expected,
+                dry=dry,
+            )
+            if not dry:
+                self.store.append_event(
+                    report.ref_id,
+                    source="agent",
+                    event="paper_restore_slice",
+                    payload={
+                        "window": list(report.window),
+                        "inserted": report.inserted,
+                        "kept": report.kept,
+                        "replaced": report.replaced,
+                        "chunks_done": report.chunks_done,
+                        "chunks_total": report.chunks_total,
+                        "reason": reason,
+                    },
+                    conn=conn,
+                )
+                if report.completed:
+                    self.store.append_event(
+                        report.ref_id,
+                        source="agent",
+                        event="paper_restored",
+                        payload={
+                            "dump_body_sha": (raw.get("manifest") or {}).get("body_sha")
+                            if isinstance(raw, dict)
+                            else None,
+                            "chunks": report.chunks_total,
+                            "cards": report.cards_total,
+                            "identifiers": report.identifiers_total,
+                            "links": report.links_written + report.links_kept,
+                            "skipped_links": report.links_skipped,
+                            "skipped_identifiers": report.skipped_identifiers,
+                            "not_carried": report.not_carried,
+                            # gr517423 review R1: dumped trust stamps are
+                            # never written raw — the door restamps; this
+                            # is the record of what changed.
+                            "restamped": len(report.links_restamped),
+                            "restamped_links": report.links_restamped,
+                            "reason": reason,
+                        },
+                        conn=conn,
+                    )
+        return Response(body=self._render_restore_ack(report))
+
+    def _restore_abort(
+        self,
+        id: str | int | None,
+        extras: dict[str, Any],
+        *,
+        dry_run: bool | str | None,
+    ) -> Response:
+        """``put(args={'restore_abort': True})`` — clear ``meta.restore``
+        on a ref whose restore was abandoned or whose dump went stale
+        (gr517423, slice 2). The chunk rows the run inserted are deleted;
+        chunks that predate the restore stay, and a retired target —
+        including a just-minted one — stays retired.
+        """
+        from precis.ingest import paper_dump
+
+        example = (
+            f"put(kind='{self.spec.kind}', id='<pa-or-slug>', "
+            "args={'restore_abort': True, 'reason': '<why>'})"
+        )
+        reason = extras.get("reason")
+        dry = normalize_dry_run(dry_run) is not None
+        if not dry and not (reason and str(reason).strip()):
+            raise BadInput(
+                "args['restore_abort'] needs args['reason'] — the ref_events carry it",
+                next=example,
+            )
+        ref_id = self._restore_expected_pin(id)
+        if ref_id is None:
+            raise BadInput(
+                "restore_abort needs id= naming the ref its restore is in flight on",
+                next=example,
+            )
+        with _body_op_tx(self.store, "restore_abort") as conn:
+            info = paper_dump.restore_abort(conn, ref_id, kind=self.spec.kind, dry=dry)
+            progress = info["progress"]
+            if not dry:
+                self.store.append_event(
+                    ref_id,
+                    source="agent",
+                    event="paper_restore_aborted",
+                    payload={
+                        "dump_ref_id": progress.get("dump_ref_id"),
+                        "chunks_done": progress.get("chunks_done"),
+                        "chunks_total": progress.get("chunks_total"),
+                        "chunks_removed": info["chunks_removed"],
+                        "chunks_live": info["chunks_live"],
+                        "reason": reason,
+                    },
+                    conn=conn,
+                )
+        done = progress.get("chunks_done") or 0
+        total = progress.get("chunks_total") or 0
+        lead = "DRY RUN (no write) — would abort" if dry else "aborted"
+        verb = "would be" if dry else "were"
+        stays = f"{info['chunks_live']} chunk(s) that predate the restore stay"
+        if info["retired"]:
+            stays += " (the ref stays retired)"
+        body = (
+            f"{lead} the in-flight restore on {info['handle']}: "
+            f"meta.restore {'would be ' if dry else ''}cleared "
+            f"(frontier was {done}/{total} chunk(s))\n"
+            f"{info['chunks_removed']} chunk(s) the run inserted {verb} "
+            f"removed; {stays}"
+        )
+        return Response(body=body)
+
+    @staticmethod
+    def _render_restore_ack(report: Any) -> str:
+        """The restore ack: the window, the per-ord counts, then either the
+        next window to send or the completion line with the link tally."""
+        lo, hi = report.window
+        lead = (
+            f"DRY RUN (no write) — would restore {report.handle}"
+            if report.dry
+            else f"restored {report.handle}"
+        )
+        parts = [
+            f"{lead} slice window [{lo}, {hi}): "
+            f"{report.inserted} chunk(s) inserted, {report.kept} kept"
+            + (f", {report.replaced} replaced" if report.replaced else "")
+            + ("; ref un-retired" if report.unretired else "")
+        ]
+        if report.completed:
+            line = (
+                f"complete: body_sha verified — {report.handle}'s body "
+                f"matches the dump; {report.links_written} link(s) written"
+            )
+            if report.links_kept:
+                line += f", {report.links_kept} already present"
+            if report.links_skipped:
+                line += f", {len(report.links_skipped)} skipped"
+            parts.append(line)
+            parts += [
+                f"- skipped {s.get('relation')} link "
+                f"pa{s.get('src_ref_id')}→pa{s.get('dst_ref_id')}: "
+                f"{s.get('reason')}"
+                for s in report.links_skipped
+            ]
+            parts += [
+                f"- trust restamped on link {r['link_id']} "
+                f"(dump link {r.get('dump_link_id')}): {r['was']} → {r['now']}"
+                for r in report.links_restamped
+            ]
+        else:
+            parts.append(
+                f"progress: {report.chunks_done}/{report.chunks_total} "
+                "chunks restored — send the slice whose window starts "
+                f"at {report.chunks_done}"
+            )
+        parts += [
+            f"- skipped identifier {i.get('id_kind')}={i.get('id_value')}: "
+            f"{i.get('reason')}"
+            for i in report.skipped_identifiers
+        ]
+        if report.not_carried:
+            parts.append(f"not carried: {', '.join(report.not_carried)}")
+        return "\n".join(parts)
 
     def acquire(
         self,

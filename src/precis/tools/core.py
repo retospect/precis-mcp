@@ -1315,6 +1315,13 @@ def put(
     # cite is legitimate (no passage exists to drill to) and exports emit
     # @software/@dataset. Refused on a paper carrying body chunks.
     record_type: str | None = None,
+    # paper restore door (see precis-paper-ref-help, gr517423):
+    # put(kind='paper', id=<pa>, args={'restore': <dump slice>}) takes
+    # dry_run=True to preview the slice's writes under a savepoint —
+    # same contract as edit's dry_run=. Declared at the verb level (the
+    # gr262482 pattern): the handler declares it, so without this param
+    # the kwarg died at the strictness gate on the way in.
+    dry_run: bool | None = None,
     # message delivery stamp (asa_bot, precis-message-help):
     # put(kind='message', id=N, status='sent'|'failed'[, error='…']).
     status: str | None = None,
@@ -1544,6 +1551,7 @@ def put(
                 "citation": citation,
                 "context_ref_id": context_ref_id,
                 "record_type": record_type,
+                "dry_run": dry_run,
                 "status": status,
                 "error": error,
                 "entry": entry,
