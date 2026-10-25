@@ -9,9 +9,9 @@ system of record every process holds a connection to.
 
 Postgres is the authority: values are pgcrypto-encrypted in
 ``vault.secrets`` and reached only through the ``vault.*`` SECURITY DEFINER
-functions (list / mask / reveal / set_secret / delete_secret — reveal is the
-sole decrypt path and always writes an audit row; there is deliberately no
-bulk-plaintext function). The passphrase lives in the single-row
+functions (list / mask / reveal / set_secret / set_secret_if_absent /
+delete_secret — reveal is the sole decrypt path and always writes an
+audit row; there is deliberately no bulk-plaintext function). The passphrase lives in the single-row
 ``vault._key`` table (0239): reachable only by the owning role, read on its
 behalf by the SECURITY DEFINER verbs — a GUC can't be ACL'd, and the old
 ``ALTER SYSTEM SET app.secret_key`` leaked it to every role via
@@ -779,6 +779,51 @@ def set_secret(name: str, value: str, *, store: Store) -> None:
     invalidate(name)
 
 
+def set_secret_if_absent(name: str, value: str, *, store: Store) -> str | None:
+    """Store ``value`` only if ``name`` is absent; return the stored value.
+
+    The first-mint verb (migration 0248). ``set_secret``'s upsert makes
+    concurrent first-mints last-writer-wins, so two processes minting a
+    key on first use could each walk away believing their own value —
+    fatal when the mint derives other state (gr517874: a password pepper
+    overwrite kills every hash made with the loser). The DB serializes
+    the race; the winner and every loser then converge on what is
+    actually stored.
+
+    The SQL side returns only "did this call insert" — the stored value
+    is read back through :func:`_reveal`, a direct ``vault.reveal`` call,
+    so the decrypt is a normal audited reveal carrying this process's
+    identity (0111) and the vault keeps a single decrypt path. It is
+    deliberately *not* :func:`get_secret`: ``_cached_reveal`` coalesces
+    fills and can hand a winner a stale "not found" miss recorded by a
+    racing reader in the same process, which would look like a spurious
+    delete race.
+
+    ``None`` when the read-back found nothing — a ``delete_secret``
+    raced the pair, or the vault itself is unreachable. Either way the
+    caller retries or fails, but must never use its minted value.
+    """
+    with store.pool.connection() as conn:
+        conn.execute(
+            "SELECT vault.set_secret_if_absent(%s, %s)", (name, value)
+        ).fetchone()
+        conn.commit()
+    invalidate(name)
+    val = _reveal(store, name)
+    if val is not None:
+        # Prime the cache the way a get_secret fill would, minus the
+        # coalescing — later reads in this process don't pay a second
+        # reveal for a value we just wrote or confirmed.
+        with _cache_lock:
+            _cache[name] = _Entry(
+                val,
+                now=time.monotonic(),
+                version=None,
+                max_age=_CACHE_MAX_AGE_SECONDS,
+            )
+    return val
+
+
 def delete_secret(name: str, *, store: Store) -> None:
     """Remove ``name`` from the vault; invalidate the cache."""
     with store.pool.connection() as conn:
@@ -813,4 +858,5 @@ __all__ = [
     "require_secret",
     "require_vault_secret",
     "set_secret",
+    "set_secret_if_absent",
 ]

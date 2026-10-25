@@ -116,12 +116,13 @@ def test_ensure_pepper_mints_once_then_reads_back(
     def fake_get(name: str, *, store: Any = None, default: Any = None) -> Any:
         return vault_state.get(name, default)
 
-    def fake_set(name: str, value: str, *, store: Any) -> None:
+    def fake_set_if_absent(name: str, value: str, *, store: Any) -> str:
         sets.append(name)
-        vault_state[name] = value
+        vault_state.setdefault(name, value)
+        return vault_state[name]
 
     monkeypatch.setattr("precis.secrets.get_secret", fake_get)
-    monkeypatch.setattr("precis.secrets.set_secret", fake_set)
+    monkeypatch.setattr("precis.secrets.set_secret_if_absent", fake_set_if_absent)
     bogus: Any = object()
     first = users.ensure_pepper(store=bogus)
     assert sets == [users.PEPPER_SECRET]
@@ -132,9 +133,9 @@ def test_ensure_pepper_mints_once_then_reads_back(
 def test_ensure_pepper_race_converges_on_stored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``vault.set_secret`` is ON CONFLICT DO UPDATE: a racer's mint
-    landing between our set and the re-read wins — the caller gets the
-    stored survivor, not its own (now dead) value."""
+    """The vault verb returns the survivor of a first-mint race — the
+    pepper handed to the caller must be that stored winner, not our own
+    (now dead) mint."""
     from typing import Any
 
     from precis import users
@@ -146,8 +147,8 @@ def test_ensure_pepper_race_converges_on_stored(
         lambda name, *, store=None, default=None: vault_state.get(name, default),
     )
     monkeypatch.setattr(
-        "precis.secrets.set_secret",
-        lambda name, value, *, store: vault_state.__setitem__(name, "racer"),
+        "precis.secrets.set_secret_if_absent",
+        lambda name, value, *, store: vault_state.setdefault(name, "racer"),
     )
     bogus: Any = object()
     assert users.ensure_pepper(store=bogus) == "racer"

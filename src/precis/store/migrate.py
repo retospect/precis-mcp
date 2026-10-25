@@ -270,6 +270,34 @@ def _is_fresh_db(conn: psycopg.Connection) -> bool:
     return not (row and row[0])
 
 
+#: The disposable-database guard (gr517938). Every database the test
+#: harness destroys and rebuilds is the ``precis_test`` template or a
+#: ``precis_test_<uuid>`` session clone, so the name is the line a
+#: mis-pointed ``PRECIS_TEST_PG_URL`` cannot cross.
+_DISPOSABLE_DB_PREFIX = "precis_test"
+
+
+def assert_disposable_database(conn: psycopg.Connection) -> str:
+    """Return the database name, or raise when it isn't ``precis_test*``.
+
+    The rebuild/drop paths (``rebuild_on_checksum_mismatch`` and the
+    conftest drop helpers) wipe every user object verbatim against
+    whatever DSN they were handed — before this guard a test URL pointed
+    at a real database would destroy it. Shared by the migrator and the
+    test harness so both enforce the same line.
+    """
+    row = conn.execute("SELECT current_database()").fetchone()
+    db = str(row[0]) if row else ""
+    if not db.startswith(_DISPOSABLE_DB_PREFIX):
+        raise RuntimeError(
+            f"refusing destructive rebuild/drop on database {db!r} — only "
+            f"disposable {_DISPOSABLE_DB_PREFIX}* databases may be wiped; "
+            "check the DSN (PRECIS_TEST_PG_URL) or reset a test database "
+            "per docs/runbooks/reset-test-db.md"
+        )
+    return db
+
+
 def _drop_user_objects(conn: psycopg.Connection) -> None:
     """Drop every non-extension user object, for a from-scratch replay.
 
@@ -329,16 +357,21 @@ def _drop_user_objects(conn: psycopg.Connection) -> None:
             "  )"
         ).fetchall():
             cur.execute(f'DROP TYPE IF EXISTS "{name}" CASCADE')
-        for (name,) in cur.execute(
-            "SELECT p.proname FROM pg_proc p "
+        for (sig,) in cur.execute(
+            "SELECT format('%I.%I(%s)', n.nspname, p.proname, "
+            "pg_get_function_identity_arguments(p.oid)) "
+            "FROM pg_proc p "
             "JOIN pg_namespace n ON n.oid = p.pronamespace "
-            "WHERE n.nspname = 'public' "
+            "WHERE n.nspname = 'public' AND p.prokind = 'f' "
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM pg_depend d "
             "    WHERE d.objid = p.oid AND d.deptype = 'e'"
             "  )"
         ).fetchall():
-            cur.execute(f'DROP FUNCTION IF EXISTS "{name}" CASCADE')
+            # Schema-qualified identity signature: each overload is
+            # named unambiguously (file_gripe_readonly has two), and
+            # nothing a search_path could shadow resolves in our place.
+            cur.execute(f"DROP FUNCTION IF EXISTS {sig} CASCADE")
 
 
 # Backcompat: callers built the runner with a single directory.
@@ -587,6 +620,11 @@ class Migrator:
         # a real BEGIN/COMMIT and surfaces any inner exception
         # directly.
         with psycopg.connect(self.dsn, autocommit=True) as conn:
+            if rebuild_on_checksum_mismatch:
+                # The flag licenses wiping every user object — refuse on
+                # anything not named precis_test* before touching a row
+                # (gr517938). A mis-pointed DSN fails here, not post-drop.
+                assert_disposable_database(conn)
             # Per-release baseline bootstrap: on a truly-fresh DB (no
             # ``_migrations`` table yet) load the snapshot in one shot
             # instead of replaying the chain. The snapshot ships a

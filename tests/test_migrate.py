@@ -7,6 +7,7 @@ it and we verify schema + seed contents."""
 from __future__ import annotations
 
 import hashlib
+import uuid
 from pathlib import Path
 
 import psycopg
@@ -16,7 +17,13 @@ from psycopg.rows import dict_row
 import precis.store.migrate as migrate
 import precis.utils.db_retry as db_retry
 from precis.store import MigrationLockContention, Migrator
-from tests.conftest import MIGRATIONS_DIR
+from tests.conftest import (
+    MIGRATIONS_DIR,
+    PG_TEST_DSN,
+    _drop_all_public_objects,
+    _dsn_with_db,
+    _pg_available,
+)
 
 
 def _fetch(dsn: str, sql: str) -> list[dict]:
@@ -224,9 +231,18 @@ def test_checksum_drift_rebuilds(
     (snapshot_dir / "0001_initial.sql").write_text(original, encoding="utf-8")
     Migrator(fresh_db, snapshot_dir).apply_all()
 
-    # An object no migration owns — the rebuild must remove it.
+    # Objects no migration owns — the rebuild must remove them. The
+    # overloaded function also pins that the drop uses each proc's
+    # identity signature: a bare-name DROP FUNCTION is AmbiguousFunction
+    # under overloads (file_gripe_readonly carries two since 0244).
     with psycopg.connect(fresh_db, autocommit=True) as conn:
         conn.execute("CREATE TABLE stale_junk (x int)")
+        conn.execute(
+            "CREATE FUNCTION stale_fn(x int) RETURNS int LANGUAGE SQL AS 'SELECT 1'"
+        )
+        conn.execute(
+            "CREATE FUNCTION stale_fn(x text) RETURNS int LANGUAGE SQL AS 'SELECT 2'"
+        )
 
     # Mutate the sealed file (a "redrafted draft"): same version, new bytes.
     mutated = original + "\nCREATE TABLE public.drift_marker (x int);\n"
@@ -251,6 +267,13 @@ def test_checksum_drift_rebuilds(
     assert "drift_marker" in tables  # the mutated file ran
     assert "chunks" in tables  # the replayed chain is intact
     assert "stale_junk" not in tables  # the drop actually ran
+    stale_fns = _fetch(
+        fresh_db,
+        "SELECT proname FROM pg_proc p JOIN pg_namespace n "
+        "ON n.oid = p.pronamespace "
+        "WHERE n.nspname = 'public' AND p.proname = 'stale_fn'",
+    )
+    assert stale_fns == []  # both overloads dropped
     ledger = _fetch(fresh_db, "SELECT version, checksum FROM _migrations")
     assert ledger == [
         {
@@ -311,6 +334,46 @@ def test_renumbered_draft_rebuilds(
         )
     }
     assert "draft_tbl" in tables
+
+
+def test_rebuild_and_drop_refuse_non_test_database(tmp_path) -> None:
+    """gr517938: the destructive paths refuse a database not named
+    ``precis_test*`` — a PRECIS_TEST_PG_URL pointed at a real database
+    must fail before the first drop, not after it."""
+    if not _pg_available():
+        pytest.skip(f"postgres unreachable at {PG_TEST_DSN}")
+    scratch = f"notprecis_rebuild_guard_{uuid.uuid4().hex[:8]}"
+    admin_dsn = _dsn_with_db(PG_TEST_DSN, "postgres")
+    with psycopg.connect(admin_dsn, autocommit=True) as admin:
+        admin.execute(f'CREATE DATABASE "{scratch}"')
+    scratch_dsn = _dsn_with_db(PG_TEST_DSN, scratch)
+    try:
+        snapshot_dir = tmp_path / "migrations"
+        snapshot_dir.mkdir()
+        (snapshot_dir / "0001_initial.sql").write_text(
+            (MIGRATIONS_DIR / "0001_initial.sql").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        # The flag alone refuses — the check runs at connect, before any
+        # drift detection, migration apply or drop.
+        with pytest.raises(RuntimeError, match="precis_test"):
+            Migrator(scratch_dsn, snapshot_dir).apply_all(
+                rebuild_on_checksum_mismatch=True
+            )
+        # The conftest drop helper holds the same line.
+        with pytest.raises(RuntimeError, match="precis_test"):
+            _drop_all_public_objects(scratch_dsn)
+        # Nothing ran: the scratch DB is still empty of user objects.
+        assert (
+            _fetch(
+                scratch_dsn,
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+            )
+            == []
+        )
+    finally:
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{scratch}"')
 
 
 # ── bounded lock-contention retry (gr511981) ───────────────────────────

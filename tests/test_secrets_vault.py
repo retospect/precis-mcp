@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -276,3 +277,137 @@ def test_recheck_probe_runs_against_real_postgres(vault_store: Store) -> None:
     versions = vault._list_versions(vault_store)
     assert versions is not None
     assert set(versions) == {"A_KEY"}
+
+
+def test_set_secret_if_absent_keeps_first_value(vault_store: Store) -> None:
+    """gr517874: the first mint wins; later callers get the stored value."""
+    assert (
+        vault.set_secret_if_absent("A_KEY", "first-value-00001", store=vault_store)
+        == "first-value-00001"
+    )
+    assert (
+        vault.set_secret_if_absent("A_KEY", "second-value-0002", store=vault_store)
+        == "first-value-00001"
+    )
+    vault.invalidate("A_KEY")
+    assert vault.get_secret("A_KEY", store=vault_store) == "first-value-00001"
+    with vault_store.pool.connection() as conn:
+        verbs = conn.execute(
+            "SELECT verb, count(*) FROM vault.events WHERE name = %s GROUP BY verb",
+            ("A_KEY",),
+        ).fetchall()
+        idents = conn.execute(
+            "SELECT host, pid FROM vault.events WHERE name = %s AND verb = 'reveal'",
+            ("A_KEY",),
+        ).fetchall()
+    # 'set' for the winning mint only; every read-back — winner's,
+    # loser's, the verification above — is a normal vault.reveal through
+    # the 6-arg overload, so each row carries the client identity (0111).
+    counts = {r[0]: r[1] for r in verbs}
+    assert counts["set"] == 1
+    assert counts["reveal"] >= 2
+    assert idents and all(host is not None and pid is not None for host, pid in idents)
+
+
+def test_set_secret_if_absent_refuses_empty(vault_store: Store) -> None:
+    with pytest.raises(psycopg.errors.RaiseException):
+        vault.set_secret_if_absent("A_KEY", "", store=vault_store)
+
+
+def test_set_secret_if_absent_grant_matches_set_secret(vault_store: Store) -> None:
+    """Same lock-down as set_secret: SECURITY DEFINER, EXECUTE to PUBLIC
+    only — and RETURNS boolean, never plaintext (reveal stays the sole
+    decrypt path)."""
+    with vault_store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT p.proname, p.prosecdef, p.prorettype::regtype::text, "
+            "has_function_privilege('public', p.oid, 'EXECUTE') "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'vault' "
+            "AND p.proname IN ('set_secret', 'set_secret_if_absent')"
+        ).fetchall()
+    by_name = {r[0]: (r[1], r[2], r[3]) for r in rows}
+    assert by_name["set_secret_if_absent"] == (True, "boolean", True)
+    assert by_name["set_secret_if_absent"][0] == by_name["set_secret"][0]
+    assert by_name["set_secret_if_absent"][2] == by_name["set_secret"][2]
+
+
+def test_set_secret_if_absent_read_back_ignores_fill_miss(
+    vault_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-1: the read-back bypasses the coalesced reveal cache — a
+    racing in-process 'not found' miss (``_fill_miss`` /
+    ``_cached_reveal``) must not look like a delete race to the
+    winner."""
+    monkeypatch.setattr(vault, "_cached_reveal", lambda store, name: None)
+    assert (
+        vault.set_secret_if_absent("A_KEY", "real-stored-value", store=vault_store)
+        == "real-stored-value"
+    )
+    monkeypatch.undo()
+    vault.invalidate("A_KEY")
+    assert vault.get_secret("A_KEY", store=vault_store) == "real-stored-value"
+
+
+def test_set_secret_if_absent_concurrent_converges(vault_store: Store) -> None:
+    """N racing minters on one name all return the single stored value."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    candidates = [f"racer-{i:016d}" for i in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda v: vault.set_secret_if_absent("A_KEY", v, store=vault_store),
+                candidates,
+            )
+        )
+    assert len(set(results)) == 1
+    assert results[0] in candidates
+    vault.invalidate("A_KEY")
+    assert vault.get_secret("A_KEY", store=vault_store) == results[0]
+
+
+def test_ensure_pepper_concurrent_mint_converges(
+    vault_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr517874: racing ``ensure_pepper`` calls converge on one pepper."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis import users
+
+    monkeypatch.delenv(users.PEPPER_SECRET, raising=False)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(lambda _: users.ensure_pepper(store=vault_store), range(8))
+        )
+    assert len(set(results)) == 1
+    vault.invalidate(users.PEPPER_SECRET)
+    assert users.resolve_pepper(store=vault_store) == results[0]
+    # A second round resolves the stored pepper — no re-mint.
+    assert users.ensure_pepper(store=vault_store) == results[0]
+
+
+@pytest.mark.db
+def test_ensure_file_link_key_concurrent_mint_converges(
+    vault_store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr517874: racing ``ensure_file_link_key`` calls converge on one
+    key — a signer on the losing mint would 403 every link it made."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis import file_links
+
+    monkeypatch.delenv(file_links.FILE_LINK_SECRET, raising=False)
+    monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: file_links.ensure_file_link_key(store=vault_store),
+                range(8),
+            )
+        )
+    assert len(set(results)) == 1
+    vault.invalidate(file_links.FILE_LINK_SECRET)
+    # A minted token verifies under the stored key — the winner is live.
+    token = file_links.mint("get", "a" * 64, 42, store=vault_store)
+    assert file_links.verify(token, op="get", sha="a" * 64, store=vault_store)

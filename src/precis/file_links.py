@@ -87,12 +87,13 @@ def ensure_file_link_key(*, store: Store | None = None) -> str:
 
     A copy of ``users.py::ensure_pepper``: read through
     :func:`precis.secrets.get_secret` (env → vault → file), mint with
-    ``secrets.token_urlsafe(32)``, persist via ``set_secret``. The vault
-    is the shared store because signer (MCP) and verifier (precis_web)
-    are different processes. ``vault.set_secret`` is ``ON CONFLICT DO
-    UPDATE`` — last-writer-wins — so two racing first-mints would
-    overwrite each other; the re-read makes both racers converge on the
-    surviving key instead of each signing with its own.
+    ``secrets.token_urlsafe(32)``, persist via
+    :func:`precis.secrets.set_secret_if_absent`. The vault is the shared
+    store because signer (MCP) and verifier (precis_web) are different
+    processes. The mint is atomic — two racing first-mints converge on
+    the stored key, and the returned value is that key (ours when we
+    won, the winner's when we didn't) — so nobody signs with a key that
+    loses the race and dies under the winner's overwrite (gr517874).
     """
     existing = _resolve_key(store=store)
     if existing:
@@ -105,8 +106,13 @@ def ensure_file_link_key(*, store: Store | None = None) -> str:
     from precis import secrets as vault
 
     minted = _stdlib_secrets.token_urlsafe(32)
-    vault.set_secret(FILE_LINK_SECRET, minted, store=store)
-    return _resolve_key(store=store) or minted
+    stored = vault.set_secret_if_absent(FILE_LINK_SECRET, minted, store=store)
+    if stored is None:
+        raise RuntimeError(
+            f"{FILE_LINK_SECRET}: vault unreachable or raced a delete "
+            "during first mint; retry"
+        )
+    return stored
 
 
 def _sig(key: str, fields: str) -> str:

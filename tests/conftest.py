@@ -150,6 +150,17 @@ log = logging.getLogger(__name__)
 _TEMPLATE_DB = str(conninfo_to_dict(PG_TEST_DSN).get("dbname") or "postgres")
 _ACTIVE_DSN = PG_TEST_DSN
 
+# gr517938, R3-1: fail at import — before any connection is opened —
+# when PRECIS_TEST_PG_URL names a non-test database. Everything below
+# this point treats the DSN as disposable (drop/rebuild/truncate), so a
+# mis-pointed URL must not get as far as the first connect.
+if not _TEMPLATE_DB.startswith("precis_test"):
+    raise RuntimeError(
+        f"conftest: refusing to run against database {_TEMPLATE_DB!r} — "
+        "PRECIS_TEST_PG_URL must name a disposable precis_test* "
+        "database; the suite drops and rebuilds whatever it points at"
+    )
+
 
 def _active_dsn() -> str:
     """The DSN the current session's per-test fixtures use: the session's
@@ -1511,6 +1522,12 @@ def _drop_all_public_objects(dsn: str) -> None:
     next ``Migrator.apply_all`` rebuilds the schema from scratch.
     """
     with psycopg.connect(dsn, autocommit=True) as conn:
+        # The whole body below is destructive — assert the same
+        # precis_test* line the migrator's rebuild guard does before
+        # the first DROP (gr517938).
+        from precis.store.migrate import assert_disposable_database
+
+        assert_disposable_database(conn)
         # Drop views first (they may depend on tables we're about
         # to drop); then tables CASCADE; then orphan sequences.
         for kind, drop_kw in (
@@ -1533,18 +1550,21 @@ def _drop_all_public_objects(dsn: str) -> None:
         # etc. in public, and dropping those nukes the extension's
         # operators. The pg_depend EXISTS predicate filters them out.
         funcs = conn.execute(
-            "SELECT p.oid::regprocedure::text FROM pg_proc p "
+            "SELECT format('%I.%I(%s)', n.nspname, p.proname, "
+            "pg_get_function_identity_arguments(p.oid)) "
+            "FROM pg_proc p "
             "JOIN pg_namespace n ON n.oid = p.pronamespace "
-            "WHERE n.nspname = 'public' "
+            "WHERE n.nspname = 'public' AND p.prokind = 'f' "
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM pg_depend d "
             "     WHERE d.objid = p.oid AND d.deptype = 'e'"
             "  )"
         ).fetchall()
         for (sig,) in funcs:
-            # Drop by identity signature, not bare name: 0244 overloads
-            # file_gripe_readonly ((text) and (text, text)), and a
-            # name-only DROP raises AmbiguousFunction on the pair.
+            # Drop by schema-qualified identity signature, not bare
+            # name: 0244 overloads file_gripe_readonly ((text) and
+            # (text, text)), and a name-only DROP raises
+            # AmbiguousFunction on the pair.
             _run_with_lock_retry(conn, f"DROP FUNCTION IF EXISTS {sig} CASCADE")
 
 

@@ -223,9 +223,13 @@ def ensure_pepper(*, store: Store) -> str:
 
     Called by ``precis users add`` so the peppered path is what a new
     deployment gets by default without the operator having to know the
-    concept exists. ``vault.set_secret`` is ``ON CONFLICT DO UPDATE`` —
-    last-writer-wins — so the re-read makes two racing first-mints
-    converge on the surviving key rather than each returning its own.
+    concept exists.
+
+    The mint goes through :func:`precis.secrets.set_secret_if_absent`, not
+    resolve-then-``set_secret``: two processes minting at once would
+    otherwise each store their own value, and every hash made with the
+    loser is dead forever (gr517874). The returned value is the stored
+    one — ours when we won, the winner's when we didn't.
     """
     from precis import secrets as vault
 
@@ -233,8 +237,13 @@ def ensure_pepper(*, store: Store) -> str:
     if existing:
         return existing
     minted = _stdlib_secrets.token_urlsafe(32)
-    vault.set_secret(PEPPER_SECRET, minted, store=store)
-    return resolve_pepper(store=store) or minted
+    stored = vault.set_secret_if_absent(PEPPER_SECRET, minted, store=store)
+    if stored is None:
+        raise PepperUnavailable(
+            f"{PEPPER_SECRET}: vault unreachable or raced a delete "
+            "during first mint; retry"
+        )
+    return stored
 
 
 def _derive(password: str, *, salt: bytes, pepper: str | None) -> bytes:

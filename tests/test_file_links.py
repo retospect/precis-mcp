@@ -105,12 +105,13 @@ def test_key_minted_once_and_reused(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_get(name: str, *, store: Any = None, default: Any = None) -> Any:
         return vault_state.get(name, default)
 
-    def fake_set(name: str, value: str, *, store: Any) -> None:
+    def fake_set_if_absent(name: str, value: str, *, store: Any) -> str:
         sets.append(name)
-        vault_state[name] = value
+        vault_state.setdefault(name, value)
+        return vault_state[name]
 
     monkeypatch.setattr("precis.secrets.get_secret", fake_get)
-    monkeypatch.setattr("precis.secrets.set_secret", fake_set)
+    monkeypatch.setattr("precis.secrets.set_secret_if_absent", fake_set_if_absent)
     bogus_store: Any = object()
     first = file_links.ensure_file_link_key(store=bogus_store)
     assert sets == [file_links.FILE_LINK_SECRET]
@@ -121,22 +122,21 @@ def test_key_minted_once_and_reused(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_racing_mints_converge_on_the_stored_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``vault.set_secret`` is ON CONFLICT DO UPDATE: a racer landing
-    between our set and re-read overwrites us — the returned key must be
-    the vault's survivor, not our minted loser (which would sign dead
-    links)."""
+    """The vault verb returns the survivor of a first-mint race — the
+    key ``ensure_file_link_key`` hands out must be that stored winner,
+    not our minted loser (which would sign dead links)."""
     monkeypatch.delenv("PRECIS_FILE_LINK_KEY")
     vault_state: dict[str, str] = {}
 
     def fake_get(name: str, *, store: Any = None, default: Any = None) -> Any:
         return vault_state.get(name, default)
 
-    def fake_set(name: str, value: str, *, store: Any) -> None:
-        vault_state[name] = value
-        vault_state[name] = "racer-key"  # a concurrent mint overwrites
+    def fake_set_if_absent(name: str, value: str, *, store: Any) -> str:
+        vault_state[name] = "racer-key"  # a concurrent mint won
+        return vault_state[name]
 
     monkeypatch.setattr("precis.secrets.get_secret", fake_get)
-    monkeypatch.setattr("precis.secrets.set_secret", fake_set)
+    monkeypatch.setattr("precis.secrets.set_secret_if_absent", fake_set_if_absent)
     bogus_store: Any = object()
     assert file_links.ensure_file_link_key(store=bogus_store) == "racer-key"
 
@@ -149,6 +149,9 @@ def test_verify_never_mints(monkeypatch: pytest.MonkeyPatch) -> None:
     sets: list[str] = []
     monkeypatch.setattr("precis.secrets.get_secret", lambda *a, **kw: None)
     monkeypatch.setattr("precis.secrets.set_secret", lambda *a, **kw: sets.append(a))
+    monkeypatch.setattr(
+        "precis.secrets.set_secret_if_absent", lambda *a, **kw: sets.append(a)
+    )
     bogus_store: Any = object()
     with pytest.raises(file_links.TokenInvalid):
         file_links.verify(
