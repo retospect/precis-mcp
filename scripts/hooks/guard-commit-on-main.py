@@ -11,9 +11,12 @@ up-front instead, mirroring ``guard-worktree-path.py`` (remove the *ability* to
 do the wrong thing).
 
 Scope, deliberately narrow to stay false-positive-free:
-- Only ``git commit`` (incl. ``--amend``) — NOT ``git merge`` (a
-  ``git merge --ff-only origin/main`` to sync the primary is legitimate), NOT
-  ``commit-tree`` (``scripts/ship``'s plumbing), NOT cherry-pick/revert.
+- Only ``git commit`` (incl. ``--amend``) as a whitespace-bounded token —
+  a path that merely contains it (``scratch/commit-msg.txt``, gr515527),
+  ``--no-commit`` or ``HEAD^{commit}`` is not the subcommand. NOT
+  ``git merge`` (a ``git merge --ff-only origin/main`` to sync the primary
+  is legitimate), NOT ``commit-tree`` (``scripts/ship``'s plumbing), NOT
+  cherry-pick/revert.
 - Only when the resolved branch is ``main``/``master``. Commits on any feature
   / ``worktree-*`` / ``docs-*`` branch pass untouched.
 - Only in a repo that actually has the ``scripts/ship`` gate this protects.
@@ -31,7 +34,10 @@ guard and no fix. This hook fires first (PreToolUse runs ahead of that
 check) and denies the same call with a message that names the guard and
 the ``-F`` alternative, so the refusal carries the fix instead of a parse
 error. The denial text is the only thing the repo can improve — the guard
-itself is a harness built-in (docs/conventions/container-ops.md).
+itself is a harness built-in (docs/conventions/container-ops.md). The
+wrapped check is scoped to the commit itself: a plain ``git commit`` in
+its own segment after an unrelated heredoc or ``$(…)`` elsewhere in the
+call is parseable and passes (gr515648).
 
 Escape hatch: set ``ALLOW_COMMIT_ON_MAIN=1`` in the environment for the rare
 legitimate direct-to-main commit.
@@ -50,8 +56,11 @@ import sys
 
 PROTECTED = {"main", "master"}
 
-# A ``git … commit`` invocation, excluding the ``commit-tree`` plumbing verb.
-_COMMIT_RE = re.compile(r"\bgit\b[^\n;&|]*?\bcommit\b(?!-tree)")
+# A ``git … commit`` invocation where ``commit`` is a whitespace-bounded
+# token — ``scratch/commit-msg.txt`` in a ``git check-ignore`` path,
+# ``--no-commit`` on a merge or ``HEAD^{commit}`` is not the subcommand
+# (gr515527).
+_COMMIT_RE = re.compile(r"\bgit\b[^\n;&|]*?(?<!\S)commit(?!\S)")
 # ``git -C <path>`` inside a single segment.
 _GIT_C_RE = re.compile(r"\bgit\b\s+(?:-c\s+\S+\s+)*-C\s+(['\"]?)([^'\"\s]+)\1")
 # A segment that is *only* a ``cd <path>``.
@@ -62,6 +71,34 @@ _CD_RE = re.compile(r"""^\s*cd\s+(['\"]?)([^'\"]+)\1\s*$""")
 #: closed with a bare syntax error (gr456287, gr514943). A left-shift such
 #: as ``1<<2`` does not match: the delimiter needs a word char or quote.
 _UNPARSEABLE_RE = re.compile(r"\$\(|<<-?\s*['\"]?[A-Za-z_]")
+#: A heredoc opener carrying its delimiter tag, for tracking body lines.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _wrapped_commit(command: str) -> bool:
+    """A ``git commit`` tangled with a heredoc or ``$(…)`` — the shape the
+    worktree guard kills at parse time (gr514943).
+
+    Only a commit the guard actually cannot parse counts: a ``git commit``
+    inside a heredoc BODY (the guard refuses any heredoc whose text names
+    git), or one sharing a segment with a ``$(``/``<<``. A plain commit in
+    its own segment after an unrelated heredoc — ``python3 <<'EOF' …``
+    then ``git commit -F msg`` — is statically parseable and runs
+    (gr515648).
+    """
+    pending: list[str] = []
+    for line in command.split("\n"):
+        if pending:
+            if line.strip() == pending[0]:
+                pending.pop(0)
+            elif _COMMIT_RE.search(line):
+                return True
+            continue
+        pending.extend(m.group(2) for m in _HEREDOC.finditer(line))
+        for seg in re.split(r"&&|\|\||;", line):
+            if _COMMIT_RE.search(seg) and _UNPARSEABLE_RE.search(seg):
+                return True
+    return False
 
 
 def _branch(cwd: str) -> str:
@@ -113,8 +150,10 @@ def evaluate(command: str, cwd: str) -> str | None:
 
     # A commit invocation tangled with a heredoc/`$(…)` is refused by the
     # worktree guard anyway; deny it here with a reason that names the
-    # guard and the fix instead of the guard's bare parse error.
-    if _COMMIT_RE.search(command) and _UNPARSEABLE_RE.search(command):
+    # guard and the fix instead of the guard's bare parse error. Scoped to
+    # the commit's own segment/body — an unrelated heredoc or substitution
+    # elsewhere in the call does not wrap it (gr515648).
+    if _wrapped_commit(command):
         return (
             "Refusing `git commit` wrapped in a heredoc or $(…) substitution "
             "— the worktree guard cannot statically prove this shape keeps "

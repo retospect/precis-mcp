@@ -33,8 +33,10 @@ in its own context, never the parent's transcript):
   ``WARN_BYTES`` is DENIED outright — Read is a strict superset, and the
   denial names it. A dumper feeding a pipe (``cat log | grep err``) is
   never recorded — its bytes were filtered, not served — but is denied
-  when the file is over ``WARN_BYTES``: ``rg <pat> <file>`` filters in
-  place without pulling the file through the pipe.
+  when the serve is unbounded and the file is over ``WARN_BYTES`` —
+  the whole file flows through, and ``rg <pat> <file>`` filters in
+  place without pulling it through the pipe. A bounded stage
+  (``tail -n 20 big | cut``) passes only its slice (gr515526).
 
 Two traps the first cut hit (witty review, 2026-10-21):
 
@@ -521,9 +523,12 @@ def _run_bash(
             continue
         if s["filtered"]:
             # Its bytes fed the next pipe stage — never recorded. Denied
-            # only when the file is large: `rg <pat> <file>` is the same
-            # filter without pulling the file through.
-            if st.st_size > WARN_BYTES:
+            # only when the WHOLE file would flow through — an unbounded
+            # serve (`cat big | grep`), where `rg <pat> <file>` is the same
+            # filter without pulling the file through. A bounded stage
+            # (`tail -n 20 big | cut`, `sed -n '1,5p' big | wc -l`) passes
+            # a slice, not the file (gr515526).
+            if s["unbounded"] and st.st_size > WARN_BYTES:
                 return _deny(
                     f"[read-dedup] `{s['desc']} | …` pulls {st.st_size // 1024}KB "
                     "of the file through a pipe — filter it in place instead: "

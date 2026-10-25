@@ -377,6 +377,24 @@ def test_piped_cat_big_is_denied(tmp_path: Path) -> None:
     assert "rg" in out["permissionDecisionReason"]
 
 
+def test_piped_bounded_serve_on_big_file_is_allowed(tmp_path: Path) -> None:
+    """gr515526: a bounded stage feeds only its slice into the pipe —
+    ``tail -n 20 big | cut`` does not pull the file through, so there is
+    nothing to redirect to ``rg``. The whole-file deny is for unbounded
+    serves only."""
+    f = tmp_path / "big.log"
+    _write(f, "x\n" * (hook.WARN_BYTES))
+    for cmd in (
+        f"tail -n 20 {f} | cut -d' ' -f1",
+        f"head -n 5 {f} | wc -l",
+        f"sed -n '1,10p' {f} | grep x",
+    ):
+        assert _run(tmp_path, _bash(cmd)) is None, cmd
+    # …but an unbounded serve feeding a pipe is still denied.
+    out = _run(tmp_path, _bash(f"tail -n +1 {f} | wc -l"))
+    assert out is not None and out["permissionDecision"] == "deny"
+
+
 def test_stdout_redirected_cat_is_not_a_serve(tmp_path: Path) -> None:
     f = tmp_path / "a.txt"
     _write(f, "hello\n")

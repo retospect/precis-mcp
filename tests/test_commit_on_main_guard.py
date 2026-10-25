@@ -142,6 +142,32 @@ class TestScope:
         assert evaluate("git merge --ff-only origin/main", str(root)) is None
         assert evaluate("git status", str(root)) is None
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # gr515527: a path that merely contains "commit" is not the
+            # subcommand — the gripe's exact refused shape.
+            "rtk proxy git check-ignore -v scratch/commit-msg.txt",
+            "git check-ignore -v scratch/commit-msg.txt",
+            # Other glued shapes that are not `git commit`.
+            "git merge --no-commit",
+            "git log --grep=commit -5",
+            "git show HEAD^{commit}",
+            "git tag -l 'commit-*'",
+        ],
+    )
+    def test_commit_substring_tokens_allowed(
+        self, cmd: str, monkeypatch, tmp_path
+    ) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "main"})
+        assert evaluate(cmd, str(root)) is None, cmd
+
+    def test_standalone_commit_still_denied(self, monkeypatch, tmp_path) -> None:
+        # The whitespace-bounded token still catches the real subcommand.
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "main"})
+        assert evaluate("git commit -m x", str(root)) is not None
+        assert evaluate("git -c core.x=y commit --amend", str(root)) is not None
+
     def test_command_without_commit_word_short_circuits(self) -> None:
         assert evaluate("ls -la", "/anywhere") is None
         assert evaluate("", "/anywhere") is None
@@ -179,11 +205,35 @@ class TestUnparseableCommitShape:
             'git commit -m "plain literal"',
             # A left-shift with a numeric operand is not a heredoc opener.
             'git commit -m x && python3 -c "print(1<<2)"',
+            # gr515648: a commit in its own segment after an unrelated
+            # heredoc is not "wrapped" — the gripe's exact refused shape.
+            "python3 <<'PY'\nprint(1)\nPY\ngit commit -F scratch/msg.txt",
+            "python3 - <<'PY'\nimport os\nPY\n\ngit commit -m x",
+            "msg=$(cat f.txt) && git commit -F msg.txt",
         ],
     )
     def test_literal_and_shift_allowed(self, cmd: str, monkeypatch, tmp_path) -> None:
         root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
         assert evaluate(cmd, str(root)) is None, cmd
+
+    def test_commit_after_heredoc_on_main_is_still_denied(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # gr515648 relaxes only the "wrapped" claim — a plain commit after an
+        # unrelated heredoc is still a commit, refused on main itself.
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "main"})
+        cmd = "python3 <<'PY'\nprint(1)\nPY\ngit commit -F scratch/msg.txt"
+        reason = evaluate(cmd, str(root))
+        assert reason is not None and "`main`" in reason
+
+    def test_commit_inside_heredoc_body_still_wrapped(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # A commit inside a heredoc BODY is data the worktree guard refuses
+        # outright (heredocs may not name git) — the named denial stays.
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        reason = evaluate("bash <<'EOF'\ngit commit -m x\nEOF", str(root))
+        assert reason is not None and "worktree guard" in reason
 
 
 class TestMainWiring:

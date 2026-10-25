@@ -158,7 +158,7 @@ the plain shape is the one that never surprises.
 | `rtk git …`, i.e. the rtk hook's rewrite of `git …` (34) | `RTK_DISABLED=1 git …` or `/usr/bin/git …`; see `rtk.md` Known gaps |
 | `X=1; python3 -c "print($X)"` — an interpreter given a dynamically computed program, even with no git in it | A static program: a literal `-c '…'` with no `$` expansion, or a script file written with the Write tool and then run |
 | `python3 - <<EOF` / shell heredoc whose text names git | Edit/Write file tools |
-| `git commit -m "$(cat <<'EOF' …)"`, or `-m "…"` quoting `'`/`` ` ``/`$` | `git commit -F .claude/msg.txt` — write the message with the Write tool; `.claude/` is the named gitignored scratch dir (gr514617, gr514743, gr515326) |
+| `git commit -m "$(cat <<'EOF' …)"`, or `-m "…"` quoting `'`/`` ` ``/`$` | `git commit -F scratch/commit-msg.txt` — write the message with the Write tool; `scratch/` is the named gitignored scratch dir (gr514617, gr514743, gr515326, gr515823) |
 | `mkdir -p /tmp/x && LOG=… && scripts/ship … > "$LOG" 2>&1` ("construct too complex", 95) | Split into plain commands; a literal `> /tmp/x.log 2>&1` redirect |
 | `LOG=/tmp/x.log` or any variable holding a path, referenced as `"$LOG"` (even alone) | Literal paths — the guard cannot trace a variable's value |
 | `grep`/`find` whose arguments contain the token `git` | Grep/Read tools |
