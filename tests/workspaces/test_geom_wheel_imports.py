@@ -425,3 +425,35 @@ def test_precis_geom_ruff_clean() -> None:
         encoding="utf-8",
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# topo-place (pcb-topo-place slice 1, Decision 21): the kernel ships in the
+# ``[pcb-kernel]`` wheel subset, so it must never import ``precis.store`` —
+# solver output reaches the DB only through the ``pcb_place`` job path.
+# ---------------------------------------------------------------------------
+
+_TOPOPLACE_DIR = _SRC / "precis" / "pcb" / "topoplace"
+
+
+def test_topoplace_never_imports_precis_store() -> None:
+    """AST check over every topoplace module: no ``precis.store``
+    (or any store-adjacent ``precis.store`` submodule) import at any
+    level, module or function — the package's own docstring is the only
+    place the name may appear."""
+    offenders: list[str] = []
+    for path in sorted(_TOPOPLACE_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            mods: list[str] = []
+            if isinstance(node, ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                mods = [_resolve(path, node)]
+            for m in mods:
+                if m == "precis.store" or m.startswith("precis.store."):
+                    offenders.append(f"{path.relative_to(_ROOT)}: {m}")
+    assert not offenders, (
+        "topoplace must stay store-free — solver output reaches the DB "
+        f"only through the pcb_place job path: {offenders}"
+    )

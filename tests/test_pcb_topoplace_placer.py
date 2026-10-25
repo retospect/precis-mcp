@@ -1,0 +1,120 @@
+"""Slice 1a: the incremental proxy (parity with a full recompute and
+evals/s), the placer (vs ``autoplace`` at equal evals), the archive's
+diversity invariant, and seed determinism — spec §1a's own tests."""
+
+from __future__ import annotations
+
+import time
+
+import numpy as np
+
+from precis.pcb.place import autoplace
+from precis.pcb.topoplace import (
+    ObjectiveShares,
+    ProxyState,
+    evaluate,
+    topo_place,
+)
+from precis.pcb.topoplace.archive import mean_displacement, rotations_differ
+from tests.fixtures.pcb.topo_synth import synth_design
+
+W = ObjectiveShares()
+
+
+def test_try_move_commit_matches_full_recompute_1000_moves() -> None:
+    """Incremental == full recompute, exactly, over 1000 seeded random
+    moves (translate / rotate / flip, commit-or-revert) on the
+    100-part synthetic board."""
+    d, _inst, _nets = synth_design(seed=0)
+    proxy = ProxyState(d, d.pose0, W)
+    rng = np.random.default_rng(2)
+    movable = np.flatnonzero(~d.fixed)
+    for i in range(1000):
+        p = int(movable[rng.integers(len(movable))])
+        row = proxy.pose[p].copy()
+        kind = rng.random()
+        if kind < 0.8:
+            row[0] += rng.normal(0.0, 3.0)
+            row[1] += rng.normal(0.0, 3.0)
+        elif kind < 0.9:
+            row[2] = (row[2] + float(rng.integers(1, 4))) % 4
+        else:
+            row[3] = 1.0 - row[3]
+        proxy.try_move(p, row)
+        (proxy.commit if rng.random() < 0.5 else proxy.revert)()
+        if i % 25 == 0:
+            c, length = evaluate(d, proxy.pose)
+            assert c == proxy.crossings, i
+            assert length == proxy.length, i
+    c, length = evaluate(d, proxy.pose)
+    assert c == proxy.crossings
+    assert length == proxy.length
+
+
+def test_proxy_throughput_floor_and_printed_rate() -> None:
+    """Proxy evals/s on the 100-part synthetic, printed every run —
+    hard floor 500/s (spec's CI floor; target ≥2000/s on the dev Mac)."""
+    d, _inst, _nets = synth_design(seed=0)
+    proxy = ProxyState(d, d.pose0, W)
+    rng = np.random.default_rng(1)
+    movable = np.flatnonzero(~d.fixed)
+    n_evals = 4000
+    t0 = time.perf_counter()
+    for _ in range(n_evals):
+        p = int(movable[rng.integers(len(movable))])
+        row = proxy.pose[p].copy()
+        row[0] += rng.normal(0.0, 3.0)
+        row[1] += rng.normal(0.0, 3.0)
+        (proxy.commit if proxy.try_move(p, row) < 0 else proxy.revert)()
+    rate = n_evals / (time.perf_counter() - t0)
+    print(f"\nproxy throughput: {rate:.0f} evals/s (floor 500, target 2000)")
+    assert rate >= 500.0
+
+
+def test_placer_beats_autoplace_at_equal_evals_median() -> None:
+    """On the synthetic board, best proxy crossings ≤ autoplace's at
+    equal eval count — printed per seed, hard on the median."""
+    effort = 6000
+    ours: list[int] = []
+    theirs: list[int] = []
+    for seed in range(5):
+        d, inst, nets = synth_design(seed=seed)
+        res = topo_place(d, objective=W, effort=effort, seed=seed)
+        ap = autoplace(inst, nets, iters=effort, seed=seed)
+        # autoplace's best pose read under the SAME pin-level metric —
+        # centroid airwires hide the fan-in crossings two real pins
+        # exhibit, so the comparison must happen inside this metric.
+        ap_pose = d.pose0.copy()
+        for i, row in enumerate(inst):
+            ap_pose[i, 0], ap_pose[i, 1] = ap.positions[row["refdes"]]
+        ac, _al = evaluate(d, ap_pose)
+        ours.append(res.crossings)
+        theirs.append(ac)
+        print(
+            f"\nseed {seed}: topo={res.crossings} "
+            f"autoplace={ac} (centroid {ap.crossings_after})"
+        )
+    assert float(np.median(ours)) <= float(np.median(theirs))
+
+
+def test_archive_diversity_invariant_and_size() -> None:
+    """After a run: no two elites violate the diversity rule
+    (≥ d_min displacement or ≥ 10 % rotations), count ≤ archive_size."""
+    d, _inst, _nets = synth_design(seed=0)
+    res = topo_place(d, objective=W, effort=4000, seed=0)
+    elites = res.elites
+    assert len(elites) <= 8
+    for i, a in enumerate(elites):
+        for b in elites[i + 1 :]:
+            assert (
+                mean_displacement(a.pose, b.pose) >= 2.0
+                or rotations_differ(a.pose, b.pose) >= 0.1
+            )
+
+
+def test_determinism_same_seed_identical_elites_json() -> None:
+    d, _inst, _nets = synth_design(seed=0)
+    a = topo_place(d, objective=W, effort=3000, seed=7)
+    b = topo_place(d, objective=W, effort=3000, seed=7)
+    assert a.elites_json() == b.elites_json()
+    assert (a.best_pose == b.best_pose).all()

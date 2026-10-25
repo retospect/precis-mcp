@@ -281,6 +281,10 @@ Sizes: 0 S–M, 1 L (three builds), 2 L (two builds), 3 M, 4 M–L, 5 S.
 "Devin alone" means a fresh builder can finish it from this text; "Opus
 seam review" means an Opus pass on the API before the slice lands.
 
+Progress: slice 0 (0a/0b/0c) and **1a** landed 2026-10-25 —
+`src/precis/pcb/topoplace/` exists (design, pairmap, proxy, archive,
+placer); 1b/1c remain open below.
+
 ### 0. Prerequisites (folded gripes)
 
 **0a — gr514458, lint-clean alias.**
@@ -356,8 +360,26 @@ class TopoDesign:
 def design_from_ir(ir: PcbIR, footprints: Mapping[str, dict]) -> TopoDesign
 ```
 
-**1a — pairwise map, proxy, placer.** Files: `topoplace/pairmap.py`,
-`topoplace/proxy.py`, `topoplace/placer.py`, `topoplace/archive.py`.
+**1a — pairwise map, proxy, placer.** *Landed 2026-10-25.* Files:
+`topoplace/pairmap.py`, `topoplace/proxy.py`, `topoplace/placer.py`,
+`topoplace/archive.py` (+ `design.py`: `TopoDesign`, `design_from_ir`,
+`ObjectiveShares`, the `FlexSlot`/`SwapGroup` shells 1b fills).
+Spec-calls the builder made that the seam review should confirm:
+`ObjectiveShares` carries the two proxy-priced terms (`crossings`,
+`ratsnest`) normalised to sum 1, applied reference-normalised at the
+seed pose (pcb-intent-api §Weights); `freedoms` derives from the IR
+lock bits (ROTATE unless `inst_fixed_rot`, BACK_SIDE unless
+`inst_fixed_xy`); `pose0` snaps authored rotation to the nearest
+quarter; `net_pins` keeps non-plane nets with ≥2 pins; a shared net's
+representative pin per side is the one nearest the other part's centre
+at `pose0`, fixed before the rotation grid is swept (the grid is
+(4,4,2) — mirror of b); equal-projection ties order near-to-far;
+crowding evicts every offender only when the candidate beats them all
+(keeps the pairwise-diversity invariant); the proxy MST is pin-level
+Euclidean — `MST_VIA_BIAS_MM` belongs to the layer logic of slice 2;
+incumbent ranking is `(crossings, cost)`, crossings primary; a `Ladder`
+rung's return keys that snapshot's archive admission; acceptance
+temperature self-calibrates per restart off the median probe |Δ|.
 
 ```python
 @dataclass(frozen=True, slots=True)
