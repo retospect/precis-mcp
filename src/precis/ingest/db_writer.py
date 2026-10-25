@@ -913,6 +913,9 @@ _BODY_OWNED_META_KEYS: frozenset[str] = frozenset(
         "extract_used_fallback",
         "extract_fallback_reason",
         "extract_fallback_empty",
+        # The foreign-prefix marker names ords in *this* body (gr515439) —
+        # it moves with the chunks and is stale the moment they change.
+        "article_start_ord",
     }
 )
 

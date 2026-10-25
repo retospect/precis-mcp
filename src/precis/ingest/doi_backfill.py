@@ -108,10 +108,15 @@ def _cohort(
     defaults to ``include_deleted=True`` (built for link-rendering, which
     wants to show a tombstoned endpoint), which would otherwise let
     ``--apply --ids <tombstoned-ref>`` write a DOI onto a dead row; the
-    SQL-scan branch below already excludes soft-deleted refs."""
+    SQL-scan branch below already excludes soft-deleted refs.
+
+    Refs whose DOI a human cleared
+    (:data:`~precis.store._identifiers_ops.CLEARED_IDENTIFIERS_META_KEY`,
+    gr515246) are excluded in both branches — this sweep must not
+    re-derive the identifier the operator removed."""
     if ids:
         refs_map = store.fetch_refs_by_ids(ids, include_deleted=False)
-        return [refs_map[i] for i in ids if i in refs_map]
+        return [r for i in ids if (r := refs_map.get(i)) and not _doi_cleared(r)]
     order_sql = {
         "desc": "ORDER BY r.ref_id DESC",
         "asc": "ORDER BY r.ref_id ASC",
@@ -122,6 +127,7 @@ def _cohort(
         "WHERE r.kind='paper' AND r.retired_at IS NULL "
         "  AND NOT EXISTS (SELECT 1 FROM ref_identifiers d "
         "                  WHERE d.ref_id=r.ref_id AND d.id_kind='doi') "
+        "  AND NOT coalesce((r.meta->'cleared_identifiers') ? 'doi', false) "
         "  AND ( coalesce(btrim(r.title),'') <> '' "
         "        OR EXISTS (SELECT 1 FROM ref_identifiers x "
         "                   WHERE x.ref_id=r.ref_id "
@@ -136,10 +142,16 @@ def _cohort(
     return [refs_map[i] for i in ordered if i in refs_map]
 
 
+def _doi_cleared(ref: Ref) -> bool:
+    """True when a human cleared this ref's DOI (gr515246 marker)."""
+    marked = (ref.meta or {}).get("cleared_identifiers")
+    return isinstance(marked, dict) and "doi" in marked
+
+
 def _draft_cohort(store: Store, ident: str) -> list[Ref]:
     """The DOI-less source refs a draft actually cites — the exact set the
     retraction button walks (``cited_paper_refs`` renders the body), minus
-    the ones that already have a DOI."""
+    the ones that already have a DOI or had it cleared by a human."""
     from precis.export.retraction import cited_paper_refs
 
     draft = store.get_ref(kind="draft", id=int(ident))
@@ -148,7 +160,7 @@ def _draft_cohort(store: Store, ident: str) -> list[Ref]:
         return []
     refs, _unresolved = cited_paper_refs(store, draft)
     dois = store.dois_for_refs([r.id for r in refs])
-    return [r for r in refs if r.id not in dois]
+    return [r for r in refs if r.id not in dois and not _doi_cleared(r)]
 
 
 def _ident(store: Store, ref_id: int, kind: str) -> str | None:
@@ -205,7 +217,9 @@ def _phase_a(
             recovered[ref_id] = str(doi)
             if apply:
                 try:
-                    store.set_ref_identifier(ref_id, "doi", str(doi), source=SOURCE_ID)
+                    wrote = store.set_ref_identifier(
+                        ref_id, "doi", str(doi), source=SOURCE_ID
+                    )
                 except BadInput:
                     # A live-owner conflict that only surfaced at write time
                     # (raced with the pre-check above) — same lane as a
@@ -222,6 +236,14 @@ def _phase_a(
                     log.exception("backfill-dois: id-write #%s failed", ref_id)
                     recovered.pop(ref_id, None)
                     write_failed.append(ref_id)
+                else:
+                    if not wrote:
+                        # Refused — the scheme was human-cleared between
+                        # cohort selection and write (gr515246). Not a
+                        # recovery.
+                        log.info("backfill-dois: id-write #%s refused", ref_id)
+                        recovered.pop(ref_id, None)
+                        write_failed.append(ref_id)
     remaining = [r.id for r in refs if r.id not in recovered]
     return recovered, owned_elsewhere, write_failed, remaining
 
@@ -280,13 +302,20 @@ def _phase_b(
                 recovered[ref_id] = str(res.doi)
                 if apply:
                     try:
-                        store.set_ref_identifier(
+                        wrote = store.set_ref_identifier(
                             ref_id, "doi", str(res.doi), source=SOURCE_TITLE
                         )
                     except Exception:
                         log.exception("backfill-dois: title-write #%s failed", ref_id)
                         recovered.pop(ref_id, None)
                         review.append((ref_id, "write-failed"))
+                    else:
+                        if not wrote:
+                            # Refused — cleared between cohort selection and
+                            # write (gr515246). Review, not recovered.
+                            log.info("backfill-dois: title-write #%s refused", ref_id)
+                            recovered.pop(ref_id, None)
+                            review.append((ref_id, "write-refused"))
         elif res.verdict == "auto" and not _is_real_doi(res.doi):
             arxiv_only.append(ref_id)
         elif res.verdict == "review":

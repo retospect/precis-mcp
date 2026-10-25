@@ -82,6 +82,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.identity import is_placeholder_title
+from precis.ingest.article_spread import article_start_ord
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.crossref import lookup_crossref
 from precis.ingest.pdf_sidecar import (
@@ -92,6 +93,7 @@ from precis.ingest.semantic_scholar import S2RateLimited, lookup_s2
 from precis.ingest.verify_metadata import content_tokens, title_overlap
 from precis.liveness import drain_sleep
 from precis.store import Store, Tag
+from precis.store._identifiers_ops import _cleared_schemes
 from precis.utils.authors import to_name_dicts
 from precis.utils.rate_limit import RateLimited
 from precis.utils.title_views import title_plain
@@ -401,6 +403,16 @@ def _is_title_like(line: str) -> bool:
     return letters >= 0.5 * len(line)
 
 
+def _body_window(store: Store, ref_id: int, span: int) -> tuple[int, int]:
+    """Inclusive ``pos_range`` covering ``span`` ords of the paper's OWN
+    article — ``(0, span)`` unless a foreign-prefix marker
+    (:func:`~precis.ingest.article_spread.article_start_ord`, gr515439)
+    shifts it to ``(start, start + span)``. Every first-page reader goes
+    through here so a previous article's tail is skipped uniformly."""
+    start = article_start_ord(store, ref_id)
+    return start, start + span
+
+
 def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
     """Ordered title-query candidates for the S2 title track, plus whether
     they are *trusted*.
@@ -420,7 +432,7 @@ def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
     if t and not is_placeholder_title(t) and not is_garbage_title(t) and not is_pii(t):
         return [t], True
     blocks = store.chunks.list_chunks_for_ref(
-        ref.id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1)
+        ref.id, pos_range=_body_window(store, ref.id, _TITLE_SCAN_CHUNKS - 1)
     )
     seen: set[str] = set()
     cands: list[str] = []
@@ -448,8 +460,11 @@ def _similarity(store: Store, a: str, b: str) -> float:
 
 
 def _chunk0_text(store: Store, ref_id: int) -> str:
-    """Ref's own first body chunk (``ord=0``), or ``""`` if it has none."""
-    rows = store.chunks.list_chunks_for_ref(ref_id, pos_range=(0, 0))
+    """Ref's own first body chunk — ``ord=0``, or the article-start ord
+    when a foreign prefix is marked (gr515439) — or ``""`` if none."""
+    rows = store.chunks.list_chunks_for_ref(
+        ref_id, pos_range=_body_window(store, ref_id, 0)
+    )
     return rows[0].text or "" if rows else ""
 
 
@@ -504,7 +519,9 @@ def _body_text_sans_references(store: Store, ref_id: int) -> str:
     heading in the first :data:`_TOC_CHUNKS` chunks is a table-of-contents
     entry, not the list, and is ignored."""
     parts: list[str] = []
-    blocks = store.chunks.list_chunks_for_ref(ref_id, pos_range=(0, _BODY_SCAN_CHUNKS))
+    blocks = store.chunks.list_chunks_for_ref(
+        ref_id, pos_range=_body_window(store, ref_id, _BODY_SCAN_CHUNKS)
+    )
     for i, b in enumerate(blocks):
         if b.chunk_kind == "references":
             break
@@ -546,7 +563,7 @@ def _edition_conflict(store: Store, res: Resolution) -> str | None:
     """gr260193: reason string if the registry hit describes a different
     edition than the body's front matter, else ``None`` (see module doc)."""
     blocks = store.chunks.list_chunks_for_ref(
-        res.ref_id, pos_range=(0, _TITLE_SCAN_CHUNKS - 1)
+        res.ref_id, pos_range=_body_window(store, res.ref_id, _TITLE_SCAN_CHUNKS - 1)
     )
     front = "\n".join(b.text or "" for b in blocks)
     if not front:
@@ -793,6 +810,17 @@ def apply_resolution(
         meta_patch["issn"] = res.issn
     meta_patch.update(res.extra_meta)
     with store.tx() as conn:
+        if res.doi and "doi" in _cleared_schemes(conn, res.ref_id):
+            # The resolved DOI is what the operator just removed — writing
+            # it back (or rewriting identity around it) makes the wrong
+            # DOI "come back" on the next sweep (gr515246).
+            log.info(
+                "apply_resolution: skipping #%s — doi cleared by a human "
+                "edit, resolved doi=%s not written (gr515246)",
+                res.ref_id,
+                res.doi,
+            )
+            return
         store.update_paper_fields(
             res.ref_id,
             title=res.title or None,
@@ -878,6 +906,9 @@ def _triage_refs(store: Store, limit: int | None) -> list[Any]:
             "LEFT JOIN tags t ON t.tag_id = rt.tag_id "
             "  AND t.namespace='OPEN' AND t.value='needs-triage' "
             "WHERE r.kind='paper' AND r.retired_at IS NULL "
+            # A human-cleared DOI (gr515246): don't re-derive what the
+            # operator removed — same cohort filter doi_backfill applies.
+            "  AND NOT coalesce((r.meta->'cleared_identifiers') ? 'doi', false) "
             # Parked refs (MISMATCH_TAG) await a human; don't re-hit them.
             "  AND NOT EXISTS (SELECT 1 FROM ref_tags mt "
             "    JOIN tags mtt ON mtt.tag_id = mt.tag_id "

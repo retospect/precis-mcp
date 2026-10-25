@@ -37,17 +37,46 @@ probe ``WHERE id_kind='openalex' AND id_value = lower(:w_id)`` (or match
 ``w…`` ↔ ``W…`` miss is silent — the row exists, the join just doesn't.
 The DOI scheme is additionally enforced by the ``0049`` trigger; other
 schemes have no DB-level guard, so the Python helpers are the chokepoint.
+
+Cleared-identifier marker (gr515246): a human ``clear`` (``edit``'s
+``doi=''`` / the Meta tab's blanked field) stamps
+``refs.meta.cleared_identifiers.<scheme> = {"at", "by"}`` on top of
+deleting the ``ref_identifiers`` row. Without it the next automated
+sweep (``doi_backfill``, ``apply_resolution``, remediate) saw a
+DOI-less paper with a title and re-derived the identifier the operator
+just removed — the deleted DOI "came back". Both writers consult the
+marker: a *machine*-sourced write of a marked scheme is skipped, a
+human-sourced one lands and lifts the marker (the operator changed
+their mind). Machine clears (e.g. ``park_mismatch``'s
+registry-title-zero-overlap DOI drop, ``source='resolve-metadata'``)
+never stamp it — a parked ref is still allowed to auto-recover the
+*correct* identifier under review.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from psycopg.types.json import Jsonb
+
 if TYPE_CHECKING:
     from psycopg import Connection
     from psycopg_pool import ConnectionPool
+
+log = logging.getLogger(__name__)
+
+#: ``refs.meta`` key recording identifiers a human deliberately cleared:
+#: ``{scheme: {"at": <ts>, "by": <source>}}``. See the module docstring.
+CLEARED_IDENTIFIERS_META_KEY = "cleared_identifiers"
+
+#: ``source`` values that mean a person made the change — the same set
+#: :func:`precis.store._refs_ops._default_author_source` maps to the
+#: ``human`` tier. Only these stamp (on clear) / lift (on set) the
+#: :data:`CLEARED_IDENTIFIERS_META_KEY` marker.
+_HUMAN_EDIT_SOURCES = frozenset({"web-edit", "mcp-edit", "edit"})
 
 
 # Identifier shape detection -------------------------------------------------
@@ -193,6 +222,86 @@ def _normalise_identifier(scheme: str, value: str) -> str:
     return v.lower()
 
 
+def _cleared_schemes(c: Connection, ref_id: int) -> set[str]:
+    """Schemes marked cleared-by-a-human on the ref (empty set if none).
+
+    ``FOR NO KEY UPDATE`` locks the refs row on the caller's conn so a
+    concurrent ``clear_ref_identifier`` (DELETE + stamp) can't race the
+    check-then-write callers — on a pool conn this is one implicit
+    transaction, so the lock is only as wide as the read. NO KEY UPDATE,
+    not UPDATE: a FOR UPDATE lock conflicts with the KEY SHARE that FK
+    inserts (chunks, ref_events, ref_identifiers) take on the refs row,
+    which is a deadlock shape — db_writer's upgrade-path lock comment
+    documents the same constraint.
+    """
+    row = c.execute(
+        "SELECT meta->%s FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+        (CLEARED_IDENTIFIERS_META_KEY, ref_id),
+    ).fetchone()
+    marked = row[0] if row else None
+    if not isinstance(marked, dict):
+        return set()
+    return set(marked)
+
+
+def _stamp_cleared(
+    c: Connection,
+    ref_id: int,
+    scheme: str,
+    source: str,
+    values: Iterable[str] = (),
+) -> None:
+    """Record ``scheme`` as human-cleared on ``refs.meta`` (gr515246).
+
+    The cleared ``id_value``s go in the marker too (``"values"``) — a
+    merge can then tell "the survivor holds the very identifier the
+    human removed" apart from "the survivor holds its own value of the
+    same scheme" and keep the latter. Scheme-only entries from before
+    this field existed stay valid (treated as value-unknown).
+
+    Also drops the paper's ``meta.<scheme>`` copy — a paper's DOI/arXiv
+    surfaces both in ``ref_identifiers`` and as a top-level meta key
+    (``_render_overview`` reads it), so deleting only the alias row
+    leaves a ghost. Scoped to ``kind='paper'``: on other kinds
+    ``meta.doi`` names *another* object entirely (a provenance ref's
+    ``meta.doi`` is the retracted paper's).
+    """
+    extra = Jsonb({"values": list(values)} if values else {})
+    c.execute(
+        "UPDATE refs SET meta = jsonb_set(coalesce(meta, '{}'::jsonb), "
+        "  '{cleared_identifiers}', "
+        "  coalesce(meta->'cleared_identifiers', '{}'::jsonb) "
+        "  || jsonb_build_object(%s::text, "
+        "      jsonb_build_object('at', now(), 'by', %s::text) || %s::jsonb)) "
+        "WHERE ref_id = %s "
+        "  AND (meta->'cleared_identifiers' IS NULL "
+        "       OR jsonb_typeof(meta->'cleared_identifiers') = 'object')",
+        (scheme, source, extra, ref_id),
+    )
+    if scheme in ("doi", "arxiv"):
+        c.execute(
+            "UPDATE refs SET meta = meta - %s::text "
+            "WHERE ref_id = %s AND kind = 'paper' AND meta ? %s::text",
+            (scheme, ref_id, scheme),
+        )
+
+
+def _unstamp_cleared(c: Connection, ref_id: int, scheme: str) -> None:
+    """Lift the human-cleared mark for ``scheme`` — an explicit re-add."""
+    c.execute(
+        "UPDATE refs SET meta = CASE "
+        "  WHEN coalesce(meta->'cleared_identifiers', '{}'::jsonb) - %s::text "
+        "       = '{}'::jsonb "
+        "       THEN meta - 'cleared_identifiers' "
+        "       ELSE jsonb_set(meta, '{cleared_identifiers}', "
+        "                      (meta->'cleared_identifiers') - %s::text) END "
+        "WHERE ref_id = %s "
+        "  AND jsonb_typeof(meta->'cleared_identifiers') = 'object' "
+        "  AND meta->'cleared_identifiers' ? %s::text",
+        (scheme, scheme, ref_id, scheme),
+    )
+
+
 class IdentifiersMixin:
     """Cross-scheme alias lookup over the ``ref_identifiers`` table."""
 
@@ -324,6 +433,11 @@ class IdentifiersMixin:
 
         Returns the number of rows actually written. ``conn=`` lets
         the caller share a transaction with the parent ``ingest`` flow.
+
+        A scheme the operator deliberately cleared
+        (:data:`CLEARED_IDENTIFIERS_META_KEY`, gr515246) is skipped for
+        machine-sourced rows — bulk sweeps may not resurrect it; a
+        human-sourced row both lands and lifts the mark.
         """
         rows: list[tuple[str, str, int, str]] = []
         for scheme, value, source in identifiers:
@@ -340,9 +454,39 @@ class IdentifiersMixin:
         )
 
         def _do(c: Connection) -> int:
+            marked = _cleared_schemes(c, ref_id)
+            human: set[str] = set()
+            kept: list[tuple[str, str, int, str]] = []
+            for row in rows:
+                if row[0] in marked and row[3] not in _HUMAN_EDIT_SOURCES:
+                    log.info(
+                        "ref_identifiers: skipping %s=%s on #%s — "
+                        "cleared by a human edit (gr515246)",
+                        row[0],
+                        row[1],
+                        ref_id,
+                    )
+                    continue
+                if row[0] in marked:
+                    human.add(row[0])
+                kept.append(row)
+            if not kept:
+                return 0
             with c.cursor() as cur:
-                cur.executemany(sql, rows)
-                return cur.rowcount or 0
+                cur.executemany(sql, kept)
+                written = cur.rowcount or 0
+            for s in human:
+                # Lift the mark only when the human row actually landed —
+                # a value already owned by another ref loses the
+                # ON CONFLICT, and unmarking then would let the next
+                # machine sweep resurrect the cleared scheme.
+                landed = c.execute(
+                    "SELECT 1 FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
+                    (ref_id, s),
+                ).fetchone()
+                if landed is not None:
+                    _unstamp_cleared(c, ref_id, s)
+            return written
 
         if conn is not None:
             return _do(conn)
@@ -378,6 +522,13 @@ class IdentifiersMixin:
         path (the ``🗑 Delete paper`` button soft-deletes the ref but, unlike
         ``merge_refs``, leaves its ``ref_identifiers`` rows), which would
         otherwise wedge the survivor's DOI / arXiv id permanently.
+
+        A scheme marked human-cleared
+        (:data:`CLEARED_IDENTIFIERS_META_KEY`, gr515246) refuses
+        *machine*-sourced writes — ``False`` with a log line, so a
+        backfill/enrich pass leaves the clear alone instead of
+        re-deriving the identifier the operator removed. A human-sourced
+        set lands and lifts the mark.
         """
         from precis.errors import BadInput
 
@@ -385,8 +536,19 @@ class IdentifiersMixin:
         v = _normalise_identifier(s, value)
         if not s or not v:
             return False
+        src = (source or "manual").strip().lower()
 
         def _do(c: Connection) -> bool:
+            marked = _cleared_schemes(c, ref_id)
+            if s in marked and src not in _HUMAN_EDIT_SOURCES:
+                log.info(
+                    "set_ref_identifier: refusing %s=%s on #%s — "
+                    "cleared by a human edit (gr515246)",
+                    s,
+                    v,
+                    ref_id,
+                )
+                return False
             owner = c.execute(
                 "SELECT ri.ref_id, r.retired_at IS NOT NULL "
                 "FROM ref_identifiers ri "
@@ -422,8 +584,13 @@ class IdentifiersMixin:
             c.execute(
                 "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
                 "VALUES (%s, %s, %s, %s)",
-                (s, v, ref_id, (source or "manual").strip().lower()),
+                (s, v, ref_id, src),
             )
+            if s in marked:
+                # Reached only for a human-sourced write (the machine
+                # branch returned above) — an explicit re-add lifts the
+                # clear mark so automated sweeps manage it again.
+                _unstamp_cleared(c, ref_id, s)
             return True
 
         if conn is not None:
@@ -453,18 +620,55 @@ class IdentifiersMixin:
 
         Returns True when a row was actually removed, False when this
         ref had no identifier for ``scheme`` (a clean no-op, not an
-        error).
+        error). The one False→True exception: a *human* clear of a
+        ``doi``/``arxiv`` ghost — no identifier row, but the paper's
+        ``meta.<scheme>`` copy still shows the value on the Meta tab.
+        Blanking that field must stamp the marker and drop the ghost,
+        exactly like clearing a real row. An empty or null
+        ``meta.<scheme>`` is no ghost — nothing is displayed, so the
+        clear stays a no-op (no marker either, or a future sweep would
+        be blocked from filling a field the human never saw).
+
+        A human-sourced clear additionally stamps the
+        :data:`CLEARED_IDENTIFIERS_META_KEY` marker (and drops the
+        paper's ``meta.<scheme>`` copy) so automated identifier writers
+        don't re-derive what the operator just removed (gr515246).
         """
         s = (scheme or "").strip().lower()
         if not s:
             return False
+        src = (source or "manual").strip().lower()
 
         def _do(c: Connection) -> bool:
-            cur = c.execute(
-                "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
-                (ref_id, s),
-            )
-            return cur.rowcount > 0
+            # Lock the refs row first — the same order every writer
+            # takes (refs, then ref_identifiers), so a clear can't
+            # deadlock against a set that locked refs via
+            # _cleared_schemes before touching ref_identifiers.
+            _cleared_schemes(c, ref_id)
+            deleted = [
+                str(r[0])
+                for r in c.execute(
+                    "DELETE FROM ref_identifiers "
+                    "WHERE ref_id = %s AND id_kind = %s RETURNING id_value",
+                    (ref_id, s),
+                ).fetchall()
+            ]
+            if not deleted:
+                if src in _HUMAN_EDIT_SOURCES and s in ("doi", "arxiv"):
+                    ghost = c.execute(
+                        "SELECT meta->>%s::text FROM refs WHERE ref_id = %s "
+                        "AND kind = 'paper' "
+                        "AND nullif(meta->>%s::text, '') IS NOT NULL",
+                        (s, ref_id, s),
+                    ).fetchone()
+                    if ghost is not None:
+                        v = _normalise_identifier(s, str(ghost[0]))
+                        _stamp_cleared(c, ref_id, s, src, values=[v] if v else [])
+                        return True
+                return False
+            if src in _HUMAN_EDIT_SOURCES:
+                _stamp_cleared(c, ref_id, s, src, values=deleted)
+            return True
 
         if conn is not None:
             return _do(conn)

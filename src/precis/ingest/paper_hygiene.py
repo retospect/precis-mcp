@@ -2043,6 +2043,7 @@ def _repair_one(
 ) -> TitleRepairOutcome:
     """Run the repair cascade for one junk-titled paper (see
     :func:`repair_junk_title_papers` for the leg order and stamping rule)."""
+    from precis.ingest.article_spread import mark_article_start
     from precis.ingest.metadata_resolve import (
         _resolve_by_doi,
         _resolve_by_title,
@@ -2051,6 +2052,14 @@ def _repair_one(
     )
 
     rid = ref.id
+
+    # gr515439: when the leading body chunks are the previous article's
+    # tail, stamp ``meta.article_start_ord`` first so every reader below
+    # (title candidates, chunk-0 overlap, edition check) looks at the
+    # paper's own front matter, not the foreign text that produced the
+    # junk title. Best-effort: no confident boundary = no mark.
+    if not dry_run:
+        mark_article_start(store, rid)
 
     def _applied(how: str, title: str) -> TitleRepairOutcome:
         return TitleRepairOutcome(rid, how, new_title=title)

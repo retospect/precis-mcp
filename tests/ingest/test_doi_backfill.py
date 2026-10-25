@@ -293,3 +293,235 @@ def test_ids_cohort_excludes_soft_deleted_ref(store: Store) -> None:
     assert gone not in result.cohort
     assert gone not in result.recovered_id
     assert _doi_of(store, gone) is None
+
+
+# ── cleared-identifier marker (gr515246) ─────────────────────────
+#
+# A human clear (Meta tab blank field / ``edit doi=''``) stamps
+# ``refs.meta.cleared_identifiers.<scheme>``; machine-sourced writers must
+# then leave that scheme alone so the wrong DOI doesn't "come back" on
+# the next sweep. A human re-add lifts the mark.
+
+
+def _meta_of(store: Store, ref_id: int) -> dict[str, Any]:
+    return dict(_ref(store, ref_id).meta or {})
+
+
+def _stamp_meta_doi(store: Store, ref_id: int, doi: str) -> None:
+    """Give the ref a ``meta.doi`` display copy, the way ingest/edit do."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = coalesce(meta,'{}'::jsonb) "
+            "|| jsonb_build_object('doi', %s::text) WHERE ref_id = %s",
+            (doi, ref_id),
+        )
+
+
+def test_human_clear_stamps_marker_and_drops_meta_doi(store: Store) -> None:
+    rid = _paper(store, slug="clr", title="Cleared Paper", doi="10.9/wrong")
+    _stamp_meta_doi(store, rid, "10.9/wrong")
+
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+    assert _doi_of(store, rid) is None
+
+    meta = _meta_of(store, rid)
+    assert meta["cleared_identifiers"]["doi"]["by"] == "web-edit"
+    assert "at" in meta["cleared_identifiers"]["doi"]
+    # The display copy must go too — else the Meta tab still shows a DOI.
+    assert "doi" not in meta
+
+
+def test_machine_clear_does_not_stamp(store: Store) -> None:
+    """A machine clear (park_mismatch's source='resolve-metadata') must not
+    mark the scheme — a parked ref is still allowed to auto-recover the
+    correct identifier under review."""
+    rid = _paper(store, slug="machine-clr", title="Machine Cleared", doi="10.9/x")
+
+    assert store.clear_ref_identifier(rid, "doi", source="resolve-metadata")
+    assert _doi_of(store, rid) is None
+    assert "cleared_identifiers" not in _meta_of(store, rid)
+
+
+def test_human_clear_excluded_from_backfill_cohorts(store: Store) -> None:
+    """The wrong DOI "came back" because every sweep re-derived it: after
+    a human clear both the ``--ids`` and the SQL-scan cohorts must skip
+    the ref, and a write attempt must produce nothing."""
+    marked = _paper(store, slug="mkd", title="Human Cleared", doi="10.9/gone")
+    plain = _paper(store, slug="pln", title="Plain Doi-less")
+    assert store.clear_ref_identifier(marked, "doi", source="web-edit")
+
+    ids_result = backfill_dois(
+        store,
+        ids=[marked, plain],
+        do_id_phase=False,
+        do_title_phase=False,
+    )
+    assert ids_result.cohort == [plain]
+
+    scan_result = backfill_dois(
+        store, apply=False, do_id_phase=False, do_title_phase=False
+    )
+    assert plain in scan_result.cohort
+    assert marked not in scan_result.cohort
+
+    # And an apply run still writes nothing onto the marked ref — belt
+    # (cohort) and braces (set_ref_identifier refusal) both hold.
+    applied = backfill_dois(
+        store,
+        apply=True,
+        ids=[marked],
+        do_title_phase=False,
+        batch_fn=lambda req, _key: [{"doi": "10.9/resurrect"} for _ in req],
+    )
+    assert marked not in applied.cohort
+    assert _doi_of(store, marked) is None
+
+
+def test_machine_set_on_cleared_scheme_is_refused(store: Store) -> None:
+    rid = _paper(store, slug="blk", title="Blocked", doi="10.9/gone")
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+
+    assert not store.set_ref_identifier(rid, "doi", "10.9/sneak", source="system")
+    assert _doi_of(store, rid) is None
+
+    # The bulk path skips machine-sourced rows the same way.
+    assert (
+        store.insert_ref_identifiers(rid, [("doi", "10.9/sneak", "backfill-dois-s2id")])
+        == 0
+    )
+    assert _doi_of(store, rid) is None
+
+
+def test_human_set_lifts_clear_mark(store: Store) -> None:
+    """The operator changed their mind: a human-sourced re-add lands and
+    lifts the mark, after which machine sweeps manage the scheme again."""
+    rid = _paper(store, slug="lift", title="Re-added", doi="10.9/gone")
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+
+    assert store.set_ref_identifier(rid, "doi", "10.9/back", source="web-edit")
+    assert _doi_of(store, rid) == "10.9/back"
+    assert "cleared_identifiers" not in _meta_of(store, rid)
+
+    # Mark lifted → a machine-sourced write manages the scheme again.
+    assert store.set_ref_identifier(rid, "doi", "10.9/newer", source="system")
+    assert _doi_of(store, rid) == "10.9/newer"
+
+
+def test_human_bulk_insert_lifts_clear_mark(store: Store) -> None:
+    """The bulk path mirrors set_ref_identifier: a human re-add lands
+    and lifts the mark."""
+    rid = _paper(store, slug="lift-bulk", title="Re-added", doi="10.9/gone")
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+
+    assert store.insert_ref_identifiers(rid, [("doi", "10.9/back", "web-edit")]) == 1
+    assert _doi_of(store, rid) == "10.9/back"
+    assert "cleared_identifiers" not in _meta_of(store, rid)
+
+
+def test_human_bulk_insert_that_conflicts_keeps_clear_mark(store: Store) -> None:
+    """A human-sourced row that loses ON CONFLICT to another ref's alias
+    never landed — lifting the mark then would let the next machine
+    sweep resurrect the scheme the operator cleared."""
+    rid = _paper(store, slug="clr-conflict", title="Cleared", doi="10.9/gone")
+    _paper(store, slug="doi-owner", title="Owner", doi="10.9/taken")
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+
+    written = store.insert_ref_identifiers(rid, [("doi", "10.9/taken", "web-edit")])
+    assert written == 0
+    assert _doi_of(store, rid) is None
+    meta = _meta_of(store, rid)
+    assert meta["cleared_identifiers"]["doi"]["by"] == "web-edit"
+
+
+def test_human_clear_of_meta_ghost_stamps_and_drops(store: Store) -> None:
+    """The Meta tab can blank a field whose DOI only ever lived in
+    ``meta.doi`` — no ``ref_identifiers`` row to delete. That still
+    counts as a human clear: stamp the marker and drop the ghost."""
+    rid = _paper(store, slug="ghost", title="Ghost Doi")
+    _stamp_meta_doi(store, rid, "10.9/ghost")
+
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+    meta = _meta_of(store, rid)
+    assert meta["cleared_identifiers"]["doi"]["by"] == "web-edit"
+    assert "doi" not in meta
+
+
+def test_machine_clear_of_meta_ghost_is_a_noop(store: Store) -> None:
+    """A machine clear touching only a meta ghost stamps nothing — same
+    rule as a machine clear of a real row."""
+    rid = _paper(store, slug="ghost-m", title="Ghost Doi Machine")
+    _stamp_meta_doi(store, rid, "10.9/ghost")
+
+    assert not store.clear_ref_identifier(rid, "doi", source="resolve-metadata")
+    meta = _meta_of(store, rid)
+    assert "cleared_identifiers" not in meta
+    assert meta["doi"] == "10.9/ghost"
+
+
+def test_clear_of_nothing_is_still_false(store: Store) -> None:
+    """No identifier row and no meta ghost — the clean no-op stays a
+    no-op and stamps nothing."""
+    rid = _paper(store, slug="nothing", title="No Ids")
+    assert not store.clear_ref_identifier(rid, "doi", source="web-edit")
+    assert "cleared_identifiers" not in _meta_of(store, rid)
+
+
+def test_phase_a_refused_write_is_failed_not_recovered(store: Store) -> None:
+    """Cohort filter raced — the marker landed between selection and
+    write, so set_ref_identifier returns False. That must count as a
+    failed write, not a recovery (the CLI's recovered tally used to keep
+    it)."""
+    from precis.ingest.doi_backfill import _phase_a
+
+    rid = _paper(store, slug="id-refused", title="Refused Id", s2="f" * 40)
+    with store.tx() as conn:
+        store.set_ref_identifier(rid, "doi", "10.9/old", source="system", conn=conn)
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+
+    recovered, owned, failed, remaining = _phase_a(
+        store,
+        [_ref(store, rid)],
+        api_key="",
+        apply=True,
+        batch_fn=lambda ids, _k: [{"doi": "10.9/refused"} for _ in ids],
+    )
+    assert rid not in recovered
+    assert rid not in owned
+    assert rid in failed
+    assert rid in remaining
+    assert _doi_of(store, rid) is None
+
+
+def test_phase_b_refused_write_is_review_not_recovered(store: Store) -> None:
+    """Same race on the title track: a refused write lands in review,
+    not recovered_title."""
+    from precis.ingest.doi_backfill import _phase_b
+
+    rid = _paper(store, slug="ttl-refused", title="A Refused Widget Study", year=2011)
+    with store.tx() as conn:
+        store.set_ref_identifier(rid, "doi", "10.9/old", source="system", conn=conn)
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+
+    def fake_s2(title: str, api_key: str) -> dict[str, Any] | None:
+        return {
+            "title": "A Refused Widget Study",
+            "authors": [],
+            "year": 2011,
+            "doi": "10.9/refused",
+        }
+
+    recovered, arxiv_only, review = _phase_b(
+        store,
+        [rid],
+        mailto="",
+        api_key="",
+        apply=True,
+        timeout=10.0,
+        delay=0,
+        crossref_fn=_no_crossref,
+        s2_fn=fake_s2,
+    )
+    assert rid not in recovered
+    assert rid not in arxiv_only
+    assert (rid, "write-refused") in review
+    assert _doi_of(store, rid) is None

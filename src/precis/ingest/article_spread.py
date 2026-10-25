@@ -37,15 +37,34 @@ matches the target title (:func:`title_body_score` >= 0.6, every other
 article < 0.5). With no confident keep and at least two segments carrying
 article evidence the verdict is ``ambiguous``: whole body kept, paper tagged.
 Anything else is ``single``.
+
+**Foreign-prefix marker (gr515439).** A trim only fires when the spread
+segments cleanly; a shared page can also leave just the *tail* of the
+previous article ahead of the target's first page (pa39683: chunks 0-7 are
+the Engel & Macko 14C tail + references before Rumelhart's title;
+pa35223, pa35334 the same shape). Then nothing is cut and chunk 0 holds an
+unrelated paper — title extraction and front-matter readers see the
+foreign text. :func:`leading_foreign_ord` detects that case on stored
+chunks — a hard closer in the prefix plus a confident own-title/DOI match
+after it — and :func:`mark_article_start` stamps
+``refs.meta['article_start_ord']``. Body chunks are append-only, so the
+marker shifts readers' ``pos_range`` windows instead of deleting:
+:func:`article_start_ord` is the one read helper.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import re
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
-from precis.utils.title_body import title_body_score
+from precis.utils.title_body import is_placeholder_title, title_body_score
+
+if TYPE_CHECKING:
+    from psycopg import Connection
+
+    from precis.store import Store
 
 #: Head match a kept article needs, and the ceiling every other article
 #: must stay under (head and full text) for a title-based keep or a cut.
@@ -533,3 +552,219 @@ def trim_to_article(
         reason=reason,
         residual=residual,
     )
+
+
+# ---- Foreign-prefix marker (gr515439) --------------------------------
+#
+# ``trim_to_article`` runs on Marker blocks before chunking; a leftover
+# case it cannot see is the previous article's *tail alone* ahead of the
+# target's first page — no second full article to trim against, so the
+# foreign head lands in the stored body. These run on ChunkRow-shaped
+# rows (``.ord``/``.text``/``.chunk_kind``), post-ingest or at repair
+# time, and stamp ``refs.meta['article_start_ord']`` so readers shift
+# their windows rather than mutating the append-only body.
+
+#: ``refs.meta`` key naming the first ord of the paper's own article
+#: when the leading body chunks are the previous article's tail.
+ARTICLE_START_ORD_META_KEY = "article_start_ord"
+
+#: The prefix is *leading* — only this many ords count as its boundary.
+_LEADING_ORD_CAP = 32
+
+
+def _chunk_head_score(title: str, text: str) -> float:
+    """``title_body_score`` against a chunk's text, 0 when unjudgeable."""
+    if not title or not text.strip():
+        return 0.0
+    scored = title_body_score(title, text)
+    return scored.score if scored is not None else 0.0
+
+
+def _is_hard_close_chunk(chunk: Any) -> bool:
+    """This chunk ends a foreign article's tail: its reference list, an
+    acknowledgement, or a Received/Correspondence line."""
+    if getattr(chunk, "chunk_kind", "") == "references":
+        return True
+    text = (getattr(chunk, "text", "") or "").strip()
+    return bool(
+        _ACK_RE.match(text)
+        or _RECEIVED_RE.search(text)
+        or _CORRESPONDENCE_RE.search(text)
+    )
+
+
+def leading_foreign_ord(
+    chunks: Sequence[Any], *, title: str = "", doi: str | None = None
+) -> int | None:
+    """The ord where the paper's own article starts, when the leading
+    body chunks are the previous article's tail — else ``None``.
+
+    Same conservatism as :func:`trim_to_article`: a wrong mark hides real
+    content, so all three signals must fire —
+
+    * a *candidate*: the first non-``references`` chunk holding the
+      target DOI or matching ``title`` at
+      :func:`title_body_score` ``>= KEEP_SCORE``;
+    * a *hard closer* in the chunks before it — the previous article's
+      tail. A *title* candidate accepts any closer (``chunk_kind ==
+      'references'``, a Received/accepted, an acknowledgement or a
+      Correspondence line); a *DOI-only* candidate needs a
+      ``references`` chunk, since a Received/acknowledgement/
+      Correspondence line alone can also be the paper's own front
+      matter ahead of its DOI line;
+    * a prefix title score < ``OTHER_MAX_SCORE`` — when the chunks before
+      the candidate already match the title they ARE the paper's own
+      front matter, not foreign text.
+
+    Only the leading :data:`_LEADING_ORD_CAP` ords are examined; a
+    candidate at ord 0 (no prefix) or no candidate at all returns None.
+    """
+    title = _clean(title)
+    if is_placeholder_title(title):
+        title = ""
+    target_doi = _norm_doi(doi) if doi else ""
+    if not (title or target_doi):
+        return None
+    prefix: list[Any] = []
+    for chunk in chunks:
+        ord_ = int(getattr(chunk, "ord", 0) or 0)
+        if ord_ >= _LEADING_ORD_CAP:
+            break
+        text = getattr(chunk, "text", "") or ""
+        title_hit = _chunk_head_score(title, text) >= KEEP_SCORE
+        doi_hit = bool(
+            target_doi and target_doi in {_norm_doi(m) for m in _DOI_RE.findall(text)}
+        )
+        if (
+            getattr(chunk, "chunk_kind", "") != "references"
+            and prefix
+            and (title_hit or doi_hit)
+        ):
+            closer_ok = (
+                any(_is_hard_close_chunk(c) for c in prefix)
+                if title_hit
+                else any(getattr(c, "chunk_kind", "") == "references" for c in prefix)
+            )
+            if not closer_ok:
+                return None
+            joined = " ".join(getattr(c, "text", "") or "" for c in prefix)
+            return ord_ if _chunk_head_score(title, joined) < OTHER_MAX_SCORE else None
+        prefix.append(chunk)
+    return None
+
+
+def article_start_ord(
+    store: Store, ref_id: int, *, conn: Connection | None = None
+) -> int:
+    """``refs.meta['article_start_ord']`` — the first ord of the paper's
+    own article when a foreign prefix was marked (gr515439); ``0`` when
+    unmarked or malformed. Readers add it to their ``pos_range`` windows
+    so the foreign tail stays out of title extraction and front-matter
+    checks."""
+
+    def _do(c: Connection) -> int:
+        row = c.execute(
+            "SELECT meta->>%s FROM refs WHERE ref_id = %s",
+            (ARTICLE_START_ORD_META_KEY, ref_id),
+        ).fetchone()
+        if not row or row[0] is None:
+            return 0
+        try:
+            return max(0, int(row[0]))
+        except (TypeError, ValueError):
+            return 0
+
+    if conn is not None:
+        return _do(conn)
+    with store.pool.connection() as c:
+        return _do(c)
+
+
+def mark_article_start(
+    store: Store, ref_id: int, *, conn: Connection | None = None
+) -> int | None:
+    """Stamp ``refs.meta['article_start_ord']`` when the ref's leading
+    body chunks are the previous article's tail (gr515439). Returns the
+    marked ord, or ``None`` when no mark holds (the common case — no
+    confident boundary is no mark, never a guess).
+
+    Called at ingest (after the spread journal) and by the junk-title
+    repair pass before it re-reads first-page chunks. Journals an
+    ``ingest:spread`` / ``foreign_prefix`` ref_event so the mark is
+    auditable; the chunks themselves are untouched (append-only).
+
+    Everything runs on the caller's ``conn``: at ingest the ref and its
+    identifiers are still uncommitted, so pool-side reads would see
+    nothing and the mark would silently skip. The marker is kept in
+    step with the chunks — re-deriving the same ord writes nothing (no
+    duplicate event), a moved boundary overwrites, and a marker whose
+    boundary no longer detects (re-ingested front matter) is dropped
+    with a ``foreign_prefix_cleared`` event.
+    """
+    from precis.ingest.add import ARTICLE_SPREAD_SOURCE
+
+    def _do(c: Connection) -> int | None:
+        row = c.execute(
+            "SELECT title, "
+            "  (SELECT min(id_value) FROM ref_identifiers "
+            "   WHERE ref_id = r.ref_id AND id_kind = 'doi'), "
+            "  meta->>%s "
+            "FROM refs r WHERE ref_id = %s AND retired_at IS NULL",
+            (ARTICLE_START_ORD_META_KEY, ref_id),
+        ).fetchone()
+        if row is None:
+            return None
+        title, doi, stamped = row[0] or "", row[1], row[2]
+        current: int | None = None
+        if stamped is not None:
+            try:
+                n = int(stamped)
+                current = n if n > 0 else None
+            except (TypeError, ValueError):
+                current = None
+
+        chunks = store.chunks.list_chunks_for_ref(ref_id, conn=c)
+        start = leading_foreign_ord(chunks, title=title, doi=doi)
+        if start is None:
+            if current is None:
+                return None
+            c.execute(
+                "UPDATE refs SET meta = meta - %s::text, updated_at = now() "
+                "WHERE ref_id = %s",
+                (ARTICLE_START_ORD_META_KEY, ref_id),
+            )
+            store.append_event(
+                ref_id,
+                source=ARTICLE_SPREAD_SOURCE,
+                event="foreign_prefix_cleared",
+                payload={"was": current},
+                conn=c,
+            )
+            return None
+        if start == current:
+            return start
+        store.update_paper_fields(
+            ref_id,
+            meta_patch={ARTICLE_START_ORD_META_KEY: start},
+            source=ARTICLE_SPREAD_SOURCE,
+            conn=c,
+        )
+        payload: dict[str, Any] = {
+            ARTICLE_START_ORD_META_KEY: start,
+            "foreign_ords": [int(c2.ord) for c2 in chunks if int(c2.ord) < start],
+        }
+        if current is not None:
+            payload["was"] = current
+        store.append_event(
+            ref_id,
+            source=ARTICLE_SPREAD_SOURCE,
+            event="foreign_prefix",
+            payload=payload,
+            conn=c,
+        )
+        return start
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)

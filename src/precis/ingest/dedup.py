@@ -34,6 +34,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store, Tag
 from precis.store._body_predicate import has_body_sql
@@ -277,6 +279,157 @@ def inherit_missing_identity(
     return filled
 
 
+def _cleared_mark(conn: Any, ref_id: int) -> dict[str, Any]:
+    """The ref's ``meta.cleared_identifiers`` dict, ``{}`` when absent or
+    malformed (gr515246)."""
+    row = conn.execute(
+        "SELECT meta->'cleared_identifiers' FROM refs WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    return dict(row[0]) if row and isinstance(row[0], dict) else {}
+
+
+def _mark_values(entry: Any) -> set[str] | None:
+    """The recorded ``id_value`` set of one marker entry, or ``None`` for
+    a legacy scheme-only mark (value unknowable — pre-dates the
+    ``values`` field, gr515246)."""
+    if not isinstance(entry, dict):
+        return None
+    vs = entry.get("values")
+    if isinstance(vs, list):
+        return {str(v) for v in vs}
+    if entry.get("value"):
+        return {str(entry["value"])}
+    return None
+
+
+def _drop_cleared_loser_rows(
+    conn: Any, *, survivor_ref_id: int, loser_ref_id: int
+) -> None:
+    """Delete the loser's migratable-kind identifier rows whose value the
+    survivor's operator already cleared — run BEFORE the identifier
+    migration, so they can't ride across (gr515246). Per *value*: a
+    loser's row the human never cleared isn't touched. Legacy
+    scheme-only marks (value unknowable) still drop the whole scheme —
+    resurrection is the worse error. DOIs compare case-insensitively:
+    marker ``values`` are recorded post-normalisation (lowercase) but a
+    legacy loser row can still carry the original mixed case."""
+    cleared = _cleared_mark(conn, survivor_ref_id)
+    for scheme, entry in cleared.items():
+        if scheme not in _MIGRATABLE_ID_KINDS:
+            continue
+        values = _mark_values(entry)
+        if values:
+            conn.execute(
+                "DELETE FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = %s "
+                "  AND CASE WHEN id_kind = 'doi' "
+                "           THEN lower(id_value) = ANY(%s) "
+                "           ELSE id_value = ANY(%s) END",
+                (loser_ref_id, scheme, list(values), list(values)),
+            )
+        elif values is None:
+            conn.execute(
+                "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
+                (loser_ref_id, scheme),
+            )
+
+
+def _union_cleared_entry(own: Any, loser: Any) -> Any:
+    """Merge the loser's marker entry into the survivor's own entry for
+    the same scheme: keep the survivor's record (``by``/``at``), union
+    the recorded ``values`` so neither cleared ``id_value`` is forgotten
+    (gr515246)."""
+    if not isinstance(own, dict) or not isinstance(loser, dict):
+        return loser
+    merged = dict(own)
+    merged.pop("value", None)
+    union = (_mark_values(own) or set()) | (_mark_values(loser) or set())
+    if union:
+        merged["values"] = sorted(union)
+    return merged
+
+
+def _merge_cleared_markers(
+    conn: Any, *, survivor_ref_id: int, loser_ref_id: int
+) -> None:
+    """Carry the loser's ``meta.cleared_identifiers`` onto the survivor,
+    per cleared *value* (gr515246).
+
+    For each marked scheme:
+
+    * the survivor holds no identifier row of that scheme → the mark
+      unions across (the clear blocks re-derivation on the merged ref);
+    * the survivor holds the very ``id_value`` the human cleared → that
+      row is deleted (it may have just migrated off the loser) and the
+      mark unions across;
+    * the survivor holds a *different* value → it is the survivor's own
+      identifier, not the cleared one: no union, no delete. Legacy
+      scheme-only marks (no recorded ``values``) take this lane too —
+      unverifiable, so nothing is dropped.
+
+    Restricted to :data:`_MIGRATABLE_ID_KINDS`: content-derived schemes
+      (``cite_key``/``paper_id``/…) never merge and their marks stay on
+    the loser. Dropped rows also lose the ``meta.<scheme>`` display
+    ghost (``doi``/``arxiv``, mirroring ``_stamp_cleared``).
+    """
+    loser_mark = _cleared_mark(conn, loser_ref_id)
+    if not loser_mark:
+        return
+    held: dict[str, set[str]] = {}
+    for kind, value in conn.execute(
+        "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
+        (survivor_ref_id,),
+    ).fetchall():
+        # doi compares lowercase: marker values are post-normalisation,
+        # a legacy row can still be mixed-case (the DELETE below
+        # matches with lower() the same way).
+        v = str(value)
+        held.setdefault(str(kind), set()).add(v.lower() if str(kind) == "doi" else v)
+    surv_mark = _cleared_mark(conn, survivor_ref_id)
+    changed = False
+    drop: dict[str, set[str]] = {}
+    for scheme, entry in loser_mark.items():
+        if scheme not in _MIGRATABLE_ID_KINDS:
+            continue
+        own = held.get(scheme) or set()
+        values = _mark_values(entry)
+        if values is not None and scheme == "doi":
+            values = {v.lower() for v in values}
+        if not own:
+            surv_mark[scheme] = _union_cleared_entry(surv_mark.get(scheme), entry)
+            changed = True
+        elif values is not None and values & own:
+            # Only the matching rows go — other values of the same scheme
+            # are the survivor's own.
+            drop[scheme] = values & own
+            surv_mark[scheme] = _union_cleared_entry(surv_mark.get(scheme), entry)
+            changed = True
+    for scheme, vals in drop.items():
+        conn.execute(
+            "DELETE FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = %s "
+            "  AND CASE WHEN id_kind = 'doi' "
+            "           THEN lower(id_value) = ANY(%s) "
+            "           ELSE id_value = ANY(%s) END",
+            (survivor_ref_id, scheme, list(vals), list(vals)),
+        )
+        if scheme in ("doi", "arxiv"):
+            conn.execute(
+                "UPDATE refs SET meta = meta - %s::text "
+                "WHERE ref_id = %s AND kind = 'paper' "
+                "AND meta ? %s::text",
+                (scheme, survivor_ref_id, scheme),
+            )
+    if changed:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set("
+            "  coalesce(meta, '{}'::jsonb), '{cleared_identifiers}', %s::jsonb) "
+            "WHERE ref_id = %s",
+            (Jsonb(surv_mark), survivor_ref_id),
+        )
+
+
 @trust_door("computed")
 def merge_duplicate(
     store: Store,
@@ -300,6 +453,16 @@ def merge_duplicate(
     if survivor_ref_id == duplicate_ref_id:
         raise ValueError("merge_duplicate: survivor and duplicate are the same ref")
 
+    # Lock both refs rows first, in id order: set_ref_identifier and
+    # clear_ref_identifier take refs before ref_identifiers, and this
+    # fold writes ref_identifiers before the marker union writes refs —
+    # without a common first lock the two orders deadlock (gr515246).
+    conn.execute(
+        "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
+        "ORDER BY ref_id FOR NO KEY UPDATE",
+        ([survivor_ref_id, duplicate_ref_id],),
+    )
+
     # (a) External identifiers → survivor. First drop any identifier the
     # survivor *already* holds, so the move below can't hit the
     # (id_kind, id_value) PK. DOIs are compared case-insensitively: the 0049
@@ -316,10 +479,19 @@ def merge_duplicate(
         "            ELSE d.id_value = s.id_value END",
         (duplicate_ref_id, survivor_ref_id, list(_MIGRATABLE_ID_KINDS)),
     )
+    # A value the survivor's operator deliberately cleared must not ride
+    # across on the duplicate's rows — the move below would resurrect the
+    # very identifier the human removed (gr515246).
+    _drop_cleared_loser_rows(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
+    )
     conn.execute(
         "UPDATE ref_identifiers SET ref_id = %s "
         "WHERE ref_id = %s AND id_kind = ANY(%s)",
         (survivor_ref_id, duplicate_ref_id, list(_MIGRATABLE_ID_KINDS)),
+    )
+    _merge_cleared_markers(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
     )
     # (a2) Body / PDF → a survivor that lacks them (gr479362).
     moved = _move_body_to_survivor(

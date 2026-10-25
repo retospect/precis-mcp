@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -19,10 +20,16 @@ from precis.ingest.add import (
     PdfInput,
     precis_add,
 )
-from precis.ingest.article_spread import trim_to_article
+from precis.ingest.article_spread import (
+    article_start_ord,
+    leading_foreign_ord,
+    mark_article_start,
+    trim_to_article,
+)
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.pdf_metadata import PdfMetadata
 from precis.ingest.pipeline import extract_paper
+from precis.store.types import ChunkInsert
 
 KROTO = "The stability of the fullerenes Cn, with n = 24, 28, 32, 36, 50, 60 and 70"
 PROSE = (
@@ -459,3 +466,372 @@ class TestIngestJournalsSpread:
         ) as m:
             precis_add(PdfInput(pdf_path=pdf), store=store)
         assert m.call_args.kwargs["target_title"] == KROTO
+
+
+# ---- foreign-prefix marker (gr515439) ----------------------------------
+#
+# Journal PDFs sharing a page with the previous article ingest its tail as
+# leading body chunks. Fixtures mirror the three prod cases: pa39683
+# (Rumelhart 1986 — chunks 0-7 are the Engel & Macko 14C tail), pa35223
+# (Pfleiderer MnSi tail + refs + acks before chunk 9) and pa35334 (Kipp
+# refs + acks before chunk 3).
+
+RUMELHART = "Learning representations by back-propagating errors"
+PACOMM = "Programmable autonomous computing machines from coupled oscillators"
+AQUA = "Water conduction through the hydrophobic channel of aquaporin-1"
+FOREIGN_14C = (
+    "The 14C ages of groundwater samples from the confined carbonate "
+    "aquifer were interpreted with a geochemical mass-balance model, and "
+    "carbon isotope exchange between water and minerals was estimated "
+    "from the dolomite and calcite content of the rock."
+)
+FOREIGN_MNSI = (
+    "The helimagnetic transition in MnSi is driven by the Dzyaloshinskii-"
+    "Moriya interaction; the measured susceptibility and specific heat "
+    "anomalies agree with a weak first-order transition at ambient "
+    "pressure near 29.5 K."
+)
+OWN_PROSE = (
+    "We describe a new learning procedure for networks of neuron-like "
+    "units and demonstrate that it learns internal representations that "
+    "allow the network to solve tasks which simple associative "
+    "generalisation cannot capture."
+)
+
+
+def _c(ord_: int, text: str, kind: str = "paragraph") -> Any:
+    return SimpleNamespace(ord=ord_, text=text, chunk_kind=kind)
+
+
+def _rumelhart_prefix_chunks() -> list[Any]:
+    """pa39683: chunks 0-7 are the 14C paper's tail; own title at 8."""
+    return [
+        _c(0, FOREIGN_14C),
+        _c(1, "The model reconciles the apparent age differences. " + FOREIGN_14C),
+        _c(2, "We thank the referees for constructive comments."),
+        _c(3, "Received 19 May; accepted 15 July 1986."),
+        _c(
+            4, "- 1. Engel, M. & Macko, S. A. Nature 317, 350-352 (1985).", "references"
+        ),
+        _c(5, "- 2. Mook, W. G. Chem. Geol. 25, 155-176 (1979).", "references"),
+        _c(6, "- 3. Pearson, F. J. Water Resour. Res. 1, 394 (1965).", "references"),
+        _c(7, "Correspondence and requests for materials should be addressed to M.E."),
+        _c(
+            8,
+            f"{RUMELHART}\nDavid E. Rumelhart, Geoffrey E. Hinton & Ronald J. Williams\n{OWN_PROSE}",
+        ),
+        _c(
+            9, "The aim is to achieve a state in which the output matches. " + OWN_PROSE
+        ),
+    ]
+
+
+def _mnsi_prefix_chunks() -> list[Any]:
+    """pa35223: chunks 0-8 are the MnSi paper's tail; own title at 9."""
+    return [
+        _c(0, FOREIGN_MNSI),
+        _c(1, "Below the transition the helix reorients. " + FOREIGN_MNSI),
+        _c(2, "Acknowledgements. We thank P. Boni for the neutron data."),
+        _c(3, "- 1. Pfleiderer, C. et al. Nature 427, 227-231 (2004).", "references"),
+        _c(4, "- 2. Bak, P. & Jensen, M. H. J. Phys. C 13, 881 (1980).", "references"),
+        _c(
+            5,
+            "- 3. Nakanishi, O. et al. Solid State Commun. 35, 995 (1980).",
+            "references",
+        ),
+        _c(
+            6,
+            "- 4. Ishikawa, Y. et al. Solid State Commun. 19, 525 (1976).",
+            "references",
+        ),
+        _c(7, "- 5. Landau, L. D. Phys. Z. Sowjetunion 11, 26 (1937).", "references"),
+        _c(8, "Correspondence should be addressed to C.P."),
+        _c(
+            9,
+            f"{PACOMM}\nWe present a computing machine built from coupled "
+            f"nonlinear oscillators. {OWN_PROSE}",
+        ),
+        _c(10, "The phase dynamics encode the solution. " + OWN_PROSE),
+    ]
+
+
+def _kipp_prefix_chunks() -> list[Any]:
+    """pa35334: chunks 0-2 are the Kipp paper's refs + acks; own title at 3."""
+    return [
+        _c(
+            0, "- 12. Kipp, T. et al. Phys. Rev. Lett. 96, 077403 (2006).", "references"
+        ),
+        _c(1, "- 13. Walck, S. N. et al. Phys. Rev. B 56, 9721 (1997).", "references"),
+        _c(2, "We are grateful to the EPSRC for support."),
+        _c(3, f"{AQUA}\nSingle-file water transport through narrow pores. {OWN_PROSE}"),
+        _c(4, "Molecular dynamics simulations predict high rates. " + OWN_PROSE),
+    ]
+
+
+class TestLeadingForeignOrd:
+    def test_rumelhart_prefix_marks_ord_8(self) -> None:
+        chunks = _rumelhart_prefix_chunks()
+        assert leading_foreign_ord(chunks, title=RUMELHART) == 8
+
+    def test_mnsi_prefix_marks_ord_9(self) -> None:
+        chunks = _mnsi_prefix_chunks()
+        assert leading_foreign_ord(chunks, title=PACOMM) == 9
+
+    def test_kipp_prefix_marks_ord_3(self) -> None:
+        chunks = _kipp_prefix_chunks()
+        assert leading_foreign_ord(chunks, title=AQUA) == 3
+
+    def test_doi_candidate_without_title(self) -> None:
+        """A title-less ref can still mark from a front-matter DOI line."""
+        chunks = [
+            _c(0, FOREIGN_14C),
+            _c(1, "- 1. Engel, M. Nature 317, 350 (1985).", "references"),
+            _c(4, "doi:10.1038/323533a0\n" + OWN_PROSE),
+        ]
+        assert leading_foreign_ord(chunks, doi="10.1038/323533a0") == 4
+
+    def test_normal_paper_marks_nothing(self) -> None:
+        """Negative: chunk 0 is the paper's own title — no mark ever."""
+        chunks = [
+            _c(0, f"{KROTO}\nKroto, H. W.\n{PROSE}"),
+            _c(1, "The fullerene cage is stable. " + PROSE),
+            _c(2, "References"),
+            _c(3, "- 1. Smith, J. Nature 1, 2 (1985).", "references"),
+        ]
+        assert leading_foreign_ord(chunks, title=KROTO) is None
+
+    def test_candidate_without_hard_closer_marks_nothing(self) -> None:
+        """A title-matching chunk with no closer before it is not a
+        boundary — the prefix must carry the previous article's tail."""
+        chunks = [
+            _c(0, "Some unrelated front matter. " + FOREIGN_14C),
+            _c(1, "More front matter without a closer. " + FOREIGN_14C),
+            _c(2, f"{RUMELHART}\n{OWN_PROSE}"),
+        ]
+        assert leading_foreign_ord(chunks, title=RUMELHART) is None
+
+    def test_own_article_then_refs_marks_nothing(self) -> None:
+        """A post-references appendix re-mentioning the title is not a
+        boundary: the prefix scores on the title (it's the own body)."""
+        chunks = [
+            _c(0, f"{RUMELHART}\n{OWN_PROSE}"),
+            _c(1, "The delta rule generalises. " + OWN_PROSE),
+            _c(2, "- 1. Rosenblatt, F. Psychol. Rev. 65, 386 (1958).", "references"),
+            _c(3, f"Appendix: proof of convergence for {RUMELHART}. " + OWN_PROSE),
+        ]
+        assert leading_foreign_ord(chunks, title=RUMELHART) is None
+
+    def test_no_identity_no_mark(self) -> None:
+        chunks = _rumelhart_prefix_chunks()
+        assert leading_foreign_ord(chunks) is None
+        assert leading_foreign_ord(chunks, title="untitled") is None
+
+    def test_doi_candidate_with_soft_closer_marks_nothing(self) -> None:
+        """A DOI-only candidate needs a *references* chunk before it — a
+        Received/acknowledgement/Correspondence line alone can be the
+        paper's own front matter ahead of its DOI line, so it doesn't
+        prove a foreign tail."""
+        chunks = [
+            _c(0, "Received 19 May; accepted 15 July 1986. " + FOREIGN_14C),
+            _c(
+                1,
+                "doi:10.1038/323533a0\n"
+                "A somewhat related but distinct title\n" + OWN_PROSE,
+            ),
+        ]
+        assert (
+            leading_foreign_ord(
+                chunks, title="A totally different paper", doi="10.1038/323533a0"
+            )
+            is None
+        )
+
+    def test_doi_candidate_with_references_closer_still_marks(self) -> None:
+        """The DOI-only rule tightens the closer, it doesn't remove it:
+        a real references chunk ahead of the DOI line still marks."""
+        chunks = [
+            _c(0, "Received 19 May; accepted 15 July 1986. " + FOREIGN_14C),
+            _c(1, "- 1. Engel, M. Nature 317, 350 (1985).", "references"),
+            _c(4, "doi:10.1038/323533a0\n" + OWN_PROSE),
+        ]
+        assert leading_foreign_ord(chunks, doi="10.1038/323533a0") == 4
+
+
+class TestMarkArticleStart:
+    def test_marks_meta_and_journals(self, store) -> None:
+        ref = store.insert_ref(kind="paper", slug="pa39683", title=RUMELHART)
+        for c in _rumelhart_prefix_chunks():
+            store.chunks.insert_chunks(
+                ref.id,
+                [
+                    ChunkInsert(
+                        ord=c.ord, text=c.text, meta={"chunk_kind": c.chunk_kind}
+                    )
+                ],
+            )
+
+        assert mark_article_start(store, ref.id) == 8
+        assert article_start_ord(store, ref.id) == 8
+        meta = store.fetch_refs_by_ids([ref.id])[ref.id].meta
+        assert meta["article_start_ord"] == 8
+
+        # The readers' window shifts: chunk-0 text is the paper's own.
+        from precis.ingest.metadata_resolve import _chunk0_text
+
+        assert _chunk0_text(store, ref.id).startswith(RUMELHART)
+
+        with store.pool.connection() as conn:
+            events = conn.execute(
+                "SELECT event, payload FROM ref_events "
+                "WHERE ref_id = %s AND source = 'ingest:spread' "
+                "AND event = 'foreign_prefix'",
+                (ref.id,),
+            ).fetchall()
+        assert len(events) == 1
+        assert events[0][1]["article_start_ord"] == 8
+        assert events[0][1]["foreign_ords"] == list(range(8))
+
+    def test_normal_paper_unmarked(self, store) -> None:
+        ref = store.insert_ref(kind="paper", slug="norm", title=KROTO)
+        store.chunks.insert_chunks(
+            ref.id, [ChunkInsert(ord=0, text=f"{KROTO}\n{PROSE}")]
+        )
+        assert mark_article_start(store, ref.id) is None
+        assert article_start_ord(store, ref.id) == 0
+        meta = store.fetch_refs_by_ids([ref.id])[ref.id].meta
+        assert "article_start_ord" not in meta
+
+    def _seed_prefix(self, store: Any, conn: Any, slug: str) -> int:
+        """Insert a ref + the rumelhart prefix chunks on ``conn`` so the
+        whole fixture is one (possibly uncommitted) transaction."""
+        rid = int(
+            store.insert_ref(kind="paper", slug=slug, title=RUMELHART, conn=conn).id
+        )
+        store.chunks.insert_chunks(
+            rid,
+            [
+                ChunkInsert(ord=c.ord, text=c.text, meta={"chunk_kind": c.chunk_kind})
+                for c in _rumelhart_prefix_chunks()
+            ],
+            conn=conn,
+        )
+        return rid
+
+    def test_mark_inside_uncommitted_tx(self, store) -> None:
+        """At ingest the ref (and its identifiers) are uncommitted on the
+        ingest conn — reads must run on that conn or the mark silently
+        skips a fresh-ingest ref."""
+        with store.tx() as conn:
+            rid = self._seed_prefix(store, conn, "uncom")
+            assert mark_article_start(store, rid, conn=conn) == 8
+        assert article_start_ord(store, rid) == 8
+
+    def test_same_ord_mark_writes_nothing(self, store) -> None:
+        """Re-deriving the same boundary is a no-op — no rewrite and no
+        duplicate foreign_prefix event on every repair pass."""
+        ref = store.insert_ref(kind="paper", slug="pa39683b", title=RUMELHART)
+        for c in _rumelhart_prefix_chunks():
+            store.chunks.insert_chunks(
+                ref.id,
+                [
+                    ChunkInsert(
+                        ord=c.ord, text=c.text, meta={"chunk_kind": c.chunk_kind}
+                    )
+                ],
+            )
+
+        assert mark_article_start(store, ref.id) == 8
+        assert mark_article_start(store, ref.id) == 8
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM ref_events WHERE ref_id = %s "
+                "AND event = 'foreign_prefix'",
+                (ref.id,),
+            ).fetchone()[0]
+        assert n == 1
+
+    def test_moved_boundary_overwrites(self, store) -> None:
+        """A different computed ord replaces the marker and journals the
+        new boundary (``was`` records the superseded one)."""
+        ref = store.insert_ref(kind="paper", slug="pa39683c", title=RUMELHART)
+        for c in _rumelhart_prefix_chunks():
+            store.chunks.insert_chunks(
+                ref.id,
+                [
+                    ChunkInsert(
+                        ord=c.ord, text=c.text, meta={"chunk_kind": c.chunk_kind}
+                    )
+                ],
+            )
+        assert mark_article_start(store, ref.id) == 8
+
+        # Re-ingest dropped the leading tail; the boundary now sits at 4.
+        shifted = [
+            _c(0, FOREIGN_14C),
+            _c(1, "We thank the referees for constructive comments."),
+            _c(2, "- 1. Engel, M. Nature 317, 350 (1985).", "references"),
+            _c(4, f"{RUMELHART}\n{OWN_PROSE}"),
+            _c(5, "The aim is to achieve a state. " + OWN_PROSE),
+        ]
+        with store.tx() as conn:
+            store.chunks.insert_chunks(
+                ref.id,
+                [
+                    ChunkInsert(
+                        ord=c.ord,
+                        text=c.text,
+                        meta={"chunk_kind": c.chunk_kind},
+                    )
+                    for c in shifted
+                ],
+                replace=True,
+                conn=conn,
+            )
+            assert mark_article_start(store, ref.id, conn=conn) == 4
+        assert article_start_ord(store, ref.id) == 4
+        with store.pool.connection() as conn:
+            payloads = conn.execute(
+                "SELECT payload FROM ref_events WHERE ref_id = %s "
+                "AND event = 'foreign_prefix' ORDER BY event_id",
+                (ref.id,),
+            ).fetchall()
+        assert len(payloads) == 2
+        assert payloads[1][0]["was"] == 8
+
+    def test_stale_marker_is_dropped(self, store) -> None:
+        """The boundary that justified the mark is gone (re-ingested
+        front matter) — the marker must drop, else readers keep
+        skipping ords that are now the paper's own."""
+        ref = store.insert_ref(kind="paper", slug="pa39683d", title=RUMELHART)
+        for c in _rumelhart_prefix_chunks():
+            store.chunks.insert_chunks(
+                ref.id,
+                [
+                    ChunkInsert(
+                        ord=c.ord, text=c.text, meta={"chunk_kind": c.chunk_kind}
+                    )
+                ],
+            )
+        assert mark_article_start(store, ref.id) == 8
+
+        with store.tx() as conn:
+            store.chunks.insert_chunks(
+                ref.id,
+                [
+                    ChunkInsert(ord=0, text=f"{RUMELHART}\n{OWN_PROSE}"),
+                    ChunkInsert(ord=1, text="More of the paper. " + OWN_PROSE),
+                ],
+                replace=True,
+                conn=conn,
+            )
+            assert mark_article_start(store, ref.id, conn=conn) is None
+        assert article_start_ord(store, ref.id) == 0
+        meta = store.fetch_refs_by_ids([ref.id])[ref.id].meta
+        assert "article_start_ord" not in meta
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT payload FROM ref_events WHERE ref_id = %s "
+                "AND event = 'foreign_prefix_cleared'",
+                (ref.id,),
+            ).fetchone()
+        assert row is not None and row[0]["was"] == 8

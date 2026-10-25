@@ -1349,3 +1349,19 @@ class TestDoorDispatch:
     def test_unknown_id_notfound(self, handler: PaperHandler) -> None:
         with pytest.raises(NotFound):
             _edit(handler, "pa99999999", {"drop_body": True, "reason": "x"})
+
+
+def test_move_body_carries_article_start_marker(
+    store: Store, handler: PaperHandler
+) -> None:
+    """gr515439: ``article_start_ord`` names ords in *this* body — it is
+    body-owned meta, so a move carries it to the target and strips it
+    from the donor."""
+    a = _seed(store, "fpdonor2020", meta={"article_start_ord": 2})
+    b = _seed(store, "fptarget2020")
+    _body(store, a, 3)
+
+    resp = _edit(handler, a, {"move_body_to": f"pa{b}", "reason": "body is B's"})
+    assert "moved" in resp.body
+    assert _meta(store, b)["article_start_ord"] == 2
+    assert "article_start_ord" not in _meta(store, a)

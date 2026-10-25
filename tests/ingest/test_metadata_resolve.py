@@ -845,3 +845,101 @@ def test_track2_toc_references_heading_does_not_cut_body(store: Store) -> None:
     }
     out = resolve_triage(store, apply=True, crossref_fn=_no_call, s2_fn=_fake_s2(cand))
     assert _verdict(out, rid).verdict == "auto"
+
+
+# ── cleared-identifier guard (gr515246) ───────────────────────────
+
+
+def test_apply_resolution_skips_human_cleared_doi(store: Store) -> None:
+    """A resolution that recovers the DOI a human just cleared must not
+    write it back — that's exactly how the wrong DOI "came back"."""
+    from precis.ingest.metadata_resolve import Resolution, apply_resolution
+
+    rid = _triage_paper(store, slug="clr-res", title="Cleared Paper", doi="10.9/wrong")
+    assert store.clear_ref_identifier(rid, "doi", source="web-edit")
+
+    apply_resolution(
+        store,
+        Resolution(
+            rid,
+            "auto",
+            "title",
+            "test",
+            title="Cleared Paper",
+            author_dicts=[{"name": "A. Nother"}],
+            doi="10.9/wrong",
+        ),
+    )
+
+    assert "doi" not in _identifiers(store, rid)
+    # Nothing applied — the ref keeps its triage tag and original title.
+    assert _has_triage(store, rid)
+    assert _ref(store, rid).title == "Cleared Paper"
+    meta = _ref(store, rid).meta
+    assert meta["cleared_identifiers"]["doi"]["by"] == "web-edit"
+
+
+def test_apply_resolution_unmarked_still_applies(store: Store) -> None:
+    """Same call on an unmarked ref still lands the DOI — the guard only
+    fires on the human-cleared marker."""
+    from precis.ingest.metadata_resolve import Resolution, apply_resolution
+
+    rid = _triage_paper(store, slug="ok-res", title="Plain Paper")
+
+    apply_resolution(
+        store,
+        Resolution(rid, "auto", "title", "test", doi="10.9/fine"),
+    )
+
+    assert _identifiers(store, rid)["doi"] == "10.9/fine"
+    assert not _has_triage(store, rid)
+
+
+def test_triage_cohort_excludes_human_cleared_doi(store: Store) -> None:
+    """gr515246: a ref whose DOI a human cleared must not re-enter the
+    triage cohort — same exclusion doi_backfill applies."""
+    cleared = _triage_paper(
+        store, slug="clr-tri", title="Cleared Paper", doi="10.9/wrong"
+    )
+    plain = _triage_paper(store, slug="plain-tri", title="Still Triageable")
+    assert store.clear_ref_identifier(cleared, "doi", source="web-edit")
+
+    out = resolve_triage(store, apply=False, crossref_fn=_no_call, s2_fn=_fake_s2(None))
+    ids = {r.ref_id for r in out}
+    assert cleared not in ids
+    assert plain in ids
+
+
+# ── foreign-prefix window (gr515439) ─────────────────────────────
+
+
+def test_body_window_readers_skip_marked_foreign_prefix(store: Store) -> None:
+    """_chunk0_text / _title_candidates start at the marked article-start
+    ord — the previous article's tail never feeds the title track."""
+    from precis.ingest.metadata_resolve import _chunk0_text
+
+    rid = _titleless_paper(
+        store,
+        slug="fpre",
+        n=0x110,
+        chunks=(
+            "14C dating of confined carbonate groundwater",
+            "Isotope exchange in dolomite aquifers",
+            "Programmable autonomous computing machines",
+            "Coupled nonlinear oscillators compute",
+        ),
+    )
+    with store.tx() as conn:
+        store.update_paper_fields(
+            rid,
+            meta_patch={"article_start_ord": 2},
+            source="test",
+            conn=conn,
+        )
+    ref = _ref(store, rid)
+
+    cands, trusted = _title_candidates(store, ref)
+    assert not trusted
+    assert cands and cands[0] == "Programmable autonomous computing machines"
+    assert not any("14C" in c or "Isotope" in c for c in cands)
+    assert _chunk0_text(store, rid) == ("Programmable autonomous computing machines")

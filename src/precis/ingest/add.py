@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.identity import make_pdf_sha256, normalize_doi
+from precis.ingest.article_spread import mark_article_start
 from precis.ingest.claim import Claim
 from precis.ingest.db_writer import (
     PaperToWrite,
@@ -39,7 +40,11 @@ from precis.ingest.db_writer import (
     register_aliases_and_maybe_upgrade,
     write_paper,
 )
-from precis.ingest.dedup import inherit_missing_identity
+from precis.ingest.dedup import (
+    _drop_cleared_loser_rows,
+    _merge_cleared_markers,
+    inherit_missing_identity,
+)
 from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
 from precis.ingest.pres import (
     PresWriteResult,
@@ -783,6 +788,9 @@ def _ingest_pdf(
             _note_pdf_no_body(store, existing, input, paper, conn=conn)
             if chunks_written:
                 _note_article_spread(store, existing, spread, input, conn=conn)
+                # gr515439: mark a leading foreign prefix (previous
+                # article's tail) so title/front-matter readers skip it.
+                mark_article_start(store, existing, conn=conn)
             conn.commit()
             stored_kind = _lookup_kind(existing, conn=conn)
             _apply_extra_tags(store, stored_kind, existing, input.extra_tags)
@@ -832,6 +840,7 @@ def _ingest_pdf(
         _note_pdf_no_body(store, result.ref_id, input, paper, conn=conn)
         if result.chunks_written:
             _note_article_spread(store, result.ref_id, spread, input, conn=conn)
+            mark_article_start(store, result.ref_id, conn=conn)
         conn.commit()
 
     _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
@@ -1932,6 +1941,16 @@ def _reconcile_orphan_stub(
         return None
     stub_id = int(row[0])
 
+    # Lock both refs rows first, in id order: set/clear_ref_identifier
+    # take refs before ref_identifiers, and this fold writes
+    # ref_identifiers before the marker union writes refs — without a
+    # common first lock the two orders deadlock (gr515246).
+    conn.execute(
+        "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
+        "ORDER BY ref_id FOR NO KEY UPDATE",
+        ([survivor_ref_id, stub_id],),
+    )
+
     # Corroboration (gr264748): the filename/handle link alone folded
     # unrelated papers (pa42497 -> pa42939). Require the stub's title to
     # share distinctive tokens with the survivor's title or leading body.
@@ -1992,6 +2011,12 @@ def _reconcile_orphan_stub(
     # doesn't already own these exact values. Content-derived ids
     # (cite_key/paper_id) stay on the retired row; probe_existing now
     # filters soft-deleted refs so they can't resurrect it.
+    # A value the survivor's operator deliberately cleared must not ride
+    # across on the stub's rows — the fold would resurrect the very
+    # identifier the human removed (gr515246).
+    _drop_cleared_loser_rows(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id
+    )
     conn.execute(
         """
         UPDATE ref_identifiers SET ref_id = %s
@@ -2000,6 +2025,7 @@ def _reconcile_orphan_stub(
         """,
         (survivor_ref_id, stub_id),
     )
+    _merge_cleared_markers(conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id)
 
     inherit_missing_identity(
         store,
