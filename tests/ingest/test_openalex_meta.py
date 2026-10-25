@@ -258,6 +258,17 @@ class TestFetchByIdentifier:
         url = self._selector_url(monkeypatch, "10.3390/ChemoSensors11090486")
         assert url.endswith("/works/doi:10.3390/chemosensors11090486")
 
+    def test_doi_selector_short_registrant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: ``enrich_ref(doi=)`` used to pass the DOI to the
+        ``doi:`` selector verbatim — any ``10.x/`` form. The
+        identifier-detect rewrite (9c0442afe) gated it on a 4+-digit
+        registrant, so short prefixes like ``10.1/…`` raised instead of
+        fetching (and missing)."""
+        url = self._selector_url(monkeypatch, "10.1/a")
+        assert url.endswith("/works/doi:10.1/a")
+
     def test_w_id_selector(self, monkeypatch: pytest.MonkeyPatch) -> None:
         url = self._selector_url(monkeypatch, "W4386410574")
         assert url.endswith("/works/W4386410574")

@@ -57,7 +57,11 @@ if TYPE_CHECKING:
 # (e.g. an agent doing `get(kind='paper', id='1705.02630')`). Order of
 # checking matters: more-specific patterns first.
 
-_DOI_RE = re.compile(r"^10\.\d{4,9}/.+", re.IGNORECASE)
+# Registrant length is unbounded in the DOI grammar — real (if rare)
+# prefixes run shorter than four digits, so the bound stays loose; the
+# ``10.<digits>/`` shape is already unambiguous against every other
+# scheme here.
+_DOI_RE = re.compile(r"^10\.\d{1,9}/.+", re.IGNORECASE)
 # arXiv post-2007 format: YYMM.NNNN[N][vN]
 _ARXIV_NEW_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 # arXiv pre-2007 format: archive/YYMMNNN, e.g. cond-mat/0211262, math-ph/9910009
