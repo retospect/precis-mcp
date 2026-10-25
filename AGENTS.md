@@ -35,6 +35,9 @@ run `scripts/docs-index` if absent). Runtime kinds and verbs:
   `wt-<tree name>::<qualname>` (read-only; grep if the alias doesn't
   resolve). Grep is truth for code you changed. Skill
   `precis-python-help`.
+  Never `rg -rn`/`rg -rln`: in ripgrep `-r` is `--replace <text>`, so
+  `-rn` rewrites every match to `n` and silently mangles output
+  (gr515812). Use `rg -n`.
 - **Rounds**: when a round is open (`scripts/round status`), mark it from
   your tree with `scripts/round in <sha>|none|eta <text>`. The mark is the
   status report; message the coordinator only for a question, blocker or

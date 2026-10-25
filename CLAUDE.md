@@ -21,8 +21,9 @@ Never edit or commit in the primary `main` checkout; integrate branches in
 a dedicated integration worktree. Mechanics: `docs/conventions/shipping.md`.
 
 - **`/land`** — `scripts/ship --remote`: GitHub's check.yml gate, then CAS
-  squash-merge to `main`. Harness only under the release train — any path
-  under `scripts/ship`, `scripts/test`, `scripts/lib/` or `.github/`; a
+  squash-merge to `main`. Harness only under the release train — the canonical
+  list is the `HARNESS_DIFF` case in `scripts/ship` (`scripts/ship`,
+  `scripts/test`, `scripts/lib/*`, `.github/*`); a
   non-harness diff is refused, name `--quick`. Run ship in background,
   output to a log.
 - **`/go`** — `scripts/ship --quick` to `main`, then `scripts/release`: cut
