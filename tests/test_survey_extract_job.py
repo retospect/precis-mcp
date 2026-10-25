@@ -15,9 +15,10 @@ from typing import Any
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
-from precis.store import Migrator, Store
+from precis.store import Migrator, Store, Tag
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.utils.llm.router import Rung, Transport
 from precis.workers.executors._yield import Done, Yield
@@ -31,6 +32,7 @@ from tests.extract_helpers import (
     make_taxon,
     survey_world,
 )
+from tests.workers._helpers import seed_chunk, seed_ref
 
 
 @pytest.fixture
@@ -238,7 +240,7 @@ class TestValidate:
 
     def test_spec_wires_the_hook(self) -> None:
         assert job.SPEC.validate is job.validate
-        assert job.ACCEPT_SPEC.validate is job.validate
+        assert job.ACCEPT_SPEC.validate is job.accept_validate
 
 
 class TestMeasureAcceptDispatch:
@@ -338,6 +340,840 @@ class TestMeasureAcceptDispatch:
         monkeypatch.setattr(job, "route", lambda req: llm_result("unreadable output"))
         done, _ = drive(self._accept_meta(world), store, job.ACCEPT_SPEC)
         assert "FAILED" in done.summary
+
+
+class TestRunLevelAcceptance:
+    """Corpus slice T AC5/AC6: the batch is the ``extraction_run`` token,
+    not the paper — ``measure_accept`` runs without ``paper`` (stratified
+    paper × measurand). The verdict records its coverage (``papers`` +
+    the ``max_id`` high-water mark); ``accepted_runs`` resolves the
+    latest counting verdict per covered paper and ``best_measure``'s
+    ``accepted_only`` gates a token row on its paper's pass, the mark,
+    and its anchor."""
+
+    def _row(
+        self,
+        world: dict,
+        *,
+        paper: int,
+        chunk: int,
+        lit: str,
+        text: str,
+        measurand: int,
+        unit: str,
+        token: str | None,
+    ) -> int:
+        start = text.index(lit)
+        return (
+            world["store"]
+            .insert_measure(
+                MeasureSpec(
+                    measurand_ref_id=measurand,
+                    literal=lit,
+                    subject_ref_id=paper,
+                    reported_unit=unit,
+                    tier="measured",
+                    source_attribution="own_work",
+                    anchor=MeasureAnchor(
+                        paper, chunk, "offsets", [chunk, start, start + len(lit)]
+                    ),
+                    meta={"extraction_run": token} if token else {},
+                ),
+                actor="test",
+            )
+            .output_id
+        )
+
+    def _accept_job(
+        self,
+        store: Store,
+        token: str,
+        accepted: bool,
+        finished: str,
+        *,
+        verdict: bool = True,
+        papers: list[int] | None = None,
+        max_id: int | None = None,
+        bar: float = 0.05,
+        z: float = 1.645,
+    ) -> int:
+        """A finished ``measure_accept`` job ref — ``verdict=False`` is a
+        job that finished before reaching a verdict (no meta.acceptance);
+        ``papers=None`` writes a pre-coverage verdict, which counts for
+        nothing."""
+        meta: dict[str, Any] = {
+            "job_type": "measure_accept",
+            "executor": "coordinator",
+            "params": {"extraction_run": token},
+            "finished_at": finished,
+        }
+        if verdict:
+            acc: dict[str, Any] = {
+                "accepted": accepted,
+                "run_token": token,
+                "errors": 0 if accepted else 4,
+                "sampled": 60,
+                "wilson_hi": 0.04 if accepted else 0.12,
+                "bar": bar,
+                "z": z,
+            }
+            if papers is not None:
+                acc["papers"] = papers
+            if max_id is not None:
+                acc["max_id"] = max_id
+            meta["acceptance"] = acc
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO refs (kind, set_by, title, meta) "
+                "VALUES ('job', 'system', 'ma', %s) RETURNING ref_id",
+                (Jsonb(meta),),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def test_six_paper_run_level_batch_is_accepted(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC5: a 60-row all-correct batch over 6 papers — under a
+        per-paper batch 10 rows could never pass the n=52 bar."""
+        store = world["store"]
+        row_ids: list[int] = []
+        for p in range(6):
+            paper = seed_ref(store, title=f"batch paper {p}", kind="paper")
+            spec = [(world["jtot"], f"9{p}{i}", "mA cm-2") for i in range(5)]
+            spec += [(world["ads"], f"-1.{p}{i}", "eV") for i in range(5)]
+            text = "; ".join(f"reading {lit} {u}" for _m, lit, u in spec)
+            chunk = seed_chunk(store, ref_id=paper, text=text)
+            for measurand, lit, unit in spec:
+                row_ids.append(
+                    self._row(
+                        world,
+                        paper=paper,
+                        chunk=chunk,
+                        lit=lit,
+                        text=text,
+                        measurand=measurand,
+                        unit=unit,
+                        token="trial-1",
+                    )
+                )
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"}), "frontier-x"
+            ),
+        )
+        done, events = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {"extraction_run": "trial-1", "reviews_per_slice": 50},
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert done.success
+        assert "ACCEPTED" in done.summary
+        acc = next(v for k, v in events if k == "meta")["acceptance"]
+        assert acc["accepted"] and acc["sampled"] == 60 and acc["errors"] == 0
+        assert len(acc["papers"]) == 6
+        assert acc["max_id"] == max(row_ids)
+
+    def test_run_level_needs_a_token_or_a_paper(self, world: dict) -> None:
+        done, _ = drive(
+            {"job_type": "measure_accept", "executor": "coordinator", "params": {}},
+            world["store"],
+            job.ACCEPT_SPEC,
+        )
+        assert not done.success
+        assert "extraction_run" in done.summary
+
+    def test_run_level_unknown_token_fails(self, world: dict) -> None:
+        done, _ = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {"extraction_run": "no-such-run"},
+            },
+            world["store"],
+            job.ACCEPT_SPEC,
+        )
+        assert not done.success
+        assert "no live output rows" in done.summary
+
+    def test_accepted_runs_maps_latest_finished_verdict(self, world: dict) -> None:
+        store = world["store"]
+        p = world["paper"]
+        self._accept_job(
+            store,
+            "tok-ok",
+            True,
+            "2026-10-24T10:00:00+00:00",
+            papers=[p],
+            max_id=10,
+        )
+        self._accept_job(
+            store,
+            "tok-bad",
+            False,
+            "2026-10-24T10:00:00+00:00",
+            papers=[p],
+            max_id=10,
+        )
+        # a later finished job's verdict supersedes the earlier one…
+        self._accept_job(
+            store,
+            "tok-bad",
+            True,
+            "2026-10-24T12:00:00+00:00",
+            papers=[p],
+            max_id=10,
+        )
+        # …but a job that finished before a verdict says nothing
+        self._accept_job(
+            store, "tok-ok", False, "2026-10-24T13:00:00+00:00", verdict=False
+        )
+        got = store.accepted_runs(["tok-ok", "tok-bad", "tok-none"])
+        assert got["tok-ok"][p]["accepted"] is True
+        assert got["tok-bad"][p]["accepted"] is True
+        assert got["tok-none"] == {}
+        assert store.accepted_runs("tok-ok")["tok-ok"][p]["accepted"] is True
+
+    def test_best_measure_accepted_only_skips_failed_token(self, world: dict) -> None:
+        """AC6 first half: a failed token's rows drop out of the ranking;
+        a row with no token (hand-written) is not an extraction row and
+        stays."""
+        store = world["store"]
+        quest = seed_ref(store, title="accept quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        text = CHUNK1
+        top = 0
+        for lit, token in (("1000", "bad-run"), ("95", "good-run"), ("-0.5", None)):
+            top = self._row(
+                world,
+                paper=world["paper"],
+                chunk=world["c1"],
+                lit=lit,
+                text=text,
+                measurand=world["ads"],
+                unit="eV",
+                token=token,
+            )
+        p = world["paper"]
+        self._accept_job(
+            store,
+            "good-run",
+            True,
+            "2026-10-24T10:00:00+00:00",
+            papers=[p],
+            max_id=top,
+        )
+        self._accept_job(
+            store,
+            "bad-run",
+            False,
+            "2026-10-24T10:00:00+00:00",
+            papers=[p],
+            max_id=top,
+        )
+
+        (group,) = store.best_measure(world["ads"], serving=quest, sense="max")
+        assert group["n"] == 3 and group["best"]["literal"] == "1000"
+
+        (group,) = store.best_measure(
+            world["ads"], serving=quest, sense="max", accepted_only=True
+        )
+        assert group["n"] == 2 and group["best"]["literal"] == "95"
+
+    def test_paper_scoped_verdict_covers_only_its_paper(self, world: dict) -> None:
+        """One paper's pass under a shared token is partial coverage — the
+        other papers' rows stay out."""
+        store = world["store"]
+        quest = seed_ref(store, title="cov quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        other = seed_ref(store, title="other survey", kind="paper")
+        store.add_link(src_ref_id=other, dst_ref_id=quest, relation="serves")
+        oc = seed_chunk(store, ref_id=other, text=CHUNK1)
+        a = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="shr",
+        )
+        b = self._row(
+            world,
+            paper=other,
+            chunk=oc,
+            lit="1000",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="shr",
+        )
+        self._accept_job(
+            store,
+            "shr",
+            True,
+            "2026-10-24T10:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=max(a, b),
+        )
+
+        (group,) = store.best_measure(
+            world["ads"], serving=quest, sense="max", accepted_only=True
+        )
+        assert group["n"] == 1 and group["best"]["id"] == a
+
+    def test_paper_scoped_passes_union_to_run_coverage(self, world: dict) -> None:
+        """Each paper-scoped pass contributes its paper: the union of the
+        per-paper verdicts is the run's coverage."""
+        store = world["store"]
+        quest = seed_ref(store, title="union quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        other = seed_ref(store, title="other survey", kind="paper")
+        store.add_link(src_ref_id=other, dst_ref_id=quest, relation="serves")
+        oc = seed_chunk(store, ref_id=other, text=CHUNK1)
+        a = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="u",
+        )
+        b = self._row(
+            world,
+            paper=other,
+            chunk=oc,
+            lit="1000",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="u",
+        )
+        self._accept_job(
+            store,
+            "u",
+            True,
+            "2026-10-24T10:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=a,
+        )
+        self._accept_job(
+            store,
+            "u",
+            True,
+            "2026-10-24T10:05:00+00:00",
+            papers=[other],
+            max_id=b,
+        )
+
+        (group,) = store.best_measure(
+            world["ads"], serving=quest, sense="max", accepted_only=True
+        )
+        assert group["n"] == 2 and group["best"]["id"] == b
+
+    def test_rows_minted_after_the_verdict_are_outside_coverage(
+        self, world: dict
+    ) -> None:
+        """The verdict's max_id is the high-water mark: a row stamped with
+        the token after the accept was never in the sampling frame."""
+        store = world["store"]
+        quest = seed_ref(store, title="hwm quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        seen = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="grow",
+        )
+        self._accept_job(
+            store,
+            "grow",
+            True,
+            "2026-10-24T10:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=seen,
+        )
+        late = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="1000",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="grow",
+        )
+        assert late > seen
+
+        (group,) = store.best_measure(world["ads"], serving=quest, sense="max")
+        assert group["n"] == 2 and group["best"]["id"] == late
+
+        (group,) = store.best_measure(
+            world["ads"], serving=quest, sense="max", accepted_only=True
+        )
+        assert group["n"] == 1 and group["best"]["id"] == seen
+
+    def test_anchorless_token_rows_fail_the_gate(self, world: dict) -> None:
+        """A token row with no anchor was never in the sampling frame
+        (_batch_rows inner-joins links) — the gate must not pass it."""
+        store = world["store"]
+        quest = seed_ref(store, title="anchor quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["ads"],
+                literal="95",
+                subject_ref_id=world["paper"],
+                reported_unit="eV",
+                tier="asserted",
+                source_attribution="own_work",
+                meta={"extraction_run": "t0"},
+            ),
+            actor="test",
+        )
+        anchored = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="1000",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="t0",
+        )
+        self._accept_job(
+            store,
+            "t0",
+            True,
+            "2026-10-24T10:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=anchored,
+        )
+
+        (ungated,) = store.best_measure(world["ads"], serving=quest, sense="max")
+        assert ungated["n"] == 2  # the anchorless row does reach the gate
+
+        (group,) = store.best_measure(
+            world["ads"], serving=quest, sense="max", accepted_only=True
+        )
+        assert group["n"] == 1 and group["best"]["id"] == anchored
+
+    def test_loose_bar_verdict_counts_for_nothing(self, world: dict) -> None:
+        """A re-accept under a looser bar neither grants nor overturns: the
+        default-bar fail stands."""
+        store = world["store"]
+        quest = seed_ref(store, title="bar quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        mid = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="bar-t",
+        )
+        self._accept_job(
+            store,
+            "bar-t",
+            False,
+            "2026-10-24T10:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=mid,
+            bar=0.05,
+        )
+        self._accept_job(
+            store,
+            "bar-t",
+            True,
+            "2026-10-24T12:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=mid,
+            bar=0.20,
+        )
+
+        assert (
+            store.best_measure(
+                world["ads"], serving=quest, sense="max", accepted_only=True
+            )
+            == []
+        )
+
+    def test_pre_coverage_verdicts_grant_nothing(self, world: dict) -> None:
+        """A verdict written before the coverage fields existed is not a
+        counting verdict — fail closed."""
+        store = world["store"]
+        quest = seed_ref(store, title="legacy quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="old",
+        )
+        self._accept_job(store, "old", True, "2026-10-24T10:00:00+00:00")
+
+        assert (
+            store.best_measure(
+                world["ads"], serving=quest, sense="max", accepted_only=True
+            )
+            == []
+        )
+
+    def _extract_ref(
+        self,
+        store: Store,
+        token: str | None,
+        *,
+        via_params: bool = False,
+        status: str | None = None,
+        finished_at: str | None = None,
+    ) -> int:
+        """A ``survey_extract`` job ref — the token rides
+        ``coordinator_state`` (or ``params.run_token`` with
+        ``via_params``); ``None`` leaves a job that has not checkpointed
+        yet (its run token will be the default ``survey-extract:<ref_id>``).
+        ``status`` adds that ``STATUS:`` tag; ``finished_at`` stamps the
+        legacy meta field."""
+        meta: dict[str, Any] = {
+            "job_type": "survey_extract",
+            "executor": "coordinator",
+            "params": {},
+        }
+        if token is not None:
+            if via_params:
+                meta["params"]["run_token"] = token
+            else:
+                meta["coordinator_state"] = {"run_token": token}
+        if finished_at is not None:
+            meta["finished_at"] = finished_at
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO refs (kind, set_by, title, meta) "
+                "VALUES ('job', 'system', 'se', %s) RETURNING ref_id",
+                (Jsonb(meta),),
+            ).fetchone()
+        assert row is not None
+        ref_id = int(row[0])
+        if status is not None:
+            store.add_tag(
+                ref_id,
+                Tag.parse_strict(f"STATUS:{status}"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        return ref_id
+
+    def test_later_counting_fail_revokes_the_pass(self, world: dict) -> None:
+        """The governing verdict is the latest *counting* one: a re-accept
+        at the default bar and z that fails revokes the earlier pass."""
+        store = world["store"]
+        quest = seed_ref(store, title="revoke quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        mid = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="rev",
+        )
+        self._accept_job(
+            store,
+            "rev",
+            True,
+            "2026-10-24T10:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=mid,
+        )
+        self._accept_job(
+            store,
+            "rev",
+            False,
+            "2026-10-24T12:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=mid,
+        )
+
+        assert store.accepted_runs("rev")["rev"][world["paper"]]["accepted"] is False
+        assert (
+            store.best_measure(
+                world["ads"], serving=quest, sense="max", accepted_only=True
+            )
+            == []
+        )
+
+    def test_rows_committed_after_the_draw_are_outside_coverage(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The frame is frozen at the draw: a row — even on a paper the
+        batch had not seen — stamped with the token mid-review never
+        lands inside coverage."""
+        store = world["store"]
+        ids = [
+            self._row(
+                world,
+                paper=world["paper"],
+                chunk=world["c1"],
+                lit=lit,
+                text=CHUNK1,
+                measurand=world["ads"],
+                unit="eV",
+                token="t-drift",
+            )
+            for lit in ("95", "1000", "-0.5")
+        ]
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"})
+            ),
+        )
+        meta = {
+            "job_type": "measure_accept",
+            "executor": "coordinator",
+            "params": {
+                "extraction_run": "t-drift",
+                "reviews_per_slice": 1,
+                "bar": 0.5,
+            },
+        }
+        events: list = []
+        dispatch = job.ACCEPT_SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(fake_ctx(store, dict(meta), events), job.ACCEPT_SPEC)
+        assert isinstance(out, Yield)
+        # mid-review, another paper commits a row under the same token
+        other = seed_ref(store, title="late survey", kind="paper")
+        oc = seed_chunk(store, ref_id=other, text=CHUNK1)
+        late = self._row(
+            world,
+            paper=other,
+            chunk=oc,
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="t-drift",
+        )
+        for _ in range(200):
+            out = dispatch(
+                fake_ctx(
+                    store,
+                    {**meta, "coordinator_state": out.state},
+                    events,
+                ),
+                job.ACCEPT_SPEC,
+            )
+            if isinstance(out, Done):
+                break
+            assert isinstance(out, Yield)
+        else:
+            raise AssertionError("dispatch never finished")
+
+        acc = next(v for k, v in events if k == "meta")["acceptance"]
+        assert acc["max_id"] == max(ids)
+        assert late > acc["max_id"]
+        assert acc["papers"] == [world["paper"]]
+        assert other not in acc["papers"]
+
+    def test_loose_z_verdict_counts_for_nothing(self, world: dict) -> None:
+        """A re-accept under a looser z neither grants nor overturns — the
+        default-z fail stands, same as the loose-bar case."""
+        store = world["store"]
+        quest = seed_ref(store, title="z quest", kind="quest")
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        mid = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="z-t",
+        )
+        self._accept_job(
+            store,
+            "z-t",
+            False,
+            "2026-10-24T10:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=mid,
+        )
+        self._accept_job(
+            store,
+            "z-t",
+            True,
+            "2026-10-24T12:00:00+00:00",
+            papers=[world["paper"]],
+            max_id=mid,
+            z=1.0,
+        )
+
+        assert (
+            store.best_measure(
+                world["ads"], serving=quest, sense="max", accepted_only=True
+            )
+            == []
+        )
+
+    def test_run_level_accept_refused_while_extract_jobs_live(
+        self, world: dict
+    ) -> None:
+        """Sequence order is not commit order: while an extract job still
+        carries the token, a row can hold an id under the frame's mark and
+        commit after the draw — the run-level accept is refused."""
+        store = world["store"]
+        live = self._extract_ref(store, "live-run")
+        queued = self._extract_ref(store, None)
+
+        with pytest.raises(BadInput):
+            job.accept_validate(store, {"extraction_run": "live-run"})
+        # a queued job that has not checkpointed is caught by its default
+        # token, survey-extract:<ref_id>
+        with pytest.raises(BadInput):
+            job.accept_validate(store, {"extraction_run": f"survey-extract:{queued}"})
+        # paper-scoped stays open — it covers only that paper's share
+        job.accept_validate(
+            store, {"extraction_run": "live-run", "paper": world["paper"]}
+        )
+
+        store.add_tag(
+            live,
+            Tag.parse_strict("STATUS:succeeded"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        job.accept_validate(store, {"extraction_run": "live-run"})
+
+    def test_extract_liveness_is_the_terminal_status_tag(self, world: dict) -> None:
+        """``finished_at`` does not decide liveness: a terminal STATUS tag
+        frees the token even without it (legacy jobs), and a re-queued
+        job blocks even with a stale ``finished_at``."""
+        store = world["store"]
+        legacy = self._extract_ref(store, "tok-legacy", status="failed")
+        # the legacy shape is a terminal STATUS with no meta stamp —
+        # add_tag stamps finished_at on the terminal write, so strip it
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'finished_at' WHERE ref_id = %s",
+                (legacy,),
+            )
+        job.accept_validate(store, {"extraction_run": "tok-legacy"})
+
+        self._extract_ref(
+            store,
+            "tok-req",
+            status="queued",
+            finished_at="2026-10-24T13:00:00+00:00",
+        )
+        with pytest.raises(BadInput):
+            job.accept_validate(store, {"extraction_run": "tok-req"})
+
+        # the params.run_token branch of the token match
+        self._extract_ref(store, "tok-par", via_params=True, status="running")
+        with pytest.raises(BadInput):
+            job.accept_validate(store, {"extraction_run": "tok-par"})
+
+    def test_run_level_dispatch_refuses_a_live_token(self, world: dict) -> None:
+        """validate fires at put; a job that sat queued gets the same
+        refusal again at dispatch, before the draw."""
+        store = world["store"]
+        self._extract_ref(store, "t-live")
+        self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["ads"],
+            unit="eV",
+            token="t-live",
+        )
+        done, _ = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {"extraction_run": "t-live"},
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert not done.success
+        assert "still live" in done.summary
+
+    def test_pre_frame_checkpoint_yields_a_non_counting_verdict(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A checkpoint written before frame_* existed resumes to a
+        verdict that omits coverage — accepted_runs reads that as
+        non-counting rather than scoping coverage to rows live now."""
+        store = world["store"]
+        ids = [
+            self._row(
+                world,
+                paper=world["paper"],
+                chunk=world["c1"],
+                lit=lit,
+                text=CHUNK1,
+                measurand=world["ads"],
+                unit="eV",
+                token="t-old",
+            )
+            for lit in ("95", "1000")
+        ]
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"})
+            ),
+        )
+        done, events = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {
+                    "extraction_run": "t-old",
+                    "reviews_per_slice": 10,
+                    "bar": 0.5,
+                },
+                "coordinator_state": {
+                    "sampled": ids,
+                    "verdicts": {},
+                    "idx": 0,
+                    "total_rows": len(ids),
+                    "run_token": "t-old",
+                },
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert done.success
+        acc = next(v for k, v in events if k == "meta")["acceptance"]
+        assert "papers" not in acc and "max_id" not in acc
 
 
 class TestCastorTrialPrep:

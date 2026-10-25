@@ -312,4 +312,25 @@ stratified sample of that batch and accepts or fails the batch by the Wilson
 rule (default bar 5%); the verdict lands in the accept job's
 `meta.acceptance`. Run `measure_accept` on its own (`params={'paper': <id>,
 'extraction_run': <token>, 'sample_n': N, 'bar': 0.05}`) to re-accept a batch
-without extracting again.
+without extracting again. `paper` may be omitted — the batch is then the
+whole run token across papers and the sample stratifies by paper × measurand
+(the intended shape: one token per trial or filler window, since a per-paper
+batch rarely reaches the n=52 the zero-error bar needs).
+
+The verdict is read, never written onto rows (a row's `meta` is frozen).
+Each `meta.acceptance` records its coverage, frozen at the draw:
+`papers` — the papers in the sampling frame — and `max_id`, the frame's
+row-id high-water mark (rows minted under the token after the draw were
+never in the frame). A run-level accept (`extraction_run` without
+`paper`) is refused while `survey_extract` jobs still carry the token —
+sequence order is not commit order, so a row can hold an id under the
+mark yet commit after the frame read.
+`Store.accepted_runs(tokens)` maps each token to the latest *counting*
+verdict per covered paper: a verdict counts only with both coverage
+fields, `bar` at or under the default 5%, and `z` at or above the
+default 1.645, so a loose-bar or loose-z re-accept can neither grant nor
+overturn and a pre-coverage verdict grants nothing.
+`best_measure(..., accepted_only=True)` keeps a token row only when its
+paper's governing verdict passed, the row id sits under the mark, and the
+row keeps its anchor — rows carrying no `extraction_run` token are not
+batch rows and stay.

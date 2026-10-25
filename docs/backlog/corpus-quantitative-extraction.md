@@ -122,6 +122,21 @@ paging through 200 lines. It is a small change, part of slice T1.
 
 ## Slice T — tables to structured measures and subject refs
 
+**Status 2026-10-24:** the acceptance substrate (findings 1–2) shipped —
+`measure_accept` takes `extraction_run` without `paper` (run-level batch,
+sample stratified paper × measurand) and each verdict records its coverage
+(the papers in the sampling frame + the frame's `max_id` high-water mark,
+frozen at the draw; a run-level accept is refused while extract jobs for
+the token are live).
+`Store.accepted_runs(tokens)` resolves the latest *counting* verdict per
+covered paper (only `bar` ≤ `DEFAULT_BAR` and `z` ≥ `DEFAULT_Z` counts;
+pre-coverage verdicts grant nothing), and `best_measure(accepted_only=True)`
+keeps a token row
+only under its paper's pass, at or under the mark, with its anchor.
+ACs 5–6 (accept half) are covered by `tests/test_survey_extract_job.py`
+`TestRunLevelAcceptance`. T1–T3, the sampler context widening (finding 3)
+and the promotion half of AC6 remain open.
+
 Prod holds 124,257 live `table` chunks on papers, 114,410 of them
 pipe-delimited (2026-10-21); median 4 lines, p90 11, p99 21. Today the
 reader emits one JSON result per cell under `max_tokens=2048`, so a

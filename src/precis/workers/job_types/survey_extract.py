@@ -36,7 +36,23 @@ parent's summary.
 
 ``measure_accept`` is also a standalone job_type — re-accepting a batch
 (more samples, a different bar, a new frontier model) never re-runs the
-extraction.
+extraction. The batch is the ``extraction_run`` token, not the paper
+(corpus finding 1: a per-paper batch almost never reaches n=52, the
+smallest zero-error sample that passes the bar). Given a token without
+``paper`` the batch spans every paper stamped with it and the sample
+stratifies by paper × measurand; ``paper`` only narrows the batch to
+that paper's rows. Each verdict records its coverage — the papers in
+the sampling frame plus ``max_id``, the frame's row-id high-water
+mark, both frozen at the draw — and store-side
+``accepted_runs`` resolves a token to the latest *counting* verdict per
+covered paper (only a ``bar`` at or under and a ``z`` at or above the
+defaults counts; a pre-coverage verdict grants nothing).
+``best_measure``'s
+``accepted_only`` keeps a token row only when its paper's governing
+verdict passed, the row id sits under the mark, and the row keeps its
+anchor. A run-level accept is refused while ``survey_extract`` jobs
+still carry the token — sequence order is not commit order, so a row
+can hold an id under the mark and commit after the frame read.
 
 Castor-trial knobs on the extract pass: ``params.measurands`` narrows
 the reader vocabulary to the named taxa plus their descendants (the
@@ -78,6 +94,7 @@ from precis.utils.llm.router import (
     route,
     tier_from_str,
 )
+from precis.workers.executors._common import TERMINAL
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
 
@@ -1051,14 +1068,14 @@ ACCEPT_PARAMS_SCHEMA: dict[str, Any] = {
         "model": {"type": ["string", "null"]},
         "reviews_per_slice": {"type": ["integer", "null"]},
     },
-    "required": ["paper"],
+    "required": [],
     "additionalProperties": True,
 }
 
 ACCEPT_DESCRIPTION = (
     "Sampling acceptance of one extraction batch — stratified sample of "
-    "the batch's output rows, frontier-model verdicts on the reviews "
-    "ledger, Wilson interval verdict on the batch."
+    "the batch's output rows (paper × measurand), frontier-model verdicts "
+    "on the reviews ledger, Wilson interval verdict on the batch."
 )
 
 
@@ -1069,21 +1086,27 @@ def _reviews_per_slice(params: dict[str, Any]) -> int:
     return env_int("PRECIS_MEASURE_ACCEPT_PER_SLICE", 6, lo=1, hi=50)
 
 
-def _batch_rows(store: Store, paper: int, run_token: str) -> list[dict[str, Any]]:
-    """The batch's live output rows (newest-first irrelevant — the sample
-    is drawn deterministically over the id set)."""
+def _batch_rows(
+    store: Store, paper: int | None, run_token: str
+) -> list[dict[str, Any]]:
+    """The batch's live output rows — the run token's rows on ``paper``, or
+    across papers when ``paper`` is None (the batch *is* the run token —
+    corpus finding 1). Newest-first is irrelevant: the sample is drawn
+    deterministically over the id set."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT m.id, m.measurand_ref_id, m.literal, m.reported_unit, "
             "       m.subject, m.span, m.anchor_scheme, m.run_key, "
-            "       m.conditions, l.src_chunk_id, t.meta->>'slug' "
+            "       m.conditions, l.src_chunk_id, t.meta->>'slug', "
+            "       m.subject_ref_id "
             "  FROM measures m "
             "  JOIN links l ON l.link_id = m.primary_link_id "
             "  LEFT JOIN refs t ON t.ref_id = m.measurand_ref_id "
-            " WHERE m.subject_ref_id = %s AND m.direction = 'output' "
+            " WHERE (%s::bigint IS NULL OR m.subject_ref_id = %s) "
+            "   AND m.direction = 'output' "
             "   AND m.superseded_by IS NULL "
             "   AND m.meta->>'extraction_run' = %s ORDER BY m.id",
-            (paper, run_token),
+            (paper, paper, run_token),
         ).fetchall()
     return [
         {
@@ -1098,6 +1121,7 @@ def _batch_rows(store: Store, paper: int, run_token: str) -> list[dict[str, Any]
             "conditions": r[8],
             "chunk_id": r[9],
             "measurand": r[10] or str(r[1]),
+            "subject_ref_id": int(r[11]),
         }
         for r in rows
     ]
@@ -1164,14 +1188,25 @@ _VERDICT_TO_REVIEW = {
 def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
     state = (ctx.meta or {}).get("coordinator_state") or {}
     params = (ctx.meta or {}).get("params") or {}
-    paper = _paper_id(ctx.store, params.get("paper"))
-    if paper is None:
+    raw_paper = params.get("paper")
+    paper = _paper_id(ctx.store, raw_paper)
+    if raw_paper is not None and paper is None:
         return Done(
             summary="measure_accept: params.paper does not resolve to a live ref",
             success=False,
         )
-    run_token = str(
-        params.get("extraction_run") or _latest_run_token(ctx.store, paper) or ""
+    raw_token = params.get("extraction_run")
+    token = raw_token.strip() if isinstance(raw_token, str) else ""
+    if paper is None and not token:
+        return Done(
+            summary=(
+                "measure_accept: needs params.extraction_run (the batch is "
+                "the run token) or a resolvable params.paper"
+            ),
+            success=False,
+        )
+    run_token = token or str(
+        _latest_run_token(ctx.store, paper) if paper is not None else ""
     )
     if not run_token:
         return Done(
@@ -1183,18 +1218,33 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         )
     rows = _batch_rows(ctx.store, paper, run_token)
     if not rows:
+        scope = f"on paper {paper}" if paper is not None else "on any paper"
         return Done(
             summary=(
-                f"measure_accept: no live output rows for run {run_token!r} "
-                f"on paper {paper}"
+                f"measure_accept: no live output rows for run {run_token!r} {scope}"
             ),
             success=False,
         )
 
     if "sampled" not in state:
+        # The put-time refusal is hours stale by dispatch — re-check that
+        # no extract job still carries the token before reading the frame.
+        if paper is None and _token_extract_live(ctx.store, run_token):
+            return Done(
+                summary=(
+                    f"measure_accept: survey_extract jobs for run "
+                    f"{run_token!r} are still live — re-run once they finish"
+                ),
+                success=False,
+            )
+        # Strata are paper × measurand (the 2026-10-14 ruling); for a
+        # paper-scoped batch the paper factor is constant, so this is the
+        # same draw the per-measurand strata gave before.
         strata: dict[str, list[int]] = {}
         for r in rows:
-            strata.setdefault(str(r["measurand"]), []).append(r["id"])
+            strata.setdefault(f"{r['subject_ref_id']}:{r['measurand']}", []).append(
+                r["id"]
+            )
         draw = _accept.stratified_sample(
             strata,
             _sample_n(params),
@@ -1207,6 +1257,12 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
             "idx": 0,
             "total_rows": len(rows),
             "run_token": run_token,
+            # The sampling frame, frozen at the draw: rows and papers
+            # committed during the review slices (a budget pause can
+            # last hours) were never sampleable and must not land
+            # inside coverage.
+            "frame_papers": sorted({r["subject_ref_id"] for r in rows}),
+            "frame_max_id": max(r["id"] for r in rows),
         }
     sampled = [int(m) for m in state.get("sampled") or []]
     verdicts = dict(state.get("verdicts") or {})
@@ -1249,7 +1305,7 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                     ),
                 ),
                 source="measure_accept",
-                ref_id=paper,
+                ref_id=measure["subject_ref_id"],
                 model=model_pin,
                 thinking=False,
                 temperature=0.0,
@@ -1304,6 +1360,21 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         z=float(z) if z else _accept.DEFAULT_Z,
         bar=float(bar) if bar else _accept.DEFAULT_BAR,
     )
+    # Coverage is the sampling frame frozen at the draw (state above):
+    # the papers in the frame plus the frame's row-id high-water mark —
+    # rows minted under the token afterwards were never sampleable, and
+    # accepted_runs grants by both. A checkpoint predating the frame
+    # fields omits coverage entirely — re-reading the rows live now would
+    # sweep in what was never sampleable, so the verdict carries no
+    # coverage and accepted_runs reads it as non-counting (fail closed).
+    papers = state.get("frame_papers")
+    max_id = state.get("frame_max_id")
+    covered = (
+        isinstance(papers, list)
+        and bool(papers)
+        and isinstance(max_id, int)
+        and not isinstance(max_id, bool)
+    )
     acc_meta = {
         "accepted": acc.accepted,
         "errors": acc.errors,
@@ -1316,6 +1387,9 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         "run_token": run_token,
         "total_rows": int(state.get("total_rows") or len(rows)),
     }
+    if covered:
+        acc_meta["papers"] = papers
+        acc_meta["max_id"] = max_id
     ctx.set_meta(acceptance=acc_meta)
     verdict = "ACCEPTED" if acc.accepted else "FAILED"
     bad = [
@@ -1323,8 +1397,14 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         for mid in sampled
         if verdicts.get(str(mid), {}).get("verdict") != "correct"
     ]
+    if paper is not None:
+        scope = f"pa{paper}"
+    elif covered and isinstance(papers, list):
+        scope = f"{len(papers)} papers"
+    else:
+        scope = "the run"
     lines = [
-        f"measure_accept: batch {verdict} for run {run_token} on pa{paper}: "
+        f"measure_accept: batch {verdict} for run {run_token} on {scope}: "
         f"{acc.errors} error(s) in {acc.sampled} sampled "
         f"(Wilson upper {acc.wilson_hi:.3f} vs bar {acc.bar})",
     ]
@@ -1345,14 +1425,69 @@ def _sample_n(params: dict[str, Any]) -> int:
     return _accept.DEFAULT_SAMPLE
 
 
+def _token_extract_live(store: Store, token: str) -> bool:
+    """A live ``survey_extract`` job carrying ``token`` — unretired and
+    without a terminal ``STATUS:`` tag (``_common.TERMINAL``; a job with
+    no STATUS tag at all is not provably done, so it counts as live).
+    The token rides the job's ``params.run_token``, its checkpointed
+    ``coordinator_state.run_token``, or is the default
+    ``survey-extract:<ref_id>`` the job derives on first dispatch."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM refs j "
+            " WHERE j.kind = 'job' AND j.retired_at IS NULL "
+            "   AND j.meta ->> 'job_type' = 'survey_extract' "
+            "   AND NOT EXISTS ("
+            "         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)"
+            "          WHERE rt.ref_id = j.ref_id "
+            "            AND t.namespace = 'STATUS' "
+            "            AND t.value = ANY(%s)) "
+            "   AND (j.meta -> 'params' ->> 'run_token' = %s "
+            "        OR j.meta -> 'coordinator_state' ->> 'run_token' = %s "
+            "        OR 'survey-extract:' || j.ref_id::text = %s) "
+            " LIMIT 1",
+            (list(TERMINAL), token, token, token),
+        ).fetchone()
+    return row is not None
+
+
+def accept_validate(store: Store, params: dict[str, Any]) -> None:
+    """``JobTypeSpec.validate`` for ``measure_accept`` — the batch is the
+    run token, so ``extraction_run`` alone suffices; ``paper`` only narrows
+    the batch to that paper's share and must resolve when given. A
+    run-level accept is refused while extract jobs still carry the token:
+    sequence order is not commit order, so a row can take an id under the
+    frame's high-water mark yet commit after the draw."""
+    raw_paper = params.get("paper")
+    raw_token = params.get("extraction_run")
+    has_token = isinstance(raw_token, str) and bool(raw_token.strip())
+    if raw_paper is not None and _paper_id(store, raw_paper) is None:
+        raise BadInput(
+            "measure_accept: params.paper does not resolve to a live ref",
+            next="pass a live paper ref_id, pa<id> handle or slug",
+        )
+    if _paper_id(store, raw_paper) is None and not has_token:
+        raise BadInput(
+            "measure_accept: needs params.extraction_run or params.paper",
+            next="pass extraction_run='<run token>' (a paper alone means "
+            "its latest extraction run)",
+        )
+    if raw_paper is None and has_token:
+        token = str(raw_token).strip()
+        if _token_extract_live(store, token):
+            raise BadInput(
+                f"measure_accept: survey_extract jobs for run {token!r} are still live",
+                next="wait for the extraction jobs to finish — or pass "
+                "paper=<id> for a paper whose extraction has finished",
+            )
+
+
 ACCEPT_SPEC = JobTypeSpec(
     name="measure_accept",
     params_schema=ACCEPT_PARAMS_SCHEMA,
     compatible_executors=COMPATIBLE_EXECUTORS,
     requires=REQUIRES,
     description=ACCEPT_DESCRIPTION,
-    # Same put-time paper check as survey_extract (measurands is not a
-    # measure_accept param — ``params.get`` yields None and skips it).
-    validate=validate,
+    validate=accept_validate,
     dispatch=_accept_dispatch,
 )

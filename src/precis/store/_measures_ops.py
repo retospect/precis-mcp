@@ -109,6 +109,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput, NotFound
+from precis.extract.accept import DEFAULT_BAR, DEFAULT_Z
 from precis.store._taxon_ops import _EDGES
 from precis.taxonomy.measure_units import (
     MINUS_FOLD,
@@ -1410,6 +1411,74 @@ class MeasuresMixin:
         _si_normalise(rows)
         return rows
 
+    def accepted_runs(
+        self, tokens: str | Sequence[str]
+    ) -> dict[str, dict[int, dict[str, Any]]]:
+        """The governing verdict per covered paper for each extraction-run
+        token: ``{token: {subject_ref_id: meta.acceptance}}`` — a token with
+        no counting verdict maps to an empty dict.
+
+        Read-only — the verdict stays on the job ref because a measure row's
+        ``meta`` is frozen, so acceptance can never be stamped on the rows it
+        covers (docs/backlog/corpus-quantitative-extraction.md, finding 2).
+
+        A finished ``measure_accept`` verdict records its coverage:
+        ``papers`` (the papers in the sampling frame) and ``max_id`` (the
+        frame's row-id high-water mark, frozen at the draw). For each
+        covered paper the latest *counting* verdict governs; a verdict
+        counts only when it carries both coverage fields, its ``bar`` is
+        at or under ``DEFAULT_BAR`` and its ``z`` at or above
+        ``DEFAULT_Z`` — a loose-bar or loose-z re-accept can neither
+        grant nor overturn — while a pre-coverage verdict grants nothing
+        (fail closed) and a job that finished before reaching a verdict
+        says nothing at all. Paper-scoped accept children each cover
+        their paper; a run-level verdict covers every paper in the
+        frame, so the run's coverage is the union — every paper needs a
+        passing verdict.
+        """
+        toks = [tokens] if isinstance(tokens, str) else [str(t) for t in tokens]
+        out: dict[str, dict[int, dict[str, Any]]] = {t: {} for t in toks}
+        if not toks:
+            return out
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT j.meta -> 'acceptance' ->> 'run_token' AS tok, "
+                "       j.meta -> 'acceptance' AS acc "
+                "  FROM refs j "
+                " WHERE j.kind = 'job' AND j.retired_at IS NULL "
+                "   AND j.meta ->> 'job_type' = 'measure_accept' "
+                "   AND j.meta ? 'finished_at' "
+                "   AND j.meta -> 'acceptance' ->> 'run_token' = ANY(%s) "
+                " ORDER BY j.meta ->> 'finished_at' DESC, j.ref_id DESC",
+                (toks,),
+            ).fetchall()
+        for tok, acc in rows:
+            if not isinstance(acc, dict):
+                continue
+            papers, max_id, bar, z = (
+                acc.get("papers"),
+                acc.get("max_id"),
+                acc.get("bar"),
+                acc.get("z"),
+            )
+            if (
+                not isinstance(papers, list)
+                or not isinstance(max_id, int)
+                or isinstance(max_id, bool)
+                or not isinstance(bar, (int, float))
+                or isinstance(bar, bool)
+                or bar > DEFAULT_BAR
+                or not isinstance(z, (int, float))
+                or isinstance(z, bool)
+                or z < DEFAULT_Z
+            ):
+                continue  # not a counting verdict: grants nothing, revokes nothing
+            cov = out.setdefault(str(tok), {})
+            for pid in papers:  # latest first — the first sighting governs
+                if isinstance(pid, int) and not isinstance(pid, bool):
+                    cov.setdefault(pid, dict(acc))
+        return out
+
     # -- ranking and search (Build B) --------------------------------------
 
     def _serving_subjects(self, serving: int) -> set[int]:
@@ -1528,6 +1597,7 @@ class MeasuresMixin:
         serving: int,
         sense: str | None = None,
         reference: str | None = None,
+        accepted_only: bool = False,
     ) -> list[dict[str, Any]]:
         """The best live value per comparable group over everything serving
         the quest ``serving``.
@@ -1557,7 +1627,16 @@ class MeasuresMixin:
         dict with
         its run's ``conditions`` and ``review_state`` (newest current verdict,
         else ``unreviewed``); ordered by measurand name, reference,
-        normalization, partition."""
+        normalization, partition.
+
+        ``accepted_only`` keeps a row stamped with an ``extraction_run``
+        token only when its paper's governing ``measure_accept`` verdict
+        (:meth:`accepted_runs`) passed, the row id sits at or under that
+        verdict's ``max_id`` high-water mark, and the row still carries its
+        anchor (``primary_link_id``) — the batch gate from corpus finding 2,
+        scoped so a batch row the sampler never saw stays out. A row with no
+        token (hand-written, e.g. the pilot's) is not an extraction row and
+        stays; its own reviews already govern it."""
         override = _sense(sense)
         subjects = self._serving_subjects(serving)
         where = [
@@ -1587,6 +1666,26 @@ class MeasuresMixin:
             for r in self._measure_rows(" AND ".join(where), params, with_review=True)
             if r["review_state"] != "rejected"
         ]
+        if accepted_only:
+            verdicts = self.accepted_runs(
+                [
+                    str(tok)
+                    for r in rows
+                    if (tok := (r.get("meta") or {}).get("extraction_run")) is not None
+                ]
+            )
+            rows = [
+                r
+                for r in rows
+                if (tok := (r.get("meta") or {}).get("extraction_run")) is None
+                or (
+                    r.get("primary_link_id") is not None
+                    and (v := (verdicts.get(str(tok)) or {}).get(r["subject_ref_id"]))
+                    is not None
+                    and bool(v.get("accepted"))
+                    and int(r["id"]) <= int(v["max_id"])
+                )
+            ]
         by_run = self._conditions_by_run([r["run_key"] for r in rows])
         required = self._required_conditions_map({r["measurand_ref_id"] for r in rows})
         for r in rows:
