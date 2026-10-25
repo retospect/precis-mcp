@@ -45,6 +45,24 @@ def _agent(kind: str) -> dict:
     }
 
 
+def _agent_call(**tool_input) -> dict:
+    return {"session_id": "s1", "tool_name": "Agent", "tool_input": tool_input}
+
+
+def test_bare_agent_gets_tier_nudge(monkeypatch, capsys) -> None:
+    out = _run(monkeypatch, capsys, _agent_call(prompt="x"))
+    assert "[tier]" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_named_agent_no_tier_nudge(monkeypatch, capsys) -> None:
+    assert _run(monkeypatch, capsys, _agent_call(subagent_type="navigator")) == ""
+
+
+def test_general_purpose_with_model_no_tier_nudge(monkeypatch, capsys) -> None:
+    payload = _agent_call(subagent_type="general-purpose", model="sonnet")
+    assert _run(monkeypatch, capsys, payload) == ""
+
+
 def test_fires_at_threshold_then_rearms(monkeypatch, capsys) -> None:
     n = _mod.THRESHOLD
     outs = [_run(monkeypatch, capsys, _edit()) for _ in range(2 * n)]

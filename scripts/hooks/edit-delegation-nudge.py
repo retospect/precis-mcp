@@ -17,6 +17,10 @@ further ``THRESHOLD`` edits.
   "Hook payload fields".
 - State: a small JSON file under the temp dir keyed by ``session_id``.
 
+Bare Agent/Task calls (missing or general-purpose subagent_type) also get
+an advisory tier nudge unless an explicit model was selected. Named agent
+definitions carry their own model; explicit choices are never overridden.
+
 Advisory only (``additionalContext``, exit 0, never blocks); any parse or
 state-IO problem stays silent. Wired in .claude/settings.json (PreToolUse).
 """
@@ -60,16 +64,40 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
-    if not isinstance(payload, dict) or payload.get("agent_id"):
-        return 0  # subagent call (or junk): only the main loop is counted
+    if not isinstance(payload, dict):
+        return 0
+    tool = payload.get("tool_name")
+    ti = payload.get("tool_input") or {}
+    if not isinstance(ti, dict):
+        return 0
+    if (
+        tool in _AGENT_TOOLS
+        and ti.get("subagent_type") in (None, "", "general-purpose")
+        and ti.get("model") in (None, "", "default", "inherit")
+    ):
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "additionalContext": (
+                            "[tier] Bare general-purpose agents inherit the caller's costly "
+                            "tier. For mechanical work choose a named agent definition "
+                            "(navigator, extract, tidy, gripe-filer), or select a model "
+                            "explicitly. Keep general-purpose when the task needs it."
+                        ),
+                    }
+                }
+            )
+        )
+    if payload.get("agent_id"):
+        return 0  # only the main loop's edits are counted
     session = payload.get("session_id") or os.environ.get("CLAUDE_SESSION_ID")
     if not session:
         return 0
-    tool = payload.get("tool_name")
     path = _state_path(str(session))
 
     if tool in _AGENT_TOOLS:
-        ti = payload.get("tool_input") or {}
         if ti.get("subagent_type") in _BUILD_AGENTS:
             _save(path, 0)
         return 0
