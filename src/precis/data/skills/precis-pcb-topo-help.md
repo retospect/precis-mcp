@@ -63,7 +63,7 @@ The dev loop runs the whole pipeline off a local `.epro2` on this
 worktree's dev DB — no prod, no MCP, no deploy:
 
 ```bash
-scripts/pcb-loop                          # ~/taz15.epro2 → /tmp/pcb-topo/loop/<n>/
+scripts/pcb-loop                          # board.epro2 → /tmp/pcb-topo/loop/<n>/
 scripts/pcb-loop --skip-route --seed 3 --board path/to/board.epro2 --out DIR
 scripts/pcb-loop --force --anneal-route   # topo pose committed despite the
                                           # placement-DRC gate, then legalized

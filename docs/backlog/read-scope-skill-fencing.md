@@ -61,7 +61,7 @@ dispatch verb deny, the DB role and `--read-only`.
 
 ## Design: scope source
 
-New `src/precis/runtime/scope.py::current_scope() -> Literal['read',
+New `runtime/scope.py` function `current_scope() -> Literal['read',
 'write']`, the one function every surface asks. Resolution order:
 
 1. **Per request, shared HTTP server (slice 4).** The token gate learns a
@@ -107,7 +107,7 @@ served body is byte-identical to the file before it was marked.
 
 ## Design: filtering and the read-only pointer
 
-One pure function, `src/precis/utils/skill_scope.py::render(text, scope)
+One pure function, `render(text, scope)` in `utils/skill_scope.py`
 -> (body, dropped_headings)`, does the strip and the drop. Every surface
 below calls it or the verb test `is_write_call(call: str) -> bool`
 (leading `put|edit|delete|tag|link(`; the gripe create above is `False`).

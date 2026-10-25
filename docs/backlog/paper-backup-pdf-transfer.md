@@ -19,7 +19,7 @@ through an MCP result.
 Before running drop_body/clear_abstract on 25 refs (gr513878), the
 executor needed an undo. No paper view dumps a ref's full state, so it
 wrote hand-built SQL through `scripts/prod-psql --ro` into
-`~/precis-exports/gr513878/pa<N>.json` (keys `ref`, `chunks`,
+`precis-exports/gr513878/pa<N>.json` under the operator's home (keys `ref`, `chunks`,
 `identifiers`, `links_in`, `links_out`). Nothing could load those files
 back. Three more gaps around PDFs:
 
@@ -140,7 +140,7 @@ the line `undo: save get(kind='paper', id='<h>', view='ops') first
 goes in the body.
 
 **Code.**
-- New: `src/precis/ingest/paper_dump.py::dump_ref(conn, ref_id, *,
+- New: `ingest/paper_dump.py` function `dump_ref(conn, ref_id, *,
   offset, size) -> dict` and `NOT_CARRIED`.
 - Edit: `handlers/paper.py` (add `"ops"` to `_SUPPORTED_VIEWS`, extend
   the view's args spec, add the render).

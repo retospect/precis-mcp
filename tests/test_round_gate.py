@@ -672,7 +672,8 @@ def test_cut_dry_run_checks_everything_and_changes_nothing(rig: Rig) -> None:
 
 def test_status_shows_the_open_release(rig: Rig) -> None:
     _open_round(rig)
-    assert "release" not in rig.round("status").stdout
+    # The good/r<N> hint also says "release"; only the open-release line matters.
+    assert "release release/r" not in rig.round("status").stdout
     assert rig.round("cut", **_fresh(rig, "c2")).returncode == 0
     out = rig.round("status")
     assert f"release release/r1 at {rig.shas['c2'][:9]}, cut " in out.stdout

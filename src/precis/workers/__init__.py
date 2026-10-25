@@ -48,7 +48,7 @@ hand-rolled ``claimed_by`` UPDATEs.
 This motivates scheduler leases, the separate GPU lane (``deploy/README.md``),
 and the heartbeat daemon thread: a wedged rotation must not trigger a false
 host-dark alert. The in-rotation heartbeat remains an idempotent non-lease
-backstop, the liveness signal leases are judged by. :mod:`.activity` stamps
+backstop. :mod:`.activity` stamps
 each ref pass so silent work is not mistaken for a dead worker; snapshots
 appear in ``host_heartbeat.meta.activity`` and Status **Now**.
 
@@ -117,11 +117,10 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
   docstring for the check/route/push pipeline. Ops: ``docs/runbooks/
   health-digest-ops.md``.
   Taproot edge silence is unhealthy only with chase-eligible work overdue
-  beyond6h: the check mirrors tracing/acquiring eligibility, canonical-hub
+  beyond 6h: the check mirrors tracing/acquiring eligibility, canonical-hub
   exclusion and waiting backoff. Eligibility age starts at queue entry,
   genuine advance or completed backoff expiry; failed/unknown activity
-  cannot erase that origin. Bursty output and empty queues must not
-  masquerade as stalled producers (gr346342).
+  cannot erase it (gr346342).
 * ``disk_check`` — SQL-free, every node: ``shutil.disk_usage`` over
   ``PRECIS_DISK_WATCH_PATHS``, warn/critical alerts.
 * ``structural`` (5h dedup)/``deep_review`` (144h) — opus reviewers via
@@ -166,10 +165,9 @@ Notable pass mechanics
   action is restart-once (``cap=1``), dark until
   ``PRECIS_RESTART_ONCE_ENABLED=1``. Pass-dead/pass-wedged and the heal
   arm exclude units freshly observed inactive AND disabled by Linux
-  heartbeats. Historical cycle logs and merged activity outlive role
-  changes; systemd state supplies process intent without rewriting
-  pass-level ``service_config``. Missing/stale observations and crashed
-  enabled units remain expected. Other platforms retain log expectations.
+  heartbeats (systemd state supplies process intent without rewriting
+  ``service_config``). Missing/stale observations and crashed enabled
+  units remain expected; other platforms keep log expectations.
 * ``doctor_tick`` (spine Layer 3, :mod:`.job_types.doctor_tick`) — own
   docstring for the judgment-layer design. ``health_digest``'s
   degraded/daily push swaps in the doctor's body when a report is fresh
@@ -209,11 +207,10 @@ extracts inline ``[N]`` usage into ``chunk_citations``, and ``bib_retag``
 is the manual, corpus-mutating remediation for mis-typed bibliography
 chunks — each module's docstring is the record. The chunk-tag cascade
 lives in ``classify.py``; the generic axis runner in ``axis_pass.py``; the
-paper→topic cascade in ``classify_topics.py``. Its current full-taxonomy
-marker covers every enabled worker subset: the admin CLI intentionally keeps
-full traversal, and a following worker pass must not churn the same papers.
-Subset-only markers stay sensitive to enabled-set changes so newly enabled
-topics backfill those papers.
+paper→topic cascade in ``classify_topics.py``. Its full-taxonomy marker
+covers every enabled worker subset (the admin CLI keeps full traversal, so a
+following worker pass must not churn the same papers); subset-only markers
+stay sensitive to enabled-set changes so new topics backfill.
 
 Agentic dispatch
 ----------------
