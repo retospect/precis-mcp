@@ -2286,6 +2286,7 @@ _PINNED_FINGERPRINTS: dict[tuple[str, str], str] = {
     ("meta", "alert_backlog_rot"): "alert_backlog_rot",
     ("infra", "tool_latency"): "tool_latency",
     ("infra", "tool_latency_regressed"): "tool_latency_regressed",
+    ("deploy", "post_migration_steps"): "post_migration_steps",
     # The graph gardener left the lease cadences for a recurring todo;
     # its watchdog keeps the id the derived lease check used to emit.
     ("cadence", "graph_garden"): "watchdog:cadence/graph_garden",

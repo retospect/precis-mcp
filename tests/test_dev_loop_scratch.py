@@ -190,7 +190,7 @@ def test_out_run_writes_the_importer_layout(tmp_path: Path) -> None:
                 }
             ],
         )
-        o.block("plate", "plate box:w0.04d0.02h0.01", desc="plate part")
+        o.block("plate", "plate add box:w40mmd20mmh10mm", desc="plate part")
         o.instance("pin", template="plate", parent="p", pose="[0 0 10] nm")
         o.connect("p.tail", "pin.top")
 

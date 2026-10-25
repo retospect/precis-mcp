@@ -248,6 +248,16 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         service="health_digest",
         severity="info",
     ),
+    _watchdog(
+        "deploy",
+        "post_migration_steps",
+        "A migration's out-of-transaction follow-up (VALIDATE CONSTRAINT, "
+        "CONCURRENTLY index, backfill) has not run — schema works, degraded.",
+        budget="per probe",
+        service="health_digest",
+        triage="`precis post-migration-check` lists the pending steps and "
+        "the command that clears each.",
+    ),
     # ── health_digest: derived checks ──────────────────────────────────
     _watchdog(
         "cadence",
