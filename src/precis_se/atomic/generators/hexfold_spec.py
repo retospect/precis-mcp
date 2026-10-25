@@ -173,8 +173,17 @@ def _canonical_frame(
     assert best is not None
     _volume, e3, radius, height, along = best
     # e1: the world axis least aligned with e3, made orthonormal; e2 closes
-    # a right-handed basis. Rows of ``rot`` are the new axes.
-    world = np.eye(3)[int(np.argmin(np.abs(e3)))]
+    # a right-handed basis. Rows of ``rot`` are the new axes. The argmin is
+    # banded (gr515872): a cross-section symmetric about e3 leaves the two
+    # transverse |e3| components equal to ~1e-16 of platform libm noise,
+    # and a strict argmin picks between them on ULP — rotating this frame
+    # ~90 degrees and re-placing every =CH2 cap that _h_directions builds
+    # off a fixed probe axis (se/rail/a's golden flipped on x86 CI).
+    # Components within _FRAME_TIE of the minimum resolve to the lowest
+    # index, identically on every platform; genuinely distinct components
+    # in the golden set are >= 5e-5 away.
+    ax = np.abs(e3)
+    world = np.eye(3)[int(np.flatnonzero(ax <= ax.min() + _FRAME_TIE)[0])]
     e1 = world - float(world @ e3) * e3
     e1 /= np.linalg.norm(e1)
     e2 = np.cross(e3, e1)
@@ -437,11 +446,45 @@ _RING_CLOSE_REACH_SIGMA = 2.0
 #: on the fence always counts as *under*: a cap is dropped, a pair is
 #: collected, a borderline-reachable pair is closed, a borderline
 #: survivor refuses. The order keys that consume those distances are
-#: quantised to the same grid, so ties resolve by ordinal. 1e-5 A sits
+#: gap-clustered under ``_ORDER_TIE_A``, so ties resolve by ordinal.
+#: 1e-5 A sits
 #: far above the ~1e-6 A platform spread of the relaxed coords (the
 #: goldens canonicalise them to a 1e-6 grid) and is chemically
 #: invisible next to the 1.0-2.8 A bars.
 _CAP_EPS_A = 1e-5
+
+#: Tie band for near-equal distance orderings (gr515872): sort keys
+#: whose consecutive gaps stay under this many angstrom cluster together
+#: and order by ordinal, identically on every platform. Measured gaps in
+#: the golden set are <= 2.6e-4 A (a genuine near-tie) or >= 1.0e-3 A, so
+#: 5e-4 sits between them; a rounding grid can flip a key that lands on a
+#: cell boundary (se/rail/b sat 7.4e-8 from one).
+_ORDER_TIE_A = 5e-4
+
+
+def _gap_clustered_order(keys: list[float], band: float) -> list[int]:
+    """Indices into ``keys`` ordered by key value: sorted consecutive
+    gaps under ``band`` share a cluster that orders by index. A value a
+    platform's libm nudges across a rounding boundary cannot reorder the
+    result (gr515872)."""
+    order = sorted(range(len(keys)), key=lambda k: (keys[k], k))
+    out: list[int] = []
+    cluster: list[int] = []
+    prev: float | None = None
+    for k in order:
+        if prev is not None and keys[k] - prev > band:
+            out.extend(sorted(cluster))
+            cluster = []
+        cluster.append(k)
+        prev = keys[k]
+    out.extend(sorted(cluster))
+    return out
+
+
+#: ``_canonical_frame``'s world-axis pick: |e3| components within this
+#: much of the minimum are noise-ties and resolve to the lowest index
+#: (gr515872); real separations in the golden set are >= 5e-5.
+_FRAME_TIE = 1e-6
 
 #: Each resolution pass adds at least one ring-closure bond or removes at
 #: least one rim atom, so the loop converges or exhausts this bound and
@@ -534,9 +577,11 @@ def _deepest_cap_host(
         ]
         return min(d, default=math.inf)
 
-    # depth quantised to the _CAP_EPS_A grid (gr512667): borderline ties
-    # resolve by ordinal, identically on every platform
-    return min(cap_hosts, key=lambda h: (round(depth(h) / _CAP_EPS_A), h))
+    # near-equal depths cluster and resolve by ordinal (gr515872):
+    # gap-clustered ties are identical on every platform
+    hosts_sorted = sorted(cap_hosts)
+    order = _gap_clustered_order([depth(h) for h in hosts_sorted], _ORDER_TIE_A)
+    return hosts_sorted[order[0]]
 
 
 def _cap_clash_pairs(
@@ -836,19 +881,23 @@ def _resolve_edge_caps(
         new_bonds: list[tuple[int, int]] = []
         small: list[tuple[int, int, set[int]]] = []
         to_trim: set[int] = set(stubs)
+        pdist = {
+            pair: float(np.linalg.norm(xyz[pair[0]] - xyz[pair[1]])) for pair in pairs
+        }
         # closest pair first, so a three-rim convergence knits its
         # shortest gaps and the small-ring guard refuses the third side
-        for (a, b), (_d, cap_hosts) in sorted(
-            pairs.items(),
-            key=lambda kv: (
-                # quantised (gr512667): pairs within _CAP_EPS_A order by
-                # ordinal, identically on every platform
-                round(
-                    float(np.linalg.norm(xyz[kv[0][0]] - xyz[kv[0][1]])) / _CAP_EPS_A
-                ),
-                kv[0],
-            ),
-        ):
+        pair_list = sorted(pairs)
+        ordered = [
+            (p, pairs[p])
+            for p in (
+                pair_list[k]
+                for k in _gap_clustered_order(
+                    [pdist[p] for p in pair_list], _ORDER_TIE_A
+                )
+            )
+        ]
+        for (a, b), (_d, cap_hosts) in ordered:
+            pair_d = pdist[(a, b)]
             if a in to_trim or b in to_trim:
                 continue  # going this pass; the next pass re-judges the rest
             if (
@@ -857,7 +906,7 @@ def _resolve_edge_caps(
                 and work.atoms[b].element in lat_el
                 and degree[a] < 4
                 and degree[b] < 4
-                and float(np.linalg.norm(xyz[a] - xyz[b])) <= reach + _CAP_EPS_A
+                and pair_d <= reach + _CAP_EPS_A
             ):
                 if not _within_hops(adj, a, b, _SMALL_RING_HOPS):
                     new_bonds.append((a, b))

@@ -38,9 +38,7 @@ Regenerate **only inside the aarch64 Linux dev container** — i.e. via
 ``scripts/test``, never on the dev Mac's host Python. The goldens were
 written there; macOS arm64's libm differs from Linux's at the same
 1-2 ulp, which can flip a value that sits on a 1e-6 rounding boundary
-and bake digests that red the gate everywhere else. One block is
-beyond even the grid's reach: ``se/rail/a`` drifts on x86 CI runners
-and is checked on aarch64 only until the drift is fixed (gr515872).
+and bake digests that red the gate everywhere else.
 """
 
 from __future__ import annotations
@@ -48,7 +46,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -56,6 +53,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+import precis_se.atomic.generators.rail120 as rail_mod
 from hexfold.build import Net
 from hexfold.channel import channel_junction
 from hexfold.fin import fin_tube
@@ -521,19 +519,48 @@ def test_builder_sha_goldens() -> None:
     _check(entries)
 
 
-#: Blocks whose sha moves on some x86 CI runners but not on aarch64, where the
-#: goldens are generated (gr515872). Checked on aarch64 only until fixed.
-_AARCH64_ONLY = frozenset({"se/rail/a"})
-
-
 def test_se_block_sha_goldens() -> None:
     """Every SE generator's emitted block is byte-identical."""
     entries = _block_entries()
-    if platform.machine().lower() not in {"aarch64", "arm64"}:
-        entries = {k: v for k, v in entries.items() if k not in _AARCH64_ONLY}
     if _UPDATE:
         gold = _read() if _GOLDEN.is_file() else {"entries": {}}
         gold["entries"].update(entries)
         _write(gold["entries"])
         pytest.skip("goldens regenerated")
     _check(entries)
+
+
+def test_rail_a_robust_to_ulp_perturbation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr515872 regression: a ~1e-9 Å perturbation of the relaxed
+    coordinates must not change the ``se/rail/a`` structure.
+
+    x86 libm noise (~1e-16 on the transverse |e3| components of a
+    symmetric cross-section) flipped the canonical frame's world-axis
+    pick and re-placed every =CH2 cap at a different azimuth — the
+    structure changed and the golden moved. The banded frame pick
+    (``_FRAME_TIE``) and gap-clustered orderings (``_ORDER_TIE_A``) must
+    keep the build deterministic under perturbations far larger than
+    that.
+    """
+    params = _BLOCK_CASES["se/rail/a"][1]
+    base = build_rail120(params)
+    rng = np.random.default_rng(20261025)
+    real_relax = rail_mod.stick_relax_pinned
+
+    def noisy_relax(*args: Any, **kwargs: Any) -> Any:
+        raw, force = real_relax(*args, **kwargs)
+        arr = np.asarray(raw, dtype=float)
+        return arr + 1e-9 * rng.standard_normal(arr.shape), force
+
+    monkeypatch.setattr(rail_mod, "stick_relax_pinned", noisy_relax)
+    perturbed = build_rail120(params)
+
+    assert perturbed.elements == base.elements
+    assert sorted(perturbed.bonds) == sorted(base.bonds)
+    assert perturbed.topology["terminated"] == base.topology["terminated"]
+    # coords move by the noise itself plus the PCA-axis rotation it
+    # induces (~1e-8 Å here); a ~90° frame flip moves them by O(1 Å)
+    assert (
+        float(np.abs(np.asarray(perturbed.coords) - np.asarray(base.coords)).max())
+        < 1e-5
+    )

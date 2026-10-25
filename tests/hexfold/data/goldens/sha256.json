@@ -280,13 +280,13 @@
       "atoms": 1422,
       "call": "build_prism120(prism-k3-120-z rows=6 periods=8 strip_rows=4 '++++++')",
       "sha256": {
-        "bonds": "e2ba3c3bd4b2792d4f9d861767960062b8310c4295984c7c56ae3a90010c13bf",
-        "coords": "d94186fe7c7588d2c068ba7e084171f4a9a9e8f1675b359e613b0a0dd0af6967",
-        "elements": "b9a8e499836d01e8bcb1e634d9fc1090dd2046b1ba48e1aefd552b5cfb906dc4",
-        "junctions": "232e6761e176c9c5db2e463d3729c9b5d9f2acd5b3f397bf6ee9015db47f8cf3",
-        "seam_atoms": "40f944a812ed0613ee12dc5d46427b80b0a16def96cd38c79bc8891f306bbf0f",
-        "sites": "61e38cbf45e2c0eeeedc7953ee592ee5c7cf6c31c0cbb6689bb01bbfbf5964d5",
-        "terminated": "295781b7ed7f715bfe9789373b5741b04ba2a6f36d7dd863c1b5505f22f9154a"
+        "bonds": "10ecbd4ef945e99b0905f7c85505793ed5d84724c4d9257991346fd392b5bf5d",
+        "coords": "5fda0b8fd6b433630d9fc2c9ff089d04b23031d7b49cf3f313d1fadb78ee236c",
+        "elements": "677569747d6e43af77261667e5b2d9ccf9a7b6727591830914a69cc1e8622527",
+        "junctions": "915fe6e77679e6a17ef2e769af77bf078225aeb4a48fcd8197a6dd09fb3c0f26",
+        "seam_atoms": "24aff0a6495b51c86e541bc21133a6d22f5c1333134b757e07d6abf5d1bc9bea",
+        "sites": "109ccab75aca95d5e45ee5dae46434a4432c69623ae31c416057eb5c747a00f8",
+        "terminated": "014e7fa82d07650cb8960962f55baa7b50f853609c8fcdb14d74cbcc9cc8ab21"
       }
     },
     "se/prism/b": {
@@ -345,13 +345,13 @@
       }
     },
     "se/sp3/k3z/a": {
-      "atoms": 191,
+      "atoms": 189,
       "call": "build_sp3_seam(k3-sp3-z sheet=[4,4])",
       "sha256": {
-        "bonds": "8cdfbabadde920dff326b60f1ced805f5bf169019e2397609e2d1754194b6c42",
-        "coords": "11d8b2e5337486947c2c5e9773103ea685bc65313ca87ddb06b28fa2ee7c91e9",
-        "elements": "1005cad9fa91d9808cb22d5db399d4c804e0c33784471c3637d18d76bd4afb80",
-        "terminated": "b20643a72b940bf2d926f8ce25d77c4ca2ef20972777df25b48cc966d73cdc04"
+        "bonds": "daadfc83a9f79d5d29b767cb00dfff52bc2611f36d7923b015756b2a8ad991d0",
+        "coords": "7b56f8afe7625d9a5ee1f1a1299de451f0f0312015039530ebbfccdc97b5d802",
+        "elements": "cfb8f46ed9acdad78cc4e9b464ab9714af22c02e1712c5fa016b36a47b1c8750",
+        "terminated": "84d7ee126c788517554427c90bc9499da056d34a5ba50ec8e09fd9710cb14fc3"
       }
     },
     "se/sp3/k3z/b": {
