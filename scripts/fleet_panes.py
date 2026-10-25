@@ -181,6 +181,18 @@ def unsent_input(pane_with_escapes: str) -> str:
     return ""
 
 
+#: Mid-compaction banner. Devin shows "Compacting conversation history
+#: with N messages and M tokens", Claude "Compacting conversation". An
+#: Enter sent while it is up is swallowed — the text sits in the input
+#: box unsent (gr515698) — so send helpers wait it out before typing.
+COMPACT_RE = re.compile(r"\bCompacting\b")
+
+
+def compacting(pane: str) -> bool:
+    """True while the pane tail shows a compaction in progress."""
+    return any(COMPACT_RE.search(ln) for ln in nonempty_tail(pane, 15))
+
+
 # --- chrome ------------------------------------------------------------------
 # Lines dropped by `read` and ignored for "last meaningful line". Agent text
 # (⏺/• blocks, diffs, the spinner) stays.

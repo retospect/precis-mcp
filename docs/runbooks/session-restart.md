@@ -9,9 +9,23 @@ session has to be restarted for another reason.
 ## Diagnose
 
 ```bash
-claude mcp get precis        # entry present? Status line says Connected?
+claude mcp list                # is there a precis line? "- ✔ Connected"?
 scripts/mcp-entry-preflight --dry-run   # what the heal would do
 ```
+
+`claude mcp get precis` answers the same question but prints the entry's
+`Authorization: Bearer …` header in full on stdout (gr515184) — the token
+lands in scrollback, transcripts and logs. Never run it where output is
+captured; if the entry detail is genuinely needed, read the
+`mcpServers.precis` block of `~/.claude.json` or filter the header out
+(`claude mcp get precis | grep -vi authorization`). Same for
+`precis-mcp-http-ensure.sh --config`, whose output IS the token-bearing
+client entry — feed it to `claude mcp add-json` and never echo it.
+
+The Bearer token currently sits inline in `~/.claude.json` (and in
+`~/.config/devin/mcp_config.json`, mode 600). The planned end-state is a
+mode-600 token file (`~/.config/precis/token`) with rotation, deferred to
+the next infrastructure/ansible run (Reto 2026-10-25, gr515184).
 
 The server being up is NOT evidence the entry exists: the server is a
 shared streamable-http daemon (`deploy/mcp-http/precis-mcp-http-ensure.sh`),

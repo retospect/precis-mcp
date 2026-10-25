@@ -18,6 +18,7 @@ wired in `.claude/settings.json` under `hooks:`. Deny = exit 2 with stderr
 | `read-dedup.py` | `Read` (Bash payloads reach it via `bash-reflex-nudge.py` delegation) | Refuses to re-serve an unchanged file/range; dedups `cat`/`sed`/`head`/`tail`/`git show` spellings on one ledger | `tool_name`, `tool_input.file_path`/`limit`/`command`, `cwd`, `session_id`, `tool_use_id`, `agent_id`; `source` under `--session-start` |
 | `guard-commit-on-main.py` | `Bash` | Denies `git commit` when the target branch is `main`/`master` | `tool_input.command`, `cwd` |
 | `guard-git-stash.py` | `Bash` | Denies bare `git stash`/`stash pop` (the stash stack is shared across trees); tagged `push -m` passes | `tool_input.command` |
+| `guard-rebase-dirty.py` | `Bash` | Denies `git rebase` on a dirty tree with no autostash in play — the retry-with-`--autostash` path silently rewrites every recorded sha | `tool_input.command`, `cwd` |
 | `guard-bare-python-tools.py` | `Bash` | Refuses bare `pytest`/`pip`/`mypy` — wired paths are `scripts/test`, `uv run`, `uv add` | `tool_input.command` |
 | `guard-prod-psql.py` | `Bash` | Classifies `scripts/prod-psql` SQL: targeted writes pass, destructive/untargeted ask | `tool_name`, `tool_input.command` |
 | `guard-checkout-in-primary.py` | `Bash` | Denies `git checkout`/`switch` of a non-main branch inside the primary checkout | `tool_input.command`, `cwd` |
@@ -26,7 +27,8 @@ wired in `.claude/settings.json` under `hooks:`. Deny = exit 2 with stderr
 | `bash-reflex-nudge.py` | `Bash` | Nudges shell-run symbol greps (`rg`/`grep`) toward `scripts/coderef` and inline cluster ops toward delegation; delegates every payload to `read-dedup.py`'s `hook_output` | `tool_name`, `tool_input.command`, `cwd` |
 | `coderef-nudge.py` | `Grep` | Nudges a bare-symbol grep toward `scripts/coderef callers|deps` (non-blocking) | `tool_input.pattern`/`glob`/`path`/`type`, `cwd` |
 | `guard-prod-write.py` | `mcp__precis__put\|edit\|delete\|tag` | Warns (allows) that a session-MCP write mutates PROD | `tool_name`, `tool_input.kind` |
-| `guard-autostash-staged.py` | **present, not wired** — its docstring targets matcher `Bash`; the settings.json wiring never landed | Denies autostash git verbs (`rebase --autostash`, `pull`, `merge`) while the index is non-empty — the stash pop returns changes UNSTAGED | `tool_input.command`, `cwd` |
+| `guard-autostash-staged.py` | `Bash` | Denies autostash git verbs (`rebase --autostash`, `pull`, `merge`) while the index is non-empty — the stash pop returns changes UNSTAGED | `tool_input.command`, `cwd` |
+| `guard-heredoc.py` | **present, not wired** — the `.claude/settings.json` `Bash` hunk is a pending proposal (gr514124); once wired, `scripts/gen-devin-hooks render` carries it into `.devin/hooks.v1.json` (`exec`) | Denies a `<<` heredoc in a shell command — the one-plain-command rule's repo-side refuse; `<<<` herestrings pass. `ALLOW_HEREDOC=1` escape | `tool_input.command`/`cmd` |
 
 ## PostToolUse
 
@@ -103,6 +105,17 @@ sync with it. To inspect `bin/devin` itself on a Mac without the Xcode
 CLT — `strings`/`file` aren't installed there — `grep -a <pattern>
 bin/devin` works (gr515492).
 
+**The settings-import WARN has no hooks-only off switch (gr515218).**
+Every Devin session start warns that `.claude/settings.json` failed to
+parse — expected, and permanent while the file carries a Claude-only
+event (`SubagentStart`). The only toggle is `read_config_from.claude`
+(`~/.config/devin/config.json` or project `.devin/config.json`), which is
+all-or-nothing: `false` silences the WARN but also drops `CLAUDE.md`
+rules, `.claude/skills`, `.claude/commands` and the MCP import — not worth
+it, since project hooks load from `.devin/hooks.v1.json` regardless
+(verified devin 3000.11.205). Treat the WARN as cosmetic; a per-section
+import switch is an upstream ask, not a repo config.
+
 ## What you cannot verify from the repo
 
 The harness's built-in **worktree-isolation guard** (the one that refuses
@@ -126,3 +139,20 @@ rules, ordering, or refusal text — lives in this repo, so no amount of
   PreToolUse payloads carry `tool_name: "exec"` and
   `tool_input.workdir` — see `rtk-hook.sh`'s header) — only the built-in
   guard is absent.
+
+## Which rules are hook-enforced in which runtime (gr514124)
+
+The footer's "one plain command per Bash call" rules are *documented*
+for every runtime but *enforced* unevenly — a builder that assumes the
+guard caught a shape only some harnesses refuse is how gr514124/514330
+happened:
+
+- **Claude (`claude -w`)** — the built-in worktree-isolation guard
+  refuses compound shapes (`<<` heredocs, `&&`/`;`/`||` chains, loops,
+  `$(…)`, `cd`) AND the `scripts/hooks/` guards run. Both layers bind.
+- **Devin** — no built-in guard; only the repo hooks mirrored into
+  `.devin/hooks.v1.json` run. Heredocs, chains and loops therefore *run*
+  there even though the documented rule still bans them —
+  `guard-heredoc.py` (above) closes the heredoc leg once wired.
+- **Codex** — `codex-efficiency.py` is a rewriter/counter, not a deny
+  guard; nothing hook-enforces the command-shape rules there at all.

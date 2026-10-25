@@ -12,7 +12,9 @@ The thread-session fleet (one window per roadmap thread) is
     fleet-wave peek [WIN...] [-n N]     last N non-empty lines per window
     fleet-wave ctx                      context % per Claude pane
     fleet-wave prompts                  panes at a dialog: window, type, command
-    fleet-wave send-line WIN TEXT       type TEXT + Enter; refuses unsent input
+    fleet-wave send-line WIN TEXT       type TEXT + Enter; refuses unsent input,
+                                        waits out a compacting pane, retries a
+                                        swallowed Enter (gr515698)
     fleet-wave watch-done NAME...       emit when <tree>/.claude/purpose finishes
     fleet-wave stuck-watch [NAME...]    emit on prompt / quiet / done / gone
     fleet-wave close NAME...            kill window, remove tree, drop branch;
@@ -101,7 +103,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # for the small fleet-wave-only helpers built on them.
 from fleet_panes import (
     ANSI_RE,
+    BUSY_RE,
     LAUNCH_PERMISSION_MODE,
+    compacting,
     ctx_percent,
     dialog_command,
     dialog_type,
@@ -393,15 +397,38 @@ def cmd_prompts(f: Fleet, _a: argparse.Namespace) -> int:
     return 0
 
 
+def _wait_out_compaction(
+    f: Fleet, win: str, wait: float, poll: float
+) -> tuple[str | None, bool]:
+    """Latest pane capture once the pane stops compacting.
+
+    ``(None, False)`` when the pane cannot be captured; ``(pane, True)``
+    when ``wait`` expired with the compaction banner still up."""
+    deadline = time.monotonic() + wait
+    while True:
+        pane = f.capture(win, escapes=True)
+        if pane is None or not compacting(ANSI_RE.sub("", pane)):
+            return pane, False
+        if time.monotonic() >= deadline:
+            return pane, True
+        time.sleep(poll)
+
+
 def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
     win = f.resolve(a.win)
     if not win:
         print(f"fleet-wave: no window {a.win}", file=sys.stderr)
         return 2
-    pane = f.capture(win, escapes=True)
+    # An Enter sent while the pane is compacting is swallowed — the text
+    # lands in the input box but never submits (gr515698: a brief sat
+    # idle ~30 min that way). Wait the compaction out before typing.
+    pane, still = _wait_out_compaction(f, win, a.wait, a.poll)
     if pane is None:
         print(f"fleet-wave: cannot read {win}", file=sys.stderr)
         return 2
+    if still:
+        print(f"REFUSED {win}: still compacting after {a.wait:g}s")
+        return 3
     plain = ANSI_RE.sub("", pane)
     if dialog_type(plain):
         print(f"REFUSED {win}: a dialog is open ({dialog_command(plain)})")
@@ -420,8 +447,30 @@ def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
     # An Enter arriving with the text is swallowed by the paste: pause first.
     time.sleep(a.pause)
     f.tmux("send-keys", "-t", t, "Enter")
-    print(f"sent: {win}")
-    return 0
+    # A compaction can also start between the check above and the Enter —
+    # verify the box cleared and retry Enter a bounded number of times. A
+    # busy pane or an open dialog means the agent took it (text typed on a
+    # busy pane queues — Devin's `○` list, not the ❭ box — so a second
+    # Enter would flush the queue early, not re-submit).
+    note = "sent"
+    for attempt in range(1 + a.retries):
+        time.sleep(a.pause)
+        pane, still = _wait_out_compaction(f, win, a.wait, a.poll)
+        if pane is None or still:
+            break  # cannot verify — window gone or compaction outlived --wait
+        plain = ANSI_RE.sub("", pane)
+        if not unsent_input(pane) or BUSY_RE.search(plain) or dialog_type(plain):
+            print(f"{note}: {win}")
+            return 0
+        if attempt < a.retries:
+            f.tmux("send-keys", "-t", t, "Enter")
+            note = "sent (retried Enter)"
+    print(
+        f"UNVERIFIED {win}: cannot confirm the Enter landed — check the "
+        "window and submit it by hand if the text still sits in the box",
+        file=sys.stderr,
+    )
+    return 4
 
 
 def _fill_footer(text: str, fills: dict[str, str]) -> str:
@@ -1084,9 +1133,26 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("ctx", help="context %% per Claude pane").set_defaults(fn=cmd_ctx)
     sub.add_parser("prompts", help="panes at a dialog").set_defaults(fn=cmd_prompts)
 
-    s = sub.add_parser("send-line", help="type TEXT and press Enter")
+    s = sub.add_parser(
+        "send-line",
+        help="type TEXT and press Enter; waits out a compacting pane "
+        "and retries a swallowed Enter",
+    )
     s.add_argument("win")
     s.add_argument("text")
+    s.add_argument(
+        "--wait",
+        type=float,
+        default=90.0,
+        help="seconds to wait out a compacting pane (default 90)",
+    )
+    s.add_argument("--poll", type=float, default=2.0, help=argparse.SUPPRESS)
+    s.add_argument(
+        "--retries",
+        type=int,
+        default=2,
+        help="extra Enter attempts when the first was swallowed",
+    )
     s.add_argument("--pause", type=float, default=1.0, help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_send_line)
 

@@ -182,6 +182,22 @@ def test_codex_states() -> None:
     assert (q.state, q.dialog) == ("prompt", "question")
 
 
+def test_compacting_marker() -> None:
+    m = _lib()
+    # Devin's banner, verbatim shape from the binary's UI strings.
+    assert m.compacting(
+        "⏺ earlier\n"
+        "Compacting conversation history with 12 messages and 9k tokens\n"
+        "❭ \n"
+    )
+    assert not m.compacting(_fix("devin-working.txt"))
+    assert not m.compacting(_fix("devin-queued.txt"))
+    # A finished compaction ("Compacted with…") or a stale banner above
+    # the 15-line tail is not a live compaction.
+    assert not m.compacting("Compacted with summarizer\n" + "x\n" * 20)
+    assert not m.compacting("Compacting conversation\n" + "fill\n" * 20 + "❭ \n")
+
+
 def test_done_when_process_exited() -> None:
     m = _lib()
     rep = m.pane_report("devin", "user@host ~ % \n", command_running=False)

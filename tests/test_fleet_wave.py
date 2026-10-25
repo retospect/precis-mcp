@@ -44,10 +44,24 @@ if cmd in ("list-windows", "list-panes"):
     p = os.path.join(d, name)
     sys.stdout.write(open(p, encoding="utf-8").read() if os.path.exists(p) else "")
 elif cmd == "capture-pane":
+    t = target()
+    seq = os.path.join(d, "pane-" + t + ".seq")
+    if os.path.isdir(seq):
+        # Staged captures: serve the dir's files in call order; the last
+        # one repeats once it is exhausted.
+        cnt = os.path.join(d, "capcount-" + t)
+        n = int(open(cnt).read()) if os.path.exists(cnt) else 0
+        files = sorted(os.listdir(seq))
+        sys.stdout.write(
+            open(os.path.join(seq, files[min(n, len(files) - 1)])).read()
+        )
+        with open(cnt, "w") as fh:
+            fh.write(str(n + 1))
+        sys.exit(0)
     ext = ".esc" if "-e" in argv else ".txt"
-    p = os.path.join(d, "pane-" + target() + ext)
+    p = os.path.join(d, "pane-" + t + ext)
     if not os.path.exists(p) and ext == ".esc":
-        p = os.path.join(d, "pane-" + target() + ".txt")
+        p = os.path.join(d, "pane-" + t + ".txt")
     if not os.path.exists(p):
         sys.exit(1)
     sys.stdout.write(open(p, encoding="utf-8").read())
@@ -294,6 +308,71 @@ def test_send_line_refuses_unsent_text_and_dialogs(env: dict[str, str]) -> None:
         assert proc.returncode == 3
         assert proc.stdout.startswith("REFUSED")
     assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+
+
+# Devin's mid-compaction banner (verbatim shape from the binary's UI
+# strings) — an Enter sent while it is up lands the text but swallows the
+# submit (gr515698).
+DEVIN_COMPACTING = (
+    "⏺ earlier output\n"
+    "Compacting conversation history with 142 messages and 198k tokens\n"
+    "❭ \n"
+)
+#: The IDLE pane with our text still sitting in the input box.
+UNSENT_HELD = IDLE.replace("❯ \n", "❯ rebase and reship\n")
+
+
+def _seq(env: dict[str, str], win: str, *texts: str) -> None:
+    """Staged captures for the fake tmux: served in call order, last repeats."""
+    seq = Path(env["FAKE_TMUX_DIR"]) / f"pane-{win}.seq"
+    seq.mkdir()
+    for i, text in enumerate(texts):
+        (seq / f"{i:02d}.txt").write_text(text, encoding="utf-8")
+
+
+def test_send_line_waits_out_a_compacting_pane(env: dict[str, str]) -> None:
+    _windows(env, {"devin-a": ""})
+    _seq(env, "devin-a", DEVIN_COMPACTING, IDLE)
+    proc = _run(env, "send-line", "a", "the brief", "--pause", "0", "--poll", "0")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "sent: devin-a\n"
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    assert sends == [
+        ["send-keys", "-t", "devin-a", "-l", "--", "the brief"],
+        ["send-keys", "-t", "devin-a", "Enter"],
+    ]
+
+
+def test_send_line_refuses_a_pane_still_compacting(env: dict[str, str]) -> None:
+    _windows(env, {"devin-a": DEVIN_COMPACTING})
+    proc = _run(env, "send-line", "a", "the brief", "--pause", "0", "--wait", "0")
+    assert proc.returncode == 3
+    assert "compacting" in proc.stdout
+    assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+
+
+def test_send_line_retries_a_swallowed_enter(env: dict[str, str]) -> None:
+    _windows(env, {"claude-a": ""})
+    _seq(env, "claude-a", IDLE, UNSENT_HELD, IDLE)
+    proc = _run(env, "send-line", "a", "rebase and reship", "--pause", "0")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "sent (retried Enter): claude-a\n"
+    enters = [
+        c for c in _tmux_calls(env) if c[:1] == ["send-keys"] and c[-1] == "Enter"
+    ]
+    assert len(enters) == 2
+
+
+def test_send_line_reports_unsubmitted_after_retries(env: dict[str, str]) -> None:
+    _windows(env, {"claude-a": ""})
+    _seq(env, "claude-a", IDLE, UNSENT_HELD)
+    proc = _run(env, "send-line", "a", "hi", "--pause", "0", "--retries", "1")
+    assert proc.returncode == 4
+    assert "UNVERIFIED" in proc.stderr
+    enters = [
+        c for c in _tmux_calls(env) if c[:1] == ["send-keys"] and c[-1] == "Enter"
+    ]
+    assert len(enters) == 2
 
 
 def test_launch_fills_footer_and_runs_claude_by_argv(
