@@ -721,12 +721,13 @@ class FusedBlockSearch:
         # Local import — paper.py imports this module lazily, so by the
         # time ``run`` executes paper.py is fully loaded; see this
         # module's docstring for why the import is deferred rather than
-        # top-level.
+        # top-level. ``_DOI_RE`` is the one canonical pattern in
+        # ``_identifiers_ops`` (gr516333).
         from precis.handlers.paper import (
-            _DOI_RE,
             _maybe_resolve_doi,
             _suggest_paper_slugs,
         )
+        from precis.store._identifiers_ops import _DOI_RE
 
         kind = self.kind
 
@@ -1363,7 +1364,7 @@ class PaperSearchResultRenderer:
         # Local import — see this module's docstring: paper.py is fully
         # loaded by the time a search actually runs (this module is only
         # imported lazily from inside ``PaperHandler.search()``).
-        from precis.handlers.paper import _DOI_RE
+        from precis.store._identifiers_ops import _DOI_RE
 
         kind = self.kind
         q = result.q

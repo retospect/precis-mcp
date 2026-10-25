@@ -391,8 +391,17 @@ put(kind='job', id=<failed_job_id>, mode='retry')
 # jobs" to see them.
 put(kind='job', id=<failed_job_id>, mode='retry', model='sonnet')
 
+# The parent's meta.llm_select pin (placement/thinking/effort/
+# temperature) survives a plain retry — the ack names it when it
+# does. A surviving placement='local' pin re-mints the same failure;
+# override it in the same call:
+put(kind='job', id=<failed_job_id>, mode='retry', placement='cloud')
+# select={...} is the full-knob form; placement= is its one-key
+# shorthand and wins the placement key when both are given.
+
 # Retry rejects a job that isn't terminal (STATUS:failed/cancelled),
-# an orphan job with no todo parent, and model= on a non-LLM parent.
+# an orphan job with no todo parent, and model=/select=/placement=
+# on a non-LLM parent.
 
 # Option B (manual equivalent): clear the bubble by hand. A failed
 # child is terminal, so it does NOT block re-mint — deleting it is

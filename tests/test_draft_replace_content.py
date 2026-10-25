@@ -375,6 +375,39 @@ def test_replace_content_chained_edit_uses_ack_span_sha(
     assert [c.text for c in own] == ["Intro", "Second rewrite."]
 
 
+def test_replace_content_noop_heading_hashes_stored_text(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr516613: a first-line ``# T`` equal to the stored heading's
+    trimmed form skips the heading edit — the returned span-sha must
+    fingerprint the STORED (whitespace-padded) text so a chained
+    base_sha still matches the next read."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": title_dc})
+    head = _handle_of(hub, "nt", "Intro")
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="Body.", at={"into": head, "last": True}
+    )
+    # Stray whitespace on the stored heading — what real drafts carry.
+    hub.live_store.drafts.edit_text(_chunk(hub, head).handle, "  Intro  ")
+    r1 = draft.edit(id=head, mode="replace-content", text="# Intro\nNew body.")
+    m = re.search(r"span-sha:([0-9a-f]{12})", r1.body)
+    assert m is not None, r1.body
+    # The ack's token must equal what the next read hashes.
+    assert _span_sha(hub, head).startswith(m.group(1))
+    r2 = draft.edit(
+        id=head,
+        mode="replace-content",
+        text="# Intro\nSecond body.",
+        base_sha=m.group(1),
+    )
+    assert "replaced" in r2.body
+    own = hub.live_store.drafts.block_own_chunks(_chunk(hub, head))
+    assert [c.text for c in own] == ["  Intro  ", "Second body."]
+
+
 def test_replace_content_refuses_non_prose_in_span(
     draft: DraftHandler, hub: Hub
 ) -> None:

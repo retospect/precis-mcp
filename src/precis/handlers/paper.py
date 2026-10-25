@@ -142,15 +142,33 @@ def _body_op_tx(store: Store, door: str) -> Iterator[Any]:
     can't restamp) carries the trigger's hint as ``next=`` via
     :func:`trust_refusal`; anything else is a constraint the caller
     tripped and gets a gripe-pointers ``next=``.
+
+    ``SET LOCAL statement_timeout`` lifts the role's defensive bound
+    for the door's statements (gr516498): the re-home is a handful of
+    set-based statements, but the ``chunk_embeddings`` copy feeds one
+    HNSW index insertion per chunk. A 5.7 k-chunk body cost ~6.5 s
+    (~1 ms/chunk) on a quiet dev DB, but that understates prod badly —
+    the reported 5,724-chunk split outran the 120 s ``agent_rw`` bound
+    (deploy/roles/postgres), i.e. ≥21 ms/chunk. 600 s covers ~28
+    k-chunk bodies at the prod rate while still bounding a genuinely
+    wedged statement; a cancellation still maps to ``Upstream`` with a
+    retry hint.
     """
     try:
         with store.tx() as conn:
+            conn.execute("SET LOCAL statement_timeout = '600s'")
             yield conn
     except psycopg.errors.DeadlockDetected as exc:
         raise Upstream(
             f"{door} lost a lock deadlock — nothing was written",
             next="retry the edit; if deadlocks repeat, another session is "
             "holding a write on one of the refs — file a gripe naming them",
+        ) from exc
+    except psycopg.errors.QueryCanceled as exc:
+        raise Upstream(
+            f"{door} hit the statement timeout — nothing was written",
+            next="retry the edit; if it times out again the body is too "
+            "large for one transaction — file a gripe naming the refs",
         ) from exc
     except psycopg.errors.CheckViolation as exc:
         refusal = trust_refusal(exc)
@@ -5326,15 +5344,15 @@ _RANGE_RE = re.compile(r"^(\d+)(?:\.\.|-)(\d+)$")
 # aren't a sequence you page through). gr334152.
 _CHUNK_RE = re.compile(r"^(-?\d+)$")
 
-# A DOI-form paper id. DOIs start with ``10.<registrant>/<suffix>`` per
-# the IDF spec; the suffix can legally contain slashes and dots (e.g.
-# ``10.1038/s41598-023-44772-6``, ``10.1111/jnc.13915``), which is why
-# they can't be routed through ``_SLUG_RE`` — the regex would try to
-# split the DOI on ``/`` as a view path and fail. Chunk selectors
-# (``~38``) still attach to DOI-form ids; view paths (``/abstract``)
+# The one DOI pattern lives in ``precis.store._identifiers_ops``
+# (gr516333 — ``_paper_search`` imports it lazily from there). DOI-form
+# ids can't be routed through ``_SLUG_RE`` — the suffix can legally
+# contain slashes and dots, so the regex would try to split the DOI on
+# ``/`` as a view path and fail. Chunk selectors (``~38``) still attach
+# to DOI-form ids via the pattern's group 2; view paths (``/abstract``)
 # do not — use the ``view=`` kwarg instead, because we can't safely
-# disambiguate ``/abstract`` as "view=abstract" vs "DOI suffix /abstract".
-_DOI_RE = re.compile(r"^(10\.\d+/[^~]+?)(~.*)?$")
+# disambiguate ``/abstract`` as "view=abstract" vs "DOI suffix
+# /abstract".
 
 _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("cite", "bib"): "bibtex",

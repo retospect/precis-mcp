@@ -86,11 +86,22 @@ _HUMAN_EDIT_SOURCES = frozenset({"web-edit", "mcp-edit", "edit"})
 # (e.g. an agent doing `get(kind='paper', id='1705.02630')`). Order of
 # checking matters: more-specific patterns first.
 
-# Registrant length is unbounded in the DOI grammar — real (if rare)
-# prefixes run shorter than four digits, so the bound stays loose; the
-# ``10.<digits>/`` shape is already unambiguous against every other
-# scheme here.
-_DOI_RE = re.compile(r"^10\.\d{1,9}/.+", re.IGNORECASE)
+# THE DOI pattern (gr516333) — one regex, imported everywhere the DOI
+# shape is detected or split; two copies of differing strictness used
+# to drift (a tightening of one broke the other's callers).
+#
+# ``10.<registrant>/<suffix>``: registrant length is unbounded in the
+# DOI grammar — real (if rare) prefixes run shorter than four digits,
+# so the bound stays loose (the 4-9 tightening broke enrich_ref on
+# short registrants); the ``10.<digits>/`` shape is already
+# unambiguous against every other scheme here. Group 1 is the DOI:
+# the suffix stops at ``~`` so a paper-id chunk selector
+# (``10.1111/jnc.13915~38``) splits off as group 2 — DOI suffixes can
+# legally contain ``/`` and ``.``, which is why DOI-form ids can't be
+# routed through the slug parser. Case-insensitive: DOIs are
+# case-insensitive per the DOI Handbook, and the ``10.`` prefix is
+# digits anyway.
+_DOI_RE = re.compile(r"^(10\.\d{1,9}/[^~]+?)(~.*)?$", re.IGNORECASE)
 # arXiv post-2007 format: YYMM.NNNN[N][vN]
 _ARXIV_NEW_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 # arXiv pre-2007 format: archive/YYMMNNN, e.g. cond-mat/0211262, math-ph/9910009

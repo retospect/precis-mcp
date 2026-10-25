@@ -130,7 +130,8 @@ def test_retry_model_change_preserves_existing_select(
 ) -> None:
     """A model= swap with no select= leaves the parent's existing
     meta.llm_select untouched — a bare tier change shouldn't silently wipe
-    a prior structured selection."""
+    a prior structured selection — but the ack names the pin so the
+    caller knows it is still in force (gr516589)."""
     rid = id_of(
         todos.put(
             text="planner brief",
@@ -139,11 +140,96 @@ def test_retry_model_change_preserves_existing_select(
     )
     job_id = _fail_first_job(store, jobs, rid)
 
-    jobs.put(id=job_id, mode="retry", model="sonnet")
+    resp = jobs.put(id=job_id, mode="retry", model="sonnet")
     ref = store.get_ref(kind="todo", id=rid)
     assert ref is not None
     assert ref.meta.get("llm_tier") == "sonnet"
     assert ref.meta.get("llm_select") == {"placement": "cloud"}
+    assert "llm_select" in resp.body and "still in force" in resp.body
+    assert "placement" in resp.body
+
+
+def test_retry_placement_shorthand_overrides_pin(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """gr516589: placement='cloud' is the one-knob select= shorthand —
+    it overwrites the parent's surviving placement pin so the re-minted
+    job doesn't fail the same way."""
+    rid = id_of(
+        todos.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"placement": "local"}},
+        ).body
+    )
+    job_id = _fail_first_job(store, jobs, rid)
+
+    resp = jobs.put(id=job_id, mode="retry", model="sonnet", placement="cloud")
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("llm_tier") == "sonnet"
+    assert ref.meta.get("llm_select") == {"placement": "cloud"}
+    assert "still in force" not in resp.body
+
+
+def test_retry_placement_keeps_sibling_select_knobs(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """placement= without select= merges into the parent's existing
+    llm_select — stamp_ref_meta merges at the top level only, so a bare
+    {placement} write would wipe the sibling knobs."""
+    rid = id_of(
+        todos.put(
+            text="planner brief",
+            meta={
+                "llm_tier": "opus",
+                "llm_select": {
+                    "placement": "local",
+                    "effort": "high",
+                    "thinking": True,
+                },
+            },
+        ).body
+    )
+    job_id = _fail_first_job(store, jobs, rid)
+
+    jobs.put(id=job_id, mode="retry", placement="cloud")
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("llm_select") == {
+        "placement": "cloud",
+        "effort": "high",
+        "thinking": True,
+    }
+
+
+def test_retry_placement_merges_into_select(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """placement= folds into the select= dict — the explicit arg wins
+    the placement key."""
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
+    job_id = _fail_first_job(store, jobs, rid)
+
+    jobs.put(
+        id=job_id,
+        mode="retry",
+        select={"effort": "high"},
+        placement="cloud",
+    )
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("llm_select") == {"effort": "high", "placement": "cloud"}
+
+
+def test_retry_placement_rejects_bad_value(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """placement= is validated against the same closed vocab select= is."""
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
+    job_id = _fail_first_job(store, jobs, rid)
+    with pytest.raises(BadInput, match="unknown placement"):
+        jobs.put(id=job_id, mode="retry", placement="moon")
+    assert f"child-failed:{job_id}" in _parent_tags(store, rid)
 
 
 def test_retry_select_requires_llm_parent(

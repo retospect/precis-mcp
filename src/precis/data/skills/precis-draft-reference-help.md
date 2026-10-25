@@ -45,7 +45,7 @@ with a bare `dc<id>`, never a `-B..A` window.
 | `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
 | `get(id='dc<id>', view='history')` | the chunk's edit events, newest first, with prior text (`args={'page_size':N}`, ≤500) |
 | `get(id='dc<id>', view='proposals')` | open anchored todos with `meta.proposed_text`, as diffs vs the current text |
-| `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes) |
+| `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes); `args={'rel': 'touched', 'of_kind': 'agentlog'}` narrows it (a hot draft's unfiltered view runs to hundreds of KB) |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |
 
 **`edit` — params** (`text=` rewrite is the default; one param family per

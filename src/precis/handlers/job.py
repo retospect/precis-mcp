@@ -1707,6 +1707,7 @@ class JobHandler(NumericRefHandler):
         parent_id: int | str | None = None,
         model: str | None = None,
         select: dict[str, Any] | None = None,
+        placement: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
@@ -1714,11 +1715,16 @@ class JobHandler(NumericRefHandler):
         # dispatch worker re-mints a fresh attempt. ``model='sonnet'``
         # additionally swaps the parent's ``meta.llm_tier`` first, which
         # is what the next tick dispatches with; ``select={...}`` does the
-        # same for the optional structured ``meta.llm_select`` sibling.
+        # same for the optional structured ``meta.llm_select`` sibling,
+        # and ``placement='cloud'|'local'`` is its one-knob shorthand
+        # (gr516589: a parent's surviving placement pin fails the re-mint
+        # the same way unless it is overridden here).
         # Handled before the generic ``id is not None`` /
         # ``mode`` rejections below.
         if mode == "retry":
-            return self._retry_job(id=id, model=model, select=select)
+            return self._retry_job(
+                id=id, model=model, select=select, placement=placement
+            )
         if mode == "retarget":
             return self._retarget_job(id=id, text=text, params=params)
         if id is not None:
@@ -2223,6 +2229,7 @@ class JobHandler(NumericRefHandler):
         id: str | int | None,
         model: str | None,
         select: dict[str, Any] | None = None,
+        placement: str | None = None,
     ) -> Response:
         """Re-run a failed job by unblocking its parent todo.
 
@@ -2254,10 +2261,15 @@ class JobHandler(NumericRefHandler):
          — placement/thinking/effort/temperature — validated by
         :func:`~precis.todo.guards.check_llm_select_meta` and
         written onto the parent alongside ``llm_tier`` when a ``model``
-        change also lands. When ``model`` is given but ``select`` isn't,
-        the parent's existing ``meta.llm_select`` (if any) is left
-        untouched — a bare tier swap shouldn't silently wipe a prior
-        structured selection.
+        change also lands. ``placement`` is the one-knob shorthand —
+        merged into the parent's existing ``llm_select`` when ``select``
+        isn't given (its other knobs survive), or into ``select`` when
+        it is (gr516589). When
+        ``model`` is given but ``select`` isn't, the parent's existing
+        ``meta.llm_select`` (if any) is left untouched — a bare tier
+        swap shouldn't silently wipe a prior structured selection —
+        but the ack names the surviving pin: an unseen ``placement:
+        'local'`` re-mints the same failure the retry meant to escape.
 
         If the parent todo carries no dispatch signal at all
         (``meta.executor``, ``meta.llm_tier``, or an OPEN ``executor:*``
@@ -2314,26 +2326,39 @@ class JobHandler(NumericRefHandler):
 
         new_llm_tier: str | None = None
         new_llm_select: dict[str, Any] | None = None
-        if model is not None or select is not None:
+        if model is not None or select is not None or placement is not None:
             has_llm_tier = bool(parent_meta.get("llm_tier"))
             if not has_llm_tier:
                 raise BadInput(
-                    f"model=/select= only apply to LLM-planner todos; parent "
-                    f"todo #{parent_id} carries no meta.llm_tier",
+                    f"model=/select=/placement= only apply to LLM-planner "
+                    f"todos; parent todo #{parent_id} carries no meta.llm_tier",
                     next=(
-                        "retry without model=/select=, or set the executor's "
-                        "params by hand"
+                        "retry without model=/select=/placement=, or set the "
+                        "executor's params by hand"
                     ),
                 )
             if model is not None:
                 new_llm_tier = str(model).strip()
                 # Closed-vocab validation (opus|sonnet|haiku|...).
                 todo_guards.check_llm_tier_meta({"llm_tier": new_llm_tier})
+            merged_select: dict[str, Any] | None = None
             if select is not None:
+                merged_select = dict(select)
+            elif placement is not None:
+                # Merge into the parent's existing llm_select — a bare
+                # placement= must not wipe its other knobs (effort,
+                # thinking): stamp_ref_meta merges at the top level only.
+                kept = parent_meta.get("llm_select")
+                merged_select = dict(kept) if isinstance(kept, dict) else {}
+            if placement is not None:
+                # The one-knob shorthand wins over a select= dict's own
+                # placement key — the explicit arg is the last write.
+                merged_select = {**(merged_select or {}), "placement": placement}
+            if merged_select is not None:
                 # Same validation the write-time guard runs on a direct
                 # put()/tag() — a retry-form knob gets no less scrutiny.
-                todo_guards.check_llm_select_meta({"llm_select": select})
-                new_llm_select = select
+                todo_guards.check_llm_select_meta({"llm_select": merged_select})
+                new_llm_select = merged_select
 
         bubble = Tag.open(f"child-failed:{job_id}")
         final = Tag.open("child-failed-final")
@@ -2378,6 +2403,15 @@ class JobHandler(NumericRefHandler):
             f", swapped model→{str(model).strip()}" if model is not None else ""
         )
         model_note += ", updated selection" if new_llm_select is not None else ""
+        kept_select = parent_meta.get("llm_select")
+        if new_llm_select is None and isinstance(kept_select, dict) and kept_select:
+            # The pin outlives the retry — name it, since an unseen
+            # placement/effort pin re-mints the same failure the caller
+            # was escaping (gr516589).
+            model_note += (
+                f"; parent's meta.llm_select {kept_select} still in force "
+                "— override with placement='cloud'|'local' or select={…}"
+            )
         final_note = (
             " (also cleared the terminal child-failed-final latch and reset the "
             "unpark budget so the sweeper won't re-latch it)"

@@ -1245,6 +1245,10 @@ def put(
     # swaps the parent todo's meta.llm_tier so the re-minted tick runs on
     # a different tier (opus|sonnet|haiku).
     model: str | None = None,
+    # placement='cloud'|'local' — the one-knob shorthand for the retry's
+    # structured selection (meta.llm_select.placement); needed when the
+    # parent's surviving placement pin is what failed the job (gr516589).
+    placement: str | None = None,
     # presentation (see precis-pres-help):
     pos: int | None = None,
     meta: dict[str, Any] | None = None,
@@ -1504,6 +1508,7 @@ def put(
                 "parent_id": parent_id,
                 "prio": prio,
                 "model": model,
+                "placement": placement,
                 "pos": pos,
                 "meta": meta,
                 "ref_meta": ref_meta,

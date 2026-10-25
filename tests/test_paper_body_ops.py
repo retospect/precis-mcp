@@ -1365,3 +1365,33 @@ def test_move_body_carries_article_start_marker(
     assert "moved" in resp.body
     assert _meta(store, b)["article_start_ord"] == 2
     assert "article_start_ord" not in _meta(store, a)
+
+
+class TestBodyOpTxTimeout:
+    """gr516498: the body doors lift the role's defensive
+    statement_timeout — the chunk_embeddings copy feeds one HNSW index
+    insert per chunk, so a several-thousand-chunk body can exceed the
+    120 s agent_rw role bound inside a single statement."""
+
+    def test_body_op_tx_lifts_statement_timeout(self, store: Store) -> None:
+        from precis.handlers.paper import _body_op_tx
+
+        with _body_op_tx(store, "split_body") as conn:
+            row = conn.execute(
+                "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"
+            ).fetchone()
+        assert row is not None
+        assert int(row[0]) >= 600_000
+
+    def test_body_op_tx_maps_query_canceled_to_upstream(self, store: Store) -> None:
+        import psycopg
+
+        from precis.errors import Upstream
+        from precis.handlers.paper import _body_op_tx
+
+        with pytest.raises(Upstream, match="statement timeout") as exc:
+            with _body_op_tx(store, "split_body"):
+                raise psycopg.errors.QueryCanceled(
+                    "canceling statement due to statement timeout"
+                )
+        assert exc.value.next and "retry" in exc.value.next

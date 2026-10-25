@@ -3718,7 +3718,7 @@ class DraftStore(_AbbrevMixin):
             )
         first, _, after_first = new_raw.partition("\n")
         m = _HEADING_LINE_RE.match(first)
-        heading_text = m.group(1).strip() if m else None
+        heading_text: str | None = m.group(1).strip() if m else None
         body_md = after_first if m else new_raw
         with self.tx() as conn:
             row = self._row(conn, handle)
@@ -3846,11 +3846,20 @@ class DraftStore(_AbbrevMixin):
                 self.edit_text_in_tx(conn, handle, new_raw, source=source)
                 new_span_sha = own_content_sha([new_raw])
             else:
+                # A first-line ``# T`` matching the stored heading's
+                # trimmed form is a no-op edit — the stored text (and
+                # its stray whitespace, gr516613) stays, so the
+                # chained-edit sha below must hash the stored text, not
+                # the trimmed candidate, or the next read's span-sha
+                # won't match it.
                 if (
                     heading_text is not None
                     and heading_text != text_of[chunk_id].strip()
                 ):
                     self.edit_text_in_tx(conn, handle, heading_text, source=source)
+                    head = heading_text
+                else:
+                    head = text_of[chunk_id]
                 # Retire the replaced body run — each direct child with
                 # its whole subtree (a list container's items die with
                 # it). Retire is the append-only delete; the replacement
@@ -3908,7 +3917,6 @@ class DraftStore(_AbbrevMixin):
                         )
                 # The ack's chained-edit token, computed under the same
                 # tx as the writes so no racing edit can slip between.
-                head = heading_text if heading_text is not None else text_of[chunk_id]
                 new_span_sha = own_content_sha(
                     [head] + [c.text for c in inserted if c.parent_chunk_id == chunk_id]
                 )
