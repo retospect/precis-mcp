@@ -28,12 +28,14 @@ import pytest
 
 from tests._skill_roots import skill_files
 
-#: Hard cap in bytes. A skill over this fails the gate unless allowlisted.
+#: Hard cap in bytes — the one knob. A skill over this fails the gate
+#: unless allowlisted. (gr515088: derive, don't magic-number, the rest.)
 FAIL_BYTES = 32 * 1024
 
 #: Soft cap in bytes. A skill over this (but under FAIL_BYTES, or allowlisted)
-#: only warns — visible drift before it becomes a failure.
-WARN_BYTES = 16 * 1024
+#: only warns — visible drift before it becomes a failure. Derived from
+#: ``FAIL_BYTES`` so the two thresholds can't drift into each other.
+WARN_BYTES = FAIL_BYTES // 2
 
 #: slug (filename stem, no ``.md``) -> justification. Every entry here is
 #: exempt from ``FAIL_BYTES`` but still counted toward the ``WARN_BYTES``

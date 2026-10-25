@@ -426,6 +426,13 @@ marker + tail, and the middle only comes back via `more(cursor=…)` or
 `get(kind='skill', id='<slug>').body`, not `wc -c` on the file
 (gr514726).
 
+Above the fold sits the file-size gate: `tests/test_skill_size.py`
+fails a file over `FAIL_BYTES` (32 KiB) unless allowlisted, and warns
+past `WARN_BYTES` (= `FAIL_BYTES // 2`, 16 KiB). Past the warn line a
+skill should already be splitting into topic skills — the fix is
+restructuring for `/toc` + `~N` section access, not raising the cap
+(gr515088).
+
 ## Cross-reference and classification axes (tags:, kinds:, [[wikilink]])
 
 Three frontmatter/body axes, all gated at ingest (hard-fail):
