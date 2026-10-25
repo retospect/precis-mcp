@@ -337,6 +337,32 @@ def test_payload_renders_a_v2_only_record() -> None:
     assert ml["bracket"] is None and ml["transitions"] == []
 
 
+def test_payload_v2_tier_read_off_bep_flux_share() -> None:
+    """gr514393: the v2 record carries no ``tier`` — what v1 split into
+    ``kinetics.dft.json`` vs ``kinetics.json`` the record reports as
+    ``bep_flux_share``. Zero share is the v1 ``dft`` case; any share is
+    ``ml``; a record lacking the field keeps the v1 block's answer."""
+    dft = kinetics_payload(
+        {
+            "kinetics_v2": {**_v2_record(), "bep_flux_share": 0.0},
+            "score": {"target": "NH3"},
+        }
+    )
+    assert dft is not None and set(dft) == {"dft"}
+    ml = kinetics_payload(
+        {
+            "kinetics_v2": {**_v2_record(), "bep_flux_share": 0.3},
+            "score": {"target": "NH3"},
+        }
+    )
+    assert ml is not None and set(ml) == {"ml"}
+    # v2 without the field (older engine): the v1 block's tier survives
+    both = kinetics_payload(
+        {"kinetics": _record(tier="dft"), "kinetics_v2": _v2_record()}
+    )
+    assert both is not None and set(both) == {"dft"}
+
+
 def test_payload_v2_fields_outrank_v1_but_v1_only_fields_survive() -> None:
     """Both blocks present: the ranked (MF) numbers win; the transitions
     table, bracket, production and tier stay from the v1 block the record

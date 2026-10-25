@@ -287,6 +287,17 @@ def _v2_overlay(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     tof = _v2_tof(v2)
     if tof is not None:
         out["tof"] = tof
+    # v2 tier policy (gr514393): the record carries no ``tier``; what v1
+    # split into ``kinetics.dft.json`` vs ``kinetics.json`` the record
+    # reports as ``bep_flux_share`` — the fraction of target production
+    # through BEP-priced (non-NEB) transitions. Zero share is the v1
+    # ``dft`` case (every load-bearing barrier measured); any share means
+    # predicted barriers feed the answer — ``ml``. A record that lacks
+    # the field (older engine) keeps the v1 block's ``tier`` or the
+    # ``ml`` default.
+    share = _fin(v2.get("bep_flux_share"))
+    if math.isfinite(share):
+        out["tier"] = "dft" if share == 0.0 else "ml"
     drc = _dict(v2.get("drc"))
     if drc:
         out["drc"] = {"X_RC": drc}

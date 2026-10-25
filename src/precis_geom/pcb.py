@@ -1637,7 +1637,14 @@ class Board:
                         message=f"footprint {fp!r} is not registered on this board",
                     )
                 )
-        connected = {c["net"] for c in self._connections}
+        # A net tied only to solver slots is bound, not floating: the
+        # solver wires the concrete pin at assign time (gr516695).
+        connected = {c["net"] for c in self._connections} | {
+            fp.net
+            for r in self._part_order
+            for fp in self._parts[r]._flex_slots
+            if fp.net is not None
+        }
         findings += [
             CheckFinding(
                 code="net.unconnected", net=n, message=f"net {n!r} has no connections"
@@ -1700,20 +1707,27 @@ class Board:
                 rating = p.meta.get("max_current_a")
             return float(rating) if rating is not None else None
 
+        # Requirements are per connection but the finding is per pin per
+        # net: N ties carrying current= on one net name the same
+        # under-rated pin once, against the strictest bound (gr516696).
+        net_max: dict[str, float] = {}
         for c in reqs:
             bound = c.get("current_max_a")
             if bound is None:
                 continue
-            for r, p in self.pins_on(c["net"]):
+            net = c["net"]
+            net_max[net] = min(float(bound), net_max.get(net, float("inf")))
+        for net, bound in net_max.items():
+            for r, p in self.pins_on(net):
                 rating = pin_rating(r, p)
-                if rating is not None and rating < float(bound):
+                if rating is not None and rating < bound:
                     out.append(
                         CheckFinding(
                             code="over_current",
                             refdes=r,
-                            net=c["net"],
+                            net=net,
                             message=(
-                                f"net {c['net']} requires ≤ {float(bound):g} A "
+                                f"net {net} requires ≤ {bound:g} A "
                                 f"but {r}.{p} is rated {rating:g} A"
                             ),
                         )

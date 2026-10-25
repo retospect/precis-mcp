@@ -200,6 +200,41 @@ def test_over_current_wired_pin() -> None:
     assert f.refdes == "U1" and f.net == "LED"
 
 
+def test_slot_bound_net_is_not_unconnected() -> None:
+    """gr516695: a net tied only to a ``FlexPin`` slot counts as
+    connected — the solver wires the concrete pin at assign time. A
+    declared net with no tie at all still floats."""
+    b = Board("t")
+    u1 = b.part("U1")
+    b.net("SIG").tie(u1.pin(any_of=["PA1", "PA2"], name="BTN"))
+    b.net("DANGLING")
+    assert [(f.code, f.net) for f in b.check().findings] == [
+        ("net.unconnected", "DANGLING")
+    ]
+    # an untied slot binds nothing — its net stays floating
+    b2 = Board("t2")
+    b2.part("U1").pin(any_of=["PA1", "PA2"], name="BTN")
+    b2.net("SIG")
+    assert [
+        (f.code, f.net) for f in b2.check().findings if f.code == "net.unconnected"
+    ] == [("net.unconnected", "SIG")]
+
+
+def test_over_current_dedupes_per_net() -> None:
+    """gr516696: N ties carrying ``current=`` on one net produce ONE
+    over_current finding per under-rated pin, against the strictest
+    bound — the finding is per pin per net, not per connection."""
+    b = Board("t")
+    u1, r1 = b.part("U1"), b.part("R1")
+    u1.pin_functions({"PA1": {"functions": ["GPIO"], "max_current_a": 0.005}})
+    n = b.net("LED")
+    n.tie(u1["PA1"], r1["1"], current=pcb.Max("20mA"), source="ds:9~c4")
+    n.tie(r1["2"], current=pcb.Max("30mA"), source="ds:9~c5")
+    (f,) = [f for f in b.check().findings if f.code == "over_current"]
+    assert f.refdes == "U1" and f.net == "LED"
+    assert "≤ 0.02 A" in f.message
+
+
 def test_over_current_slot_all_candidates_rated_low() -> None:
     """Every rated candidate under the bound leaves the slot no legal
     pin; one unrated candidate clears it (Decision 15 filters only where
@@ -213,8 +248,8 @@ def test_over_current_slot_all_candidates_rated_low() -> None:
         }
     )
     b.net("N").tie(u1.pin(any_of=["PA1", "PA2"], name="PWR"), current=pcb.Max("20mA"))
-    # (net "N" also earns net.unconnected — a slot tie is a declaration,
-    # not a connection row.)
+    # (the slot tie emits no connection row but binds the net — it is no
+    # longer net.unconnected, gr516695.)
     (f,) = [f for f in b.check().findings if f.code == "over_current"]
     assert f.refdes == "U1" and f.net == "N"
 
