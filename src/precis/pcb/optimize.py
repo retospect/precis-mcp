@@ -4140,14 +4140,14 @@ class OptimizeEngine:
         that rotated by a different convention would reserve space where
         the part's own copper is not, and look entirely plausible doing it.
 
-        Mirroring is deliberately not modelled. ``PcbIR`` does carry
-        ``inst_bottom`` (:meth:`_placement_is_legal` reads it to exempt
-        opposite-side pairs), but the courtyard polygon this places is
-        derived unmirrored, so for an asymmetric part on the bottom side
-        the reserved area is its unmirrored twin — same extent, reflected.
-        That matters only for a SAME-side pair involving a bottom part,
-        since opposite-side pairs no longer test against each other at
-        all."""
+        Mirroring follows ``inst_bottom``: a bottom-side part's
+        courtyard mirrors like its pads do — the physical occupancy,
+        same as :func:`precis.pcb.ir.world_courtyard_polygons` since
+        2026-10-25 (topo-place slice-2a seam item 4). Before that the
+        reserved area for an asymmetric bottom part was its unmirrored
+        twin — same extent, reflected — which only mattered for
+        SAME-side pairs, since opposite-side pairs never test against
+        each other at all."""
         ir = self.ir
         px = float(ir.inst_x[inst]) if x is None else x
         py = float(ir.inst_y[inst]) if y is None else y
@@ -4157,7 +4157,13 @@ class OptimizeEngine:
         cached = self._world_poly.get(inst)
         if cached is not None and cached[0] == pose:
             return cached[1]
-        poly = place_points(self._keepout_poly[inst], cx=px, cy=py, rot_deg=prot)
+        poly = place_points(
+            self._keepout_poly[inst],
+            cx=px,
+            cy=py,
+            rot_deg=prot,
+            mirrored=bool(ir.inst_bottom[inst]),
+        )
         self._world_poly[inst] = (pose, poly)
         return poly
 

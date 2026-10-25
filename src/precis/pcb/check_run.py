@@ -326,6 +326,7 @@ def rule_inputs(
                 cx=float(i["x"]),
                 cy=float(i["y"]),
                 rot_deg=float(i.get("rot") or 0.0),
+                mirrored=padplace.is_bottom_instance(i),
             ),
         )
         for i in design["instances"]

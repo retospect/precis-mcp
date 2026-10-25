@@ -690,12 +690,12 @@ def derive_shape(
         else:
             h_mm, source = height_mm(detail.get("footprint"))
             origin = "proposed"
-        # The local extent is used AS-IS for bottom-side parts: every
-        # courtyard placer in the repo keeps ``mirrored=False`` for
-        # bottom (``ir.world_courtyard_polygons``,
-        # ``silk.world_courtyard_rings`` — "a soft preference, not a
-        # clearance guarantee"), and this shape follows the same
-        # convention rather than second-guessing it.
+        # The local extent is used AS-IS for bottom-side parts: the
+        # mechanical profile mirrors the silk/fiducial convention
+        # (``silk.world_courtyard_rings`` keeps ``mirror=False`` — "a
+        # soft preference, not a clearance guarantee"), not the
+        # occupancy courtyard, which mirrors since 2026-10-25
+        # (``ir.world_courtyard_polygons``).
         local = detail.get("extent_mm")
         rot = float(detail.get("rot_deg") or 0.0)
         bx, by = float(block["x"]), float(block["y"])

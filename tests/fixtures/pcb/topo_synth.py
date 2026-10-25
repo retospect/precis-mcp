@@ -85,6 +85,12 @@ def synth_design(
     freedoms = np.full(n_parts, 3, dtype=np.uint8)  # ROTATE | BACK_SIDE
     outline = np.asarray([[0, 0], [side, 0], [side, side], [0, side]])
 
+    # Courtyard squares — hull+margin sized to contain the +/-0.5 pins:
+    # without them the mesh tests exercise pads and the outline only
+    # (slice-2a seam item 7).
+    sq = np.asarray([[-0.9, -0.9], [0.9, -0.9], [0.9, 0.9], [-0.9, 0.9], [-0.9, -0.9]])
+    part_outline = tuple(sq.copy() for _ in range(n_parts))
+
     pin_net = np.full(n_parts * 2, -1, dtype=np.int32)
     for ni, pins in enumerate(net_pins):
         pin_net[pins] = ni
@@ -103,6 +109,7 @@ def synth_design(
         freedoms=freedoms,
         outline=outline,
         pose0=pose0,
+        part_outline=part_outline,
     )
 
     instances = [

@@ -1027,12 +1027,19 @@ def topo_place(
         obj = _tp.ObjectiveShares(
             crossings=float(objective.get("crossings", 0.8)),
             ratsnest=float(objective.get("ratsnest", 0.2)),
+            overlap=float(objective.get("overlap", 0.0)),
         )
 
     design = _design(board, catalog)
     ir = _build_ir(design)
     footprints = _footprints(design, ir)
-    td = _tp.design_from_ir(ir, footprints)
+    td = _tp.design_from_ir(
+        ir,
+        footprints,
+        net_classes=design.graph.get("net_classes"),
+        features=design.features,
+        fixed_copper=design.fixed_copper,
+    )
     _tp.check_slots(td)
     result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed)
     assignment = _tp.assign_pins(td, result.best_pose)

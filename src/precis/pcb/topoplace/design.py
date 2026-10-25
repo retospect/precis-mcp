@@ -21,14 +21,21 @@ fixed here so 1b only fills semantics, never reshapes the input.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
+from precis.errors import BadInput
 from precis.pcb import ratsnest
-from precis.pcb.ir import NO_NET, PcbIR
+from precis.pcb.ir import (
+    COURTYARD_CLEARANCE_MM,
+    NO_NET,
+    PcbIR,
+    instance_courtyard_polygons,
+    layer_name,
+)
 from precis_geom.pcb import PinConflict
 
 #: ``freedoms`` bitset values (Decision 17's "allowed freedoms").
@@ -84,13 +91,24 @@ class ObjectiveShares:
 
     crossings: float = 0.8
     ratsnest: float = 0.2
+    #: Via count — priced only from ladder rung 2 onward (slice 2's
+    #: ``route_topology``); 0 here keeps the share vector byte-identical
+    #: to slice 1 for every existing run.
+    vias: float = 0.0
+    #: Same-side courtyard overlap area in mm² (Reto ruling 2026-10-25:
+    #: a courtyard overlap is a placer violation, priced between rung-2
+    #: evals — slice-2a seam item 6). 0 keeps a share vector identical
+    #: to slice 1's.
+    overlap: float = 0.0
 
     def __post_init__(self) -> None:
-        total = self.crossings + self.ratsnest
+        total = self.crossings + self.ratsnest + self.vias + self.overlap
         if total <= 0:
             raise ValueError("objective shares must not all be zero")
         object.__setattr__(self, "crossings", self.crossings / total)
         object.__setattr__(self, "ratsnest", self.ratsnest / total)
+        object.__setattr__(self, "vias", self.vias / total)
+        object.__setattr__(self, "overlap", self.overlap / total)
 
 
 #: The named share vectors (Decision 18's presets) over the terms slice 1
@@ -98,12 +116,32 @@ class ObjectiveShares:
 #: terms later rungs price (via count, inner-layer direction), so they
 #: collapse onto crossings-heavy shares here — a via exists exactly where
 #: a crossing cannot be resolved on one layer, so crossings are the
-#: slice-1 proxy for both (spec-call, 1c).
+#: slice-1 proxy for both (spec-call, 1c). Every preset carries the same
+#: overlap share: an authored courtyard collision is a violation on any
+#: objective, never a trade-off (Reto ruling 2026-10-25).
 PRESETS: dict[str, ObjectiveShares] = {
-    "compact": ObjectiveShares(crossings=0.8, ratsnest=0.2),
-    "low-via": ObjectiveShares(crossings=0.95, ratsnest=0.05),
-    "2-layer-only": ObjectiveShares(crossings=1.0, ratsnest=0.0),
+    "compact": ObjectiveShares(crossings=0.6, ratsnest=0.2, overlap=0.2),
+    "low-via": ObjectiveShares(crossings=0.75, ratsnest=0.05, overlap=0.2),
+    "2-layer-only": ObjectiveShares(crossings=0.8, ratsnest=0.0, overlap=0.2),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class TopoZone:
+    """A non-part constrained region the mesh keeps wires out of —
+    Decision 17's authored keepouts plus the two board-config bodies the
+    router already claims (:attr:`PcbIR.mounting_holes`,
+    :attr:`PcbIR.fixed_vias`, ``fixed_copper`` track/pour rows). ``ring``
+    is a CLOSED world-frame polygon; ``layers`` the blocked copper-layer
+    indices — ``()`` means every layer (a drilled barrel is a hole on all
+    of them); ``net`` the fixed copper's net name when known (a same-net
+    wire may pass — the wire builder reads it, the mesh does not)."""
+
+    kind: str  # 'keepout' | 'mounting_hole' | 'fixed_via' | 'fixed_copper'
+    ring: np.ndarray  # (K, 2) world mm, closed
+    layers: tuple[int, ...] = ()
+    net: str = ""
+    name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +184,39 @@ class TopoDesign:
     #: indexed by part — ``pin_functions[part][pin_id] = ("GPIO","INT1")``.
     #: The summary's widen-a-slot ranked edit needs them (1c spec-call).
     pin_functions: tuple[Mapping[int, tuple[str, ...]], ...] = ()
+    #: Slice 2 (mesh): each part's courtyard polygon as a CLOSED ring
+    #: ``(K, 2)`` in the part's own footprint frame (first point repeated
+    #: last), the same shape the placer reserves and placement DRC checks
+    #: (:func:`precis.pcb.ir.instance_courtyard_polygons`, pad hull +
+    #: ``COURTYARD_CLEARANCE_MM``). The mesh constrains its edges so no
+    #: wire threads a part body. ``()``/empty = no outline (synthetic
+    #: designs, pinless parts without a fallback).
+    part_outline: tuple[np.ndarray, ...] = ()
+    #: Slice 2 (list-2-colouring): per ``net_pins`` entry the forced
+    #: outer layer from the net's class ``layers`` rule, projected onto
+    #: the two outer layers: ``-1`` free (both outers allowed or no
+    #: rule), ``0``/``n_layers - 1`` forced top/bottom, ``-2`` = the lock
+    #: admits NO outer layer (inner-only — uncolourable on the F/B pair,
+    #: a certificate).
+    net_layer_force: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int8))
+    #: Slice 2 (list-2-colouring): per ``net_pins`` entry the outer-layer
+    #: force implied by pad sides alone — every pin top SMD → 0, every
+    #: pin bottom SMD → ``n_layers - 1``, anything else (mixed sides, or
+    #: a TH pin, which exists on every layer) → -1 free. The colouring
+    #: intersects this with ``net_layer_force``; an empty intersection
+    #: is a ForcedClash certificate, not a refused board.
+    net_pin_force: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int8))
+    #: Slice 2 (mesh): non-part constrained regions — authored keepouts,
+    #: mounting holes, fixed copper — in build order. The mesh records a
+    #: zone-owned constrained edge under owner ``n_parts + zone_index``.
+    zones: tuple[TopoZone, ...] = ()
+    #: Slice 2 (certificates): the routable net's name per ``net_pins``
+    #: entry — odd-cycle certificates name nets, not indices.
+    net_name: tuple[str, ...] = ()
+    #: Slice 4 (corridor capacity): each pin's pad ``(w, h)`` in the part
+    #: frame — an edge's wire capacity is its length minus the pad
+    #: extents it touches. ``ir.pin_w``/``pin_h`` verbatim.
+    pin_wh: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), np.float64))
 
 
 def _pin_sides(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.ndarray:
@@ -170,11 +241,192 @@ def _pin_sides(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.nda
     return out
 
 
+#: Layer ``layers`` rules may name the stackup's own layer names or the
+#: standard names — this sentinel marks a lock that admits no OUTER
+#: layer (``net_layer_force``; list-2-colouring can't satisfy it).
+LAYER_FORCE_INNER = np.int8(-2)
+#: ``net_layer_force`` value for a net with no outer-layer restriction.
+LAYER_FORCE_FREE = np.int8(-1)
+
+
+def _layer_name_map(ir: PcbIR) -> dict[str, int]:
+    """Every acceptable layer NAME → index: the stackup's own names plus
+    the standard ``layer_name`` set, so a preset-named stackup still
+    reads. Shared by the class-rule projection and the keepout zone
+    filter."""
+    name_to_idx = {
+        str(layer.get("name") or ""): i
+        for i, layer in enumerate(ir.stackup)
+        if layer.get("name")
+    }
+    name_to_idx.update({layer_name(i, ir.n_layers): i for i in range(ir.n_layers)})
+    return name_to_idx
+
+
+def _net_layer_force(
+    ir: PcbIR,
+    route_of: dict[int, int],
+    net_classes: Mapping[str, Mapping[str, Any]] | None,
+    name_to_idx: Mapping[str, int],
+) -> np.ndarray:
+    """Per ``net_pins`` entry the outer-layer force implied by the net's
+    class ``layers`` rule (``net_classes`` is the graph's
+    ``{class_name: rules}`` map — ``pcb_net_classes.rules`` rows). A name
+    that resolves to no stackup layer refuses — reading it as
+    "inner-only" would fabricate a layer lock the author never wrote
+    (slice-2a seam item 8). Projection: both outers allowed →
+    ``LAYER_FORCE_FREE``; one → that index; none → ``LAYER_FORCE_INNER``."""
+    n_routed = max(route_of.values(), default=-1) + 1
+    force = np.full(n_routed, LAYER_FORCE_FREE, dtype=np.int8)
+    if not net_classes:
+        return force
+    for ir_net, k in route_of.items():
+        cls = str(ir.net_class[ir_net] or "")
+        if not cls:
+            continue
+        rules = net_classes.get(cls)
+        allowed_names = (rules or {}).get("layers")
+        if not allowed_names:
+            continue
+        unknown = [str(nm) for nm in allowed_names if str(nm) not in name_to_idx]
+        if unknown:
+            raise BadInput(
+                f"net class {cls!r} rule 'layers' names {unknown} — not "
+                f"in the {ir.n_layers}-layer stackup",
+                next=f"fix net class {cls!r} to name a stackup layer",
+                options=sorted(name_to_idx),
+            )
+        allowed = {name_to_idx[str(nm)] for nm in allowed_names}
+        outer = allowed & {0, ir.n_layers - 1}
+        if len(outer) == 2:
+            continue
+        force[k] = np.int8(outer.pop()) if outer else LAYER_FORCE_INNER
+    return force
+
+
+def _net_pin_force(
+    net_pins: tuple[np.ndarray, ...], pin_side: np.ndarray, n_layers: int
+) -> np.ndarray:
+    """Per ``net_pins`` entry the outer-layer force implied by pad sides:
+    every pin top SMD → 0, every pin bottom SMD → ``n_layers - 1``,
+    anything else → ``LAYER_FORCE_FREE`` (a TH pad exists on every
+    layer, so it forces nothing — Decision 6)."""
+    force = np.full(len(net_pins), LAYER_FORCE_FREE, dtype=np.int8)
+    for k, pins in enumerate(net_pins):
+        sides = pin_side[pins]
+        if (sides == 0).all():
+            force[k] = np.int8(0)
+        elif (sides == 1).all():
+            force[k] = np.int8(n_layers - 1)
+    return force
+
+
+def _circle_ring(x: float, y: float, r: float, n: int = 12) -> np.ndarray:
+    """A closed n-gon standing in for a drilled disc — the mesh works in
+    rings, and 12 sides costs little against a millimetre object."""
+    a = np.linspace(0.0, 2.0 * math.pi, n, endpoint=False)
+    ring = np.column_stack([x + r * np.cos(a), y + r * np.sin(a)])
+    return np.vstack([ring, ring[:1]])
+
+
+def _zones(
+    ir: PcbIR,
+    features: Iterable[Mapping[str, Any]] | None,
+    fixed_copper: Iterable[Mapping[str, Any]] | None,
+    name_to_idx: Mapping[str, int],
+) -> tuple[TopoZone, ...]:
+    """Every non-part constrained region (Decision 17's keepouts plus the
+    board-config bodies the router claims — slice-2a seam item 8):
+    mounting holes and authored vias off the IR, ``ftype='keepout'``
+    features (layer-scoped; a name that resolves to no stackup layer
+    contributes nothing to ``layers`` — an unscoped keepout blocks every
+    layer), and ``fixed_copper`` track/pour rows polygonised through the
+    DRC's one shape function. ``ctype='via'`` rows are skipped: the same
+    rows already arrived as :attr:`PcbIR.fixed_vias`."""
+    zones: list[TopoZone] = []
+    for h in ir.mounting_holes:
+        r = max(float(h.drill_mm), float(h.ring_dia_mm)) / 2.0
+        if r <= 0.0:
+            continue
+        zones.append(
+            TopoZone(
+                kind="mounting_hole",
+                ring=_circle_ring(float(h.x), float(h.y), r),
+                name=f"mounting hole {h.x:g},{h.y:g}",
+            )
+        )
+    for v in ir.fixed_vias:
+        r = float(v.dia_mm) / 2.0
+        if r <= 0.0:
+            continue
+        zones.append(
+            TopoZone(
+                kind="fixed_via",
+                ring=_circle_ring(float(v.x), float(v.y), r),
+                net=str(v.net),
+                name=f"fixed via {v.x:g},{v.y:g}",
+            )
+        )
+    for f in features or ():
+        if str(f.get("ftype") or "") != "keepout":
+            continue
+        poly = (f.get("geom") or {}).get("poly") or []
+        ring = np.asarray(poly, dtype=np.float64).reshape(-1, 2)
+        if len(ring) < 3:
+            continue
+        if not np.allclose(ring[0], ring[-1], atol=1e-9):
+            ring = np.vstack([ring, ring[0]])
+        unknown = [
+            str(nm) for nm in (f.get("layers") or ()) if str(nm) not in name_to_idx
+        ]
+        if unknown:
+            raise BadInput(
+                f"keepout names layer(s) {unknown} — not in the "
+                f"{ir.n_layers}-layer stackup",
+                next="fix the keepout's layers to name a stackup layer",
+                options=sorted(name_to_idx),
+            )
+        zones.append(
+            TopoZone(
+                kind="keepout",
+                ring=ring,
+                layers=tuple(sorted(name_to_idx[nm] for nm in (f.get("layers") or ()))),
+                name=str(f.get("reason") or "keepout"),
+            )
+        )
+    if fixed_copper:
+        # Local import: the DRC shape function's module pulls the full
+        # rule stack; zones are built only when authored copper exists.
+        from precis.pcb.drc import _copper_item_polygon
+
+        for row in fixed_copper:
+            ctype = str(row.get("ctype") or "")
+            if ctype == "via":
+                continue  # already a zone via ir.fixed_vias
+            geom = _copper_item_polygon(dict(row))
+            if geom is None or geom.is_empty or not hasattr(geom, "exterior"):
+                continue
+            layer = str(row.get("layer") or "")
+            zones.append(
+                TopoZone(
+                    kind="fixed_copper",
+                    ring=np.asarray(geom.exterior.coords, dtype=np.float64),
+                    layers=(name_to_idx[layer],) if layer in name_to_idx else (),
+                    net=str(row.get("net") or ""),
+                    name=f"fixed copper {ctype or '?'}",
+                )
+            )
+    return tuple(zones)
+
+
 def design_from_ir(
     ir: PcbIR,
     footprints: Mapping[str, Mapping[str, Any]],
     *,
     pin_decls: Mapping[str, Mapping[str, Any]] | None = None,
+    net_classes: Mapping[str, Mapping[str, Any]] | None = None,
+    features: Iterable[Mapping[str, Any]] | None = None,
+    fixed_copper: Iterable[Mapping[str, Any]] | None = None,
 ) -> TopoDesign:
     """Build the one immutable placer input from the IR.
 
@@ -186,6 +438,19 @@ def design_from_ir(
     ``pin_decls`` overrides :attr:`PcbIR.inst_pin_decls` (refdes → the
     ``pin_decls`` component blob) — for callers holding decls that never
     passed through a graph row; ``None`` reads the IR's own.
+
+    ``net_classes`` is the graph's ``{class_name: rules}`` map
+    (``pcb_net_classes`` rows, e.g. a ``{"layers": ["B.Cu"]}`` lock);
+    ``None`` means no class rules — every net free on both outer layers.
+    A ``layers`` name that resolves to no stackup layer raises
+    :class:`~precis.errors.BadInput` — silently reading it as inner-only
+    would fabricate a lock the author never wrote.
+
+    ``features`` is the board's feature list (``ftype='keepout'`` rows
+    become constrained zones); ``fixed_copper`` the authored-copper rows
+    (track/pour become zones; vias already ride :attr:`PcbIR.fixed_vias`).
+    ``None``/empty contributes no zones — mounting holes and authored
+    vias come off the IR itself either way.
 
     Conventions the spec leaves to the builder, fixed here:
     - ``net_pins`` keeps every non-plane signal net with ≥2 pins
@@ -213,6 +478,7 @@ def design_from_ir(
     n = len(parts)
 
     net_pins: list[np.ndarray] = []
+    net_names: list[str] = []
     route_of: dict[int, int] = {}  # ir net id -> net_pins index
     for net_id in range(ir.n_nets):
         cls = str(ir.net_class[net_id] or "").strip().lower()
@@ -222,6 +488,7 @@ def design_from_ir(
         if len(pins) >= 2:
             route_of[net_id] = len(net_pins)
             net_pins.append(pins)
+            net_names.append(str(ir.net_name[net_id]))
 
     rot_q = np.nan_to_num(ir.inst_rot, nan=0.0)
     rot_q = np.round(rot_q / 90.0).astype(np.int64) % 4
@@ -244,6 +511,22 @@ def design_from_ir(
 
     decl = _decls(ir, parts, route_of, pin_decls)
 
+    # The courtyard ring every placer/DRC consumer uses, in the part's
+    # own frame — the mesh's "footprint outline corners" (slice 2).
+    # ``fallback_half_extent_mm`` 1.0 is ``COURTYARD_MIN_SEPARATION_MM/2``
+    # (cost.py — not imported: it pulls the optimizer objective stack).
+    part_outline = tuple(
+        np.asarray(poly, dtype=np.float64) if poly else np.zeros((0, 2))
+        for poly in instance_courtyard_polygons(
+            ir,
+            clearance_mm=COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=1.0,
+        )
+    )
+
+    names = _layer_name_map(ir)
+    pin_side = _pin_sides(ir, footprints)
+
     return TopoDesign(
         parts=parts,
         pin_xy=np.column_stack(
@@ -253,7 +536,7 @@ def design_from_ir(
             ]
         ),
         pin_part=np.asarray(ir.pin_instance, dtype=np.int64),
-        pin_side=_pin_sides(ir, footprints),
+        pin_side=pin_side,
         pin_label=np.asarray(ir.pin_label, dtype=object),
         pin_net=np.asarray(ir.pin_net, dtype=np.int32),
         net_pins=tuple(net_pins),
@@ -270,6 +553,17 @@ def design_from_ir(
         decl_net_plane=decl["net_plane"],
         decl_net_name=decl["net_name"],
         pin_functions=decl["pin_functions"],
+        part_outline=part_outline,
+        net_layer_force=_net_layer_force(ir, route_of, net_classes, names),
+        net_pin_force=_net_pin_force(tuple(net_pins), pin_side, ir.n_layers),
+        zones=_zones(ir, features, fixed_copper, names),
+        net_name=tuple(net_names),
+        pin_wh=np.column_stack(
+            [
+                np.asarray(ir.pin_w, dtype=np.float64),
+                np.asarray(ir.pin_h, dtype=np.float64),
+            ]
+        ),
     )
 
 
@@ -425,11 +719,14 @@ def _decls(
 __all__ = [
     "FREEDOM_BACK_SIDE",
     "FREEDOM_ROTATE",
+    "LAYER_FORCE_FREE",
+    "LAYER_FORCE_INNER",
     "NO_NET",
     "PRESETS",
     "FlexSlot",
     "ObjectiveShares",
     "SwapGroup",
     "TopoDesign",
+    "TopoZone",
     "design_from_ir",
 ]

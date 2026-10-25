@@ -1320,7 +1320,13 @@ def _world_courtyard_polygon(
         fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
     )
     rot = float(ir.inst_rot[inst])
-    return place_points(local, cx=x, cy=y, rot_deg=0.0 if math.isnan(rot) else rot)
+    return place_points(
+        local,
+        cx=x,
+        cy=y,
+        rot_deg=0.0 if math.isnan(rot) else rot,
+        mirrored=bool(ir.inst_bottom[inst]),
+    )
 
 
 def _courtyard_overlap(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:

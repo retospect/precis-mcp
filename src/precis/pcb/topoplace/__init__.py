@@ -39,12 +39,25 @@ from precis.pcb.topoplace.design import (
     ObjectiveShares,
     SwapGroup,
     TopoDesign,
+    TopoZone,
     design_from_ir,
+)
+from precis.pcb.topoplace.mesh import (
+    MeshConflict,
+    MeshConflictError,
+    TopoMesh,
+    build_mesh,
+    edge_blocks_layer,
 )
 from precis.pcb.topoplace.pairmap import PairMap, PairStat, PairSummary, pair_map
 from precis.pcb.topoplace.pins import PinAssignment, assign_pins, check_slots
 from precis.pcb.topoplace.placer import Ladder, TopoPlaceResult, topo_place
-from precis.pcb.topoplace.proxy import ProxyState, evaluate, pin_world
+from precis.pcb.topoplace.proxy import (
+    ProxyState,
+    evaluate,
+    overlap_area,
+    pin_world,
+)
 
 __all__ = [
     "FREEDOM_BACK_SIDE",
@@ -54,6 +67,8 @@ __all__ = [
     "EliteArchive",
     "FlexSlot",
     "Ladder",
+    "MeshConflict",
+    "MeshConflictError",
     "ObjectiveShares",
     "PairMap",
     "PairStat",
@@ -62,11 +77,16 @@ __all__ = [
     "ProxyState",
     "SwapGroup",
     "TopoDesign",
+    "TopoMesh",
     "TopoPlaceResult",
+    "TopoZone",
     "assign_pins",
+    "build_mesh",
     "check_slots",
     "design_from_ir",
+    "edge_blocks_layer",
     "evaluate",
+    "overlap_area",
     "pair_map",
     "pin_world",
     "topo_place",

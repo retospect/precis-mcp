@@ -19,12 +19,19 @@ metric that drifts from its recompute is optimising a ghost.
 Cost is the share-weighted, reference-normalised sum — at the seed
 pose each term contributes exactly its share of J (ObjectiveShares /
 Decision 18), which is what makes "0.8 crossings / 0.2 ratsnest" a
-statement about priority rather than unit conversion.
+statement about priority rather than unit conversion. The third term,
+``overlap``, is the same-side courtyard overlap AREA in mm² — a real
+violation the placer must price between rung-2 evals (Reto ruling
+2026-10-25), counted with the ``bottom_by_refdes`` split DRC applies
+(parts on opposite faces overlap legally).
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+from shapely.geometry import Polygon
 
 from precis.pcb.topoplace.design import ObjectiveShares, TopoDesign
 
@@ -33,15 +40,15 @@ from precis.pcb.topoplace.design import ObjectiveShares, TopoDesign
 _EPS = 1e-9
 
 
-def pin_world(d: TopoDesign, pose: np.ndarray, part: int) -> np.ndarray:
-    """The part's pins in board space under a ``(4,)`` pose row —
+def local_to_world(pts: np.ndarray, pose_row: np.ndarray) -> np.ndarray:
+    """Footprint-local points → board space under a ``(4,)`` pose row —
     mirror (side) then quarter-turn, the same order
     :func:`precis.pcb.pose.rel_to_world` fixes, specialised to exact
     quarter turns so no trig enters the hot loop."""
-    pins = d.pin_xy[d.pin_part == part]
-    x, y, rot_q, side = (float(v) for v in pose[:4])
-    mx = np.where(side >= 0.5, -pins[:, 0], pins[:, 0])
-    ly = pins[:, 1]
+    pts = np.asarray(pts, dtype=np.float64)
+    x, y, rot_q, side = (float(v) for v in pose_row[:4])
+    mx = np.where(side >= 0.5, -pts[:, 0], pts[:, 0])
+    ly = pts[:, 1]
     r = round(rot_q) % 4
     if r == 0:
         rx, ry = mx, ly
@@ -52,6 +59,73 @@ def pin_world(d: TopoDesign, pose: np.ndarray, part: int) -> np.ndarray:
     else:  # r == 3
         rx, ry = -ly, mx
     return np.column_stack([x + rx, y + ry])
+
+
+def pin_world(d: TopoDesign, pose: np.ndarray, part: int) -> np.ndarray:
+    """The part's pins in board space under a ``(4,)`` pose row."""
+    return local_to_world(d.pin_xy[d.pin_part == part], pose)
+
+
+def _ring_geom(d: TopoDesign, row: np.ndarray, part: int):
+    """The part's courtyard in board space as a shapely polygon —
+    ``None`` for a part with no ring (synthetic designs)."""
+    ring = d.part_outline[part] if part < len(d.part_outline) else ()
+    pts = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
+    if len(pts) < 4:
+        return None
+    g = Polygon(local_to_world(pts, row)[:-1])
+    return g if not g.is_empty and g.area > _EPS else None
+
+
+def through_hole_parts(d: TopoDesign) -> np.ndarray:
+    """Per-part flag: any pin on a through-hole land (``pin_side == 2``).
+    A TH part's pads exist on EVERY copper layer (the plated barrel), so
+    an opposite-side pair that includes one still collides — the DRC's
+    pad model agrees (``pads_for_ir`` places TH pads on all layers).
+    Only an SMD-vs-SMD opposite-side pair is a legal facing."""
+    th = np.zeros(len(d.parts), dtype=bool)
+    if len(d.pin_side):
+        for p in np.unique(d.pin_part[d.pin_side == 2]):
+            th[int(p)] = True
+    return th
+
+
+def _collides(sides: np.ndarray, th: np.ndarray, i: int, j: int) -> bool:
+    """The courtyard-pair test — same mount side, or either part
+    through-hole (its barrel occupies the other face's copper too)."""
+    return bool(sides[i] == sides[j] or th[i] or th[j])
+
+
+def _ring_overlap_total(geoms: list[Any], pose: np.ndarray, th: np.ndarray) -> float:
+    """Sum of same-side intersection areas over a placed ring list."""
+    sides = np.asarray(pose)[:, 3] >= 0.5
+    total = 0.0
+    for i, gi in enumerate(geoms):
+        if gi is None:
+            continue
+        x0, y0, x1, y1 = gi.bounds
+        for j in range(i + 1, len(geoms)):
+            gj = geoms[j]
+            if gj is None or not _collides(sides, th, i, j):
+                continue
+            bx0, by0, bx1, by1 = gj.bounds
+            if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+                continue
+            total += float(gi.intersection(gj).area)
+    return total
+
+
+def overlap_area(d: TopoDesign, pose: np.ndarray) -> float:
+    """Total SAME-MOUNT-SIDE courtyard overlap in mm² — the count the
+    mesh's ``conflicts`` reports and placement DRC flags (parts on
+    opposite faces overlap legally; ``_ring_geom`` mirroring makes a
+    bottom part's ring its physical one). Full recompute — the
+    ``ProxyState`` parity-check baseline and the reference magnitude."""
+    return _ring_overlap_total(
+        [_ring_geom(d, pose[i], i) for i in range(len(d.parts))],
+        pose,
+        through_hole_parts(d),
+    )
 
 
 def all_pin_world(d: TopoDesign, pose: np.ndarray) -> np.ndarray:
@@ -204,15 +278,34 @@ class ProxyState:
         for k, np_net in enumerate(d.net_pins):
             for part in np.unique(d.pin_part[np_net]):
                 self._nets_of[int(part)].append(k)
+        #: placed courtyard polygons per part (None = ringless); the
+        #: overlap term re-touches only the moved part's pairs. A zero
+        #: overlap share skips the ring work entirely — the polygons
+        #: and pair scan were the whole marginal cost (3136→1319
+        #: evals/s regression, seam fix2).
+        self._rings = (
+            [_ring_geom(d, self.pose[i], i) for i in range(len(d.parts))]
+            if self.w.overlap
+            else []
+        )
+        self._th = through_hole_parts(d)
+        self._ov = (
+            _ring_overlap_total(self._rings, self.pose, self._th)
+            if self._rings
+            else 0.0
+        )
         #: reference magnitudes for share-normalised cost (floors keep a
         #: zero-crossing seed from dividing by zero — same "one per term
         #: in code" fallback the intent-api spec gives R_i ≈ 0).
         self._ref_cross = max(float(self._cross), 1.0)
         self._ref_len = max(self._len, 1.0)
+        self._ref_ov = max(self._ov, 1.0)
         self._stage: dict[int, np.ndarray] = {}
         self._stage_wires: dict[int, np.ndarray] = {}
+        self._stage_rings: dict[int, Any] = {}
         self._d_cross = 0
         self._d_len = 0.0
+        self._d_ov = 0.0
 
     @property
     def crossings(self) -> int:
@@ -223,11 +316,17 @@ class ProxyState:
         return self._len + self._d_len
 
     @property
+    def overlap(self) -> float:
+        """Same-side courtyard overlap area, mm²."""
+        return self._ov + self._d_ov
+
+    @property
     def cost(self) -> float:
         """Share-weighted, reference-normalised J."""
         return (
             self.w.crossings * self.crossings / self._ref_cross
             + self.w.ratsnest * self.length / self._ref_len
+            + self.w.overlap * self.overlap / self._ref_ov
         )
 
     def _rest_view(self, affected: set[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -245,6 +344,39 @@ class ProxyState:
         """Current (committed ∪ staged) wires OF the affected nets."""
         wires = [self._stage_wires.get(k, self._wires[k]) for k in affected]
         return _concat(wires, list(affected))
+
+    def _ring_of(self, part: int):
+        """The part's ring under the CURRENT staged-or-committed state."""
+        return self._stage_rings.get(part, self._rings[part])
+
+    def _side_of(self, part: int) -> bool:
+        row = self._stage.get(part, self.pose[part])
+        return bool(row[3] >= 0.5)
+
+    def _pair_overlap(self, part: int, geom, side: bool) -> float:
+        """``part``'s same-side overlap total against every OTHER part
+        under the current staged-or-committed state — the unit the
+        ``try_move`` delta telescopes on: each staged move replaces its
+        own pair sums, so a two-part swap lands ``A_new∩B_new −
+        A_old∩B_old`` exactly once."""
+        if geom is None:
+            return 0.0
+        x0, y0, x1, y1 = geom.bounds
+        total = 0.0
+        part_th = self._th[part]
+        for j in range(len(self.d.parts)):
+            if j == part:
+                continue
+            gj = self._ring_of(j)
+            if gj is None or (
+                side != self._side_of(j) and not (part_th or self._th[j])
+            ):
+                continue
+            bx0, by0, bx1, by1 = gj.bounds
+            if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+                continue
+            total += float(geom.intersection(gj).area)
+        return total
 
     def try_move(self, part: int, pose_row: np.ndarray) -> float:
         """Stage ``pose_row`` for ``part``; return Δcost under the staged
@@ -280,7 +412,14 @@ class ProxyState:
             if len(old_w)
             else 0.0
         )
-        self._stage[part] = np.asarray(pose_row, dtype=np.float64).copy()
+        staged_row = np.asarray(pose_row, dtype=np.float64)
+        if self.w.overlap:
+            new_geom = _ring_geom(self.d, staged_row, part)
+            self._d_ov += self._pair_overlap(
+                part, new_geom, staged_row[3] >= 0.5
+            ) - self._pair_overlap(part, self._ring_of(part), self._side_of(part))
+            self._stage_rings[part] = new_geom
+        self._stage[part] = staged_row.copy()
         self._stage_wires.update(new_wires)
         self._d_cross += d_cross
         self._d_len += new_len - old_len
@@ -291,6 +430,9 @@ class ProxyState:
         for p, row in self._stage.items():
             self.pose[p] = row
             self._pw[self.d.pin_part == p] = pin_world(self.d, row, p)
+            if self._rings:
+                self._rings[p] = self._stage_rings.get(p, self._rings[p])
+        self._ov += self._d_ov
         self._wires = [self._stage_wires.get(k, w) for k, w in enumerate(self._wires)]
         self._flat, self._flat_net = _concat(
             self._wires, list(range(len(self.d.net_pins)))
@@ -314,5 +456,7 @@ class ProxyState:
         """Drop all staged rows — the pre-``try_move`` state."""
         self._stage.clear()
         self._stage_wires.clear()
+        self._stage_rings.clear()
         self._d_cross = 0
         self._d_len = 0.0
+        self._d_ov = 0.0

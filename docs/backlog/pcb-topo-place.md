@@ -294,7 +294,19 @@ seam review" means an Opus pass on the API before the slice lands.
 
 Progress: slice 0 (0a/0b/0c), **1a**, **1b** and **1c** landed
 2026-10-25 — `src/precis/pcb/topoplace/` exists (design, pairmap,
-proxy, archive, placer, pins, writeback, summary, runstore); the wheel
+proxy, archive, placer, pins, writeback, summary, runstore); 2a mesh
+in flight on `worktree-topo-s2`: `edge_owner`/`edge_side` per
+constrained edge (a wire may leave its own part; SMD blocks its own
+face, TH/board/zones all layers, scoped keepouts their `layers`),
+`conflicts` as part-index pairs with overlap area + mount-side split
+(same-side = the placer violation; the proxy prices it as the
+`overlap` share), `outline_conflicts`/`zone_conflicts` separated,
+orphan pads refused, `TopoZone`s (keepouts/mounting holes/fixed
+copper), `net_pin_force` + class-rule refusal on unresolvable layer
+names. Reto ruling 2026-10-25: **vias are `(edge_id, t)` positions
+inside a wire — the mesh stays frozen, edge ids never renumber**;
+and `world_courtyard_polygons` mirrors bottom rings (physical
+occupancy). the wheel
 gained `Part.pin`/`pin_functions`/`pins_with`/`swap_group`,
 `net.tie(current=, source=)`, `PinConflict`, `pcb.Max`/`pcb.Min` and
 the offline `over_current`/`led_without_limit` checks; `pcb_place`

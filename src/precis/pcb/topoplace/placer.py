@@ -69,6 +69,10 @@ class TopoPlaceResult:
     #: whose best stopped moving well before the budget ended has
     #: plateaued (1c spec-call).
     last_improve_eval: int = 0
+    #: The legalize post-pass report (``LegalizeResult`` or ``None``
+    #: before legalization existed — always populated now). The
+    #: summary prints its remaining-pairs count.
+    legalize: Any = None
 
     def elites_json(self) -> bytes:
         """Canonical ``elites.json`` bytes — the determinism contract:
@@ -344,17 +348,29 @@ def topo_place(
         best_rank = (final.crossings, final.cost)
 
     assert best_pose is not None
+    # Legalize: the overlap share pulls the anneal toward legal poses,
+    # but the commit gate counts hard collisions as pre-route DRC
+    # errors — on a dense real board the best pose is still illegal
+    # (taz15: 147 errors, pcb-loop handoff). Separate what remains.
+    from precis.pcb.topoplace.legalize import legalize_pose
+
+    legal = legalize_pose(d, best_pose)
+    if legal.moved_mm > 0:
+        best_pose = legal.pose
+    final = ProxyState(d, best_pose, objective)
+    best_rank = (final.crossings, final.cost)
     return TopoPlaceResult(
         best_pose=best_pose,
         best_cost=float(best_rank[1]),
         crossings=int(best_rank[0]),
-        length=float(ProxyState(d, best_pose, objective).length),
+        length=float(final.length),
         evals=evals,
         restarts=n_restarts,
         seed=seed,
         elites=archive.elites,
         ladder_scores=tuple(ladder_scores),
         last_improve_eval=last_improve,
+        legalize=legal,
     )
 
 

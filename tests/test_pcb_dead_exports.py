@@ -219,13 +219,9 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "own docstring names this the topological proxy a later module "
         "combines with its geometric floating-tile check)"
     ),
-    "src/precis/pcb/ir.py::layer_name": (
-        "public index→name map whose only real consumer is "
-        "precis_geom.pcb._layer_name, a byte-identical copy kept because "
-        "the geom wheel can't import precis (its own docstring says so) "
-        "-- zero in-src call sites; _pcb_ops.py's same-named layer_name "
-        "params masked this under the pre-gr515710 merged leaf scan"
-    ),
+    # ir.py::layer_name left this list 2026-10-25: topoplace/design.py's
+    # ``_net_layer_force`` resolves class ``layers`` rules through it —
+    # a real in-src caller (topo-place slice 2a).
     "src/precis/pcb/realize.py::rip_net": (
         "rip-up hook for the not-yet-wired route-edit loop (routeclean, "
         "its last production caller, was deleted with the grid router "

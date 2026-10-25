@@ -174,6 +174,8 @@ def _topo_run(
     effort: int,
     seed: int,
     slug: str,
+    features: list[dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any], str, dict[str, str]] | None:
     """The ``placer='topo'`` run (topo-place spec §1c, Decision 21):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
@@ -189,7 +191,13 @@ def _topo_run(
     from precis_geom.pcb import PinConflict
 
     try:
-        td = _tp.design_from_ir(ir, footprints or {})
+        td = _tp.design_from_ir(
+            ir,
+            footprints or {},
+            net_classes=graph.get("net_classes"),
+            features=features,
+            fixed_copper=fixed_copper,
+        )
         _tp.check_slots(td)
         result = _tp.topo_place(
             td, objective=_tp.PRESETS["compact"], effort=effort, seed=seed
@@ -498,6 +506,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             effort=iters,
             seed=seed,
             slug=(ref.slug if ref is not None and ref.slug else str(pcb_ref_id)),
+            features=features,
+            fixed_copper=design.fixed_copper,
         )
         if topo_out is None:  # PinConflict already recorded
             return

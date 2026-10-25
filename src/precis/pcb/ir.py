@@ -2612,10 +2612,13 @@ def world_courtyard_polygons(
     and the ``via_under_part`` count
     (:func:`precis.pcb.drc.vias_in_courtyard_count`) all share, so the
     reserved shape, the soft cost and the measurement cannot drift.
-    ``mirrored`` stays ``False`` for bottom-side parts, the same call
-    every existing consumer makes (a soft preference, not a clearance
-    guarantee — :func:`precis.pcb.silk.world_courtyard_rings`'s docstring
-    carries the reasoning)."""
+    ``mirrored`` follows :attr:`PcbIR.inst_bottom` — a bottom-side
+    part's courtyard mirrors like its pads do (the physical occupancy;
+    until 2026-10-25 it stayed unmirrored as a soft preference, which
+    put an asymmetric bottom part's courtyard beside its own pads —
+    topo-place slice-2a seam item 4).
+    :func:`precis.pcb.silk.world_courtyard_rings` keeps its own
+    ``mirror=False`` for the fiducial standoff use it documents."""
     out: list[list[tuple[float, float]]] = []
     for i, poly in enumerate(
         instance_courtyard_polygons(
@@ -2631,7 +2634,11 @@ def world_courtyard_polygons(
         rot = float(ir.inst_rot[i])
         out.append(
             landpattern.place_points(
-                poly, cx=x, cy=y, rot_deg=0.0 if math.isnan(rot) else rot
+                poly,
+                cx=x,
+                cy=y,
+                rot_deg=0.0 if math.isnan(rot) else rot,
+                mirrored=bool(ir.inst_bottom[i]),
             )
         )
     return out
