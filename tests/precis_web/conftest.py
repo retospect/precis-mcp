@@ -147,6 +147,10 @@ class FakeStore(_FakeStoreBase):
         self.missing_pdf_shas: set[str] = set()
         self.storage_paths: dict[str, str] = {}
         self.storage_path_writes: list[tuple[str, str]] = []
+        #: {pdf_sha256: size_bytes} — the ``pdfs.size_bytes`` the
+        #: ``pdf_size_bytes`` fake reports (the /files route's
+        #: cite_key-fallback corroboration).
+        self.pdf_sizes: dict[str, int] = {}
         #: Canned sidebar-nav hits per scope_ref_id: lists of
         #: (block, ref, score) for the search_blocks_* fakes.
         self.nav_hits: dict[int, list[Any]] = {}
@@ -963,6 +967,13 @@ class FakeStore(_FakeStoreBase):
         """The seeded authoritative path (``resolve_pdf_for_ref`` prefers it),
         or ``None`` so resolution falls back to the cite_key convention."""
         return self.storage_paths.get(pdf_sha256) or None
+
+    def pdf_size_bytes(self, pdf_sha256, *, conn=None):
+        """The ingest-recorded byte size — the /files route's corroboration
+        on a cite_key-convention hit. ``None`` unless a test seeds
+        ``pdf_sizes`` (mirroring a ref whose ``pdfs`` row is unknown to
+        this fake)."""
+        return self.pdf_sizes.get(pdf_sha256)
 
     def set_pdf_storage_path(self, pdf_sha256, path, *, conn=None):
         """Record + reflect a storage_path correction (the /rename path)."""

@@ -139,6 +139,29 @@ class PdfMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def pdf_size_bytes(
+        self, pdf_sha256: str, *, conn: Connection | None = None
+    ) -> int | None:
+        """The byte size recorded at ingest, or ``None``.
+
+        The signed-download route reads it as a cheap corroboration when
+        the file was resolved off the ``cite_key`` convention rather than
+        the recorded ``storage_path`` — a convention-path hit can be a
+        stale earlier PDF of the same ref (same name, different bytes),
+        and the link promises ``sha256=<sha>``.
+        """
+
+        def _do(c: Connection) -> int | None:
+            row = c.execute(
+                "SELECT size_bytes FROM pdfs WHERE pdf_sha256 = %s", (pdf_sha256,)
+            ).fetchone()
+            return int(row[0]) if row else None
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def is_one_page_preview(self, ref: Any) -> bool:
         """Corroborated one-page-preview verdict (gr514187).
 

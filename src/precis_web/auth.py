@@ -83,8 +83,11 @@ _OPEN_PATHS = frozenset({"/healthz"})
 #: per-user ``?t=`` feed token because phone podcast clients handle Basic
 #: auth on enclosure URLs inconsistently — the route (not this
 #: middleware) does that check, and falls back to Basic when no token is
-#: presented. See :mod:`precis_web.routes.podcast`.
-_SELF_AUTH_PREFIXES = ("/podcast",)
+#: presented. See :mod:`precis_web.routes.podcast`. ``/files`` accepts a
+#: signed HMAC ``?t=`` token minted by the MCP ``pdf_link`` view — with
+#: no Basic fallback, since the token *is* the credential. See
+#: :mod:`precis_web.routes.files`.
+_SELF_AUTH_PREFIXES = ("/podcast", "/files")
 
 
 def _is_self_auth(path: str) -> bool:

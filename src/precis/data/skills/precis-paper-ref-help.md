@@ -42,6 +42,7 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` (drop_body takes `'keep_pdf': True` to keep the stored pdf) |
 | export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
 | rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` or `precis paper restore <file> --apply` |
+| download a held PDF | `get(id=…, view='pdf_link')` — signed URL, no bytes over MCP |
 | convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
 | attach a legal PDF | `put(id=…, args={'pdf_url': '<url>'})` |
@@ -293,6 +294,14 @@ target stays retired. `dry_run` previews the counts.
 CLI twin: `precis paper restore <file> [--apply] [--target new]
 [--handle s]` — a merged `precis paper dump` file as one slice, dry
 run unless `--apply`, events stamped `source='cli'`.
+
+`get(id=…, view='pdf_link')` is the way a held PDF leaves the corpus:
+it returns a signed `GET /files/pdf/<sha>?t=<token>` URL (sha, byte
+size and page count, expiry, and the `curl` line), never the bytes.
+The link is reusable until it expires — `args={'ttl_s': N}` (default
+600 s, cap 3600 s). A ref with no PDF refuses and points at
+`pdf_url`. When the reply's first line says `PRECIS_WEB_BASE_URL` is
+unset the URL is path-only — prepend the precis_web origin yourself.
 
 ## A worker stamped a paper as done/failed — how do I re-run it?
 

@@ -223,7 +223,9 @@ def ensure_pepper(*, store: Store) -> str:
 
     Called by ``precis users add`` so the peppered path is what a new
     deployment gets by default without the operator having to know the
-    concept exists.
+    concept exists. ``vault.set_secret`` is ``ON CONFLICT DO UPDATE`` —
+    last-writer-wins — so the re-read makes two racing first-mints
+    converge on the surviving key rather than each returning its own.
     """
     from precis import secrets as vault
 
@@ -232,7 +234,7 @@ def ensure_pepper(*, store: Store) -> str:
         return existing
     minted = _stdlib_secrets.token_urlsafe(32)
     vault.set_secret(PEPPER_SECRET, minted, store=store)
-    return minted
+    return resolve_pepper(store=store) or minted
 
 
 def _derive(password: str, *, salt: bytes, pepper: str | None) -> bytes:

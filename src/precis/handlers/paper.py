@@ -32,6 +32,7 @@ import difflib
 import json
 import logging
 import re
+import shlex
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any, ClassVar
@@ -227,6 +228,7 @@ _SUPPORTED_VIEWS = (
     "authors",
     "chunks",
     "ops",
+    "pdf_link",
 )
 
 
@@ -445,8 +447,9 @@ class PaperHandler(Handler):
         # ``get`` reads the ``view='ops'`` slice window only
         # (gr517423: :meth:`_render_ops_view`); the deprecated
         # ``offset``/``limit`` aliases ride along through
-        # ``_slice_args.slice_window``.
-        "get": ArgsSpec({"page", "page_size", "offset", "limit"}),
+        # ``_slice_args.slice_window``. ``ttl_s`` is the
+        # ``view='pdf_link'`` token-lifetime knob (gr517423 slice 3).
+        "get": ArgsSpec({"page", "page_size", "offset", "limit", "ttl_s"}),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
         # spelling the slim schema pushes (kind-specific fields ride
         # args=), and acquire's own BadInput hint names verify=/title=.
@@ -5252,11 +5255,82 @@ class PaperHandler(Handler):
             ),
         )
 
+    def _render_pdf_link_view(
+        self, ref: Ref, args: dict[str, Any] | None = None
+    ) -> Response:
+        """``view='pdf_link'`` — a signed, short-lived download URL for
+        the ref's held PDF (gr517423 slice 3: :mod:`precis.file_links`).
+        Bytes never ride an MCP result; precis_web streams them to the
+        token bearer at ``GET /files/pdf/<sha>?t=<token>``. Reusable
+        until expiry — ``args={'ttl_s': …}``, default 600, cap 3600.
+        """
+        from precis import file_links
+        from precis import secrets as vault
+
+        handle = _pa(ref)
+        sha = getattr(ref, "pdf_sha256", None)
+        if not sha:
+            raise BadInput(
+                f"{handle} holds no PDF — nothing to link",
+                next=(
+                    f"put(kind='paper', id='{handle}', "
+                    "args={'pdf_url': 'https://…/x.pdf'})"
+                ),
+            )
+        ttl_raw = (args or {}).get("ttl_s", file_links.DEFAULT_TTL_S)
+        try:
+            # ``int(float('inf'))`` raises OverflowError — JSON Infinity
+            # arrives as exactly that.
+            ttl_s = int(ttl_raw)
+        except (TypeError, ValueError, OverflowError):
+            raise BadInput(
+                f"args['ttl_s'] must be seconds, got {ttl_raw!r}",
+                next=f"get(kind='paper', id='{handle}', view='pdf_link')",
+            ) from None
+        token = file_links.mint("get", sha, ref.id, ttl_s, store=self.store)
+        exp = file_links.parse(token).exp
+        path = f"/files/pdf/{sha}?t={token}"
+        base = (
+            vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=self.store) or ""
+        ).rstrip("/")
+        url = f"{base}{path}" if base else path
+        # ``pdfs`` carries the ingest-time byte size and physical page
+        # count — surfaced so the caller can size the fetch before it
+        # commits to the download.
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT size_bytes, page_count FROM pdfs WHERE pdf_sha256 = %s",
+                (sha,),
+            ).fetchone()
+        size_b = f"{int(row[0])} B" if row else "unknown"
+        pages = str(int(row[1])) if row else "unknown"
+        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines: list[str] = []
+        if not base:
+            lines.append(
+                "PRECIS_WEB_BASE_URL is not set — the link below is "
+                "path-only; prepend the precis_web origin to fetch it "
+                "(the operator sets it via the vault)."
+            )
+        stem = ref.slug or handle
+        lines += [
+            f"# {handle} — PDF download link",
+            f"url: {url}",
+            f"expires: {expires} (reusable until then)",
+            f"sha256: {sha}",
+            f"bytes: {size_b} · pages: {pages}",
+            "",
+            f"curl -fo {shlex.quote(stem + '.pdf')} '{url}'",
+        ]
+        return Response(body="\n".join(lines))
+
     def _render_view(
         self, ref: Ref, view: str, args: dict[str, Any] | None = None
     ) -> Response:
         if view == "ops":
             return self._render_ops_view(ref, args)
+        if view == "pdf_link":
+            return self._render_pdf_link_view(ref, args)
         if view == "log":
             # Per-ref chronological event log across every subsystem
             # that writes to ref_events (chase, fetcher, provenance,

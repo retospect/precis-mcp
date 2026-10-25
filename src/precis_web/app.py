@@ -177,6 +177,7 @@ def create_app(
         factory,
         favorites,
         figure,
+        files,
         flags,
         graph,
         gripes,
@@ -217,6 +218,7 @@ def create_app(
     app.include_router(datasheets.router)
     app.include_router(papers_needed.router)
     app.include_router(podcast.router)
+    app.include_router(files.router)
     app.include_router(flags.router)
     app.include_router(favorites.router)
     app.include_router(items.router)

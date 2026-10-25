@@ -98,3 +98,56 @@ def test_feed_token_digest_matches_mint() -> None:
     assert feed_token_digest(token) == digest
     assert len(token) >= 32
     assert mint_feed_token()[0] != token
+
+
+def test_ensure_pepper_mints_once_then_reads_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First call vaults a fresh pepper; later calls return the stored
+    one — a silent re-mint would invalidate every peppered hash."""
+    from typing import Any
+
+    from precis import users
+
+    monkeypatch.delenv("PRECIS_WEB_PASSWORD_PEPPER", raising=False)
+    vault_state: dict[str, str] = {}
+    sets: list[str] = []
+
+    def fake_get(name: str, *, store: Any = None, default: Any = None) -> Any:
+        return vault_state.get(name, default)
+
+    def fake_set(name: str, value: str, *, store: Any) -> None:
+        sets.append(name)
+        vault_state[name] = value
+
+    monkeypatch.setattr("precis.secrets.get_secret", fake_get)
+    monkeypatch.setattr("precis.secrets.set_secret", fake_set)
+    bogus: Any = object()
+    first = users.ensure_pepper(store=bogus)
+    assert sets == [users.PEPPER_SECRET]
+    assert users.ensure_pepper(store=bogus) == first
+    assert sets == [users.PEPPER_SECRET]
+
+
+def test_ensure_pepper_race_converges_on_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``vault.set_secret`` is ON CONFLICT DO UPDATE: a racer's mint
+    landing between our set and the re-read wins — the caller gets the
+    stored survivor, not its own (now dead) value."""
+    from typing import Any
+
+    from precis import users
+
+    monkeypatch.delenv("PRECIS_WEB_PASSWORD_PEPPER", raising=False)
+    vault_state: dict[str, str] = {}
+    monkeypatch.setattr(
+        "precis.secrets.get_secret",
+        lambda name, *, store=None, default=None: vault_state.get(name, default),
+    )
+    monkeypatch.setattr(
+        "precis.secrets.set_secret",
+        lambda name, value, *, store: vault_state.__setitem__(name, "racer"),
+    )
+    bogus: Any = object()
+    assert users.ensure_pepper(store=bogus) == "racer"
