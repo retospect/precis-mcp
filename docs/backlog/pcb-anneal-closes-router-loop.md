@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: parked
 title: PCB anneal closes the router loop
 pillar: 3d-design
 prio: high
@@ -7,6 +7,14 @@ model: opus
 ---
 
 # PCB anneal closes the router loop
+
+**Superseded (Reto 2026-10-25).** `anneal_route_loop` and the
+route-feedback machinery it drove (`feedback.py`, `apply_route_feedback`,
+the `route_*` margin terms, priced `OUTLINE_GROW`/`LAYER_ADD`,
+`ExpansionCaps`) are deleted; `loop`/`expansion_caps` survive one release
+as accepted-and-ignored job args. [pcb-topo-place](pcb-topo-place.md) is
+the placer/router path; this file stays as the record of the feedback-loop
+design.
 
 ## Status — core loop shipped, evidence gaps remain (2026-10-13, bl-pcb-anneal)
 

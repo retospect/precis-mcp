@@ -147,72 +147,6 @@ def _authored_members(store: Store, ref_id: int) -> dict[str, set[tuple[str, str
     }
 
 
-@pytest.mark.parametrize("loop", [-1, 4])
-def test_pcb_route_direct_job_refuses_bad_loop_before_board_read(
-    store: Store, monkeypatch, loop
-):
-    def unexpected_read(*args, **kwargs):
-        pytest.fail("invalid loop must refuse before reading the board")
-
-    monkeypatch.setattr(store, "pcb_graph", unexpected_read)
-    ctx = _FakeCtx(store, params={"pcb_ref_id": -1, "loop": loop})
-    _route(ctx)
-    assert len(ctx.failures) == 1
-    assert "loop=" in str(ctx.failures[0])
-    assert not ctx.summaries
-
-
-def test_pcb_route_loop_runs_rounds_and_persists_digest(store: Store):
-    """``loop=N`` drives ``anneal_route_loop`` end to end under the same
-    guards as the single anneal: a clean round-0 route ends the loop
-    early (``complete``), the summary gains the loop line, and
-    ``meta.last_route.loop`` persists per-round counts plus the conflict
-    digest — which ``view='route-status'`` then shows a line of."""
-    ref_id = _seed(store, "route-loop", _DESIGN)
-    ctx = _FakeCtx(
-        store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 0, "loop": 2}
-    )
-    _route(ctx)
-
-    assert not ctx.failures
-    ref = store.get_ref(kind="pcb", id="route-loop")
-    assert ref is not None
-    loop_meta = ref.meta["last_route"]["loop"]
-    assert loop_meta["complete"] is True
-    assert loop_meta["rounds_run"] == 1  # round 0 routed the only net
-    assert loop_meta["expansion_status"] == "disabled:no-caps"
-    assert loop_meta["rounds"][0]["routed"] == 1
-    assert loop_meta["proposed_expansions"] == []
-    assert loop_meta["committed_round"] == loop_meta["best_round"]
-    assert loop_meta["refused_rounds"] == []
-    assert "route-loop: complete" in loop_meta["digest"]
-    summary = "\n".join(text for kind, text in ctx.summaries if kind == "job_summary")
-    assert "route-loop: complete" in summary
-    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
-    resp = PcbHandler(hub=Hub(store=store)).get(id="route-loop", view="route-status")
-    assert "route-loop: complete" in resp.body
-    assert "meta.last_route.loop" in resp.body
-
-
-def test_pcb_route_loop_malformed_expansion_caps_fails_input(store: Store):
-    """A malformed ``expansion_caps`` on a loop job is an input failure,
-    never silently ignored — a refused cap must read as one."""
-    ref_id = _seed(store, "route-loop-badcaps", _DESIGN)
-    ctx = _FakeCtx(
-        store,
-        params={
-            "pcb_ref_id": ref_id,
-            "iters": 50,
-            "loop": 2,
-            "expansion_caps": {"outline_max_mm": [120.0, 100.0]},
-        },
-    )
-    _route(ctx)
-    assert len(ctx.failures) == 1
-    assert "expansion_caps" in ctx.failures[0][0]
-    assert ctx.failures[0][1] == "input"
-
-
 def test_pcb_route_writes_realized_route_and_copper(store: Store) -> None:
     ref_id = _seed(store, "route-x", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
@@ -974,7 +908,7 @@ def test_routed_net_is_never_failed_by_a_placement_chord_crossing(
     """A genuinely fully-routed net must never be reported failed/unrouted
     solely because its PLACEMENT-time centroid chord crosses another net's.
 
-    `_residual_crossings` sweeps `segment_points` — instance-centroid
+    `_residual_crossings` sweeps `segment_points` — pad-to-pad
     straight chords, placement-fidelity geometry — while the maze router's
     real copper is crossing-free by construction (claimed on a shared
     occupancy grid before it is drawn). Before the round-7 fix, that sweep
@@ -1415,6 +1349,7 @@ def test_pcb_route_second_run_starts_where_the_first_ended(
 ) -> None:
     """Run 2's ``cost_before`` equals run 1's ``cost_after``: the stored
     sketch + netlist snapshot rebuild exactly the state run 1 settled in."""
+    real_optimize = pcb_route.optimize
     res1 = _capture_optimize(monkeypatch, force_swap=True)
     ref_id = _seed(store, "route-resume-cost", _PIN_SWAP_DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
@@ -1422,12 +1357,18 @@ def test_pcb_route_second_run_starts_where_the_first_ended(
     assert not ctx1.failures
     assert _snap(store, ref_id)[("U0", "right")]["net"] == "B"
 
+    # Un-chain before run 2: ``_capture_optimize`` wraps whatever
+    # ``pcb_route.optimize`` currently is — still run 1's swapping wrapper
+    # — so a second capture would force-swap U0's pins again on this run
+    # (undoing the stored swap). At pad-granular segment costs that swap
+    # moves real endpoints and the extra mutation breaks the resume
+    # invariant this test measures; restore the real function first.
+    monkeypatch.setattr(pcb_route, "optimize", real_optimize)
     res2 = _capture_optimize(monkeypatch, force_swap=False)
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     _route(ctx2)
     assert not ctx2.failures
-    # ``res1[0]`` is run 1's result: the second ``_capture_optimize`` wraps
-    # the first wrapper, so run 2's result is appended to ``res1`` as well.
+    # ``res1[0]`` is run 1's result.
     assert abs(res2[-1].cost_before - res1[0].cost_after) < 1e-6, (
         res2[-1].cost_before,
         res1[0].cost_after,

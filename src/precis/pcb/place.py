@@ -16,9 +16,9 @@ part are re-penalised — O(deg·W) per iteration instead of the O(W²) full
 rebuild, which at route-round-trip iteration counts (1500→4500) is the
 difference between sub-second and minutes inside one MCP call.
 
-The actual place↔route round-trip against Freerouting is
-wired in Slice 6 (the export/router integration); this module is the placer +
-the H/V route-*feasibility* estimate it hands the LLM in the meantime.
+This module is the legacy placer + the H/V route-*feasibility* estimate
+``view='feasibility'`` hands the LLM. Retained for that read view only
+(pcb-router-drop letter E: removal is gated on the topo replacement).
 """
 
 from __future__ import annotations

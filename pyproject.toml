@@ -975,7 +975,6 @@ extend-exclude = [
     "scripts/onto-repoint",
     "scripts/paper-count",
     "scripts/paper-monitor-ingest-dir",
-    "scripts/pcb-pr-bench",
     "scripts/pcb-route-bench",
     "scripts/perplexity-monitor-ingest-dir",
     "scripts/pgb-pools",

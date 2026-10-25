@@ -1,20 +1,20 @@
-"""gr503694 + Reto Q7: the field polish never writes a continuous or
+"""gr503694 + Reto Q7: a place job never persists a continuous or
 unnormalised rotation, and the 90° preference holds on the real bench
-board — priced, not forced.
+board.
 
 The esp32c3 dogfood (29 parts, seeds 1-5) wrote every part with a
 continuous, unnormalised θ (C1 324.05°, U1 494.87°, C11 −88.56°) on
-three seeds and parked 15-18 of 29 off the 90° grid on the other two.
-This runs the real place job per seed and asserts what the store must
-never again see:
+three seeds and parked 15-18 of 29 off the 90° grid on the other two —
+the field polish that wrote them is deleted (Reto 2026-10-25), but the
+store-level invariant stays: the anneal's ROTATE moves are ±90° deltas
+and the preferred snap writes grid points, so this runs the real place
+job per seed and asserts what the store must never again see:
 
 - every stored rotation is a multiple of the finest rotation tier
-  (``field.ROT_SNAP_DEG``, 45° — 45° poses are explicitly allowed, Q7
-  2026-10-22) in [0, 360) — the fixture authors no rotation, so every
-  stored value is engine-written;
-- at most 10 % of parts sit off the 90° grid (the rotation cost keeps
-  90° cheapest; an off-90 pose must beat its best 90° re-snap by
-  ``field.ROT_TILT_MIN_GAIN`` on the priced energy).
+  (45° — 45° poses are explicitly allowed, Q7 2026-10-22) in [0, 360) —
+  the fixture authors no rotation, so every stored value is
+  engine-written;
+- at most 10 % of parts sit off the 90° grid.
 
 Place-only (no route job): rotations are what the place job persists.
 ~12s per seed, so ``slow`` and parametrized like the fixture's own
@@ -33,7 +33,6 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
-from precis.pcb import field
 from precis.store import Store
 from tests.test_pcb_reference_end_to_end import _drain_one_job
 
@@ -42,10 +41,12 @@ pytestmark = pytest.mark.slow
 FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "esp32c3_reference.json"
 SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5)
 
+#: The finest rotation tier a pose may be written on — 45° poses are
+#: explicitly allowed (Q7 2026-10-22).
+ROT_SNAP_DEG = 45.0
+
 #: D5's strong-90° bound: at most this fraction of a board's parts may
 #: sit off the 90° grid (gr503694 fix direction, Reto's dogfood review).
-#: Q7 makes 45° poses legal writes, but each must still beat its best 90°
-#: re-snap by ``field.ROT_TILT_MIN_GAIN`` (d1ea8c938), so the bound holds.
 MAX_OFF90_FRAC = 0.10
 
 
@@ -58,8 +59,7 @@ def test_esp32c3_placed_rotations_are_grid_values(store: Store, seed: int) -> No
     assert "created" in pcb.put(id=slug, args=design).body
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
-    # The polish is opt-in until the silk gate lands; this guards its writes.
-    place_args = {"op": "place", "seed": seed, "field_polish": True}
+    place_args = {"op": "place", "seed": seed}
     assert "enqueued" in pcb.put(id=slug, args=place_args).body
     _drain_one_job(store, ref.id)
 
@@ -67,7 +67,7 @@ def test_esp32c3_placed_rotations_are_grid_values(store: Store, seed: int) -> No
     rots = {str(i["refdes"]): float(i["rot"]) for i in graph["instances"]}
     assert rots, "no placed instances"
     bad_range = {r: v for r, v in rots.items() if not 0.0 <= v < 360.0}
-    snap = field.ROT_SNAP_DEG
+    snap = ROT_SNAP_DEG
     bad_grid = {r: v for r, v in rots.items() if min(v % snap, snap - v % snap) > 1e-6}
     off90 = {r: v for r, v in rots.items() if 1e-6 < v % 90.0 < 90.0 - 1e-6}
     assert not bad_range, f"seed {seed}: rotations outside [0, 360): {bad_range}"

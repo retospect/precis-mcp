@@ -26,7 +26,7 @@ is a traced frame).
 
 The LLM, as designer, sets and adjusts objective weights and constraints
 in code, following best practice, with the reason written next to each
-call. The **numeric optimiser** (anneal, descent, field polish, BO) never
+call. The **numeric optimiser** (anneal, descent, BO) never
 changes the weights of the objective it is minimising within a run —
 that would be self-grading. The outer LLM loop tunes weights explicitly
 *between* runs; every run records the weights it ran with. The house
@@ -174,8 +174,8 @@ print(rt.summary())
 | intent | exists today | status |
 |---|---|---|
 | objective terms | `cost.py` USD terms (`crossings`, `routing_area`, `via_usd`, bbox area), `CostConfig` | weights-as-shares + R_i: **GAP** (small; wraps `CostConfig`) |
-| place budgets/seed | `pcb_place` params `iters`, `seed`, `snap`, `groups`, `field_polish` | exists |
-| route budgets | `RealizeConfig.max_expansions` (60k), `vroute` 6k, `loop` ≤ `LOOP_MAX_ROUNDS`=3, `expansion_caps`, `budget_s` | exists; `pcb.budget` is a rename |
+| place budgets/seed | `pcb_place` params `iters`, `seed`, `snap`, `groups` (`field_polish` accepted-ignored, engine deleted 2026-10-25) | exists |
+| route budgets | `RealizeConfig.max_expansions` (60k), `vroute` 6k, `budget_s` (`loop`/`expansion_caps` accepted-ignored, deleted 2026-10-25) | exists; `pcb.budget` is a rename |
 | in-script route | job-only; `bench.py` knows sanity/power; no DB-free Board→IR | **GAP** (gr513867) |
 | fixed / leash / side | component `fixed`, `max_travel_mm`, `fixed_side`, `group_fixed` (0219) | exists |
 | rooms | `pcb_instances.room_id` column, handler validates `ftype='room'` | enforcement **GAP** (stackup-regions slice 5) |
@@ -189,7 +189,7 @@ print(rt.summary())
 | pin/plane affinity | `plane_affinity` term specced | **GAP** (stackup-regions slice 6) |
 | lazy geometry refs | none; features are literal polygons | **GAP** |
 | intent on the run | trace frames specced (pcb-workspace-code §Construction traces) | **GAP** (intent block, R_i, digest of binding constraints) |
-| pr engine | `precis.pcb.pr` v1 (free parts, beliefs), not wired; vroute stays production | consumes the same intent block once it beats vroute |
+| pr engine | `precis.pcb.pr` v1 (free parts, beliefs) — deleted Reto 2026-10-25; vroute stays production | n/a |
 
 ## Slices
 

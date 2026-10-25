@@ -59,8 +59,8 @@ def test_svg_option_writes_a_drawing(tmp_path: Path) -> None:
 @pytest.mark.parametrize("seed", [1, 2, 3])
 def test_unpinned_bottom_header_migrates_to_the_top_one_and_routes(seed: int) -> None:
     """Unpin J_B and place: it moves under J_T, same orientation, legal; then
-    it routes 20/20 with 0 DRC. Needs both opt-in placer flags
-    (``pin_point_cost``, ``centroid_jump``), which ``sb.place`` turns on."""
+    it routes 20/20 with 0 DRC. Exercises pad-granular segment costs and the
+    centroid-jump move, both always on since gr499239's flags were retired."""
     spec = sb.SPECS["free-bottom"]
     built = sb.build(spec)
     before = sb.net_length_mm(built, "TB")

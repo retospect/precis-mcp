@@ -611,11 +611,6 @@ class PcbIR:
     #: entry pours the whole board at priority 0, as every plane did before.
     #: Written only through :meth:`promote_plane`/:meth:`demote_plane`.
     plane_regions: dict[tuple[int, int], tuple[Any, int]] = field(default_factory=dict)
-    #: Measure a connection at its PADS (:func:`pin_point`) instead of the
-    #: instance centroids in :func:`segment_points`. Off: a part's rotation
-    #: is invisible to the placement cost. Set from
-    #: ``OptimizeConfig.pin_point_cost`` when the engine starts.
-    pin_point_cost: bool = False
 
     # -- sizes --------------------------------------------------------
     @property
@@ -725,10 +720,11 @@ class PcbIR:
         self.net_plane_layers[net_id] = np.uint16(
             int(self.net_plane_layers[net_id]) | (1 << layer)
         )
-        if region is None and priority == 0:
-            self.plane_regions.pop((net_id, layer), None)
-        else:
-            self.plane_regions[(net_id, layer)] = (region, int(priority))
+        regions = dict(self.plane_regions)
+        regions.pop((net_id, layer), None)
+        if region is not None or priority != 0:
+            regions[(net_id, layer)] = (region, int(priority))
+        self.plane_regions = regions
         for seg_id in np.flatnonzero(self.seg_net == net_id):
             self.dirty_l1[seg_id] = True
             self.dirty_l4[seg_id] = True
@@ -2363,23 +2359,20 @@ def compute_region_density(ir: PcbIR, *, cell_mm: float = 5.0) -> None:
 
 # ── L3 geometric crossing count: the real `crossings` cost-term backing ──
 # (see `same_layer_crossing_bound`'s docstring for the forest proof of
-# why the Euler bound above cannot back this term). Uses plain L3
-# instance-centroid geometry, same fidelity as
-# `compute_gap_capacity`/`nearest_other_instance` above — no shapely, no
-# sub-instance pad offsets (those live only in pinswap.py's own local
-# geometry, not in the IR).
+# why the Euler bound above cannot back this term). Endpoints are the
+# pads themselves (`pin_point`) — centroid granularity made ROTATE
+# cost-neutral (gr499239) — but still no shapely.
 
 
 def segment_points(
     ir: PcbIR, seg_id: int
 ) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    """``seg_id``'s two endpoints: at INSTANCE-centroid granularity by
-    default — the L3 fidelity the other geometric cost.py estimators use —
-    which makes ROTATE cost-neutral (a header at rot 0 and rot 180 scores
-    identically, so the anneal's accepted rotations are a random walk and a
-    bottom header pulled under its partner ends pin-reversed about half the
-    time). With ``ir.pin_point_cost`` the endpoints are the PADS
-    (:func:`pin_point`), and orientation is priced.
+    """``seg_id``'s two endpoints: the PADS (:func:`pin_point`), so a
+    part's orientation is priced — at instance-centroid granularity
+    ROTATE was cost-neutral (a header at rot 0 and rot 180 scored
+    identically, so the anneal's accepted rotations were a random walk
+    and a bottom header pulled under its partner ended pin-reversed
+    about half the time, gr499239).
     ``None`` if either endpoint's instance has no L3 position yet —
     callers exclude that segment rather than treating a NaN position as
     the origin, which would manufacture phantom crossings at (0, 0) among
@@ -2389,15 +2382,8 @@ def segment_points(
     :mod:`precis.pcb.optimize`'s per-move crossing delta, so both derive
     the identical geometry from one place."""
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-    if ir.pin_point_cost:
-        pa, pb = pin_point(ir, a), pin_point(ir, b)
-        return None if pa is None or pb is None else (pa, pb)
-    ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
-    xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
-    xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
-    if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
-        return None
-    return (xa, ya), (xb, yb)
+    pa, pb = pin_point(ir, a), pin_point(ir, b)
+    return None if pa is None or pb is None else (pa, pb)
 
 
 #: Gap left around a part's outermost PAD EDGE when deriving its

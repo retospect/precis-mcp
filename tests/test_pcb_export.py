@@ -1,32 +1,19 @@
-"""Exporters + Freerouting round-trip.
+"""Exporters.
 
 Pure exporter coverage (BOM grouping, CPL coordinate/rotation conversion,
 KiCad netlist, Specctra DSN structure, the mechanical 0041-bridge profile),
-plus the handler export/route views over a live store. The router itself is
-gated: with no Freerouting backend the round-trip degrades to a .dsn-only pass
-(asserted), and a stub backend drives the routed path.
+plus the handler export views over a live store.
 """
 
 from __future__ import annotations
 
-import stat
-import sys
-from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
-from precis.pcb import export, route
-
-# ``_stub_router`` below writes a ``#!/bin/sh`` stub and execs it directly
-# — POSIX execute-shebang support required (Windows can't invoke a .sh as
-# a native binary; same family as ``tests/test_claude_agent.py``).
-_needs_posix_stub = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="POSIX execute-shebang support required for the frstub.sh pattern",
-)
+from precis.pcb import export
 
 # ── a small placed board (centroid coords in mm) ─────────────────────
 _MODEL = {
@@ -287,106 +274,6 @@ def test_export_model_attaches_pins_and_filters_empty_nets():
     assert model["nets"][0]["width_mm"] == 0.3
 
 
-# ── Freerouting wrapper (gated) ──────────────────────────────────────
-def test_route_dsn_skips_without_backend(tmp_path, monkeypatch):
-    monkeypatch.delenv("PRECIS_FREEROUTING_JAR", raising=False)
-    monkeypatch.delenv("PRECIS_FREEROUTING_BIN", raising=False)
-    dsn = tmp_path / "x.dsn"
-    dsn.write_text(export.specctra_dsn(_MODEL, name="x"), encoding="utf-8")
-    res = route.route_dsn(dsn)
-    assert res.skipped and not res.ok and res.ses is None
-
-
-def _stub_router(tmp_path: Path, *, unrouted: int) -> str:
-    """A fake freerouting CLI: writes the .ses given by -do, prints a count."""
-    script = tmp_path / "frstub.sh"
-    script.write_text(
-        "#!/bin/sh\n"
-        'out=""\n'
-        "while [ $# -gt 0 ]; do\n"
-        '  if [ "$1" = "-do" ]; then out="$2"; shift; fi\n'
-        "  shift\n"
-        "done\n"
-        'echo "(session)" > "$out"\n'
-        f'echo "{unrouted} incomplete connections"\n',
-        encoding="utf-8",
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IRUSR)
-    return str(script)
-
-
-@_needs_posix_stub
-def test_route_dsn_ok_with_stub(tmp_path, monkeypatch):
-    monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=0))
-    dsn = tmp_path / "x.dsn"
-    dsn.write_text("(pcb x)", encoding="utf-8")
-    res = route.route_dsn(dsn)
-    assert res.ok and res.unrouted == 0 and res.ses is not None
-    assert res.ses.exists()
-
-
-@_needs_posix_stub
-def test_route_dsn_incomplete_with_stub(tmp_path, monkeypatch):
-    monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=3))
-    dsn = tmp_path / "x.dsn"
-    dsn.write_text("(pcb x)", encoding="utf-8")
-    res = route.route_dsn(dsn)
-    assert not res.ok and res.unrouted == 3
-
-
-def test_round_trip_bounded_and_degrades(tmp_path, monkeypatch):
-    monkeypatch.delenv("PRECIS_FREEROUTING_JAR", raising=False)
-    monkeypatch.delenv("PRECIS_FREEROUTING_BIN", raising=False)
-    calls = {"place": 0}
-
-    def place_fn(iters, seed):
-        calls["place"] += 1
-        return {"crossings_after": 0}
-
-    rt = route.place_route_round_trip(
-        lambda: _MODEL,
-        place_fn,
-        lambda m: export.specctra_dsn(m, name="s"),
-        tmp_path,
-        max_passes=3,
-        name="s",
-    )
-    # no router → one place, .dsn written, loop stops immediately (skipped)
-    assert calls["place"] == 1
-    assert rt.dsn.exists() and rt.route.skipped and rt.passes == 1
-
-
-def test_round_trip_clamps_zero_passes(tmp_path, monkeypatch):
-    # max_passes=0 (reachable via args={'max_passes':'0'}) must still run one
-    # pass — the .dsn write lives inside the loop, so zero passes used to
-    # report a .dsn path that was never written.
-    monkeypatch.delenv("PRECIS_FREEROUTING_JAR", raising=False)
-    monkeypatch.delenv("PRECIS_FREEROUTING_BIN", raising=False)
-    rt = route.place_route_round_trip(
-        lambda: _MODEL,
-        lambda i, s: {"crossings_after": 0},
-        lambda m: export.specctra_dsn(m, name="s"),
-        tmp_path,
-        max_passes=0,
-        name="s",
-    )
-    assert rt.passes == 1 and rt.dsn.exists()
-
-
-@_needs_posix_stub
-def test_round_trip_succeeds_with_stub(tmp_path, monkeypatch):
-    monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=0))
-    rt = route.place_route_round_trip(
-        lambda: _MODEL,
-        lambda i, s: {"crossings_after": 0},
-        lambda m: export.specctra_dsn(m, name="s"),
-        tmp_path,
-        max_passes=3,
-        name="s",
-    )
-    assert rt.ok and rt.passes == 1 and rt.route.ses is not None
-
-
 # ── handler views over a live store ──────────────────────────────────
 @pytest.fixture
 def pcb(store):
@@ -468,51 +355,3 @@ def test_handler_mechanical_view(pcb, tmp_path):
     # lid keep-out); pcb_load dropping it made every block height None.
     u1 = next(b for b in prof["blocks"] if b["refdes"] == "U1")
     assert u1["height_mm"] == 3.1
-
-
-def test_handler_route_view_degrades(pcb, tmp_path, monkeypatch):
-    monkeypatch.delenv("PRECIS_FREEROUTING_JAR", raising=False)
-    monkeypatch.delenv("PRECIS_FREEROUTING_BIN", raising=False)
-    pcb.put(id="sensor", args=_BOARD)
-    resp = pcb.get(id="sensor", view="route", args={"dir": str(tmp_path), "iters": 50})
-    assert "No Freerouting backend" in resp.body
-    assert (tmp_path / "sensor.dsn").exists()
-
-
-def test_handler_route_view_refuses_an_overlapping_replace(pcb, tmp_path, monkeypatch):
-    """docs/backlog/pcb-always-valid-board-invariant.md: the route view's
-    per-pass re-place is judged by the placer's own rule before it is
-    stored, so an anneal that lands C1 on U1 writes nothing."""
-    from precis.errors import BadInput
-    from precis.handlers import pcb as pcb_handler
-    from precis.pcb import place
-
-    monkeypatch.delenv("PRECIS_FREEROUTING_JAR", raising=False)
-    monkeypatch.delenv("PRECIS_FREEROUTING_BIN", raising=False)
-    u1, c1 = cast(list[dict[str, Any]], _BOARD["components"])
-    legal = {**_BOARD, "components": [u1, {**c1, "x": 17.0, "y": 17.0}]}
-    pcb.put(id="sensor", args=legal)
-
-    def overlapping(*_a: Any, **_k: Any) -> place.PlaceResult:
-        return place.PlaceResult(
-            positions={"U1": (10.0, 10.0), "C1": (10.0, 10.0)},
-            crossings_before=0,
-            crossings_after=0,
-            length_before=0.0,
-            length_after=0.0,
-            objective_before=0.0,
-            objective_after=0.0,
-            iters=1,
-        )
-
-    monkeypatch.setattr(pcb_handler.place, "autoplace", overlapping)
-    ref = pcb.store.get_ref(kind="pcb", id="sensor")
-    before = {
-        i["refdes"]: (i["x"], i["y"]) for i in pcb.store.pcb_graph(ref.id)["instances"]
-    }
-    with pytest.raises(BadInput, match="courtyard_overlap"):
-        pcb.get(id="sensor", view="route", args={"dir": str(tmp_path), "iters": 50})
-    after = {
-        i["refdes"]: (i["x"], i["y"]) for i in pcb.store.pcb_graph(ref.id)["instances"]
-    }
-    assert after == before

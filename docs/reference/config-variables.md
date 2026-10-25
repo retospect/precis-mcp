@@ -167,7 +167,6 @@ roots) lives with the node that owns the capability — topology:
 | `PRECIS_STRUCT_BUNDLE_DIR` | MOF bundle indexes (`<dir>/<source>.json`) that `get(kind='structure', args={'source': 'qmof'\|'core-mof', 'config_id': …})` reads one record through | Default `~/.cache/precis/struct-bundles`. Point it at the NAS dir the bundle was downloaded to; `precis structure index-bundle <source> <bundle>` writes the index there. Missing index → the get refuses with that command. |
 | `PRECIS_ROOT` | md/plaintext/tex root (gates trio) | Unset ⇒ the file-trio kinds are hidden. Set it for file-backed notes. |
 | `PRECIS_PYTHON_ROOTS` | python-kind repos | Empty/unset ⇒ `python` kind hidden. |
-| `PRECIS_FREEROUTING_JAR` | Freerouting jar (PCB) | Route step no-ops gracefully if the jar is absent. |
 | `PRECIS_PODCAST_DIR` / `PRECIS_PODCAST_BASE_URL` | Podcast output + feed URL | |
 | `PRECIS_CLAUDE_BIN` / `PRECIS_MCP_CONFIG` | claude CLI + MCP config for spawned agents | Agentic passes need them. |
 

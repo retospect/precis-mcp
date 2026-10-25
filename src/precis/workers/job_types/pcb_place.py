@@ -40,7 +40,6 @@ from precis.pcb import session as pcb_session
 from precis.pcb import session_store as pcb_session_store
 from precis.pcb.capabilities import capability_for
 from precis.pcb.optimize import (
-    FIELD_POLISH_DEFAULT,
     PLACE_ITERS,
     PLACE_ONLY_SCHEDULE,
     OptimizeConfig,
@@ -65,8 +64,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "snap": {"type": "boolean"},
         "groups": {"type": "boolean"},
         "force": {"type": "boolean"},
-        # Opt-in field polish (optimize.FIELD_POLISH_DEFAULT, off until
-        # the silk gate lands); absent = the config default.
+        # DEPRECATED, accepted-and-ignored (the field polish engine
+        # removed, Reto 2026-10-25).
         "field_polish": {"type": "boolean"},
         # topo-place spec §1c / Decision 21: the fast topological placer
         # behind placer='topo' — opt-in until the bench shows it beats
@@ -337,9 +336,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         measures=measures,
         preferred_snap=snap,
         support_groups=groups,
-        # Absent param = FIELD_POLISH_DEFAULT, the one switch (off until
-        # the silk gate lands).
-        field_polish=bool(params.get("field_polish", FIELD_POLISH_DEFAULT)),
     )
     # Pre-route DRC gate, measured TWICE: on the stored placement before
     # the anneal touches `ir`, and on the annealed one before anything is

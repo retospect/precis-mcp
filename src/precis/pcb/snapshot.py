@@ -159,14 +159,6 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
         iters=int(params.get("iters") or 3000), seed=int(params.get("seed") or 0)
     )
     optimize_defaults = _json_config(asdict(optimize))
-    # Opt-in switches that default OFF stay out of the summary while off, so a
-    # flag that changes nothing at its default cannot move a stored capture
-    # (field_polish/pin_point_cost/centroid_jump are opt-in; field_polish was
-    # default-on from 29ed73add until its opt-in commit, the provenance for
-    # captures made in that window).
-    for flag in ("field_polish", "pin_point_cost", "centroid_jump"):
-        if not getattr(optimize, flag):
-            optimize_defaults.pop(flag, None)
     realize_summary = _json_config(asdict(realize))
     for flag in ("reserve_power_region_tracks",):
         if not getattr(realize, flag):

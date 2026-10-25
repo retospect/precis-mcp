@@ -547,8 +547,8 @@ def test_side_flip_remains_cost_neutral_even_with_crossings_registered():
     SIDE_FLIP genuinely cannot become cost-sensitive at this engine's
     fidelity. ``crossings`` is backed by
     :func:`precis.pcb.ir.same_layer_crossing_count`, which reads segment
-    endpoints at INSTANCE-centroid granularity — a side flip never
-    perturbs an instance's own (x, y), so a straight-line count is
+    endpoints at PAD granularity — a side flip never
+    perturbs a pin's position, so a straight-line count is
     structurally blind to it (the module docstring's SIDE_FLIP note has
     the full reasoning). This test pins the resulting (still correct)
     behaviour on the SAME geometrically-crossing fixture."""
@@ -575,9 +575,10 @@ def test_delta_correctness_for_crossings_over_random_moves():
     ``crossings``-specific incremental bug). Covers LAYER_ASSIGN and
     TRANSLATE explicitly — the two move kinds that can actually change
     ``crossings``' value (LAYER_ASSIGN by moving a segment between
-    layers, TRANSLATE by moving a segment's own geometry) — alongside
-    SIDE_FLIP/ROTATE (provably cost-neutral for this term, exercised for
-    contrast). This is the test that caught silent-fatal bugs in slices
+    layers, TRANSLATE by moving a segment's own geometry) — plus
+    SIDE_FLIP/ROTATE for contrast (SIDE_FLIP is provably cost-neutral
+    for this term; ROTATE isn't — it moves the pad endpoints). This is
+    the test that caught silent-fatal bugs in slices
     3, 6 and 7."""
     ir = _crossing_ir_with_positions()
     cost_config = CostConfig()

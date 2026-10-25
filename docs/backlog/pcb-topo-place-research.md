@@ -248,8 +248,8 @@ SMD-only: one, from `layer_lock.py`).
    lower bound (R15.4).
 6. **Re-check capacity** with vias as obstacles (R8/R11); iterate 4–6
    once.
-7. **Geometry.** Freerouting (`route.py::route_dsn`) or a
-   rubber-band-to-geometry pass.
+7. **Geometry.** Freerouting (`route.py::route_dsn`, since deleted
+   2026-10-25) or a rubber-band-to-geometry pass.
 
 ## A3. What to implement first (mapped to precis)
 

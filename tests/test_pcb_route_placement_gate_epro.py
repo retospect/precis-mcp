@@ -6,7 +6,6 @@ from __future__ import annotations
 import io
 import pathlib
 import zipfile
-from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -193,8 +192,12 @@ def test_clean_imported_placement_passes_the_gate(store: Store, imported: int) -
 def test_route_keeps_imported_poses_when_placer_worsens_wirelength(
     store: Store, imported: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from precis.pcb.field import board_from_engine, placement_wirelength
-    from precis.pcb.optimize import Move, MoveKind, OptimizeEngine
+    from precis.pcb.optimize import (
+        Move,
+        MoveKind,
+        OptimizeEngine,
+        _total_chord_length_mm,
+    )
 
     original = {
         i["refdes"]: (i["x"], i["y"], i["rot"], i["layer"])
@@ -202,13 +205,11 @@ def test_route_keeps_imported_poses_when_placer_worsens_wirelength(
     }
 
     def worse_anneal(engine: OptimizeEngine, _rng: Any) -> None:
-        before = board_from_engine(engine)
-        assert before is not None
-        score = placement_wirelength(before[0])
         ir = engine.ir
+        score = _total_chord_length_mm(ir)
         i = next(j for j, ref in enumerate(ir.instance_refdes) if ref == "R1")
         old = (float(ir.inst_x[i]), float(ir.inst_y[i]), float(ir.inst_rot[i]))
-        candidate = None
+        moved = False
         for dx, dy in (
             (-2.0, 0.0),
             (2.0, 0.0),
@@ -222,29 +223,19 @@ def test_route_keeps_imported_poses_when_placer_worsens_wirelength(
             x, y = old[0] + dx, old[1] + dy
             if not engine._placement_is_legal([(i, x, y)]):
                 continue
-            xs, ys = before[0].x0.copy(), before[0].y0.copy()
-            xs[i], ys[i] = x, y
-            if placement_wirelength(replace(before[0], x0=xs, y0=ys)) > score * 1.02:
-                candidate = (x, y, old[2])
+            move = Move(MoveKind.TRANSLATE, (i,), (old,), ((x, y, old[2]),))
+            engine.apply_move(move)
+            if _total_chord_length_mm(ir) > score * 1.02:
+                moved = True
                 break
-        assert candidate is not None, "fixture needs a legal, route-worse pose"
-        engine.apply_move(
-            Move(
-                MoveKind.TRANSLATE,
-                (i,),
-                (old,),
-                (candidate,),
-            )
-        )
-        after = board_from_engine(engine)
-        assert after is not None
-        assert placement_wirelength(after[0]) > score * 1.02
+            engine.undo_move(move)
+        assert moved, "fixture needs a legal, route-worse pose"
 
     monkeypatch.setattr(OptimizeEngine, "anneal", worse_anneal)
-    ctx = _run(store, imported, field_polish=False)
+    ctx = _run(store, imported)
 
     assert not ctx.failures
-    assert "input poses kept: T1+D14" in "\n".join(t for _, t in ctx.summaries)
+    assert "input poses kept: chord" in "\n".join(t for _, t in ctx.summaries)
     assert {
         i["refdes"]: (i["x"], i["y"], i["rot"], i["layer"])
         for i in store.pcb_graph(imported)["instances"]

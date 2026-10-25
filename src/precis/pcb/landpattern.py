@@ -13,14 +13,16 @@ Measured consequences (2026-08-28 acceptance run):
 * ~600 ``clearance`` DRC errors at an **exact 0.000mm** gap — not
   near-misses a better router could close. Two nets' tracks are coincident
   before any routing happens, so no routing algorithm can separate them.
-* ``crossings`` is computed between centroids, so it cannot see whether two
-  nets leaving one part actually cross — the topological objective is
-  measured on a degenerate graph.
-* Three of eight move classes are provably cost-neutral for want of this
-  data: ``ROTATE`` (``optimize.py``: "its ``total()`` delta is a true,
-  provable zero"), ``SIDE_FLIP`` ("structurally blind" at centroid
-  granularity), and ``PIN_SWAP`` (its payoff is computed by
-  :mod:`precis.pcb.pinswap`'s own evaluator and never read by ``total()``).
+* ``crossings`` was computed between centroids, so it could not see
+  whether two nets leaving one part actually cross — the topological
+  objective was measured on a degenerate graph (fixed: endpoints are
+  the pads, gr499239).
+* Two of eight move classes are provably cost-neutral for want of a
+  term that reads them: ``SIDE_FLIP`` (``seg_side`` moves no pin's
+  position) and ``PIN_SWAP`` (its payoff is computed by
+  :mod:`precis.pcb.pinswap`'s own evaluator and never read by
+  ``total()``). ``ROTATE`` was the third until pad-granular endpoints
+  priced it (gr499239).
 
 **Why synthesize rather than require a real footprint.** Real pad geometry
 lives in ``part_footprints``, populated from EasyEDA per C-number. A design

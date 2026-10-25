@@ -1,5 +1,5 @@
 ---
-status: draft
+status: parked
 title: "pcb: unified place-and-route — one piecewise-smooth energy over poses, labels, taut-band tracks and vias, annealed with discrete topology moves"
 prio: high
 model: opus
@@ -7,6 +7,12 @@ pillar: 3d-design
 ---
 
 # pcb unified place-and-route
+
+**Superseded (Reto 2026-10-25).** `precis.pcb.field` is deleted — the
+field polish engine this spec built never earned its keep
+(`silk_missing` on the film and esp32c3 seeds, opt-in since
+2026-10-22). [pcb-topo-place](pcb-topo-place.md) is the placer/router
+path; this file stays as the record of the smooth-energy design.
 
 Source: Reto, 2026-10-18 (quoted below), on top of the vector-router
 rulings of 2026-10-16/18. Review inputs: `perplexity-research:496658`

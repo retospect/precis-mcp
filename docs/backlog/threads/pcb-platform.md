@@ -102,7 +102,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   `field_polish` on by default (placer-a); 2026-10-22 Reto took the
   default off again — opt-in until the silk gate lands (silk_missing on
   film/esp32c3 seeds); the annealer lives on as the bench's `anneal`
-  column; slice 2 (θ, wells) is placer-b.
+  column; slice 2 (θ, wells) is placer-b. 2026-10-25: Reto deleted the
+  engine (`field.py` + `field_polish` accepted-ignored, bench column
+  trimmed); the smooth-energy spec `pcb-unified-place-route` is parked
+  Superseded — topo-place is the path.
   placer-c: ABNORMAL-stalled stages retry θ-pinned (gr503452) and the
   gate is legality + field energy, anneal `total()` report-only
   (gr503458) — polish applies on sanity free-bottom and p2u.

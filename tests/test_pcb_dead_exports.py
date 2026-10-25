@@ -157,6 +157,13 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "b898944ce (gr451662): the EWOD cut-sheet export, deliberately its "
         "own call outside export_fab; no handler view or CLI wires it yet"
     ),
+    "src/precis/pcb/place.py::autoplace": (
+        "entered this mapping 2026-10-25: its last production caller "
+        "(_place_and_store, the Freerouting round-trip in handlers/pcb.py) "
+        "was deleted with the Freerouting remnants. Kept per pcb-topo-place "
+        "order (item E): test_pcb_topoplace_placer.py uses it as the "
+        "rungs-0/1 comparison baseline until the topo default flip"
+    ),
     "src/precis/pcb/capabilities.py::headroom": (
         "exported via __all__ for a DRC digest to quote margin headroom; "
         "no digest formatter calls it yet"
@@ -284,6 +291,20 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "same slice: channel union for band legality checks; callers "
         "land with the band/insertion consumers"
     ),
+    "src/precis/pcb/topo.py::net_region_graph": (
+        "entered this mapping 2026-10-25: its last caller (pr/seed.py's "
+        "4a topology seed) was deleted with precis.pcb.pr; the funnel "
+        "domain this builds is the topo mesh/capacity input topoplace "
+        "slice 2 plans to consume"
+    ),
+    "src/precis/pcb/topo.py::funnel_path": (
+        "entered this mapping 2026-10-25: same lost pr/seed.py caller as "
+        "net_region_graph -- kept with topo.py for the topoplace slices"
+    ),
+    "src/precis/pcb/topo.py::RegionGraph.capacity_for": (
+        "entered this mapping 2026-10-25: same lost pr/seed.py caller as "
+        "net_region_graph -- kept with topo.py for the topoplace slices"
+    ),
     # ---- class methods/properties (widened 2026-08-29) --------------
     # ---- capabilities.FIELDS entries (widened 2026-08-29) -------------
     "src/precis/pcb/capabilities.py::FIELDS.soldermask_dam_mm": (
@@ -309,9 +330,15 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "'vocabulary settles in sketch.py, slice 7' -- a documented "
         "future slice, not a forgotten wire-up"
     ),
-    # rotation_darts left this mapping 2026-10-13: optimize.py's
-    # _ir_state_snapshot/_ir_state_restore (the outer loop's best-round
-    # restore) now carries it with the rest of the mutable sketch state.
+    # rotation_darts re-entered this mapping 2026-10-25: the optimize.py
+    # outer loop's _ir_state_snapshot/_ir_state_restore (the 2026-10-13
+    # carrier) was deleted with anneal_route_loop; back to its L2-tier
+    # 'slice 7' status.
+    "src/precis/pcb/ir.py::PcbIR.rotation_darts": (
+        "L2 tier -- same 'slice 7' future-work note as set_rotation, see "
+        "that entry's reason; re-entered 2026-10-25 when the anneal loop's "
+        "state snapshot (its last carrier) was deleted"
+    ),
     # ---- PcbIR fields: via_* real gap ------------------------------------
     # add_via/via_net/via_layer_span are the ONLY way to populate a via in
     # the IR's own L1 model ("vias as transitions") -- but realize.py's
@@ -341,9 +368,14 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "blocking via's net) was deleted with the grid router — the L1 "
         "via model stays for the not-yet-wired route-edit loop"
     ),
-    # via_layer_span left this mapping 2026-10-13: optimize.py now
-    # remaps it on LAYER_ADD (bit-shift in _shift_layer_indices) and
-    # carries it in the loop's state snapshot -- a real producer/consumer.
+    # via_layer_span re-entered this mapping 2026-10-25: the LAYER_ADD
+    # remap (_shift_layer_indices) and the loop's state snapshot that
+    # carried it were deleted with anneal_route_loop.
+    "src/precis/pcb/ir.py::PcbIR.via_layer_span": (
+        "same real gap as add_via -- see that entry's reason; the LAYER_ADD "
+        "remap that briefly produced/consumed it was deleted with "
+        "anneal_route_loop 2026-10-25"
+    ),
     # ---- PcbIR fields: L4/L5 invalidation cascade ------------------------
     # dirty_l1..l5 are set by every mutator and cleared by clean() (called
     # from optimize.py), but nothing anywhere READS a dirty_lN mask to
@@ -357,11 +389,32 @@ _KNOWN_UNWIRED: dict[str, str] = {
     # reason ("no placement pass reads that field yet"). Classified (b):
     # legitimately unwired, consistent with pre-existing precedent in
     # this same file, not a new finding.
-    # dirty_l1..l5 left this mapping 2026-10-13: optimize.py's LAYER_ADD
-    # apply/undo marks segments dirty across the cascade, and the loop's
-    # _ir_state_restore sets every mask wholesale -- real producers and a
-    # reader now exist (the "nothing recomputes off the mask" gap this
-    # used to document is no longer the whole truth).
+    # dirty_l1..l5 re-entered this mapping 2026-10-25: the LAYER_ADD
+    # apply/undo marks and the loop's wholesale _ir_state_restore writes
+    # were deleted with anneal_route_loop -- the "nothing recomputes off
+    # the mask" gap this block originally documented is the whole truth
+    # again.
+    "src/precis/pcb/ir.py::PcbIR.dirty_l1": (
+        "field-level shape of the already-allow-listed "
+        "compute_gap_capacity/compute_region_density gap above: no "
+        "engine reads ANY dirty_lN mask to decide what needs "
+        "recomputing -- optimize.py calls ir.clean() off its own "
+        "bookkeeping, never consulting the mask first (see this file's "
+        "module docstring); re-entered 2026-10-25 when the anneal loop's "
+        "mask writers were deleted"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.dirty_l2": (
+        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.dirty_l3": (
+        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.dirty_l4": (
+        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.dirty_l5": (
+        "same invalidation-cascade gap as dirty_l1 -- see that entry's reason"
+    ),
     # ---- PcbIR fields: §1i pin semantics (Slice 5 staged carry) --------
     # pin_etype/pin_max_voltage_v/pin_rail are carried through the IR per
     # pcb-lazy-netlist-and-checks.md Slice 5's contract ("ir.py carries
@@ -369,17 +422,21 @@ _KNOWN_UNWIRED: dict[str, str] = {
     # (Slice 7's firmware export, view='channel-map') never re-joins
     # pcb_pins. The Slice-5 ERC rules themselves read the GRAPH rows
     # (they need tags+meta, which the graph's member rows already carry).
-    # pin_etype left this list 2026-10-24: pr/trees.py's B·f=i current
-    # solve reads it for the driver/sink classification. The other two
-    # fields are still produced-but-unconsumed — the L2-tier "documented
-    # future slice" pattern above.
-    "src/precis/pcb/ir.py::PcbIR.pin_max_voltage_v": (
+    # pin_etype re-entered this list 2026-10-25: pr/trees.py's B·f=i
+    # current solve (its 2026-10-24 reader) was deleted with precis.pcb.pr.
+    # All three fields are produced-but-unconsumed again — the L2-tier
+    # "documented future slice" pattern above.
+    "src/precis/pcb/ir.py::PcbIR.pin_etype": (
         "Slice-5 staged carry — produced in from_graph for Slice 7's "
         "netlist consumers (channel-map/firmware export); the ERC rules "
-        "read the graph rows, not the IR"
+        "read the graph rows, not the IR; re-entered 2026-10-25 when "
+        "pr/trees.py (its last reader) was deleted"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.pin_max_voltage_v": (
+        "Slice-5 staged carry — see PcbIR.pin_etype's reason"
     ),
     "src/precis/pcb/ir.py::PcbIR.pin_rail": (
-        "Slice-5 staged carry — see PcbIR.pin_max_voltage_v's reason"
+        "Slice-5 staged carry — see PcbIR.pin_etype's reason"
     ),
     # ---- PcbIR fields: realize.py's own remit, in flight ----------------
     "src/precis/pcb/ir.py::PcbIR.seg_copper_length_mm": (

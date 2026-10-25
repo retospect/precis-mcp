@@ -57,9 +57,7 @@ pixels. The verbs map onto the seven-verb surface:
   bundle (gerbers + Excellon, zipped) off our own realizer/pads, never
   Freerouting/kicad-cli, and ``'fab'`` is that zip plus the BOM/CPL in
   JLC's upload formats, the package ``op='order'`` ships;
-  ``view='route'`` runs the Freerouting
-  place↔route round-trip, the demoted escape hatch —
-  :mod:`precis.pcb.export` / :mod:`precis.pcb.route`).
+  :mod:`precis.pcb.export`).
 - ``search`` — over design names + descriptions (the one summary card).
 - ``delete`` — soft-retire a whole design.
 - ``link``  — edges to other refs (``rel=`` per ``precis-relations``;
@@ -67,8 +65,8 @@ pixels. The verbs map onto the seven-verb surface:
 
 The in-house topological place+route engine (:mod:`precis.pcb.optimize` /
 :mod:`precis.pcb.realize`, run via the ``pcb_place``/``pcb_route`` jobs) is
-the primary path; Freerouting/gerbers-via-DSN is the rented, demoted escape
-hatch. Export is the one place the design leaves the relational graph.
+the primary path. Export is the one place the design leaves the
+relational graph.
 See ``precis-pcb-help`` and ``precis-pcb-route-help``.
 """
 
@@ -141,7 +139,6 @@ from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import review as pcb_review
-from precis.pcb import route as pcb_route
 from precis.pcb import route_state as pcb_route_state
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
@@ -207,8 +204,6 @@ _EXPORT_VIEWS = (
 #: How many errors ``view='gerber'``'s DRC banner quotes before pointing at
 #: ``view='drc'`` for the rest — enough to see what kind of failure it is.
 _GERBER_BANNER_FINDINGS = 8
-#: The rented autorouter round-trip (Slice 6, gated on Freerouting).
-_ROUTE_VIEWS = ("route",)
 #: pcb-guided-place-route Slice 1 — per-net route status (all-unrouted v1).
 _STATUS_VIEWS = ("route-status",)
 #: pcb-guided-place-route Slice 10 — the enqueued optimizer/realizer's
@@ -253,7 +248,6 @@ _OTHER_VIEWS = (
 _VIEWS = (
     *_PROBE_VIEWS,
     *_EXPORT_VIEWS,
-    *_ROUTE_VIEWS,
     *_STATUS_VIEWS,
     *_SESSION_VIEWS,
     *_TOPO_VIEWS,
@@ -847,9 +841,8 @@ class PcbHandler(Handler):
                 "place",
                 "escape",
                 "groups",
-                # Opt-in field polish on place/route
-                # (OptimizeConfig.field_polish, off until the silk gate
-                # lands).
+                # DEPRECATED, accepted-and-ignored on place/route (the
+                # field polish engine removed, Reto 2026-10-25).
                 "field_polish",
                 "loop",
                 "moves",
@@ -932,8 +925,6 @@ class PcbHandler(Handler):
                 "dir",
                 "allow_synthesized",
                 "verify",
-                "max_passes",
-                "iters",
                 "level",
                 "layers",
                 "include",
@@ -1012,9 +1003,8 @@ class PcbHandler(Handler):
             "parts, pads, nets, copper, pours; no schematic; "
             "args={'verify':true} re-reads it and diffs it against the "
             "board; put(id=<new slug>, args={'op':'import_epro','source':"
-            "'export:<slug>'}) re-imports it, dry run by default); "
-            "view='route' runs "
-            "the demoted Freerouting escape hatch), all with args={...}; "
+            "'export:<slug>'}) re-imports it, dry run by default)), all "
+            "with args={...}; "
             "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
             "job (never inline; idempotent per design+op+content-hash) — "
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
@@ -1501,99 +1491,6 @@ class PcbHandler(Handler):
         return Response(body=head + "\n" + self._toc(design))
 
     # ── auto-place ─────────────────────────────────────
-    def _place_and_store(
-        self,
-        ref_id: int,
-        *,
-        iters: int,
-        seed: int,
-        measures: list[dict[str, Any]],
-        legal_only: bool = False,
-    ) -> tuple[place.PlaceResult, int]:
-        """Anneal over the current graph and persist the placement + the
-        ``last_place`` meta stamp. Shared by the put-time autoplace and the
-        route round-trip's per-pass re-place (one copy of the store logic).
-        With ``legal_only`` the anneal's poses are judged by
-        :meth:`_refuse_illegal_placement` first and nothing is written
-        when any conflicts."""
-        graph = pcb_session.sorted_graph(self._effective_graph(ref_id))
-        res = place.autoplace(
-            graph["instances"],
-            graph["nets"],
-            measures=measures,
-            iters=iters,
-            seed=seed,
-            features=self.store.pcb_features_list(ref_id),
-        )
-        if legal_only:
-            self._refuse_illegal_placement(ref_id, graph, res.positions)
-        moved = self.store.pcb_set_placement(
-            ref_id,
-            res.positions,
-            meta={
-                "last_place": {
-                    "crossings": res.crossings_after,
-                    "length_mm": round(res.length_after, 2),
-                    "objective": round(res.objective_after, 2),
-                    "iters": res.iters,
-                }
-            },
-        )
-        return res, moved
-
-    def _refuse_illegal_placement(
-        self,
-        ref_id: int,
-        graph: dict[str, Any],
-        positions: dict[str, tuple[float, float]],
-    ) -> None:
-        """Refuse a whole-board placement any re-placed part of which
-        :meth:`precis.pcb.optimize.OptimizeEngine.pose_conflicts` rejects
-        (courtyard on a part or a mounting hole, solder land on an
-        authored via) — the rule ``op='place'`` and ``op='move'`` hold, on
-        an engine built over the board as ``positions`` leave it. The
-        legacy annealer behind ``view='route'`` (:func:`place.autoplace`)
-        does not check these, so its poses are judged here before the
-        store sees them. As with ``op='move'``, a conflict the stored board
-        already has may stand; only a pair the re-place introduces is
-        refused, each named once."""
-
-        def conflicts(g: dict[str, Any]) -> dict[tuple[str, str, str], str]:
-            ir = self._build_ir(ref_id, g, with_fixed_copper=True)
-            ir.outline = self._move_outline(ref_id)
-            engine = pcb_optimize.OptimizeEngine(ir, pcb_optimize.OptimizeConfig())
-            found: dict[tuple[str, str, str], str] = {}
-            for idx, refdes in enumerate(ir.instance_refdes):
-                x, y = float(ir.inst_x[idx]), float(ir.inst_y[idx])
-                if str(refdes) not in positions or math.isnan(x) or math.isnan(y):
-                    continue
-                for rule, other in engine.pose_conflicts(idx, x, y):
-                    a, b = sorted((str(refdes), other))
-                    found.setdefault((rule, a, b), f"{rule} {refdes} with {other}")
-            return found
-
-        placed = {
-            **graph,
-            "instances": [
-                {**i, "x": positions[rd][0], "y": positions[rd][1]}
-                if (rd := str(i["refdes"])) in positions
-                else i
-                for i in graph["instances"]
-            ],
-        }
-        standing = conflicts(graph)
-        new = [msg for key, msg in conflicts(placed).items() if key not in standing]
-        if new:
-            raise BadInput(
-                "pcb: the re-place would leave an invalid board, so nothing "
-                "was written: " + "; ".join(new),
-                next=(
-                    "re-run view='route' with another iters, add area, or run "
-                    "put(args={'op':'place'}) and route in-tree with "
-                    "put(args={'op':'route'})"
-                ),
-            )
-
     def _legalize_generator_seeds(
         self, ref_id: int, seeded: list[str], *, conn: Any
     ) -> tuple[int, int]:
@@ -1846,9 +1743,9 @@ class PcbHandler(Handler):
         # series pairs re-laid as organised rows post-anneal.
         if op in ("place", "route") and opts.get("groups") is not None:
             params["groups"] = bool(opts["groups"])
-        # Opt-in field polish (optimize.OptimizeConfig.field_polish, off
-        # until the silk gate lands): forwarded only when given, so the
-        # config default stays the one switch.
+        # DEPRECATED, accepted-and-ignored (the field polish engine
+        # removed, Reto 2026-10-25): still forwarded for one release so a
+        # stale caller lands in the job's `ignored` list, not a refusal.
         if op in ("place", "route") and opts.get("field_polish") is not None:
             params["field_polish"] = bool(opts["field_polish"])
         if op == "route" and opts.get("warm_start") is not None:
@@ -1860,43 +1757,24 @@ class PcbHandler(Handler):
                     next="put(args={'op':'route','warm_start':'distance'})",
                 )
             params["warm_start"] = warm_start
-        # Removed grid-router knobs (negotiate/corridor/escape/layer_cost/
-        # off_axis/cleanup): still forwarded — the job collects them into
-        # the run's `ignored` list rather than refusing a stale caller.
+        # Removed grid-router knobs + the router selector (vector is the
+        # only router, Reto 2026-10-25): DEPRECATED, still forwarded for
+        # one release — the job collects them into the run's `ignored`
+        # list rather than refusing a stale caller. `loop` (the
+        # route-feedback outer loop) joined them the same day.
         if op == "route":
             for knob in (
+                "router",
                 "negotiate",
                 "corridor",
                 "escape",
                 "layer_cost",
                 "off_axis",
+                "cleanup",
+                "loop",
             ):
                 if opts.get(knob) is not None:
                     params[knob] = opts[knob]
-        # Router selector — 'vector' (the only router); anything else
-        # fails at the job with a legible input error.
-        if op == "route" and opts.get("router") is not None:
-            params["router"] = str(opts["router"])
-        # Opt-in route -> penalise -> anneal -> route outer loop
-        # (optimize.anneal_route_loop); off unless asked for.
-        if op == "route" and opts.get("loop") is not None:
-            loop = int(opts["loop"])
-            cap = pcb_optimize.LOOP_MAX_ROUNDS
-            if not 0 <= loop <= cap:
-                raise BadInput(
-                    f"pcb: loop={loop} is out of range; give 0 (off) "
-                    f"to {cap} route rounds.",
-                    next=f"put(args={{'op':'route','loop':{cap}}})",
-                )
-            params["loop"] = loop
-        # Authored expansion bounds for the loop's priced moves ride the
-        # design's own meta (put(args={'meta': {'expansion_caps': {...}}})
-        # — see precis-pcb-route-help). Forwarded verbatim into the job
-        # params so the dedup hash sees them; the job validates the shape.
-        if op == "route" and params.get("loop"):
-            caps = (ref.meta or {}).get("expansion_caps")
-            if caps is not None:
-                params["expansion_caps"] = caps
         # Override for the pre-route placement DRC gate; absent unless True.
         if op in ("place", "route") and opts.get("force") is not None:
             if not isinstance(opts["force"], bool):
@@ -1906,16 +1784,6 @@ class PcbHandler(Handler):
                 )
             if opts["force"]:
                 params["force"] = True
-        # Route clean-up post-pass (RealizeConfig.route_cleanup, gr495397);
-        # on unless turned off, so only `False` is forwarded.
-        if op == "route" and opts.get("cleanup") is not None:
-            if not isinstance(opts["cleanup"], bool):
-                raise BadInput(
-                    "pcb: cleanup must be a boolean (True or False)",
-                    next="put(args={'op':'route','cleanup':False})",
-                )
-            if not opts["cleanup"]:
-                params["cleanup"] = False
         # Route-only run (gr495397): `place=False` keeps every pose and the
         # stored sketch and only routes; absent/True = the joint place+route.
         if op == "route" and opts.get("place") is not None:
@@ -1925,12 +1793,6 @@ class PcbHandler(Handler):
                     next="put(args={'op':'route','place':False})",
                 )
             if not opts["place"]:
-                if opts.get("loop"):
-                    raise BadInput(
-                        "pcb: place=False cannot combine with loop (the loop "
-                        "re-anneals between rounds)",
-                        next="put(args={'op':'route','place':False})",
-                    )
                 params["place"] = False
         # Raw store rows, verbatim -- `content_hash` itself does the
         # narrowing (job-written-field exclusion, authored-vs-derived
@@ -3843,8 +3705,6 @@ class PcbHandler(Handler):
             )
         if view in _EXPORT_VIEWS:
             return self._render_export(ref_id, view, args)
-        if view in _ROUTE_VIEWS:
-            return self._render_route(ref_id, args)
         if view in _STATUS_VIEWS:
             return self._render_route_status(ref_id)
         if view in _TOPO_VIEWS:
@@ -4485,7 +4345,7 @@ class PcbHandler(Handler):
 
     def _export_warnings(self, model: dict[str, Any], view: str) -> list[str]:
         out = []
-        if view in ("cpl", "dsn"):  # route never reaches here (_render_route)
+        if view in ("cpl", "dsn"):
             up = pcb_export.unplaced(model)
             if up:
                 out.append(
@@ -5217,89 +5077,6 @@ class PcbHandler(Handler):
         listing = "\n".join(sorted(exported.files))
         return Response(body=head + "\n\n```\n" + listing + "\n```")
 
-    def _render_route(self, ref_id: int, args: dict[str, Any]) -> Response:
-        """The §9 place↔route round-trip via Freerouting headless. Re-places
-        (escalating annealing) and re-routes until the route completes or
-        ``max_passes`` is hit. Degrades to a single ``.dsn``-only pass when no
-        router is installed (the gate is at this step only). Every re-place
-        passes the placer's legality rule before it is stored
-        (:meth:`_refuse_illegal_placement`); kept as the external baseline
-        the in-tree router (``op='route'``) is benchmarked against."""
-        ref = self.store.get_ref(kind="pcb", id=ref_id)
-        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
-        # max(1,…): '0' is truthy, and 0 passes would report a .dsn that was
-        # never written (the write lives inside the pass loop).
-        max_passes = max(1, int(args.get("max_passes") or 3))
-        base_iters = int(args.get("iters") or 1500)
-        out_dir = self._export_dir(slug, args)
-
-        measures = self.store.pcb_measures_list(ref_id)
-
-        def place_fn(iters: int, seed: int) -> dict[str, Any]:
-            res, _moved = self._place_and_store(
-                ref_id, iters=iters, seed=seed, measures=measures, legal_only=True
-            )
-            return {"crossings_after": res.crossings_after}
-
-        footprints = self.store.pcb_footprints_for(ref_id)
-        outline = self._outline_from_features(ref_id)
-
-        def dsn_fn(model: dict[str, Any]) -> str:
-            return pcb_export.specctra_dsn(
-                model, footprints=footprints, outline=outline, name=slug
-            )
-
-        rt = pcb_route.place_route_round_trip(
-            lambda: self._export_model(ref_id),
-            place_fn,
-            dsn_fn,
-            out_dir,
-            max_passes=max_passes,
-            base_iters=base_iters,
-            name=pcb_epro_write.safe_stem(slug),
-        )
-        rows = [
-            {
-                "pass": h["pass"],
-                "iters": h["iters"],
-                "crossings": ""
-                if h["crossings_after"] is None
-                else h["crossings_after"],
-                "routed": "✓" if h["routed_ok"] else ("skip" if h["skipped"] else "✗"),
-                "unrouted": "" if h["unrouted"] is None else h["unrouted"],
-            }
-            for h in rt.history
-        ]
-        if rt.route.skipped:
-            tail = (
-                "No Freerouting backend — emitted the .dsn only. Install it and "
-                "set PRECIS_FREEROUTING_JAR, then re-run view='route'. The .dsn "
-                "also opens in the EasyEDA/KiCad router as a manual escape hatch."
-            )
-        elif rt.ok:
-            tail = (
-                f"Routed ✓ → {rt.route.ses}\n"
-                "Next: import the .ses into KiCad and run kicad-cli for gerbers + "
-                "the BOM/CPL (view='bom', view='cpl') to order at JLCPCB."
-            )
-        else:
-            tail = (
-                f"Route incomplete after {rt.passes} pass(es) "
-                f"({rt.route.unrouted} unrouted). Add area / relax density / pin "
-                "more parts and re-run, or open the .dsn in a manual router.\n"
-                f"log: {rt.route.log_tail[-400:]}"
-            )
-        head = f"# route {slug} — {rt.passes} pass(es), {'ok' if rt.ok else 'not complete'}\n{rt.dsn}"
-        return Response(
-            body=head
-            + "\n"
-            + render_agent_table(
-                rows, schema=["pass", "iters", "crossings", "routed", "unrouted"]
-            )
-            + "\n"
-            + tail
-        )
-
     # ── route status (pcb-guided-place-route Slice 1) ──────────────────
     def _render_route_status(self, ref_id: int) -> Response:
         """The per-net route status table — a net with no ``pcb_routes`` row
@@ -5347,12 +5124,6 @@ class PcbHandler(Handler):
         # the stored warm_start cost pair, same lines the job summary prints.
         for line in format_warm_start(last_route.get("warm_start")):
             body += f"\n{line}"
-        loop_meta = last_route.get("loop")
-        if loop_meta:
-            # The loop run's one-line verdict; the full conflict digest
-            # text stays in meta.last_route.loop.digest.
-            first = str(loop_meta.get("digest") or "").split("\n", 1)[0]
-            body += f"\n{first} (full digest: meta.last_route.loop)"
         return Response(body=body)
 
     def _net_length_ratios(self, ref_id: int) -> dict[str, str]:

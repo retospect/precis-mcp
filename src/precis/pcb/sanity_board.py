@@ -219,8 +219,6 @@ def place(built: Built, *, seed: int = 1) -> dict[str, tuple[float, float, float
             iters=_DEFAULT_ITERS,
             seed=seed,
             schedule=_PLACE_ONLY_SCHEDULE,
-            pin_point_cost=True,
-            centroid_jump=True,
         ),
     )
     return pcb_session.positions(built.ir)

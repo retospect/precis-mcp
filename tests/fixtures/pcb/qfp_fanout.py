@@ -35,7 +35,6 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from precis.pcb import feedback as pcb_feedback
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
@@ -394,7 +393,6 @@ def route(spec: FanoutSpec, *, warm: str = "distance") -> FanoutResult:
         built.ir, config=built.config, footprints=built.footprints
     )
     seconds = time.monotonic() - t0
-    outcome = pcb_feedback.outcome_from_realize(built.ir, rres)
     ir = built.ir
     unrouted = tuple(
         sorted({str(ir.net_name[int(ir.seg_net[s])]) for s in rres.unrouted})
@@ -405,11 +403,18 @@ def route(spec: FanoutSpec, *, warm: str = "distance") -> FanoutResult:
             if seg.get("shape") == "line":
                 (x0, y0), (x1, y1) = seg["start"], seg["end"]
                 length += math.hypot(x1 - x0, y1 - y0)
+    # Per-NET counts: a net is routed only when every one of its segments
+    # is covered (dangling nets count in neither figure).
+    covered = {int(t.seg_id) for t in rres.tracks} | set(rres.fixed_realized)
+    net_segs: dict[int, list[int]] = {}
+    for s in range(ir.n_segments):
+        net_segs.setdefault(int(ir.seg_net[s]), []).append(s)
+    routed = sum(1 for segs in net_segs.values() if all(s in covered for s in segs))
     return FanoutResult(
         spec=spec,
         warm_start=applied,
-        routed=outcome.routed,
-        total=outcome.total,
+        routed=routed,
+        total=len(net_segs),
         vias=len(rres.vias),
         length_mm=round(length, 1),
         seconds=round(seconds, 1),

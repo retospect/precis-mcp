@@ -2,7 +2,7 @@
 id: precis-pcb-fab-help
 family: pcb
 title: precis — export and order a pcb design (fab package, JLCPCB, enclosure)
-summary: take a routed pcb design to fabrication — the export views (bom/cpl/netlist/dsn/mechanical/route/gerber/epro), view='epro' writing an EasyEDA Pro .epro2 and verifying it reads back, view='fab' writing the JLCPCB order package, op='order' dry-running or placing the JLCPCB order, view='availability' sweeping BOM stock/lifecycle, and the features array + CAD-enclosure bridge. Covers gerber export, pick-and-place CPL, Specctra DSN, Freerouting, JLCPCB ordering, EOL checks, enclosure hand-off.
+summary: take a routed pcb design to fabrication — the export views (bom/cpl/netlist/dsn/mechanical/gerber/epro), view='epro' writing an EasyEDA Pro .epro2 and verifying it reads back, view='fab' writing the JLCPCB order package, op='order' dry-running or placing the JLCPCB order, view='availability' sweeping BOM stock/lifecycle, and the features array + CAD-enclosure bridge. Covers gerber export, pick-and-place CPL, Specctra DSN, JLCPCB ordering, EOL checks, enclosure hand-off.
 answers:
   - how do I export gerbers / a BOM / a CPL / a DSN from a pcb design?
   - how do I export a board to EasyEDA Pro and check the file is right?
@@ -37,13 +37,10 @@ get(
     kind="pcb", id="s", view="cpl"
 )  # JLCPCB pick-and-place CSV (rotation converted to CCW)
 get(kind="pcb", id="s", view="netlist")  # KiCad s-expr netlist
-get(kind="pcb", id="s", view="dsn")  # Specctra .dsn (the autorouter's input)
+get(kind="pcb", id="s", view="dsn")  # Specctra .dsn (an external autorouter's input)
 get(
     kind="pcb", id="s", view="mechanical"
 )  # outline + mounting holes + height-blocks → a cad enclosure
-get(
-    kind="pcb", id="s", view="route", args={"max_passes": 3}
-)  # Freerouting place↔route round-trip
 get(kind="pcb", id="s", view="gerber")  # the fab bundle: gerbers + drill, zipped
 ```
 
@@ -87,10 +84,9 @@ reports `silk_missing`. To move one label by hand, set a per-part spot:
 `put(kind='pcb', id='<slug>', args={'op':'move','refdes':'U1','label_spot':'top-right'})`
 (any of the eight names above; `null` clears it).
 
-`view='route'` runs the place↔route hand-off: place → `.dsn` →
-Freerouting → on an incomplete route, re-place (more iters) and re-route,
-bounded. With no router installed it **degrades to a `.dsn`-only pass**
-(open it in EasyEDA/KiCad as a manual escape hatch). `bom`/`cpl` warn
+`view='dsn'` writes the Specctra `.dsn` an external autorouter
+(EasyEDA/KiCad/Freerouting) reads — the manual escape hatch.
+`bom`/`cpl` warn
 about unplaced or non-assemblable (no-LCSC) parts. An instance that is
 etched copper rather than a part (a footprint whose pads are all `role:
 'electrode'` or `'probe'`, such as an EWOD electrode array) is left out of

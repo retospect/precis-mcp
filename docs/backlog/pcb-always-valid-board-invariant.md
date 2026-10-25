@@ -132,7 +132,8 @@ An invariant that does not cover these is decorative:
   outline. Moving a hole under a placed part invalidates a valid board.
 - **`get(kind='pcb', view='route')` moves parts.** `_render_route` →
   `_place_and_store` → `pcb_set_placement`. A read verb with a write
-  effect; worth fixing on its own merits.
+  effect; worth fixing on its own merits. **Fixed by deletion**
+  (Freerouting drop, Reto 2026-10-25).
 - `op='footprint'` (in `_FOOTPRINT_OPS`, not `_INLINE_EDIT_OPS`) swaps pad
   geometry under an existing placement and existing copper.
 - `op='class_rules'` changes the clearance/width thresholds existing copper

@@ -1,10 +1,15 @@
 ---
-status: idea
+status: parked
 title: pcb anneal keeps the best-cost state, not the best-routing one (gr464240)
 pillar: 3d-design
 ---
 
 # pcb anneal keeps the best-cost state, not the best-routing one (gr464240)
+
+**Superseded (Reto 2026-10-25).** Route-a-candidate-states rode on the
+route→penalise→anneal loop machinery, which is deleted
+(`anneal_route_loop`, `feedback.py`, the `route_*` terms).
+[pcb-topo-place](pcb-topo-place.md) is the placer/router path.
 
 **What.** `optimize.py` keeps the state with the lowest `_total_at_report()`
 (`best_total`). Nothing in that total prices routability, so the state the

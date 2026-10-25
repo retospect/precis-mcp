@@ -36,7 +36,6 @@ from typing import Any
 
 from precis.pcb import DANGLING_NET_NOTE, DEFAULT_STACKUP, STACKUP_PRESETS
 from precis.pcb import drc as pcb_drc
-from precis.pcb import feedback as pcb_feedback
 from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
@@ -45,15 +44,9 @@ from precis.pcb import session as pcb_session
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import PcbIR, net_member_counts, segment_points
 from precis.pcb.optimize import (
-    FIELD_POLISH_DEFAULT,
     PLACE_ITERS,
     PLACE_ONLY_SCHEDULE,
-    ExpansionCaps,
     OptimizeConfig,
-    RouteLoopConfig,
-    _ir_state_restore,
-    _ir_state_snapshot,
-    anneal_route_loop,
     optimize,
     resolve_measures,
 )
@@ -654,7 +647,6 @@ def place(
     seed: int = 1,
     iters: int | None = None,
     groups: bool = False,
-    field_polish: bool | None = None,
     catalog: dict[str, dict[str, Any]] | None = None,
 ) -> LocalPlacement:
     """The ``pcb_place`` job's anneal, in-process: placement-only moves
@@ -669,7 +661,6 @@ def place(
         schedule=PLACE_ONLY_SCHEDULE,
         measures=measures,
         support_groups=groups,
-        field_polish=(FIELD_POLISH_DEFAULT if field_polish is None else field_polish),
     )
     result = optimize(ir, config)
     poses = pcb_session.positions(ir)
@@ -894,11 +885,9 @@ def route(
     board: Any,
     *,
     placement: LocalPlacement | None = None,
-    loop: int = 0,
     seed: int = 1,
     iters: int | None = None,
     groups: bool = False,
-    field_polish: bool | None = None,
     router: str = "vector",
     force: bool = False,
     place: bool | None = None,
@@ -909,20 +898,13 @@ def route(
     ladder. ``placement=`` continues a ``place()`` result's IR and
     defaults ``place=False`` — the job's route-only mode (``hold_poses``,
     ``iters=0``): the settled sketch and poses reach the realizer
-    untouched. A bare board defaults ``place=True``, the joint anneal.
-    ``loop=N`` swaps the single anneal for ``anneal_route_loop`` (route →
-    penalise → anneal → route) and — the job's own refusal — cannot
-    combine with route-only."""
+    untouched. A bare board defaults ``place=True``, the joint anneal."""
     if router != "vector":
         raise LocalError(
             f"router={router!r} — the grid maze router was removed; "
             "only 'vector' exists"
         )
-    if loop and not (0 < loop <= 10):
-        raise LocalError(f"loop={loop} is out of range; give 0 (off) to 10 rounds")
     route_only = (placement is not None) if place is None else (not place)
-    if route_only and loop:
-        raise LocalError("place=False cannot combine with loop")
     if placement is not None:
         design = placement.design
         ir = placement.ir
@@ -934,79 +916,25 @@ def route(
         ir, footprints, (applied, measures) = _prepare(design)
         applied_locked = applied.locked
     locked_names = frozenset(str(ir.net_name[n]) for n in applied_locked)
-    expansion_caps = None
-    raw_caps = (design.graph["board"].get("meta") or {}).get("expansion_caps")
-    if loop and raw_caps is not None:
-        try:
-            expansion_caps = ExpansionCaps(
-                outline_max_mm=(
-                    float(raw_caps["outline_max_mm"][0]),
-                    float(raw_caps["outline_max_mm"][1]),
-                ),
-                max_copper_layers=int(raw_caps["max_copper_layers"]),
-                max_fab_usd=float(raw_caps["max_fab_usd"]),
-            )
-        except (KeyError, TypeError, ValueError, IndexError) as exc:
-            raise LocalError(f"expansion_caps is malformed ({exc})") from exc
     config = OptimizeConfig(
         iters=0 if route_only else (iters or 3000),
         hold_poses=route_only,
         seed=seed,
         locked_plane_nets=applied_locked,
         measures=measures,
-        expansion=expansion_caps,
         support_groups=groups,
-        field_polish=(FIELD_POLISH_DEFAULT if field_polish is None else field_polish),
     )
-    committed_round = 0
-    if loop:
-        realized_by_round: list[Any] = []
-        states: list[Any] = []
-
-        def _route_once(ir_: PcbIR) -> Any:
-            rres_, _findings, _fail, _split = _route_on(
-                design, ir_, footprints, locked_names, force=force
-            )
-            states.append(_ir_state_snapshot(ir_))
-            realized_by_round.append(rres_)
-            return pcb_feedback.outcome_from_realize(ir_, rres_)
-
-        loop_result = anneal_route_loop(
-            ir,
-            config,
-            _route_once,
-            loop=RouteLoopConfig(rounds=loop, seed=seed),
+    optimize(ir, config)
+    collisions = pcb_session.fixed_copper_findings(
+        ir, footprints, design.fixed_copper, design.fab_caps
+    )
+    if collisions:
+        raise LocalError(
+            f"the anneal placed pads on fixed copper — {len(collisions)} collision(s)"
         )
-        committed_round = loop_result.best_round
-        _ir_state_restore(ir, states[committed_round])
-        rres = realized_by_round[committed_round]
-        findings = pcb_session.routed_drc_findings(
-            ir,
-            rres,
-            capability=design.fab_caps,
-            footprints=footprints,
-            fixed_copper=design.fixed_copper,
-            outline=design.outline,
-            net_rules=pcb_session.clearance_net_rules(design.graph, design.fab_caps),
-            net_voltages=_net_voltages(design.graph),
-        )
-        rres, drc_fail = pcb_session.strip_drc_violating_nets(ir, rres, findings)
-        split = pcb_session.split_nets(
-            ir, rres, footprints=footprints, fixed_copper=design.fixed_copper
-        )
-    else:
-        optimize(ir, config)
-        collisions = pcb_session.fixed_copper_findings(
-            ir, footprints, design.fixed_copper, design.fab_caps
-        )
-        if collisions:
-            raise LocalError(
-                "the anneal placed pads on fixed copper — "
-                f"{len(collisions)} collision(s)"
-            )
-        rres, findings, drc_fail, split = _route_on(
-            design, ir, footprints, locked_names, force=force
-        )
+    rres, findings, drc_fail, split = _route_on(
+        design, ir, footprints, locked_names, force=force
+    )
     rows, unrouted_reasons = _status_rows(design, ir, rres, drc_fail, split)
     counts = {"realized": 0, "failed": 0, "dangling": 0}
     for row in rows.values():
@@ -1033,7 +961,6 @@ def route(
         ir=ir,
         rres=rres,
         footprints=footprints,
-        committed_round=committed_round,
     )
 
 

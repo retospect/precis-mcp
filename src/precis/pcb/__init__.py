@@ -5,10 +5,8 @@ The keystone-kind philosophy (shared with cad and structure): own a
 legible IR the LLM reads as structure — a circuit is already a graph, a
 board already placed rectangles — and keep every stage a pure function
 over it so each is unit-testable in isolation. Export is the one place a
-design leaves the relational graph. Freerouting (:mod:`~precis.pcb.route`)
-is the one rented kernel, and it is no longer the critical path: the
-in-house realizer + vector router produce the copper the gerbers are cut
-from.
+design leaves the relational graph. The in-house realizer + vector router
+produce the copper the gerbers are cut from.
 
 Route warm starts use Hungarian Manhattan-distance assignment from connected
 fixed-copper via terminals to admissible channel pads. Replay with In2.Cu/B.Cu
@@ -23,22 +21,11 @@ anneal's crossing move and authored-baseline swap persistence stay unchanged;
 matched roles also carry `cost_mm`/`prior_cost_mm`, which
 `format_warm_start` renders into the job summary and `view='route-status'`.
 
-Negotiated congestion remains a per-route opt-in, never a global default.
-Its handler and realizer supported the knob before the job params contract
-registered it; that omission refused every advertised request at enqueue
-(gr469872). Registering the existing parameter fixes reachability without
-changing copper policy, the 60-second cap, or off-by-default routing. The
-loop reports what it did (``realize.NegotiationReport``: iterations,
-conflict trail, budget, proposals committed, whether its result was taken)
-and the route job prints that line — on the EWOD dogfood board's B.Cu lock
-it never converges (ewod-pcb thread, 2026-10-07).
-
-`op='route'` with `loop=N` runs :func:`~precis.pcb.optimize.anneal_route_loop`
-instead of one anneal plus realize, behind the same guards; priced
-outline/layer growth needs the design's `meta.expansion_caps`. The job
-writes only rounds on the stored board shape and records grown rounds as
-priced proposals under `meta.last_route.loop` (parameters, keys and the
-route-status line: skill `precis-pcb-route-help`).
+The grid-router knobs (``negotiate``, ``corridor``, ``escape``,
+``layer_cost``, ``off_axis``, ``cleanup``), the ``router`` selector and
+``loop`` are accepted-and-ignored for one release — vector is the only
+router and there is no outer route loop (Reto 2026-10-25). A stale
+caller's knobs land in the job's ``ignored`` list, never a refusal.
 
 Footprint-owned geometry (pads, polygon vertices, holes, courtyard) is
 stored footprint-local and only mapped to world through :mod:`~precis.pcb.pose`
@@ -89,8 +76,8 @@ Map, in pipeline order (design doc:
 * **Out** — :mod:`~precis.pcb.gerber` (Gerber X2 + Excellon),
   :mod:`~precis.pcb.svg`, :mod:`~precis.pcb.gerber_view` (render the board
   from its gerbers), :mod:`~precis.pcb.schematic`, :mod:`~precis.pcb.export`
-  (the text/dict exporters), :mod:`~precis.pcb.route` (Freerouting via
-  Specctra, optional), :mod:`~precis.pcb.jlc_order` (JLCPCB upload → quote →
+  (the text/dict exporters, Specctra ``.dsn`` included),
+  :mod:`~precis.pcb.jlc_order` (JLCPCB upload → quote →
   create — the guarded unpaid-order step; docs/backlog/pcb-jlc-order.md).
 * **Argue** — :mod:`~precis.pcb.argue`: the handle grammar (``U1``,
   ``U1.3``, ``net:GND``, ``feature:outline``) the fab render stamps as

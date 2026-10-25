@@ -14,7 +14,6 @@ Two tests:
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 from pathlib import Path
@@ -46,11 +45,10 @@ def test_render_table_reports_rate_per_net_and_connection() -> None:
         drc_s=0.25,
         errors_by_rule={"unrouted": 1},
         warns_by_rule={"clearance": 2, "board_edge_clearance": 1},
-        anneal="2/4",
     )
     table = rb.render_table([row])
     assert (
-        "| b | 3/4 | 2/4 | 1 | 8 | 2 | 12.3 | 2.0 | 0.50 | 0.250 | 0.25 "
+        "| b | 3/4 | 1 | 8 | 2 | 12.3 | 2.0 | 0.50 | 0.250 | 0.25 "
         "| 1: unrouted 1 | 3: board_edge_clearance 1, clearance 2 |"
     ) in table
 
@@ -125,22 +123,8 @@ def test_track_length_counts_lines_and_arcs() -> None:
     reason="opt-in: scripts/pcb-route-bench sets PRECIS_PCB_BENCH_OUT",
 )
 def test_route_bench_table(store: Store) -> None:
-    def with_anneal(row: rb.BenchRow, rerun) -> rb.BenchRow:
-        a = rerun()
-        return dataclasses.replace(row, anneal=f"{a.routed}/{a.nets}")
-
-    rows = [
-        with_anneal(
-            rb.bench_nano(store), lambda: rb.bench_nano(store, field_polish=False)
-        )
-    ]
-    rows += [
-        with_anneal(
-            rb.bench_esp32c3(store, seed),
-            lambda s=seed: rb.bench_esp32c3(store, s, field_polish=False),
-        )
-        for seed in rb.ESP32C3_SEEDS
-    ]
+    rows = [rb.bench_nano(store)]
+    rows += [rb.bench_esp32c3(store, seed) for seed in rb.ESP32C3_SEEDS]
     rows.append(rb.bench_ewod_replay(store))
     rows.append(rb.bench_qfp_plaza())
     taz15 = Path(os.environ.get("PRECIS_PCB_BENCH_TAZ15") or rb.TAZ15_BLANK_SNAPSHOT)

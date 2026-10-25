@@ -286,10 +286,8 @@ def test_pcb_place_snap_and_soft_pin_report_and_stamp(store: Store) -> None:
     snapped = {r[0]: r[1] for r in rows if r[1] is not None}
     assert "A" not in snapped  # frozen parts are never snapped
     assert snapped  # the snap stamped what it moved
-    # C ends on its 0.5mm preferred grid. The field polish (opt-in) rasters
-    # onto that same grid (board_from_engine's pitch is
-    # _preferred_snap_grid_mm), so when the polish already landed C there
-    # the snap has nothing to move and — per its "parts that actually
+    # C ends on its 0.5mm preferred grid. A part already on its own grid
+    # gives the snap nothing to move and — per its "parts that actually
     # moved" contract — nothing to stamp.
     placed = {i["refdes"]: i for i in store.pcb_graph(ref_id)["instances"]}
     for axis in ("x", "y"):

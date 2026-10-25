@@ -139,51 +139,14 @@ job applies).
 
 ## Route job options, idempotency and the autoplace alias
 
-- `op='route'` also accepts `negotiate` (int 0–100, default 0 = off):
-  experimental negotiated-congestion iterations, tried only when the
-  normal rip-up passes leave nets unrouted; capped at 60 s, and the result
-  is kept only if it routes more nets. Unmeasured on real boards yet.
-- `op='route'` also accepts `corridor` (number ≥ 0, default 0 = off):
-  the tile-plan corridor experiment (slice 1 of the global-plan
-  router). When on, a strict
-  flow-capacity tile plan is negotiated first, each planned segment
-  searches with every off-corridor cell priced `corridor`, and the
-  ordinary rip-up passes still run after — so it can cost time, never
-  nets. Measured 2026-10-15 on both benchmarks: EWOD dogfood-6 replay
-  51/55 (same as plain), QFP plaza warm 53/55 (same as plain) — opt-in
-  only until a pinned measurement beats plain on both.
-- `op='route'` also accepts `escape` (string `"plaza"`, default off):
-  plaza packing for tough pad rows (slice 1b of the global-plan
-  router). A closed pad row whose
-  ring-crossing boundaries read zero lanes on the strict flow map gets
-  an angular escape assignment — stub outward to a packed margin via
-  lattice, inner-layer run to the source — handed to the vector router as wedge
-  corridors at the `corridor` price (default 5 when unset); the plain
-  passes still run after. Measured 2026-10-15: EWOD replay 51/55,
-  QFP plaza warm 53/55 — same as plain on both.
-- `op='route'` also accepts `loop` (int 0–3, default 0 = off): the
-  bounded **route → penalise → anneal → route** outer loop
-  (`optimize.anneal_route_loop`). Each round routes the current board,
-  folds its failed nets/escapes and congestion into the next anneal's
-  margins, and re-places — including two *priced* expansion moves
-  (grow the outline, add a symmetric layer pair) **only when the design
-  authors bounds**. Set them on the design's meta at authoring time:
-  `args={'meta': {'expansion_caps': {'outline_max_mm': [w, h],
-  'max_copper_layers': n, 'max_fab_usd': usd}}}` — every field required;
-  absent caps disable both moves (never treated as infinity). The loop
-  ends in a conflict digest — binding constraints, net/pad/region
-  witnesses, marginal fab-USD prices — not placement advice. The job
-  commits the best round whose board shape is still the stored one: it
-  never writes a grown outline or an added layer pair, so a round that
-  only routed because the board grew is reported, not stored —
-  `meta.last_route.loop.proposed_expansions` lists each growth with its
-  round, routed count and fab-USD delta; apply it as a design edit
-  (outline feature / stackup) and re-run. The job summary and
-  `view='route-status'` show the one-line verdict; the full digest lives
-  at `meta.last_route.loop.digest` next to per-round routed/failed/
-  dangling counts, outline mm, layers, `best_round`, `committed_round`
-  and any `refused_rounds` (a later round the pre-route gate refused
-  counts as zero routed instead of failing the whole job).
+- Removed knobs are DEPRECATED, accepted-and-ignored for one release
+  (sent to the job, reported in its `ignored` list), never acted on:
+  the grid-router knobs (`negotiate`, `corridor`, `escape`,
+  `layer_cost`, `off_axis`, `cleanup`) and the `router` selector —
+  vector is the only router; `loop` and `expansion_caps` (the
+  route → penalise → anneal outer loop and its priced expansion moves,
+  deleted 2026-10-25); `field_polish` (the placement polish engine,
+  deleted the same day).
 - **Idempotent per (design, op, content-hash).** A re-submit against
   *unchanged* netlist/placement state and the same `iters`/`seed`
   collapses onto the in-flight/prior job instead of minting a duplicate —
@@ -195,20 +158,9 @@ job applies).
 
 ## Straighten kinked tracks, or route without moving parts
 
-- `op='route'` also accepts `cleanup` (bool, default on): after routing, a
-  track that kinks around another net's via gets both nets re-routed with
-  the via moved up to 1 mm, kept only if length, bends and vias all hold
-  or improve and no DRC finding is added; capped at 40 moves and 20 s.
-  The summary says `cleanup: K moves kept, L tried, length -X mm,
-  bends -Y`; when no flagged track has a foreign via in its way it says
-  `cleanup: 0 moves kept, 0 tried (N kinked/detoured track(s), none with
-  a foreign via blocking its straight line)`. It runs only on a finished
-  board (every net routed, no copper DRC error; silk rules do not count);
-  otherwise `cleanup: skipped (29 unrouted, 11 copper DRC errors)`.
-  `cleanup=False` turns it off.
 - `op='route'` also accepts `place` (bool, default true = the joint
   place+route above). `place=False` is route-only: no anneal, every pose
-  and the stored sketch stay as stored. Cannot combine with `loop`.
+  and the stored sketch stay as stored.
 
 ## Gridless retry of failed nets
 
@@ -363,10 +315,10 @@ having changed nothing else.
   the fill takes the rest. A net whose pins do not all fit its region
   routes as traces, and the job summary says why (`regions:` lines).
 - `direction`: `h`/`v`/`d`/`any` or an angle in degrees — the layer's
-  preferred axis (cross-grain steps cost `off_axis`, default 1.6x; route
-  param `off_axis=` changes it). Unset layers alternate h/v by index.
+  preferred axis (cross-grain steps cost more; the `off_axis=` route
+  param is removed). Unset layers alternate h/v by index.
 - `route_cost`: a step on this layer costs this multiple (>= 1) of the
-  base step; route param `layer_cost=` overrides per run.
+  base step (the `layer_cost=` route param is removed).
 - `reference`: the layer a trace returns its current through (default: the
   nearest poured layer); informational until a return-path cost lands.
 - First and last layers must be `F.Cu` and `B.Cu` — a bottom-side part's
@@ -556,15 +508,15 @@ easy to miss from the tool surface alone:
 
 - **`SIDE_FLIP` has no cost effect.** The `crossings` term (the only term
   that could plausibly respond to a side choice) is a straight-line sweep
-  at component-centroid granularity — it is structurally blind to which
-  side of an obstacle a connection routes on, the same way it is blind to
-  `inst_rot`. The move still runs (its dirty-cascade bookkeeping is
+  between pad positions — it is structurally blind to which
+  side of an obstacle a connection routes on. The move still runs (its dirty-cascade bookkeeping is
   exercised so the plumbing is ready), it just never changes `total()`.
   This is why `op='pin_side'` is a seed, not a lock (see above).
-- **`ROTATE` is cost-neutral too**, for the same structural reason as
-  `SIDE_FLIP` — no term reads `inst_rot`. `op='move'`'s `rot=` still
-  writes a real rotation to the database (useful for footprint/courtyard
-  correctness), it just isn't something the anneal optimizes for yet.
+- **`ROTATE` is priced** — endpoints are the pads, so spinning a part
+  moves them and reprices every incident segment's crossing geometry
+  (it was cost-neutral at the old component-centroid granularity,
+  gr499239). `op='move'`'s `rot=` writes a real rotation and the anneal
+  optimizes it too.
 
 Everything else — `TRANSLATE`, `SWAP`, `LAYER_ASSIGN`,
 `PLANE_PROMOTE`/`PLANE_DEMOTE`, and the `crossings`/`gap_capacity`/

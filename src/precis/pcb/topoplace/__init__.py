@@ -1,5 +1,4 @@
-"""topo-place — the fast topological layer in front of the smooth-energy
-engines (``field.py``, ``precis.pcb.pr``) and the geometry router
+"""topo-place — the fast topological layer in front of the geometry router
 (``topo.py``/``vroute.py``). Spec: docs/backlog/pcb-topo-place.md.
 
 **The model.** A design is one immutable snapshot

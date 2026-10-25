@@ -1400,51 +1400,35 @@ def test_op_route_negotiate_enqueues_and_dedupes_exact_params(pcb, store, negoti
     assert any("negotiate" not in r[0] for r in rows)
 
 
-@pytest.mark.parametrize("loop", [-1, 4])
-def test_op_route_loop_out_of_range_is_bad_input_not_a_long_job(pcb, loop):
-    pcb.put(id="op-loop", args=_CROSSED_OUTLINED)
-    with pytest.raises(BadInput, match="loop"):
-        pcb.put(id="op-loop", args={"op": "route", "loop": loop})
-
-
-def test_op_route_loop_enqueues_params_and_forwards_authored_caps(store, monkeypatch):
-    """``loop`` reaches the job params (gr469872's contract — an
-    unregistered param is refused at enqueue), and the design's authored
-    ``meta.expansion_caps`` rides along verbatim so the dedup hash sees
-    it; an omitted knob stays absent."""
+def test_op_route_loop_is_deprecated_accepted_and_ignored(store, monkeypatch):
+    """``loop`` (the route -> penalise -> anneal outer loop) was removed
+    with the priced-expansion machinery (Reto 2026-10-25): DEPRECATED for
+    one release — the handler forwards it verbatim so the job can report
+    it in the run's ``ignored`` list rather than refuse a stale caller.
+    The design's authored ``meta.expansion_caps`` is no longer read at
+    all."""
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    caps = {
-        "outline_max_mm": [120.0, 100.0],
-        "max_copper_layers": 6,
-        "max_fab_usd": 200.0,
-    }
     hub = Hub(store=store)
-    PcbHandler(hub=hub).put(
-        id="op-loop-caps",
-        args={**_CROSSED_OUTLINED, "meta": {"expansion_caps": caps}},
-    )
-    ref = store.get_ref(kind="pcb", id="op-loop-caps")
+    PcbHandler(hub=hub).put(id="op-loop", args=_CROSSED_OUTLINED)
+    ref = store.get_ref(kind="pcb", id="op-loop")
     assert ref is not None
     job = Mock()
     job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
     monkeypatch.setattr(hub, "sibling", lambda kind: job)
     handler = PcbHandler(hub=hub)
     handler._enqueue_op(ref, "route", {"loop": 2})
-    params = job.put.call_args.kwargs["params"]
-    assert params["loop"] == 2
-    assert params["expansion_caps"] == caps
+    assert job.put.call_args.kwargs["params"]["loop"] == 2
     handler._enqueue_op(ref, "route", {})
-    params = job.put.call_args.kwargs["params"]
-    assert "loop" not in params
-    assert "expansion_caps" not in params
+    assert "loop" not in job.put.call_args.kwargs["params"]
 
 
-def test_op_route_cleanup_must_be_boolean_and_only_off_is_forwarded(store, monkeypatch):
-    """gr495397: the clean-up pass is on by default, so only ``False``
-    reaches the job params (an omitted or ``True`` knob keeps the dedup
-    key of a plain route)."""
+def test_op_route_cleanup_is_deprecated_accepted_and_ignored(store, monkeypatch):
+    """``cleanup`` was removed with the grid router (Reto 2026-10-25):
+    DEPRECATED for one release — the handler forwards it verbatim so the
+    job can report it in the run's ``ignored`` list rather than refuse a
+    stale caller."""
     from types import SimpleNamespace
     from unittest.mock import Mock
 
@@ -1452,8 +1436,6 @@ def test_op_route_cleanup_must_be_boolean_and_only_off_is_forwarded(store, monke
     PcbHandler(hub=hub).put(id="op-cleanup", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="op-cleanup")
     assert ref is not None
-    with pytest.raises(BadInput, match="cleanup"):
-        PcbHandler(hub=hub).put(id="op-cleanup", args={"op": "route", "cleanup": 1})
     job = Mock()
     job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
     monkeypatch.setattr(hub, "sibling", lambda kind: job)
@@ -1461,7 +1443,7 @@ def test_op_route_cleanup_must_be_boolean_and_only_off_is_forwarded(store, monke
     handler._enqueue_op(ref, "route", {"cleanup": False})
     assert job.put.call_args.kwargs["params"]["cleanup"] is False
     handler._enqueue_op(ref, "route", {"cleanup": True})
-    assert "cleanup" not in job.put.call_args.kwargs["params"]
+    assert job.put.call_args.kwargs["params"]["cleanup"] is True
 
 
 def test_op_route_force_must_be_boolean(pcb):

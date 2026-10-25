@@ -41,7 +41,8 @@ parts, nets with fanout/class/I/width, net_classes, route-status summary);
 neighbour instances); `get(id='slug@NET')` is membership. Eyes:
 `crossings | ratsnest | drc | trace | proximity | measures | feasibility |
 route-status | congestion | planes`. Figures: `svg`. Exports: `bom | cpl |
-netlist | dsn | mechanical | gerber`, plus `route` (demoted Freerouting).
+netlist | dsn | mechanical | gerber` (`route`/Freerouting deleted
+2026-10-25).
 
 **Board frame** (documented in the skill): origin at the **board-outline
 corner**, +X right, +Y up, rotation **clockwise from north**, pivot = the

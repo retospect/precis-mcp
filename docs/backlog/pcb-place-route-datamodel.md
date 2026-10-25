@@ -1,6 +1,5 @@
 ---
-status: in-progress
-claimed-by: pcb-drop
+status: parked
 title: "pcb: smooth place-and-route — topology by search, layers by belief, geometry by batched relaxation, coarse-to-fine"
 prio: high
 model: opus
@@ -16,7 +15,7 @@ Agreed by Reto 2026-10-20. It replaces the method of [pcb-unified-place-route](p
 and builds on [pcb-vector-router](pcb-vector-router.md) where §Conflicts says;
 where they disagree, this file wins.
 
-**Parked (Reto 2026-10-25).** `precis.pcb.pr` is formally parked: its
+**Superseded (Reto 2026-10-25).** `precis.pcb.pr` is deleted: its
 slice 2 results beat vroute on no bench.
 [pcb-topo-place](pcb-topo-place.md) is the router path forward; this
 file stays as the record of the smooth-energy design.

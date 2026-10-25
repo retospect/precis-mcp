@@ -15,8 +15,9 @@ user's and are **settled** — this file sequences them, it does not relitigate.
 ## Settled decisions
 
 1. **Freerouting is out.** The in-house layered rubber-banding graph engine is
-   the system. `view='route'` goes away. Because `place.autoplace` is reachable
-   *only* from that path, measures become 100% dead — so measures **must**
+   the system. `view='route'` went away 2026-10-25 (`_render_route` +
+   `_place_and_store` deleted; `place.autoplace` stays for
+   `view='feasibility'` until the topo replacement). Measures **must**
    become registered cost terms, and `place.py`'s objective is deleted.
 2. **One scalarization over all terms.** Augmented weighted Tchebycheff
    `s = max_t(w_t·P_t) + ρ·Σ_t(w_t·P_t)` (Steuer & Choo 1983 — the ρ term is
@@ -100,7 +101,7 @@ Engine track **S1→S7 is strictly ordered**. Surface track **S8/S9 is parallel*
 and independent. S10 is last by design.
 
 - **S1 — delete the second cost function.** `handlers/pcb.py`: drop
-  `_render_route`, `_place_and_store`. `place.py`: drop `autoplace`,
+  `_render_route`, `_place_and_store` (done 2026-10-25). `place.py`: drop `autoplace`,
   `_objective`, `W_*`; relocate `route_feasibility` (its one other consumer is
   `view='feasibility'`); delete the file. Drop the DSN exporter with it.
   Measures are dead until S4 — say so in `view='measures'` output, the way the
@@ -2192,9 +2193,9 @@ Verified by grep, not by reading prose:
 So the two engines disagree on both the objective *and* what inputs
 exist. Which runs depends on the verb: `op='place'` enqueues
 `workers/job_types/pcb_place.py` → `optimize.py`+`cost.py` (**ignores
-measures**); `_place_and_store` → `place.autoplace` (`handlers/pcb.py:873`,
-**honours measures**) is reached only from the **Freerouting round-trip**,
-the path we ourselves demoted.
+measures**); `_place_and_store` → `place.autoplace` (**honours
+measures**) was reached only from the **Freerouting round-trip** — both
+deleted 2026-10-25.
 
 Net effect: **every measure the agent states is invisible to the engine we
 call the system.** `view='measures'` still evaluates and displays them, so

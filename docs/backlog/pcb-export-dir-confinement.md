@@ -14,7 +14,8 @@ prio: normal
 write. So an agent-supplied absolute path writes wherever the serving
 process can write. The sites are `_render_export` (bom/cpl/netlist/dsn/
 mechanical), `_render_gerber`, `_render_epro` and the Freerouting
-`_render_route`: four places doing the same unconfined write. The
+`_render_route` (since deleted, 2026-10-25): four places doing the same
+unconfined write. The
 filename is `f"{slug}.<ext>"`. A slug is a precis slug and is
 constrained at mint, but the export never re-checks it, so the
 confinement rests on an invariant held somewhere else. Found by the

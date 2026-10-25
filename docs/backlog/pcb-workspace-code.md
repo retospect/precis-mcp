@@ -105,7 +105,7 @@ import precis_geom.pcb as pcb
 | check | `b.check()` → findings | — | pure L0 checks: pin names resolve, unknown nets, free-ended naming, unresolved parts, missing footprints NOT-CHECKED |
 | shape | `b.shape()` → `BoardShape` (outline, one prism per placed part with `height_mm` + `origin`, hole centres/diameters, keepouts); `shape.fits(other)` → `FitResult` | — | slice 0b: derived data + the fit-check call; nothing enters the batch; one derivation in `precis_geom.pcb_shape` shared with `export.mechanical_profile`/`precis_se.board` |
 | emit | `out.board(b)` | `out/manifest.json` + `out/trace.json` | `b.to_batch()` is the dict |
-| services | `pcb.place(b, seed=, iters=, groups=, field_polish=)` → `Placement`; `pcb.route(b, placement=, loop=, router='vector')` → `Routing` | `requests[]` | §Q2 |
+| services | `pcb.place(b, seed=, iters=, groups=)` → `Placement`; `pcb.route(b, placement=, router='vector')` → `Routing` | `requests[]` | §Q2 |
 
 Every builder call is a traced primitive (`@traced`, structures
 §Construction traces); `b.use(...)` is the module frame, the module
@@ -205,7 +205,7 @@ was not handed (the net-namespacing invariant, checked at build time).
 | cost | zero extra | one container holds a lane slot for minutes; two sandbox hosts (W1), one live job per workspace lease | the solver runs on the worker lane as today; the sandbox slot is held for seconds |
 | lane capacity | script lane: short jobs only | script lane blocked by solver time; a second workspace waits on the lease | script lane short; solver load is the existing `pcb_place`/`pcb_route` lane |
 | how iteration feels to the agent | two surfaces: edit script → run → then `put(op='place')` → poll job → `view='placement'` | one surface, minutes of silence, no partial result | one surface: edit → run → the echo says `place: hit (run 3)` or `place: queued job j…; re-run in ~3 min`; inspection via MCP views meanwhile |
-| fit with field placer + vector router | unchanged: `pcb_place` (`optimize` → `field.polish_placement`), `pcb_route` (`optimize` → `realize` → `vroute.route`) | the kernel ships in the wheel; results come back as authored poses and copper through the manifest — bypasses the never-worse guard (gr480010), judged mutation, `last_route`, the lock columns (`fixed_side`, `group_fixed`, `room_id`) and recorded DRC runs; the sandbox pins a wheel version that drifts from the server's DRC | unchanged job types plus a request table in front of them |
+| fit with anneal placer + vector router | unchanged: `pcb_place` (`optimize`), `pcb_route` (`optimize` → `realize` → `vroute.route`) | the kernel ships in the wheel; results come back as authored poses and copper through the manifest — bypasses the never-worse guard (gr480010), judged mutation, `last_route`, the lock columns (`fixed_side`, `group_fixed`, `room_id`) and recorded DRC runs; the sandbox pins a wheel version that drifts from the server's DRC | unchanged job types plus a request table in front of them |
 | trust boundary | the importer | copper would enter through the manifest — a second way to make copper | the importer; solver writes stay in the job path |
 
 **Recommendation: (c), built as (a) first.** (a) is slice 1 — the
@@ -227,7 +227,8 @@ running|failed, job, run}`; on `hit` the read MCP serves `get(kind=
 `revision` equals the request key, so `Placement.ready` is one read.
 A `failed` request carries the job's failure class
 (`non-convergence` from `pcb_route`) and `next=` naming the constraint
-or the `loop`/`expansion_caps` knob.
+(the `loop`/`expansion_caps` knobs are deleted — accepted-and-ignored
+since 2026-10-25).
 
 ## Q3 — the full program, offline
 
@@ -420,10 +421,10 @@ re-optimised in context.
    the port net arrives from. So after the inter-module route, one pass
    with the boundaries dissolved: `group_fixed` released to a leash
    (`max_travel_mm`, small moves of modules and of parts inside them —
-   `field.polish_placement` with the leash as the bound), interior
+   a placement polish pass with the leash as the bound), interior
    copper demoted from fixed to router copper, then rip-up and reroute
    of every net crossing a block edge plus every interior net the
-   crossing nets displaced (`pcb_route` negotiation, `loop=k`), under
+   crossing nets displaced (`pcb_route` negotiation), under
    the never-worse guard: the pass replaces the seed only if the
    unrouted count and DRC errors do not rise. The pass is not a knob:
    `pcb.route(b, hierarchical=True)` is seed + pass, and the echo

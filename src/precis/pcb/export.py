@@ -2,8 +2,7 @@
 
 Export is the **only** place the design leaves the relational graph. Every
 exporter is pure (IR in → text/dict out), so each is trivially testable and
-none needs a binary — the binaries (Freerouting, kicad-cli) are gated at the
-*router* step (:mod:`precis.pcb.route`), not here.
+none needs a binary.
 
 Targets, in fab order:
 

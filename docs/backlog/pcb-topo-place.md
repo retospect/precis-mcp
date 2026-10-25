@@ -59,9 +59,10 @@ Relation to other pcb items: [pcb-intent-api](pcb-intent-api.md) supplies
 the objective shares and constraints this consumes;
 [pcb-unified-place-route](pcb-unified-place-route.md) (`field.py`) and
 [pcb-place-route-datamodel](pcb-place-route-datamodel.md) (`precis.pcb.pr`)
-are the smooth-energy engines; [pcb-vector-router](pcb-vector-router.md)
+were the smooth-energy engines (both deleted, Reto 2026-10-25; git
+history); [pcb-vector-router](pcb-vector-router.md)
 (`topo.py`, `vroute.py`) is the geometry engine. topo-place is the fast
-topological layer in front of them: poses, pin assignments, a layer per
+topological layer in front of it: poses, pin assignments, a layer per
 wire piece and via sites. v1 hands geometry to `vroute` (phase 4).
 
 ## Rulings (Reto 2026-10-24)
@@ -684,7 +685,7 @@ first round; outline containment holds.
 
 Geometry hands off to `vroute` (`src/precis/pcb/vroute.py`) — the vector
 router and the only production router since the grid router was removed
-(`d42369679`); Freerouting was dropped on 2026-10-23. Entry point:
+(`d42369679`); Freerouting's remnants were deleted on 2026-10-25. Entry point:
 `vroute.route(space, request)` — one `vroute.Space` (obstacles plus the
 per-net clearance) built once, one `vroute.Request` per connection,
 driven the way `realize.py` drives it today.
@@ -713,8 +714,8 @@ Slices 0–5 above; skills: `precis-pcb-workspace-help` gains the pin forms,
 - A peripheral DSL (I2C instances, timer sharing, alt-function
   exclusivity); the LLM fixes those pins (Decision 11).
 - Promoting pin function tables into the component library (Decision 16).
-- Native taut geometry; v1 geometry is `vroute` (Freerouting was dropped
-  2026-10-23).
+- Native taut geometry; v1 geometry is `vroute` (Freerouting's remnants
+  were deleted 2026-10-25).
 - Rotation during shove.
 - Blind and buried vias.
 - Exact k-layer via minimisation beyond the 2-layer relaxation (NP-complete

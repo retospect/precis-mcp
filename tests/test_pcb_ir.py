@@ -637,7 +637,9 @@ def test_same_layer_crossing_count_excludes_unplaced_segments_not_origin():
     assert same_layer_crossing_count(ir, 0) == 0
 
 
-def test_segment_points_returns_instance_centroids_or_none():
+def test_segment_points_returns_pad_positions_or_none():
+    # Endpoints are the pads (pin_point); a one-pin instance's synthesized
+    # pad sits at its centroid, so the numbers coincide here.
     ir = from_graph(_crossing_pair_graph(), stackup=DEFAULT_STACKUP)
     assert segment_points(ir, 0) == ((0.0, 0.0), (10.0, 10.0))
 

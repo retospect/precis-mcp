@@ -521,6 +521,6 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
    ([[precis-pcb-route-help]]'s rip-up loop).
 7. **Export & order** — `view='fab'` writes the JLC package (gerber+drill
    zip + BOM + CPL) in one dir; `op='order'` dry-runs/places the JLCPCB
-   order; `view='mechanical'` for the enclosure; `view='route'`
-   (Freerouting) stays available as a demoted escape hatch. All of step 7:
+   order; `view='mechanical'` for the enclosure; `view='dsn'` feeds an
+   external autorouter as a manual escape hatch. All of step 7:
    [[precis-pcb-fab-help]].
