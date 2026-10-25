@@ -526,6 +526,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         and n_placement_errors > errors_before
     )
     if worse and not force:
+        if topo_files is not None:
+            # The run happened and its files are computed even though the
+            # pose was refused — stamp them so view='topo' and bench
+            # metrics can read a refused run (gr515107 loop).
+            ctx.set_meta(topo_run={"files": topo_files})
         ctx.record_failure(
             "pcb_place: refusing to commit — the new placement has "
             f"{n_placement_errors} pre-route DRC error(s), the stored one has "

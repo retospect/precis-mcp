@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# scripts/pcb-loop — the local PCB dev loop: import an .epro2 into this
+# worktree's dev DB, topo-place it, route it with vroute, run DRC and
+# write summary.md + metrics.json + SVG renders. No prod, no MCP, no
+# deploy — the PCB lane's iteration command.
+#
+# Usage:
+#   scripts/pcb-loop [--board <epro2>] [--seed N] [--effort N]
+#                    [--skip-route] [--out DIR]
+#
+# Defaults: --board ~/taz15.epro2 (READ-ONLY: copied into .scratch first;
+# the file is never moved or rewritten), --out /tmp/pcb-topo/loop/<n>
+# with n the next free integer. The driver is
+# tests/fixtures/pcb/pcb_loop.py, run via scripts/dev — per-stage wall
+# times and metrics land under <out>/.
+set -euo pipefail
+
+board="${HOME}/taz15.epro2"
+# The default board's project carries 6 PCB documents; this is the
+# 2026-08-20 TAZ Control Board V1.15, the current one.
+board_uuid=""
+seed=1
+effort=20000
+skip_route=0
+out=""
+extra=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --board) board="$2"; shift 2 ;;
+        --board-uuid) board_uuid="$2"; shift 2 ;;
+        --seed) seed="$2"; shift 2 ;;
+        --effort) effort="$2"; shift 2 ;;
+        --skip-route) skip_route=1; shift ;;
+        --skip-place) extra+=(--skip-place); shift ;;
+        --force) extra+=(--force); shift ;;
+        --anneal-route) extra+=(--anneal-route); shift ;;
+        --out) out="$2"; shift 2 ;;
+        *) echo "ERR: unknown flag $1" >&2; exit 64 ;;
+    esac
+done
+
+if [[ -z "$board_uuid" && "$board" == "${HOME}/taz15.epro2" ]]; then
+    board_uuid="858a5f81603d1987"
+fi
+
+here="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$here"
+
+if [[ ! -f "$board" ]]; then
+    echo "ERR: board not found: $board" >&2
+    exit 66
+fi
+
+if [[ -z "$out" ]]; then
+    base=/tmp/pcb-topo/loop
+    mkdir -p "$base"
+    n=1
+    for d in "$base"/*/; do
+        b="$(basename "$d")"
+        [[ "$b" =~ ^[0-9]+$ ]] && (( b >= n )) && n=$(( b + 1 ))
+    done
+    out="${base}/${n}"
+else
+    mkdir -p "$out"
+fi
+
+stage=".scratch/pcb-loop/$(basename "$out")"
+mkdir -p "$stage"
+cp "$board" "${stage}/input.epro2"
+
+scripts/dev db-up >/dev/null
+
+if (( skip_route )); then extra+=(--skip-route); fi
+if [[ -n "$board_uuid" ]]; then extra+=(--board-uuid "$board_uuid"); fi
+
+sha="$(git rev-parse --short HEAD)"
+git diff --quiet HEAD -- || sha="${sha}+dirty"
+
+# The driver's exit is nonzero on a refused/failed stage — that is a
+# result, not a crash: copy the outputs to $out either way, then exit
+# with it so callers can still tell iterations apart.
+set +e
+scripts/dev uv run --no-sync python -m tests.fixtures.pcb.pcb_loop \
+    --board "${stage}/input.epro2" \
+    --slug "pcb-loop-$(basename "$out")" \
+    --out "$stage" \
+    --seed "$seed" --effort "$effort" "${extra[@]+"${extra[@]}"}"
+rc=$?
+set -e
+cp -a "${stage}/." "$out/"
+
+python3 - "$out/metrics.json" "$sha" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    sys.exit(0)
+r = m.get("route") or {}
+d = m.get("drc") or {}
+n = m.get("slug", "?")
+print(
+    f"LOOP {n} routed {r.get('routed')}/{r.get('nets')} "
+    f"drc {d.get('errors')} ov {d.get('overlap_errors')} "
+    f"wall {m.get('total_s')}s {sys.argv[2]}"
+)
+PY
+echo "loop out: $out"
+exit $rc

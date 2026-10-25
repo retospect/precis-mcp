@@ -57,6 +57,25 @@ the default); `against=` diffs the selected run's best pose and
 crossing count against another run's. A board with no topo runs says
 so and names the enqueue.
 
+## Iterate locally — `scripts/pcb-loop`
+
+The dev loop runs the whole pipeline off a local `.epro2` on this
+worktree's dev DB — no prod, no MCP, no deploy:
+
+```bash
+scripts/pcb-loop                          # ~/taz15.epro2 → /tmp/pcb-topo/loop/<n>/
+scripts/pcb-loop --skip-route --seed 3 --board path/to/board.epro2 --out DIR
+scripts/pcb-loop --force --anneal-route   # topo pose committed despite the
+                                          # placement-DRC gate, then legalized
+                                          # by the joint anneal before routing
+```
+
+One run: import → `placer='topo'` place job → route-only
+(`place=False`) job → DRC → `placement.svg`/`sketch.svg`/`board.svg` +
+`summary.md` + `metrics.json` (per-stage wall times). The bench side
+(`scripts/pcb-topo-bench`) measures topo vs the anneal against the
+default-switch bar on the standing boards.
+
 ## See also
 
 - [[precis-pcb-route-help]] — the default anneal's `op='place'`/

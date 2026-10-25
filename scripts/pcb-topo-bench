@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# scripts/pcb-topo-bench — topo-place vs the default anneal, both routed
+# by vroute, on the standing boards plus the route-bench set
+# (gr515107; docs/backlog/pcb-topo-place.md). The boards and what each
+# column measures: tests/fixtures/pcb/topo_bench.py.
+#
+# Usage:
+#   scripts/pcb-topo-bench [OUT_DIR]   # one run; default
+#                                      # /tmp/pcb-topo/bench/<UTC ts>
+#
+# Why a second script (not a scripts/pcb-route-bench flag): route-bench
+# is the vroute regression table — one engine, one deterministic run per
+# board, a --twice determinism gate. This is a two-pipeline COMPARISON
+# with a PASS/FAIL verdict against the default-switch bar; extending the
+# regression harness would conflate the two contracts.
+#
+# The standing boards' prod exports are read-only; refresh them with:
+#   scripts/pcb-snapshot export-prod heater-base-test \
+#       .scratch/pcb-snapshot/heater-base-test.json
+#   scripts/pcb-snapshot export-prod taz15-blank \
+#       .scratch/pcb-snapshot/taz15-blank.json
+# Absent snapshots are skipped, not failed. A snapshot elsewhere is
+# picked via PRECIS_PCB_SNAP_<SLUG> (slug uppercased, '-' -> '_').
+#
+# Runs through scripts/test (container, RAM test DB). The test writes
+# bench.md/bench.json under a worktree-relative staging dir (the
+# container mounts this worktree at /app); the script copies the pair
+# into OUT_DIR afterwards.
+set -euo pipefail
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+out_dir="${1:-/tmp/pcb-topo/bench/${ts}}"
+here="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$here"
+stage=".scratch/pcb-topo-bench/${ts}"
+mkdir -p "$stage" "$out_dir"
+
+# scripts/test's fixed forward list does not name this var; the generic
+# PRECIS_TEST_ENV passthrough carries it.
+PRECIS_TEST_ENV="PRECIS_PCB_TOPO_BENCH_OUT=${stage}/bench.md" \
+    scripts/test -n0 -s tests/test_pcb_topo_bench.py::test_topo_bench_table
+
+cp "${stage}/bench.md" "${stage}/bench.json" "$out_dir/"
+echo "table: ${out_dir}/bench.md"
+echo "json:  ${out_dir}/bench.json"

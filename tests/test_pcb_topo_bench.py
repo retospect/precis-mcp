@@ -1,0 +1,245 @@
+"""topo-place vs anneal+vroute bench (``tests/fixtures/pcb/topo_bench.py``).
+
+Three layers:
+
+- verdict/render unit tests — fabricated rows, no DB, no network;
+- ``test_topo_handoff_routes_a_tiny_board`` — the pose hand-off end to
+  end on a four-part board (``placer='topo'`` job then a route-only
+  ``place=False`` job): the cheapest proof the (b) pipeline exists;
+- ``test_topo_bench_table`` — opt-in (``PRECIS_PCB_TOPO_BENCH_OUT``,
+  set by ``scripts/pcb-topo-bench``): the standing boards plus the
+  route-bench set, the markdown table + JSON written to that path.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from precis.dispatch import Hub
+from precis.handlers.pcb import PcbHandler
+from precis.store import Store
+from tests._pcb_outline import closed_outline
+from tests.fixtures.pcb import topo_bench as tb
+
+_TINY: dict[str, Any] = {
+    "components": [
+        {"refdes": "A", "label": "ic", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
+        {"refdes": "B", "label": "ic", "x": 2.0, "y": 2.0, "pins": [{"name": "1"}]},
+        {"refdes": "C", "label": "ic", "x": 0.0, "y": 2.0, "pins": [{"name": "1"}]},
+        {"refdes": "D", "label": "ic", "x": 2.0, "y": 0.0, "pins": [{"name": "1"}]},
+    ],
+    "nets": [{"name": "N1"}, {"name": "N2"}],
+    "connections": [
+        {"net": "N1", "refdes": "A", "pin": "1"},
+        {"net": "N1", "refdes": "B", "pin": "1"},
+        {"net": "N2", "refdes": "C", "pin": "1"},
+        {"net": "N2", "refdes": "D", "pin": "1"},
+    ],
+    "features": [closed_outline()],
+}
+
+
+def _row(**kw: Any) -> tb.TopoBenchRow:
+    return tb.TopoBenchRow(
+        board=kw.pop("board", "b"),
+        anneal=kw.pop("anneal", tb.PipeSide()),
+        topo=kw.pop("topo", tb.PipeSide()),
+        topo_stage=kw.pop("topo_stage", tb.TopoStage()),
+        **kw,
+    )
+
+
+def test_verdicts_pass_when_topo_is_no_worse_and_faster() -> None:
+    row = _row(
+        anneal=tb.PipeSide(
+            routed=10, nets=10, drc_errors=2, median_mm=30.0, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(
+            routed=10, nets=10, drc_errors=2, median_mm=28.0, vias=8, wall_s=12.0
+        ),
+    )
+    vs = tb.verdicts(row)
+    assert vs == {
+        "routed": "PASS",
+        "drc_errors": "PASS",
+        "median_mm": "PASS",
+        "vias": "PASS",
+        "wall_s": "PASS",
+    }
+    assert tb.overall(row) == "PASS"
+
+
+def test_verdicts_fail_on_each_metric() -> None:
+    base = _row(
+        anneal=tb.PipeSide(
+            routed=10, nets=10, drc_errors=2, median_mm=30.0, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(
+            routed=10, nets=10, drc_errors=2, median_mm=30.0, vias=8, wall_s=20.0
+        ),
+    )
+    assert tb.overall(base) == "FAIL"  # equal wall is not faster
+    row = _row(
+        anneal=tb.PipeSide(
+            routed=10, nets=10, drc_errors=0, median_mm=30.0, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(
+            routed=9, nets=10, drc_errors=1, median_mm=31.0, vias=9, wall_s=10.0
+        ),
+    )
+    vs = tb.verdicts(row)
+    assert vs["routed"] == "FAIL"
+    assert vs["drc_errors"] == "FAIL"
+    assert vs["median_mm"] == "FAIL"
+    assert vs["vias"] == "FAIL"
+    assert vs["wall_s"] == "PASS"
+    assert tb.overall(row) == "FAIL"
+
+
+def test_verdicts_na_when_a_side_lacks_numbers() -> None:
+    row = _row(
+        anneal=tb.PipeSide(
+            routed=10, nets=10, drc_errors=0, median_mm=30.0, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(note="topo place refused: gate"),
+    )
+    assert set(tb.verdicts(row).values()) == {"n/a"}
+    assert tb.overall(row) == "n/a"
+    # A refused side that still holds partial numbers compares what it has.
+    partial = _row(
+        anneal=tb.PipeSide(
+            routed=10, nets=10, drc_errors=0, median_mm=30.0, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(routed=10, nets=10, note="no drc yet"),
+    )
+    vs = tb.verdicts(partial)
+    assert vs["routed"] == "PASS"
+    assert vs["drc_errors"] == "n/a"
+    assert tb.overall(partial) == "n/a"
+
+
+def test_render_tables_mark_na_and_notes() -> None:
+    row = _row(
+        anneal=tb.PipeSide(
+            routed=9, nets=10, drc_errors=1, median_mm=31.2, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(note="topo place refused: 3 placement DRC"),
+        topo_stage=tb.TopoStage(place_s=4.2),
+    )
+    table = tb.render_table([row])
+    assert "| b | anneal+vroute | 9/10 | 1 | 31.2 | 8 | 20.0 |" in table
+    assert "topo+vroute | n/a/n/a | n/a | n/a | n/a | n/a" in table
+    assert "topo place refused: 3 placement DRC" in table
+    stage = tb.render_stage_table([row])
+    assert (
+        "| b | n/a | n/a | n/a | n/a | 4.2 | n/a (slice 2) | n/a (slice 2) |" in stage
+    )
+    verdict_table = tb.render_verdicts([row])
+    assert "| b | n/a | n/a | n/a | n/a | n/a | n/a |" in verdict_table
+
+
+def test_render_tables_fill_when_topo_route_exists() -> None:
+    """The column contract slice 5 fills: no shape change, real numbers."""
+    row = _row(
+        anneal=tb.PipeSide(
+            routed=9, nets=10, drc_errors=1, median_mm=31.2, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(
+            routed=10, nets=10, drc_errors=0, median_mm=29.9, vias=7, wall_s=15.0
+        ),
+        topo_stage=tb.TopoStage(
+            crossings_start=41,
+            crossings=0,
+            evals=20000,
+            evals_per_s=1500.0,
+            airwire_mm=120.0,
+            place_s=13.3,
+        ),
+    )
+    table = tb.render_table([row])
+    assert "| b | topo+vroute | 10/10 | 0 | 29.9 | 7 | 15.0 |" in table
+    stage = tb.render_stage_table([row])
+    assert "| b | 41 → 0 | 20000 | 1500 | 120 | 13.3 |" in stage
+    assert "| b | PASS | PASS | PASS | PASS | PASS | PASS |" in tb.render_verdicts(
+        [row]
+    )
+
+
+def test_source_provenance_renders_in_board_cell() -> None:
+    row = _row(board="heater-base-test", source="pb460559")
+    assert "| heater-base-test (pb460559) | anneal+vroute |" in tb.render_table([row])
+    assert "| heater-base-test (pb460559) |" in tb.render_verdicts([row])
+    bare = _row(board="nano", source="fixture")
+    assert "| nano (fixture) | anneal+vroute |" in tb.render_table([bare])
+
+
+def test_bench_json_shape_and_provenance() -> None:
+    row = _row(
+        source="pb460559",
+        anneal=tb.PipeSide(
+            routed=10, nets=10, drc_errors=0, median_mm=30.0, vias=8, wall_s=20.0
+        ),
+        topo=tb.PipeSide(note="n/a (pre-slice-5)"),
+        topo_stage=tb.TopoStage(crossings=3, evals=20000, place_s=9.9),
+    )
+    doc = tb.bench_json([row], generated_utc="2026-10-25T00:00:00Z")
+    assert doc["schema"] == "precis-pcb-topo-bench/1"
+    assert doc["route_mode"] == tb.TOPO_ROUTE_MODE
+    (board,) = doc["boards"]
+    assert board["source"] == "pb460559"
+    assert board["anneal"]["routed"] == 10
+    assert board["topo"]["routed"] is None
+    assert board["topo_stage"]["via_bracket"] == "n/a (slice 2)"
+    assert board["overall"] == "n/a"
+    json.dumps(doc)  # serialisable verbatim
+
+
+def test_topo_handoff_routes_a_tiny_board(store: Store) -> None:
+    """The (b) pipeline end to end: placer='topo' writes poses, a
+    route-only job realizes them, the side reports real numbers."""
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo", args=_TINY).body
+    # force=True rides the place + route gates' escape hatches: the
+    # proxy placer prices crossings + length only, so its pose can carry
+    # a placement error both never-worse/legality gates would refuse.
+    side, stage = tb._topo_side(store, pcb, "tiny-topo", seed=1, effort=200, force=True)
+    assert stage.crossings is not None and stage.evals is not None, side.note
+    assert side.nets == 2 and side.routed is not None, side.note
+    assert side.drc_errors is not None
+    assert side.wall_s is not None and side.vias is not None
+
+
+# Opt-in only (scripts/pcb-topo-bench): the whole set runs two real
+# job-path pipelines per board — heater's anneal+route alone passes the
+# 300s global. 1h ceiling so a hung run still fails loudly.
+@pytest.mark.slow
+@pytest.mark.timeout(3600)
+@pytest.mark.skipif(
+    not os.environ.get("PRECIS_PCB_TOPO_BENCH_OUT"),
+    reason="opt-in: scripts/pcb-topo-bench sets PRECIS_PCB_TOPO_BENCH_OUT",
+)
+def test_topo_bench_table(store: Store) -> None:
+    rows = tb.run_bench(store)
+    out = Path(os.environ["PRECIS_PCB_TOPO_BENCH_OUT"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    from datetime import UTC, datetime
+
+    generated = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out.write_text(
+        f"pcb topo-place vs anneal+vroute — {generated} UTC\n\n"
+        + tb.render(rows)
+        + "\n",
+        encoding="utf-8",
+    )
+    out.with_suffix(".json").write_text(
+        json.dumps(tb.bench_json(rows, generated_utc=generated), indent=1) + "\n",
+        encoding="utf-8",
+    )
+    print(tb.render(rows))
+    assert rows
+    assert all(r.anneal.nets is None or r.anneal.nets > 0 for r in rows)
