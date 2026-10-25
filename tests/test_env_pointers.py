@@ -241,7 +241,7 @@ def _clone(origin: Path, dest: Path) -> Path:
 
 
 def test_prod_clone_defaults_to_a_sibling_of_the_main_checkout(
-    repo: tuple[Path, Path, list[str]],
+    repo: tuple[Path, Path, list[str]], tmp_path: Path
 ) -> None:
     work, _origin, _shas = repo
     script = f'. "{LIB}"; env_prod_checkout_dir "{work}"'
@@ -250,10 +250,34 @@ def test_prod_clone_defaults_to_a_sibling_of_the_main_checkout(
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env=_env(),
+        # HOME pinned: the ~ fallback (gr514256) must not leak the dev
+        # machine's real clone into this derivation.
+        env=_env(HOME=str(tmp_path)),
         check=True,
     )
     assert Path(res.stdout.strip()).resolve() == Path(f"{work.resolve()}-prod")
+
+
+def test_prod_clone_falls_back_to_home_precis_mcp_prod(
+    repo: tuple[Path, Path, list[str]], tmp_path: Path
+) -> None:
+    """gr514256: hosts whose served clone predates the `<checkout>-prod`
+    sibling convention hold it at ~/precis-mcp-prod — when the derived
+    sibling is absent but that one is a checkout, it wins."""
+    work, origin, shas = repo
+    home = tmp_path / "home"
+    home.mkdir()
+    clone = _clone(origin, home / "precis-mcp-prod")
+    # The dir function resolves the home clone, and sync moves it.
+    res = _sync(work, shas[0], HOME=str(home))
+    assert res.returncode == 0, res.stderr
+    assert _git(clone, "rev-parse", "HEAD") == shas[0]
+    # The derived sibling still wins when BOTH exist.
+    sibling = _clone(origin, Path(f"{work}-prod"))
+    res = _sync(work, shas[1], HOME=str(home))
+    assert res.returncode == 0, res.stderr
+    assert _git(sibling, "rev-parse", "HEAD") == shas[1]
+    assert _git(clone, "rev-parse", "HEAD") == shas[0]
 
 
 def test_sync_moves_the_clone_to_the_deployed_sha_detached(

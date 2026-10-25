@@ -1397,9 +1397,10 @@ fi
 # checkout or wheel too old to satisfy it is reported, never built and hoped
 # over.
 #
-#   PRECIS_CATPATH_DIR            — catpath checkout. Unset, the sibling
-#                                   layout is probed: <repo>/../catpath,
-#                                   ~/work/projects/code/catpath, ~/catpath
+#   PRECIS_CATPATH_DIR            — catpath checkout. Unset, the conventional
+#                                   layouts are probed, first hit wins:
+#                                   <main checkout>/../catpath,
+#                                   ~/work/project/code/catpath, ~/catpath
 #   PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 — bypass entirely (hosts already seeded
 #                                   by hand, or a fleet with no plugin hosts)
 if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
@@ -1411,19 +1412,14 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
     # exists ... and there is no catpath checkout there", naming a path the
     # operator had never used. Probing the conventional sibling locations makes
     # the common layout work with no env var; PRECIS_CATPATH_DIR still wins.
+    # autocatpath_probe_dirs owns the candidate list and resolves the <repo>
+    # sibling through the main checkout, so a deploy run from a
+    # .claude/worktrees/<name> tree looks beside the checkout, not inside the
+    # worktrees dir.
     if [[ -n "${PRECIS_CATPATH_DIR:-}" ]]; then
         _CATPATH_DIR="$PRECIS_CATPATH_DIR"
     else
-        _CATPATH_DIR="${HOME}/catpath"
-        for _cand in \
-            "${REPO_ROOT}/../catpath" \
-            "${HOME}/work/projects/code/catpath" \
-            "${HOME}/catpath"; do
-            if [[ -f "${_cand}/pyproject.toml" ]]; then
-                _CATPATH_DIR="$(cd "$_cand" && pwd)"
-                break
-            fi
-        done
+        _CATPATH_DIR="$(autocatpath_find_checkout "$REPO_ROOT" || true)"
     fi
     _FLOOR="$(autocatpath_floor "${REPO_ROOT}/pyproject.toml" || true)"
 
@@ -1449,10 +1445,19 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
         _WHEEL="$(autocatpath_select_wheel "${_CATPATH_DIR}/dist" "$_FLOOR" "$_LOCK_V" || true)"
         if [[ -z "$_WHEEL" ]]; then
             if [[ -n "$_LOCK_V" ]]; then
-                _NEED="uv.lock pins ${_LOCKED:0:12} (v${_LOCK_V}); no autocatpath-${_LOCK_V} wheel in ${_CATPATH_DIR}/dist"
+                _NEED="uv.lock pins ${_LOCKED:0:12} (v${_LOCK_V}); no autocatpath-${_LOCK_V} wheel"
             else
-                _NEED="no wheel >=${_FLOOR} in ${_CATPATH_DIR}/dist"
+                _NEED="no wheel >=${_FLOOR}"
             fi
+            if [[ -z "$_CATPATH_DIR" ]]; then
+                # No candidate held a checkout — name every location the
+                # probe tried so the operator can place the checkout in one
+                # of them, or point PRECIS_CATPATH_DIR at it.
+                die "${_NEED} — the catpath probe found no checkout at any of:
+$(autocatpath_probe_dirs "$REPO_ROOT" | sed 's/^/  /')
+Set PRECIS_CATPATH_DIR to a catpath checkout, or PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 if the hosts are already seeded. (gr263082)"
+            fi
+            _NEED="${_NEED} in ${_CATPATH_DIR}/dist"
             # No qualifying wheel — try to build one, but only from a
             # checkout that actually declares a satisfying version.
             _PROJ_V="$(autocatpath_project_version "${_CATPATH_DIR}/pyproject.toml" || true)"

@@ -139,9 +139,10 @@
 # distinct restore points rather than back-to-back copies. Runtime ~60–90
 # min (measured: the -Z6 dump is 62 min; -Z0 drops the zlib CPU and the
 # checksum rsync moves only diffs). The script holds its own mkdir lock, so
-# a slow night can't overlap the next tick. The window guard in
-# scripts/lib/backup-window.sh does NOT cover this slot — flagged to the
-# coordinator for a harness-side decision.
+# a slow night can't overlap the next tick. The deploy no-go window for this
+# slot is the backup_dir_window_*_utc pair in defaults/main.yml — the window
+# guard in scripts/lib/backup-window.sh reads every <X>_window_*_utc pair
+# (gr513885).
 - name: Schedule nightly dir dump to dbbackup
   ansible.builtin.cron:
     name: "pg_dump dir backup to dbbackup"

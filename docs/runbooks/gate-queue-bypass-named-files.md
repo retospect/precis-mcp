@@ -1,10 +1,13 @@
 # Verifying a few named test files when the local gate queue is hours deep
 
-**When.** `scripts/test` waits on an N-slot local gate (`scripts/lib/gate-slot.sh`,
-default 3) and the queue is deep (seen 2026-09-16: ~20 sibling waiters, some over 1.5 h).
+**When.** `scripts/test` waits on an N-slot local gate (`scripts/lib/gate-slot.sh`;
+N derives from the Docker VM's RAM/cores, `PRECIS_GATE_SLOTS` overrides) and
+the queue is deep (seen 2026-09-16: ~20 sibling waiters, some over 1.5 h).
 You need a handful of named test files green before a `/qland`, not the full
 suite. The remote `/land` matrix or the post-burst `/go` stays the real gate;
-this is a spot check.
+this is a spot check. If the files you need are no-DB (no `store`-family
+fixtures), `scripts/test --fast <files>` skips the queue entirely — it
+starts no Postgres and takes no slot (gr514466).
 
 **Do not** dispatch a `test-runner` agent into a deep queue (it cannot wait
 usefully and flails on empty logs), and do not kill or stop gate containers
@@ -33,11 +36,11 @@ ps -o etime=,command= -p <pid>
   most of a holder's elapsed time was spent waiting for the slot it now
   holds.
 
-Never raise `PRECIS_GATE_SLOTS` to get unblocked: the default (3 since
-2026-10-21, sized to the 93.2 GiB / 8-CPU OrbStack VM) is the fleet's
-capacity answer, not a per-session knob — the OOM churn it prevents is
-gr202193's, and CPU is now the binding constraint, not RAM. Wait, use the
-bypass below, or ask the holder's session.
+Never raise `PRECIS_GATE_SLOTS` to get unblocked: the cap is derived from
+the VM's own totals — `min(floor((MemTotal - 16 GiB) / 4.5 GiB), NCPU / 2)`,
+min 1 — and is the fleet's capacity answer, not a per-session knob; the
+OOM churn it prevents is gr202193's, and CPU is the binding constraint,
+not RAM. Wait, use the bypass below, or ask the holder's session.
 
 ## Recipe
 

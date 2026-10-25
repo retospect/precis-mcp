@@ -118,10 +118,12 @@ reported "exited with code 0" and read as success. Redirect to a log, read the
 
 ## Preflight traps
 
-1. **Catpath wheel precheck looks in `~/catpath`, not your real checkout.** <!-- home-path: allow — where the precheck looks on the host -->
-   Deploy dies with "autocatpath floor is >=X but no wheel that new exists in
-   …/dist and there is no catpath checkout there" (gr263082). Set
-   `PRECIS_CATPATH_DIR=<catpath checkout>`, or
+1. **No catpath checkout in any probed location.** Deploy dies with "the
+   catpath probe found no checkout at any of: <main checkout>/../catpath,
+   ~/work/project/code/catpath, ~/catpath" (gr263082) — the probe resolves <!-- home-path: allow — where the precheck looks on the host -->
+   the repo sibling through the main checkout, so it works from a
+   `.claude/worktrees/<name>` deploy too. Put the checkout in one of those
+   locations, set `PRECIS_CATPATH_DIR=<catpath checkout>`, or
    `PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1` when hosts are already seeded.
    Shipping catpath itself: [`catpath-cluster-ship`](./catpath-cluster-ship.md).
 2. **Catpath checkout ahead of `uv.lock`'s pin blocks preflight** ("would

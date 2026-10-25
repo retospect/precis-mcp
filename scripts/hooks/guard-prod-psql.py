@@ -8,7 +8,9 @@ stall on a prompt; destructive or untargeted ones ask. This hook is the
 single decision point, keyed off the SQL:
 
 - A **lone** `scripts/prod-psql --ro "<any SQL>"` -> **allow**: agent_ro inside
-  BEGIN READ ONLY, the server refuses writes.
+  BEGIN READ ONLY, the server refuses writes. ``--explain`` counts the same —
+  the script runs ``EXPLAIN <sql>`` as agent_ro after stripping FOR
+  UPDATE/SHARE tails (gr513882). ``--help`` prints usage and connects nowhere.
 - A **lone** `scripts/prod-psql "<sql>"` (one quoted SQL argument, no shell
   chaining, no ``$``/backtick/backslash interpolation, no ``VAR=`` env
   prefix at all) is parsed statement by statement and judged by its MOST DANGEROUS
@@ -599,10 +601,14 @@ def _invocation(segment: str) -> tuple[bool, str] | None:
         return None
     rest = words[1] if len(words) > 1 else ""
     ro = False
-    if re.match(
-        r"--ro(?:[ \t\n]|$)", rest
-    ):  # exact word, as scripts/prod-psql tests $1
-        ro, rest = True, rest[len("--ro") :].lstrip()
+    # --ro and --explain both land in the agent_ro read-only path
+    # (--explain runs "EXPLAIN <sql>" under it, gr513882); either order and
+    # repeats are fine, same as the script's own flag loop.
+    while True:
+        m = re.match(r"--(?:ro|explain)(?=[ \t\n]|$)", rest)
+        if m is None:
+            break
+        ro, rest = True, rest[m.end() :].lstrip()
     return ro, rest
 
 
@@ -683,6 +689,11 @@ def evaluate(command: str) -> dict[str, str] | None:
             return out
     if len(segs) == 1 and bare:
         ro, args = calls[0][1]
+        if args.strip() in ("--help", "-h"):
+            return {
+                "decision": "allow",
+                "reason": "prod-psql --help prints usage; no connection — auto-approved",
+            }
         m = re.fullmatch(r"\s*(\"[^\"$`\\]*\"|'[^']*')\s*", args)
         if m and not ro:
             sql = m.group(1)[1:-1]

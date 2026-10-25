@@ -74,6 +74,7 @@ def test_nonpython_scripts_files_are_excluded() -> None:
         str(p)
         for p in sorted(SCRIPTS.rglob("*"))
         if p.is_file()
+        and "__pycache__" not in p.parts  # bytecode from other tests' imports
         and not _is_python(p)
         and not any(p.relative_to(ROOT) in hits for hits in _covered_files().values())
     ]

@@ -9,8 +9,10 @@
 # containers at random (exit 137, silent pytest death mid-run, mypy SIGKILL
 # at container-creation) — never a real failure, pure capacity. Capping
 # concurrent gates fleet-wide turns that churn into a short queue. A gate now
-# peaks ~4.5 GiB and 180-470% CPU (baseline containers ~9 GiB), so three fit
-# memory comfortably and CPU is the binding constraint — default 3. The
+# peaks ~4.5 GiB and 180-470% CPU (baseline containers ~9 GiB), so the cap is
+# derived from the VM's memory minus a baseline reserve, bounded by half its
+# cores — gate_slot_default below; the flat 3 it replaces was the same sizing
+# done once by hand (gr514466). The
 # remaining OOM risk (one runaway run) is bounded per-container: the gate and
 # dev-run services carry a 24 GiB mem_limit in docker/dev/compose.yaml, so a
 # runaway OOMs alone (exit 137) and its siblings are untouched; callers name
@@ -30,11 +32,10 @@
 # (gr202363) — otherwise a release firing after a sibling steals our slot
 # (>45-min hold, or a late EXIT trap) deletes THEIR fresh slot instead.
 #
-# PRECIS_GATE_SLOTS overrides the cap (default 3 — sized 2026-10-21 for the
-# OrbStack VM: ~4.5 GiB peak per gate against 93.2 GiB, and CPU-bound rather
-# than memory-bound; the previous 2 was measured on the ~8 GB Docker Desktop
-# VM, gr202193). Callers must arrange `gate_slot_release` on EXIT (idempotent)
-# and around early returns.
+# PRECIS_GATE_SLOTS overrides the cap; unset, gate_slot_default derives it
+# from the VM the containers run on (gr514466 — the flat 3 starved small runs
+# behind ~25 sharing agents). Callers must arrange `gate_slot_release` on
+# EXIT (idempotent) and around early returns.
 #
 # Fairness (gr294498): the slot grab used to be a plain unfair spin-race —
 # every waiter re-scanned all slots and `mkdir`'d on each 3s wake-up with no
@@ -56,11 +57,97 @@ GATE_SLOT_TICKET=""
 # shellcheck source=scripts/lib/lock-holder.sh
 source "${BASH_SOURCE[0]%/*}/lock-holder.sh"
 
+# Age of a lock dir from its mtime, for the waiting message (gr513773).
+# `stat -f %m` is macOS/BSD, `stat -c %Y` is GNU — the first to succeed wins,
+# matching the find -mmin portability constraint of _lock_older_than.
+_gate_dir_age() { # <dir> -> "45s" | "12m" | "3h" | "?"
+    local mt now s
+    mt="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "")"
+    [[ "$mt" =~ ^[0-9]+$ ]] || { printf '?'; return; }
+    now="$(date +%s)"
+    s=$((now - mt))
+    if ((s < 120)); then
+        printf '%ss' "$s"
+    elif ((s < 7200)); then
+        printf '%sm' "$((s / 60))"
+    else
+        printf '%sh' "$((s / 3600))"
+    fi
+}
+
+# One line per slot for the waiting message (gr513773): free, or who holds it
+# — the holder file's leading path (the worktree root scripts/test|ship ran
+# from, so its basename is the tree/agent name), the holder pid and host, how
+# long it has been held, and whether that pid is still alive on this host.
+# A waiter can then tell a genuinely running gate from a leaked slot before
+# the pid-dead steal notices it.
+_gate_slot_holders() { # <common> <slots>
+    local common="$1" slots="$2" i d holder tree pid host age state
+    for ((i = 0; i < slots; i++)); do
+        d="${common}/precis-gate-slot-${i}.lock.d"
+        if [[ ! -d "$d" ]]; then
+            printf '  gate slot %s: free\n' "$i" >&2
+            continue
+        fi
+        pid="$(lock_holder_pid "$d")"
+        host="$(lock_holder_host "$d")"
+        age="$(_gate_dir_age "$d")"
+        if [[ -z "$pid" ]]; then
+            printf '  gate slot %s: held %s — no usable holder file\n' "$i" "$age" >&2
+            continue
+        fi
+        holder="$(cat "$d/holder" 2>/dev/null || true)"
+        tree="${holder%% pid=*}"
+        tree="${tree##*/}"
+        state="dead"
+        lock_pid_alive "$pid" && state="alive"
+        printf '  gate slot %s: held %s by %s (pid %s on %s, %s)\n' \
+            "$i" "$age" "${tree:-?}" "$pid" "${host:-?}" "$state" >&2
+    done
+}
+
 # Drop waiter tickets whose owner is gone: a dead pid on THIS host (authoritative
 # — steal at once), or any ticket past the age timer (a foreign host we can't
 # probe, or a local waiter killed before its EXIT trap removed its ticket).
 # Ticket name is <epoch>-<pid>-<host>; host may contain dashes, so parse left to
 # right rather than trimming from the right.
+# The default cap (gr514466), sized on the Docker VM's own totals — that's
+# the pool the gate containers share, and on this host it is much smaller
+# than the host's (OrbStack: 47 GiB / 12 CPUs against 192 GiB). `docker info`
+# reports VM totals on every runtime; the host probes (sysctl on macOS,
+# /proc/meminfo + nproc on Linux) are only the no-daemon fallback. Sizing:
+# a run peaks ~4.5 GiB against a 16 GiB reserve for the baseline containers,
+# CPU-capped at half the VM's cores; never below 1. Every probe is a command
+# call so tests can stub them as shell functions.
+_gate_slot_capacity() { # prints "<mem_bytes> <ncpu>"
+    local out kb
+    if out="$(docker info --format '{{.MemTotal}} {{.NCPU}}' 2>/dev/null)" \
+        && [[ "$out" =~ ^[0-9]+\ [0-9]+$ ]]; then
+        printf '%s\n' "$out"
+        return 0
+    fi
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        printf '%s %s\n' \
+            "$(sysctl -n hw.memsize 2>/dev/null || echo 0)" \
+            "$(sysctl -n hw.ncpu 2>/dev/null || echo 0)"
+    else
+        kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+        printf '%s %s\n' "$((kb * 1024))" "$(nproc 2>/dev/null || echo 0)"
+    fi
+}
+
+gate_slot_default() { # the derived default cap
+    local mem=0 ncpu=0 mem_slots cpu_slots slots
+    read -r mem ncpu <<<"$(_gate_slot_capacity)"
+    [[ "$mem" =~ ^[0-9]+$ ]] || mem=0
+    [[ "$ncpu" =~ ^[0-9]+$ ]] || ncpu=0
+    mem_slots=$(( (mem - 17179869184) / 4831838208 )) # (mem - 16 GiB) / 4.5 GiB
+    cpu_slots=$((ncpu / 2))
+    slots=$((mem_slots < cpu_slots ? mem_slots : cpu_slots))
+    ((slots < 1)) && slots=1
+    printf '%s\n' "$slots"
+}
+
 _gate_queue_prune() { # <qdir> <max_age_min>
     local qdir="$1" max="$2" t base rest pid host me
     me="$(lock_holder_hostname)"
@@ -80,9 +167,9 @@ _gate_queue_prune() { # <qdir> <max_age_min>
 }
 
 gate_slot_acquire() {
-    local slots="${PRECIS_GATE_SLOTS:-3}"
+    local slots="${PRECIS_GATE_SLOTS:-$(gate_slot_default)}"
     local common i d holder reason host name my_rank depth other seen_self
-    local waited=0 last_rank=-1
+    local waited=0 last_rank=-1 last_announce=0
     common="$(git rev-parse --git-common-dir)"
     host="$(lock_holder_hostname)"
     local qdir="${common}/precis-gate-queue.d"
@@ -150,14 +237,20 @@ gate_slot_acquire() {
             echo "(steals a slot immediately if its holder dies; a live holder on this host is waited out however long its gate takes)" >&2
         fi
         # Surface queue position so a waiter can tell "next up" from "deep in a
-        # churny queue" (gr294498). Re-announced only when our rank changes.
-        if ((my_rank != last_rank)); then
+        # churny queue" (gr294498), plus one line per slot naming the holding
+        # tree/agent, the holder pid, the hold's age and its liveness
+        # (gr513773). Re-announced when our rank changes and every ~60 s — the
+        # ages advance and a constant-rank wait otherwise prints nothing while
+        # the status stream buries the first "waiting" reason.
+        if ((my_rank != last_rank || SECONDS - last_announce >= 60)); then
             if ((my_rank < slots)); then
                 echo "gate slot: next up (position $((my_rank + 1)) of ${depth} waiting, ${slots} slots) — trying each freed slot" >&2
             else
                 echo "gate slot: waiting at position $((my_rank + 1)) of ${depth} (${slots} slots ahead are busy)" >&2
             fi
+            _gate_slot_holders "$common" "$slots"
             last_rank="$my_rank"
+            last_announce=$SECONDS
         fi
         waited=1
         sleep 3

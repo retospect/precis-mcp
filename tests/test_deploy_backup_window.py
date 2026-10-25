@@ -167,6 +167,29 @@ def test_bounds_file_missing_or_malformed_is_a_tree_error(tmp_path: Path) -> Non
     assert r.returncode == 2 and "HH:MM" in r.stderr
 
 
+def test_windows_lists_every_pair_with_its_cron_slot() -> None:
+    """(d) extended (gr513885): the guard reads a LIST of <X>_window_*_utc
+    pairs — one per backup leg — each paired with the pg_<X>_cron_* slot it
+    mirrors, in file order (primary first)."""
+    r = _lib("backup_window_windows", str(REPO_ROOT))
+    assert r.returncode == 0, r.stderr
+    rows = [line.split() for line in r.stdout.splitlines()]
+    assert rows == [["03:00", "04:20", "03:30"], ["21:30", "23:30", "21:45"]]
+
+
+def test_dir_dump_cron_slot_sits_inside_its_own_window() -> None:
+    """Same containment contract as the primary leg: a deliberate schedule
+    change updates the pair together or reddens here."""
+    r = _lib("backup_window_windows", str(REPO_ROOT))
+    assert r.returncode == 0, r.stderr
+    rows = [line.split() for line in r.stdout.splitlines()]
+    start, end, slot = rows[1]
+    inside = _lib("backup_window_contains", start, end, slot)
+    assert inside.returncode == 0, (
+        f"dir-dump cron slot {slot} is outside its window {start}–{end}"
+    )
+
+
 # ── the decision, with the clock and pending set faked ─────────────────────
 
 
@@ -397,6 +420,42 @@ def test_guard_composes_bounds_clock_and_pending(
     assert r.returncode == 1 and "UNKNOWN" in r.stdout and "origin/prod" in r.stderr
     r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="12:00")
     assert r.returncode == 0 and r.stdout == ""
+
+
+def test_dir_window_guard_refuses_and_proceeds(
+    mig_repo: tuple[Path, dict[str, str]],
+) -> None:
+    """gr513885: the 21:45Z dir-dump leg is a second window — a migration
+    deploy inside it refuses (the fixed window is the fallback; no prod-psql
+    in the throwaway repo), outside both legs it is silent."""
+    repo, shas = mig_repo
+    f = repo / DEFAULTS_REL
+    f.parent.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / DEFAULTS_REL, f)
+    r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="22:30")
+    assert r.returncode == 1
+    assert "21:30–23:30 UTC" in r.stdout and "ends at 23:30 UTC" in r.stdout
+    assert "0003_new.sql" in r.stdout
+    for now in ("21:29", "23:30"):
+        r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC=now)
+        assert r.returncode == 0 and r.stdout == "" and r.stderr == "", (now, r)
+
+
+def test_dir_window_clear_probe_overrides_only_after_its_slot(
+    mig_repo: tuple[Path, dict[str, str]],
+) -> None:
+    """The per-window cron slot matters: a clear probe at 21:40 cannot clear
+    the 21:45 run still ahead; the same probe at 23:00 can."""
+    repo, shas = mig_repo
+    f = repo / DEFAULTS_REL
+    f.parent.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / DEFAULTS_REL, f)
+    _stub_prod_psql(repo, "#!/bin/sh\nprintf 'BEGIN\\nCOMMIT\\n'\n")
+    r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="21:40")
+    assert r.returncode == 1
+    assert "21:45 UTC" in r.stdout and "still ahead" in r.stdout
+    r = _lib("backup_window_guard", str(repo), shas["mig"], "0", DEPLOY_NOW_UTC="23:00")
+    assert r.returncode == 0 and r.stdout.startswith("NOTE: live check")
 
 
 # ── the live probe through a stubbed scripts/prod-psql ─────────────────────
@@ -651,6 +710,19 @@ def test_deploy_override_flag_proceeds_inside_window(deploy_fx: DeployFixture) -
     assert r.returncode == 0, r.stdout + r.stderr
     assert "NOTE: --ignore-backup-window" in r.stdout
     assert deploy_fx.ansible_called() == {"ansible", "ansible-playbook"}
+
+
+def test_deploy_refuses_migration_inside_dir_window_before_ansible(
+    deploy_fx: DeployFixture,
+) -> None:
+    """gr513885 through the real script: the 21:45Z dir-dump leg refuses a
+    migration deploy at 22:30Z before either ansible stub ran."""
+    r = deploy_fx.run(deploy_fx.shas["mig"], now="22:30")
+    assert r.returncode != 0
+    out = r.stdout + r.stderr
+    assert "REFUSING TO DEPLOY" in out and "21:30–23:30 UTC" in out
+    assert "ends at 23:30 UTC" in out and "backup-window guard refused" in out
+    assert deploy_fx.ansible_called() == set()
 
 
 def test_deploy_refuses_migration_on_a_live_dump_outside_the_window(

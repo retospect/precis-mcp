@@ -259,3 +259,39 @@ def test_restart_handlers_exist_for_each_linux_service() -> None:
         "restart alertmanager",
         "restart alertmanager receiver",
     } <= names
+
+
+# ── gr514256: the redeploy bounces a stale receiver on the monitoring host ──
+
+
+def test_redeploy_bounces_a_stale_receiver_on_monitoring_hosts() -> None:
+    """The receiver runs /opt/precis/venv but belongs to the monitoring role —
+    no install notify covers it, and monitoring hosts sit outside step-2's
+    bounce groups. redeploy-precis.yml restarts it only when the running
+    process predates the installed wheel (process-vs-files staleness, so a
+    resumed deploy still catches it and a fresh unit is never bounced)."""
+    redeploy = yaml.safe_load(
+        (_DEPLOY / "redeploy-precis.yml").read_text(encoding="utf-8")
+    )
+    names = [p["name"] for p in redeploy]
+    tag = "Bounce a stale alertmanager receiver on the monitoring host (gr514256)"
+    assert tag in names
+    # After the bounce/sweep plays, before the convergence assert — restarts
+    # land while the run is still mid-flight, same as every other daemon.
+    at = names.index(tag)
+    assert (
+        names.index(
+            "Bounce + flag orphaned precis worker lanes (no play owns them here)"
+        )
+        < at
+    )
+    assert (
+        names.index("Verify every managed precis venv is on the deployed commit") > at
+    )
+    play = redeploy[at]
+    hosts = play["hosts"] if isinstance(play["hosts"], list) else [play["hosts"]]
+    assert "monitoring" in hosts and "gateway" in hosts
+    assert play["pre_tasks"][0]["ansible.builtin.meta"] == "end_host"
+    text = yaml.safe_dump(play)
+    assert "ActiveEnterTimestampUSec" in text and "direct_url.json" in text
+    assert "precis-alertmanager-receiver" in text

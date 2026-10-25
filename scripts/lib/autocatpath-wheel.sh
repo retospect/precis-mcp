@@ -175,3 +175,49 @@ autocatpath_select_wheel() {
     version_ge "$v" "$floor" || return 1
     printf '%s' "$wheel"
 }
+
+# autocatpath_probe_dirs <repo-root> [home]
+#
+# Prints the ordered candidate list for a catpath checkout, one per line,
+# first hit wins — so scripts/deploy can both walk it and, when nothing
+# matches, name every tried path in the refusal (a bare "no checkout" leaves
+# the operator guessing which layouts count as conventional).
+# PRECIS_CATPATH_DIR beats all of these and never goes through here.
+#
+# The repo sibling is resolved through --git-common-dir, not <repo-root>/..:
+# from a linked worktree (.claude/worktrees/<name>) the checkout's parent IS
+# the worktrees dir, so repo/../catpath looks inside it — a candidate that
+# can never exist, while the real sibling beside the main checkout is never
+# tried. And the home-layout entry is work/project/code (singular): the
+# "projects" spelling never existed on the controller, so the old probe
+# silently fell through to the retired ~/catpath and every deploy died in
+# preflight unless PRECIS_CATPATH_DIR was set.
+autocatpath_probe_dirs() {
+    local repo_root=$1 home=${2:-$HOME} common main_root
+    common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
+    if [ -n "$common" ]; then
+        main_root=$(dirname "$common")
+    else
+        main_root=$repo_root
+    fi
+    printf '%s\n' \
+        "${main_root}/../catpath" \
+        "${home}/work/project/code/catpath" \
+        "${home}/catpath"
+}
+
+# autocatpath_find_checkout <repo-root> [home]
+#
+# Prints the resolved path of the first autocatpath_probe_dirs candidate
+# holding a pyproject.toml, or returns 1 when none does — the caller then
+# reports the probed list, which is exactly what probe_dirs prints.
+autocatpath_find_checkout() {
+    local cand
+    while IFS= read -r cand; do
+        if [ -f "${cand}/pyproject.toml" ]; then
+            printf '%s' "$(cd "$cand" && pwd)"
+            return 0
+        fi
+    done < <(autocatpath_probe_dirs "$@")
+    return 1
+}

@@ -3,7 +3,7 @@
 ## Ship and gate
 
 - [Read the failure above the cross mark when the ship gate goes red](ship-gate-red.md)
-- [The local gate runs at most a fixed number of concurrent pytest slots](gate-slots.md)
+- [The local gate queues concurrent pytest runs on VM-derived slots](gate-slots.md)
 - [A flaky test is rerun once, then filed as a gripe with its seed](flaky-rerun.md)
 - [A new migration takes main's highest number plus one at landing time](migration-numbering.md)
 - [Audit the file list of a rebased squash commit before landing](squash-audit.md)

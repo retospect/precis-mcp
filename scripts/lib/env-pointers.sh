@@ -52,16 +52,28 @@ env_pointer_move() {
 }
 
 # Echo the directory of the prod clone: PRECIS_PROD_CHECKOUT, else the main
-# checkout's path with `-prod` appended (a sibling directory).
+# checkout's path with `-prod` appended (a sibling directory). When that
+# sibling is absent but ~/precis-mcp-prod holds a checkout, that is the
+# answer — the served clone predates the sibling convention on some hosts,
+# and a deploy that "advanced" a nonexistent derived path left the real
+# clone stale while reporting green (gr514256, r96). A bare miss still
+# echoes the derived path so the caller's warning names the convention.
 env_prod_checkout_dir() {
-    local root="${1:-$PWD}" common
+    local root="${1:-$PWD}" common derived
     if [[ -n "${PRECIS_PROD_CHECKOUT:-}" ]]; then
         printf '%s\n' "$PRECIS_PROD_CHECKOUT"
         return 0
     fi
     common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
     [[ -n "$common" ]] || return 1
-    printf '%s-prod\n' "$(dirname "$common")"
+    derived="$(dirname "$common")-prod"
+    if [[ -f "${derived}/.git/HEAD" ]]; then
+        printf '%s\n' "$derived"
+    elif [[ -f "${HOME}/precis-mcp-prod/.git/HEAD" ]]; then
+        printf '%s\n' "${HOME}/precis-mcp-prod"
+    else
+        printf '%s\n' "$derived"
+    fi
 }
 
 # Put the prod clone on <sha>, detached. The clone is what the shared session

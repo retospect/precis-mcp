@@ -88,15 +88,18 @@ silent skip, never a hook failure.
 
 All gate/test containers still share **one Docker VM**, so
 `scripts/test` and the `scripts/ship` gate take a fleet-wide **gate slot**
-(`scripts/lib/gate-slot.sh`, default 3 concurrent, `PRECIS_GATE_SLOTS`
-overrides) before the heavyweight container run — a queued run waits with a
-message instead of OOM-killing a sibling's at random (exit 137 / silent
-pytest death mid-run, gr202193). The default moved 2 → 3 on 2026-10-21 with
-the OrbStack VM (93.2 GiB, 8 CPUs: a gate peaks ~4.5 GiB, so CPU is the
-limit now, not memory). Each gate/dev container also carries a 24 GiB
-`mem_limit` (`docker/dev/compose.yaml`), so a runaway OOMs alone and the
-kill is reported as OOM rather than a silent death. Abandoned slots are
-stolen when the holder pid dies or after 45 min.
+(`scripts/lib/gate-slot.sh`) before the heavyweight work — before the
+test-db container too, so a queued run waits empty-handed with a message
+instead of holding a live db or OOM-killing a sibling's run at random
+(exit 137 / silent pytest death mid-run, gr202193). The cap derives from
+the VM itself (gr514466): `min(floor((MemTotal - 16 GiB) / 4.5 GiB),
+NCPU / 2)`, min 1 — probed via `docker info`, with host sysctl/nproc as
+fallback; 6 on the 47 GiB / 12-CPU OrbStack VM (a run peaks ~4.5 GiB).
+`PRECIS_GATE_SLOTS` overrides. A `--fast` run selects only no-DB tests, so
+it starts no Postgres and takes no slot. Each gate/dev container also
+carries a 24 GiB `mem_limit` (`docker/dev/compose.yaml`), so a runaway
+OOMs alone and the kill is reported as OOM rather than a silent death.
+Abandoned slots are stolen when the holder pid dies or after 45 min.
 
 ```
 scripts/test                         # full suite (-n6)

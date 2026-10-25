@@ -13,10 +13,17 @@
 #   scripts/prod-psql "\d refs"                        # psql backslash cmds too
 #   echo "SELECT ..." | scripts/prod-psql              # piped SQL (stdin)
 #   scripts/prod-psql                                  # interactive shell
+#   scripts/prod-psql --help                           # usage + schema cheat sheet
 #
 #   scripts/prod-psql --ro "SELECT ..."               # read-only: agent_ro role,
 #                                                      # wrapped in BEGIN READ ONLY
-#   scripts/prod-psql --help                          # this text
+#   scripts/prod-psql --explain "SELECT … FOR UPDATE SKIP LOCKED"
+#                                                      # read-only EXPLAIN: agent_ro
+#                                                      # cannot EXPLAIN a row lock,
+#                                                      # so the FOR … tail is
+#                                                      # stripped; a data-modifying
+#                                                      # statement is refused —
+#                                                      # EXPLAIN its driving SELECT
 #
 # Schema: docs/reference/schema.md is the generated map of prod (every
 # table's columns, PK/FK, comments) — grep it before guessing a column
@@ -49,6 +56,10 @@
 # chunk_kind='gripe_body', its comments 'gripe_comment' — join
 # chunks c ON c.ref_id = r.ref_id for text.
 #
+# Name-resolution errors get a hint (gr514333): a `column/relation … does not
+# exist` on stderr is answered with the schema.md pointer and the `\d` recipe —
+# prod-psql runs psql for you, so nobody has to memorize the table shapes.
+#
 # Row cap (.claude/fleet/authority.md, 2026-10-15): a one-shot or piped SQL
 # text without --ro that mentions UPDATE or DELETE runs inside BEGIN; the
 # rows the transaction updated or deleted (all its statements, see
@@ -73,11 +84,55 @@
 #   PRECIS_PROD_WRITE_MAX_ROWS=500    # row cap for UPDATE/DELETE (default 100)
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+usage: scripts/prod-psql [--ro] "SQL"     # one-shot query (or SQL on stdin)
+       scripts/prod-psql                  # interactive psql (agent_rw)
+       scripts/prod-psql --help           # this text
+
+  --ro   read-only: the agent_ro role inside BEGIN READ ONLY — prefer it for
+         reads; it makes writes impossible instead of row-capped.
+
+  --explain   read-only EXPLAIN: runs "EXPLAIN <sql>" as agent_ro. FOR
+              UPDATE/FOR SHARE/SKIP LOCKED tails are stripped (agent_ro
+              cannot take row locks even in a plan), and a data-modifying
+              statement is refused — EXPLAIN its driving SELECT instead:
+              prod-psql --explain "SELECT …the SELECT a claim/insert runs…"
+
+Env:  PRECIS_PROD_SSH_HOST          ssh hop host (default caspar)
+      PRECIS_PROD_PSQL_OPTS         extra psql flags (e.g. "-At", "-x")
+      PRECIS_PROD_WRITE_MAX_ROWS    UPDATE/DELETE row cap (default 100)
+
+Schema — docs/reference/schema.md is GENERATED from prod (scripts/gen-schema);
+grep it, or ask psql itself: scripts/prod-psql --ro "\d <table>".
+Names that bite:
+  refs              PK is ref_id — no `id` column; kind='job'|'alert' rows are
+                    the ops queues (jobs/alerts are not tables)
+  chunks            chunk_id, ref_id, ord — no `embedding` column
+  chunk_embeddings  (chunk_id, embedder) — embeddings live here
+  links             link_id, src_ref_id/dst_ref_id (+ src_/dst_chunk_id)
+  ref_events        ref_id, ts — event times live here
+  ref_tags          (ref_id, tag_id)
+
+Tag joins (gr515525): ref_tags has no tag text; join tags t ON t.tag_id =
+rt.tag_id and filter (namespace, value): closed axes lift their prefix
+('STATUS:open' -> namespace='STATUS', value='open'); free-form tags sit under
+namespace='OPEN' with the whole 'theme:<slug>' as value. Prose lives in chunks
+(chunk_kind='gripe_body'|'gripe_comment'), not refs.title.
+EOF
+}
+
 RO=0
-if [[ "${1:-}" == "--ro" ]]; then
-    RO=1
+EXPLAIN=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --ro) RO=1 ;;
+        --explain) EXPLAIN=1; RO=1 ;;
+        --help|-h) usage; exit 0 ;;
+        *) break ;;
+    esac
     shift
-fi
+done
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     # The header comment IS the manual — print it rather than keep a
@@ -218,19 +273,107 @@ COMMIT;
 EOF
 }
 
+# Name-resolution help (gr514333, gr513856): psql's stderr is scanned AFTER
+# the run for the classic `column/relation … does not exist`, and answered
+# with where the schema actually lives — plus the specific name when the
+# mistake is a known one (refs has ref_id, not id; embeddings live in
+# chunk_embeddings; jobs/alerts are refs rows, not tables). Prints a hint or
+# nothing; the exit code is the caller's, unchanged.
+prod_psql_error_hint() {
+    local sql="$1" err="$2" col rel hint=""
+    col="$(sed -nE 's/.*column "?[A-Za-z_][A-Za-z0-9_.]*\."?([A-Za-z_][A-Za-z0-9_]*)"? (of relation "[^"]+" )?does not exist.*/\1/p; s/.*column "?([A-Za-z_][A-Za-z0-9_.]*)"? (of relation "[^"]+" )?does not exist.*/\1/p' "$err" | head -1)"
+    rel="$(sed -nE 's/.*relation "([^"]+)" does not exist.*/\1/p' "$err" | head -1)"
+    if [[ -n "$col" ]]; then
+        case "$col" in
+            id)
+                if printf '%s' "$sql" | grep -qiw refs; then
+                    hint="\`refs\` has no \`id\` column — the PK is \`ref_id\`"
+                elif printf '%s' "$sql" | grep -qiw chunks; then
+                    hint="\`chunks\` has no \`id\` column — the PK is \`chunk_id\` (its ref FK is \`ref_id\`)"
+                elif printf '%s' "$sql" | grep -qiw links; then
+                    hint="\`links\` has no \`id\` column — the PK is \`link_id\`; the endpoints are \`src_ref_id\`/\`dst_ref_id\`"
+                elif printf '%s' "$sql" | grep -qiw tags; then
+                    hint="\`tags\` has no \`id\` column — the PK is \`tag_id\`"
+                else
+                    hint="most precis tables have no \`id\` column — PKs are ref_id/chunk_id/link_id/tag_id/event_id"
+                fi ;;
+            embedding)
+                if printf '%s' "$sql" | grep -qiw chunks; then
+                    hint="\`chunks\` has no \`embedding\` column — embeddings live in \`chunk_embeddings\` (JOIN on chunk_id)"
+                fi ;;
+        esac
+    elif [[ -n "$rel" ]]; then
+        case "$rel" in
+            jobs|alerts)
+                hint="there is no \`$rel\` table — $rel are \`refs\` rows: WHERE kind = '${rel%s}'" ;;
+        esac
+    fi
+    [[ -n "$col$rel" ]] || return 0
+    if [[ -n "$hint" ]]; then
+        printf 'prod-psql: hint — %s.\n' "$hint"
+    fi
+    printf 'prod-psql: hint — the generated schema is docs/reference/schema.md (scripts/gen-schema); one table up close: scripts/prod-psql --ro "\\d <table>" (e.g. "\\d refs").\n'
+}
+
+# --explain (gr513882): agent_ro cannot EXPLAIN a FOR UPDATE tail or a
+# data-modifying statement, so a claim query's plan is checked on its driving
+# SELECT. The rewrite is best-effort — FOR <lock clause> is dropped only
+# where it can legally end a (sub)query (just before `)`, `;`, a comment or
+# the end); those words inside a string literal mid-statement are left alone,
+# and one just before a `)` is a rare, harmless-for-a-plan false positive.
+explain_rewrite() {
+    local s
+    s="$(printf '%s' "$1" | perl -0777 -pe '
+        s/^\s*EXPLAIN\b\s*//i;
+        s/\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b
+          (?:\s+OF\s+[\w.]+(?:\s*,\s*[\w.]+)*)?
+          (?:\s+(?:NOWAIT|SKIP\s+LOCKED))?
+          (?=\s*(?:\)|;|--|\/\*|$))//gix;
+    ')"
+    # A write — or a data-modifying CTE — cannot be EXPLAINed read-only.
+    # String literals, quoted identifiers and comments are blanked for this
+    # CHECK only; the rewrite above ships verbatim.
+    if printf '%s' "$s" | perl -0777 -ne '
+        s{--[^\n]*}{}g; s{/\*.*?\*/}{}gs;
+        s{\x27[^\x27]*(\x27\x27[^\x27]*)*\x27}{}g;
+        s{"[^"]*"}{}g;
+        exit(/\b(?:INSERT|UPDATE|DELETE|MERGE)\b/i ? 0 : 1)'; then
+        printf 'prod-psql: --explain is read-only (agent_ro) — it cannot EXPLAIN a data-modifying statement. EXPLAIN the driving SELECT instead: drop the INSERT/UPDATE wrapper and pass the SELECT it runs. A FOR UPDATE / SKIP LOCKED tail is stripped automatically.\n' >&2
+        return 1
+    fi
+    printf '%s\n' "$s"
+}
+
 # Run one SQL text non-interactively. A capped write tees psql's stdout to
-# read its verdict line back: ROLLBACK exits 4, UNCAPPED exits 5.
+# read its verdict line back: ROLLBACK exits 4, UNCAPPED exits 5. stderr is
+# captured then relayed on either path so prod_psql_error_hint can read it —
+# one-shot output is non-interactive, the delay is invisible.
 run_sql() {
-    local sql="$1"
+    local sql="$1" err rc=0
     refuse_session_set "$sql"
+    if [[ $EXPLAIN -eq 1 ]]; then
+        sql="$(explain_rewrite "$sql")" || exit 2
+        sql="EXPLAIN $sql"
+    fi
+    err="$(mktemp)"
     if ! needs_cap "$sql"; then
-        wrap_ro "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
-        return
+        wrap_ro "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED" 2>"$err" || rc=$?
+        if [[ -s "$err" ]]; then
+            cat "$err" >&2
+            prod_psql_error_hint "$sql" "$err" >&2
+        fi
+        rm -f "$err"
+        return "$rc"
     fi
     refuse_tx_control "$sql"
     OUT="$(mktemp)"
-    trap 'rm -f "$OUT"' EXIT
-    wrap_cap "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED" | tee "$OUT"
+    # Expanded now: $err is local and unbound when the EXIT trap runs.
+    trap "rm -f '$OUT' '$err'" EXIT
+    wrap_cap "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED" 2>"$err" | tee "$OUT"
+    if [[ -s "$err" ]]; then
+        cat "$err" >&2
+        prod_psql_error_hint "$sql" "$err" >&2
+    fi
     if grep -q '^prod-psql: ROLLBACK' "$OUT"; then
         echo "prod-psql: rolled back — narrow the WHERE, or set PRECIS_PROD_WRITE_MAX_ROWS for a deliberate bulk change." >&2
         exit 4

@@ -66,16 +66,19 @@ def _slot_dirs(repo: Path) -> list[Path]:
 
 
 def _start_acquire(
-    repo: Path, done: Path, *, slots: int | None = 1
+    repo: Path, done: Path, *, slots: int | None = 1, stubs: str = ""
 ) -> subprocess.Popen:
     """Run the real ``gate_slot_acquire`` in the background.
 
     ``slots=None`` leaves ``PRECIS_GATE_SLOTS`` unset, exercising the script's
-    default cap. On success it writes the won slot dir to ``done``, then
-    sleeps so the slot stays held while the test inspects it.
+    derived default cap; ``stubs`` is bash inserted after the ``source`` so a
+    test can shadow the probes (``docker``, ``sysctl``, ``nproc``…) with
+    functions and pin the derivation. On success it writes the won slot dir
+    to ``done``, then sleeps so the slot stays held while the test inspects
+    it.
     """
     script = (
-        f'cd "{repo}"; source "{_LIB}"; '
+        f'cd "{repo}"; source "{_LIB}"; {stubs}'
         f'gate_slot_acquire; printf "%s" "$GATE_SLOT_DIR" > "{done}"; sleep 30'
     )
     env = {**os.environ}
@@ -88,6 +91,19 @@ def _start_acquire(
         env=env,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _default_slots(stubs: str) -> int:
+    """The real ``gate_slot_default`` under stubbed probes."""
+    cp = subprocess.run(
+        ["bash", "-c", f'source "{_LIB}"; {stubs} gate_slot_default'],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        check=True,
+    )
+    return int(cp.stdout.strip())
 
 
 def _hold_slot(repo: Path, index: int, pid: int) -> Path:
@@ -210,13 +226,93 @@ def test_release_clears_an_unacquired_waiters_ticket(
     )
 
 
-def test_default_cap_is_three_and_env_override_wins(repo: Path, tmp_path: Path) -> None:
-    """The default cap is exactly 3 (OrbStack sizing, 2026-10-21).
+def _start_acquire_capture(
+    repo: Path, done: Path, err: Path, *, slots: int = 1
+) -> subprocess.Popen:
+    """Like ``_start_acquire`` but keeps stderr so the waiting/steal lines
+    can be asserted on."""
+    script = (
+        f'cd "{repo}"; source "{_LIB}"; '
+        f'gate_slot_acquire; printf "%s" "$GATE_SLOT_DIR" > "{done}"; sleep 30'
+    )
+    return subprocess.Popen(
+        ["bash", "-c", script],
+        env={**os.environ, "PRECIS_GATE_SLOTS": str(slots)},
+        stderr=err.open("w", encoding="utf-8"),
+    )
 
-    ``PRECIS_GATE_SLOTS`` unset: with slots 0-1 held an acquirer must win
-    slot 2 (default >= 3), and once 0-2 are all held a second acquirer must
-    WAIT (default <= 3). The env still overrides: a third acquirer under
-    ``PRECIS_GATE_SLOTS=4`` takes slot 3 while the capped one still waits.
+
+def test_waiting_message_names_each_holder_tree_pid_and_age(
+    repo: Path, tmp_path: Path
+) -> None:
+    """gr513773(a): the waiting message must say which tree/agent holds each
+    slot, its pid, and how long it has held — not just a bare queue position."""
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        _hold_slot(repo, 0, holder.pid)
+        done = tmp_path / "done"
+        err = tmp_path / "acquire.err"
+        proc = _start_acquire_capture(repo, done, err, slots=1)
+        try:
+            # First announce fires on the first poll cycle; give it two.
+            time.sleep(5)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+        text = err.read_text(encoding="utf-8")
+        assert "position 1 of 1" in text or "next up" in text
+        assert "gate slot 0: held" in text
+        assert repo.name in text, "the holding tree's basename must be named"
+        assert f"pid {holder.pid}" in text
+        assert "alive" in text
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_dead_holder_from_a_removed_tree_is_stolen(repo: Path, tmp_path: Path) -> None:
+    """gr513773(b): a slot leaked by a worktree that no longer exists frees
+    itself — the holder pid is dead, which is authoritative on this host
+    regardless of whether the recorded tree path still exists."""
+    reaped = subprocess.Popen(["true"])
+    reaped.wait()
+    gone_tree = tmp_path / "reaped-worktree"  # never created on purpose
+    slot = repo / ".git" / "precis-gate-slot-0.lock.d"
+    slot.mkdir()
+    (slot / "holder").write_text(
+        f"{gone_tree} pid={reaped.pid} host={_this_host()}\n", encoding="utf-8"
+    )
+
+    done = tmp_path / "done"
+    err = tmp_path / "acquire.err"
+    proc = _start_acquire_capture(repo, done, err, slots=1)
+    try:
+        assert _wait_for(done, timeout=10), (
+            "a dead holder whose tree is gone blocked acquisition — the "
+            "pid-dead steal did not fire"
+        )
+        text = err.read_text(encoding="utf-8")
+        assert "stole gate slot 0" in text
+        assert "dead" in text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+#: Stubbed ``docker info`` output that pins the derived cap at exactly 3:
+#: 30 GiB -> floor((30-16)/4.5) = 3, under the 8/2 = 4 CPU bound.
+_STUB_3_SLOTS = "docker() { echo '32212254720 8'; };"
+
+
+def test_default_cap_derives_and_env_override_wins(repo: Path, tmp_path: Path) -> None:
+    """The default cap is derived from the VM's capacity (gr514466).
+
+    ``PRECIS_GATE_SLOTS`` unset, probes stubbed to derive 3: with slots 0-1
+    held an acquirer must win slot 2 (cap >= 3), and once 0-2 are all held a
+    second acquirer must WAIT (cap <= 3) — proof the derived value drives
+    admission, not a leftover constant. The env still overrides: a third
+    acquirer under ``PRECIS_GATE_SLOTS=4`` takes slot 3 while the capped one
+    still waits.
     """
     holder = subprocess.Popen(["sleep", "60"])
     done_a = tmp_path / "done-a"
@@ -227,17 +323,17 @@ def test_default_cap_is_three_and_env_override_wins(repo: Path, tmp_path: Path) 
         for i in range(2):
             _hold_slot(repo, i, holder.pid)
 
-        # Lower edge: the default cap reaches slot 2.
-        proc_a = _start_acquire(repo, done_a, slots=None)
+        # Lower edge: the derived cap reaches slot 2.
+        proc_a = _start_acquire(repo, done_a, slots=None, stubs=_STUB_3_SLOTS)
         assert _wait_for(done_a, timeout=10), (
             "an acquirer with PRECIS_GATE_SLOTS unset never took the free "
-            "slot 2 — the default cap is under 3"
+            "slot 2 — the derived cap is under the stubbed 3"
         )
         assert done_a.read_text(encoding="utf-8").endswith("precis-gate-slot-2.lock.d")
 
         # Upper edge: slots 0-2 held (0-1 by `holder`, 2 by proc_a itself)
-        # and the default-capped waiter must queue, not reach a slot 3.
-        proc_b = _start_acquire(repo, done_b, slots=None)
+        # and the derived-capped waiter must queue, not reach a slot 3.
+        proc_b = _start_acquire(repo, done_b, slots=None, stubs=_STUB_3_SLOTS)
         assert not _wait_for(done_b, timeout=7), (
             "a default-capped acquirer won a fourth slot while 0-2 are held "
             "— the default cap is over 3"
@@ -262,3 +358,70 @@ def test_default_cap_is_three_and_env_override_wins(repo: Path, tmp_path: Path) 
             if proc is not None:
                 proc.terminate()
                 proc.wait(timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("stubs", "want"),
+    [
+        pytest.param(
+            # The docker VM is the truth: this host's OrbStack numbers
+            # (47 GiB / 12 CPUs) derive floor(31/4.5) = 6, capped by 12/2.
+            "docker() { echo '50465865728 12'; };",
+            6,
+            id="docker-vm-47g-12cpu",
+        ),
+        pytest.param(
+            # CPU-bound: 96 GiB would allow 17, 4 cores cap it at 2.
+            "docker() { echo '103079215104 4'; };",
+            2,
+            id="docker-vm-cpu-bound",
+        ),
+        pytest.param(
+            # A VM too small for the reserve still admits one run.
+            "docker() { echo '8589934592 4'; };",
+            1,
+            id="docker-vm-below-reserve",
+        ),
+        pytest.param(
+            # Docker fails -> macOS probes: 192 GiB -> 39, 24 CPUs -> 12.
+            "docker() { return 1; };"
+            "uname() { echo Darwin; };"
+            'sysctl() { case "$2" in'
+            "  hw.memsize) echo 206158430208;;"
+            "  hw.ncpu) echo 24;;"
+            "esac; };",
+            12,
+            id="fallback-macos",
+        ),
+        pytest.param(
+            # Non-numeric docker output falls back too (unparseable daemon
+            # answer), not silently trusted.
+            "docker() { echo 'Cannot connect to the Docker daemon'; };"
+            "uname() { echo Darwin; };"
+            'sysctl() { case "$2" in'
+            "  hw.memsize) echo 34359738368;;"
+            "  hw.ncpu) echo 8;;"
+            "esac; };",
+            3,
+            id="fallback-macos-garbage-docker",
+        ),
+        pytest.param(
+            # Docker fails -> Linux probes: 50000000 kB (~47.7 GiB) -> 7,
+            # 8 CPUs -> 4 wins.
+            "docker() { return 1; };"
+            "uname() { echo Linux; };"
+            "awk() { echo 50000000; };"
+            "nproc() { echo 8; };",
+            4,
+            id="fallback-linux",
+        ),
+    ],
+)
+def test_gate_slot_default_derives_from_capacity(stubs: str, want: int) -> None:
+    """``gate_slot_default``: min(floor((mem-16 GiB)/4.5 GiB), ncpu/2), >= 1.
+
+    The probes are shadowed as bash functions, so every platform path runs
+    on any host: docker info for the VM, sysctl on macOS, /proc/meminfo +
+    nproc on Linux — the latter two only when docker can't answer.
+    """
+    assert _default_slots(stubs) == want

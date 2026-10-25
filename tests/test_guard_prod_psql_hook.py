@@ -524,3 +524,30 @@ def test_read_over_refs_meta_carries_an_mcp_hint() -> None:
     out = evaluate('scripts/prod-psql --ro "SELECT count(*) FROM jobs"')
     assert out is not None and out["decision"] == "allow"
     assert "context" not in out
+
+
+def test_explain_flag_counts_as_ro() -> None:
+    """gr513882: --explain runs "EXPLAIN <sql>" as agent_ro — same allow as
+    --ro, and the FOR UPDATE tail the script strips stays out of the ask path."""
+    evaluate = _hook().evaluate
+    out = evaluate('scripts/prod-psql --explain "SELECT 1"')
+    assert out is not None and out["decision"] == "allow"
+    out = evaluate(
+        'scripts/prod-psql --explain "SELECT 1 FROM t FOR UPDATE SKIP LOCKED"'
+    )
+    assert out is not None and out["decision"] == "allow"
+    out = evaluate('scripts/prod-psql --ro --explain "SELECT 1"')
+    assert out is not None and out["decision"] == "allow"
+
+
+def test_explain_still_asks_for_node_acting_meta_commands() -> None:
+    evaluate = _hook().evaluate
+    out = evaluate('scripts/prod-psql --explain "\\! id"')
+    assert out is not None and out["decision"] == "ask"
+
+
+def test_help_is_allowed() -> None:
+    evaluate = _hook().evaluate
+    for flag in ("--help", "-h"):
+        out = evaluate(f"scripts/prod-psql {flag}")
+        assert out is not None and out["decision"] == "allow", flag

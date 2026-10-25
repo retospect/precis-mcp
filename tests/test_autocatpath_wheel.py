@@ -53,6 +53,46 @@ def _sh(snippet: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _git(*args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def _worktree_layout(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """The layout the worktree bug lives in: <tmp>/main is the real checkout
+    with a linked worktree at <tmp>/main/.claude/worktrees/wt (the shape
+    deploys actually run from) and a catpath checkout at <tmp>/catpath — the
+    main checkout's sibling, reachable only through --git-common-dir."""
+    main = tmp_path / "main"
+    main.mkdir()
+    _git("init", "-q", str(main))
+    _git(
+        "-C",
+        str(main),
+        "-c",
+        "user.email=t@example.invalid",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "init",
+        "--allow-empty",
+    )
+    wt = main / ".claude" / "worktrees" / "wt"
+    _git("-C", str(main), "worktree", "add", "-q", "--detach", str(wt))
+    catpath = tmp_path / "catpath"
+    catpath.mkdir()
+    (catpath / "pyproject.toml").write_text(
+        '[project]\nversion = "0.0.1"\n', encoding="utf-8"
+    )
+    return main, wt, catpath
+
+
 def _pyproject(tmp_path: Path, body: str) -> Path:
     path = tmp_path / "pyproject.toml"
     path.write_text(body, encoding="utf-8")
@@ -437,6 +477,87 @@ def test_deploy_reports_why_a_floor_clearer_was_rejected() -> None:
     deploy = (REPO_ROOT / "scripts" / "deploy").read_text(encoding="utf-8")
     assert "_NEED=" in deploy and "${_NEED}" in deploy
     assert "autocatpath-${_LOCK_V}" in deploy
+
+
+def test_probe_dirs_resolves_the_repo_sibling_through_the_main_checkout(
+    tmp_path: Path,
+) -> None:
+    """scripts/deploy runs from .claude/worktrees/<name>, where
+    REPO_ROOT/../catpath lands inside the worktrees dir — a candidate that
+    can never exist, while the real sibling beside the main checkout went
+    untried. The probe must resolve the main checkout via --git-common-dir."""
+    main, wt, catpath = _worktree_layout(tmp_path)
+    result = _sh(f'autocatpath_probe_dirs "{wt}" "{tmp_path}/nohome"')
+    assert result.returncode == 0, result.stderr
+    first = result.stdout.splitlines()[0]
+    assert Path(first).resolve() == catpath.resolve(), result.stdout
+    assert f"{wt}/../catpath" not in result.stdout
+
+
+def test_probe_dirs_uses_the_singular_project_spelling(tmp_path: Path) -> None:
+    """The controller's real layout is ~/work/project/code — the "projects"
+    spelling never existed, so the probe fell through to the retired
+    ~/catpath and preflight died unless PRECIS_CATPATH_DIR was set."""
+    home = tmp_path / "home"
+    result = _sh(f'autocatpath_probe_dirs "{tmp_path}" "{home}"')
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert f"{home}/work/project/code/catpath" in lines, result.stdout
+    assert not any("projects" in line for line in lines), result.stdout
+    # Probe order is preserved: repo sibling, the home layout, then ~/catpath.
+    assert lines[-1] == f"{home}/catpath"
+
+
+def test_find_checkout_from_a_worktree_lands_on_the_main_checkouts_sibling(
+    tmp_path: Path,
+) -> None:
+    """The behavioural contract: run from the worktree, the probe must find
+    the catpath beside the MAIN checkout and hand deploy its resolved path."""
+    _main, wt, catpath = _worktree_layout(tmp_path)
+    result = _sh(f'autocatpath_find_checkout "{wt}" "{tmp_path}/nohome"')
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout).resolve() == catpath.resolve()
+
+
+def test_find_checkout_prefers_the_repo_sibling_over_the_home_layout(
+    tmp_path: Path,
+) -> None:
+    """First hit wins, and the order is unchanged: <main>/../catpath beats
+    ~/work/project/code/catpath, which beats ~/catpath."""
+    _main, wt, catpath = _worktree_layout(tmp_path)
+    home = tmp_path / "home"
+    home_catpath = home / "work" / "project" / "code" / "catpath"
+    home_catpath.mkdir(parents=True)
+    (home_catpath / "pyproject.toml").write_text(
+        '[project]\nversion = "0.0.1"\n', encoding="utf-8"
+    )
+    result = _sh(f'autocatpath_find_checkout "{wt}" "{home}"')
+    assert Path(result.stdout).resolve() == catpath.resolve()
+    # With the sibling gone the home layout is the next hit.
+    (catpath / "pyproject.toml").unlink()
+    result = _sh(f'autocatpath_find_checkout "{wt}" "{home}"')
+    assert Path(result.stdout).resolve() == home_catpath.resolve()
+
+
+def test_find_checkout_reports_a_miss_so_deploy_can_list_what_it_probed(
+    tmp_path: Path,
+) -> None:
+    """An un-set PRECIS_CATPATH_DIR with nothing in any probed location must
+    fail loudly — deploy then names every tried path in the refusal."""
+    result = _sh(f'autocatpath_find_checkout "{tmp_path}" "{tmp_path}/nohome"')
+    assert result.returncode == 1
+
+
+def test_deploy_probes_through_the_lib_and_names_the_probed_paths() -> None:
+    """Structural: if deploy keeps its own candidate list the worktree fix is
+    dead code, and a miss that names no path is the original bug all over —
+    the refusal must list what was tried and say to set PRECIS_CATPATH_DIR."""
+    deploy = (REPO_ROOT / "scripts" / "deploy").read_text(encoding="utf-8")
+    assert "autocatpath_find_checkout" in deploy
+    assert "autocatpath_probe_dirs" in deploy
+    assert "${REPO_ROOT}/../catpath" not in deploy
+    assert "projects/code" not in deploy, "the never-match spelling is back"
+    assert "Set PRECIS_CATPATH_DIR" in deploy
 
 
 def test_deploy_checks_the_checkout_against_the_locked_commit() -> None:

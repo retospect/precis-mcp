@@ -46,9 +46,9 @@ _SCRIPTED_PSQL_FILES: dict[str, int] = {
     "deploy/roles/backups/templates/restore_test.sh.j2": 1,
 }
 
-#: A psql invocation, up to the first flag-ish token after the binary name.
+#: A psql invocation (not the `prod-psql` script name), up to the first flag-ish token after the binary name.
 #: Matches both bare `psql -X ...` and argv-list `[psql, -X, ...]` forms.
-_PSQL_CALL = re.compile(r"\bpsql\b[,\s]+(?P<flags>(?:-{1,2}[\w-]+[,\s]+)*)")
+_PSQL_CALL = re.compile(r"(?<![\w-])psql\b[,\s]+(?P<flags>(?:-{1,2}[\w-]+[,\s]+)+)")
 
 #: psql's own name for "do not read ~/.psqlrc" — accept either spelling.
 _NO_PSQLRC = ("-X", "--no-psqlrc")

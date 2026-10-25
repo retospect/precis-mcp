@@ -66,9 +66,12 @@ scripts/exercise-mcp/out/
 board*.svg
 
 # devin/windsurf: ignore session state, but TRACK the shareable
-# workflows (ported from .claude/commands/) so they ship with the repo.
+# workflows (ported from .claude/commands/) and the generated hook mirror
+# (scripts/gen-devin-hooks renders it from .claude/settings.json — Devin's
+# importer rejects the Claude file whole on unknown events, gr515151).
 .devin/*
 !.devin/workflows/
+!.devin/hooks.v1.json
 **/.windsurf
 
 # Claude Code: ignore session state (worktrees, transcripts, todos,

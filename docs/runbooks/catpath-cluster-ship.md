@@ -26,11 +26,12 @@ channel is a wheelhouse seeded by `scripts/deploy` (gr263082). General deploy:
    `autocatpath[mace]>=0.N`). Lock regeneration rewrites the surrounding
    context, so `-S` on `uv.lock` misses bumps; the floor line in
    pyproject is the stable needle.
-4. **Deploy needs `PRECIS_CATPATH_DIR=<catpath checkout>`** — the default
-   `~/catpath` does not exist on the controller. With the floor bumped, <!-- home-path: allow — where the checkout lives on the controller -->
-   `scripts/deploy` preflight builds the new wheel from that checkout
-   (provenance-checked against the `uv.lock` pin) and seeds every plugin host's
-   `/opt/precis/wheels`.
+4. **Deploy finds the checkout itself** when it sits in a probed location —
+   `<main checkout>/../catpath`, `~/work/project/code/catpath`, `~/catpath` — <!-- home-path: allow — where the checkout lives on the controller -->
+   otherwise set `PRECIS_CATPATH_DIR=<catpath checkout>`. With the floor
+   bumped, `scripts/deploy` preflight builds the new wheel from that
+   checkout (provenance-checked against the `uv.lock` pin) and seeds every
+   plugin host's `/opt/precis/wheels`.
 
 Related preflight failures (checkout ahead of the lock pin; skipping the wheel
 check with `PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1`) are in

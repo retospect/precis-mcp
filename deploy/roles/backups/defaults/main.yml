@@ -1,11 +1,13 @@
 ---
 # backups role defaults. Overridable via host_vars or group_vars.
 #
-# The nightly pg_dump schedule and the deploy no-go window it implies live
-# HERE, together, so a schedule change moves both. scripts/deploy reads the
-# two backup_window_* keys from this file (scripts/lib/backup-window.sh, a
-# line-oriented awk read: keep them as plain `key: "HH:MM"` lines) and
-# refuses a deploy that carries a pending migration while the window is open:
+# The nightly pg_dump schedules and the deploy no-go windows they imply live
+# HERE, together, so a schedule change moves both. scripts/deploy reads every
+# `<X>_window_start_utc`/`<X>_window_end_utc` pair from this file
+# (scripts/lib/backup-window.sh, a line-oriented awk read: keep them as plain
+# `key: "HH:MM"` lines) — each pair sits next to the `pg_<X>_cron_*` slot it
+# mirrors — and refuses a deploy that carries a pending migration while ANY
+# window is open:
 # the dump holds ACCESS SHARE on every table for its whole run, and a
 # migration's ALTER TABLE (ACCESS EXCLUSIVE) waits behind it for ~48 min
 # (2026-09-08: a /go at 03:22 UTC hung 17+ min with a silent log). See
@@ -33,6 +35,12 @@ b2_sync_enabled: false
 pg_backup_dir_enabled: true
 pg_backup_dir_cron_hour: "21"
 pg_backup_dir_cron_minute: "45"
+# Its deploy no-go window (gr513885): the dump runs ~60–90 min from the 21:45
+# slot holding ACCESS SHARE like the early-morning leg; the rsync after it
+# holds no DB locks. 15 min of lead before the slot, 15 of slack after the
+# worst-case end.
+backup_dir_window_start_utc: "21:30"
+backup_dir_window_end_utc: "23:30"
 # The DB node's mount of the dbbackup share. Mirrors the nfs_client role's
 # default — an overlay override lands on both, keep the two in step.
 dbbackup_mount: /mnt/dbbackup

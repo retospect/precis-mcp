@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -92,22 +93,16 @@ def _stage(tmp_path: Path, name: str) -> Path:
     return tree
 
 
-def _run(
+def _fake_docker_env(
     tmp_path: Path,
-    name: str,
     *,
-    args: tuple[str, ...] = ("-n0", "tests/x.py"),
-    ps_services: str = "precis-test-db",
-    run_rc: int = 0,
-    down_rc: int = 0,
-    keep_db: bool = False,
-    other_run_pids: tuple[int, ...] = (),
-) -> tuple[int, list[str]]:
-    tree = _stage(tmp_path, name)
-    markers = tree / ".git" / "precis-test-runs"
-    for pid in other_run_pids:
-        markers.mkdir(exist_ok=True)
-        (markers / str(pid)).write_text("", encoding="utf-8")
+    ps_services: str,
+    run_rc: int,
+    down_rc: int,
+    keep_db: bool,
+    extra_env: dict[str, str] | None,
+) -> tuple[dict[str, str], Path]:
+    """PATH with the synthetic docker first + the env it logs through."""
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
     docker = fakebin / "docker"
@@ -126,8 +121,59 @@ def _run(
     }
     env.pop("PRECIS_TEST_KEEP_DB", None)
     env.pop("PRECIS_COMPOSE", None)
+    env.pop("PRECIS_GATE_SLOTS", None)
     if keep_db:
         env["PRECIS_TEST_KEEP_DB"] = "1"
+    env.update(extra_env or {})
+    return env, log
+
+
+def _this_host() -> str:
+    return (
+        subprocess.run(
+            ["hostname", "-s"], capture_output=True, text=True, encoding="utf-8"
+        ).stdout.strip()
+        or "unknown"
+    )
+
+
+def _hold_gate_slot(tree: Path, index: int, pid: int) -> None:
+    """Occupy a gate slot in the staged repo as a live same-host holder."""
+    d = tree / ".git" / f"precis-gate-slot-{index}.lock.d"
+    d.mkdir()
+    (d / "holder").write_text(
+        f"{tree} pid={pid} host={_this_host()}\n", encoding="utf-8"
+    )
+
+
+def _run(
+    tmp_path: Path,
+    name: str,
+    *,
+    args: tuple[str, ...] = ("-n0", "tests/x.py"),
+    ps_services: str = "precis-test-db",
+    run_rc: int = 0,
+    down_rc: int = 0,
+    keep_db: bool = False,
+    other_run_pids: tuple[int, ...] = (),
+    tree: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+    timeout: int = 60,
+) -> tuple[int, list[str]]:
+    if tree is None:
+        tree = _stage(tmp_path, name)
+    markers = tree / ".git" / "precis-test-runs"
+    for pid in other_run_pids:
+        markers.mkdir(exist_ok=True)
+        (markers / str(pid)).write_text("", encoding="utf-8")
+    env, log = _fake_docker_env(
+        tmp_path,
+        ps_services=ps_services,
+        run_rc=run_rc,
+        down_rc=down_rc,
+        keep_db=keep_db,
+        extra_env=extra_env,
+    )
     proc = subprocess.run(
         ["bash", str(tree / "scripts" / "test"), *args],
         cwd=tree,
@@ -135,7 +181,7 @@ def _run(
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=60,
+        timeout=timeout,
         check=False,
     )
     if proc.returncode == 0 and markers.is_dir():
@@ -207,3 +253,89 @@ def test_stale_run_marker_does_not_block_teardown(tmp_path: Path) -> None:
     assert not (
         tmp_path / "agent-abc123" / ".git" / "precis-test-runs" / str(dead.pid)
     ).exists()
+
+
+def test_fast_run_skips_the_gate_queue(tmp_path: Path) -> None:
+    """--fast needs no Postgres, so it takes no gate slot (gr514466).
+
+    The only slot is held by a live sibling; a no-DB run must still go
+    straight to its container instead of queueing behind it.
+    """
+    tree = _stage(tmp_path, "plain-tree")
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        _hold_gate_slot(tree, 0, holder.pid)
+        rc, log = _run(
+            tmp_path,
+            "plain-tree",
+            args=("--fast", "-n0", "tests/x.py"),
+            tree=tree,
+            extra_env={"PRECIS_GATE_SLOTS": "1"},
+            timeout=30,
+        )
+        assert rc == 0
+        assert [line.split("|")[0] for line in log] == ["run"]
+        qdir = tree / ".git" / "precis-gate-queue.d"
+        assert not (qdir.is_dir() and list(qdir.iterdir())), (
+            "a --fast run left an arrival ticket — it entered the gate queue"
+        )
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_db_run_still_queues_for_a_gate_slot(tmp_path: Path) -> None:
+    """A run that starts Postgres still waits on the semaphore (gr514466).
+
+    Same held-slot setup: the DB path must drop an arrival ticket and wait —
+    only the no-DB path skips. And the wait happens BEFORE ``compose up``:
+    a queued run holds no live test-db while it waits for a slot.
+    """
+    tree = _stage(tmp_path, "plain-tree")
+    holder = subprocess.Popen(["sleep", "60"])
+    env, log = _fake_docker_env(
+        tmp_path,
+        ps_services="precis-test-db",
+        run_rc=0,
+        down_rc=0,
+        keep_db=False,
+        extra_env={"PRECIS_GATE_SLOTS": "1"},
+    )
+    try:
+        _hold_gate_slot(tree, 0, holder.pid)
+        with (tmp_path / "stderr.log").open("w", encoding="utf-8") as err:
+            proc = subprocess.Popen(
+                ["bash", str(tree / "scripts" / "test"), "-n0", "tests/x.py"],
+                cwd=tree,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=err,
+            )
+            try:
+                qdir = tree / ".git" / "precis-gate-queue.d"
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline and not (
+                    qdir.is_dir() and list(qdir.iterdir())
+                ):
+                    time.sleep(0.2)
+                assert qdir.is_dir() and list(qdir.iterdir()), (
+                    "a DB run never queued for the held gate slot — "
+                    "the slot wait is gone from the DB path"
+                )
+                assert proc.poll() is None, (
+                    "a DB run finished while its only slot was held"
+                )
+                verbs = [
+                    line.split("|")[0]
+                    for line in log.read_text(encoding="utf-8").splitlines()
+                ]
+                assert verbs == [], (
+                    f"a queued DB run already started containers ({verbs}) — "
+                    "the slot wait must come before `compose up`"
+                )
+            finally:
+                proc.kill()
+                proc.wait(timeout=10)
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)

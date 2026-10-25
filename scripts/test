@@ -50,6 +50,11 @@
 # otherwise (see ARTIFACT_ENV below) — a test-tuning var like NANO_SEEDS
 # that is exported on the host but not forwarded is dropped silently and
 # gets one stderr warning instead (gr513868).
+# PRECIS_TEST_PASSENV=FOO,BAR : forward the named environment variables into
+# the test container (gr514238). The ARTIFACT_ENV whitelist below only covers
+# fixed test-artifact knobs, so an ad-hoc knob like UNI_VIEWS never reached
+# pytest. Names are validated; values are inherited by docker (`-e NAME`),
+# never expanded into argv or logs — the vars may be secrets.
 #
 # --impacted (-i): impact selection via pytest-testmon. Runs only the tests
 # affected by your working-tree changes — the inner-loop accelerator when the
@@ -109,6 +114,11 @@ subagent worktree (basename agent-*) tears its compose project down at exit.
      PRECIS_TEST_ENV="NAME=value …" forwards extra env vars into the test
      container (only a fixed allowlist crosses otherwise; an unforwarded
      NANO_/ESP32C3_/PRECIS_PCB_ var warns once on stderr).
+     PRECIS_TEST_AUTOBRIDGE=1 bridges missing core deps into the run's uv env
+     automatically when the baked image is stale (opt-in; the refusal message
+     names the exact UV_WITH line if you only want it once).
+PRECIS_TEST_PASSENV=FOO,BAR forwards the named env vars into the test
+container (values are inherited by docker, never printed).
 
 Two-call background protocol for capped foreground shells: `--bg <args>`
 detaches the run and prints its run-id; poll with `--await <run-id>`
@@ -201,8 +211,10 @@ fi
 # --fast / -f : the fast set — `-m 'not db and not slow'`: skips every test that
 # needs Postgres (auto-marked `db` in tests/conftest.py) AND the heavy `slow`
 # compute cluster. No Postgres is started, so it runs in seconds and is
-# independent of the test DB. The right gate for pure-logic / docs / config
-# changes; NOT authoritative before a deploy (/go still runs the full suite).
+# independent of the test DB — and it takes no gate slot, so it never queues
+# behind a sibling's full run (gr514466). The right gate for pure-logic /
+# docs / config changes; NOT authoritative before a deploy (/go still runs
+# the full suite).
 IMPACTED=0
 FAST=0
 # --selected : the `scripts/ship --checked` selection, run locally — the
@@ -240,6 +252,27 @@ if [[ "$SELECTED" == 1 ]]; then
         while IFS= read -r _l; do [[ -n "$_l" ]] && SEL_ARGS+=("$_l"); done <<< "$(tail -n +2 <<<"$_sel_out")"
         if [[ "$_sel_first" == "testmon=1" ]]; then IMPACTED=1; fi
     fi
+fi
+
+# PRECIS_TEST_PASSENV (gr514238): comma-separated env var NAMES forwarded
+# into the container as `-e NAME` — docker inherits each value from this
+# shell's environment, so a value never reaches argv or a log (the vars may
+# be secrets). Validated here, before any docker call, so a bad name refuses
+# instantly instead of after the gate-slot wait. A named var that is unset
+# warns (names only) — silently not forwarding it is the failure this fixes.
+PASSENV=()
+if [[ -n "${PRECIS_TEST_PASSENV:-}" ]]; then
+    IFS=',' read -ra _passenv_names <<< "$PRECIS_TEST_PASSENV"
+    for _passenv_name in ${_passenv_names[@]+"${_passenv_names[@]}"}; do
+        [[ -z "$_passenv_name" ]] && continue
+        if [[ ! "$_passenv_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "ERR: PRECIS_TEST_PASSENV entry '${_passenv_name}' is not a valid env var name" >&2
+            echo "next: comma-separate bare NAMEs only (no values, no spaces) — e.g. PRECIS_TEST_PASSENV=FOO,BAR scripts/test" >&2
+            exit 1
+        fi
+        PASSENV+=(-e "$_passenv_name")
+        [[ -z "${!_passenv_name+x}" ]] && echo "WARNING: PRECIS_TEST_PASSENV names ${_passenv_name}, which is not set in this shell — export it first (NAME=... scripts/test)" >&2
+    done
 fi
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
@@ -387,6 +420,15 @@ THREAD_CAP_ENV=(
     -e NUMEXPR_NUM_THREADS=1 -e VECLIB_MAXIMUM_THREADS=1
 )
 
+# Take a fleet-wide gate slot before any heavyweight container work — BEFORE
+# the tmpfs test-db below, so a queued run waits empty-handed rather than
+# holding a live Postgres for the length of its wait (gr514466). --fast
+# selected only no-DB tests (`-m 'not db and not slow'`), so it skips the
+# queue too — no Postgres, no slot.
+if [[ "$FAST" != "1" ]]; then
+    gate_slot_acquire
+fi
+
 TEST_DB_ENV=()
 if [[ "$FAST" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
@@ -406,6 +448,15 @@ fi
 NPROC=(-n6)
 for a in "$@"; do [[ "$a" == -n* ]] && NPROC=(); done
 
+# Default -q unless the caller set their own verbosity — same convention
+# as NPROC (gr514718): the -q used to live in the fixed pytest command,
+# so `scripts/test x.py -q` compounded into -qq, which drops even the
+# "N passed" summary — bare dots with nothing confirming the tests ran.
+VERBOSITY=(-q)
+for a in "$@"; do
+    [[ "$a" =~ ^-[qv]+$ || "$a" == "--quiet" || "$a" == "--verbose" ]] && VERBOSITY=()
+done
+
 # Impacted mode: pull in the testmon plugin on the fly (no image rebuild),
 # enable selection, force -n0 (testmon is per-process — xdist fragments the
 # map), and persist the map per-worktree at /app/.testmondata (the bind-mount,
@@ -417,8 +468,14 @@ for a in "$@"; do [[ "$a" == -n* ]] && NPROC=(); done
 #   UV_WITH="--with newdep" scripts/test tests/test_newdep.py
 # (the ship gate itself runs `uv run` WITH sync, so it resolves new deps from
 # uv.lock without an image rebuild; this passthrough gives the fast loop the
-# same reach).
+# same reach). PRECIS_TEST_AUTOBRIDGE=1 (gr513760) does the same without
+# naming the deps: inside the container a check-core-deps.py --with-flags
+# pre-pass computes the missing core deps and adds them to the uv run flags —
+# opt-in and loud, never the default, because bridging should stay a visible
+# workaround and the durable fix (scripts/build-image precis-dev) belongs to
+# the release owner.
 UV_WITH="${UV_WITH:-}"
+AUTOBRIDGE="${PRECIS_TEST_AUTOBRIDGE:-}"
 # --coverage: no report artifacts (just the sqlite DB + manifest); pytest-cov
 # is a baked dev dep. Works with or without --impacted.
 COV_ARGS=()
@@ -469,10 +526,6 @@ if [[ "$IMPACTED" == "1" && "$FAST" != "1" ]]; then
         TESTMON_MARKER_ARGS=(-m "not slow")
     fi
 fi
-
-# Take a fleet-wide gate slot just before the heavyweight container run (the
-# tiny tmpfs test-db above doesn't need one).
-gate_slot_acquire
 
 # Artifact-writing tests (the PCB fab render, chiefly) need to be TOLD where to
 # put their output, and nothing but UV_WITH used to cross the container
@@ -537,8 +590,9 @@ done < <(compgen -e)
 # the bind-mounted source is live without a per-run reinstall (that reinstall
 # was pure noise + latency — the reason sessions hand-rolled `--no-sync`).
 # -p no:warnings drops the warnings summary (noise while iterating); --tb=short
-# keeps tracebacks compact; -q drops per-test verbosity. Pass pytest args as
-# inner positional params ("$@") so no cross-shell re-quoting is needed.
+# keeps tracebacks compact; the -q is a positional arg (VERBOSITY) so a
+# caller-supplied -v/-q can replace it. Pass pytest args as inner
+# positional params ("$@") so no cross-shell re-quoting is needed.
 #
 # Preflight (gr286507): a stale baked venv (new core dep promoted, image not
 # yet rebuilt) otherwise surfaces as ModuleNotFoundError red tests in whatever
@@ -571,6 +625,14 @@ done < <(compgen -e)
 # (/app) to sys.path, so imports resolve exactly as bare `pytest`'s did;
 # bare `pytest` itself would run the base venv's interpreter, not the
 # healed overlay.
+# prewarm-pycache.py (gr514615): pysbd emits a SyntaxWarning at compile
+# time, and the image's PYTHONDONTWRITEBYTECODE=1 means no .pyc is ever
+# cached — so every process that imports it recompiles and re-prints the
+# warnings above the result. Compiling the package once here writes the
+# .pyc that all later imports read. It runs FIRST in the chain because
+# check-core-deps.py's own `import pysbd` would otherwise emit the same
+# warnings before pytest ever started.
+#
 # One pytest container run. $1 = "testmon" adds the testmon args, anything
 # else runs plain (the gr471933 fallback); remaining args are the caller's.
 run_pytest() {
@@ -580,16 +642,25 @@ run_pytest() {
         tm_args=("${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}")
     fi
     local rc=0
+    # The sed filter drops xdist's "bringing up nodes..." status line —
+    # printed for non-tty runs whenever verbosity < 0 (i.e. our -q), with
+    # no upstream off switch (xdist/dsession.py getstatus). sed, not
+    # grep -v: grep exits 1 when it selects no lines, which pipefail would
+    # read as a failed run — sed exits 0 after processing input, so the
+    # pipeline status stays compose's own (gr514615). -u keeps it live.
     compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
         -e PRECIS_STRICT_LOCK_CHECK="${PRECIS_STRICT_LOCK_CHECK:-}" \
+        -e PRECIS_TEST_AUTOBRIDGE="$AUTOBRIDGE" \
         "${THREAD_CAP_ENV[@]}" \
         "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
+        "${PASSENV[@]+"${PASSENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-lock-pins.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
-        _ "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
+        bash -lc 'AUTO_WITH=""; if [ "${PRECIS_TEST_AUTOBRIDGE}" = "1" ]; then AUTO_WITH="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py --with-flags 2>/dev/null || true)"; if [ -n "$AUTO_WITH" ]; then echo "PRECIS_TEST_AUTOBRIDGE: bridging missing core dep(s) for this run: ${AUTO_WITH} (durable fix: scripts/build-image precis-dev)" >&2; fi; fi; uv run --no-sync ${UV_WITH} ${AUTO_WITH} bash -c "python3 scripts/lib/prewarm-pycache.py pysbd && python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-lock-pins.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
+        _ "${VERBOSITY[@]+"${VERBOSITY[@]}"}" "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
-        "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@" || rc=$?
+        "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@" \
+        | sed -u '/^bringing up nodes/d' || rc=$?
     # Exit 137 = the container's own OOM kill (mem_limit in compose.yaml) —
     # name it as such rather than a silent red run (gate-slot.sh).
     gate_oom_note "$rc" "the pytest container"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# scripts/lib/backup-window.sh — the nightly-backup no-go window for
-# scripts/deploy: refuse a MIGRATION deploy while the prod pg_dump may be
+# scripts/lib/backup-window.sh — the nightly-backup no-go windows for
+# scripts/deploy: refuse a MIGRATION deploy while a prod pg_dump may be
 # running, warn-and-proceed for a code-only deploy.
 #
 # Why: the prod DB node reboots at 03:00 UTC and the nightly `pg_dump --jobs=4`
@@ -11,6 +11,13 @@
 # waiting (new code installed, migrations unapplied), so the only good move is
 # to not start. Until this file the rule lived in operator memory
 # (docs/runbooks/migration-deploy-window.md).
+#
+# Windows are a LIST (gr513885): the early-morning reboot+dump leg is only the
+# first — the incremental-leg directory dump fires a second pg_dump nightly at
+# 21:45 UTC (~60–90 min) with the same lock profile. backup_window_windows
+# reads every `<X>_window_start_utc`/`<X>_window_end_utc` pair from the
+# backups defaults file, each paired with the `pg_<X>_cron_*` slot it mirrors,
+# and the guard applies the decision to whichever window holds the clock.
 #
 # The live check (gr511981): the clock is only a proxy. r91 resumed at
 # 04:22Z — legitimately outside the window — while the dump still ran, and
@@ -25,9 +32,11 @@
 # deploys keep the probe-free path.
 #
 # One source of truth for the bounds: deploy/roles/backups/defaults/main.yml,
-# the same file that holds the pg_dump cron slot, so a schedule change moves
+# the same file that holds each pg_dump cron slot, so a schedule change moves
 # both. Read with awk (plain `key: "HH:MM"` lines), not a YAML parser —
-# nothing else in scripts/ depends on python being on PATH.
+# nothing else in scripts/ depends on python being on PATH. The convention a
+# new backup leg follows: cron keys `pg_<X>_cron_hour`/`pg_<X>_cron_minute`,
+# window keys `<X>_window_start_utc`/`<X>_window_end_utc`.
 #
 # "Pending migration" is computed OFFLINE, never by querying prod: a migration
 # is pending when src/precis/migrations/*.sql has files ADDED between the sha
@@ -85,6 +94,39 @@ backup_window_cron_slot() {
     minute="$(_backup_window_yaml_value pg_backup_cron_minute "$file")"
     [[ "$hour" =~ ^[0-9]{1,2}$ && "$minute" =~ ^[0-9]{1,2}$ ]] || return 2
     printf '%02d:%02d\n' "$((10#$hour))" "$((10#$minute))"
+}
+
+# Every deploy no-go window, one "<start> <end> <slot>" line per
+# `<X>_window_*_utc` pair in the defaults file, in file order (the primary
+# 03:00–04:20 leg first). <slot> is the matching `pg_<X>_cron_*` time as
+# HH:MM, or empty when that leg has none — backup_window_decide treats it as
+# "still ahead". 2 when the file is missing or a pair is not HH:MM.
+backup_window_windows() {
+    local root="${1:-$PWD}" file prefix start end hour minute slot
+    file="$(backup_window_defaults_file "$root")"
+    [[ -f "$file" ]] || {
+        printf 'backup-window: no %s — cannot read the window bounds\n' "$file" >&2
+        return 2
+    }
+    while read -r prefix; do
+        start="$(_backup_window_yaml_value "${prefix}_window_start_utc" "$file")"
+        end="$(_backup_window_yaml_value "${prefix}_window_end_utc" "$file")"
+        if ! _backup_window_is_hhmm "$start" || ! _backup_window_is_hhmm "$end"; then
+            printf 'backup-window: %s must hold %s_window_start_utc/%s_window_end_utc as "HH:MM" (got start=%s end=%s)\n' \
+                "$file" "$prefix" "$prefix" "${start:-unset}" "${end:-unset}" >&2
+            return 2
+        fi
+        slot=""
+        hour="$(_backup_window_yaml_value "pg_${prefix}_cron_hour" "$file")"
+        minute="$(_backup_window_yaml_value "pg_${prefix}_cron_minute" "$file")"
+        if [[ "$hour" =~ ^[0-9]{1,2}$ && "$minute" =~ ^[0-9]{1,2}$ ]]; then
+            slot="$(printf '%02d:%02d\n' "$((10#$hour))" "$((10#$minute))")"
+        fi
+        printf '%s %s %s\n' "$start" "$end" "$slot"
+    done < <(awk '
+        $1 ~ /^[a-z_][a-z0-9_]*_window_start_utc:$/ {
+            sub(/:$/, "", $1); sub(/_window_start_utc$/, "", $1); print $1
+        }' "$file")
 }
 
 # HH:MM now, UTC. DEPLOY_NOW_UTC wins when set (must be HH:MM).
@@ -190,8 +232,8 @@ backup_window_decide() {
         # No migration at stake: a running dump cannot block a code-only
         # deploy, and the guard never probed on this path.
         (( in_window == 0 )) && return 0
-        printf 'WARNING: inside the %s–%s UTC backup window (now %s UTC). No pending migration, so proceeding — but the DB node reboots at %s UTC and the nightly pg_dump runs through the window; expect dropped connections. Window ends %s UTC.\n' \
-            "$start" "$end" "$now" "$start" "$end"
+        printf 'WARNING: inside the %s–%s UTC backup window (now %s UTC). No pending migration, so proceeding — but the scheduled pg_dump for this leg runs inside it and (in the early-morning leg) the DB node reboots too; expect dropped connections. Window ends %s UTC.\n' \
+            "$start" "$end" "$now" "$end"
         return 0
     fi
 
@@ -251,11 +293,28 @@ backup_window_decide() {
 # DEPLOY_NOW_UTC/date, pending set from git, live probe from prod-psql.
 #   backup_window_guard <repo_root> <target> [ignore] [prod_ref]
 backup_window_guard() {
-    local root="$1" target="$2" ignore="${3:-0}" prod_ref="${4:-origin/prod}" bounds start end now pending live detail slot
-    bounds="$(backup_window_bounds "$root")" || return 2
-    read -r start end <<< "$bounds"
+    local root="$1" target="$2" ignore="${3:-0}" prod_ref="${4:-origin/prod}" \
+        windows start="" end="" slot="" now pending live detail wstart wend wslot
+    windows="$(backup_window_windows "$root")" || return 2
     now="$(backup_window_now)" || return 2
-    slot="$(backup_window_cron_slot "$root" 2>/dev/null || true)"
+    # Decide against the window holding the clock — its bounds and cron slot
+    # are what the refusal/warning names. Outside every window the FIRST
+    # (primary) window's values are passed through; decide() returns early on
+    # in_window=0, so they only surface in the operator-override note.
+    while read -r wstart wend wslot; do
+        if [[ -z "$start" ]]; then
+            start="$wstart" end="$wend" slot="$wslot"
+        fi
+        if backup_window_contains "$wstart" "$wend" "$now"; then
+            start="$wstart" end="$wend" slot="$wslot"
+            break
+        fi
+    done <<< "$windows"
+    [[ -n "$start" ]] || {
+        printf 'backup-window: no *_window_*_utc pair in %s — cannot read the window bounds\n' \
+            "$(backup_window_defaults_file "$root")" >&2
+        return 2
+    }
     # The pending set is needed at ANY hour now (the live probe can refuse
     # outside the window); still offline git work either way. The probe —
     # the only prod round-trip — runs only when a migration may be in play.

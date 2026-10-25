@@ -1,0 +1,218 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "E=\"$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh\"; [ -x \"$E\" ] && bash \"$E\"; bash \"$CLAUDE_PROJECT_DIR/scripts/mcp-http-install\" --for-hook || true"
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/session-start-lock.sh\""
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/inflight\" --for-hook"
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/reap-worktrees\" --for-hook"
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/reap-test-dbs\" --for-hook"
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/reap-idle-gates\" --for-hook || true"
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/reap-stale-serves\" --for-hook"
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/heal-primary-branch.sh\""
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/session-start-memory.sh\""
+        },
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-nudge.sh\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/main-ci-status\" --for-hook || true"
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/docs-index\" || true"
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/read-dedup.py\" --session-start"
+        }
+      ]
+    }
+  ],
+  "SubagentStop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/subagent-task-state.py\" stop \"$CLAUDE_PROJECT_DIR\""
+        }
+      ]
+    }
+  ],
+  "SessionEnd": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "S=\"$CLAUDE_PROJECT_DIR/scripts/hooks/session-end-reap.sh\"; [ -f \"$S\" ] && bash \"$S\" || true"
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "^(edit|apply_patch|write|notebook_edit)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-worktree-path.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-sealed-migration.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/rca-triage-nudge.py\""
+        }
+      ]
+    },
+    {
+      "matcher": "^(edit|apply_patch|write|notebook_edit|run_subagent)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/edit-delegation-nudge.py\""
+        }
+      ]
+    },
+    {
+      "matcher": "^(run_subagent)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/agent-tier-nudge.py\""
+        }
+      ]
+    },
+    {
+      "matcher": "^(read|notebook_read)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-secret-read.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/read-dedup.py\""
+        }
+      ]
+    },
+    {
+      "matcher": "^(exec)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-secret-read.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-commit-on-main.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-git-stash.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-bare-python-tools.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-prod-psql.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-checkout-in-primary.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-cd-to-primary.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-piped-exit-code.py\""
+        },
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/bash-reflex-nudge.py\""
+        }
+      ]
+    },
+    {
+      "matcher": "^(grep)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/coderef-nudge.py\""
+        }
+      ]
+    },
+    {
+      "matcher": "^(mcp__precis__put|mcp__precis__edit|mcp__precis__delete|mcp__precis__tag)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-prod-write.py\""
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "^(write|apply_patch)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/map-staleness-reminder.py\""
+        }
+      ]
+    },
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "\"$CLAUDE_PROJECT_DIR/scripts/hooks/session-size-nudge.py\""
+        }
+      ]
+    }
+  ],
+  "PreCompact": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/precompact-persist.sh\""
+        }
+      ]
+    }
+  ]
+}

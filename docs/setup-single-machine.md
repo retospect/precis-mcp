@@ -74,6 +74,13 @@ bring the DB up once per worktree, then `precis` commands inside see it.
 
 ### Prod-shaped dev data (repo dev, cluster access)
 
+Just need an **empty** dev DB (no prod access)? `scripts/dev db-up` brings up
+this worktree's `precis-test-db` container, creates `precis_dev` and migrates
+it — idempotent, and it prints the DSN
+(`postgresql://postgres@precis-test-db:5432/precis_dev`, reachable from inside
+containers via `scripts/dev env PRECIS_DATABASE_URL=… …`; no host port is
+published).
+
 A freshly migrated DB is empty, so bugs that need real data shapes (a
 pathway's Pourbaix map, a board's net classes, a gripe with long comments)
 don't show on it. With read access to prod, seed a dev DB from an
