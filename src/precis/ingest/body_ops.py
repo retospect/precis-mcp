@@ -66,6 +66,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from precis.errors import BadInput
 from precis.ingest.db_writer import _BODY_OWNED_META_KEYS, _merge_ingest_meta
 from precis.ingest.dedup import (
     _PDF_ID_KINDS,
@@ -137,6 +138,12 @@ class BodyReport:
     pdf: bool = False
     identifiers: list[str] = field(default_factory=list)
     meta_keys: list[str] = field(default_factory=list)
+    #: The pdf sha a ``keep_pdf`` drop retained (``None`` = pointer
+    #: cleared as usual); set by :func:`detach_body`, never the probe.
+    kept_pdf: str | None = None
+    #: True when ``kept_pdf`` re-pointed ``refs.pdf_sha256`` (and cleared
+    #: ``pdf_pages``, the dropped file's span).
+    pdf_repointed: bool = False
 
     @property
     def is_stub(self) -> bool:
@@ -228,40 +235,167 @@ def _content_ids(conn: Any, ref_id: int) -> list[str]:
     return [f"{k}:{v}" for k, v in rows]
 
 
+def _attached_pdf_shas(conn: Any, ref_id: int) -> tuple[str | None, list[str]]:
+    """``(refs.pdf_sha256, sorted pdf_sha256 identifier values)`` — every
+    file the ref is attached to."""
+    row = conn.execute(
+        "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (ref_id,)
+    ).fetchone()
+    pointer = str(row[0]).strip() if row and row[0] else None
+    rows = conn.execute(
+        "SELECT id_value FROM ref_identifiers "
+        "WHERE ref_id = %s AND id_kind = 'pdf_sha256' ORDER BY id_value",
+        (ref_id,),
+    ).fetchall()
+    return pointer, [str(r[0]).strip() for r in rows]
+
+
+def resolve_kept_pdf(conn: Any, ref_id: int, *, named: str | None) -> tuple[str, bool]:
+    """The pdf sha a ``keep_pdf`` drop retains — and whether the pointer
+    moves (gr513878).
+
+    "Attached" is the union of ``refs.pdf_sha256`` and the ref's
+    ``pdf_sha256`` identifier rows — a merge can leave a second file's
+    row behind while the pointer still names the ref's own attachment.
+    ``named`` (the door's ``args['pdf_sha256']``) must name one of them;
+    with no ``named`` a single distinct attached sha keeps it and
+    several refuse — the caller names which file survives. Returns
+    ``(sha, switch)`` where ``switch`` says the kept sha is not the
+    ref's current pointer, so the door must re-point
+    ``refs.pdf_sha256`` and clear ``pdf_pages`` (the stored span was
+    measured on the dropped extraction, not the surviving file).
+
+    A switch also needs the file itself: ``refs.pdf_sha256`` FKs to
+    ``pdfs``, so re-pointing at an identifier whose bytes the corpus
+    ledger doesn't hold refuses — the heal could never find the file
+    anyway.
+    """
+    named_sha = (named or "").strip().lower() or None
+    pointer, id_shas = _attached_pdf_shas(conn, ref_id)
+    attached = sorted({*id_shas, *([pointer] if pointer else [])})
+    sha: str | None
+    if named_sha is not None:
+        if named_sha not in attached:
+            raise BadInput(
+                f"pdf_sha256={named_sha!r} is not attached to ref {ref_id}",
+                next=(
+                    f"attached pdf_sha256 values: {', '.join(attached) or 'none'} "
+                    "— pass one of them as args['pdf_sha256'], or drop "
+                    "keep_pdf to clear the pdf too"
+                ),
+            )
+        sha = named_sha
+    elif not attached:
+        raise BadInput(
+            f"ref {ref_id} holds no pdf — keep_pdf has nothing to keep",
+            next="run the plain drop_body (no keep_pdf), or attach a pdf "
+            "first with put(args={'pdf_url': ...})",
+        )
+    elif len(attached) > 1:
+        raise BadInput(
+            f"ref {ref_id} is attached to {len(attached)} pdfs — "
+            "keep_pdf needs args['pdf_sha256'] to name the one to keep",
+            next=f"attached pdf_sha256 values: {', '.join(attached)}; "
+            "re-run with 'pdf_sha256': '<sha>' in args",
+        )
+    else:
+        sha = attached[0]
+    switch = sha != pointer
+    if (
+        switch
+        and conn.execute("SELECT 1 FROM pdfs WHERE pdf_sha256 = %s", (sha,)).fetchone()
+        is None
+    ):
+        raise BadInput(
+            f"pdf_sha256={sha!r} is on ref {ref_id} but the corpus holds "
+            "no pdfs row for it — there is no stored file to point at",
+            next=f"re-point at the attached sha that IS stored "
+            f"({pointer or 'none held'}), or re-fetch the file first",
+        )
+    return sha, switch
+
+
 @trust_door("computed")
-def detach_body(*, ref_id: int, conn: Any) -> BodyReport:
+def detach_body(
+    *,
+    ref_id: int,
+    conn: Any,
+    keep_pdf: bool = False,
+    pdf_sha256: str | None = None,
+) -> BodyReport:
     """Strip ``ref_id`` back to a stub: body chunks, pdf pointers,
     content ids and body-owned meta keys all go; bibliographic metadata,
     identifiers and cards stay. The FK cascade clears every derived row
     with the chunk delete — including ``links`` chunk anchors, which is
     intended here and reported via ``report.chunk_links_removed`` (the
     union over live and retired chunks: every anchored link dies).
-    Retired ``ord >= 0`` rows delete too (``report.retired_chunks``)."""
+    Retired ``ord >= 0`` rows delete too (``report.retired_chunks``).
+
+    ``keep_pdf=True`` keeps the attachment instead of clearing it
+    (gr513878): ``refs.pdf_sha256``/``pdf_pages`` and the matching
+    ``pdf_sha256`` identifier row survive, so the bodiless ref is a
+    ``paper_reconcile`` / ``precis bodiless-heal`` candidate (the heal's
+    predicate is exactly ``pdf_sha256 IS NOT NULL AND NOT has_body``) and
+    the stored file re-extracts with no refetch. ``pdf_sha256=`` names
+    the file to keep when the ref is attached to several — naming one
+    that is not the current pointer re-points ``refs.pdf_sha256`` at it
+    and clears ``pdf_pages`` (the span belonged to the dropped
+    extraction); every other attached sha's identifier row drops with
+    ``content_hash`` — but ``paper_id``/``pub_id`` stay under keep_pdf:
+    they name the paper, not the dropped bytes, and nothing re-mints
+    them.
+    """
     report = probe_body(conn, ref_id)
     # A stub still runs when it carries stale content ids or body meta —
     # the early return must not strand a chunkless, pdf-less ref that has
     # junk only this op removes (gr515106 LOW).
     if report.is_stub and not report.identifiers and not report.meta_keys:
         return report
+    kept: str | None = None
+    switch = False
+    if keep_pdf:
+        kept, switch = resolve_kept_pdf(conn, ref_id, named=pdf_sha256)
     conn.execute("DELETE FROM chunks WHERE ref_id = %s AND ord >= 0", (ref_id,))
-    if report.pdf:
+    if report.pdf and kept is None:
         conn.execute(
             "UPDATE refs SET pdf_sha256 = NULL, pdf_pages = NULL, "
             "updated_at = now() WHERE ref_id = %s",
             (ref_id,),
         )
+    elif switch:
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, pdf_pages = NULL, "
+            "updated_at = now() WHERE ref_id = %s",
+            (kept, ref_id),
+        )
     # The content ids describe the dropped artifact; leaving pdf_sha256 /
     # content_hash behind would probe a re-ingest of the same wrong file
     # straight back onto this stub. cite_key / doi / arxiv / s2 stay —
-    # they name the paper, not the bytes.
-    conn.execute(
-        "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = ANY(%s)",
-        (ref_id, list(_PDF_ID_KINDS) + list(_SINGLE_ID_KINDS)),
-    )
+    # they name the paper, not the bytes. keep_pdf spares exactly the
+    # kept sha's pdf_sha256 row (the other attachments' rows drop — the
+    # door named the survivor) plus paper_id/pub_id, which describe the
+    # paper and which the heal never re-mints (Opus review, gr513878).
+    if kept is None:
+        conn.execute(
+            "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = ANY(%s)",
+            (ref_id, list(_PDF_ID_KINDS) + list(_SINGLE_ID_KINDS)),
+        )
+    else:
+        conn.execute(
+            "DELETE FROM ref_identifiers WHERE ref_id = %s AND "
+            "(id_kind = 'content_hash' OR "
+            " (id_kind = 'pdf_sha256' AND id_value <> %s))",
+            (ref_id, kept),
+        )
     _strip_body_owned_meta(conn, ref_id)
     # A drop removes every chunk-anchored link — the union, not just the
     # retired-anchored subset the field holds off the probe.
-    return replace(report, chunk_links_removed=report.chunk_links_total)
+    return replace(
+        report,
+        chunk_links_removed=report.chunk_links_total,
+        kept_pdf=kept,
+        pdf_repointed=switch,
+    )
 
 
 def _copy_body_chunks(conn: Any, *, src_ref_id: int, dst_ref_id: int) -> int:
@@ -623,4 +757,5 @@ __all__ = [
     "ensure_paper_cards",
     "move_body",
     "probe_body",
+    "resolve_kept_pdf",
 ]

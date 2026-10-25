@@ -7,8 +7,9 @@ stubs or queues supplementary-information acquisition with ``mode='fetch-si'``;
 it never writes a body. ``edit`` is scoped to *bibliographic metadata*
 (authors / year / title / abstract / doi / arxiv / journal / entry_type)
 plus the ``args=`` lifecycle doors — ``retire`` / ``redirect_to`` /
-``merge_into`` and the wrong-body repair set (``drop_body`` /
-``move_body_to`` / ``split_body`` / ``clear_abstract``, gr514995); it
+``merge_into``, the wrong-body repair set (``drop_body`` /
+``move_body_to`` / ``split_body`` / ``clear_abstract``, gr514995) and
+the single-row identifier removal (``drop_identifier``, gr513878); it
 never edits block text in place.
 
 Slug parsing supports the canonical slug-with-chunk syntax used across
@@ -70,7 +71,10 @@ from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
-from precis.store._identifiers_ops import detect_identifier_scheme
+from precis.store._identifiers_ops import (
+    _normalise_identifier,
+    detect_identifier_scheme,
+)
 from precis.store._review_ops import trust_refusal
 from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE
@@ -129,6 +133,20 @@ def _links_removed_note(report: Any) -> str:
     on retired donor chunks have no copy to re-point onto."""
     n = getattr(report, "chunk_links_removed", 0)
     return f", {n} retired-chunk link(s) removed" if n else ""
+
+
+def _dropped_content_ids(identifiers: list[str], kept_pdf: str | None) -> list[str]:
+    """The content ids a drop actually removes — under ``keep_pdf`` only
+    ``content_hash`` and the non-kept ``pdf_sha256`` rows go; the kept
+    sha's row and ``paper_id``/``pub_id`` stay (gr513878)."""
+    if kept_pdf is None:
+        return list(identifiers)
+    return [
+        i
+        for i in identifiers
+        if i.startswith("content_hash:")
+        or (i.startswith("pdf_sha256:") and i != f"pdf_sha256:{kept_pdf}")
+    ]
 
 
 @contextlib.contextmanager
@@ -246,7 +264,8 @@ _MERGE_UNKNOWN_YEAR_SIM = 0.95
 
 #: The ``edit(args=…)`` door keys, in dispatch order — at most one per
 #: call, and never combined with the metadata fields. Every door takes
-#: ``args['reason']``.
+#: ``args['reason']``. ``keep_pdf`` / ``pdf_sha256`` are *modifiers* of
+#: ``drop_body``, not doors — they ride the same args dict.
 _EDIT_DOOR_ARGS = (
     "retire",
     "redirect_to",
@@ -256,6 +275,7 @@ _EDIT_DOOR_ARGS = (
     "split_body",
     "clear_abstract",
     "convert_to",
+    "drop_identifier",
 )
 
 
@@ -456,7 +476,10 @@ class PaperHandler(Handler):
         # / ``split_body`` / ``clear_abstract`` are the wrong-body
         # repair doors (gr514995: :meth:`_drop_body`,
         # :meth:`_move_body_to`, :meth:`_split_body`,
-        # :meth:`_clear_abstract`); ``reason`` is the audit string every
+        # :meth:`_clear_abstract`) — ``keep_pdf`` / ``pdf_sha256`` are
+        # ``drop_body``'s modifiers (gr513878), not doors of their own;
+        # ``drop_identifier`` removes one named identifier row
+        # (:meth:`_drop_identifier`); ``reason`` is the audit string every
         # door writes into its ref_event. Subclass hooks read their own
         # keys via _edit_args.
         "edit": ArgsSpec(
@@ -466,9 +489,12 @@ class PaperHandler(Handler):
                 "merge_into",
                 "clear_stamp",
                 "drop_body",
+                "keep_pdf",
+                "pdf_sha256",
                 "move_body_to",
                 "split_body",
                 "clear_abstract",
+                "drop_identifier",
                 "reason",
             }
         ),
@@ -2359,6 +2385,12 @@ class PaperHandler(Handler):
         call. ``args={'merge_into': <survivor>}`` folds this live ref into
         a confirmed duplicate's survivor (:meth:`_merge_duplicate_into`),
         taking ``args['reason']`` and no other field.
+        ``args={'drop_identifier': {'scheme': …, 'value': …}}`` removes
+        exactly one ``ref_identifiers`` row — the surgical fix for a
+        wrong id sitting next to correct ones
+        (:meth:`_drop_identifier`); ``args={'drop_body': True,
+        'keep_pdf': True}`` drops the body but keeps the pdf attachment
+        so the bodiless-heal re-extracts it (:meth:`_drop_body`).
         ``args={'clear_stamp': <key|[keys]>}`` removes allow-listed
         worker-retry stamps from ``refs.meta`` so the owning pass
         re-claims the paper on its next sweep
@@ -2449,6 +2481,16 @@ class PaperHandler(Handler):
                 ),
             )
         doors = [k for k in _EDIT_DOOR_ARGS if k in raw_args]
+        if ("keep_pdf" in raw_args or "pdf_sha256" in raw_args) and (
+            "drop_body" not in doors
+        ):
+            # keep_pdf / pdf_sha256 are drop_body modifiers — anywhere
+            # else they would be silently ignored and the pdf dropped.
+            raise BadInput(
+                "args['keep_pdf'] / args['pdf_sha256'] only modify the drop_body door",
+                next=f"edit(kind='{self.spec.kind}', id='{id}', args="
+                "{'drop_body': True, 'keep_pdf': True, 'reason': '<why>'})",
+            )
         if doors:
             door = doors[0]
             if (
@@ -2496,7 +2538,27 @@ class PaperHandler(Handler):
                     dry=bool(dry_mode),
                 )
             if door == "drop_body":
-                return self._drop_body(id, reason=reason, dry=bool(dry_mode))
+                keep_raw = raw_args.get("keep_pdf")
+                keep_pdf = (
+                    str(keep_raw).strip().lower() not in ("false", "0", "no", "")
+                    if keep_raw is not None
+                    else False
+                )
+                if raw_args.get("pdf_sha256") is not None and not keep_pdf:
+                    raise BadInput(
+                        "args['pdf_sha256'] names the attachment a keep_pdf "
+                        "drop retains — it needs args['keep_pdf']: True",
+                        next=f"edit(kind='{self.spec.kind}', id='{id}', args="
+                        "{'drop_body': True, 'keep_pdf': True, 'pdf_sha256': "
+                        f"'{raw_args['pdf_sha256']}', 'reason': '<why>'}})",
+                    )
+                return self._drop_body(
+                    id,
+                    reason=reason,
+                    dry=bool(dry_mode),
+                    keep_pdf=keep_pdf,
+                    pdf_sha256=raw_args.get("pdf_sha256"),
+                )
             if door == "move_body_to":
                 return self._move_body_to(
                     id,
@@ -2516,6 +2578,13 @@ class PaperHandler(Handler):
                     id,
                     raw_args["convert_to"],
                     subtype=raw_args.get("subtype"),
+                    reason=reason,
+                    dry=bool(dry_mode),
+                )
+            if door == "drop_identifier":
+                return self._drop_identifier(
+                    id,
+                    raw_args["drop_identifier"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
@@ -3356,7 +3425,15 @@ class PaperHandler(Handler):
                 f"{{'{door}': {arg}, 'reason': '<why>'}})",
             )
 
-    def _drop_body(self, id: str | int, *, reason: str, dry: bool) -> Response:
+    def _drop_body(
+        self,
+        id: str | int,
+        *,
+        reason: str,
+        dry: bool,
+        keep_pdf: bool = False,
+        pdf_sha256: Any = None,
+    ) -> Response:
         """``edit(args={'drop_body': True})`` — detach the body, keep the
         record (gr514995).
 
@@ -3367,14 +3444,31 @@ class PaperHandler(Handler):
         and strips the extraction meta keys — title, year, authors,
         bibliographic identifiers, cite_key and card chunks stay, so the
         ref is a stub the fetcher can re-chase. No retire, no redirect.
+
+        ``args['keep_pdf']: True`` keeps the attachment instead
+        (gr513878): the pointer and its ``pdf_sha256`` identifier row
+        survive, leaving a bodiless ref the ``paper_reconcile`` pass /
+        ``precis bodiless-heal`` re-extracts from the *stored* file — the
+        repair for a ref whose body came from the wrong PDF while the
+        right one is already attached. ``args['pdf_sha256']: '<sha>'``
+        names the file to keep when the ref is attached to several
+        (required then; a named sha that is attached but not the pointer
+        re-points ``refs.pdf_sha256`` at it).
         """
         from precis.ingest import body_ops, paper_dump
 
         kind = self.spec.kind
         ref, handle = self._require_live_body_ref(id, "drop_body")
         self._require_reason(reason, "drop_body", kind, handle)
+        named = None if pdf_sha256 is None else str(pdf_sha256).strip() or None
+        kept_sha: str | None = None
+        switched = False
         with self.store.pool.connection() as conn:
             probe = body_ops.probe_body(conn, ref.id)
+            if keep_pdf:
+                kept_sha, switched = body_ops.resolve_kept_pdf(
+                    conn, ref.id, named=named
+                )
             undo = paper_dump.undo_line(conn, ref.id, handle)
         # A stub carrying stale content ids / body meta is still a drop
         # target — detach_body cleans exactly those (gr515106 LOW).
@@ -3383,6 +3477,16 @@ class PaperHandler(Handler):
                 body=f"no change: {handle} already holds no body and no PDF."
             )
         if dry:
+            dropped_ids = _dropped_content_ids(probe.identifiers, kept_sha)
+            pdf_note = "pdf_sha256 cleared, " if probe.pdf else ""
+            if kept_sha is not None:
+                pdf_note = (
+                    f"pdf re-pointed to {kept_sha} (pdf_pages cleared — the "
+                    "span was the dropped file's), "
+                    if switched
+                    else f"pdf {kept_sha} kept (pointer, pages and its "
+                    "pdf_sha256 identifier row retained), "
+                )
             return Response(
                 body=(
                     f"DRY RUN (no write) - would drop {handle}'s body: "
@@ -3390,11 +3494,18 @@ class PaperHandler(Handler):
                     f"row(s) deleted"
                     f"{_retired_note(probe)}, "
                     f"{probe.chunk_links_total} chunk link(s) removed, "
-                    f"{'pdf_sha256 cleared, ' if probe.pdf else ''}content ids "
-                    f"removed ({', '.join(probe.identifiers) or 'none'}), "
+                    f"{pdf_note}content ids "
+                    f"removed ({', '.join(dropped_ids) or 'none'}), "
                     f"meta keys stripped ({', '.join(probe.meta_keys) or 'none'}); "
-                    "a 'body_dropped' ref_event logged.\n\n"
-                    f"{undo}"
+                    "a 'body_dropped' ref_event logged."
+                    + (
+                        " The kept pdf leaves the ref a bodiless-heal "
+                        "candidate — the paper_reconcile pass / "
+                        "'precis bodiless-heal' re-extracts the stored file."
+                        if kept_sha is not None
+                        else ""
+                    )
+                    + f"\n\n{undo}"
                 )
             )
         with _body_op_tx(self.store, "drop_body") as conn:
@@ -3415,7 +3526,12 @@ class PaperHandler(Handler):
                     f"id='{handle}', args={{'drop_body': True, "
                     f"'reason': '{reason}'}})",
                 )
-            report = body_ops.detach_body(ref_id=ref.id, conn=conn)
+            report = body_ops.detach_body(
+                ref_id=ref.id,
+                conn=conn,
+                keep_pdf=keep_pdf,
+                pdf_sha256=named,
+            )
             self.store.append_event(
                 ref.id,
                 source="agent",
@@ -3426,10 +3542,33 @@ class PaperHandler(Handler):
                     "retired_chunks": report.retired_chunks,
                     "embeddings": report.embeddings,
                     "chunk_links_removed": report.chunk_links_removed,
-                    "pdf_cleared": report.pdf,
-                    "identifiers_removed": report.identifiers,
+                    "pdf_cleared": report.pdf and report.kept_pdf is None,
+                    "pdf_kept": report.kept_pdf,
+                    "pdf_repointed": report.pdf_repointed,
+                    "identifiers_removed": _dropped_content_ids(
+                        report.identifiers, report.kept_pdf
+                    ),
                 },
                 conn=conn,
+            )
+        if report.kept_pdf is not None:
+            pdf_note = (
+                f"pdf re-pointed to {report.kept_pdf} (pdf_pages cleared — "
+                "the span was the dropped file's)"
+                if report.pdf_repointed
+                else f"pdf {report.kept_pdf} kept"
+            )
+            return Response(
+                body=(
+                    f"dropped {handle}'s body: {report.chunks} chunk(s) + "
+                    f"{report.embeddings} embedding row(s) deleted"
+                    f"{_retired_note(report)}, "
+                    f"{report.chunk_links_removed} chunk link(s) removed; "
+                    f"{pdf_note} — the ref is a bodiless "
+                    "stub whose stored file the paper_reconcile pass / "
+                    "'precis bodiless-heal' re-extracts "
+                    "(ref_event 'body_dropped' logged)."
+                )
             )
         return Response(
             body=(
@@ -4125,6 +4264,134 @@ class PaperHandler(Handler):
             f"link(s) ({probe.chunk_links} chunk-anchored), "
             f"{probe.identifiers} identifier(s), {probe.authors} author "
             f"row(s){', pdf' if probe.pdf else ''} kept"
+        )
+
+    def _drop_identifier(
+        self, id: str | int, spec: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'drop_identifier': {'scheme': …, 'value': …}})`` —
+        remove exactly one ``ref_identifiers`` row (gr513878).
+
+        The surgical door ``doi=''``/``arxiv=''`` can't express: those
+        clear *every* row of the scheme and stamp the human-cleared
+        marker — wrong when a ref carries a bad value next to good ones
+        (a merge that left the donor's pubmed/openalex/s2 rows on the
+        survivor) and the scheme should stay open for a later correct
+        write. One ``(scheme, value)`` row goes; the scheme's other
+        rows stay, no cleared marker is stamped, and a displayed
+        ``meta.doi``/``meta.arxiv`` ghost of the dropped value follows
+        it out (re-pointed at a surviving row of the scheme, else
+        removed — :meth:`Store.drop_ref_identifier`).
+        """
+        kind = self.spec.kind
+        ref, handle = self._require_live_body_ref(id, "drop_identifier")
+        self._require_reason(
+            reason,
+            "drop_identifier",
+            kind,
+            handle,
+            arg="{'scheme': '<scheme>', 'value': '<value>'}",
+        )
+        if isinstance(spec, dict):
+            scheme_raw, value_raw = spec.get("scheme"), spec.get("value")
+        elif isinstance(spec, str) and ":" in spec:
+            scheme_raw, value_raw = spec.split(":", 1)
+        else:
+            scheme_raw = value_raw = None
+        scheme = str(scheme_raw or "").strip().lower()
+        value = _normalise_identifier(scheme, str(value_raw or ""))
+        if not scheme or not value:
+            raise BadInput(
+                "drop_identifier needs {'scheme': '<scheme>', 'value': "
+                "'<value>'} — one identifier row per call",
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                "{'drop_identifier': {'scheme': 'pubmed', 'value': "
+                "'24970080'}, 'reason': '<why>'})",
+            )
+        if scheme == "cite_key":
+            raise BadInput(
+                "drop_identifier cannot remove a cite_key — a cite_key is "
+                "the ref's handle, not an external identifier",
+                next="to fold this record into another ref use "
+                "args={'merge_into': '<survivor>', 'reason': '<why>'}",
+            )
+        # Content-derived ids are the body doors' to manage; dropping the
+        # pointer's own pdf_sha256 row would orphan the attachment.
+        if scheme in ("content_hash", "paper_id", "pub_id"):
+            raise BadInput(
+                f"drop_identifier can't remove {scheme}={value!r} — it is "
+                "a content-derived id the body ops manage",
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                "{'drop_body': True, 'reason': '<why>'}) to drop the "
+                "attachment too, 'keep_pdf': True to keep the file",
+            )
+        pointer = (ref.pdf_sha256 or "").strip() if ref.pdf_sha256 else ""
+        if scheme == "pdf_sha256" and value == pointer.lower():
+            raise BadInput(
+                f"pdf_sha256={value!r} is {handle}'s pdf pointer — "
+                "dropping its identifier row orphans the attachment",
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                "{'drop_body': True, 'reason': '<why>'}) to drop the pdf "
+                "too, or 'keep_pdf': True to keep the file",
+            )
+        rows = self.store.list_ref_identifiers(ref.id)
+        held = [v for s, v, _src in rows if s == scheme]
+        # Rows may be stored non-canonical (mixed case) — the DELETE
+        # matches lower(id_value), so the held check does too.
+        if value not in {v.lower() for v in held}:
+            raise BadInput(
+                f"{handle} has no {scheme}={value!r} identifier row",
+                next=(
+                    f"{handle} holds {scheme}: {', '.join(held)} — pass "
+                    "one of those as 'value'"
+                    if held
+                    else f"get(kind='{kind}', id='{handle}') lists the "
+                    "identifiers it does hold"
+                ),
+            )
+        remaining = [v for v in held if v.lower() != value]
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would remove identifier "
+                    f"{scheme}:{value} from {handle}; "
+                    + (
+                        f"{len(remaining)} other {scheme} row(s) stay "
+                        f"({', '.join(remaining)}); "
+                        if remaining
+                        else f"no {scheme} rows left afterwards; "
+                    )
+                    + "no cleared_identifiers marker — the scheme stays "
+                    "open for a later correct write; an "
+                    "'identifier_dropped' ref_event logged."
+                )
+            )
+        with self.store.tx() as conn:
+            removed = self.store.drop_ref_identifier(ref.id, scheme, value, conn=conn)
+            if removed is None:
+                raise BadInput(
+                    f"{handle}'s {scheme}={value!r} row was removed between "
+                    "the check and the write — nothing was written",
+                    next="re-list the ref's identifiers and retry if the "
+                    "row is really still there",
+                )
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="identifier_dropped",
+                payload={"reason": reason, "scheme": scheme, "value": removed},
+                conn=conn,
+            )
+        return Response(
+            body=(
+                f"removed identifier {scheme}:{removed} from {handle} "
+                + (
+                    f"({len(remaining)} {scheme} row(s) kept); "
+                    if remaining
+                    else f"(no {scheme} rows left); "
+                )
+                + "ref_event 'identifier_dropped' logged."
+            )
         )
 
     def _declare_supplement(

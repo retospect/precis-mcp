@@ -1446,3 +1446,650 @@ class TestBodyOpLockContention:
         # The lock-specific boundary-map text — a QueryCanceled row would
         # also render Upstream+retry, so this pins the LockNotAvailable arm.
         assert "locked by another writer" in body
+
+
+_SHA_B = "b" * 64
+
+
+def _pdf_id_values(store: Store, ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id_value FROM ref_identifiers WHERE ref_id = %s "
+            "AND id_kind = 'pdf_sha256' ORDER BY id_value",
+            (ref_id,),
+        ).fetchall()
+    return [str(r[0]).strip() for r in rows]
+
+
+def _add_pdf_id(store: Store, ref_id: int, sha: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('pdf_sha256', %s, %s, 'test') ON CONFLICT DO NOTHING",
+            (sha, ref_id),
+        )
+
+
+def _pdfs_row(store: Store, sha: str, storage: str = "y.pdf") -> None:
+    """A corpus-ledger row for ``sha`` — ``refs.pdf_sha256`` FKs to it, so
+    a keep_pdf pointer switch/promotion needs it."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 3, 10, %s) "
+            "ON CONFLICT DO NOTHING",
+            (sha, sha, storage),
+        )
+
+
+def _pdf_pages(store: Store, ref_id: int) -> str | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pdf_pages::text FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def _id_pairs(store: Store, ref_id: int) -> set[tuple[str, str]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchall()
+    return {(str(r[0]), str(r[1])) for r in rows}
+
+
+class TestDropBodyKeepPdf:
+    """gr513878: ``keep_pdf`` drops the wrong body but keeps the stored
+    pdf attachment, so the bodiless-heal re-extracts the right file."""
+
+    def test_happy_path(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "keeppdf2020", year=2020, meta={"source_format": "pdf"})
+        _body(store, ref, 3)
+        _pdf(store, ref)
+        store.set_ref_identifier(ref, "doi", "10.1/abc", source="test")
+        store.set_ref_identifier(ref, "content_hash", "f" * 64, source="test")
+        store.set_ref_identifier(ref, "paper_id", "doi:10.1/abc", source="test")
+        store.set_ref_identifier(ref, "pub_id", "54am6h", source="test")
+        resp = _edit(
+            handler,
+            ref,
+            {
+                "drop_body": True,
+                "keep_pdf": True,
+                "reason": "body is another paper's, pdf is right",
+            },
+        )
+        assert _ords(store, ref) == []
+        assert _emb_count(store, ref) == 0
+        # pointer + its identifier row survive; other content ids dropped
+        assert _pdf_sha(store, ref) == _SHA
+        assert _pdf_id_values(store, ref) == [_SHA]
+        # paper_id/pub_id stay — they name the paper, not the dropped file
+        assert _id_kinds(store, ref) == {
+            "cite_key",
+            "doi",
+            "pdf_sha256",
+            "paper_id",
+            "pub_id",
+        }
+        assert "source_format" not in _meta(store, ref)
+        assert "kept" in resp.body and "bodiless" in resp.body
+        ev = _events(store, ref, "body_dropped")
+        assert len(ev) == 1
+        assert ev[0].payload["pdf_cleared"] is False
+        assert ev[0].payload["pdf_kept"] == _SHA
+        assert ev[0].payload["pdf_repointed"] is False
+        removed = ev[0].payload["identifiers_removed"]
+        assert "pdf_sha256:" + _SHA not in removed
+        assert "content_hash:" + "f" * 64 in removed
+        assert "paper_id:doi:10.1/abc" not in removed
+        assert "pub_id:54am6h" not in removed
+
+    def test_kept_ref_is_a_bodiless_heal_candidate(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The heal's predicate (``pdf_sha256 IS NOT NULL AND NOT
+        has_body``) picks the kept ref up — a plain-dropped twin is
+        invisible to it."""
+        from precis.ingest.paper_hygiene import _bodiless_candidates
+
+        kept = _seed(store, "healkeep2020", year=2020)
+        gone = _seed(store, "healgone2020", year=2020)
+        _body(store, kept, 1)
+        _pdf(store, kept)
+        _body(store, gone, 1)
+        _pdf(store, gone, sha="d" * 64)
+        _edit(
+            handler,
+            kept,
+            {"drop_body": True, "keep_pdf": True, "reason": "x"},
+        )
+        _edit(handler, gone, {"drop_body": True, "reason": "x"})
+        ids = {c.ref_id for c in _bodiless_candidates(store, limit=None)}
+        assert kept in ids
+        assert gone not in ids
+
+    def test_named_sha_picks_current_pointer(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "keeppick2020", year=2020)
+        _body(store, ref, 1)
+        _pdf(store, ref)
+        _add_pdf_id(store, ref, _SHA_B)
+        resp = _edit(
+            handler,
+            ref,
+            {
+                "drop_body": True,
+                "keep_pdf": True,
+                "pdf_sha256": _SHA,
+                "reason": "keep the ref's own file",
+            },
+        )
+        assert _pdf_sha(store, ref) == _SHA
+        assert _pdf_id_values(store, ref) == [_SHA]
+        ev = _events(store, ref, "body_dropped")
+        assert ev[0].payload["pdf_kept"] == _SHA
+
+    def test_named_sha_switches_pointer(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Naming an attached sha that is not the pointer re-points
+        ``refs.pdf_sha256`` at it and clears the dropped file's span."""
+        ref = _seed(store, "keepswitch2020", year=2020)
+        _body(store, ref, 1)
+        _pdf(store, ref)
+        _add_pdf_id(store, ref, _SHA_B)
+        _pdfs_row(store, _SHA_B, "clary.pdf")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET pdf_pages = '[1,11)' WHERE ref_id = %s", (ref,)
+            )
+        resp = _edit(
+            handler,
+            ref,
+            {
+                "drop_body": True,
+                "keep_pdf": True,
+                "pdf_sha256": _SHA_B,
+                "reason": "the pointer was the wrong file",
+            },
+        )
+        assert _pdf_sha(store, ref) == _SHA_B
+        assert _pdf_pages(store, ref) is None
+        assert _pdf_id_values(store, ref) == [_SHA_B]
+        # the ack and the event both record the re-point + span clear
+        assert "re-pointed" in resp.body and "pdf_pages" in resp.body
+        ev = _events(store, ref, "body_dropped")
+        assert ev[0].payload["pdf_kept"] == _SHA_B
+        assert ev[0].payload["pdf_repointed"] is True
+
+    def test_several_attached_without_name_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "keepamb2020", year=2020)
+        _body(store, ref, 1)
+        _pdf(store, ref)
+        _add_pdf_id(store, ref, _SHA_B)
+        with pytest.raises(BadInput, match="pdf_sha256") as exc:
+            _edit(
+                handler,
+                ref,
+                {"drop_body": True, "keep_pdf": True, "reason": "x"},
+            )
+        assert _SHA_B in str(exc.value.next)
+        assert _ords(store, ref) == [0]
+        assert _pdf_sha(store, ref) == _SHA
+
+    def test_named_sha_not_on_ref_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "keepmiss2020", year=2020)
+        _body(store, ref, 1)
+        _pdf(store, ref)
+        with pytest.raises(BadInput, match="not attached") as exc:
+            _edit(
+                handler,
+                ref,
+                {
+                    "drop_body": True,
+                    "keep_pdf": True,
+                    "pdf_sha256": _SHA_B,
+                    "reason": "x",
+                },
+            )
+        assert _SHA in str(exc.value.next)
+        assert _ords(store, ref) == [0]
+
+    def test_nothing_to_keep_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "keepnone2020", year=2020)
+        _body(store, ref, 1)
+        with pytest.raises(BadInput, match="nothing to keep"):
+            _edit(
+                handler,
+                ref,
+                {"drop_body": True, "keep_pdf": True, "reason": "x"},
+            )
+        assert _ords(store, ref) == [0]
+
+    def test_pdf_sha256_without_keep_pdf_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "keepnosha2020", year=2020)
+        _body(store, ref, 1)
+        _pdf(store, ref)
+        with pytest.raises(BadInput, match="keep_pdf") as exc:
+            _edit(
+                handler,
+                ref,
+                {"drop_body": True, "pdf_sha256": _SHA, "reason": "x"},
+            )
+        assert exc.value.next is not None
+        assert _pdf_sha(store, ref) == _SHA
+
+    def test_keep_pdf_off_drop_body_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``keep_pdf`` on any other door — or on no door — must refuse,
+        never be silently ignored while the pdf drops."""
+        a = _seed(store, "keepoffa2020", year=2020)
+        b = _seed(store, "keepoffb2020", year=2020)
+        _body(store, a, 1)
+        _pdf(store, a)
+        with pytest.raises(BadInput, match="drop_body"):
+            _edit(
+                handler,
+                a,
+                {
+                    "move_body_to": f"pa{b}",
+                    "keep_pdf": True,
+                    "reason": "x",
+                },
+            )
+        with pytest.raises(BadInput, match="drop_body"):
+            _edit(handler, a, {"keep_pdf": True, "reason": "x"})
+        assert _ords(store, a) == [0]
+        assert _pdf_sha(store, a) == _SHA
+
+    def test_identifier_only_sha_becomes_pointer(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A pdf_sha256 identifier with no pointer still counts as
+        attached — keep_pdf promotes it so the heal can find the file."""
+        ref = _seed(store, "keepidonly2020", year=2020)
+        _add_pdf_id(store, ref, _SHA)
+        _pdfs_row(store, _SHA)
+        store.set_ref_identifier(ref, "content_hash", "f" * 64, source="test")
+        _edit(
+            handler,
+            ref,
+            {"drop_body": True, "keep_pdf": True, "reason": "x"},
+        )
+        assert _pdf_sha(store, ref) == _SHA
+        assert _pdf_id_values(store, ref) == [_SHA]
+
+    def test_switch_to_unstored_sha_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A pdf_sha256 identifier without a ``pdfs`` ledger row names
+        no stored file — re-pointing at it would violate the FK and
+        leave the heal nothing to find."""
+        ref = _seed(store, "keepnostore2020", year=2020)
+        _body(store, ref, 1)
+        _pdf(store, ref)
+        _add_pdf_id(store, ref, _SHA_B)  # identifier row only, no pdfs row
+        with pytest.raises(BadInput, match="no pdfs row") as exc:
+            _edit(
+                handler,
+                ref,
+                {
+                    "drop_body": True,
+                    "keep_pdf": True,
+                    "pdf_sha256": _SHA_B,
+                    "reason": "x",
+                },
+            )
+        assert exc.value.next is not None
+        assert _ords(store, ref) == [0]
+        assert _pdf_sha(store, ref) == _SHA
+
+    def test_dry_run_reports_kept_and_dropped(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "keepdry2020", year=2020)
+        _body(store, ref, 2)
+        _pdf(store, ref)
+        _add_pdf_id(store, ref, _SHA_B)
+        store.set_ref_identifier(ref, "content_hash", "f" * 64, source="test")
+        resp = _edit(
+            handler,
+            ref,
+            {
+                "drop_body": True,
+                "keep_pdf": True,
+                "pdf_sha256": _SHA,
+                "reason": "x",
+            },
+            dry_run=True,
+        )
+        assert "DRY RUN" in resp.body
+        assert _SHA in resp.body
+        assert "kept" in resp.body
+        assert f"pdf_sha256:{_SHA_B}" in resp.body
+        assert "bodiless-heal" in resp.body
+        # nothing written
+        assert _ords(store, ref) == [0, 1]
+        assert _pdf_sha(store, ref) == _SHA
+        assert sorted(_pdf_id_values(store, ref)) == sorted([_SHA, _SHA_B])
+        assert _events(store, ref, "body_dropped") == []
+
+
+class TestDropIdentifier:
+    """gr513878: surgical one-row ``ref_identifiers`` removal — the door
+    the donor-merge cleanup needed (pubmed/openalex/s2 rows have no
+    ``doi=''``-style clear)."""
+
+    def test_happy_path(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropid2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        store.set_ref_identifier(ref, "doi", "10.1/abc", source="test")
+        resp = _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "pubmed", "value": "24970080"},
+                "reason": "donor's pmid, gr513878",
+            },
+        )
+        assert "removed identifier pubmed:24970080" in resp.body
+        assert _id_kinds(store, ref) == {"cite_key", "doi"}
+        ev = _events(store, ref, "identifier_dropped")
+        assert len(ev) == 1
+        payload = ev[0].payload
+        assert payload["scheme"] == "pubmed"
+        assert payload["value"] == "24970080"
+        assert payload["reason"] == "donor's pmid, gr513878"
+        # no cleared marker — the scheme stays open for a correct re-add
+        assert "cleared_identifiers" not in _meta(store, ref)
+
+    def test_one_of_several_same_scheme(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "dropidtwo2020", year=2020)
+        s2a, s2b = "a" * 40, "b" * 40
+        store.insert_ref_identifiers(ref, [("s2", s2a, "test"), ("s2", s2b, "test")])
+        _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "s2", "value": s2b},
+                "reason": "x",
+            },
+        )
+        pairs = _id_pairs(store, ref)
+        assert ("s2", s2b) not in pairs
+        assert ("s2", s2a) in pairs
+
+    def test_value_is_normalised(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropidnorm2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "pubmed", "value": "PMID:24970080"},
+                "reason": "x",
+            },
+        )
+        assert ("pubmed", "24970080") not in _id_pairs(store, ref)
+
+    def test_string_spec_form(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropidstr2020", year=2020)
+        store.set_ref_identifier(ref, "openalex", "w2057701641", source="test")
+        resp = _edit(
+            handler,
+            ref,
+            {"drop_identifier": "openalex:W2057701641", "reason": "x"},
+        )
+        assert "removed identifier openalex:w2057701641" in resp.body
+        assert "openalex" not in _id_kinds(store, ref)
+
+    def test_absent_row_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropidmiss2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "11111111", source="test")
+        with pytest.raises(BadInput, match="99999999") as exc:
+            _edit(
+                handler,
+                ref,
+                {
+                    "drop_identifier": {"scheme": "pubmed", "value": "99999999"},
+                    "reason": "x",
+                },
+            )
+        assert "11111111" in str(exc.value.next)
+        assert ("pubmed", "11111111") in _id_pairs(store, ref)
+
+    def test_absent_scheme_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropidnone2020", year=2020)
+        with pytest.raises(BadInput, match="pubmed") as exc:
+            _edit(
+                handler,
+                ref,
+                {
+                    "drop_identifier": {"scheme": "pubmed", "value": "24970080"},
+                    "reason": "x",
+                },
+            )
+        assert exc.value.next is not None
+
+    def test_cite_key_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropidcite2020", year=2020)
+        with pytest.raises(BadInput, match="cite_key"):
+            _edit(
+                handler,
+                ref,
+                {
+                    "drop_identifier": {
+                        "scheme": "cite_key",
+                        "value": "dropidcite2020",
+                    },
+                    "reason": "x",
+                },
+            )
+
+    def test_bad_spec_shape_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropidshape2020", year=2020)
+        with pytest.raises(BadInput, match="scheme"):
+            _edit(
+                handler,
+                ref,
+                {"drop_identifier": {"scheme": "pubmed"}, "reason": "x"},
+            )
+        with pytest.raises(BadInput, match="scheme"):
+            _edit(handler, ref, {"drop_identifier": True, "reason": "x"})
+
+    def test_missing_reason_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropidnor2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        with pytest.raises(BadInput, match="reason"):
+            _edit(
+                handler,
+                ref,
+                {"drop_identifier": {"scheme": "pubmed", "value": "24970080"}},
+            )
+        assert ("pubmed", "24970080") in _id_pairs(store, ref)
+
+    def test_retired_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropiddead2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        store.retire_ref(ref)
+        with pytest.raises(BadInput, match="retired"):
+            _edit(
+                handler,
+                ref,
+                {
+                    "drop_identifier": {"scheme": "pubmed", "value": "24970080"},
+                    "reason": "x",
+                },
+            )
+        assert ("pubmed", "24970080") in _id_pairs(store, ref)
+
+    def test_dry_run_writes_nothing(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropiddry2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        resp = _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "pubmed", "value": "24970080"},
+                "reason": "x",
+            },
+            dry_run=True,
+        )
+        assert "DRY RUN" in resp.body
+        assert "pubmed:24970080" in resp.body
+        assert ("pubmed", "24970080") in _id_pairs(store, ref)
+        assert _events(store, ref, "identifier_dropped") == []
+
+    def test_meta_doi_ghost_removed_even_with_surviving_row(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Ruling: the displayed meta.doi drops with its row — never
+        re-pointed at a surviving row, which could show a different
+        wrong DOI."""
+        ref = _seed(store, "dropidghost2020", year=2020, meta={"doi": "10.9/bad"})
+        store.set_ref_identifier(ref, "doi", "10.9/bad", source="test")
+        store.insert_ref_identifiers(ref, [("doi", "10.1/good", "test")])
+        _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "doi", "value": "10.9/bad"},
+                "reason": "x",
+            },
+        )
+        assert _id_pairs(store, ref) >= {("doi", "10.1/good")}
+        assert ("doi", "10.9/bad") not in _id_pairs(store, ref)
+        assert "doi" not in _meta(store, ref)
+
+    def test_mixed_case_stored_row_removable(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A legacy non-canonical (uppercase) id_value still matches —
+        the DELETE compares lower(id_value)."""
+        ref = _seed(store, "dropidcase2020", year=2020)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, "
+                "source) VALUES ('arxiv', 'Astro-PH/0211262', %s, 'test')",
+                (ref,),
+            )
+        _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "arxiv", "value": "astro-ph/0211262"},
+                "reason": "x",
+            },
+        )
+        assert "arxiv" not in _id_kinds(store, ref)
+
+    def test_pointer_pdf_sha256_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The pointer's own pdf_sha256 row is the body doors' — removing
+        it would orphan the attachment."""
+        ref = _seed(store, "dropidptr2020", year=2020)
+        _pdf(store, ref)
+        with pytest.raises(BadInput, match="pdf pointer") as exc:
+            _edit(
+                handler,
+                ref,
+                {
+                    "drop_identifier": {"scheme": "pdf_sha256", "value": _SHA},
+                    "reason": "x",
+                },
+            )
+        assert "keep_pdf" in str(exc.value.next)
+        assert ("pdf_sha256", _SHA) in _id_pairs(store, ref)
+
+    def test_nonpointer_pdf_sha256_row_droppable(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "dropidnp2020", year=2020)
+        _pdf(store, ref)
+        _add_pdf_id(store, ref, _SHA_B)
+        _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "pdf_sha256", "value": _SHA_B},
+                "reason": "x",
+            },
+        )
+        assert _pdf_id_values(store, ref) == [_SHA]
+        assert _pdf_sha(store, ref) == _SHA
+
+    def test_system_derived_schemes_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """content_hash / paper_id / pub_id are content-derived — the
+        body doors own them, drop_identifier refuses."""
+        ref = _seed(store, "dropidsys2020", year=2020)
+        for scheme, value in (
+            ("content_hash", "f" * 64),
+            ("paper_id", "doi:10.1/abc"),
+            ("pub_id", "54am6h"),
+        ):
+            store.set_ref_identifier(ref, scheme, value, source="test")
+            with pytest.raises(BadInput, match="content-derived"):
+                _edit(
+                    handler,
+                    ref,
+                    {
+                        "drop_identifier": {"scheme": scheme, "value": value},
+                        "reason": "x",
+                    },
+                )
+            assert (scheme, value) in _id_pairs(store, ref)
+
+    def test_keep_pdf_string_literals_parse(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``keep_pdf`` parses strictly: bool True or truthy literals
+        keep; "false"/"0"/"no" mean the plain drop."""
+        a = _seed(store, "keepfalse2020", year=2020)
+        _body(store, a, 1)
+        _pdf(store, a)
+        _edit(
+            handler,
+            a,
+            {"drop_body": True, "keep_pdf": "false", "reason": "x"},
+        )
+        assert _pdf_sha(store, a) is None  # "false" = plain drop
+        b = _seed(store, "keeptrue2020", year=2020)
+        _body(store, b, 1)
+        _pdf(store, b, sha="d" * 64)
+        _edit(
+            handler,
+            b,
+            {"drop_body": True, "keep_pdf": "true", "reason": "x"},
+        )
+        assert _pdf_sha(store, b) == "d" * 64
+
+    def test_meta_doi_ghost_removed_with_last_row(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "dropidlast2020", year=2020, meta={"doi": "10.9/bad"})
+        store.set_ref_identifier(ref, "doi", "10.9/bad", source="test")
+        _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": "doi", "value": "10.9/bad"},
+                "reason": "x",
+            },
+        )
+        assert "doi" not in _id_kinds(store, ref)
+        assert "doi" not in _meta(store, ref)

@@ -10,6 +10,8 @@ answers:
   - a merged stub resolves to the wrong paper — how do I re-point it?
   - how do I retire a phantom citation stub?
   - a ref holds the wrong paper's body — how do I detach or re-home it?
+  - a ref carries one wrong identifier next to right ones — how do I remove just it?
+  - the body is another paper's but the attached PDF is right — how do I re-extract it?
   - a worker stamped a paper done/failed — how do I re-run it?
   - how do I attach a legal PDF to a body-less stub?
 applies-to: get/edit/put (kind='paper')
@@ -32,10 +34,11 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 |---|---|
 | fix a wrong/missing author | `edit(id=…, authors=["Family, Given [iD]"])` |
 | repair stub metadata | `edit(id=…, title=/doi=/arxiv=/year=/journal=/entry_type=/abstract=/volume=/issue=/pages=/url=)` |
+| remove one wrong identifier row | `args={'drop_identifier': {'scheme': 'pubmed', 'value': '…'}, 'reason': …}` |
 | fold a duplicate pair | `args={'merge_into': '<survivor>', 'reason': …}` |
 | re-point a merged stub | `args={'redirect_to': '<pa>', 'reason': …}` |
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
-| re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` |
+| re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` (drop_body takes `'keep_pdf': True` to keep the stored pdf) |
 | export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
 | convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
@@ -86,7 +89,18 @@ repairable the same way — `edit(kind='paper', id='<slug>', doi='10.…')` (or
 `arxiv=`) upgrades it in place, so prefer that over minting a second,
 DOI-bearing stub and orphaning the first. A *wrong* identifier is removable
 the same door — `doi=''` (empty string, not omitted) clears this ref's own
-DOI without touching who owns it elsewhere; `arxiv=''` clears likewise. A
+DOI without touching who owns it elsewhere; `arxiv=''` clears likewise.
+Both are whole-scheme clears: every row of the scheme goes and the
+`cleared_identifiers` marker stops sweeps re-deriving it. When the ref
+holds a wrong value *next to* right ones — a merge that left the donor's
+ids on the survivor — the surgical door is
+`args={'drop_identifier': {'scheme': 'pubmed', 'value': '24970080'},
+'reason': …}` (any scheme but cite_key; the value normalises like the
+identifier lookups, so `'PMID:…'` forms work). One row goes, the rest of
+the scheme stays, no cleared marker is stamped — a sweep can still land
+the *correct* value later — and an `identifier_dropped` ref_event carries
+the reason. It refuses with the ref's actual rows when the named pair
+isn't held. A
 mis-filed record's year and venue repair the same way — `year=2007`,
 `journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`,
 and the locator fields `volume=`/`issue=`/`pages=`/`url=` — the BibTeX
@@ -178,6 +192,7 @@ A duplicate of a real record wants a merge instead. `dry_run` previews.
 
 ```python
 edit(kind="paper", id="pa506039", args={"drop_body": True, "reason": "wrong pdf"})
+edit(kind="paper", id="pa254044", args={"drop_body": True, "keep_pdf": True, "pdf_sha256": "<sha to keep>", "reason": "body is another paper's; re-extract own pdf"})
 edit(kind="paper", id="pa1108", args={"move_body_to": "pa42053", "reason": "it's 42053's"})
 edit(kind="paper", id="pa41", args={"split_body": {"title": "Companion paper"}, "reason": "different work"})
 edit(kind="paper", id="pa174214", args={"clear_abstract": True, "reason": "junk abstract"})
@@ -186,6 +201,15 @@ edit(kind="paper", id="pa174214", args={"clear_abstract": True, "reason": "junk 
 `reason` required, `dry_run` previews, one DELETE+INSERT transaction.
 `drop_body` deletes body chunks + embeddings, clears `pdf_sha256` and
 content ids, keeps metadata — a live stub, refetchable via `pdf_url`.
+Add `'keep_pdf': True` when the ref's own PDF is the right file and only
+the body is wrong (e.g. it arrived by a dedup merge): the pointer and its
+`pdf_sha256` identifier stay, so the stub is a bodiless-heal candidate —
+the `paper_reconcile` pass or `precis bodiless-heal --apply` re-extracts
+the stored file, no refetch needed. When the ref is attached to several
+PDFs (several `pdf_sha256` identifier rows), `'pdf_sha256': '<sha>'` names
+the one to keep — required then; naming an attached sha that is not the
+pointer re-points `refs.pdf_sha256` at it. It refuses when the named sha
+isn't attached or several are attached and none is named.
 `move_body_to` gives body, pdf and content ids to a live ref holding
 zero body chunks and no pdf (refuses otherwise: `drop_body`/
 `merge_into`/`bodiless-heal`); the donor ends a live stub.

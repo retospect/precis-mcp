@@ -686,6 +686,84 @@ class IdentifiersMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def drop_ref_identifier(
+        self,
+        ref_id: int,
+        scheme: str,
+        value: str,
+        *,
+        conn: Connection | None = None,
+    ) -> str | None:
+        """Delete this ref's own ``(scheme, value)`` identifier row.
+
+        The surgical sibling of :meth:`clear_ref_identifier`: that door
+        removes *every* row of a scheme and stamps the human-cleared
+        marker (gr515246); this one removes exactly one value — the
+        repair for a ref carrying a wrong id next to correct ones
+        (gr513878: a merge left the donor's pubmed/openalex/s2 rows on
+        the survivor). No ``cleared_identifiers`` marker is stamped: the
+        scheme stays open so a sweep can still derive the *correct*
+        value later; ``clear_ref_identifier`` (``edit``'s ``doi=''``)
+        remains the "never re-derive this scheme" door.
+
+        Returns the stored value removed, or ``None`` when the ref
+        holds no such row (the caller's refuse path — never an
+        exception: a missing row names no fix). Scoped to this ref's
+        rows like ``clear_ref_identifier`` — it can never touch another
+        ref's claim on the value. The row match is
+        ``lower(id_value) = <normalised value>`` so a legacy
+        non-canonical (mixed-case) row is still removable.
+
+        When the dropped value is the paper's displayed ``meta.<scheme>``
+        copy (doi/arxiv on ``kind='paper'``, same ghost rule
+        ``_stamp_cleared`` applies), the meta key drops with the row —
+        never re-pointed at a surviving row of the scheme, which on the
+        merge-donor refs this door exists for could display a *different*
+        wrong value (Reto ruling, gr513878).
+        """
+        s = (scheme or "").strip().lower()
+        v = _normalise_identifier(s, value)
+        if not s or not v:
+            return None
+
+        def _do(c: Connection) -> str | None:
+            # Lock the refs row first — the same order
+            # clear_ref_identifier takes (refs, then ref_identifiers),
+            # so a drop can't deadlock against a writer holding refs.
+            _cleared_schemes(c, ref_id)
+            deleted = [
+                str(r[0])
+                for r in c.execute(
+                    "DELETE FROM ref_identifiers "
+                    "WHERE ref_id = %s AND id_kind = %s "
+                    "AND lower(id_value) = %s RETURNING id_value",
+                    (ref_id, s, v),
+                ).fetchall()
+            ]
+            if not deleted:
+                return None
+            if s in ("doi", "arxiv"):
+                ghost = c.execute(
+                    "SELECT meta->>%s::text FROM refs WHERE ref_id = %s "
+                    "AND kind = 'paper'",
+                    (s, ref_id),
+                ).fetchone()
+                if (
+                    ghost is not None
+                    and ghost[0] is not None
+                    and _normalise_identifier(s, str(ghost[0])) == v
+                ):
+                    c.execute(
+                        "UPDATE refs SET meta = meta - %s::text WHERE ref_id = %s",
+                        (s, ref_id),
+                    )
+            return deleted[0]
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def suggest_cite_key(
         self,
         authors: Any,
