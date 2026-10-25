@@ -182,12 +182,17 @@ session (full-context wake-ups are the expensive part of today's flow).
   `type(scope): subject (gr<id>)` or a `fixes gr<id>` body line). The
   deployed ref is `origin/prod` or the `PRECIS_TRIAGE_DEPLOYED_REF`
   pin — nothing else is deploy proof: a prod worker runs an installed
-  wheel with no `.git`, so its deployed proof is a FOLLOW-UP
-  `deployed_history.txt` generated at build time from the build's own
-  sha (round-2 review R2-1 — a committed snapshot can't describe the
-  build it ships in; until the follow-up lands a clone-less worker
-  has no deployed proof and `fixed` never closes `done` there). A
-  clone with `origin/prod` wins whenever present. The evidence is
+  wheel with no `.git`, so its deployed proof is
+  `deployed_history.txt`, generated at DEPLOY time
+  (`deploy/redeploy-precis.yml`, gr517975) on the controller from the
+  pinned sha's own `git log --since=30.days` and copied into the
+  worker venv's `share/precis/` (round-2 review R2-1 — a committed
+  snapshot can't describe the build it ships in). The reader trusts
+  the file only while its `# sha` header equals the installed
+  `direct_url.json` commit — a stale or foreign-build file is no
+  evidence. Rows are `sha<TAB>subject` plus each closing-form body
+  line, so a squash commit that kept its cite in the body still
+  counts. A clone with `origin/prod` wins whenever present. The evidence is
   quoted in the
   gripe's prompt block, and the verdict vocabulary gains `fixed`,
   `noise` and `working-as-designed`:

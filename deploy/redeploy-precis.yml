@@ -18,7 +18,7 @@
 #     /opt/mcps/venv            ← 38-precis-web       (web, worker-agent, watch-poll, cron-tick)
 #     /opt/precis/embedder-venv ← 19a-precis-embedder (embedder)
 #
-# This playbook does eight things:
+# This playbook does nine things:
 #   0. Pin the target: resolve the deploy ref (default `main`) to ONE commit
 #      sha *once* at play start and freeze every install/compare against it.
 #      Without this the install, the pre-flight, and the convergence assert
@@ -61,6 +61,11 @@
 #      (direct_url.json) must equal the PINNED sha, or the redeploy fails
 #      loudly. This is the proof the deploy actually landed everywhere — the
 #      uv checkout cache's .git/HEAD lags and cannot be trusted for it.
+#   4b. Writes deployed_history.txt (the pinned sha's own recent git log,
+#      generated on the controller) into each worker venv's share/precis/ —
+#      the clone-less prod worker's deployed proof for the gripe-triage
+#      `fixed` close (gr517975). After step 4, so the file's `# sha` header
+#      matches the asserted install by construction.
 #   5. Prints PRECIS_DEPLOY_COMPLETE from the gateway in the last play, so
 #      scripts/deploy can tell "every play ran" from "ansible stopped early
 #      with a clean-looking PLAY RECAP" (r36).
@@ -1549,6 +1554,153 @@
           {{ inventory_hostname }}: precis-web booted on
           {{ precis_target_sha[:10] }} ✓
         quiet: true
+
+# ── 4b. Deployed-history file for the triage fixed-close (gr517975) ──
+# gripe_triage's `fixed` verdict needs deployed proof before it may close a
+# gripe done. A prod worker runs an installed wheel — /opt/precis/venv, no
+# .git — so the deploy writes the evidence INTO the venv:
+# <sys.prefix>/share/precis/deployed_history.txt is the reader's default
+# path (workers/gripe_triage.py::_deployed_history_path).
+#
+# The file carries `# sha <pinned>` as its first line — the staleness
+# anchor — then one "sha<TAB>subject" row per commit plus a row for each
+# body line in closing form ("fixes|closes|resolves gr<id>"), from
+# `git log --since=30.days <pinned>` on the CONTROLLER checkout (the same
+# {{ playbook_dir }}/.. idiom as 03-precis-constraints.yml and the
+# ancestry classifier above). Because it is generated from the PINNED
+# sha's own history, its content is by construction the ancestry of the
+# installed build (round-2 review R2-1 — a committed snapshot could never
+# describe the build it ships in). The reader re-checks the `# sha` header
+# against the venv's own direct_url.json commit_id, so a stale,
+# foreign-build or hand-placed file reads as NO evidence — never as wrong
+# evidence. Serving/compute's heartbeat-only workers deliberately get no
+# file: no evidence there either (a triage tick they never run couldn't
+# fixed-close even if it ran).
+#
+# The dir and file are root-owned 0644/0755 (group wheel on darwin, root
+# on linux): the worker — and every LLM process it spawns — runs as
+# deploy, so deploy-owned evidence would let a worker forge cite rows and
+# self-close gripes (review finding + COORDINATOR ruling 2026-10-25).
+#
+# Generation is best-effort and NEVER aborts the deploy: a sha the
+# controller checkout can't produce prints SKIP and the dir/copy skip —
+# the previous deploy's file stays on disk, and its '# sha' no longer
+# matches the new install, so it reads as no evidence. The scratch gets
+# its header only after `git log` succeeds, so a half-generated file never
+# carries a valid `# sha`.
+#
+# Placement: after the convergence assert — every venv install/rebuild is
+# done and installed == pinned, so the `# sha` we write matches the
+# installed commit by construction (and a venv wipe-rebuild earlier in the
+# run can't delete the file). Ungated on precis_deploy_changed: a same-sha
+# redeploy still heals a missing file.
+- name: "Land deployed_history.txt for the triage fixed-close (gr517975)"
+  hosts:
+    - gateway
+    - scheduler
+    - inference
+  become: false
+  vars:
+    # <venv>/share/precis = sys.prefix/share/precis inside the worker venv.
+    _deployed_history_dir: /opt/precis/venv/share/precis
+  tasks:
+    - name: Allocate a controller-local scratch file for the history
+      ansible.builtin.tempfile:
+        state: file
+        suffix: deployed_history.txt
+      delegate_to: localhost
+      run_once: true
+      check_mode: false
+      register: precis_deployed_history_tmp
+
+    - block:
+        - name: Generate the history from the pinned sha's own git log (controller)
+          ansible.builtin.shell: |
+            set -uo pipefail
+            repo="{{ playbook_dir }}/.."
+            sha="{{ precis_target_sha }}"
+            out="{{ precis_deployed_history_tmp.path }}"
+            # Best-effort: nothing in this task may abort the deploy —
+            # every failure path prints SKIP and exits 0, and the
+            # dir/copy below gate on that marker.
+            git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null \
+              || git -C "$repo" fetch -q origin || true
+            if ! git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              echo "SKIP: pinned sha $sha is not in the controller checkout"
+              exit 0
+            fi
+            if ! rows=$(git -C "$repo" log --since=30.days \
+                "--format=%x1e%H%x09%s%x1f%b" "$sha" | awk '
+              BEGIN { RS = "\036" }
+              {
+                rec = $0
+                sub(/^\n+/, "", rec)
+                if (rec == "") next
+                us = index(rec, "\037")
+                head = us ? substr(rec, 1, us - 1) : rec
+                body = us ? substr(rec, us + 1) : ""
+                tab = index(head, "\t")
+                sha = substr(head, 1, tab - 1)
+                printf "%s\t%s\n", sha, substr(head, tab + 1)
+                n = split(body, lines, "\n")
+                for (i = 1; i <= n; i++) {
+                  low = tolower(lines[i])
+                  if (low ~ /^[[:space:]]*(fix(es|ed)?|close[sd]?|resolve[sd]?)[: ]+gr[0-9]+/)
+                    printf "%s\t%s\n", sha, lines[i]
+                }
+              }'); then
+              echo "SKIP: git log failed for $sha"
+              exit 0
+            fi
+            # The '# sha' header lands only after the rows exist — a
+            # failed run never leaves a valid header over absent content,
+            # and a SKIP never rewrites the on-disk file's header.
+            printf '# sha %s\n%s\n' "$sha" "$rows" > "$out" \
+              || { echo "SKIP: scratch write failed"; exit 0; }
+          args:
+            executable: /bin/bash
+          delegate_to: localhost
+          run_once: true
+          check_mode: false
+          changed_when: false
+          register: precis_deployed_history_gen
+
+        - name: Warn when the generator skipped (the old file stays, inert)
+          ansible.builtin.debug:
+            msg: >-
+              deployed_history generation SKIPPED on the controller
+              ({{ precis_deployed_history_gen.stdout_lines | join(' ') }}) —
+              the previous deploy's file stays on disk; its '# sha' won't
+              match the new install, so it reads as no evidence.
+          when: "'SKIP' in precis_deployed_history_gen.stdout"
+
+        - name: Ensure the share dir exists inside the worker venv
+          ansible.builtin.file:
+            path: "{{ _deployed_history_dir }}"
+            state: directory
+            owner: root
+            group: "{{ (os_family == 'darwin') | ternary('wheel', 'root') }}"
+            mode: "0755"
+          become: true
+          when: "'SKIP' not in precis_deployed_history_gen.stdout"
+
+        - name: Land deployed_history.txt (atomic, idempotent)
+          ansible.builtin.copy:
+            src: "{{ precis_deployed_history_tmp.path }}"
+            dest: "{{ _deployed_history_dir }}/deployed_history.txt"
+            owner: root
+            group: "{{ (os_family == 'darwin') | ternary('wheel', 'root') }}"
+            mode: "0644"
+          become: true
+          when: "'SKIP' not in precis_deployed_history_gen.stdout"
+      always:
+        - name: Clean up the controller-local scratch file
+          ansible.builtin.file:
+            path: "{{ precis_deployed_history_tmp.path }}"
+            state: absent
+          delegate_to: localhost
+          run_once: true
+          check_mode: false
 
 # ── 5. Completion marker — the gateway reached the last play ──
 # ansible's PLAY RECAP alone cannot say whether the run finished: when one

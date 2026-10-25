@@ -467,8 +467,10 @@ beats `*`, so a `prio 0` host skips even under a fleet-wide light). It leases up
 writes `fix:<type>`, `cluster:<slug>`, `size:S|M|L`, a computed PRIO
 and `STATUS:triaged`. It can also CLOSE: a `fixed` verdict backed by a
 commit citing the gripe writes `STATUS:done` when the commit is
-provably deployed (ancestor of `origin/prod`; a build-time
-`deployed_history.txt` for clone-less workers is a follow-up —
+provably deployed (ancestor of `origin/prod`, or listed in the
+deploy-time `deployed_history.txt` the redeploy lands in the worker
+venv's `share/precis/` — trusted only while its `# sha` header
+matches the installed commit;
 cite fixes as `type(scope): subject (gr<id>)` or a `fixes gr<id>`
 body line; a `Refs gr<id>` mention does not count, and a `docs(`
 subject never counts) and `STATUS:verify` when it is

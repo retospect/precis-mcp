@@ -13,14 +13,17 @@ idempotent reruns, and the Reto-batch digest behind ``notify``.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import re
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
@@ -1599,23 +1602,256 @@ class TestFixEvidence:
         idx = gripe_triage.collect_fix_evidence(repo, [108])
         assert idx.by_gripe == {}
 
+    def _write_history(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        body: str,
+        sha: str = "deadbee" + "0" * 33,
+    ) -> Path:
+        """A deploy-time history file whose ``# sha`` header matches the
+        monkeypatched installed commit — the shape the staleness anchor
+        requires (gr517975)."""
+        hist = tmp_path / "deployed_history.txt"
+        hist.write_text(f"# sha {sha}\n{body}", encoding="utf-8")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", str(hist))
+        monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: sha)
+        return hist
+
     def test_history_file_counts_as_deployed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Clone-less prod worker: the release-time deployed-history
+        """Clone-less prod worker: the deploy-time deployed-history
         file is the deploy proof — a citing sha in it IS deployed."""
-        hist = tmp_path / "deployed_history.txt"
-        hist.write_text(
-            "# deployed history — generated test\n"
+        self._write_history(
+            tmp_path,
+            monkeypatch,
             "deadbee1234567890abcdef0123456789abcdef\t"
             "fix(thing): repair the widget (gr107)\n",
-            encoding="utf-8",
         )
-        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", str(hist))
         idx = gripe_triage.collect_fix_evidence(None, [107])
         assert idx.deployed_ref == "deployed_history.txt"
         (ev,) = idx.by_gripe[107]
         assert ev.deployed is True
+
+    def test_history_body_closing_line_counts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A squash commit whose id cite lives in a closing-form body
+        line: the file stores it as a second ``sha<TAB>line`` row, and
+        the strict body rule picks it up exactly like a clone's."""
+        sha = "deadbee" + "0" * 33
+        self._write_history(
+            tmp_path,
+            monkeypatch,
+            f"{sha}\tfix(thing): repair the widget\n"
+            f"{sha}\tCo-Authored-By: nobody\n"
+            f"{sha}\tcloses gr109\n",
+        )
+        idx = gripe_triage.collect_fix_evidence(None, [109])
+        (ev,) = idx.by_gripe[109]
+        assert ev.deployed is True and ev.matched == "closes gr109"
+
+    def test_history_stale_header_is_no_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file written for another build (``# sha`` ≠ the installed
+        ``direct_url.json`` commit) proves nothing — the whole file
+        reads as no evidence, never as wrong evidence. This is also the
+        SKIP invariant: a deploy whose generator skipped leaves the
+        previous build's file in place, and the header check retires it."""
+        sha = "deadbee" + "0" * 33
+        self._write_history(
+            tmp_path, monkeypatch, f"{sha}\tfix(thing): repair (gr110)\n"
+        )
+        monkeypatch.setattr(
+            gripe_triage, "_installed_commit", lambda: "cafe99" + "9" * 34
+        )
+        assert gripe_triage._deployed_history() == {}
+        assert gripe_triage.collect_fix_evidence(None, [110]).by_gripe == {}
+
+    def test_history_short_header_is_no_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hand-placed abbreviated ``# sha`` header never counts —
+        only a full 40-char sha compared ``==`` to the installed
+        commit does (no prefix matching on the staleness anchor)."""
+        sha = "deadbee" + "0" * 33
+        hist = tmp_path / "deployed_history.txt"
+        hist.write_text(
+            f"# sha {sha[:7]}\n{sha}\tfix(thing): repair (gr113)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", str(hist))
+        monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: sha)
+        assert gripe_triage._deployed_history() == {}
+
+    def test_history_default_path_inside_sys_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no env override the reader looks at
+        ``<sys.prefix>/share/precis/deployed_history.txt`` — the venv
+        location the deploy writes (``/opt/precis/venv`` on prod)."""
+        sha = "deadbee" + "0" * 33
+        share = tmp_path / "share" / "precis"
+        share.mkdir(parents=True)
+        (share / "deployed_history.txt").write_text(
+            f"# sha {sha}\n{sha}\tfix(thing): repair (gr112)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", raising=False)
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+        monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: sha)
+        idx = gripe_triage.collect_fix_evidence(None, [112])
+        assert idx.by_gripe[112][0].deployed is True
+
+    def test_installed_commit_reads_direct_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_installed_commit`` is the only producer of the staleness
+        anchor — pin the ``direct_url.json`` parsing: valid vcs_info →
+        the commit; editable (``dir_info`` only), malformed JSON,
+        missing ``commit_id``, absent file and a missing dist all give
+        ``None`` (→ the history reads as absent)."""
+        sha = "deadbee" + "0" * 33
+
+        class _Dist:
+            def __init__(self, payload: str | None) -> None:
+                self.payload = payload
+
+            def read_text(self, _name: str) -> str | None:
+                return self.payload
+
+        def _dist(payload: str | None) -> Any:
+            return lambda _name: _Dist(payload)
+
+        monkeypatch.setattr(
+            importlib.metadata,
+            "distribution",
+            _dist(json.dumps({"vcs_info": {"commit_id": sha}})),
+        )
+        assert gripe_triage._installed_commit() == sha
+        for payload in (
+            '{"dir_info": {"editable": true}}',  # editable install: no vcs_info
+            "not json {",
+            '{"vcs_info": {}}',
+            None,  # no direct_url.json at all
+        ):
+            monkeypatch.setattr(importlib.metadata, "distribution", _dist(payload))
+            assert gripe_triage._installed_commit() is None, payload
+
+        def _missing(_name: str) -> Any:
+            raise importlib.metadata.PackageNotFoundError("precis-mcp")
+
+        monkeypatch.setattr(importlib.metadata, "distribution", _missing)
+        assert gripe_triage._installed_commit() is None
+
+    def test_play_generator_rows_parse_as_deployed(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The awk generator inside redeploy-precis.yml's history play
+        emits exactly the format ``_deployed_history`` reads — run the
+        extracted shell block against a fixture repo so the deploy-side
+        wire format can't drift from the reader."""
+        play = next(
+            p
+            for p in yaml.safe_load(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "deploy"
+                    / "redeploy-precis.yml"
+                ).read_text(encoding="utf-8")
+            )
+            if "deployed_history" in str(p.get("name", ""))
+        )
+        cmd = next(
+            t["ansible.builtin.shell"]
+            for t in play["tasks"][1]["block"]
+            if "ansible.builtin.shell" in t
+        )
+        _commit(repo, "fix(thing): repair the widget (gr120)")
+        _commit(repo, "feat(thing): squash-merged fix", body="Fixes gr121")
+        head = _g(repo, "rev-parse", "HEAD")
+        out = tmp_path / "deployed_history.txt"
+        script = (
+            cmd.replace("{{ playbook_dir }}/..", str(repo))
+            .replace("{{ precis_target_sha }}", head)
+            .replace("{{ precis_deployed_history_tmp.path }}", str(out))
+        )
+        cp = subprocess.run(
+            script,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert cp.returncode == 0 and "SKIP" not in cp.stdout, cp.stderr
+        assert out.read_text(encoding="utf-8").startswith(f"# sha {head}\n")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", str(out))
+        monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: head)
+        idx = gripe_triage.collect_fix_evidence(None, [120, 121])
+        assert idx.by_gripe[120][0].deployed is True
+        ev = idx.by_gripe[121][0]
+        assert ev.deployed is True and ev.matched == "Fixes gr121"
+
+    def test_play_generator_skip_never_rewrites_the_file(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """A SKIP run (the pinned sha missing on the controller) leaves
+        the scratch — and hence the on-disk file — byte-identical; the
+        stale ``# sha`` header keeps it inert."""
+        play = next(
+            p
+            for p in yaml.safe_load(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "deploy"
+                    / "redeploy-precis.yml"
+                ).read_text(encoding="utf-8")
+            )
+            if "deployed_history" in str(p.get("name", ""))
+        )
+        cmd = next(
+            t["ansible.builtin.shell"]
+            for t in play["tasks"][1]["block"]
+            if "ansible.builtin.shell" in t
+        )
+        out = tmp_path / "deployed_history.txt"
+        script = (
+            cmd.replace("{{ playbook_dir }}/..", str(repo))
+            .replace("{{ precis_target_sha }}", "f" * 40)
+            .replace("{{ precis_deployed_history_tmp.path }}", str(out))
+        )
+        cp = subprocess.run(
+            script,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        # Never aborts the deploy — a SKIP is exit 0 with the marker.
+        assert cp.returncode == 0 and "SKIP" in cp.stdout
+        assert not out.exists() or out.read_text(encoding="utf-8") == ""
+
+    def test_history_without_header_or_install_is_no_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No ``# sha`` anchor — or no readable installed commit at all
+        (a dev install) — is the same safe no-evidence."""
+        sha = "deadbee" + "0" * 33
+        hist = tmp_path / "deployed_history.txt"
+        hist.write_text(f"{sha}\tfix(thing): repair (gr111)\n", encoding="utf-8")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", str(hist))
+        monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: sha)
+        assert gripe_triage.collect_fix_evidence(None, [111]).by_gripe == {}
+        # Header present but nothing installed-readable: still nothing.
+        self._write_history(
+            tmp_path, monkeypatch, f"{sha}\tfix(thing): repair (gr111)\n"
+        )
+        monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: None)
+        assert gripe_triage.collect_fix_evidence(None, [111]).by_gripe == {}
 
     def test_longer_id_does_not_match_prefix(self, repo: Path) -> None:
         _commit(repo, "fix(thing): work (gr1044)")

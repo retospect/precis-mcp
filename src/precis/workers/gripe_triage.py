@@ -90,11 +90,13 @@ global cap posts a once-per-hour ``blocked`` board line.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import secrets
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -329,8 +331,10 @@ _POINTER_RE = re.compile(r"\b(gr|td|qu)(\d+)\b")
 #
 # Before the model call the tick looks for commits citing ``gr<id>`` in
 # the clone's git history — or, on a clone-less prod worker, in the
-# release-time deployed-history file (a follow-up slice, absent today:
-# clone-less workers have no deployed proof and ``fixed`` can't close).
+# deploy-time deployed-history file (``<venv>/share/precis/
+# deployed_history.txt``, written by ``deploy/redeploy-precis.yml`` for
+# the pinned sha and trusted only while its ``# sha`` header matches
+# the installed build's ``direct_url.json`` commit).
 # The cite is strict: the id sits in the commit SUBJECT, or on a body line in
 # closing form (``fixes gr<id>``) — a bare "Refs gr<id>" is a mention,
 # not evidence. A citing commit provably deployed closes ``done``; one
@@ -354,16 +358,17 @@ _EVIDENCE_MAX = 4
 _EVIDENCE_CANDIDATES = 32
 _GIT_TIMEOUT = 15
 
-#: Release-time deployed evidence — a FOLLOW-UP slice (round-2 review
-#: R2-1: the committed snapshot could never describe the build it
-#: shipped in, so the file generates at build time from the build's
-#: own sha, not from a checkout's origin/main). Until it lands a
-#: clone-less prod worker — an installed wheel under
-#: ``/opt/precis/venv``, no ``.git`` — has no deployed proof at all:
-#: ``fixed`` can never close ``done`` there, which is the safe
-#: direction. When the file is present a citing commit in it IS
-#: deployed. ``PRECIS_TRIAGE_DEPLOYED_HISTORY`` points at a different
-#: file (tests).
+#: Deploy-time deployed evidence (gr517975; round-2 review R2-1 — a
+#: committed snapshot can never describe the build it ships in, so
+#: ``deploy/redeploy-precis.yml`` generates the file on the controller
+#: from the PINNED sha's own ``git log`` and lands it in the worker
+#: venv's ``share/precis/``). The reader trusts it only while its
+#: ``# sha <full40>`` header equals the installed dist's
+#: ``direct_url.json`` commit — a file written for another build, a
+#: stale copy a venv rebuild left behind, or a hand-placed file all
+#: read as NO evidence, never as wrong evidence. A citing commit in a
+#: matching file IS deployed. ``PRECIS_TRIAGE_DEPLOYED_HISTORY`` points
+#: at a different file (tests) and takes the same staleness check.
 _DEPLOYED_HISTORY_ENV = "PRECIS_TRIAGE_DEPLOYED_HISTORY"
 _DEPLOYED_HISTORY_NAME = "deployed_history.txt"
 _DEPLOYED_HISTORY_LABEL = "deployed_history.txt"
@@ -462,31 +467,76 @@ def _same_sha(a: str, b: str) -> bool:
     return bool(a and b) and (a.startswith(b) or b.startswith(a))
 
 
-def _deployed_history() -> dict[str, str]:
-    """``{sha: subject}`` from the release-time deployed-history file —
-    ``{}`` when it is absent or unreadable (dev checkouts, pre-release
-    installs). ``#`` header lines are skipped."""
+def _deployed_history_path() -> Path:
+    """``<sys.prefix>/share/precis/deployed_history.txt`` — inside the
+    venv that runs the worker (``/opt/precis/venv`` on prod), which is
+    where the deploy lands it."""
+    return Path(sys.prefix) / "share" / "precis" / _DEPLOYED_HISTORY_NAME
+
+
+def _installed_commit() -> str | None:
+    """The commit this build was installed from — the ``precis-mcp``
+    dist's ``direct_url.json`` ``vcs_info.commit_id`` (what the
+    redeploy convergence assert compares). ``None`` when it can't be
+    read — a dev install with no dist metadata, a missing or corrupt
+    file — in which case the caller treats the history file as absent:
+    no installed-sha proof, no deployed evidence."""
+    try:
+        from importlib.metadata import distribution
+
+        raw = distribution("precis-mcp").read_text("direct_url.json")
+        if not raw:
+            return None
+        commit = json.loads(raw).get("vcs_info", {}).get("commit_id")
+    except (ModuleNotFoundError, OSError, ValueError, AttributeError):
+        return None
+    return str(commit).strip() if commit else None
+
+
+def _deployed_history() -> dict[str, tuple[str, str]]:
+    """``{sha: (subject, closing-form body lines)}`` from the
+    deploy-time deployed-history file — ``{}`` unless the file exists
+    AND its ``# sha <full40>`` header equals :func:`_installed_commit`
+    exactly (the generator writes full shas; a short or abbreviated
+    header can't prefix-match a real build, so ``==``, not
+    ``_same_sha``). The header is the staleness anchor: the deploy
+    writes the file for the sha it installs, so a file that names a
+    different commit can't describe this build and proves nothing
+    (env-override path too — uniform). First stored line per sha is
+    the subject; the rest are body candidates (a squash commit can
+    carry its cite in the body). Lines keep their full text — the
+    strict cite rule runs on the complete subject, and only the
+    displayed cite is truncated."""
+    installed = _installed_commit()
+    if not installed:
+        return {}
     path = os.environ.get(_DEPLOYED_HISTORY_ENV)
     try:
-        if path:
-            text = Path(path).read_text(encoding="utf-8")
-        else:
-            from importlib.resources import files
-
-            text = (files("precis.data") / _DEPLOYED_HISTORY_NAME).read_text(
-                encoding="utf-8"
-            )
-    except (OSError, FileNotFoundError, ModuleNotFoundError):
+        target = Path(path) if path else _deployed_history_path()
+        content = target.read_text(encoding="utf-8")
+    except OSError:
         return {}
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
+    header = ""
+    grouped: dict[str, list[str]] = {}
+    for line in content.splitlines():
+        if not line.strip():
             continue
-        sha, _, subject = line.partition("\t")
+        if line.lstrip().startswith("#"):
+            m = re.match(r"#\s*sha\s+([0-9a-f]{40})\b", line.strip(), re.IGNORECASE)
+            if m and not header:
+                header = m.group(1)
+            continue
+        sha, _, part = line.partition("\t")
         sha = sha.strip()
         if sha:
-            out[sha] = _one_line(subject)[:120]
-    return out
+            grouped.setdefault(sha, []).append(_one_line(part))
+    if header != installed:
+        return {}
+    return {
+        sha: (parts[0], "\n".join(parts[1:]))
+        for sha, parts in grouped.items()
+        if parts[0]
+    }
 
 
 def _log_cites(repo: Path, refs: list[str], gid: int) -> list[tuple[str, str, str]]:
@@ -528,11 +578,12 @@ def collect_fix_evidence(repo: Path | None, ids: Any) -> EvidenceIndex:
     Sources, in precedence order (Opus review): a clone with
     ``origin/prod`` (or the env pin) is the deployed proof —
     ``merge-base --is-ancestor``; without it, the deployed-history
-    file is (a listed cite IS deployed — a follow-up slice, absent
-    until a build-time generator ships); without either, evidence
-    from a resolvable main ref can reach ``verify`` only, and with
-    nothing at all the index is empty — ``fixed`` can never close
-    ``done`` on a checkout that can't prove the deploy."""
+    file is (a listed cite IS deployed — the file only survives the
+    ``# sha`` staleness check when it was written for this build);
+    without either, evidence from a resolvable main ref can reach
+    ``verify`` only, and with nothing at all the index is empty —
+    ``fixed`` can never close ``done`` on a checkout that can't prove
+    the deploy."""
     root = Path(repo) if repo is not None and Path(repo).is_dir() else None
     deployed = (
         _resolve_ref(root, _DEPLOYED_REF_ENV, _DEPLOYED_REF_CANDIDATES)
@@ -544,7 +595,7 @@ def collect_fix_evidence(repo: Path | None, ids: Any) -> EvidenceIndex:
         if root is not None
         else None
     )
-    history: dict[str, str] = {} if deployed else _deployed_history()
+    history: dict[str, tuple[str, str]] = {} if deployed else _deployed_history()
     if not (deployed or main or history):
         return EvidenceIndex(by_gripe={}, deployed_ref=None, main_ref=None)
     refs = [r for r in dict.fromkeys((deployed, main)) if r]
@@ -555,13 +606,15 @@ def collect_fix_evidence(repo: Path | None, ids: Any) -> EvidenceIndex:
         if root is not None and refs:
             merged.extend(_log_cites(root, refs, int(gid)))
         if history:
-            # The file stores subjects only — the strict subject rule
-            # applies as-is; a body closing-form can't exist there.
-            merged.extend(
-                (sha, subject, subject)
-                for sha, subject in history.items()
-                if _cite_line(gid, subject, "") is not None
-            )
+            # The file stores the subject plus its closing-form body
+            # lines per sha — the same strict subject/closing-form rule
+            # as a clone's cite applies to both. The cite check runs on
+            # the full line; the stored subject is display-truncated,
+            # matching _log_cites.
+            for sha, (subject, body) in history.items():
+                matched = _cite_line(gid, subject, body)
+                if matched is not None:
+                    merged.append((sha, subject[:120], matched))
         ev: list[FixEvidence] = []
         for sha, subject, matched in merged:
             in_history = any(_same_sha(sha, h) for h in history)
