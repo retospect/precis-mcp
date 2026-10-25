@@ -120,12 +120,13 @@ def _claim_batch(store: Store, limit: int) -> list[int]:
                       WHERE rt.ref_id = r.ref_id
                         AND t.namespace = 'STATUS'
                         AND t.value IN ('done', 'wontfix'))
-               AND NOT EXISTS (
+               AND (r.created_at <= now() - interval '1 hour'
+                    OR NOT EXISTS (
                      SELECT 1 FROM ref_tags rt
                        JOIN tags t ON t.tag_id = rt.tag_id
                       WHERE rt.ref_id = r.ref_id
                         AND t.value = %s
-                        AND t.namespace IN ('OPEN', 'FLAG'))
+                        AND t.namespace IN ('OPEN', 'FLAG')))
                AND EXISTS (
                      -- The e.is_default join keeps eligibility in
                      -- lockstep with _gripe_vector: a gripe embedded

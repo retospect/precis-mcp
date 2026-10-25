@@ -444,12 +444,15 @@ when the condition clears (call_errors: no matching error for three
 daily passes) with a `resolved: auto-closed: …` comment and
 `STATUS:done`.
 
-A daily `gripe_triage` pass, off unless a `gripe_triage` service_config
-row lights it, comments once per three days on open gripes older than
-three days that lack a PRIO or a `thread:<slug>` tag. The `triage:`
-comment suggests the missing PRIO (7 for `origin:*`, else 5) and owning
-thread with the reason and the `tag(...)` call that applies it; it never
-closes or retags.
+A `gripe_triage` tick fires every 15 minutes, off unless a
+`gripe_triage` service_config row lights it. It leases up to 40 oldest
+`STATUS:open` gripes (`reopened` first) once the parents pass has run
+(or the row is an hour old), makes one Sonnet-class batch call, and
+writes `fix:<type>`, `cluster:<slug>`, `size:S|M|L`, a computed PRIO
+and `STATUS:triaged`. Duplicates are suggestion-only (`dup-suggest:`
+comment + `meta.dup_suggested`), "not a bug" stays open as
+`disagreement`, and `fix:reto` gripes land in a review-queue digest.
+It never closes, links `supersedes`, or edits the gripe body.
 
 ## Link a gripe to a related paper or chunk
 

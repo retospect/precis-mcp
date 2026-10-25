@@ -249,11 +249,12 @@ def _run_call_errors(store: Store, batch_size: int) -> None:
 
 
 def _run_gripe_triage(store: Store, batch_size: int) -> None:
-    """One gripe triage pass (gripe system batch F slice 4): one
-    ``triage:`` comment suggesting PRIO and owning thread on stale open
-    gripes. Dark unless a ``gripe_triage`` service_config row lights it
-    (gated inside the pass). ``batch_size`` is unused — the pass's own
-    per-run comment cap is the throttle. spends=False: no LLM."""
+    """One gripe triage tick (pipeline v2 slice 3): claim up to 40 open
+    gripes, ONE Sonnet-class batch call, write fix:/cluster:/size:/PRIO
+    + STATUS:triaged. Dark unless a ``gripe_triage`` service_config row
+    lights it (gated inside the pass). ``batch_size`` is unused — the
+    pass's own batch cap is the throttle. spends=True: the tick bills
+    one model call."""
     del batch_size
     from precis.workers.gripe_triage import run_gripe_triage_pass
 
@@ -950,15 +951,16 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=24 * 3600 + 47 * 60,
         run=_run_call_errors,
     ),
-    # Gripe system batch F slice 4: one `triage:` comment (PRIO + owning
-    # thread suggestion) per stale open gripe, never a close. Host-
-    # agnostic, daily, off the exact day boundary (+53m). No `eligible`
+    # Gripe pipeline v2 slice 3: the LLM triage tick — 15 minutes, one
+    # Sonnet-class batch call per fire. Host-agnostic. No `eligible`
     # check: the pass is dark-gated on the gripe_triage service_config
-    # row, so an unset fleet just no-ops. spends=False: no LLM.
+    # row, so an unset fleet just no-ops. spends=True: the tick bills
+    # the model call, so the daily ceiling gates it.
     Cadence(
         name="gripe_triage",
-        interval_s=24 * 3600 + 53 * 60,
+        interval_s=15 * 60,
         run=_run_gripe_triage,
+        spends=True,
     ),
     # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
     # none' first lines, nodes another live memory supersedes, and nodes

@@ -1247,18 +1247,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gardener-help",
     ),
     ServiceSpec(
-        # Gripe system batch F slice 4 (precis.workers.gripe_triage): the
-        # daily `gripe_triage` scheduler cadence fires the pass; this row
-        # names the service so `precis service` can light it. NO
+        # Gripe pipeline v2 slice 3 (precis.workers.gripe_triage): the
+        # 15-minute `gripe_triage` scheduler cadence fires the pass; this
+        # row names the service so `precis service` can light it. NO
         # `default_profiles` and no rotation wiring (ref_pass=False): the
         # pass is dark until a service_config row (prio > 0) lights it.
+        # uses_model: one hosted Sonnet-class batch call per lit tick.
         name="gripe_triage",
         label="Gripe triage",
         category="health",
         kind=ServiceKind.PASS,
-        one_line="Daily triage comment on open gripes older than 3 days "
-        "with no PRIO or thread: tag — suggests both with a reason, never "
-        "closes; dark until service_config lights it.",
+        uses_model=True,
+        cost_sources=("gripe_triage",),
+        one_line="15-minute LLM tick over the oldest open gripes — one "
+        "batch call writes fix:/cluster:/size:/PRIO + STATUS:triaged, "
+        "suggests duplicates, never closes; dark until service_config "
+        "lights it.",
         doc_skill="precis-gripe-help",
     ),
     ServiceSpec(
