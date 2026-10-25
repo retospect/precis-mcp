@@ -329,6 +329,32 @@ with `…and N more — page=2` (`page=2` returns what was hidden; an
 explicit `page_size=` shows the untrimmed page, `mode='verbatim'` is
 never trimmed).
 
+## Why did some memory hits hide behind a cursor?
+## Weak memory matches fold off the page
+## The `── weak matches below ──` line
+
+`search(kind='memory', ...)` hides the hits prod measured as noise: a
+hit whose embedding distance clears the kind's cut (**0.42** for
+memory) *and* that no lexical leg corroborated folds off the rendered
+page. Shown hits print that distance (`(0.21)`) in place of the opaque
+rank. The page ends with exactly one line:
+
+```text
+── weak matches below (distance > 0.42): N more, more(cursor='…') ──
+```
+
+`more(cursor='…')` returns exactly the folded rows — nothing re-ranked.
+All-weak pages say `no strong match` ahead of the same line. A
+partial-term (OR) lexical match counts as corroboration, so a long
+query is never judged on distance alone. Only `memory` has a measured
+cut (gr514956, prod 2026-10-25); other kinds list all hits until
+measured.
+
+`search(kind='memory', view='index')` — the session-start recall shape —
+applies 0.42 as a *hard* cut instead: weak hits drop with no hint and
+no cursor, that rendering is read by recall code. `mode='semantic'`
+never folds.
+
 ## Filter search results by tag
 ## Find refs tagged with topic:X
 ## Combine search with a tag axis

@@ -1144,8 +1144,34 @@ class DispatchMixin(RuntimeShape):
                     if response.transient
                     else self._build_recipe_seed(verb, args, response)
                 )
+                rendered = self._render(response)
+                if response.fold_tail:
+                    # gr514956: the weak-match fold's ``more(cursor=…)``
+                    # placeholder resolves here — the one seam that
+                    # knows both the tail text and whether this process
+                    # can redeem a cursor. A short-lived runtime (or a
+                    # transient body, which may not be cached) unwraps
+                    # the hint to ``below`` and appends the folded rows
+                    # instead of minting a dead pointer, the same rule
+                    # ``split`` applies via ``cursor_capable=False``.
+                    from precis._pagination import FOLD_CURSOR_PLACEHOLDER
+
+                    token = f"more(cursor={FOLD_CURSOR_PLACEHOLDER})"
+                    if self.long_lived and not response.transient:
+                        cursor = self.pagination.stash(
+                            response.fold_tail, kind=args.get("kind"), fold=fold
+                        )
+                        rendered = rendered.replace(
+                            token, f"more(cursor='{cursor}')", 1
+                        )
+                    else:
+                        rendered = (
+                            rendered.replace(token, "below", 1)
+                            + "\n"
+                            + response.fold_tail.lstrip("\n")
+                        )
                 body, _cursor = self.pagination.split(
-                    self._render(response),
+                    rendered,
                     alt_hint=response.pagination_alt_hint,
                     cursor_capable=self.long_lived,
                     kind=args.get("kind"),

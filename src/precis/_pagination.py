@@ -519,6 +519,18 @@ def _ttl_seconds() -> float:
 #: is worth attempting to replay at all.
 _RECIPE_CURSOR_PREFIX = "rr1."
 
+#: Placeholder a handler renders inside a ``more(cursor=…)`` hint when
+#: the cursor can only be minted by the dispatcher — the rendered-search
+#: weak-match fold (gr514956). The handler carries the folded rows on
+#: ``Response.fold_tail`` and cannot know whether this runtime is
+#: cursor-capable, so it emits ``more(cursor=<this token>)`` and
+#: ``DispatchMixin.dispatch_with_status`` substitutes a real
+#: :meth:`PaginationCache.stash` cursor on a long-lived runtime, or
+#: rewrites the hint to ``below`` and appends the tail inline on a
+#: short-lived one — mirroring :meth:`split`'s ``cursor_capable=False``
+#: contract (never hand out a cursor no process can redeem, gr267466).
+FOLD_CURSOR_PLACEHOLDER = "__fold_tail__"
+
 
 def hash_body(body: str) -> str:
     """SHA-256 hex digest of ``body``, used as the drift-detection
@@ -948,6 +960,32 @@ class PaginationCache:
                 fold=True,
             )
         return head + marker + tail + footer, cursor
+
+    def stash(self, body: str, *, kind: str | None = None, fold: bool = True) -> str:
+        """Cache ``body`` whole under a fresh opaque cursor; return it.
+
+        The rendered-search weak-match fold (gr514956): the handler
+        hides its folded rows behind a ``more(cursor=…)`` token, and
+        the dispatcher mints the cursor here — the tail was never part
+        of the served body, so there is nothing to split off (unlike
+        :meth:`split`, where the cursor keys the overflow of one body).
+        Draining goes through :meth:`pop` like any other tail, so an
+        oversized stash still re-splits under the recorded policy
+        (``kind`` footer fallback, ``fold``). The cursor is always
+        opaque: fold tails come from ``search``, which is not the
+        deterministic-replay case recipe cursors exist for.
+        """
+        cursor = uuid.uuid4().hex
+        with self._lock:
+            self._prune_expired()
+            self._maybe_evict_oldest()
+            self._entries[cursor] = _CachedTail(
+                body=body,
+                expires_at=self._now() + _ttl_seconds(),
+                kind=_clamp_kind(kind),
+                fold=fold,
+            )
+        return cursor
 
     def pop(self, cursor: str) -> str | None:
         """Retrieve and remove the tail for ``cursor``.

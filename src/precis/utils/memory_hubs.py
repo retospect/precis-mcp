@@ -376,7 +376,7 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
         hub_ids = {x.id for x in hubs}
         ranked: list[int] = []
         if query:
-            hits, _total = handler._best_body_hits(
+            hits, _total, _fold_info = handler._best_body_hits(
                 query,
                 Tag.normalize_filter([space, _HUB_TAG], kind="memory"),
                 _HINT_HUBS + 1,

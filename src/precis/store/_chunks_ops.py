@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import time
 from contextlib import nullcontext
 from contextvars import ContextVar
@@ -606,6 +607,21 @@ def _scoped_or_retry(q: str, scope_ref_id: int | None) -> bool:
     query ORs to itself — nothing to retry.
     """
     return scope_ref_id is not None and len(q.split()) > 1
+
+
+def _or_corroborates(q: str) -> bool:
+    """Whether a partial-term (OR) match counts as lexical corroboration.
+
+    gr514956: a multi-word natural-language query whose terms land in
+    different chunks leaves the strict-AND ``lex`` leg empty, so judging
+    corroboration on AND alone makes every sem-only hit look
+    uncorroborated. Unlike ``lex_any`` (a candidate leg, scoped-only),
+    this is an evidence probe on already-returned rows — safe unscoped.
+    A one-word query ORs to itself: the ``lex`` leg already says it.
+    Terms split on non-word characters, matching what the tsquery sees
+    (``cloud-brightening`` is two terms, not one).
+    """
+    return len(re.findall(r"\w+", q)) > 1
 
 
 def header_card_text(title: str | None, hook: str | None) -> str:
@@ -1595,6 +1611,7 @@ class ChunkStore:
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
+        fold_info_out: dict[int, tuple[float | None, bool]] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
@@ -1617,6 +1634,17 @@ class ChunkStore:
         ``None`` (default) keeps the pre-gr513663 behaviour. A hit that
         also matched lexically is never floor-cut.
 
+        ``fold_info_out`` (gr514956) — when a dict is passed, it is
+        cleared and populated with ``{chunk_id: (sem_distance,
+        corroborated)}`` for every returned row: the hit's ``sem`` leg
+        distance (``None`` when the semantic leg never saw it — a
+        lex-only hit) and whether any lexical leg corroborated it
+        (strict-AND ``lex``, the scoped ``lex_any`` retry, or a
+        partial-term OR match for multi-word queries). The rendered
+        result fold reads this to hide — not drop — weak uncorroborated
+        rows; ``semantic_only_max_distance`` uses the same corroboration
+        definition for its hard cut.
+
         ``card_kinds`` opts the listed synthetic cards back into both
         legs (see :func:`_ord_card_clause`).
 
@@ -1627,7 +1655,7 @@ class ChunkStore:
         false "no blocks".
         """
         if query_vec is None:
-            return self.search_chunks_lexical(
+            rows = self.search_chunks_lexical(
                 q=q,
                 kind=kind,
                 scope_ref_id=scope_ref_id,
@@ -1644,6 +1672,14 @@ class ChunkStore:
                 card_kinds=card_kinds,
                 has_body=has_body,
             )
+            # A pure-lexical row is corroborated by definition and has no
+            # semantic distance — callers folding on ``fold_info_out``
+            # must not mistake the degraded leg for uncorroborated hits.
+            if fold_info_out is not None:
+                fold_info_out.clear()
+                for block, _ref, _s in rows:
+                    fold_info_out[block.id] = (None, True)
+            return rows
 
         with self.pool.connection() as conn:
             embedder = self._default_embedder_name(conn)
@@ -1758,23 +1794,49 @@ class ChunkStore:
                 "                       )\n                       "
             )
 
-        # gr513663: the semantic-only floor drops fused rows no lexical
-        # leg corroborated once their distance clears the stricter bar.
-        # ``lex_any`` counts as corroboration too — it is still a term
-        # match, just OR-ed instead of AND-ed (gr510534). A lex-only row
-        # has no ``sem`` entry at all; ``NULL < %s`` drops nothing since
-        # its EXISTS disjunct is already true.
-        sem_only_where = ""
-        if semantic_only_max_distance is not None:
-            lex_any_exists = (
+        # gr514956: corroboration also counts a partial-term (OR) match.
+        # A multi-word natural-language query whose terms land in
+        # different chunks leaves the strict-AND ``lex`` leg empty, so
+        # without this every sem-only hit reads as uncorroborated and the
+        # floor/fold degrades into a pure distance cut (the Opus review's
+        # "marine cloud brightening MCB cost benefit TEA" case). Probed on
+        # the outer row's own ``c.tsv`` — per output row, no extra
+        # candidate leg — so it can never change the fused ranking.
+        or_corrob = _or_corroborates(q)
+        or_exists = f"OR c.tsv @@ (SELECT {_SCOPED_OR_TSQUERY}) " if or_corrob else ""
+        corrob_expr = (
+            "EXISTS (SELECT 1 FROM lex l2 WHERE l2.cid = fused.cid) "
+            + (
                 "OR EXISTS (SELECT 1 FROM lex_any a2 WHERE a2.cid = fused.cid) "
                 if or_leg
                 else ""
             )
+            + or_exists
+        )
+
+        # gr513663: the semantic-only floor drops fused rows no lexical
+        # leg corroborated once their distance clears the stricter bar.
+        # ``lex_any`` counts as corroboration too — it is still a term
+        # match, just OR-ed instead of AND-ed (gr510534). A lex-only row
+        # has no ``sem`` entry at all; ``NULL <= %s`` drops nothing since
+        # its EXISTS disjunct is already true. The boundary is inclusive
+        # (``d <= t`` keeps) so a hit at exactly the threshold survives —
+        # the rendered fold hides ``d > t`` only, and the two must agree
+        # (gr514956 review).
+        sem_only_where = ""
+        if semantic_only_max_distance is not None:
             sem_only_where = (
-                "WHERE (EXISTS (SELECT 1 FROM lex l2 WHERE l2.cid = fused.cid) "
-                f"{lex_any_exists}"
-                "OR (SELECT s2.d FROM sem s2 WHERE s2.cid = fused.cid) < %s)"
+                f"WHERE ({corrob_expr}"
+                "OR (SELECT s2.d FROM sem s2 WHERE s2.cid = fused.cid) <= %s)"
+            )
+
+        # gr514956: the render fold needs each row's sem-leg distance and
+        # corroboration verdict to decide what hides behind the cursor.
+        fold_cols = ""
+        if fold_info_out is not None:
+            fold_cols = (
+                ", (SELECT s3.d FROM sem s3 WHERE s3.cid = fused.cid) AS sem_d"
+                f", ({corrob_expr}) AS corroborated"
             )
         sql = f"""
             WITH lex AS (
@@ -1811,7 +1873,7 @@ class ChunkStore:
                     {lex_any_union}SELECT cid FROM sem
                 ) u
             )
-            SELECT {proj}, {_REFS_COLS_ALIASED}, fused.score
+            SELECT {proj}, {_REFS_COLS_ALIASED}, fused.score{fold_cols}
             FROM fused
             JOIN chunks c ON c.chunk_id = fused.cid
             JOIN refs r ON r.ref_id = c.ref_id
@@ -1853,7 +1915,11 @@ class ChunkStore:
         if max_distance is not None:
             full_params.append(float(max_distance))
         full_params.extend([k] * (3 if or_leg else 2))
+        if fold_info_out is not None and or_corrob:
+            full_params.append(q)
         if semantic_only_max_distance is not None:
+            if or_corrob:
+                full_params.append(q)
             full_params.append(float(semantic_only_max_distance))
         full_params.append(limit)
         full_params.append(offset)
@@ -1861,7 +1927,16 @@ class ChunkStore:
         with self.pool.connection() as conn:
             _prepare_filtered_ann(conn, inner_limit)
             rows = conn.execute(sql, full_params).fetchall()
-        return [_unpack_search_row(r) for r in rows]
+        unpacked = [_unpack_search_row(r) for r in rows]
+        if fold_info_out is not None:
+            fold_info_out.clear()
+            for raw, (block, _ref, _s) in zip(rows, unpacked, strict=True):
+                sem_d = raw[_SCORE_IDX + 1]
+                fold_info_out[block.id] = (
+                    float(sem_d) if isinstance(sem_d, (int, float)) else None,
+                    bool(raw[_SCORE_IDX + 2]),
+                )
+        return unpacked
 
     def search_chunks_multi(
         self,
@@ -2221,6 +2296,7 @@ class ChunkStore:
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
+        fold_info_out: dict[int, tuple[float | None, bool]] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so the LLM-facing ``search(mode=…)`` picks a
@@ -2242,6 +2318,9 @@ class ChunkStore:
         ``semantic_only_max_distance`` only reaches the fused mode — the
         purely lexical modes have no semantic leg to floor, and
         ``mode='semantic'`` already answers to ``max_distance`` alone.
+        ``fold_info_out`` (gr514956) likewise reaches only the fused
+        mode; the verbatim/literal/lexical modes have no fold metadata
+        to report.
 
         Result tuples are ``(ChunkRow, Ref, score)`` in every mode — score is
         an RRF score, cosine distance, or lexical rank, "more relevant
@@ -2346,6 +2425,7 @@ class ChunkStore:
             chunk_ids=chunk_ids,
             card_kinds=card_kinds,
             has_body=has_body,
+            fold_info_out=fold_info_out,
         )
 
     # -- relative navigation ------------------------------------

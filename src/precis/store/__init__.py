@@ -83,6 +83,7 @@ from precis.store.migrate import (
 from precis.store.store import (
     SEMANTIC_DISTANCE_FLOOR,
     SEMANTIC_ONLY_DISTANCE_FLOOR,
+    SEMANTIC_ONLY_FOLD_DISTANCE,
     Store,
 )
 from precis.store.types import (
@@ -105,6 +106,7 @@ from precis.store.types import (
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
     "SEMANTIC_ONLY_DISTANCE_FLOOR",
+    "SEMANTIC_ONLY_FOLD_DISTANCE",
     "ActorSlug",
     "BibEntry",
     "CacheEntry",

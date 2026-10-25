@@ -1192,8 +1192,15 @@ class GripeHandler(NumericRefHandler):
     # NumericRefHandler via the search_body_chunks opt-in above. We only
     # override the per-hit renderer to surface comment context. ───────
 
-    def _render_body_search_hit(self, ref: Ref, block: Any, rank: float) -> str:
-        """One result line: header + chunk-kind context + matched text."""
+    def _render_body_search_hit(
+        self, ref: Ref, block: Any, rank: float, dist: float | None = None
+    ) -> str:
+        """One result line: header + chunk-kind context + matched text.
+
+        ``dist`` rides along for signature compatibility with the base
+        fold render (gr514956) — gripe is not in
+        ``SEMANTIC_ONLY_FOLD_DISTANCE``, so callers never pass it today.
+        """
         kind = block.chunk_kind
         if kind == _BODY_KIND:
             label = f"{self._sense()} {ref.id}"
@@ -1201,7 +1208,8 @@ class GripeHandler(NumericRefHandler):
             label = f"{self._sense()} {ref.id} (comment {block.ord})"
         else:
             label = f"{self._sense()} {ref.id} ({kind})"
-        return f"\n## {label}  (rank={rank:.2f})\n{self._snippet(block.text)}"
+        metric = f"({dist:.2f})" if dist is not None else f"(rank={rank:.2f})"
+        return f"\n## {label}  {metric}\n{self._snippet(block.text)}"
 
     # ── rendering: body + comment timeline ──────────────────────────
 

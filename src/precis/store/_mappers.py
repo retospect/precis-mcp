@@ -152,6 +152,22 @@ SEMANTIC_DISTANCE_FLOOR = 0.65
 # that also matched lexically is never floor-cut.
 SEMANTIC_ONLY_DISTANCE_FLOOR = 0.45
 
+# Per-kind fold threshold for rendered search results (gr514956). A hit
+# whose semantic distance clears the kind's value AND that has no lexical
+# corroboration is *folded* out of the rendered page — not dropped, so it
+# stays reachable behind the page's ``more(cursor=…)`` continuation —
+# while the automatic recall path (``view='index'``, cross-kind
+# ``search_hits`` streams) applies the same value as a hard
+# ``semantic_only_max_distance`` cut. Kinds absent from the table never
+# fold.
+#
+# Calibrated on prod distances 2026-10-25 (the measurement on gr514956):
+# memory body-chunk hits split cleanly at 0.42 — relevant chunks landed
+# ≤0.38, noise ≥0.41 — while paper relevant (.13–.63) overlaps paper
+# noise (.29–.45), so no single value separates papers and every other
+# kind stays unmeasured. Add a kind only with a fresh prod measurement.
+SEMANTIC_ONLY_FOLD_DISTANCE: dict[str, float] = {"memory": 0.42}
+
 
 # Search-time noise filters. Two predicates wrap every block-search
 # WHERE clause; both are necessary to keep low-information blocks
@@ -542,6 +558,7 @@ def _row_to_bib_entry(row: tuple) -> BibEntry:
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
     "SEMANTIC_ONLY_DISTANCE_FLOOR",
+    "SEMANTIC_ONLY_FOLD_DISTANCE",
     "_AGENT_WRITABLE_PREFIXES",
     "_MARKUP_ONLY_BLOCK",
     "_MIN_BLOCK_CHARS",

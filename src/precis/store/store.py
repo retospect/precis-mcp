@@ -81,6 +81,7 @@ from precis.store._mappers import (
     _SYSTEM_WRITABLE_PREFIXES,
     SEMANTIC_DISTANCE_FLOOR,
     SEMANTIC_ONLY_DISTANCE_FLOOR,
+    SEMANTIC_ONLY_FOLD_DISTANCE,
     _chunk_noise_clauses,
     _pos_to_db,
     _row_to_cache_entry,
@@ -407,6 +408,7 @@ class Store(
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
     "SEMANTIC_ONLY_DISTANCE_FLOOR",
+    "SEMANTIC_ONLY_FOLD_DISTANCE",
     "_AGENT_WRITABLE_PREFIXES",
     "_MARKUP_ONLY_BLOCK",
     "_MIN_BLOCK_CHARS",

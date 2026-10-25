@@ -2140,7 +2140,11 @@ class MemoryHandler(NumericRefHandler):
         from precis.cli.memory import bullet_line
 
         normalized = Tag.normalize_filter(tags, kind=self.kind)
-        hits, _total = self._best_body_hits(
+        # gr514956: the index view is the no-human-reads recall path
+        # (session-start recall and the ``score_recall`` weekly scorer
+        # both rank off this render) — the kind's fold distance applies
+        # as a hard cut, with no hint line and no cursor tail.
+        hits, _total, _fold_info = self._best_body_hits(
             q,
             normalized,
             page_size,
@@ -2149,6 +2153,7 @@ class MemoryHandler(NumericRefHandler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             chunk_scope=chunk_scope,
+            hard_cut=True,
         )
         if not hits:
             tag_suffix = f" tagged {normalized}" if normalized else ""

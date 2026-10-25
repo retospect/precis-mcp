@@ -41,6 +41,18 @@ class Response:
     #: Live licensed data must never enter the pagination cache.
     transient: bool = False
 
+    #: Agent-facing rows the handler deliberately kept off ``body`` —
+    #: the rendered-search weak-match fold tail (gr514956). The body
+    #: ends with a ``more(cursor=…)`` hint whose cursor token is
+    #: :data:`precis._pagination.FOLD_CURSOR_PLACEHOLDER`; the
+    #: dispatcher resolves it into a real
+    #: :meth:`precis._pagination.PaginationCache.stash` cursor on a
+    #: long-lived runtime, or unwraps the hint and appends this text
+    #: inline on a short-lived one. Contents must already be rendered —
+    #: the dispatcher never inspects them, and a ``transient`` response
+    #: must not set this (live licensed data may not be cached).
+    fold_tail: str | None = None
+
     #: How many items the body enumerates when the response is a result
     #: set — search hits / list rows shown on this page, the batch size
     #: on a multi-id ``get``, ``1`` for a single-ref read, ``0`` for an
