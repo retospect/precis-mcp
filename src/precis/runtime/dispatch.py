@@ -642,6 +642,27 @@ _DENY_VERBS_ENV = "PRECIS_MCP_DENY_VERBS"
 _DENY_EXEMPT_ENV = "PRECIS_MCP_DENY_EXEMPT"
 
 
+def _denied_verbs_env() -> frozenset[str]:
+    """The run's denied verbs as a set; empty when the env var is unset."""
+    raw = os.environ.get(_DENY_VERBS_ENV)
+    if not raw:
+        return frozenset()
+    return frozenset(v.strip() for v in raw.split(",") if v.strip())
+
+
+def _put_denied() -> bool:
+    """Whether this run's envelope denies ``put`` — i.e. tier-1 says the
+    run may not write at all.
+
+    The gripe handler treats this as the read-only signal *independent of
+    the connection's actual grants*: tier-2 (``SET ROLE agent_ro``,
+    ``envelope.db_role``) is dark by default
+    (``pool._db_role_enforced``), so an envelope-denied run usually holds
+    an *rw* connection — keying the ro path off the grants probe alone
+    would take the uncapped writer path (gr516603 review)."""
+    return "put" in _denied_verbs_env()
+
+
 def _exempt_ref_ids(verb: str, args: dict[str, Any]) -> list[tuple[str, Any]]:
     """The ``(kind, id)`` refs a denied verb would *mutate*.
 
@@ -714,6 +735,40 @@ def _with_categorizer_filter_notes(
     return replace(response, body=response.body + "\n\n" + "\n".join(notes))
 
 
+def _ro_gripe_create(verb: str, args: dict[str, Any], hub: Any) -> bool:
+    """True when ``args`` is a create-only ``put(kind='gripe', ...)``.
+
+    The write:none carve-out (gr516603, Reto 2026-10-21 in
+    ``review-container-readonly-role.md``): a read-only run may still
+    file a gripe. An ``id`` — top-level or smuggled inside ``args=``,
+    which later flattens into kwargs — makes the call a comment on an
+    existing ref and stays denied. ``kind='gr'`` resolves through the
+    handle registry, mirroring :meth:`DispatchMixin._expand_kind_code`.
+    What the create can write stays bounded by the DB role and
+    ``file_gripe_readonly``.
+    """
+    if verb != "put" or args.get("id") is not None:
+        return False
+    kind = args.get("kind")
+    if not isinstance(kind, str):
+        return False
+    if kind != "gripe":
+        if kind in hub.kinds:
+            return False
+        try:
+            from precis.utils import handle_registry
+
+            resolved, is_chunk = handle_registry.kind_for_code(kind)
+        except Exception:
+            return False
+        if is_chunk or resolved != "gripe":
+            return False
+    extras = args.get(_EXTRAS_KEY)
+    if isinstance(extras, dict) and extras.get("id") is not None:
+        return False
+    return True
+
+
 def _refuse_envelope_denied_verb(verb: str, args: dict[str, Any], hub: Any) -> None:
     """Raise :class:`Denied` when the run's envelope forbids ``verb``.
 
@@ -722,10 +777,12 @@ def _refuse_envelope_denied_verb(verb: str, args: dict[str, Any], hub: Any) -> N
     the verb mutates must be that kind tagged ``ns:*``. The dream runs
     with ``memory:DREAM`` — it may edit/retire/link its own DREAM-tagged
     memories (the Step-7 correction flow) while every other ref stays
-    read-only (gr179501's crafted-summary box, kept).
+    read-only (gr179501's crafted-summary box, kept). The other opening
+    is the ro gripe carve-out (:func:`_ro_gripe_create`).
     """
-    raw = os.environ.get(_DENY_VERBS_ENV)
-    if not raw or verb not in {v.strip() for v in raw.split(",")}:
+    if verb not in _denied_verbs_env():
+        return
+    if _ro_gripe_create(verb, args, hub):
         return
     exempt = os.environ.get(_DENY_EXEMPT_ENV)
     if exempt:

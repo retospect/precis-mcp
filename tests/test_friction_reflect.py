@@ -56,3 +56,60 @@ def test_ineligible_passthrough_preserves_none(monkeypatch):
     # No MCP → passthrough, and None stays None.
     assert fr.append_friction_footer(None, has_mcp=False, max_turns=20) is None
     assert fr.append_friction_footer("x", has_mcp=False, max_turns=20) == "x"
+
+
+# ── gr516603: the read-only (write:none / agent_ro) variant ────────
+
+
+def test_ro_run_eligible_without_flag(monkeypatch):
+    """Reto 2026-10-25: the nudge is ON for every read-only run from the
+    first release — no flag, no staged rollout. A write-capable run at
+    the same settings stays off."""
+    assert fr.friction_eligible(has_mcp=True, max_turns=20) is False
+    assert fr.friction_eligible(has_mcp=True, max_turns=20, read_only=True) is True
+
+
+def test_ro_run_still_needs_mcp_and_turns(monkeypatch):
+    """Always-on doesn't lift the structural guards: no MCP → nowhere to
+    ``put``; under the turn floor → the task keeps its budget."""
+    assert fr.friction_eligible(has_mcp=False, max_turns=20, read_only=True) is False
+    assert (
+        fr.friction_eligible(
+            has_mcp=True, max_turns=fr.FRICTION_MIN_TURNS - 1, read_only=True
+        )
+        is False
+    )
+
+
+def test_ro_footer_is_create_only_with_friction_fallback(monkeypatch):
+    out = fr.append_friction_footer("SOUL", has_mcp=True, max_turns=20, read_only=True)
+    assert out is not None
+    assert out.startswith("SOUL")
+    assert fr.FRICTION_REFLECTION_RO in out
+    assert "friction: none" in out  # same honored default
+    # Create-only: the definer stamps the tags, so the footer must not
+    # teach a tags= filing — and it names the stamp so the agent
+    # doesn't try.
+    assert "tags=[" not in fr.FRICTION_REFLECTION_RO
+    assert "friction-model" not in fr.FRICTION_REFLECTION_RO
+    assert "source:agent_ro" in out
+    assert "put(kind='gripe'" in out
+    # The FRICTION-block fallback for when put itself is refused
+    # (tier-1 tool deny or a DB cap) — mechanism (b) of the spec.
+    assert "FRICTION" in out
+    assert "title:" in out
+    assert "END" in out
+
+
+def test_ro_footer_is_whole_prompt_when_no_prior(monkeypatch):
+    out = fr.append_friction_footer(None, has_mcp=True, max_turns=20, read_only=True)
+    assert out == fr.FRICTION_REFLECTION_RO
+
+
+def test_rw_footer_still_flag_gated_and_tag_teaching(monkeypatch):
+    """The rw variant is unchanged: flag-gated, and still teaches the
+    friction + friction-model tags an rw filer must pass itself."""
+    _on(monkeypatch)
+    out = fr.append_friction_footer(None, has_mcp=True, max_turns=20)
+    assert out == fr.FRICTION_REFLECTION
+    assert "friction-model" in out

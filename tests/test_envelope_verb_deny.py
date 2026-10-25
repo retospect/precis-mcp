@@ -113,6 +113,63 @@ def test_typed_profile_write_none_refuses_every_write(
         assert "[error:Denied]" in _text(out)
 
 
+def test_typed_profile_write_none_gripe_create_carveout(
+    mounted: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr516603: under write:none, ``put(kind='gripe')`` *create* is the
+    one write that gets through — everything touching an existing ref or
+    another kind stays denied, including an ``id`` smuggled inside
+    ``args=``."""
+    import re
+
+    monkeypatch.setenv(env_mod.DENY_VERBS_ENV, "put,edit,delete,tag,link")
+    out = _text(tools_core.put(kind="gripe", text="ro carve-out probe"))
+    assert "[error:Denied]" not in out
+    # kind resolves through the handle registry like _expand_kind_code.
+    assert "[error:Denied]" not in _text(
+        tools_core.put(kind="gr", text="ro carve-out via code")
+    )
+    refused = [
+        tools_core.put(kind="gripe", id=1, text="comment"),
+        tools_core.put(kind="finding", text="x"),
+        tools_core.edit(kind="gripe", id=1, title="x"),
+        tools_core.delete(kind="gripe", id=1),
+        tools_core.tag(kind="gripe", id=1, add=["a"]),
+        tools_core.link(kind="gripe", id=1, target="todo:2"),
+    ]
+    for out in refused:
+        assert "[error:Denied]" in _text(out)
+    # The carve-out applied on this rw test connection (tier-2 SET ROLE
+    # is dark — the env deny is the ro signal, not the grants), so the
+    # filing was stamped by file_gripe_readonly's sourced path.
+    m = re.search(r"id=(\d+)", _text(tools_core.put(kind="gripe", text="x")))
+    assert m is not None
+    assert mounted.hub.store is not None
+    tags = {str(t) for t in mounted.hub.store.tags_for(int(m.group(1)))}
+    assert "source:agent_ro" in tags
+    assert "friction" in tags
+    assert any(t.startswith("agent:") for t in tags)
+
+
+def test_typed_profile_write_none_gripe_create_is_text_only(
+    mounted: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr516603 review: under the carve-out every write-shaping arg is
+    REFUSED (not silently stripped) — the connection here is rw, so
+    without the env check these would have applied as a normal writer's
+    tags/link/prio, uncapped and unstamped."""
+    monkeypatch.setenv(env_mod.DENY_VERBS_ENV, "put,edit,delete,tag,link")
+    refused = [
+        tools_core.put(kind="gripe", text="x", tags=["friction"]),
+        tools_core.put(kind="gripe", text="x", link="todo:1"),
+        tools_core.put(kind="gripe", text="x", prio=3),
+        tools_core.put(kind="gripe", text="x", args={"observation": True}),
+        tools_core.put(kind="gripe", text="x", args={"new": True}),
+    ]
+    for out in refused:
+        assert "[error:Denied]" in _text(out), _text(out)
+
+
 def test_typed_profile_reads_still_work(
     mounted: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

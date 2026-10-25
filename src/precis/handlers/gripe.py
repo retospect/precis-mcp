@@ -58,11 +58,13 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, NamedTuple
 
-from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._gripe_themes import THEME_TAG_PREFIX, match_themes
 from precis.handlers._interpret import interpreted
@@ -141,6 +143,69 @@ _STALE_AFTER = timedelta(days=3)
 #: base class calls with a fixed arg set). Request-scoped, not an instance
 #: attribute: one handler instance serves concurrent calls.
 _PUT_PRIO: RequestState[int | None] = RequestState("precis_gripe_put_prio", None)
+
+#: The ``agent:<name>`` label grammar ``file_gripe_readonly`` validates
+#: (migration 0244) — the source derivation below stays inside it so a
+#: weird env value can't turn a gripe filing into a refused call.
+_SOURCE_LABEL = re.compile(r"[a-z0-9_.:-]{1,48}")
+
+#: Per-process run label, minted once at import (``agent-<8 hex>`` —
+#: inside the SQL label grammar by construction). The fallback when no
+#: agentlog run id is in env. ``PRECIS_PROCESS`` is deliberately NOT the
+#: fallback: it names the process *type*, shared by every run a
+#: long-lived serve handles, which would collapse them into one 3/hour
+#: ``agent:`` bucket (gr516603 review). A per-process mint keeps each
+#: spawned-serve run in its own bucket — the spawned ``precis serve``
+#: lives for one run — and the 20/hour ``source:agent_ro`` cap still
+#: bounds the total however the labels slice themselves.
+_PROCESS_RUN_LABEL = f"agent-{uuid.uuid4().hex[:8]}"
+
+
+def _ro_gripe_source() -> str:
+    """The ``agent:<name>`` label a read-only run's gripe is stamped with.
+
+    The agentlog run id when present (``run-<id>`` — per-run unique,
+    which is what makes the 3-per-run SQL cap actually per-run), else
+    this process's minted :data:`_PROCESS_RUN_LABEL` (per-serve ≈
+    per-run). An env value outside the label grammar is skipped rather
+    than truncated into a lie; the minted label is grammar-safe by
+    construction, so a fallback can't fail the SQL check.
+    """
+    import os
+
+    from precis import agentlog
+
+    run = os.environ.get(agentlog.ENV_VAR, "").strip()
+    label = f"run-{run}" if run else ""
+    if label and _SOURCE_LABEL.fullmatch(label):
+        return label
+    return _PROCESS_RUN_LABEL
+
+
+def _filing_refusal(exc: BaseException) -> Denied | BadInput | None:
+    """Map a ``file_gripe_readonly`` refusal to a typed error with a next
+    step — the FRICTION-block fallback (gr516603, mcp-authoring rule 2).
+
+    ``None`` for anything that isn't one of its documented refusals (the
+    caller re-raises; a source-label rejection means our own derivation
+    produced garbage — a server bug, not caller misuse)."""
+    msg = str(exc)
+    if "file_gripe_readonly:" not in msg:
+        return None
+    cause = msg.split("file_gripe_readonly: ", 1)[1].splitlines()[0]
+    fallback = (
+        "end the run's output with a FRICTION block instead "
+        "(at most 3 — 'FRICTION' / 'title: <one line>' / "
+        "'body: <what blocked you>' / 'END')"
+    )
+    if "exceeds the 4000-char limit" in cause:
+        return BadInput(
+            f"a read-only gripe is capped at 4000 chars ({cause})",
+            next=f"shorten it and retry put(kind='gripe', text='...'), or {fallback}",
+        )
+    if "run cap" in cause or "hourly cap" in cause:
+        return Denied(cause, next=fallback)
+    return None
 
 
 class _CreatedGripe(NamedTuple):
@@ -407,6 +472,15 @@ class GripeHandler(NumericRefHandler):
         # NumericRefHandler.put rejects id-presence unconditionally
         # so we intercept before delegating.
         if id is not None:
+            if self._is_ro():
+                # The dispatch carve-out is create-only; a direct call
+                # under agent_ro would die as Internal on the chunk
+                # INSERT — name the one thing a ro run may do (gr516603).
+                raise Denied(
+                    "a read-only run can't comment on or tag an existing "
+                    f"{self._sense()} — its gripe channel is create-only",
+                    next=f"put(kind={self.kind!r}, text='your friction report')",
+                )
             if new or observation:
                 raise BadInput(
                     "args={'new': …}/{'observation': …} only apply when filing "
@@ -462,6 +536,36 @@ class GripeHandler(NumericRefHandler):
                 what=f"{self._sense()} comment",
             )
             return interpreted(resp, readings)
+        # Envelope-denied create (write:none — the dispatch carve-out is
+        # what let this put reach the handler): the channel is text-only.
+        # Refuse — don't strip — every write-shaping arg: the run should
+        # learn the one call shape it can make, and "filed" must never
+        # mean "filed with different tags than you asked" (gr516603
+        # review; the probe-only ro path below still strips with a
+        # reading per the spec).
+        from precis.runtime.dispatch import _put_denied
+
+        if _put_denied():
+            non_text = [
+                name
+                for name, val in (
+                    ("tags", tags),
+                    ("untags", untags),
+                    ("link", link),
+                    ("unlink", unlink),
+                    ("rel", rel),
+                    ("prio", prio),
+                    ("new", new),
+                    ("observation", observation),
+                )
+                if val
+            ]
+            if non_text:
+                raise Denied(
+                    "a write:none run's gripe channel takes text= only — "
+                    f"{', '.join(non_text)} needs a write-capable run",
+                    next=f"put(kind={self.kind!r}, text='your friction report')",
+                )
         # Observation (gr514477 batch): file already closed. The auto-close
         # goes through the same resolved-comment + tag path as a manual
         # close, so the close gate applies unchanged.
@@ -479,7 +583,10 @@ class GripeHandler(NumericRefHandler):
         # ``theme:<slug>`` keeper as a '+1' comment instead of minting a
         # duplicate ref; with no live keeper the new gripe takes the tag
         # and becomes it. Filers never search first — matching lives here.
-        matched: list[str] = [] if new else match_themes(text or "")
+        # A read-only filing skips the merge entirely: the '+1' would be a
+        # comment INSERT on someone else's ref — exactly the write
+        # ``agent_ro`` lacks (gr516603; filers file, triage dedups).
+        matched: list[str] = [] if (new or self._is_ro()) else match_themes(text or "")
         note = ""
         if len(matched) == 1:
             slug = matched[0]
@@ -623,6 +730,15 @@ class GripeHandler(NumericRefHandler):
         this kind's own ``tag()`` — ``_require_resolved_comment`` sees its
         comment exactly as it would on a manual close.
         """
+        if self._is_ro():
+            raise BadInput(
+                "a read-only run can't file an already-closed gripe — the "
+                "resolved comment + STATUS:done writes need a write-capable role",
+                next=(
+                    f"put(kind={self.kind!r}, text='...') — it files open; "
+                    "triage closes it"
+                ),
+            )
         created = self._insert_gripe(
             text=text, tags=[*(tags or []), "observation"], link=link, rel=rel
         )
@@ -926,6 +1042,27 @@ class GripeHandler(NumericRefHandler):
 
     # ── create: ref + body chunk + default tags + (optional) link ──
 
+    def _is_ro(self) -> bool:
+        """Whether this filing must take the read-only channel —
+        envelope-denied (``PRECIS_MCP_DENY_VERBS`` names ``put``; the
+        dispatch carve-out is what let the call reach here) OR the store
+        connection itself is read-only (``agent_ro``, via
+        :func:`precis.dispatch._probe_read_only`).
+
+        The env half matters because tier-2 is dark by default
+        (``pool._db_role_enforced``): a ``write:none`` run usually holds
+        an *rw* connection, so the grants probe alone would take the
+        uncapped writer path — the deny env is the signal, not the
+        grants (gr516603 review). Probed per call.
+        """
+        from precis.runtime.dispatch import _put_denied
+
+        if _put_denied():
+            return True
+        from precis.dispatch import _probe_read_only
+
+        return _probe_read_only(self.store)
+
     def _create(
         self,
         *,
@@ -982,6 +1119,8 @@ class GripeHandler(NumericRefHandler):
         # rare read-only one. Any caller-supplied ``tags=``/``link=``
         # beyond the default are still applied in the same transaction,
         # same as before.
+        import psycopg.errors
+
         from precis.handlers._gripe_title import first_line
         from precis.utils.link_tag_ops import (
             guard_taxon_hierarchy,
@@ -1005,6 +1144,19 @@ class GripeHandler(NumericRefHandler):
                     "text='resolved: …', tags=['STATUS:done'])"
                 ),
             )
+        # Read-only path (gr516603): the definer stamps the filing
+        # ``source:agent_ro`` + ``friction`` + ``agent:<run>`` itself —
+        # ``agent_ro`` holds no ``ref_tags``/``links``/UPDATE grant, so
+        # caller ``tags=``/``link=``/``prio=`` are dropped with a reading,
+        # not applied and not an error (mcp-authoring rule 9).
+        ro = self._is_ro()
+        dropped: list[str] = []
+        if ro:
+            if link is not None:
+                dropped.append("link=")
+                link = None
+            if rel is not None:
+                dropped.append("rel=")
         if link is not None:
             mint_lazy_link_target(link, store=self.store)
         target = parse_link_target(link, store=self.store) if link is not None else None
@@ -1023,16 +1175,40 @@ class GripeHandler(NumericRefHandler):
         readings = self._check_thread_tags(tags, create=True)
         if (put_prio := _PUT_PRIO.get()) is not None:
             prio_from_tag = put_prio
-        parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
+        if ro:
+            if tags:
+                dropped.append("tags=")
+            if prio_from_tag is not None:
+                dropped.append("prio=")
+            parsed_extra_tags: list[Tag] = []
+            readings.append(
+                "read-only run: " + ", ".join(dropped) + " ignored — the "
+                "gripe is stamped source:agent_ro + friction + agent:<run> "
+                "by file_gripe_readonly; tag/link it from a write-capable run"
+                if dropped
+                else "read-only run: stamped source:agent_ro + friction + "
+                "agent:<run> by file_gripe_readonly"
+            )
+        else:
+            parsed_extra_tags = [
+                Tag.parse_strict(t, kind=self.kind) for t in (tags or [])
+            ]
 
         with self.store.tx() as conn:
-            row = conn.execute(
-                "SELECT public.file_gripe_readonly(%s)", (text,)
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT public.file_gripe_readonly(%s, %s)",
+                    (text, _ro_gripe_source() if ro else None),
+                ).fetchone()
+            except psycopg.errors.RaiseException as exc:
+                refusal = _filing_refusal(exc)
+                if refusal is not None:
+                    raise refusal from exc
+                raise
             assert row is not None
             ref_id = int(row[0])
             short = self._shorten_title(conn, ref_id, text)
-            if prio_from_tag is not None:
+            if not ro and prio_from_tag is not None:
                 self.store.set_prio(ref_id, prio_from_tag, conn=conn)
             for tag in parsed_extra_tags:
                 self.store.add_tag(
@@ -1053,7 +1229,8 @@ class GripeHandler(NumericRefHandler):
         return _CreatedGripe(
             ref_id=ref_id,
             readings=readings,
-            has_thread=any(t.lower().startswith("thread:") for t in tags or ()),
+            has_thread=not ro
+            and any(t.lower().startswith("thread:") for t in tags or ()),
             short_title=short,
             title_src_len=len(first_line(text)) if short is not None else None,
         )

@@ -507,6 +507,36 @@ def test_default_envelope_denies_nothing_and_no_role(stub_bin: Path) -> None:
     assert "DB_ROLE=unset" in res.final_text
 
 
+def test_write_none_envelope_gets_ro_friction_footer(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr516603: a ``write:none`` run gets the always-on ro friction
+    nudge — no ``PRECIS_FRICTION_REFLECT`` flag — and it's the
+    create-only/FRICTION-block variant, not the tag-teaching rw one."""
+    from precis.workers.envelope import Envelope
+
+    monkeypatch.delenv("PRECIS_FRICTION_REFLECT", raising=False)
+    _write_argv_env_stub(stub_bin)
+    res = call_claude_agent("do", envelope=Envelope(write="none"), mcp_config="m.json")
+    assert "--append-system-prompt" in res.final_text
+    assert "friction: none" in res.final_text
+    assert "source:agent_ro" in res.final_text
+    # The rw footer (tags= + friction-model) is NOT what was appended.
+    assert "friction-model" not in res.final_text
+
+
+def test_write_full_envelope_keeps_footer_flag_gated(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write-capable envelope stays flag-gated: no flag → no footer."""
+    from precis.workers.envelope import Envelope
+
+    monkeypatch.delenv("PRECIS_FRICTION_REFLECT", raising=False)
+    _write_argv_env_stub(stub_bin)
+    res = call_claude_agent("do", envelope=Envelope(write="full"), mcp_config="m.json")
+    assert "friction: none" not in res.final_text
+
+
 # ── PRECIS_MCP_PROFILE=command inert-deny guard (backlog stopgap) ──
 # The closed agent-deny-lists spec, option 2 (open gaps: gr503441).
 

@@ -691,14 +691,25 @@ def _resolve_agent_args(
     else:
         system_prompt_text = system_prompt
 
-    # End-of-run tool-friction reflection (default-OFF, PRECIS_FRICTION_REFLECT).
-    # Rides ``--append-system-prompt`` on eligible runs — MCP present (so the
-    # agent can ``put`` a gripe) with turn headroom. One-shot JSON judges use
-    # claude_p, not this path, so they are structurally excluded.
+    # Per-todo envelope: resolve the explicit arg, else the
+    # executor-scoped active envelope. Resolved *before* the friction
+    # footer — a ``write:none`` box gets the always-on ro nudge
+    # (gr516603) — then reused for the tier-1 deny merge below and the
+    # subprocess role export in ``_prepare_agent_env``.
+    from precis.workers import envelope as _envelope
+
+    active_env = envelope if envelope is not None else _envelope.active_envelope()
+
+    # End-of-run tool-friction reflection (default-OFF, PRECIS_FRICTION_REFLECT;
+    # always-on for a ``write:none`` run). Rides ``--append-system-prompt`` on
+    # eligible runs — MCP present (so the agent can ``put`` a gripe) with turn
+    # headroom. One-shot JSON judges use claude_p, not this path, so they are
+    # structurally excluded.
     system_prompt_text = append_friction_footer(
         system_prompt_text,
         has_mcp=mcp_config is not None,
         max_turns=max_turns,
+        read_only=active_env is not None and active_env.write == "none",
     )
 
     args: list[str] = [
@@ -736,13 +747,9 @@ def _resolve_agent_args(
         args.append("--strict-mcp-config")
     if system_prompt_text:
         args.extend(["--append-system-prompt", system_prompt_text])
-    # Per-todo envelope: resolve the explicit arg, else the executor-scoped
-    # active envelope. Its tier-1 deny list is merged into
-    # ``disallowed_tools`` below; its DB role is exported to the subprocess
-    # env in ``_prepare_agent_env``.
-    from precis.workers import envelope as _envelope
-
-    active_env = envelope if envelope is not None else _envelope.active_envelope()
+    # The envelope's tier-1 deny list is merged into ``disallowed_tools``
+    # here; its DB role is exported to the subprocess env in
+    # ``_prepare_agent_env``.
     effective_deny = list(disallowed_tools)
     if active_env is not None:
         for tool in _envelope.disallowed_tools(active_env):
