@@ -114,14 +114,16 @@ def test_an_unknown_view_suggests_the_nearest_real_view(
 def test_the_roster_covers_every_dispatched_view() -> None:
     """Drift guard: a ``v == "<view>"`` branch in ``_get_impl`` whose
     name is missing from the roster fails here — the two can never
-    silently part ways again."""
+    silently part ways again. ``completion``/``completion_digest``
+    dispatch through the earlier ``completion_view`` alias (bound before
+    ``v``), so the walk accepts both names."""
     dispatched: set[str] = set()
     src = textwrap.dedent(inspect.getsource(SeHandler._get_impl))
     for node in ast.walk(ast.parse(src)):
         if (
             not isinstance(node, ast.Compare)
             or not isinstance(node.left, ast.Name)
-            or node.left.id != "v"
+            or node.left.id not in ("v", "completion_view")
         ):
             continue
         for op, comp in zip(node.ops, node.comparators, strict=True):
