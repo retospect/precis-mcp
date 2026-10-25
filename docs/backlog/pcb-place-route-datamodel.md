@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: topo-1b
 title: "pcb: smooth place-and-route — topology by search, layers by belief, geometry by batched relaxation, coarse-to-fine"
 prio: high
 model: opus
