@@ -216,6 +216,97 @@ def test_service_gated_cadence_resolves_prio_per_host(store) -> None:
     assert ran == ["fired"]
 
 
+def test_resolved_interval_keeps_its_own_spacing_across_passes(store) -> None:
+    """gr518038 round 2 — the dream_agent shape: ``resolve_interval``
+    returns a live value (3600) different from the static ``interval_s``
+    (900). The static value must never touch the row: the seed is
+    insert-only, so the stored interval and the re-armed clock stay on
+    the RESOLVED spacing across passes (a seed-side resync would re-arm
+    it at +900 and fire the throttle every 15 minutes)."""
+    ran: list[str] = []
+    cad = Cadence(
+        name=f"c-{uuid4().hex}",
+        interval_s=900,
+        run=lambda s, b: ran.append("fired"),
+        resolve_interval=lambda s: 3600,
+    )
+    r1 = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r1.claimed, r1.ok) == (1, 1) and ran == ["fired"]
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.interval_s == 3600
+
+    r2 = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert r2.claimed == 0 and ran == ["fired"]
+    # The row is untouched by the static-interval seed — same clock,
+    # same stored interval.
+    again = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert again == lease
+
+
+def test_shrunken_resolved_interval_pulls_the_clock_forward(store) -> None:
+    """gr518038: when the RESOLVED interval shrinks (a throttle easing),
+    the claim-time resync clamps the outstanding clock to
+    ``now() + new interval`` — the fire lands inside the new spacing,
+    not the old one."""
+    ran: list[str] = []
+    resolved = {"s": 24 * 3600}
+    cad = Cadence(
+        name=f"c-{uuid4().hex}",
+        interval_s=3600,
+        run=lambda s, b: ran.append("fired"),
+        resolve_interval=lambda s: resolved["s"],
+    )
+    assert run_scheduler_pass(store, host="h", cadences=(cad,)).claimed == 1
+    resolved["s"] = 900
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert r.claimed == 0 and ran == ["fired"]
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.interval_s == 900
+    with store.pool.connection() as conn:
+        clamped = conn.execute(
+            "SELECT next_fire_at <= now() + make_interval(secs => %s) "
+            "FROM scheduler_leases WHERE name = %s",
+            (900, cad.name),
+        ).fetchone()[0]
+    assert clamped
+
+
+def test_shrunken_interval_fires_within_the_new_interval(store) -> None:
+    """gr518038 at pass level: a cadence whose interval shrank (the
+    gripe_triage ~24h→15m change) must not wait out the OLD far-future
+    ``next_fire_at`` — the claim's interval resync clamps the clock to
+    ``now() + new interval``, so the same-named cadence fires promptly."""
+    ran: list[str] = []
+    name = f"c-{uuid4().hex}"
+    # The old long-interval cadence fires once and re-arms a day out.
+    long_cad = Cadence(
+        name=name, interval_s=24 * 3600, run=lambda s, b: ran.append("long")
+    )
+    assert run_scheduler_pass(store, host="h", cadences=(long_cad,)).claimed == 1
+    # Same name, new short interval: the reseed clamps the day-out clock.
+    short_cad = Cadence(name=name, interval_s=60, run=lambda s, b: ran.append("short"))
+    r = run_scheduler_pass(store, host="h", cadences=(short_cad,))
+    assert r.claimed == 0 and ran == ["long"]
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[name]
+    assert lease.interval_s == 60
+    with store.pool.connection() as conn:
+        clamped = conn.execute(
+            "SELECT next_fire_at <= now() + make_interval(secs => %s) "
+            "FROM scheduler_leases WHERE name = %s",
+            (60, name),
+        ).fetchone()[0]
+    assert clamped
+    # Once the new interval passes it fires normally — not a day later.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE scheduler_leases SET next_fire_at = now() - interval '1 second' "
+            "WHERE name = %s",
+            (name,),
+        )
+    r2 = run_scheduler_pass(store, host="h", cadences=(short_cad,))
+    assert (r2.claimed, r2.ok) == (1, 1) and ran == ["long", "short"]
+
+
 def test_exactly_once_under_two_concurrent_claimants(store) -> None:
     """Extends the single-threaded exactly-once cover in
     ``test_scheduler_leases.py`` with a REAL concurrent race at the pass

@@ -23,9 +23,28 @@ from psycopg import Connection
 #: Seed a missing lease as immediately-due (``next_fire_at = now()``), matching
 #: the launchd timers' ``RunAtLoad=true`` — one fire right after the flag flips,
 #: then every ``interval_s``. Only one worker's conditional advance wins it.
+#: Insert-only, deliberately (gr518038): the per-cycle pass seed carries the
+#: cadence's STATIC ``interval_s``, so a resync here would fight the
+#: ``resolve_interval`` cadences — the resync lives in the claim, where the
+#: resolved interval is the argument.
 _SEED_LEASE = (
     "INSERT INTO scheduler_leases (name, interval_s, next_fire_at) "
     "VALUES (%s, %s, now()) ON CONFLICT (name) DO NOTHING"
+)
+
+#: Resync the stored interval to the caller's RESOLVED value and clamp the
+#: outstanding clock to ``now() + new interval`` when it changed (gr518038:
+#: a shrink — gripe_triage's ~24h→15m — must not leave the cadence waiting
+#: out the old far-future fire; ``LEAST`` keeps an already-sooner clock on a
+#: grow). Runs in the claim, before the advance, on the resolved interval —
+#: ``resolve_interval`` cadences (the dream_agent throttle) resolve a live
+#: value the static-side seed must not overwrite. ``interval_s <>`` guard:
+#: steady state writes nothing.
+_RESYNC_LEASE = (
+    "UPDATE scheduler_leases "
+    "SET interval_s = %s, "
+    "    next_fire_at = LEAST(next_fire_at, now() + make_interval(secs => %s)) "
+    "WHERE name = %s AND interval_s <> %s"
 )
 
 #: The advance IS the lock (§15i): only the worker whose ``UPDATE`` matches the
@@ -82,13 +101,17 @@ class SchedulerLeasesMixin:
         """Try to claim cadence ``name`` for one fire. Returns ``True`` iff this
         caller won it (its conditional advance matched the due row).
 
-        Seeds a missing lease as immediately-due, then does the atomic advance.
-        Decentralized + exactly-once: run concurrently on every worker, only one
-        gets ``True`` per interval; the losers get ``False`` and skip.
+        Seeds a missing lease as immediately-due, resyncs the stored clock
+        when ``interval_s`` changed (``_RESYNC_LEASE`` — a shrink pulls the
+        outstanding ``next_fire_at`` forward to ``now() + new interval``),
+        then does the atomic advance. Decentralized + exactly-once: run
+        concurrently on every worker, only one gets ``True`` per interval;
+        the losers get ``False`` and skip.
         """
 
         def _apply(c: Connection) -> bool:
             c.execute(_SEED_LEASE, (name, interval_s))
+            c.execute(_RESYNC_LEASE, (interval_s, interval_s, name, interval_s))
             row = c.execute(
                 _ADVANCE_LEASE, (interval_s, interval_s, host, name)
             ).fetchone()
