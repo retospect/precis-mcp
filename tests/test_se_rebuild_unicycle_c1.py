@@ -17,6 +17,7 @@ posed world-frame envelope:
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_se import persist
+from precis_se import validate as se_validate
 from precis_se.handler import SeHandler
 from tests._script import load_script
 
@@ -128,8 +130,13 @@ def test_broken_variant_reproduces_prod_defects(
 
 
 def test_fixed_validate_warns_exactly_prods_known_findings(
-    handler: SeHandler, store: Store
+    handler: SeHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Unbounded overlap check: on a loaded CI runner the 30 s budget ran
+    # out and added an overlap_budget_exceeded warning to the count (r104).
+    monkeypatch.setattr(
+        se_validate, "validate", functools.partial(se_validate.validate, budget_s=None)
+    )
     _build(handler, store, broken=False)
     body = handler.get(id=_SLUG, view="validate").body
     assert "0 error(s), 4 warning(s)" in body
