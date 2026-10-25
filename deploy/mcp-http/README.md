@@ -53,7 +53,15 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   in the state directory, else `~/work/projects/code/precis-mcp`. A host whose
   agents work elsewhere (e.g. `~/precis-mcp`) writes that path to
   `main-checkout`. A path that is not a git checkout falls back to the default
-  with a note.
+  with a note. Since gr515239 `main-checkout` is also the canonical-checkout
+  marker: a run that finds none records its own resolution (env, then the
+  invoker's checkout, then the default), and a later run resolving a
+  different physical path refuses before touching docker — a stale second
+  copy of the repo once recreated the live backend. `mcp-http-install
+  --apply` and `mcp-image-refresh` refuse from a non-canonical tree the same
+  way. Backends and the proxy carry a `precis.invoker` label
+  (script/pid/ppid/cwd) so the container records who created it, and
+  `precis-status` shows the mounted host paths as `src_host`/`main_host`.
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the
   repo. The proxy mounts the **directory** `caddy/`, so the atomic `mv` that

@@ -658,6 +658,14 @@ dev = [
 # git credential helper locally, gh_token BuildKit secret in the image build.
 # tool.uv.sources applies only to THIS project's lock/sync — cluster
 # `uv pip install precis-mcp[...]` never reads it (wheelhouse covers those).
+# Fetch caveat (gr514979): uv's GitHub fast path resolves git sources via
+# api.github.com / raw.githubusercontent.com UNAUTHENTICATED, so on this
+# private repo those calls 404 before uv falls back to git. A full-sha `rev`
+# (below) skips the API entirely — branch/tag revs and `#<sha>` URL fragments
+# do not (and `#` fragments are broken in uv 0.13.5: the `#` leaks into the
+# git fetch URL). Anywhere uv must fetch this source, export
+# UV_NO_GITHUB_FAST_PATH=1 (uv >= 0.7.13) to use the plain git transport —
+# docker/Dockerfile's uv-sync stages and deploy/roles/autocatpath do.
 # Pillow security override (Reto 2026-10-11). marker-pdf 2.0.0 hard-caps
 # Pillow<11; the override replaces that requirement so the lock takes
 # pillow>=12.3.0, clearing Dependabot #56-67. The reachable ones: paste/crop

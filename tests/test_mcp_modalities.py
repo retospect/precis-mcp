@@ -432,6 +432,8 @@ def _clear_build_env(monkeypatch) -> None:
         monkeypatch.delenv(env_name, raising=False)
     monkeypatch.delenv("PRECIS_CHECKOUT_WATCHDOG", raising=False)
     monkeypatch.delenv("PRECIS_BUILD_AGE_WARN_DAYS", raising=False)
+    monkeypatch.delenv("PRECIS_MCP_SRC_HOST", raising=False)
+    monkeypatch.delenv("PRECIS_MCP_MAIN_HOST", raising=False)
 
 
 def _pin_lane(monkeypatch, *, source=None, watched=None, dist=None) -> None:
@@ -539,6 +541,33 @@ def test_precis_status_unknown_lane_warns_staleness_unknown(monkeypatch) -> None
     assert len(warnings) == 1
     assert warnings[0].startswith("WARN staleness unknown")
     assert "no git identity" in warnings[0]
+
+
+def test_precis_status_reports_mounted_host_paths(monkeypatch) -> None:
+    """gr515239: precis-status names the host paths mounted at /src and
+    /main, so a backend recreated from a stale second repo copy is visible
+    on the status page instead of anonymous."""
+    from precis.handlers import skill as skill_mod
+
+    _clear_build_env(monkeypatch)
+    _pin_lane(monkeypatch)
+    monkeypatch.setenv("PRECIS_MCP_SRC_HOST", "/host/stale-copy")
+    monkeypatch.setenv("PRECIS_MCP_MAIN_HOST", "/host/canonical")
+    rows = dict(skill_mod._collect_build_info())
+    assert rows["src_host"] == "/host/stale-copy"
+    assert rows["main_host"] == "/host/canonical"
+
+
+def test_precis_status_host_paths_render_unknown_when_unset(monkeypatch) -> None:
+    """Outside the session-MCP container the two rows read ``unknown``,
+    not absent — the gap is honest on a bare checkout."""
+    from precis.handlers import skill as skill_mod
+
+    _clear_build_env(monkeypatch)
+    _pin_lane(monkeypatch)
+    rows = dict(skill_mod._collect_build_info())
+    assert rows["src_host"] == "unknown"
+    assert rows["main_host"] == "unknown"
 
 
 def test_precis_status_served_tree_behind_counts_commits(monkeypatch, tmp_path) -> None:

@@ -3127,6 +3127,11 @@ def _collect_build_info(staleness: _Staleness | None = None) -> list[tuple[str, 
     source_path = lane.get("source_path") or _SOURCE_GIT_INFO.get("source_path")
     rows.append(("source_path", source_path or "unknown"))
     rows.append(("source_drift", st.drift_row))
+    # The host paths the container mounts at /src and /main (gr515239): a
+    # backend recreated from a stale second repo copy names that copy here
+    # instead of hiding it. Container envs, not baked build args.
+    rows.append(("src_host", os.environ.get("PRECIS_MCP_SRC_HOST") or "unknown"))
+    rows.append(("main_host", os.environ.get("PRECIS_MCP_MAIN_HOST") or "unknown"))
     return rows
 
 

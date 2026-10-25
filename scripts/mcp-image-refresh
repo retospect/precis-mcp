@@ -171,6 +171,68 @@ def run(cmd: list[str]) -> int:
     return subprocess.run(cmd, cwd=ROOT).returncode
 
 
+def mcp_http_state() -> Path:
+    """The live ensure script's state dir (its marker lives there)."""
+    return Path(
+        os.environ.get(
+            "PRECIS_MCP_HTTP_STATE",
+            str(Path.home() / ".cache" / "precis-mcp-http"),
+        )
+    )
+
+
+def own_main_checkout() -> Path | None:
+    """The main checkout this script's tree belongs to: the parent of
+    ``git rev-parse --git-common-dir`` (a worktree resolves to the shared
+    main checkout, so a run from a canonical worktree passes). None when
+    git cannot answer — a copied-out script leaves the ensure script's own
+    guard as the gate."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError:
+        return None
+    common = r.stdout.strip()
+    if r.returncode != 0 or not common:
+        return None
+    p = Path(common)
+    if not p.is_absolute():
+        p = ROOT / p
+    try:
+        return p.parent.resolve(strict=True)
+    except OSError:
+        return None
+
+
+def canonical_mismatch() -> str:
+    """'' when this tree may refresh the install; else the refusal reason.
+
+    gr515239: a run from a stale second copy of this repo recreated the live
+    backend. The canonical main checkout is recorded in the ensure script's
+    ``main-checkout`` marker; an absent/unreadable marker or a moved target
+    passes — the ensure script's own guard still gates the recreate."""
+    marker = mcp_http_state() / "main-checkout"
+    try:
+        recorded = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    mine = own_main_checkout()
+    if not recorded or mine is None:
+        return ""
+    try:
+        canon = Path(recorded).resolve(strict=True)
+    except OSError:
+        return ""
+    return "" if mine == canon else (
+        f"this tree's main checkout is {mine} but {canon} is recorded as "
+        f"canonical in {marker}"
+    )
+
+
 def serving(status_text: str) -> bool:
     codes = re.findall(r"\(no token, [^)]*\) -> (\d+)", status_text)
     return len(codes) >= 2 and all(c == "401" for c in codes)
@@ -212,6 +274,15 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds to wait for the new colour",
     )
     args = ap.parse_args(argv)
+
+    if mismatch := canonical_mismatch():
+        print(
+            f"STOP: {mismatch}. A stale second copy of this repo recreated the "
+            "live backend once already (gr515239). Re-run from the canonical "
+            "checkout, or fix the marker. Nothing was built or changed.",
+            file=sys.stderr,
+        )
+        return EXIT_DIFF
 
     pinned = locked_sha(ROOT / "uv.lock")
     baked = image_label(IMAGE, REV_LABEL)

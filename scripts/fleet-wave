@@ -477,6 +477,20 @@ def _ensure_tree(f: Fleet, name: str) -> Path:
     )
     if proc.returncode:
         raise SystemExit(f"fleet-wave: worktree add {name}: {proc.stderr.strip()}")
+    # Seed .venv from the main checkout so a builder's first `uv run`
+    # reuses it instead of installing ~160 packages mid-task (gr514738).
+    seed = subprocess.run(
+        [str(SCRIPTS / "seed-worktree-venv"), str(tree), str(f.main)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if seed.returncode:
+        print(
+            f"fleet-wave: venv seed for {name} failed; first uv run builds it: "
+            f"{seed.stderr.strip()}"
+        )
     return tree
 
 
@@ -670,9 +684,10 @@ def _commit_to_main(f: Fleet, rel_paths: list[str], msg: str) -> bool:
     back — local main is never left ahead or dirty from a claim.
     """
     main = f.main
-    if _git_rc("add", "--", *rel_paths, cwd=main) != 0 or _git_rc(
-        "commit", "-q", "-m", msg, cwd=main
-    ) != 0:
+    if (
+        _git_rc("add", "--", *rel_paths, cwd=main) != 0
+        or _git_rc("commit", "-q", "-m", msg, cwd=main) != 0
+    ):
         print(f"fleet-wave: nothing committed for {msg!r}", file=sys.stderr)
         return False
     if not git("remote", "get-url", "origin", cwd=main).strip():

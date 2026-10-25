@@ -1,0 +1,184 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/seed-worktree-venv — seed a fresh worktree's ``.venv`` from a
+sibling checkout.
+
+    seed-worktree-venv <tree> [src]
+
+The first ``uv run`` in a fresh worktree used to build a brand-new .venv —
+~160 packages, minutes, mid-task (gr514738). A seeded .venv is already
+usable: uv reuses it and self-heals only the editable install on the next
+sync.
+
+The seed copies ``<src>/.venv`` (default: the main checkout, resolved
+from the tree's git common dir) into ``<tree>/.venv`` — ``cp -Rc`` (APFS
+clonefile, instant) where supported, ``cp -a`` elsewhere — then repoints
+the absolute paths the copy carries:
+
+- ``bin/*`` text launchers: every ``*/.venv/`` path prefix →
+  ``<tree>/.venv/``. Console-script shebangs (``#!…/.venv/bin/python``)
+  can point at a THIRD checkout when the source venv was itself seeded —
+  so the rewrite normalises any .venv path, not just the src one. The
+  ``VIRTUAL_ENV=`` lines in the ``activate*`` scripts are the same shape
+  and get the same fix.
+- ``lib/python*/site-packages/*.pth``: absolute ``*/src`` path lines →
+  ``<tree>/src`` (the editable install's path entries; uv rewrites these
+  on the next sync anyway, this keeps pre-sync direct use right).
+- editable ``*.dist-info/direct_url.json``: ``file://<old>`` →
+  ``file://<tree>``.
+
+The copy is staged at ``<tree>/.venv-seed-<pid>`` and renamed into place,
+so a failed seed never leaves a half venv that ``uv`` would try to reuse.
+An existing ``<tree>/.venv`` and a src with none are both no-ops.
+Wired into ``scripts/devin-tree`` and ``scripts/fleet-wave``'s
+``_ensure_tree``; the ``claude -w`` path lives in .claude hooks.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+#: A path-char run ending in ``.venv`` — shebang interpreters, VIRTUAL_ENV
+#: assignments, any absolute reference into the copied venv. The lookahead
+#: stops ``.venv2``/``.venv-seed`` matching; whatever follows ('/', quote,
+#: space, EOL) is preserved. ``:`` is excluded so a ``PATH=a:/x/.venv``
+#: list separator isn't swallowed into the match.
+_VENV_PATH = re.compile(rb"[/\w.~+@-]*\.venv(?![\w.-])")
+
+#: A .pth line that is one absolute path into a checkout's src dir.
+_SRC_LINE = re.compile(rb"^/[^\s]+/src$")
+
+
+def _main_checkout(tree: Path) -> Path:
+    proc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tree),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if proc.returncode or not proc.stdout.strip():
+        raise SystemExit(
+            "seed-worktree-venv: cannot resolve the main checkout "
+            f"from {tree} — pass it as the [src] argument"
+        )
+    return Path(proc.stdout.strip()).parent
+
+
+def _copy_venv(src_venv: Path, dst: Path) -> None:
+    for cmd in (["cp", "-Rc"], ["cp", "-a"]):
+        proc = subprocess.run(
+            [*cmd, str(src_venv), str(dst)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if proc.returncode == 0:
+            return
+    try:
+        shutil.copytree(src_venv, dst, symlinks=True)
+    except Exception as exc:
+        raise SystemExit(f"seed-worktree-venv: copy failed: {exc}") from exc
+
+
+def _fix_bin(stage: Path, dst_venv: Path) -> int:
+    """Repoint every ``*/.venv`` path in the staged launchers to ``dst_venv``
+    — the FINAL path, not the staging dir the files currently sit in."""
+    venv_posix = dst_venv.as_posix().encode()
+    changed = 0
+    bin_dir = stage / "bin"
+    for f in bin_dir.iterdir() if bin_dir.is_dir() else ():
+        if not f.is_file() or f.is_symlink():
+            continue
+        data = f.read_bytes()
+        if b"\x00" in data[:8192]:  # compiled shim/binary — leave it
+            continue
+        new = _VENV_PATH.sub(venv_posix, data)
+        if new != data:
+            f.write_bytes(new)
+            changed += 1
+    return changed
+
+
+def _fix_site_packages(venv: Path, tree: Path) -> int:
+    """Repoint editable-install path entries (.pth + direct_url.json)."""
+    changed = 0
+    for sp in venv.glob("lib/python*/site-packages"):
+        for pth in sp.glob("*.pth"):
+            data = pth.read_bytes()
+            lines = [
+                str(tree / "src").encode() if _SRC_LINE.match(line) else line
+                for line in data.split(b"\n")
+            ]
+            new = b"\n".join(lines)
+            if new != data:
+                pth.write_bytes(new)
+                changed += 1
+        for info in sp.glob("*.dist-info/direct_url.json"):
+            try:
+                meta = json.loads(info.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            url = str(meta.get("url", ""))
+            if not meta.get("dir_info", {}).get("editable") or not url.startswith(
+                "file://"
+            ):
+                continue
+            meta["url"] = f"file://{tree}"
+            info.write_text(json.dumps(meta), encoding="utf-8")
+            changed += 1
+    return changed
+
+
+def seed_tree(tree: Path, src: Path) -> str:
+    """Seed ``tree/.venv`` from ``src/.venv``; return a one-line outcome."""
+    tree = tree.resolve()
+    src = src.resolve()
+    if not tree.is_dir():
+        raise SystemExit(f"seed-worktree-venv: no worktree at {tree}")
+    dst = tree / ".venv"
+    if dst.exists():
+        return "present"
+    src_venv = src / ".venv"
+    if not src_venv.is_dir():
+        return "no-src"
+    stage = tree / f".venv-seed-{os.getpid()}"
+    try:
+        _copy_venv(src_venv, stage)
+        fixes = _fix_bin(stage, dst) + _fix_site_packages(stage, tree)
+        if dst.exists():  # a sibling won the race — keep theirs
+            shutil.rmtree(stage)
+            return "present"
+        stage.rename(dst)
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    return f"seeded ({fixes} paths repointed)"
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) not in (2, 3) or argv[1].startswith("-"):
+        print("usage: seed-worktree-venv <tree> [src]", file=sys.stderr)
+        return 2
+    tree = Path(argv[1])
+    src = Path(argv[2]) if len(argv) == 3 else _main_checkout(tree)
+    outcome = seed_tree(tree, src)
+    print(f"seed-worktree-venv: {tree}/.venv {outcome}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

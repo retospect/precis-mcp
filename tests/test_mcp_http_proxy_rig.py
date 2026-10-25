@@ -484,6 +484,20 @@ def test_install_status_and_noop(rig: Rig) -> None:
     assert rig.docker("port", f"{rig.name}-a") == ""
     assert f"127.0.0.1:{rig.port}" in rig.docker("port", f"{rig.name}-proxy")
 
+    # gr515239: the run that created the backend is labelled on it, the
+    # canonical marker was recorded, and the host paths mounted at /src and
+    # /main reach the container env (precis-status shows them).
+    inv = rig.docker(
+        "inspect", "-f", '{{index .Config.Labels "precis.invoker"}}', f"{rig.name}-a"
+    )
+    assert "pid=" in inv and "cwd=" in inv
+    assert "precis-mcp-http-ensure.sh" in inv
+    marker = (rig.state / "main-checkout").read_text(encoding="utf-8").strip()
+    assert marker == os.path.realpath(rig.repo)
+    spec_env = rig.docker("inspect", "-f", "{{json .Config.Env}}", f"{rig.name}-a")
+    assert f"PRECIS_MCP_SRC_HOST={rig.repo}" in spec_env
+    assert f"PRECIS_MCP_MAIN_HOST={rig.repo}" in spec_env
+
     st = rig.run("--status")
     assert st.returncode == 0
     assert "/proxy-health -> 200" in st.stdout

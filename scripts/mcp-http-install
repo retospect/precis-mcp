@@ -20,6 +20,26 @@ inst_sha="$(sha "$installed")"
 
 if [ "${1:-}" = "--apply" ]; then
   if [ -z "$repo_sha" ]; then echo "repo copy missing: $repo" >&2; exit 1; fi
+  # gr515239: --apply ships THIS checkout's copy over the installed script;
+  # a stale second clone must not. The ensure script records the canonical
+  # main checkout in its state dir; absent marker or an unanswerable git is
+  # a pass (the ensure script's own guard still gates the recreate).
+  marker="${PRECIS_MCP_HTTP_STATE:-$HOME/.cache/precis-mcp-http}/main-checkout"
+  if [ -s "$marker" ]; then
+    canon="$(tr -d '[:space:]' < "$marker")"
+    canon="$(cd "$canon" 2>/dev/null && pwd -P || printf '%s' "$canon")"
+    common="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null || true)"
+    mine=""
+    if [ -n "$common" ]; then
+      case "$common" in /*) ;; *) common="$root/$common";; esac
+      mine="$(cd "$common/.." 2>/dev/null && pwd -P || true)"
+    fi
+    if [ -n "$mine" ] && [ "$mine" != "$canon" ]; then
+      printf 'mcp-http-install: refusing --apply (gr515239): this repo tree is %s but the canonical main checkout is %s (recorded in %s). next= run scripts/mcp-http-install --apply from that checkout.\n' \
+        "$mine" "$canon" "$marker" >&2
+      exit 3
+    fi
+  fi
   if [ "$repo_sha" = "$inst_sha" ]; then echo "mcp-http ensure script: in sync"; exit 0; fi
   if [ -n "$inst_sha" ]; then
     diff -u "$installed" "$repo" || true

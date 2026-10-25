@@ -180,6 +180,25 @@ A log audit found ~60% of Bash calls carried a redundant
 which is why this is called out explicitly rather than left as an assumed
 default.
 
+## Fresh worktrees seed `.venv`, never build one (gr514738)
+
+The first `uv run` in a fresh worktree used to resolve and install ~160
+packages mid-task. New worktrees instead get a **copy of the main
+checkout's `.venv`**, planted by `scripts/seed-worktree-venv` and wired
+into `scripts/devin-tree` and `scripts/fleet-wave::_ensure_tree` (the
+`claude -w` creation path lives in .claude hooks; a tree made by hand can
+run `scripts/seed-worktree-venv <tree>` itself). `cp -Rc` makes the copy
+an APFS clone — instant, no extra disk; `cp -a` elsewhere.
+
+A copied venv is not automatically right: console-script shebangs
+(`bin/pytest`, `bin/precis`) and the `VIRTUAL_ENV=` lines in
+`bin/activate*` carry absolute paths — possibly a THIRD checkout's, since
+main's own .venv may itself be a seed. The seed rewrites every
+`*/.venv` path in `bin/*` text files to the new tree, repoints the
+editable `.pth`/`direct_url.json` entries at the new `src/`, and stages
+the copy under `.venv-seed-<pid>` so a failed seed never leaves a half
+venv uv would try to reuse. uv self-heals the rest on the next sync.
+
 ## bash 3.2 gotchas (stock macOS bash)
 
 Repo scripts must run on the bash 3.2 macOS ships (`scripts/test` header

@@ -74,11 +74,20 @@ FROM scratch AS premodels
 # =============================================================================
 FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS deps
 
+# UV_NO_GITHUB_FAST_PATH=1: uv's GitHub fast path resolves git deps through
+# api.github.com / raw.githubusercontent.com UNAUTHENTICATED — those 404 on a
+# private repo (catpath, gr514979) and burn the 60-req/h anonymous API quota
+# on public ones, before uv falls back to git anyway. Forcing the plain git
+# transport sends every fetch through the credential helper instead. A
+# full-sha `rev` never consults the API; non-sha refs (e.g. AUTOCATPATH_REV's
+# `main` fallback) do — the env covers both. Inherited by every FROM-deps
+# stage below (models / builder / dev-venv — incl. the autocatpath install).
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_COLOR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    UV_PROJECT_ENVIRONMENT=/opt/venv
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_NO_GITHUB_FAST_PATH=1
 
 ARG UV_VERSION
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -406,6 +415,10 @@ ARG AUTOCATPATH_REV=main
 # from `gh auth token`; docker/dev/compose.yaml wires the secret). Exposed
 # as a git credential helper — never embedded in the URL — so the token
 # reaches neither an image layer nor the venv's direct_url.json.
+# UV_NO_GITHUB_FAST_PATH=1 is inherited from the deps stage's ENV (this
+# stage is FROM deps): without it uv resolves the non-sha `@main` fallback
+# through api.github.com unauthenticated → 404 on the private repo
+# (gr514979).
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     --mount=type=secret,id=gh_token,required=false \
     if [ -s /run/secrets/gh_token ]; then \
@@ -511,11 +524,16 @@ CMD ["bash"]
 # -----------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS deps-lite
 
+# UV_NO_GITHUB_FAST_PATH=1: same rationale as the deps stage — uv's
+# unauthenticated GitHub API fast path 404s on private git deps and wastes
+# anonymous quota on public ones (gr514979); the git transport carries the
+# host's credential helper.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_COLOR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    UV_PROJECT_ENVIRONMENT=/opt/venv
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_NO_GITHUB_FAST_PATH=1
 
 ARG UV_VERSION
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -599,11 +617,16 @@ CMD ["precis", "watch"]
 # -----------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS deps-embed
 
+# UV_NO_GITHUB_FAST_PATH=1: same rationale as the deps stage — uv's
+# unauthenticated GitHub API fast path 404s on private git deps and wastes
+# anonymous quota on public ones (gr514979); the git transport carries the
+# host's credential helper.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_COLOR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    UV_PROJECT_ENVIRONMENT=/opt/venv
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_NO_GITHUB_FAST_PATH=1
 
 ARG UV_VERSION
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \

@@ -331,6 +331,65 @@ def test_dry_run_local_edit_prints_refusal(
     assert calls == []
 
 
+def test_canonical_mismatch_refuses_before_any_step(
+    mod: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gr515239: run from a tree whose main checkout is not the recorded
+    canonical one, the script stops before the image check or any run()."""
+    state = tmp_path / "state"
+    state.mkdir()
+    canon = tmp_path / "canon"
+    canon.mkdir()
+    (state / "main-checkout").write_text(str(canon) + "\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_HTTP_STATE", str(state))
+    monkeypatch.setattr(
+        mod, "own_main_checkout", lambda: (tmp_path / "elsewhere").resolve()
+    )
+    calls = _no_run(mod, monkeypatch)
+    assert mod.main([]) == mod.EXIT_DIFF
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "STOP" in err and "elsewhere" in err
+
+
+def test_canonical_mismatch_pass_cases(
+    mod: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # No marker yet -> pass: the ensure script owns recording it.
+    monkeypatch.setenv("PRECIS_MCP_HTTP_STATE", str(tmp_path / "no-state"))
+    assert mod.canonical_mismatch() == ""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    canon = (tmp_path / "canon").resolve()
+    canon.mkdir()
+    marker = state / "main-checkout"
+    monkeypatch.setenv("PRECIS_MCP_HTTP_STATE", str(state))
+    marker.write_text(str(canon) + "\n", encoding="utf-8")
+
+    # Same main checkout (a canonical worktree passes) -> pass.
+    monkeypatch.setattr(mod, "own_main_checkout", lambda: canon)
+    assert mod.canonical_mismatch() == ""
+    # A different checkout -> the refusal reason names both.
+    monkeypatch.setattr(
+        mod, "own_main_checkout", lambda: (tmp_path / "other").resolve()
+    )
+    assert "recorded as canonical" in mod.canonical_mismatch()
+    # Git cannot answer (a copied-out script) -> pass.
+    monkeypatch.setattr(mod, "own_main_checkout", lambda: None)
+    assert mod.canonical_mismatch() == ""
+    # A marker naming a deleted checkout -> pass; the ensure script
+    # re-records it.
+    marker.write_text(str(tmp_path / "gone") + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        mod, "own_main_checkout", lambda: (tmp_path / "other").resolve()
+    )
+    assert mod.canonical_mismatch() == ""
+
+
 def test_serving_needs_both_probes_401(mod: ModuleType) -> None:
     ok = "x (no token, from the proxy) -> 401  (401 = serving)\ny (no token, via proxy) -> 401  (z)\n"
     assert mod.serving(ok)

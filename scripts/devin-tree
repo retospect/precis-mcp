@@ -82,6 +82,11 @@ if [[ ! -d $tree ]]; then
 		git -C "$root" worktree add -q -b "$branch" "$tree" origin/main
 	fi
 fi
+# Seed .venv from the main checkout so the first `uv run` reuses it
+# instead of installing ~160 packages mid-session (gr514738). The seed
+# is a no-op when one already exists; a failure never blocks the launch.
+"$(dirname "$(realpath "$0")")/seed-worktree-venv" "$tree" "$root" \
+	|| echo "devin-tree: venv seed failed; first uv run will build it" >&2
 # Hold the tree until the window's --exec re-locks it to Devin's pid, so the
 # reaper never sees a fresh, merged, clean, sessionless tree in between.
 git -C "$root" worktree unlock "$tree" >/dev/null 2>&1 || true

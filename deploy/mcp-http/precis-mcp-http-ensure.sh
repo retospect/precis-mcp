@@ -187,6 +187,73 @@ exists() { docker inspect "$1" >/dev/null 2>&1; }
 running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = true ]; }
 label_of() { docker inspect -f "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null || true; }
 
+# --- canonical-checkout guard (gr515239) ------------------------------------
+# 2026-10-24: a run whose REPO resolved to a stale SECOND copy of this repo
+# recreated the live backend, which then mounted and served that copy's tree.
+# The marker ${STATE_DIR}/main-checkout names the canonical main checkout:
+# the first run that finds none writes it (env, then the invoker's own
+# checkout, then the resolved default); every later run whose REPO resolves
+# to a different physical path is a stale copy and refuses before touching
+# docker (exit 3). Called before follow_prod and again inside create_backend.
+
+# The physical main checkout of the precis-mcp tree the INVOKER sits in, or
+# nothing — a SessionStart hook run from a worktree names the shared main
+# checkout through --git-common-dir, never the worktree. Trusted only when
+# the tree's origin names precis-mcp (any git cwd would qualify otherwise).
+invoker_main_checkout() {
+    local common top
+    common="$(git -C "$PWD" rev-parse --git-common-dir 2>/dev/null)" || return 0
+    [ -n "$common" ] || return 0
+    case "$common" in
+        /*) ;;                        # a worktree's common dir is already absolute
+        *)  common="${PWD}/${common}" ;;
+    esac
+    top="$(cd "${common}/.." 2>/dev/null && pwd -P)" || return 0
+    # The -prod sibling clone shares the origin URL but is the served clone,
+    # not the canonical checkout.
+    case "$(basename "$top")" in *-prod) return 0 ;; esac
+    git -C "$top" remote get-url origin 2>/dev/null | grep -qi precis-mcp || return 0
+    printf '%s\n' "$top"
+}
+
+require_canonical_checkout() {
+    local marker="${STATE_DIR}/main-checkout" canon="" resolved extra=""
+    resolved="$(cd "$REPO" 2>/dev/null && pwd -P || printf '%s' "$REPO")"
+    if [ -f "$marker" ]; then
+        canon="$(tr -d '[:space:]' < "$marker")"
+        if [ -n "$canon" ] && [ -d "${canon}/.git" ]; then
+            canon="$(cd "$canon" && pwd -P)"
+        else
+            canon=""   # empty marker, or its checkout moved: re-record below
+        fi
+    fi
+    if [ -z "$canon" ]; then
+        if [ -n "${PRECIS_MCP_REPO:-}" ]; then
+            canon="$resolved"
+        else
+            canon="$(invoker_main_checkout)"
+            [ -n "$canon" ] || canon="$resolved"
+        fi
+        mkdir -p "$STATE_DIR"
+        printf '%s\n' "$canon" > "$marker"
+        note "canonical main checkout recorded as ${canon} (${marker})"
+    fi
+    [ "$resolved" = "$canon" ] && return 0
+    if [ "$resolved" = "${HOME}/work/projects/code/precis-mcp" ]; then
+        extra="
+  (${resolved} is the built-in default — the stale copy lived at the plural 'projects' path)"
+    fi
+    cat >&2 <<EOF
+precis-mcp: REFUSING to run from a non-canonical checkout (gr515239):
+  this run resolved the main checkout to ${resolved}${extra}
+  but ${marker} records ${canon}
+A stale second copy of this repo recreated the live backend on 2026-10-24.
+next= re-run with PRECIS_MCP_REPO=${canon}; if ${canon} is wrong, correct or
+delete ${marker} (one line) and re-run from the canonical checkout.
+EOF
+    exit 3
+}
+
 # The colour the proxy actually routes to: the Caddyfile's upstream line, else
 # the state file, else a.
 live_colour() {
@@ -278,6 +345,10 @@ if ! $got_lock; then
     echo "precis-mcp: another ensure holds ${LOCK}; leaving it to that run" >&2
     exit 0
 fi
+
+# A non-canonical run must not even move the served clone: the guard goes
+# before follow_prod, under the lock, before any docker call.
+require_canonical_checkout
 
 # Keep the served clone on origin/prod. scripts/deploy moves it only on the
 # machine that runs the deploy, so a second machine hosting this server
@@ -512,6 +583,11 @@ ENVS=(
     # Keyed on the resolved sha, NOT mtimes — a git checkout touches every
     # mtime, which is exactly why the install-watchdog arm refuses source trees.
     -e PRECIS_CHECKOUT_WATCHDOG=/src
+    # The host paths mounted at /src and /main (gr515239): precis-status shows
+    # them as src_host/main_host, so a backend serving a stale second copy
+    # names that copy instead of hiding it.
+    -e "PRECIS_MCP_SRC_HOST=${SRC_REPO}"
+    -e "PRECIS_MCP_MAIN_HOST=${MAIN_CHECKOUT}"
     ${WT_ENVS[@]+"${WT_ENVS[@]}"}
     ${TOPO_ENVS[@]+"${TOPO_ENVS[@]}"}
 )
@@ -737,6 +813,7 @@ create_proxy() {  # $1 = container name; created, not started
     docker create \
         --name "$1" \
         --label "precis.proxy_spec=${PROXY_SPEC}" \
+        --label "precis.invoker=$0 pid=$$ ppid=$PPID cwd=$PWD" \
         --restart unless-stopped \
         --network "$NET" \
         -p "127.0.0.1:${PORT}:${BACKEND_PORT}" \
@@ -832,6 +909,9 @@ do_recreate_proxy() {
 # --- the backends -------------------------------------------------------------
 
 create_backend() {  # $1 = colour; created and started, not yet verified
+    # Defense in depth: the container being created must not outlive a
+    # canonical check (gr515239); cheap, the marker exists by now.
+    require_canonical_checkout
     local name
     name="$(bname "$1")"
     docker rm -f "$name" >/dev/null 2>&1 || true
@@ -844,6 +924,7 @@ create_backend() {  # $1 = colour; created and started, not yet verified
         --name "$name" \
         --label "precis.env_hash=${ENV_HASH}" \
         --label "precis.colour=$1" \
+        --label "precis.invoker=$0 pid=$$ ppid=$PPID cwd=$PWD" \
         -e "PRECIS_MCP_COLOUR=$1" \
         "${RUN_ARGS[@]}" \
         "$IMAGE" \

@@ -57,6 +57,13 @@
 # install dies fetching catpath. Ignoring sources makes the resolver fall
 # through to --find-links, i.e. the wheelhouse wheel: the intended channel.
 - name: Install precis-mcp[{{ autocatpath_extras }}] (pulls the autocatpath engine) into the precis worker venv
+  # UV_NO_GITHUB_FAST_PATH: uv's GitHub fast path resolves git deps through
+  # api.github.com unauthenticated — 404 on private repos and anonymous-quota
+  # burn on public ones before uv falls back to git anyway (gr514979). The
+  # install below fetches precis-mcp over git (catpath comes via --no-sources
+  # + the wheelhouse); the env keeps every uv git fetch on the git transport.
+  environment:
+    UV_NO_GITHUB_FAST_PATH: "1"
   ansible.builtin.shell: |
     {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
