@@ -32,6 +32,7 @@ from precis.figdigit.axis import (
     AxisError,
     AxisFit,
     Scale,
+    Ticks,
     as_gray,
     find_axis_lines,
     fit_axis,
@@ -66,10 +67,6 @@ Floats = NDArray[np.float64]
 #: Peak claims must sit within this many pixels of a real polyline
 #: extremum (spec step 4).
 PEAK_TOLERANCE_PX = 3.0
-
-#: Run-length fraction separating labelled major ticks from unlabelled
-#: minors when a proposal's label count matches the majors only.
-_MAJOR_RUN_FRAC = 0.7
 
 
 class ProposeError(RuntimeError):
@@ -283,8 +280,7 @@ class DigitiseResult:
 
 
 def _fit_declared(
-    positions: Floats,
-    runs: NDArray[np.int64],
+    ticks: Ticks,
     spec: AxisSpec,
     *,
     axis: Literal["x", "y"],
@@ -296,11 +292,11 @@ def _fit_declared(
     minor ticks too is retried against the long-run (major) subset before
     the count mismatch is allowed to refuse the axis.
     """
-    pos, run = positions, runs
+    pos = ticks.positions
     if pos.size != len(spec.values) and pos.size:
-        major = run >= _MAJOR_RUN_FRAC * run.max()
-        if major.sum() == len(spec.values):
-            pos = pos[major]
+        major = ticks.majors()
+        if major.positions.size == len(spec.values):
+            pos = major.positions
     if pos.size != len(spec.values):
         raise AxisError(
             f"{axis} axis: {len(spec.values)} tick labels vs "
@@ -375,23 +371,21 @@ def digitise(
     peak_claims = tuple(peaks or ()) + (proposal.peaks if proposal is not None else ())
 
     lines = find_axis_lines(gray)
-    det: dict[str, tuple[Floats, NDArray[np.int64]]] = {}
+    det: dict[str, Ticks] = {}
     if axis_in["x"] is not None or axis_in["y"] is not None:
-        xt = tick_positions(
-            gray,
-            axis="x",
-            line=lines.x_spine,
-            span=(lines.y_spine, lines.vertical[-1]),
-        )
-        yt = tick_positions(
-            gray,
-            axis="y",
-            line=lines.y_spine,
-            span=(lines.horizontal[0], lines.x_spine),
-        )
         det = {
-            "x": (xt.positions, xt.runs),
-            "y": (yt.positions, yt.runs),
+            "x": tick_positions(
+                gray,
+                axis="x",
+                line=lines.x_spine,
+                span=(lines.y_spine, lines.vertical[-1]),
+            ),
+            "y": tick_positions(
+                gray,
+                axis="y",
+                line=lines.y_spine,
+                span=(lines.horizontal[0], lines.x_spine),
+            ),
         }
 
     fits: dict[str, AxisFit | None] = {"x": None, "y": None}
@@ -400,10 +394,9 @@ def digitise(
         spec = axis_in[name]
         if spec is None:
             continue
-        pos, run = det[name]
         try:
             fits[name] = _fit_declared(
-                pos, run, spec, axis=name, max_residual_px=max_residual_px
+                det[name], spec, axis=name, max_residual_px=max_residual_px
             )
         except AxisError as exc:
             unverified.append(

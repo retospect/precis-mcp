@@ -19,6 +19,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from precis.figdigit.axis import (
     AxisError,
+    Ticks,
     as_gray,
     find_axis_lines,
     fit_axis,
@@ -113,6 +114,55 @@ def test_log_axis_recovers_map():
     # a linear read of a log axis is refused by the residual bar
     with pytest.raises(AxisError):
         fit_axis(det_y, yticks[::-1], scale="linear")
+
+
+def test_span_clips_off_axis_label_glyphs():
+    """gr514485: on a boxed figure the y tick-label glyphs centred on the
+    x spine read exactly like ticks — a dark run starting at the spine's
+    outer edge (19 false hits reported in the field). ``span`` — the
+    perpendicular spine box — is the clip that removes them; without it
+    they land in ``positions``."""
+    xticks = np.array([0.0, 20, 40, 60, 80, 100])
+    yticks = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+    rgb, true_x, _ty = _render(xticks, yticks)
+    gray = as_gray(rgb)
+    lines = find_axis_lines(gray)
+
+    unclipped = tick_positions(gray, axis="x", line=lines.x_spine)
+    # the "0.0" … "1.0" y labels sit left of the y spine and cross the
+    # row just below the x spine: extra candidates outside the axes box
+    assert unclipped.positions.size > xticks.size
+    assert (unclipped.positions < lines.y_spine).any()
+
+    clipped = tick_positions(
+        gray, axis="x", line=lines.x_spine, span=(lines.y_spine, lines.vertical[-1])
+    )
+    assert clipped.positions.size == xticks.size
+    assert np.max(np.abs(clipped.positions - true_x)) < 1.5
+
+
+def test_majors_picks_the_labelled_ticks():
+    """gr514486: a log axis draws unlabelled minor ticks that are
+    indistinguishable from majors at scan time; ``Ticks.majors`` keeps
+    the run-length-separated labelled set — the filter callers apply
+    when the label list counts only majors."""
+    xticks = np.array([0.0, 25, 50, 75, 100])
+    yticks = np.array([1.0, 10.0, 100.0])
+    rgb, _tx, _ty = _render(xticks, yticks, ylog=True)
+    gray = as_gray(rgb)
+    lines = find_axis_lines(gray)
+    ticks = tick_positions(
+        gray, axis="y", line=lines.y_spine, span=(lines.horizontal[0], lines.x_spine)
+    )
+    assert ticks.positions.size > yticks.size  # minors ride along
+    major = ticks.majors()
+    assert major.positions.size == yticks.size
+    assert major.runs.size == yticks.size
+    fy = fit_axis(major.positions, yticks[::-1], scale="log")
+    assert fy.residual_px <= 0.5
+    # an empty detection filters to itself rather than dividing by max()==0
+    empty = Ticks(positions=np.empty(0), runs=np.empty(0, dtype=np.int64))
+    assert empty.majors() is empty
 
 
 def test_non_monotone_tick_labels_refused():

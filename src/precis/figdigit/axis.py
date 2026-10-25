@@ -155,12 +155,27 @@ class Ticks:
     """Detected tick marks along one spine: centroid ``positions`` in pixel
     coordinates (sorted) and the contiguous dark ``runs`` that produced
     them — the tick length in px. Major ticks run longer than minor ones on
-    log axes, so ``runs`` lets a caller filter ``positions`` (e.g.
-    ``runs >= 0.7 * runs.max()``) when a proposal's labels count only the
-    labelled majors."""
+    log axes, so ``runs`` lets a caller filter ``positions`` —
+    :meth:`majors` is the canned filter — when a proposal's labels count
+    only the labelled majors."""
 
     positions: Floats
     runs: NDArray[np.int64]
+
+    def majors(self, *, frac: float = 0.7) -> Ticks:
+        """The long-run subset — the labelled major ticks.
+
+        At scan time an unlabelled minor tick is indistinguishable from a
+        major one (a log axis draws both as short marks off the spine);
+        the run length is the only difference recorded — matplotlib's
+        defaults draw majors ~1.75× the minors, so ``frac`` of the
+        longest run splits them with headroom. Positions and runs are
+        filtered together so the result still pairs them.
+        """
+        if self.runs.size == 0:
+            return self
+        keep = self.runs >= frac * self.runs.max()
+        return Ticks(positions=self.positions[keep], runs=self.runs[keep])
 
 
 def tick_positions(

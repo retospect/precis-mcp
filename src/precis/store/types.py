@@ -1532,6 +1532,11 @@ class ChunkInsert:
     text: str
     slug: str | None = None
     token_count: int | None = None
+    #: A pre-computed vector for the chunk's text; when set it must have
+    #: exactly ``store.embedding_dim()`` entries (1024 for the seeded
+    #: ``bge-m3`` default embedder) — a wrong length fails at the
+    #: ``chunk_embeddings`` insert with a bare pgvector dim error
+    #: (gr515091).
     embedding: list[float] | None = None
     density: Density | None = None
     meta: dict[str, Any] = field(default_factory=dict)

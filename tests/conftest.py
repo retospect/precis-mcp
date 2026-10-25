@@ -50,6 +50,18 @@ pgvector + btree_gist are pre-installed because they're "untrusted"
 extensions only superuser can ``CREATE EXTENSION``. The migrations
 use ``IF NOT EXISTS`` so they're no-ops once installed.
 
+Rolled-back fixtures and the pool
+---------------------------------
+A test that stages state inside ``store.pool.connection()`` and rolls it
+back at the end (``conn.rollback()`` — transactional DDL, a NOT VALID
+CHECK, marker rows such as ``chunk_embeddings_kind_ready``) sees that
+state on that connection only. Any read run through a *different* pooled
+connection — a second ``store.pool.connection()`` checkout, or a
+``Store`` method that checks one out itself — sees the committed state,
+not the staged one. Probes of uncommitted state (``_ann_route``,
+``ann_route_plan`` against a marker the test just inserted) must take
+the same ``conn`` (gr515078).
+
 Connection-leak guard
 ---------------------
 Per-worker DB isolation means a worker's tests run sequentially against
