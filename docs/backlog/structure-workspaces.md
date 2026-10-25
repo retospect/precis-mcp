@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: ws-import
 title: Structure workspaces — scripts build in a sandbox, se stores and inspects, relax is a service
 pillar: 3d-design
 prio: high
