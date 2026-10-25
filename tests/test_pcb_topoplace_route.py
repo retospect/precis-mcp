@@ -2,9 +2,14 @@
 courtyard/outline edge a present constraint, Euler V−E+T=1 (footprint
 interiors triangulated, no holes), crossing constraints refused, plus
 the ``design_from_ir`` slice-2 fields (part outlines, per-net layer
-force, pin extents). Wire/colour/certificate tests land with 2b/2c."""
+force, pin extents) — and the 2b wires: per-net MST branches pulled to
+dual paths on the mesh, the taut representative's crossing parameters,
+shared-edge order, capacity and the unreachable-pad marker.
+Colour/certificate tests land with 2c."""
 
 from __future__ import annotations
+
+import itertools
 
 import numpy as np
 import pytest
@@ -313,6 +318,733 @@ def test_unplaced_pose_refused() -> None:
     pose[2, 0] = np.nan
     with pytest.raises(ValueError, match="unplaced"):
         build_mesh(d, pose)
+
+
+def test_build_wires_example_a_branches() -> None:
+    """Every 2-pin net yields one geodesic-Prim branch pulled taut on
+    the mesh: endpoints on the pads, one crossing parameter per crossed
+    edge in [0,1], corridor one triangle longer than the edge list.
+    Courtyards don't block routing (R-a) — all three nets thread
+    straight."""
+    from precis.pcb.topoplace.wires import build_wires
+
+    d = example_a()
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    pw = all_pin_world(d, d.pose0)
+    assert len(w.branches) == len(d.net_pins) == 3
+    for k, pins in enumerate(d.net_pins):
+        b = w.branches[k]
+        assert b.net == k
+        assert {b.pin_a, b.pin_b} == {int(p) for p in pins}
+        assert len(b.tris) == len(b.edges) + 1
+        assert len(b.t) == len(b.edges) > 0
+        assert all(0.0 <= t <= 1.0 for t in b.t)
+        np.testing.assert_allclose(b.points[0], pw[b.pin_a], atol=1e-9)
+        np.testing.assert_allclose(b.points[-1], pw[b.pin_b], atol=1e-9)
+    by_net = {d.net_name[b.net]: b for b in w.branches}
+    assert by_net["A"].length_mm == pytest.approx(4.0, abs=1e-6)
+    assert by_net["B"].length_mm == pytest.approx(4.0, abs=1e-6)
+    assert by_net["C"].length_mm == pytest.approx(5.0, abs=1e-6)
+    assert w.net_layers == (frozenset({0, 1}),) * 3
+
+
+def _assert_routing_rule(ctx, d, w, n_layers: int) -> None:
+    """Every crossed edge is passable on a candidate layer under the
+    NET exemption: the fans of the wire's own-net pins are open, a pad
+    of another net walls on its owner's face, zones block their layers
+    (except same-net copper), and the board edge never passes."""
+    from precis.pcb.topoplace.wires import _cand_mask
+
+    for b in w.branches:
+        net = d.net_name[b.net] if b.net < len(d.net_name) else str(b.net)
+        cand = w.net_layers[b.net] or frozenset({0, n_layers - 1})
+        cand_mask = _cand_mask(cand, n_layers)
+        own = frozenset(int(p) for p in d.net_pins[b.net])
+        for e in b.edges:
+            assert not ctx.board[e]
+            blocked = 0
+            for pin, pm in ctx.pad_contrib.get(e, ()):
+                if pin not in own:
+                    blocked |= pm
+            for z, zm in ctx.zone_contrib.get(e, ()):
+                zn = d.zones[z].net
+                if not (zn and zn == net):
+                    blocked |= zm
+            # the passable mask is uniform per net — a crossed edge is
+            # simply open on some candidate layer, no endpoint carve-out
+            assert cand_mask & ~blocked
+
+
+def test_build_wires_order_and_routing_rule() -> None:
+    """``order[e]`` holds exactly the branches crossing ``e``, sorted by
+    their taut parameter within the tie tolerance — and the routing rule
+    (see ``_assert_routing_rule``) holds on every crossed edge."""
+    from precis.pcb.topoplace.wires import _make_ctx, build_wires
+
+    n_layers = 4
+    d, _inst, _nets = synth_design(seed=0, n_parts=40)
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, n_layers)
+    assert len(w.order) == len(mesh.edges)
+    for e, ids in enumerate(w.order):
+        # a branch may cross e twice (wrapping both endpoints); its k-th
+        # appearance in order[e] is its k-th smallest t at e
+        occ: dict[int, int] = {}
+        ts = []
+        for bi in ids:
+            k = occ.get(bi, 0)
+            occ[bi] = k + 1
+            ts.append(
+                sorted(
+                    t
+                    for t, e2 in zip(w.branches[bi].t, w.branches[bi].edges)
+                    if e2 == e
+                )[k]
+            )
+        for x, y in itertools.pairwise(ts):
+            assert y >= x - 1e-9
+    ctx = _make_ctx(mesh, d, n_layers)
+    for bi, b in enumerate(w.branches):
+        for e in b.edges:
+            assert bi in w.order[e]
+    _assert_routing_rule(ctx, d, w, n_layers)
+
+
+def test_build_wires_routing_rule_on_zone_fixture() -> None:
+    """The routing rule on a fixture WITH a keepout: two nets detour an
+    all-layer keepout between their endpoints and share corridor edges
+    on the way around — every crossed edge still opens on a candidate
+    layer and no branch crosses a zone edge (round-2 item 7)."""
+    from precis.pcb.topoplace.design import TopoDesign, TopoZone
+    from precis.pcb.topoplace.wires import _make_ctx, build_wires
+
+    sq = lambda hx, hy: np.asarray(
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]], float
+    )
+    d = TopoDesign(
+        parts=("A", "B", "C", "D"),
+        pin_xy=np.zeros((4, 2)),
+        pin_part=np.asarray([0, 1, 2, 3]),
+        pin_side=np.asarray([0] * 4, np.int8),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        pin_net=np.asarray([0, 0, 1, 1], np.int32),
+        net_pins=(np.asarray([0, 1]), np.asarray([2, 3])),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(4, bool),
+        freedoms=np.full(4, 3, np.uint8),
+        outline=np.asarray([[-10, -10], [10, -10], [10, 10], [-10, 10]], float),
+        pose0=np.asarray(
+            [[-7, -3, 0, 0], [7, 3, 0, 0], [-7, 3, 0, 0], [7, -3, 0, 0]], float
+        ),
+        part_outline=(sq(0.5, 0.5),) * 4,
+        net_layer_force=np.full(2, -1, np.int8),
+        net_name=("N", "M"),
+        pin_wh=np.tile([[0.6, 0.6]], (4, 1)),
+        zones=(
+            TopoZone(
+                kind="keepout",
+                ring=np.asarray([[-2, -2], [2, -2], [2, 2], [-2, 2], [-2, -2]], float),
+                layers=(),
+                name="kz",
+            ),
+        ),
+    )
+    mesh = build_mesh(d, d.pose0)
+    ctx = _make_ctx(mesh, d, 2)
+    w = build_wires(mesh, d, 2)
+    assert not w.unreachable
+    zone_edges = set(ctx.zone_contrib)
+    assert zone_edges
+    for bi, b in enumerate(w.branches):
+        assert not set(b.edges) & zone_edges
+        for e in b.edges:
+            assert bi in w.order[e]
+    _assert_routing_rule(ctx, d, w, 2)
+
+
+def test_build_wires_no_transit_through_same_net_part() -> None:
+    """The exemption keys on the wire's NET, not the endpoint part: a
+    foreign-net pad's fan walls the wire off even when the pad sits on
+    a same-net part (round-2 ruling). Net N links P0–P2–B; B's M-net TH
+    pad keeps its walls, so no net-N branch crosses its fan boundary —
+    while B's N-net pad still joins the tree (geodesic Prim attaches
+    it) and net M routes its own branch."""
+    from precis.pcb.topoplace.design import TopoDesign
+    from precis.pcb.topoplace.wires import _make_ctx, build_wires
+
+    sq = lambda hx, hy: np.asarray(
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]], float
+    )
+    d = TopoDesign(
+        parts=("P0", "P2", "B", "P3"),
+        pin_xy=np.asarray([[0, 0], [0, 0], [0, 5.6], [0, -5.6], [0, 0]], float),
+        pin_part=np.asarray([0, 1, 2, 2, 3]),
+        pin_side=np.asarray([0, 0, 0, 2, 0], np.int8),
+        pin_label=np.asarray(["1"] * 5, dtype=object),
+        pin_net=np.asarray([0, 0, 0, 1, 1], np.int32),
+        net_pins=(np.asarray([0, 1, 2]), np.asarray([3, 4])),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(4, bool),
+        freedoms=np.full(4, 3, np.uint8),
+        outline=np.asarray([[-3, -10], [9, -10], [9, 9], [-3, 9]], float),
+        pose0=np.asarray(
+            [[0, 0, 0, 0], [6, 0, 0, 0], [3, 0, 0, 0], [3, -7.5, 0, 0]], float
+        ),
+        part_outline=(sq(0.4, 0.4), sq(0.4, 0.4), sq(1, 6), sq(0.4, 0.4)),
+        net_layer_force=np.full(2, -1, np.int8),
+        net_name=("N", "M"),
+        pin_wh=np.tile([[0.6, 0.6]], (5, 1)),
+    )
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    ctx = _make_ctx(mesh, d, 2)
+    net0 = [b for b in w.branches if b.net == 0]
+    assert net0
+    # the whole net connects through B's N pad (Prim's tree shape is
+    # free), and no branch crosses the M-net pad's fan walls
+    assert {p for b in net0 for p in (b.pin_a, b.pin_b)} == {0, 1, 2}
+    for b in net0:
+        assert set(b.edges).isdisjoint(ctx.fan_boundary[3])
+    assert any(b.net == 1 for b in w.branches)
+    assert not w.unreachable
+
+
+def test_build_wires_two_owner_edge() -> None:
+    """An edge carried by two owners — the endpoint's pad fan and a
+    foreign keepout — prices BOTH: the pad's exemption covers only its
+    own contribution, the zone's layers still block. A keepout abutting
+    part A1's courtyard on the pin-1 side shares its eastern ring edge,
+    making that edge two-owner: layer-0 keepout → net A crosses on the
+    surviving layer; an all-layer keepout over a single-layer net → the
+    branch detours around every two-owner edge (pin A1 still exits
+    through fan-boundary edges the ring does not cover)."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import TopoZone
+    from precis.pcb.topoplace.wires import _make_ctx, build_wires
+
+    ring = np.asarray([[0.4, 1.6], [1.4, 1.6], [1.4, 2.4], [0.4, 2.4], [0.4, 1.6]])
+    d = dataclasses.replace(
+        example_a(),
+        zones=(TopoZone(kind="keepout", ring=ring, layers=(0,), name="kz"),),
+    )
+    mesh = build_mesh(d, d.pose0)
+    ctx = _make_ctx(mesh, d, 2)
+    two_owner = {e for e in ctx.pad_contrib if e in ctx.zone_contrib}
+    assert two_owner
+    w = build_wires(mesh, d, 2)
+    a = next(b for b in w.branches if d.net_name[b.net] == "A")
+    assert set(a.edges) & two_owner  # crossed a two-owner edge on layer 1
+    assert not w.unreachable
+
+    d2 = dataclasses.replace(
+        example_a(),
+        zones=(TopoZone(kind="keepout", ring=ring, layers=(), name="kz"),),
+        net_layer_force=np.asarray([0, -1, -1], np.int8),  # net A on layer 0
+    )
+    mesh2 = build_mesh(d2, d2.pose0)
+    ctx2 = _make_ctx(mesh2, d2, 2)
+    two2 = {e for e in ctx2.pad_contrib if e in ctx2.zone_contrib}
+    assert two2
+    w2 = build_wires(mesh2, d2, 2)
+    a2 = next(b for b in w2.branches if d2.net_name[b.net] == "A")
+    assert set(a2.edges).isdisjoint(two2)  # detoured around the keepout
+    assert not [u for u in w2.unreachable if u.net == 0]
+
+
+def test_build_wires_zone_hug_crosses_no_zone_edge() -> None:
+    """A wire pulled taut against a keepout hugs its boundary without
+    leaking inside: the taut polyline bends through the zone's own
+    corner vertices and crosses no edge the zone contributes to — for a
+    rectangular keepout on both sides and over a range of pin heights,
+    and for a CONCAVE multi-corner keepout (round-2 item 1, the re-walk
+    must not cut a reflex corner)."""
+    from precis.pcb.topoplace.design import TopoDesign, TopoZone
+    from precis.pcb.topoplace.wires import _make_ctx, build_wires
+
+    sq = lambda hx, hy: np.asarray(
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]], float
+    )
+
+    def zone_design(dy: float, ring: np.ndarray) -> TopoDesign:
+        return TopoDesign(
+            parts=("A", "B"),
+            pin_xy=np.zeros((2, 2)),
+            pin_part=np.asarray([0, 1]),
+            pin_side=np.asarray([0, 0], np.int8),
+            pin_label=np.asarray(["1"] * 2, dtype=object),
+            pin_net=np.asarray([0, 0], np.int32),
+            net_pins=(np.asarray([0, 1]),),
+            flex=(),
+            swap_groups=(),
+            fixed=np.zeros(2, bool),
+            freedoms=np.full(2, 3, np.uint8),
+            outline=np.asarray([[-10, -10], [10, -10], [10, 10], [-10, 10]], float),
+            pose0=np.asarray([[-6, dy, 0, 0], [6, dy, 0, 0]], float),
+            part_outline=(sq(0.5, 0.5),) * 2,
+            net_layer_force=np.full(1, -1, np.int8),
+            net_name=("N",),
+            pin_wh=np.tile([[0.6, 0.6]], (2, 1)),
+            zones=(TopoZone(kind="keepout", ring=ring, layers=(), name="kz"),),
+        )
+
+    def hugs(dy: float, ring: np.ndarray) -> list[tuple[float, ...]]:
+        d = zone_design(dy, ring)
+        mesh = build_mesh(d, d.pose0)
+        ctx = _make_ctx(mesh, d, 2)
+        w = build_wires(mesh, d, 2)
+        assert not w.unreachable
+        (b,) = w.branches
+        assert not set(b.edges) & set(ctx.zone_contrib)
+        return [tuple(p) for p in b.points]
+
+    rect = np.asarray([[-2, -1], [2, -1], [2, 1], [-2, 1], [-2, -1]], float)
+    for dy in (-0.5, 0.0, 0.3, 1.5):
+        hugs(dy, rect)
+    # dead-level pins hug the southern corners; a slight lift takes the
+    # northern ones — the bend lands ON the ring vertex either way
+    assert hugs(0.0, rect)[1:3] == [(-2.0, -1.0), (2.0, -1.0)]
+    assert hugs(0.3, rect)[1:3] == [(-2.0, 1.0), (2.0, 1.0)]
+    # a reflex corner: the L's concave notch must not be cut either
+    L = np.asarray(
+        [[-2, -2], [2, -2], [2, -0.5], [-0.5, -0.5], [-0.5, 2], [-2, 2], [-2, -2]],
+        float,
+    )
+    assert hugs(-1.0, L)
+
+
+def test_build_wires_capacity_prices_pad_ends() -> None:
+    """capacity_mm is the edge length minus each endpoint pad's extent
+    projected onto the edge — a pin-touching edge loses half its pad's
+    shadow, an edge between courtyard corners keeps its full length."""
+    from precis.pcb.topoplace.wires import build_wires
+
+    d = example_a()
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    pin_vids = {int(v) for v in mesh.pin_vertex}
+    pin_edges = np.flatnonzero(np.isin(mesh.edges, list(pin_vids)).any(axis=1))
+    assert len(pin_edges) > 0
+    for e in pin_edges:
+        u, v = mesh.verts[mesh.edges[e]]
+        dvec = v - u
+        length = float(np.hypot(dvec[0], dvec[1]))
+        ux, uy = float(dvec[0]) / length, float(dvec[1]) / length
+        expect = length
+        for vid in (int(mesh.edges[e, 0]), int(mesh.edges[e, 1])):
+            if vid in pin_vids:
+                pin = int(np.flatnonzero(mesh.pin_vertex == vid)[0])
+                pw_, ph = float(d.pin_wh[pin, 0]), float(d.pin_wh[pin, 1])
+                expect -= (pw_ * abs(ux) + ph * abs(uy)) / 2.0
+        assert w.capacity_mm[e] == pytest.approx(max(expect, 0.0))
+        assert 0.0 <= w.capacity_mm[e] < length
+    corner_edges = np.flatnonzero(~np.isin(mesh.edges, list(pin_vids)).any(axis=1))
+    assert len(corner_edges) > 0
+    for e in corner_edges:
+        u, v = mesh.verts[mesh.edges[e]]
+        assert w.capacity_mm[e] == pytest.approx(float(np.hypot(*(v - u))))
+
+
+def test_build_wires_unreachable_pad_reported() -> None:
+    """A pad caged by a foreign obstacle on every candidate layer is
+    dropped from its net's tree and named once on ``w.unreachable``
+    with the boxing owners — the colour pass's certificate input; the
+    rest of the design still routes (seam R-b)."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import TopoZone
+    from precis.pcb.topoplace.wires import build_wires
+
+    d = example_a()
+    ring = np.asarray(
+        [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0]]
+    )
+    d = dataclasses.replace(
+        d,
+        zones=(TopoZone(kind="keepout", ring=ring, layers=(), name="cage"),),
+    )
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    # the caged pin is net C's pin at (0,0) — even though it is the
+    # tree's root, the record names the boxed side, not the free one
+    assert len(w.unreachable) == 1
+    hit = w.unreachable[0]
+    assert d.net_name[hit.net] == "C"
+    assert hit.pin == 4
+    assert hit.owners == (len(d.parts),)  # the keepout zone
+    assert all(b.edges for b in w.branches)
+    assert all(d.net_name[b.net] != "C" for b in w.branches)
+
+
+def _rescue_design(ring_own: bool, wall_mid_on_net: bool):
+    """R is a lone pad; J is a pad ringed by four TH pads; T is a
+    seven-pad TH wall across the middle. ``ring_own`` puts J's ring on
+    the wire's own net (walls open to it); ``wall_mid_on_net`` puts T's
+    middle wall pad on the net too (the reviewer's ``t`` repro)."""
+    from precis.pcb.topoplace.design import TopoDesign
+
+    sq = lambda hx, hy: np.asarray(
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]], float
+    )
+    ring = [[1.0, 0], [0, 1.0], [-1.0, 0], [0, -1.0]]
+    wall = [[0, -3.0 + i] for i in range(7)]
+    pin_xy = [[0, 0]] + [[0, 0]] + ring + wall
+    nets = [0, 0] + ([0] * 4 if ring_own else [1, 2, 3, 4]) + [5 + i for i in range(7)]
+    if wall_mid_on_net:
+        nets[6 + 3] = 0
+    net_ids = sorted(set(nets))
+    return TopoDesign(
+        parts=("R", "J", "T"),
+        pin_xy=np.asarray(pin_xy, float),
+        pin_part=np.asarray([0, 1, 1, 1, 1, 1] + [2] * 7),
+        pin_side=np.asarray([0, 2, 2, 2, 2, 2] + [2] * 7, np.int8),
+        pin_label=np.asarray(["1"] * len(nets), dtype=object),
+        pin_net=np.asarray(nets, np.int32),
+        net_pins=tuple(
+            np.asarray([i for i, n in enumerate(nets) if n == k]) for k in net_ids
+        ),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(3, bool),
+        freedoms=np.full(3, 3, np.uint8),
+        outline=np.asarray([[-10, -10], [10, -10], [10, 10], [-10, 10]], float),
+        pose0=np.asarray([[-6, 0, 0, 0], [5, 0, 0, 0], [0, 0, 0, 0]], float),
+        part_outline=(sq(0.5, 0.5), sq(1.6, 1.6), sq(0.6, 3.6)),
+        net_layer_force=np.full(len(net_ids), -1, np.int8),
+        net_name=tuple(f"n{k}" for k in net_ids),
+        pin_wh=np.tile([[0.6, 0.6]], (len(nets), 1)),
+    )
+
+
+def test_build_wires_rescue_through_own_net_walls() -> None:
+    """The net-keyed rescue, positive direction: J's centre pad sits
+    behind a ring of four TH pads, but the ring is on the wire's OWN
+    net, so its walls open — the pin joins the tree and a branch crosses
+    the ring's own fan edges to reach it (round-2 item 7: a successful
+    rescue). Foreign-net rings wall the same pin off instead."""
+    from precis.pcb.topoplace.mesh import build_mesh
+    from precis.pcb.topoplace.wires import _make_ctx, build_wires
+
+    d = _rescue_design(ring_own=True, wall_mid_on_net=False)
+    mesh = build_mesh(d, d.pose0)
+    ctx = _make_ctx(mesh, d, 2)
+    w = build_wires(mesh, d, 2)
+    assert not w.unreachable
+    own = frozenset(int(p) for p in d.net_pins[0])
+    assert own == frozenset(range(6))  # R pad, J centre, J ring
+    wall_crossings = [
+        e
+        for b in w.branches
+        if b.net == 0
+        for e in b.edges
+        if any(p in own for p, _m in ctx.pad_contrib.get(e, ()))
+    ]
+    assert wall_crossings  # a branch went THROUGH the ring's walls
+    _assert_routing_rule(ctx, d, w, 2)
+
+    d2 = _rescue_design(ring_own=False, wall_mid_on_net=False)
+    w2 = build_wires(build_mesh(d2, d2.pose0), d2, 2)
+    (u,) = w2.unreachable
+    assert (u.net, u.pin, u.owners) == (0, 1, (1,))  # caged by part J
+
+
+def test_build_wires_rescue_t_wall_pad_on_net() -> None:
+    """The ``t`` repro: T's middle wall pad joins the wire's net, but
+    the wall's foreign-net pads still wall it — the search must NOT
+    cross J's net-3 pad (or T's) to reach it; both caged pins come back
+    on ``w.unreachable`` with their boxing parts (round-2 item 2)."""
+    from precis.pcb.topoplace.mesh import build_mesh
+    from precis.pcb.topoplace.wires import _make_ctx, build_wires
+
+    d = _rescue_design(ring_own=False, wall_mid_on_net=True)
+    mesh = build_mesh(d, d.pose0)
+    ctx = _make_ctx(mesh, d, 2)
+    w = build_wires(mesh, d, 2)
+    by_pin = {u.pin: u for u in w.unreachable if u.net == 0}
+    assert set(by_pin) == {1, 9}
+    assert by_pin[1].owners == (1,)  # J's ring
+    assert by_pin[9].owners == (2,)  # T's wall
+    _assert_routing_rule(ctx, d, w, 2)
+
+
+def test_build_wires_caged_first_pin_keeps_net() -> None:
+    """A boxed-in first pin does not drop its net: with pin order
+    [0,1,2,3] and pin 0 caged by a keepout, the forest roots fresh
+    components and still routes the free pins; the caged one is named
+    once on ``w.unreachable`` with the zone owner (round-2 item 4)."""
+    from precis.pcb.topoplace.design import TopoDesign, TopoZone
+    from precis.pcb.topoplace.wires import build_wires
+
+    sq = lambda hx, hy: np.asarray(
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]], float
+    )
+    d = TopoDesign(
+        parts=("A", "B", "C", "D"),
+        pin_xy=np.zeros((4, 2)),
+        pin_part=np.asarray([0, 1, 2, 3]),
+        pin_side=np.asarray([0] * 4, np.int8),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        pin_net=np.asarray([0] * 4, np.int32),
+        net_pins=(np.asarray([0, 1, 2, 3]),),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(4, bool),
+        freedoms=np.full(4, 3, np.uint8),
+        outline=np.asarray([[-10, -10], [10, -10], [10, 10], [-10, 10]], float),
+        pose0=np.asarray(
+            [[-5, 0, 0, 0], [3, 0, 0, 0], [5, 4, 0, 0], [5, -4, 0, 0]], float
+        ),
+        part_outline=(sq(0.5, 0.5),) * 4,
+        net_layer_force=np.full(1, -1, np.int8),
+        net_name=("N",),
+        pin_wh=np.tile([[0.6, 0.6]], (4, 1)),
+        zones=(
+            TopoZone(
+                kind="keepout",
+                ring=np.asarray(
+                    [[-7, -2], [-3, -2], [-3, 2], [-7, 2], [-7, -2]], float
+                ),
+                layers=(),
+                name="cage",
+            ),
+        ),
+    )
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    (u,) = w.unreachable
+    assert (u.net, u.pin) == (0, 0)
+    assert u.owners == (len(d.parts),)  # the keepout zone
+    assert {p for b in w.branches for p in (b.pin_a, b.pin_b)} == {1, 2, 3}
+
+
+def test_build_wires_t_lies_on_taut_path() -> None:
+    """``t`` is geometry: the point at parameter ``t`` on a crossed edge
+    lies on the branch's taut polyline — the crossing parameter a 2c
+    via consumes is the real crossing."""
+    from precis.pcb.geom import dist_point_to_segment
+    from precis.pcb.topoplace.wires import build_wires
+
+    d = example_a()
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    for b in w.branches:
+        for e, te in zip(b.edges, b.t):
+            u = mesh.verts[mesh.edges[e, 0]]
+            v = mesh.verts[mesh.edges[e, 1]]
+            p = u + te * (v - u)
+            gap = min(
+                dist_point_to_segment(
+                    (float(p[0]), float(p[1])), b.points[i], b.points[i + 1]
+                )
+                for i in range(len(b.points) - 1)
+            )
+            assert gap <= 1e-6
+
+
+def test_build_wires_corridor_adjacency() -> None:
+    """``tris`` is a real corridor: edge ``i`` is shared by tris
+    ``i``/``i+1``, ``tris[0]`` holds pin_a's vertex, ``tris[-1]``
+    pin_b's."""
+    from precis.pcb.topoplace.wires import build_wires
+
+    d, _inst, _nets = synth_design(seed=0, n_parts=40)
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 4)
+    for b in w.branches:
+        assert len(b.tris) == len(b.edges) + 1
+        va = int(mesh.pin_vertex[b.pin_a])
+        vb = int(mesh.pin_vertex[b.pin_b])
+        assert va in (int(x) for x in mesh.tris[b.tris[0]])
+        assert vb in (int(x) for x in mesh.tris[b.tris[-1]])
+        for i, e in enumerate(b.edges):
+            sides = {int(x) for x in mesh.edge_tris[e] if int(x) >= 0}
+            assert {b.tris[i], b.tris[i + 1]} == sides
+
+
+def test_build_wires_tie_order_consistent() -> None:
+    """Order ties at wrapped vertices resolve by divergence, giving the
+    same answer on every edge of a shared run: two different-net wires
+    whose taut polylines never cross keep ONE normalized side on all
+    shared edges — 2c reads no phantom order flips (seam finding 1).
+    The sign is normalized by the edge's stored direction against the
+    corridor travel, since adjacent edges needn't agree on u→v."""
+    from precis.pcb.geom import segments_cross
+    from precis.pcb.topoplace.wires import build_wires
+
+    n_layers = 4
+    d, _inst, _nets = synth_design(seed=0, n_parts=40)
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, n_layers)
+    cent = [mesh.verts[mesh.tris[t]].mean(axis=0) for t in range(len(mesh.tris))]
+
+    def norm_sign(ba, bb, e: int, a: int, b: int) -> int:
+        pa, pb = w.order[e].index(a), w.order[e].index(b)
+        assert pa != pb
+        s = 1 if pa < pb else -1
+        ib = list(bb.edges).index(e)
+        cdir = cent[bb.tris[ib + 1]] - cent[bb.tris[ib]]
+        edir = mesh.verts[mesh.edges[e, 1]] - mesh.verts[mesh.edges[e, 0]]
+        cr = float(cdir[0] * edir[1] - cdir[1] * edir[0])
+        return s * (1 if cr > 0 else -1) if abs(cr) > 1e-12 else s
+
+    def polys_cross(ba, bb) -> bool:
+        pa, pb = ba.points, bb.points
+        if any(
+            segments_cross(pa[i], pa[i + 1], pb[j], pb[j + 1])
+            for i in range(len(pa) - 1)
+            for j in range(len(pb) - 1)
+        ):
+            return True
+        # a shared bend vertex is a real crossing when the four rays
+        # alternate cyclically around it (an X touch segments_cross
+        # cannot see); coincident rays merge first — wires arriving or
+        # leaving together touch without piercing
+        import math
+
+        for i in range(1, len(pa) - 1):
+            for j in range(1, len(pb) - 1):
+                if math.dist(pa[i], pb[j]) > 1e-9:
+                    continue
+                p = np.asarray(pa[i])
+                rays = sorted(
+                    (math.atan2(float(v[1]), float(v[0])), tag)
+                    for tag, v in (
+                        ("a", np.asarray(pa[i - 1]) - p),
+                        ("a", np.asarray(pa[i + 1]) - p),
+                        ("b", np.asarray(pb[j - 1]) - p),
+                        ("b", np.asarray(pb[j + 1]) - p),
+                    )
+                )
+                merged: list[tuple[float, str]] = []
+                for ang, tag in rays:
+                    if merged and ang - merged[-1][0] <= 1e-6:
+                        merged[-1] = (merged[-1][0], merged[-1][1] + tag)
+                    else:
+                        merged.append((ang, tag))
+                if (
+                    len(merged) > 1
+                    and merged[0][0] + 2 * math.pi - merged[-1][0] <= 1e-6
+                ):
+                    merged[0] = (merged[0][0], merged[-1][1] + merged[0][1])
+                    merged.pop()
+                if len(merged) != 4:
+                    continue
+                ia = [k for k, (_a, t) in enumerate(merged) if t == "a"]
+                if ia[1] - ia[0] == 2:
+                    return True
+        return False
+
+    seen: set[tuple[int, int]] = set()
+    phantom = 0
+    tied = 0
+    for e, ids in enumerate(w.order):
+        for a, b in itertools.pairwise(ids):
+            if (a, b) in seen:
+                continue
+            seen.add((a, b))
+            ba, bb = w.branches[a], w.branches[b]
+            if ba.net == bb.net:
+                continue
+            ea, eb = ba.edges, bb.edges
+            eb_at = {x: i for i, x in enumerate(eb)}
+            i = 0
+            runs: list[list[int]] = []
+            while i < len(ea):
+                if ea[i] in eb_at:
+                    run = [ea[i]]
+                    j = i + 1
+                    while (
+                        j < len(ea)
+                        and ea[j] in eb_at
+                        and abs(eb_at[ea[j]] - eb_at[ea[j - 1]]) == 1
+                    ):
+                        run.append(ea[j])
+                        j += 1
+                    runs.append(run)
+                    i = j
+                else:
+                    i += 1
+            for run in runs:
+                if len(run) < 2:
+                    continue
+                if any(
+                    abs(ba.t[list(ea).index(e2)] - bb.t[list(eb).index(e2)]) <= 1e-9
+                    for e2 in run
+                ):
+                    tied += 1
+                signs = {norm_sign(ba, bb, e2, a, b) for e2 in run}
+                if len(signs) > 1 and not polys_cross(ba, bb):
+                    phantom += 1
+    assert tied > 0  # the fixture does produce wrapped-vertex ties
+    assert phantom == 0
+
+
+def test_build_wires_capacity_honours_rotation() -> None:
+    """The pad extent priced off an edge is read through the part pose:
+    a quarter-turned part projects its pad's ROTATED shadow, so an
+    x-aligned edge sees the local-y extent, not the local-x one."""
+    import dataclasses
+
+    from precis.pcb.topoplace.wires import build_wires
+
+    d = example_a()
+    pose = d.pose0.copy()
+    pose[0, 2] = 1.0  # A1 quarter-turned
+    pin_wh = d.pin_wh.copy()
+    pin_wh[0] = (2.0, 1.0)
+    d = dataclasses.replace(d, pose0=pose, pin_wh=pin_wh)
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    v0 = int(mesh.pin_vertex[0])
+    hit = 0
+    for e in range(len(mesh.edges)):
+        if v0 not in (int(mesh.edges[e, 0]), int(mesh.edges[e, 1])):
+            continue
+        hit += 1
+        u, v = mesh.verts[mesh.edges[e]]
+        dvec = v - u
+        length = float(np.hypot(dvec[0], dvec[1]))
+        ux, uy = abs(float(dvec[0])) / length, abs(float(dvec[1])) / length
+        # rot_q 1: local +x maps to world +y — the pad's local h shows
+        # on the edge's x projection and w on its y projection
+        expect = length - (1.0 * ux + 2.0 * uy) / 2.0
+        assert w.capacity_mm[e] == pytest.approx(max(expect, 0.0))
+    assert hit > 0
+
+
+def test_build_wires_rate_printed() -> None:
+    """The 2b route runs well inside the spec's 2 evals/s full-route
+    floor at 100 parts — print the measured rate so 2c's budget is
+    visible."""
+    import time
+
+    from precis.pcb.topoplace.wires import build_wires
+
+    d, _inst, _nets = synth_design(seed=0, n_parts=100)
+    mesh = build_mesh(d, d.pose0)
+    t0 = time.monotonic()
+    w = build_wires(mesh, d, 4)
+    dt = time.monotonic() - t0
+    rate = 1.0 / dt
+    print(
+        f"\nwires: {len(w.branches)} branches in {dt * 1e3:.0f} ms -> {rate:.1f} evals/s"
+    )
+    assert rate >= 2.0
+
+
+def test_build_wires_deterministic() -> None:
+    from precis.pcb.topoplace.wires import build_wires
+
+    d, _inst, _nets = synth_design(seed=3)
+    mesh = build_mesh(d, d.pose0)
+    a, b = build_wires(mesh, d, 2), build_wires(mesh, d, 2)
+    assert a.branches == b.branches
+    assert a.order == b.order
+    assert a.net_layers == b.net_layers
+    np.testing.assert_array_equal(a.capacity_mm, b.capacity_mm)
 
 
 def _tiny_board() -> pcb.Board:

@@ -6,8 +6,8 @@ Loads a ``scripts/pcb-snapshot`` fixture into the dev/test DB named by
 same path the topo placer uses — ``board_batch`` → ``local._design`` →
 ``_build_ir`` → ``_footprints`` → ``design_from_ir`` — and writes
 ``<label>-<stage>.svg`` plus ``<label>-numbers.txt`` under ``--out``.
-Stages: ``mesh`` (2a); ``wires``/``layers``/``certs`` land with their
-slices. Run inside the dev container, e.g.::
+Stages: ``mesh`` (2a), ``wires`` (2b); ``layers``/``certs`` land with
+their slices. Run inside the dev container, e.g.::
 
     PRECIS_DATABASE_URL=postgresql://postgres@precis-test-db:5432/precis_test_topo \
         scripts/dev uv run --no-sync python scripts/pcb-topo-render \
@@ -53,7 +53,7 @@ def _load_design(fixture: Path, slug: str, dsn: str):
         features=design.features,
         fixed_copper=design.fixed_copper,
     )
-    return td, np.asarray(td.pose0, dtype=np.float64), design.graph
+    return td, np.asarray(td.pose0, dtype=np.float64), design.graph, ir.n_layers
 
 
 def _svg(path: Path, width_mm: float, height_mm: float, body: list[str]) -> None:
@@ -68,12 +68,8 @@ def _svg(path: Path, width_mm: float, height_mm: float, body: list[str]) -> None
     )
 
 
-def _render_mesh(td, pose, mesh, out: Path, label: str) -> str:
-    """Mesh SVG: free edges grey, courtyards orange, outline black, pads
-    red, airwires (net MST over pad vertices) dashed blue."""
-    from precis.pcb.topoplace.mesh import _place
-    from precis.pcb.topoplace.proxy import all_pin_world
-
+def _frame(mesh):
+    """Board-bounds world→SVG map shared by every stage (y down)."""
     vx, vy = mesh.verts[:, 0], mesh.verts[:, 1]
     x0, x1 = float(vx.min()) - 1.0, float(vx.max()) + 1.0
     y0, y1 = float(vy.min()) - 1.0, float(vy.max()) + 1.0
@@ -84,18 +80,15 @@ def _render_mesh(td, pose, mesh, out: Path, label: str) -> str:
     def Y(y):
         return y1 - y  # SVG y down
 
-    def seg(a, b):
-        pa, pb = mesh.verts[a], mesh.verts[b]
-        return f"{X(pa[0]):.3f},{Y(pa[1]):.3f} {X(pb[0]):.3f},{Y(pb[1]):.3f}"
+    return X, Y, x1 - x0, y1 - y0
+
+
+def _underlay(td, pose, X, Y) -> list[str]:
+    """Courtyards, zones and the board outline — the shared base every
+    stage draws its subject on top of."""
+    from precis.pcb.topoplace.mesh import _place
 
     body: list[str] = []
-    free = [
-        f'<line x1="{s.split()[0].split(",")[0]}" y1="{s.split()[0].split(",")[1]}" '
-        f'x2="{s.split()[1].split(",")[0]}" y2="{s.split()[1].split(",")[1]}" '
-        'stroke="#d4d4d4" stroke-width="0.06"/>'
-        for s in (seg(*mesh.edges[i]) for i in np.flatnonzero(~mesh.constrained))
-    ]
-    body.append("<g>" + "".join(free) + "</g>")
     for part in range(len(td.parts)):
         ring = np.asarray(td.part_outline[part], dtype=np.float64)
         if len(ring) < 4:
@@ -119,6 +112,44 @@ def _render_mesh(td, pose, mesh, out: Path, label: str) -> str:
         body.append(
             f'<polygon points="{pts}" fill="none" stroke="black" stroke-width="0.25"/>'
         )
+    return body
+
+
+def _pads(td, pose, X, Y) -> str:
+    """Pad dots — drawn last so they sit on top of any stage's lines."""
+    from precis.pcb.topoplace.proxy import all_pin_world
+
+    pw = all_pin_world(td, pose)
+    return (
+        "<g>"
+        + "".join(
+            f'<circle cx="{X(p[0]):.3f}" cy="{Y(p[1]):.3f}" r="0.14" fill="#c02020"/>'
+            for p in pw
+        )
+        + "</g>"
+    )
+
+
+def _render_mesh(td, pose, mesh, out: Path, label: str) -> str:
+    """Mesh SVG: free edges grey, courtyards orange, outline black, pads
+    red, airwires (net MST over pad vertices) dashed blue."""
+    from precis.pcb.topoplace.proxy import all_pin_world
+
+    X, Y, w_mm, h_mm = _frame(mesh)
+
+    def seg(a, b):
+        pa, pb = mesh.verts[a], mesh.verts[b]
+        return f"{X(pa[0]):.3f},{Y(pa[1]):.3f} {X(pb[0]):.3f},{Y(pb[1]):.3f}"
+
+    body: list[str] = []
+    free = [
+        f'<line x1="{s.split()[0].split(",")[0]}" y1="{s.split()[0].split(",")[1]}" '
+        f'x2="{s.split()[1].split(",")[0]}" y2="{s.split()[1].split(",")[1]}" '
+        'stroke="#d4d4d4" stroke-width="0.06"/>'
+        for s in (seg(*mesh.edges[i]) for i in np.flatnonzero(~mesh.constrained))
+    ]
+    body.append("<g>" + "".join(free) + "</g>")
+    body += _underlay(td, pose, X, Y)
     pw = all_pin_world(td, pose)
     for pins in td.net_pins:
         for i in range(len(pins)):
@@ -131,15 +162,8 @@ def _render_mesh(td, pose, mesh, out: Path, label: str) -> str:
                 f'x2="{X(b[0]):.3f}" y2="{Y(b[1]):.3f}" stroke="#5577dd" '
                 'stroke-width="0.07" stroke-dasharray="0.3,0.2"/>'
             )
-    body.append(
-        "<g>"
-        + "".join(
-            f'<circle cx="{X(p[0]):.3f}" cy="{Y(p[1]):.3f}" r="0.14" fill="#c02020"/>'
-            for p in pw
-        )
-        + "</g>"
-    )
-    _svg(out / f"{label}-mesh.svg", x1 - x0, y1 - y0, body)
+    body.append(_pads(td, pose, X, Y))
+    _svg(out / f"{label}-mesh.svg", w_mm, h_mm, body)
 
     v_ref = len(np.unique(mesh.tris.ravel()))
     euler = v_ref - len(mesh.edges) + len(mesh.tris)
@@ -151,7 +175,54 @@ def _render_mesh(td, pose, mesh, out: Path, label: str) -> str:
         f"constrained={int(mesh.constrained.sum())} euler={euler} "
         f"conflicts={len(mesh.conflicts)}({same_side}same,{ov_area:.1f}mm2) "
         f"outline={len(mesh.outline_conflicts)} zones={len(td.zones)} "
-        "crossings=n/a(2b) vias=n/a(2c) odd_cycles=n/a(2c)"
+        "crossings=n/a(2c) vias=n/a(2c) odd_cycles=n/a(2c)"
+    )
+
+
+def _net_color(net: int) -> str:
+    """Deterministic per-net stroke colour — golden-angle hue steps so
+    neighbouring net ids don't land on near-identical colours."""
+    import colorsys
+
+    r, g, b = colorsys.hsv_to_rgb((net * 0.618034) % 1.0, 0.75, 0.78)
+    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+
+
+def _render_wires(td, pose, mesh, wires, out: Path, label: str) -> str:
+    """Wires SVG: the 2b taut representatives — every branch's polyline
+    in its net's colour over the underlay. A pin on
+    ``wires.unreachable`` is drawn as a dashed red ring on its pad, and
+    counted as unrouted."""
+    X, Y, w_mm, h_mm = _frame(mesh)
+    body = _underlay(td, pose, X, Y)
+    for br in wires.branches:
+        pts = " ".join(f"{X(x):.3f},{Y(y):.3f}" for x, y in br.points)
+        body.append(
+            f'<polyline points="{pts}" fill="none" '
+            f'stroke="{_net_color(br.net)}" stroke-width="0.12" '
+            'stroke-linecap="round"/>'
+        )
+    for u in wires.unreachable:
+        a = mesh.verts[int(mesh.pin_vertex[u.pin])]
+        body.append(
+            f'<circle cx="{X(a[0]):.3f}" cy="{Y(a[1]):.3f}" r="0.6" '
+            'fill="none" stroke="#c02020" stroke-width="0.15" '
+            'stroke-dasharray="0.4,0.25"/>'
+        )
+    body.append(_pads(td, pose, X, Y))
+    _svg(out / f"{label}-wires.svg", w_mm, h_mm, body)
+    per_net = " ".join(
+        f"{td.net_name[k] if k < len(td.net_name) else k}:"
+        f"{sum(1 for b in wires.branches if b.net == k)}"
+        for k in range(len(td.net_pins))
+    )
+    unr = ",".join(
+        f"{td.net_name[u.net] if u.net < len(td.net_name) else u.net}@{u.pin}"
+        for u in wires.unreachable
+    )
+    return (
+        f"wires_branches={len(wires.branches)} "
+        f"unreachable={len(wires.unreachable)}({unr}) per-net[{per_net}]"
     )
 
 
@@ -159,7 +230,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--fixture", type=Path, required=True)
     ap.add_argument("--label", required=True)
-    ap.add_argument("--stage", choices=["mesh"], default="mesh")
+    ap.add_argument("--stage", choices=["mesh", "wires"], default="mesh")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--slug")
     ap.add_argument("--dsn", default=os.environ.get("PRECIS_DATABASE_URL"))
@@ -170,7 +241,7 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
 
     t0 = time.monotonic()
-    td, pose, _graph = _load_design(args.fixture, slug, args.dsn)
+    td, pose, _graph, n_layers = _load_design(args.fixture, slug, args.dsn)
     load_s = time.monotonic() - t0
 
     from precis.pcb.topoplace.mesh import build_mesh
@@ -178,7 +249,16 @@ def main() -> int:
     t0 = time.monotonic()
     mesh = build_mesh(td, pose)
     mesh_ms = (time.monotonic() - t0) * 1000
-    numbers = _render_mesh(td, pose, mesh, args.out, args.label)
+    if args.stage == "wires":
+        from precis.pcb.topoplace.wires import build_wires
+
+        t0 = time.monotonic()
+        wires = build_wires(mesh, td, n_layers)
+        wires_ms = (time.monotonic() - t0) * 1000
+        numbers = _render_wires(td, pose, mesh, wires, args.out, args.label)
+        numbers += f" wires_ms={wires_ms:.0f} route_evals_s={1000 / wires_ms:.1f}"
+    else:
+        numbers = _render_mesh(td, pose, mesh, args.out, args.label)
     numbers += f" mesh_ms={mesh_ms:.0f} load_s={load_s:.1f}"
     (args.out / f"{args.label}-numbers.txt").write_text(
         f"{args.label}: {numbers}\n", encoding="utf-8"
