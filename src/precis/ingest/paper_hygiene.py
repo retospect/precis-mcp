@@ -1963,7 +1963,7 @@ def repair_junk_title_papers(
         for r in rows
         # Non-article entry_types keep their (often section-shaped)
         # titles — the junk rules are article-title rules (gr515227).
-        if not r[2] or r[2] in _ARTICLE_ENTRY_TYPES
+        if not r[2] or str(r[2]).strip().lower() in _ARTICLE_ENTRY_TYPES
     ]
     ref_map = store.fetch_refs_by_ids([c[0] for c in candidates])
 
@@ -2234,7 +2234,7 @@ def raise_junk_title_papers(
     for ref_id, title, owner, entry_type, cite_key, has_doi in rows:
         # Non-article entry_types keep their (often section-shaped)
         # titles — the junk rules are article-title rules (gr515227).
-        if entry_type and entry_type not in _ARTICLE_ENTRY_TYPES:
+        if entry_type and entry_type.strip().lower() not in _ARTICLE_ENTRY_TYPES:
             continue
         t = (title or "").strip()
         if is_placeholder_title(t):

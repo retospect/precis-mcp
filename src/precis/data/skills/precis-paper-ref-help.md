@@ -31,7 +31,7 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | I want to … | call |
 |---|---|
 | fix a wrong/missing author | `edit(id=…, authors=["Family, Given [iD]"])` |
-| repair stub metadata | `edit(id=…, title=/doi=/arxiv=/year=/journal=/entry_type=/abstract=)` |
+| repair stub metadata | `edit(id=…, title=/doi=/arxiv=/year=/journal=/entry_type=/abstract=/volume=/issue=/pages=/url=)` |
 | fold a duplicate pair | `args={'merge_into': '<survivor>', 'reason': …}` |
 | re-point a merged stub | `args={'redirect_to': '<pa>', 'reason': …}` |
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
@@ -86,7 +86,9 @@ DOI-bearing stub and orphaning the first. A *wrong* identifier is removable
 the same door — `doi=''` (empty string, not omitted) clears this ref's own
 DOI without touching who owns it elsewhere; `arxiv=''` clears likewise. A
 mis-filed record's year and venue repair the same way — `year=2007`,
-`journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`).
+`journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`,
+and the locator fields `volume=`/`issue=`/`pages=`/`url=` — the BibTeX
+export reads them, so don't stuff them into the `journal=` string).
 
 The needs-triage backfill (`precis.ingest.metadata_resolve`, "Bucket B")
 guards against pulling in the *wrong* identity (gr353804): a Crossref/S2

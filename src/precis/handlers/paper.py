@@ -43,6 +43,7 @@ from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._eye import is_eye_view
 from precis.handlers._paper_format import (
+    ENTRY_TYPE_VOCAB,
     _clean_inline_text,
     _format_authors,
     _render_citation,
@@ -2161,6 +2162,10 @@ class PaperHandler(Handler):
         arxiv: str | None = None,
         journal: str | None = None,
         entry_type: str | None = None,
+        volume: str | int | float | None = None,
+        issue: str | int | float | None = None,
+        pages: str | int | float | None = None,
+        url: str | int | float | None = None,
         supplement_of: str | None = None,
         dry_run: bool | str | None = None,
         args: dict[str, Any] | None = None,
@@ -2201,10 +2206,14 @@ class PaperHandler(Handler):
         human byline fix being exactly the kind of review that stamp
         exists to record.
         ``abstract`` / ``journal`` / ``entry_type`` merge into ``meta``
-        (``entry_type`` verbatim, matching what
-        :mod:`precis.ingest.paper_meta_enrich` writes — see
-        ``_paper_format.ENTRY_TYPE_CHOICES`` for the vocabulary the web
-        edit form offers); ``doi`` / ``arxiv`` replace this ref's alias
+        (``entry_type`` validated against the Crossref vocabulary —
+        :data:`_paper_format.ENTRY_TYPE_LABELS` plus the export map's
+        remaining types — and stored lowercase, matching what
+        :mod:`precis.ingest.paper_meta_enrich` writes); ``volume`` /
+        ``issue`` / ``pages`` / ``url`` merge the same way, under the
+        meta keys the exporters already read (``volume`` / ``number``
+        for ``issue=`` / ``pages`` / ``url`` — the enricher's spelling,
+        gr515469); ``doi`` / ``arxiv`` replace this ref's alias
         via :meth:`Store.set_ref_identifier` — except ``doi=''`` /
         ``arxiv=''`` (an explicit *empty string*, not the omitted-field
         ``None`` default), which instead **clears** that identifier via
@@ -2237,6 +2246,10 @@ class PaperHandler(Handler):
                         arxiv,
                         journal,
                         entry_type,
+                        volume,
+                        issue,
+                        pages,
+                        url,
                     )
                 )
             ):
@@ -2272,6 +2285,10 @@ class PaperHandler(Handler):
                         arxiv,
                         journal,
                         entry_type,
+                        volume,
+                        issue,
+                        pages,
+                        url,
                     )
                 )
             ):
@@ -2336,7 +2353,7 @@ class PaperHandler(Handler):
             if any(
                 v is not None
                 for v in (title, year, authors, abstract, doi, arxiv, journal)
-            ) or (entry_type is not None):
+            ) or any(v is not None for v in (entry_type, volume, issue, pages, url)):
                 raise BadInput(
                     "supplement_of= cannot be combined with other edit fields",
                     next="make the supplement_of= call alone, then edit the rest",
@@ -2360,8 +2377,39 @@ class PaperHandler(Handler):
             meta_patch["abstract"] = abstract.strip()
         if isinstance(journal, str) and journal.strip():
             meta_patch["journal"] = journal.strip()
-        if isinstance(entry_type, str) and entry_type.strip():
-            meta_patch["entry_type"] = entry_type.strip()
+        if entry_type is not None:
+            et = str(entry_type).strip().lower()
+            if et:
+                if et not in ENTRY_TYPE_VOCAB:
+                    raise BadInput(
+                        f"entry_type={entry_type!r} is not a Crossref type; "
+                        "accepted values are listed below",
+                        options=sorted(ENTRY_TYPE_VOCAB),
+                        next="edit again with a value from the list",
+                    )
+                meta_patch["entry_type"] = et
+        # Bibliographic locators (gr515469): the meta keys the enricher
+        # and the exporters read — Crossref ``issue`` lands as
+        # ``meta.number`` (paper_meta_enrich's spelling). Scalars coerce
+        # to str (an ``args={'volume': 12}`` int); a compound value is
+        # refused rather than dropped silently.
+        for kwarg_name, value, meta_key in (
+            ("volume", volume, "volume"),
+            ("issue", issue, "number"),
+            ("pages", pages, "pages"),
+            ("url", url, "url"),
+        ):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                raise BadInput(
+                    f"{kwarg_name}= takes a string or a number, not "
+                    f"{type(value).__name__}",
+                    next=f"edit again with {kwarg_name}='<value>'",
+                )
+            sval = str(value).strip()
+            if sval:
+                meta_patch[meta_key] = sval
         has_doi = bool(doi and str(doi).strip())
         has_arxiv = bool(arxiv and str(arxiv).strip())
         # gr353804: '' (explicit empty string) means "clear this
@@ -3959,6 +4007,10 @@ class PaperHandler(Handler):
             lines.append(
                 f"entry_type: {old_entry_type!r} → {meta_patch['entry_type']!r}"
             )
+        for meta_key in ("volume", "number", "pages", "url"):
+            if meta_key in meta_patch:
+                old_val = (old.meta or {}).get(meta_key) or "(none)"
+                lines.append(f"{meta_key}: {old_val!r} → {meta_patch[meta_key]!r}")
         if doi:
             lines.append(f"doi: {old_ids.get('doi', '(none)')!r} → {doi!r}")
         elif doi_clear:

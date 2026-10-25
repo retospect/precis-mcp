@@ -31,7 +31,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._paper_format import (
     _clean_inline_text,
     _latex_escape,
-    _latex_escape_math,
+    bibtex_title,
 )
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
@@ -603,7 +603,8 @@ def _format_pres_citation(ref: Any, *, style: str) -> str:
     slug = ref.slug or "???"
     # gr515227: stored titles are raw — BibTeX takes the md view, RIS
     # the plain view (same split as _render_citation).
-    title_bibtex = title_md(ref.title or "")
+    # gr515709: ``bibtex_title`` (not title_md + escape) so md emphasis
+    # becomes \emph and math islands get the safe-macro allowlist.
     title = title_plain(ref.title or "")
     authors = [_clean_inline_text(str(a)) for a in (meta.get("authors") or [])]
     authors = [a for a in authors if a]
@@ -632,8 +633,9 @@ def _format_pres_citation(ref: Any, *, style: str) -> str:
         return "\n".join(out)
 
     lines = [f"@{entry_type}{{{slug},"]
-    if title:
-        lines.append(f"  title = {{{_latex_escape_math(title_bibtex)}}},")
+    title_bib = bibtex_title(ref.title or "")
+    if title_bib:
+        lines.append(f"  title = {{{title_bib}}},")
     if authors:
         lines.append(
             f"  author = {{{' and '.join(_latex_escape(a) for a in authors)}}},"

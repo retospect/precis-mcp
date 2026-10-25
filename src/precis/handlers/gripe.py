@@ -340,6 +340,12 @@ class GripeHandler(NumericRefHandler):
         *,
         id: str | int | None = None,
         text: str | None = None,
+        # ``body=`` shares the prose slot with ``text=`` the same way
+        # todo put documents the split (gr515699): ``text=`` is the
+        # title / first line, ``body=`` the details — joined below so
+        # the todo shape files identically here. ``body=`` alone is the
+        # whole prose (the old body→text alias behaviour).
+        body: str | None = None,
         title: str | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
@@ -355,13 +361,19 @@ class GripeHandler(NumericRefHandler):
         observation: bool | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``text=`` + ``body=`` join as first line + details (the todo
+        # split, gr515699); ``body=`` alone is the whole prose.
+        if isinstance(body, str) and body.strip():
+            body = body.strip()
+            head = (text or "").strip()
+            text = f"{head}\n\n{body}" if head else body
         # A gripe's title is the first line of its body, so ``title=`` is
         # sugar for prepending it (skipped when text already leads with it).
         if title is not None and id is None and title.strip():
             title = title.strip()
-            body = (text or "").strip()
-            if not body.startswith(title):
-                text = f"{title}\n\n{body}" if body else title
+            existing = (text or "").strip()
+            if not existing.startswith(title):
+                text = f"{title}\n\n{existing}" if existing else title
         # automated writers cannot rephrase: mask here; agent verb calls are
         # refused at the dispatch boundary (runtime/dispatch.py)
         text = mask_secrets(text)

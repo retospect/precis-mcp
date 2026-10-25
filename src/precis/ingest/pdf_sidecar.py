@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import logging
 import re
 from collections.abc import Callable
@@ -397,103 +396,6 @@ def is_garbage_title(text: str) -> bool:
     if not plain:
         return True
     return any(p.search(plain) for p in _GARBAGE_TITLE_RES)
-
-
-# ---------------------------------------------------------------------------
-# Leaked-markup title repair (gr500372)
-# ---------------------------------------------------------------------------
-#
-# Registry titles (Crossref especially) and PDF ``/Title`` fields sometimes
-# carry inline markup verbatim — MathML (``<mml:math>…</mml:math>``),
-# ``<sub>``/``<sup>``, italic markers (``<i>``/``<b>``). The markup is real
-# title content mis-encoded, not junk — but the closing tags' ``/``
-# characters trip the ``≥2 path separators`` rule in ``_GARBAGE_TITLE_RES``,
-# so such a title reads "filename path leak" to the junk filters and lands
-# in the unfixable-todo queue. Rendering it back to text recovers the title.
-#
-# Boundary rule: ``<sub>``/``<sup>`` stay glued to their base
-# (``(Me<sub>3</sub>Si)<sub>2</sub>`` → ``(Me3Si)2``); every other removed
-# tag (or rendered math island) becomes a space only when it sat between two
-# word characters, so ``using<i>IFEFFIT</i>`` → ``using IFEFFIT`` while
-# ``{…}<i><sub>x</sub></i>·H2O`` keeps the subscript tight.
-
-_MML_MATH_RE = re.compile(r"<mml:math\b[^>]*>.*?</mml:math>", re.IGNORECASE | re.DOTALL)
-_MML_PRESCRIPTS_RE = re.compile(r"<mml:mprescripts\b[^>]*/?>", re.IGNORECASE)
-_MML_MULTI_END_RE = re.compile(r"</mml:mmultiscripts\s*>", re.IGNORECASE)
-_ANY_TAG_RE = re.compile(r"<[^>]+>")
-_SUBSUP_TAG_RE = re.compile(r"</?(?:sub|sup)\b[^>]*>", re.IGNORECASE)
-#: Word-level inline formatting (incl. Elsevier's ``<scp>`` small-caps).
-_INLINE_TAG = r"i|b|em|u|strong|small|span|font|scp|tt|mark|s|ins|del"
-_INLINE_TAG_RE = re.compile(rf"</?(?:{_INLINE_TAG})\b[^>]*>", re.IGNORECASE)
-#: A *paired* inline tag wrapping ≤2 chars is a sub/superscript in disguise
-#: (``H2O<i><sub>y</sub></i>``) — it glues tight like ``<sub>``; a longer
-#: span is real formatting (``using<i>IFEFFIT</i>``) and marks a boundary.
-_INLINE_PAIR_RE = re.compile(
-    rf"<({_INLINE_TAG})\b[^>]*>(.*?)</\1>", re.IGNORECASE | re.DOTALL
-)
-#: Sentinels marking a removed markup boundary; resolved to a space or "".
-_GLUE = "\x00"
-
-
-def _mml_text(fragment: str) -> str:
-    """Inner text of a MathML fragment: tags stripped, entities unescaped."""
-    return html.unescape(_ANY_TAG_RE.sub("", fragment))
-
-
-def _render_mml(match: re.Match[str]) -> str:
-    """Render one ``<mml:math>`` island as plain inline text.
-
-    ``msub``/``msup``/``mrow`` keep document order (base then script), which
-    plain tag-stripping already yields. ``mmultiscripts`` prescripts sit
-    *after* ``<mprescripts/>`` in the source but render *before* the base —
-    ``<mi>Se</mi><mprescripts/><mn>76</mn>`` is ``76Se``, not ``Se76``.
-    """
-    inner = match.group(0)
-    pre = _MML_PRESCRIPTS_RE.search(inner)
-    if not pre:
-        return _mml_text(inner)
-    base = _mml_text(inner[: pre.start()])
-    tail = inner[pre.end() :]
-    end = _MML_MULTI_END_RE.search(tail)
-    prescripts = _mml_text(tail[: end.start()] if end else tail)
-    return f"{prescripts}{base}"
-
-
-def render_leaked_markup(title: str) -> str:
-    """Render inline markup that leaked into a title field as plain text.
-
-    Handles MathML islands (``<mml:math>…</mml:math>`` → their inner text),
-    ``<sub>``/``<sup>`` (kept tight), other inline formatting tags (a word
-    boundary where they split two word characters), HTML entities, and the
-    missing spaces that result when such tags were the only separators
-    ("ATHENA,ARTEMIS" → "ATHENA, ARTEMIS"; "planar<mml:math>sp2</mml:math>
-    -bonded" → "planar sp2-bonded").
-
-    Returns the input unchanged when it carries no markup/entities, so
-    callers can compare to detect whether a clean happened. Pure.
-    """
-    if "<" not in title and "&" not in title:
-        return title
-    s = _MML_MATH_RE.sub(lambda m: f"{_GLUE}{_render_mml(m)}{_GLUE}", title)
-    s = _SUBSUP_TAG_RE.sub("", s)
-
-    def _inline_pair(m: re.Match[str]) -> str:
-        inner = m.group(2)
-        # Short italic spans ("<i>x</i>", an italicised subscript counter)
-        # keep their glue; longer ones are word-level formatting and take
-        # the boundary marker on both sides.
-        return inner if len(inner.strip()) <= 2 else f"{_GLUE}{inner}{_GLUE}"
-
-    s = _INLINE_PAIR_RE.sub(_inline_pair, s)
-    s = _INLINE_TAG_RE.sub(_GLUE, s)
-    s = _ANY_TAG_RE.sub("", s)  # unknown/unclosed tags: drop tight
-    s = html.unescape(s)
-    s = re.sub(rf"\w{_GLUE}+\w", lambda m: f"{m.group(0)[0]} {m.group(0)[-1]}", s)
-    s = s.replace(_GLUE, "")
-    # Punctuation that marked a removed tag's boundary loses its space too.
-    s = re.sub(r"([A-Za-z])([,;:])(?=[A-Za-z])", r"\1\2 ", s)
-    s = re.sub(r"\s+([,.;:!?])", r"\1", s)
-    return re.sub(r"\s+", " ", s).strip()
 
 
 # A docx/PDF export name that stood in for the title: "Microsoft Word -

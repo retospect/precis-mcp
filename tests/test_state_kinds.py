@@ -53,6 +53,27 @@ class TestGripe:
         assert blocks[0].chunk_kind == "gripe_body"
         assert "VS Code" in blocks[0].text
 
+    def test_put_text_and_body_join_like_todo(self, gripe: GripeHandler) -> None:
+        """gr515699: ``text=`` the title/first line + ``body=`` the
+        details join into one prose field (the todo put split), instead
+        of refusing both spellings together."""
+        gripe.put(
+            text="kwarg parity refuses gripe.put(new=) over args=",
+            body="seen on the fleet builder; the ledger calls it unreachable",
+        )
+        ref = gripe.store.list_refs(kind="gripe", limit=10)[0]
+        assert "kwarg parity" in ref.title
+        blocks = gripe.store.chunks.list_chunks_for_ref(ref.id)
+        assert "kwarg parity" in blocks[0].text
+        assert "the ledger calls it unreachable" in blocks[0].text
+
+    def test_put_body_alone_files_the_gripe(self, gripe: GripeHandler) -> None:
+        """``body=`` alone is the whole prose — the same shape the old
+        body→text dispatch alias produced."""
+        gripe.put(body="whole gripe carried on body=")
+        ref = gripe.store.list_refs(kind="gripe", limit=10)[0]
+        assert "whole gripe" in ref.title
+
     def test_default_status_open_tag(self, gripe: GripeHandler) -> None:
         """New gripes start at STATUS:open, like todos."""
         gripe.put(text="anything")

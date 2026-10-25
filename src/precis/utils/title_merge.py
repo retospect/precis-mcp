@@ -134,6 +134,23 @@ def _first_family(authors: Any) -> str:
     return toks[-1] if toks else ""
 
 
+#: Minimum CONTENT-token count (:func:`content_tokens` — stopwords and
+#: <4-char words excluded) of a normalised title for the identical-title
+#: waiver: ``The Editorial`` or ``In Memoriam`` is too generic to
+#: collapse on even when byte-identical; ``The rise of graphene`` has
+#: two content tokens and qualifies.
+_MIN_IDENTICAL_TITLE_TOKENS = 2
+
+
+def _title_identity_key(title: str | None) -> str:
+    """The identical-title key: plain view, lowercased, every non-word
+    run folded to one space. Unicode letters keep their identity
+    (``α`` ≠ ``γ`` — an ``α-Fe2O3`` paper is not the ``γ-Fe2O3`` one).
+    ``""`` when nothing usable remains — two empty keys are NOT
+    identical."""
+    return re.sub(r"[^\w]+", " ", title_plain(title or "").lower()).strip()
+
+
 def title_merge_refusal(
     stub_title: str | None,
     stub_year: int | None,
@@ -155,13 +172,36 @@ def title_merge_refusal(
     carry authors. Shared by ``ingest.dedup.reconcile_by_title_similarity`` and
     ``Store.upsert_stub_paper``.
 
+    The token-count leg can be waived when the two titles are identical
+    after normalisation (gr515509): ``"The rise of graphene" == "The Rise
+    of Graphene"`` needs no >=5 tokens — the identical string IS the
+    corroboration a fuzzy match was approximating. The waiver is
+    deliberately narrow — it applies only when the normalised title has
+    >=2 content tokens AND both sides carry a known year AND both carry a
+    first-author family name that matches. Without that bar a title-only
+    acquire (``upsert_stub_paper`` passes no authors) of ``Editorial`` or
+    ``Reply`` would collapse onto whatever held paper shares the title —
+    the hole the Opus review of gr515509 caught. Only the token count is
+    waived; the year and author legs still apply afterwards.
+
     ``unknown_year_min_sim`` (with ``sim``) relaxes only the unknown-year
     rule: a missing year on either side passes when ``sim`` reaches it. The
     mint-time guard uses this so a year-less title-only re-acquire of a held
     paper stays idempotent; the batch reconcile leaves it unset, so a
     year-less match goes to review. A known year mismatch always refuses.
     """
-    if (
+    key = _title_identity_key(stub_title)
+    identical = key != "" and key == _title_identity_key(held_title)
+    a, b = _first_family(stub_authors), _first_family(held_authors)
+    waive_tokens = (
+        identical
+        and len(content_tokens(key)) >= _MIN_IDENTICAL_TITLE_TOKENS
+        and stub_year is not None
+        and held_year is not None
+        and a != ""
+        and a == b
+    )
+    if not waive_tokens and (
         len(content_tokens(stub_title or "")) < _MIN_TITLE_TOKENS
         or len(content_tokens(held_title or "")) < _MIN_TITLE_TOKENS
     ):
@@ -175,7 +215,6 @@ def title_merge_refusal(
             return "year-unknown"
     elif abs(int(stub_year) - int(held_year)) > 1:
         return "year-mismatch"
-    a, b = _first_family(stub_authors), _first_family(held_authors)
     if a and b and a != b:
         return "author-mismatch"
     return None

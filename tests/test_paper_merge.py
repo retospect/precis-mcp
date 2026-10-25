@@ -148,6 +148,44 @@ class TestMergeHappyPath:
         assert "DRY RUN" in resp.body
         assert not _is_retired(store, loser)
 
+    def test_identical_short_title_merges(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr515509: identical normalised titles with matching year and
+        first author skip the token-count leg — the gripe's pair
+        ("The rise of graphene") is a true dup."""
+        loser = _seed_paper(
+            store,
+            "grloser2004",
+            title="The rise of graphene",
+            year=2004,
+            authors=[{"family": "Novoselov"}],
+        )
+        winner = _seed_paper(
+            store,
+            "grwinner2004",
+            title="The rise of graphene",
+            year=2004,
+            authors=[{"family": "Novoselov"}],
+        )
+        _call(handler, f"pa{loser}", f"pa{winner}")
+        assert _is_retired(store, loser)
+
+    def test_identical_short_title_without_authors_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr515509 review: the waiver needs a matching first author on
+        BOTH sides — an authorless pair still refuses short-title."""
+        loser = _seed_paper(
+            store, "grloser2005", title="The rise of graphene", year=2004
+        )
+        winner = _seed_paper(
+            store, "grwinner2005", title="The rise of graphene", year=2004
+        )
+        with pytest.raises(BadInput, match="short-title"):
+            _call(handler, loser, winner)
+        assert not _is_retired(store, loser)
+
 
 class TestMergeRefusals:
     def test_titles_disagree_refused(self, store: Store, handler: PaperHandler) -> None:
@@ -176,8 +214,10 @@ class TestMergeRefusals:
             _call(handler, loser, winner)
 
     def test_short_title_refused(self, store: Store, handler: PaperHandler) -> None:
+        # Distinct short titles still refuse (gr515509 waived the token
+        # count only for titles identical after normalisation).
         loser = _seed_paper(store, "stloser2020", title="Note", year=2020)
-        winner = _seed_paper(store, "stwinner2020", title="Note", year=2020)
+        winner = _seed_paper(store, "stwinner2020", title="Editorial", year=2020)
         with pytest.raises(BadInput, match="short-title"):
             _call(handler, loser, winner)
 

@@ -1496,7 +1496,102 @@ def test_bibtex_title_keeps_math_and_converts_emphasis() -> None:
     assert bibtex_title("The $100 and $200 laptops") == (r"The \$100 and \$200 laptops")
 
 
-def _citation_ref(entry_type: str | None) -> Any:
+def test_bibtex_title_sanitizes_hostile_math_macros() -> None:
+    """gr515709: a ``\\cmd`` outside the allowlist inside a ``$…$`` island
+    is neutralised to ``\\backslash{cmd}`` — it lands in the .bib as
+    literal text instead of a macro that executes at compile time."""
+    from precis.handlers._paper_format import bibtex_title
+
+    out = bibtex_title(r"Study of $\input{/etc/passwd}$ reactions")
+    assert r"\input" not in out
+    assert r"\backslash{input}" in out
+    out = bibtex_title(r"On $\def\x{1}\write18{rm -rf /}$ stability")
+    assert r"\def" not in out and r"\write18" not in out
+    assert r"\backslash{def}" in out and r"\backslash{write}" in out
+    # Allowlisted typesetting macros still pass through untouched.
+    assert r"$^{\mathrm{II}}$" in bibtex_title(r"Pd$^{\mathrm{II}}$ complex")
+
+
+def test_bibtex_title_neutralises_text_mode_macros_and_braces() -> None:
+    """Opus review of gr515709: a ``\\cmd`` OUTSIDE math is a live macro
+    too — the old ``\\.`` safe-span passed it through, so a title
+    ``\\input{/etc/passwd}`` with no ``$`` reached the .bib verbatim."""
+    from precis.handlers._paper_format import bibtex_title
+
+    out = bibtex_title(r"Study of \input{/etc/passwd} films")
+    assert r"\input" not in out
+    # ``\backslash`` is math-only — text mode uses \textbackslash{}
+    # (Opus re-review of gr515709).
+    assert r"\textbackslash{}input" in out
+    # Glyph escapes (``\`` + non-letter) still pass through untouched.
+    assert bibtex_title(r"50\% done") == r"50\% done"
+    # Braces are balanced, not escaped: BibTeX counts ``\{`` as a brace
+    # anyway, so a stray ``}`` is dropped and a missing closer appended.
+    assert bibtex_title("A } stray { title") == "A  stray { title}"
+    # A ``{``/``}`` pair SPLIT ACROSS a math island still balances —
+    # BibTeX counts braces across segment boundaries.
+    assert bibtex_title("a {b $x$ c} d") == "a {b $x$ c} d"
+    # Balanced groups stay groups.
+    assert "{BCS}" in bibtex_title("The {BCS} theory")
+
+
+def test_bibtex_title_text_mode_allowlist_survives() -> None:
+    """Opus re-review of gr515709: legitimate text-mode commands —
+    fonts, accents, ligatures, logos — pass through; only non-typeset
+    commands are neutralised (as ``\\textbackslash{}name``, never
+    ``\\backslash`` which is math-only)."""
+    from precis.handlers._paper_format import bibtex_title
+
+    assert r"\textit{ab initio}" in bibtex_title(r"An \textit{ab initio} study")
+    assert r"\v{C}ech" in bibtex_title(r"The \v{C}ech cohomology")
+    assert r"\"{o}" in bibtex_title(r"The {\"{o}}pology of it")
+    assert r"\LaTeX{}" in bibtex_title(r"A \LaTeX{} companion")
+    for cmd in ("input", "write", "def"):
+        out = bibtex_title(rf"On \{cmd}{{x}} films")
+        assert rf"\{cmd}" not in out
+        assert rf"\textbackslash{{}}{cmd}" in out
+
+
+def test_bibtex_title_neutralises_caret_hex_escape() -> None:
+    """``^^5c`` is TeX's input-level escape for a backslash — inside a
+    math island it smuggles a live command past the macro scan."""
+    from precis.handlers._paper_format import bibtex_title
+
+    out = bibtex_title(r"On $^^5cinput{/etc/passwd}$ films")
+    assert "^^" not in out
+    assert "input" in out  # rendered as literal text, never a macro
+    # Normal superscripts survive.
+    assert r"$x^{2}$" in bibtex_title(r"Model $x^{2}$ fit")
+
+
+def test_bibtex_title_caret_hex_split_across_safe_span() -> None:
+    """Opus re-review BLOCKER: ``\\^^69nput`` splits ``\\^`` off as a
+    glyph-escape safe span, so the ``^^`` was never seen together — TeX
+    then decodes ``^^69`` → ``i`` and compiles a live ``\\input``. The
+    defuse must run on the whole string before the split."""
+    from precis.handlers._paper_format import bibtex_title
+
+    out = bibtex_title(r"\^^69nput{/etc/passwd} x")
+    assert "^^" not in out
+    assert r"\input" not in out
+    # The leading ``\`` becomes an inert ``\\`` line-break, the carets
+    # literal accents — ``69nput`` can never re-form a command name.
+    assert out == r"\\^{}\^{}69nput{/etc/passwd} x"
+
+
+def test_render_citation_bibtex_url_emits_raw() -> None:
+    """Opus review of gr515469: ``url`` goes to ``\\url{}``/hyperref —
+    ``\\_``/``\\%`` escapes break the link, so the field emits the raw
+    string with braces balanced (BibTeX counts ``\\{`` as a brace, so
+    escaping was no protection — re-review of gr515709)."""
+    from precis.handlers._paper_format import _render_citation
+
+    ref = _citation_ref("journal-article", url="https://doi.org/10.1/x_y%20z{w")
+    bibtex = _render_citation(ref, style="bibtex")
+    assert r"url = {https://doi.org/10.1/x_y%20z{w}}" in bibtex
+
+
+def _citation_ref(entry_type: str | None, **meta_extra: Any) -> Any:
     """Minimal ``Ref`` for the type-aware export tests
     (docs/backlog/paper-meta-surfacing.md) — same shape as
     :func:`test_bibtex_unescapes_html_entities`, journal/entry_type only."""
@@ -1505,7 +1600,7 @@ def _citation_ref(entry_type: str | None) -> Any:
     from precis.store.types import Ref
 
     _now = datetime(2026, 1, 1, tzinfo=UTC)
-    meta: dict[str, Any] = {"journal": "Some Venue"}
+    meta: dict[str, Any] = {"journal": "Some Venue", **meta_extra}
     if entry_type is not None:
         meta["entry_type"] = entry_type
     return Ref(
@@ -1558,13 +1653,45 @@ def test_citation_export_posted_content_notes_preprint() -> None:
     assert _render_citation(ref, style="endnote").startswith("%0 Unpublished Work")
 
 
+def test_citation_export_map_covers_crossref_vocabulary() -> None:
+    """gr515478: the full Crossref document-type vocabulary maps —
+    ``proceedings`` → @proceedings, ``report`` → @techreport, the
+    dataset/reference/series types land on their formats, and only
+    ``journal-article`` (the default) stays unlisted."""
+    from precis.handlers._paper_format import _EXPORT_TYPE_MAP, _render_citation
+
+    expected = {
+        "proceedings": "proceedings",
+        "proceedings-series": "proceedings",
+        "book-part": "inbook",
+        "reference-entry": "inreference",
+        "report": "techreport",
+        "report-component": "misc",
+        "dataset": "dataset",
+        "component": "misc",
+        "other": "misc",
+        "journal-issue": "periodical",
+    }
+    for entry_type, bib_type in expected.items():
+        ref = _citation_ref(entry_type)
+        bibtex = _render_citation(ref, style="bibtex")
+        assert bibtex.startswith(f"@{bib_type}{{"), (entry_type, bibtex)
+    # Every listed type produces all three formats without raising.
+    for entry_type in _EXPORT_TYPE_MAP:
+        ref = _citation_ref(entry_type)
+        for style in ("bibtex", "ris", "endnote"):
+            assert _render_citation(ref, style=style), (entry_type, style)
+    # The journal-article default never needs a map entry.
+    assert "journal-article" not in _EXPORT_TYPE_MAP
+
+
 def test_citation_export_unknown_entry_type_falls_back_to_default() -> None:
-    """An entry_type outside ``_EXPORT_TYPE_MAP`` (e.g. Crossref's
-    ``reference-entry``, or the select's ``other``) degrades to the same
+    """An entry_type outside ``_EXPORT_TYPE_MAP`` (a value outside the
+    Crossref vocabulary, e.g. ``preprint-server``) degrades to the same
     journal-article default as no entry_type at all."""
     from precis.handlers._paper_format import _render_citation
 
-    ref = _citation_ref("reference-entry")
+    ref = _citation_ref("preprint-server")
     assert _render_citation(ref, style="bibtex").startswith("@article{")
     assert _render_citation(ref, style="ris").startswith("TY  - JOUR")
 
@@ -1574,7 +1701,7 @@ def test_citation_export_venueless_paper_is_misc_gen_generic() -> None:
     matching export.latex.build_bib; a journal keeps the article default."""
     from precis.handlers._paper_format import _render_citation
 
-    for et in (None, "reference-entry"):
+    for et in (None, "preprint-server"):
         ref = _citation_ref(et)
         ref.meta.pop("journal")
         assert _render_citation(ref, style="bibtex").startswith("@misc{")

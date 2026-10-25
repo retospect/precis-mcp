@@ -41,12 +41,28 @@ def test_put_body_aliased_to_text_on_gripe_comment(
     assert "a comment via body=" in handler.get(id=rid).body
 
 
-def test_put_text_and_body_together_is_an_error(
+def test_put_text_and_body_together_joins_on_gripe(
     runtime_with_store: PrecisRuntime,
 ) -> None:
+    """gr515699: gripe put now declares both spellings like todo —
+    ``text=`` the title/first line, ``body=`` the details — so both
+    together join instead of refusing."""
     body = runtime_with_store.dispatch(
         "put",
         {"kind": "gripe", "text": "one", "body": "two"},
+    )
+    assert "[error" not in body
+    assert "created gripe" in body
+
+
+def test_put_text_and_body_together_is_an_error_on_single_spelling_kind(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A single-spelling handler still can't collapse two prose values
+    into one slot silently — memory declares only ``text=``."""
+    body = runtime_with_store.dispatch(
+        "put",
+        {"kind": "memory", "text": "one", "body": "two"},
     )
     assert "[error:BadInput]" in body
     assert "pass one, not both" in body

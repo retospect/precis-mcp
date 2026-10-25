@@ -257,8 +257,8 @@ def _reviews_for(store: Store) -> tuple[list, list[TitleMatchReview]]:
 
 
 def test_title_merge_requires_corroboration(store: Store) -> None:
-    """Same title but NULL stub year -> review, not merge; a 3-token title
-    with the same year -> review as well."""
+    """Same title but NULL stub year -> review, not merge; a DISTINCT
+    short title with the same year -> review as well."""
     held = _held(
         store,
         n=20,
@@ -274,14 +274,163 @@ def test_title_merge_requires_corroboration(store: Store) -> None:
     assert _ref_state(store, stub)["deleted"] is False
     assert [(r.stub_ref_id, r.held_ref_id) for r in review] == [(stub, held)]
 
-    # Same year but only 3 distinctive tokens (< 5) -> still review.
+    # Same year but a distinct 4-token title (< 5) -> still review as
+    # short-title (gr515509 waived the token count only for titles
+    # identical after normalisation).
     stub2 = store.insert_ref(
-        kind="paper", slug="defects02", title="Defects in Carbon Nanotubes", year=2002
+        kind="paper",
+        slug="defects02",
+        title="Defects in Carbon Nanotubes Reviewed",
+        year=2002,
     ).id
     applied, review = _reviews_for(store)
     assert all(stub2 not in o.duplicate_ref_ids for o in applied)
     assert _ref_state(store, stub2)["deleted"] is False
     assert any(r.stub_ref_id == stub2 and r.reason == "short-title" for r in review)
+
+
+def test_reconcile_merges_identical_short_titles(store: Store) -> None:
+    """gr515509: an identical normalised title with matching year AND
+    first author skips the token-count leg — a true duplicate pair like
+    "The rise of graphene" folds."""
+    held = _held(
+        store,
+        n=30,
+        slug="held30",
+        title="The rise of graphene",
+        authors=("K. S. Novoselov",),
+        year=2004,
+    )
+    stub = store.insert_ref(
+        kind="paper",
+        slug="graphene04",
+        title="The rise of graphene",
+        authors=[{"name": "Novoselov, K. S."}],
+        year=2004,
+    ).id
+    applied, review = _reviews_for(store)
+    assert any(
+        o.survivor_ref_id == held and stub in o.duplicate_ref_ids for o in applied
+    )
+    st = _ref_state(store, stub)
+    assert st["deleted"] is True and st["superseded_by"] == str(held)
+    assert all(r.stub_ref_id != stub for r in review)
+
+
+def test_reconcile_identical_short_title_without_authors_reviews(
+    store: Store,
+) -> None:
+    """The waiver needs an author on BOTH sides (gr515509 review) — an
+    authorless stub with an identical short title goes to review, never
+    merges, however generic the title."""
+    held = _held(
+        store,
+        n=31,
+        slug="held31",
+        title="Editorial Board",
+        authors=("Some Author",),
+        year=2004,
+    )
+    stub = store.insert_ref(
+        kind="paper", slug="edboard04", title="Editorial Board", year=2004
+    ).id
+    applied, review = _reviews_for(store)
+    assert all(stub not in o.duplicate_ref_ids for o in applied)
+    assert _ref_state(store, stub)["deleted"] is False
+    assert any(r.stub_ref_id == stub and r.held_ref_id == held for r in review)
+
+
+def test_title_merge_refusal_identical_titles_skip_token_count() -> None:
+    """gr515509 (+ Opus review): the identical-title waiver needs >=2
+    content tokens (stopwords excluded), a known year on both sides and
+    matching first authors — and waives ONLY the token leg."""
+    from precis.utils.title_merge import _title_identity_key, title_merge_refusal
+
+    # Full waiver: identical, both years, matching authors, >=2 content
+    # tokens ("rise" + "graphene"; "the"/"of" don't count).
+    assert (
+        title_merge_refusal(
+            "The rise of graphene",
+            2004,
+            ["K. S. Novoselov"],
+            "The Rise of Graphene",
+            2004,
+            ["Novoselov, K. S."],
+        )
+        is None
+    )
+    # An authorless side never earns the waiver — the mint-guard hole.
+    assert (
+        title_merge_refusal(
+            "The rise of graphene",
+            2004,
+            None,
+            "The rise of graphene",
+            2004,
+            ["Novoselov, K. S."],
+        )
+        == "short-title"
+    )
+    # A missing year never earns the waiver.
+    assert (
+        title_merge_refusal(
+            "The rise of graphene",
+            None,
+            ["A Smith"],
+            "The rise of graphene",
+            2004,
+            ["A Smith"],
+        )
+        == "short-title"
+    )
+    # A one-word title never earns the waiver even with year + author.
+    assert (
+        title_merge_refusal(
+            "Editorial", 2004, ["A Smith"], "Editorial", 2004, ["A Smith"]
+        )
+        == "short-title"
+    )
+    # Two raw tokens but only one CONTENT token — a stopword does not
+    # count toward the bar (Opus re-review nit).
+    for generic in ("The Editorial", "In Memoriam"):
+        assert (
+            title_merge_refusal(generic, 2004, ["A Smith"], generic, 2004, ["A Smith"])
+            == "short-title"
+        )
+    # Waiver earned, but the year leg still refuses.
+    assert (
+        title_merge_refusal(
+            "The rise of graphene",
+            2001,
+            ["A Smith"],
+            "The rise of graphene",
+            2020,
+            ["A Smith"],
+        )
+        == "year-mismatch"
+    )
+    # Distinct short titles still refuse.
+    assert (
+        title_merge_refusal("Note", 2020, None, "Editorial", 2020, None)
+        == "short-title"
+    )
+    # Two empty titles are not "identical".
+    assert title_merge_refusal(None, 2020, None, None, 2020, None) == "short-title"
+    # Greek letters keep their identity — α- and γ-polymorphs and α-/β-
+    # synucleins are NOT identical titles (Opus review of gr515509).
+    assert _title_identity_key("α-Fe2O3 films") != _title_identity_key("γ-Fe2O3 films")
+    assert _title_identity_key("α-synuclein") != _title_identity_key("β-synuclein")
+    assert (
+        title_merge_refusal(
+            "α-Fe2O3 films",
+            2020,
+            [{"name": "A Smith"}],
+            "γ-Fe2O3 films",
+            2020,
+            [{"name": "A Smith"}],
+        )
+        == "short-title"
+    )
 
 
 def test_title_merge_refuses_null_year_and_author_mismatch(store: Store) -> None:
@@ -309,15 +458,38 @@ def test_title_merge_refuses_null_year_and_author_mismatch(store: Store) -> None
 
 
 def test_upsert_stub_paper_short_title_mints(store: Store) -> None:
+    """A DISTINCT short title still mints (gr515509 waived the token
+    count only for titles identical after normalisation)."""
     held = _held(
         store, n=22, slug="held22", title="Defects in Carbon Nanotubes", year=2002
     )
     for year in (None, 2002):
         ref_id, created = store.upsert_stub_paper(
-            identifiers=[], title="Defects in Carbon Nanotubes", year=year
+            identifiers=[], title="Defects in Carbon Nanotubes Reviewed", year=year
         )
         assert created is True
         assert ref_id != held
+
+
+def test_upsert_stub_paper_identical_short_title_mints(store: Store) -> None:
+    """gr515509 review: a title-only acquire carries no authors, so the
+    identical-title waiver can never apply in the mint guard — even an
+    identical short title mints instead of collapsing onto a held paper.
+    ``Editorial`` / ``Reply``-class titles stay acquireable."""
+    held = _held(store, n=24, slug="held24", title="The rise of graphene", year=2004)
+    held_ed = _held(store, n=25, slug="held25", title="Editorial", year=2004)
+    held_board = _held(store, n=26, slug="held26", title="Editorial Board", year=2004)
+    for title, held_id in (
+        ("The rise of graphene", held),
+        ("Editorial", held_ed),
+        ("Editorial Board", held_board),
+    ):
+        for year in (None, 2004):
+            ref_id, created = store.upsert_stub_paper(
+                identifiers=[], title=title, year=year
+            )
+            assert created is True
+            assert ref_id != held_id
 
 
 def test_upsert_stub_paper_yearless_long_title_returns_held(store: Store) -> None:

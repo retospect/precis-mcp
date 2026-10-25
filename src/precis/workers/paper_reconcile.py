@@ -161,13 +161,13 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             # a terminal ``body:partial`` flag; SQL-only, no model run.
             partial = heal_partial_body_papers(store, dry_run=False, limit=limit)
             bodiless_judged += [o for o in partial if o.outcome != "pending"]
-            # Junk titles get a repair attempt first (gr500372): render
-            # leaked markup in place, else resolve the real title via the
-            # stored DOI (Crossref, then OpenAlex) or an S2 title search
-            # over the stripped export name + first-page body lines. What
-            # the cascade terminally fails (its title_repair_v stamp) then
-            # goes to the owner's queue (gr477964, gr508499); idempotent,
-            # so the daily pass never re-files.
+            # Junk titles get a repair attempt first (gr500372): resolve
+            # the real title via the stored DOI (Crossref, then OpenAlex)
+            # or an S2 title search over the stripped export name +
+            # first-page body lines. What the cascade terminally fails
+            # (its title_repair_v stamp) then goes to the owner's queue
+            # (gr477964, gr508499); idempotent, so the daily pass never
+            # re-files.
             # Capped per pass so a backlog trickles into the queue
             # instead of flooding it on the first run after deploy.
             repaired = repair_junk_title_papers(

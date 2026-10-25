@@ -78,13 +78,13 @@ _GUARDED_VERBS = ("put", "edit")
 #: ``(kind, verb, param)``. Every entry here is a decision, not an
 #: accident — adding to this set silences the guard, so do it with a
 #: one-line reason in the comment, same discipline as an inline `noqa`.
-#: Empty: the investigation for gr262482/gr250273 found no kwarg in this
-#: class that's actually CLI-only or otherwise deliberately unreachable —
-#: even the ``args=`` extras-tunnel candidates (``pcb.put``,
-#: ``structure.put``/``.edit``) turned out to be real gaps, not a
-#: different-but-legitimate door (see docs/backlog/mcp-verb-schema-diet.md
-#: §"args= is not actually exempt"). Kept as a real (if empty) set so a
-#: future deliberate exemption has a home that isn't _ARGS_ONLY.
+#:
+#: The rule (gr515828): a kwarg that IS reachable through ``args=`` —
+#: the dispatcher flattens args= keys into handler kwargs, so any
+#: declared handler kwarg without a verb-level parameter qualifies —
+#: belongs in ``_ARGS_ONLY`` (where the reachability test proves it
+#: works), never here. ``_EXEMPT`` is only for a kwarg deliberately
+#: unreachable over MCP at all.
 _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
     {
         # turn= is the design-chat transcript handle stamped on a revision
@@ -94,14 +94,6 @@ _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
         # deliberately web-only (2026-09-18, design-workbench build).
         ("se", "edit", "turn"),
         ("structure", "edit", "turn"),
-        # new=/observation= are create-only gripe flags documented and
-        # served as ``args={'new': True}`` / ``args={'observation': True}``
-        # (precis-gripe-help); the dispatcher flattens args= into handler
-        # kwargs, so they work from MCP. Kept off the top-level verb schema
-        # on purpose: two rarely-used booleans are not worth advertised
-        # schema weight (docs/backlog/mcp-verb-schema-diet.md).
-        ("gripe", "put", "new"),
-        ("gripe", "put", "observation"),
     }
 )
 
@@ -151,6 +143,17 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("fleet", "edit", "assigned"),
         ("fleet", "edit", "note"),
         ("fleet", "edit", "slice"),
+        # -- put: gripe create-only flags, args= by design --------------
+        # new=/observation= are served as ``args={'new': True}`` /
+        # ``args={'observation': True}`` (precis-gripe-help); declared
+        # handler kwargs, so the dispatcher flattens args= into kwargs
+        # and the reachability test below proves it. Kept off the
+        # top-level verb schema on purpose: two rarely-used booleans
+        # are not worth advertised schema weight (gr515828 — they sat
+        # in _EXEMPT, the deliberately-unreachable ledger, which was
+        # the wrong rule and verified nothing).
+        ("gripe", "put", "new"),
+        ("gripe", "put", "observation"),
         # -- put: diagram kinds ------------------------------------------
         ("figure", "put", "viewbox"),
         ("figure", "put", "vocab"),
@@ -206,7 +209,9 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("pres", "edit", "bibtex_type"),
         ("pres", "edit", "date"),
         ("pres", "edit", "note"),
-        ("pres", "edit", "url"),
+        # ("pres","edit","url") left the ledger 2026-10-25 (gr515469):
+        # tools/core.py::edit now declares + forwards url= for the
+        # paper locator fields, so pres's url= is top-level-reachable.
         ("pres", "edit", "venue"),
         # -- edit: draft metadata repair -----------------------------------
         # ("draft","edit","meta") / ("pres","edit","meta") fixed gr301897:

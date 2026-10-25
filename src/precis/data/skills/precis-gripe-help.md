@@ -40,6 +40,10 @@ don't articulate the fix. A title is optional: `title=` is accepted and
 becomes the first line of the body (the title is just the first line). The system tags it
 `STATUS:open` automatically.
 
+A longer filing can split the way `todo` does: `text=` is the title /
+first line and `body=` the details — they join as `text` + blank line +
+`body`. `body=` alone is the whole prose, same as `text=` alone.
+
 If you know which thread owns it, add `tags=['thread:<slug>']` with the
 thread's slug. An unknown slug is refused and the refusal lists every
 valid one. The thread's open gripes are listed from that tag, so tagging

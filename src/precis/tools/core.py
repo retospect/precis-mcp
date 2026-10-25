@@ -1607,6 +1607,15 @@ def edit(
     journal: str | None = None,
     entry_type: str | None = None,
     abstract: str | None = None,
+    # paper/cfp bibliographic locators (gr515469): the same meta-merge
+    # fields — volume= / issue= / pages= / url= write meta.volume /
+    # meta.number / meta.pages / meta.url, the keys the bib exporters
+    # read. Declared at the verb level so strict-schema MCP clients
+    # don't strip them.
+    volume: str | None = None,
+    issue: str | None = None,
+    pages: str | None = None,
+    url: str | None = None,
     # paper/cfp: supplement_of=<parent slug | paN> declares this record a
     # supplement (SI) of that parent; made alone, no other edit fields.
     supplement_of: str | None = None,
@@ -1826,6 +1835,10 @@ def edit(
         "journal": journal,
         "entry_type": entry_type,
         "abstract": abstract,
+        "volume": volume,
+        "issue": issue,
+        "pages": pages,
+        "url": url,
         "supplement_of": supplement_of,
         "find": find,
         "before": before,

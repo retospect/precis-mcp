@@ -2044,6 +2044,74 @@ class TestPaperEdit:
         assert ref.meta["journal"] == "Old Journal"
         assert "entry_type" not in ref.meta
 
+    def test_edit_persists_locator_fields(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr515469: ``volume`` / ``issue`` / ``pages`` / ``url`` merge
+        into ``meta`` under the keys the exporters read — Crossref
+        ``issue`` lands as ``meta.number`` (the enricher's spelling)."""
+        ref_id = _seed_paper(store, slug="zemel1993hintons")
+        handler.edit(
+            id=ref_id,
+            volume="7",
+            issue="3",
+            pages="549-564",
+            url="https://example.org/paper",
+        )
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.meta["volume"] == "7"
+        assert ref.meta["number"] == "3"
+        assert ref.meta["pages"] == "549-564"
+        assert ref.meta["url"] == "https://example.org/paper"
+
+    def test_edit_locator_fields_reach_bibtex(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The BibTeX view emits the locator fields an edit just wrote —
+        the workaround (volume/pages stuffed into ``journal=``) is gone."""
+        ref_id = _seed_paper(store, slug="zemel1993hintonb")
+        handler.edit(id=ref_id, volume="7", issue="3", pages="549-564")
+        bib = handler.get(id=ref_id, view="bibtex").body
+        assert "volume = {7}" in bib
+        assert "number = {3}" in bib
+        assert "pages = {549-564}" in bib
+
+    def test_edit_entry_type_validated_and_lowercased(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``entry_type=`` is checked against the Crossref vocabulary
+        (stored lowercase, matching what the enricher writes); an
+        unknown value is refused with the accepted list."""
+        ref_id = _seed_paper(store, slug="wang2020et")
+        with pytest.raises(BadInput, match="not a Crossref type"):
+            handler.edit(id=ref_id, entry_type="magazine-piece")
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert "entry_type" not in ref.meta
+        handler.edit(id=ref_id, entry_type="Proceedings-Article")
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.meta["entry_type"] == "proceedings-article"
+        # The series/component Crossref types are accepted too (Opus
+        # review of gr515478 — they were the two vocab gaps left).
+        for et in ("proceedings-series", "report-component"):
+            handler.edit(id=ref_id, entry_type=et)
+            ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+            assert ref.meta["entry_type"] == et
+
+    def test_edit_locator_scalar_values_coerce(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A numeric locator (``args={'volume': 12}`` flattened to
+        ``volume=12``) coerces to str instead of dropping silently; a
+        compound value is refused with a named error."""
+        ref_id = _seed_paper(store, slug="zemel1993hintonc")
+        handler.edit(id=ref_id, volume=12)
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.meta["volume"] == "12"
+        junk: Any = ["7"]
+        with pytest.raises(BadInput, match="takes a string or a number"):
+            handler.edit(id=ref_id, volume=junk)
+        assert ref.meta["volume"] == "12"
+
 
 # ---------------------------------------------------------------------------
 # edit() — DOI-edit metadata-clobber guard (gr180189)
