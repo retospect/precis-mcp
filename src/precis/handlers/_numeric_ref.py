@@ -703,6 +703,11 @@ class NumericRefHandler(Handler):
         view: str | None = None,
         q: str | None = None,
         of_kind: str | None = None,
+        # ``view='links'``'s relation filter (``args={'rel': 'touched'}``)
+        # — narrows the link table to one relation, the same narrowing
+        # ``of_kind`` gives on the endpoint kind (gr514335: a hot ref's
+        # unfiltered links view runs to hundreds of KB).
+        rel: str | None = None,
         # ``view='diff'``'s sha, arriving through ``get``'s ``args=``
         # extras channel (``args={'since': <sha>}`` — the sha a review's
         # ``content_sha`` carries, or any ``prev_sha``/``new_sha`` in the
@@ -778,7 +783,9 @@ class NumericRefHandler(Handler):
                     ),
                 )
             if view == "links":
-                return self._render_links_view(ref, of_kind=of_kind)
+                if rel is not None:
+                    rel = validate_relation(str(rel), store=self.store)
+                return self._render_links_view(ref, of_kind=of_kind, rel=rel)
             if view == "log":
                 from precis.handlers._event_log_render import render_event_log
 
@@ -3236,11 +3243,19 @@ class NumericRefHandler(Handler):
 
     # ── rendering hooks (subclasses may override) ─────────────────
 
-    def _render_links_view(self, ref: Ref, *, of_kind: str | None = None) -> Response:
+    def _render_links_view(
+        self,
+        ref: Ref,
+        *,
+        of_kind: str | None = None,
+        rel: str | None = None,
+    ) -> Response:
         """Render `view='links'`: outbound + inbound link graph for a ref.
 
         ``of_kind`` (``args={'of_kind': 'pathway'}``) keeps only links whose
-        other endpoint is a ref of that kind (gr472990 case b); every
+        other endpoint is a ref of that kind (gr472990 case b); ``rel``
+        (``args={'rel': 'touched'}``) keeps only links of one relation —
+        the same narrowing draft's links view offers (gr514335). Every
         neighbour is still resolved, so the filter costs no extra query.
 
         Outbound rows ("→") are stored on this ref as ``src_ref_id``.
@@ -3299,6 +3314,13 @@ class NumericRefHandler(Handler):
                 )
                 return Response(body="\n".join(lines), result_count=0)
 
+        if rel is not None:
+            out_links = [lk for lk in out_links if lk.relation == rel]
+            in_links = [lk for lk in in_links if lk.relation == rel]
+            lines[0] += f" (rel={rel})"
+            if not out_links and not in_links:
+                lines += ["", f"(no links matching rel={rel!r})"]
+                return Response(body="\n".join(lines), result_count=0)
         if of_kind is not None:
             out_links = [
                 lk

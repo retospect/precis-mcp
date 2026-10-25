@@ -131,16 +131,22 @@ _HELD_SQL = (
 
 @dataclass
 class HeldIndex:
-    """The held-corpus lookup: OpenAlex ``W…`` id → ref, DOI → ref."""
+    """The held-corpus lookup: OpenAlex ``w…`` id → ref, DOI → ref.
+
+    Keys are the ``ref_identifiers`` canonical form — lowercase (an
+    OpenAlex id stores as ``w…`` while the API records carry ``W…``;
+    gr514198). Both sides are lowered at index-build AND probe time, so a
+    legacy mixed-case row still matches.
+    """
 
     by_oa: dict[str, int]
     by_doi: dict[str, int]
 
     def ref_for(self, oa_id: str, doi: str | None) -> int | None:
         """Resolve a work to a held ``ref_id``: OpenAlex id first, then DOI."""
-        ref = self.by_oa.get(oa_id)
+        ref = self.by_oa.get(oa_id.lower())
         if ref is None and doi:
-            ref = self.by_doi.get(doi)
+            ref = self.by_doi.get(doi.lower())
         return ref
 
 
@@ -151,7 +157,7 @@ def load_held_index(store: Store) -> HeldIndex:
     by_oa: dict[str, int] = {}
     by_doi: dict[str, int] = {}
     for kind, value, ref_id in rows:
-        (by_oa if kind == "openalex" else by_doi)[str(value)] = int(ref_id)
+        (by_oa if kind == "openalex" else by_doi)[str(value).lower()] = int(ref_id)
     return HeldIndex(by_oa, by_doi)
 
 
@@ -200,7 +206,7 @@ def iter_kept_edges(
         return
     src_ref = held.ref_for(src_oa, src_doi)
     for dst_oa in dsts:
-        dst_ref = held.by_oa.get(dst_oa)
+        dst_ref = held.by_oa.get(dst_oa.lower())
         if src_ref is None and dst_ref is None:
             continue
         yield (src_oa, dst_oa, src_ref, dst_ref, src_doi)

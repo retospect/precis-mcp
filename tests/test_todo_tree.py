@@ -895,3 +895,23 @@ def test_links_view_of_kind_filters_neighbours(handler: TodoHandler, hub: Hub) -
 
     out = handler.get(id=a_id, view="links", of_kind="pathway").body
     assert "(no links to kind 'pathway')" in out
+
+
+def test_links_view_rel_filters_relation(handler: TodoHandler, hub: Hub) -> None:
+    """gr514335: ``args={'rel': R}`` keeps only links of relation R —
+    the same narrowing draft's links view already offered, extended to
+    numeric-ref kinds (a hot ref's unfiltered graph runs to hundreds of
+    KB). An unknown rel is refused by ``validate_relation``."""
+    a_id = _id_of(handler.put(text="A").body)
+    b_id = _id_of(handler.put(text="B").body)
+    c_id = _id_of(handler.put(text="C").body)
+    handler.link(id=a_id, target=f"todo:{b_id}", rel="related-to")
+    handler.link(id=a_id, target=f"todo:{c_id}", rel="see-also")
+
+    out = handler.get(id=a_id, view="links", rel="see-also").body
+    assert "(rel=see-also)" in out
+    assert f"todo:{c_id}" in out or f"td{c_id}" in out
+    assert f"todo:{b_id}" not in out and f"td{b_id}" not in out
+
+    out = handler.get(id=a_id, view="links", rel="cites").body
+    assert "(no links matching rel='cites')" in out

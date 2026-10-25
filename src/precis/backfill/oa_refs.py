@@ -225,12 +225,12 @@ def _held_refs_for_oa_ids(conn: Any, w_ids: list[str]) -> dict[str, int]:
     """
     probes = [w.lower() for w in w_ids]
     rows = conn.execute(
-        "SELECT DISTINCT ON (ri.id_value) ri.id_value, ri.ref_id "
+        "SELECT DISTINCT ON (lower(ri.id_value)) lower(ri.id_value), ri.ref_id "
         "FROM ref_identifiers ri "
         "JOIN refs r ON r.ref_id = ri.ref_id "
-        "WHERE ri.id_kind IN ('openalex', 'doi') AND ri.id_value = ANY(%s) "
+        "WHERE ri.id_kind IN ('openalex', 'doi') AND lower(ri.id_value) = ANY(%s) "
         "AND r.kind = 'paper' AND r.retired_at IS NULL "
-        "ORDER BY ri.id_value, (ri.id_kind = 'openalex') DESC, ri.ref_id",
+        "ORDER BY lower(ri.id_value), (ri.id_kind = 'openalex') DESC, ri.ref_id",
         (probes,),
     ).fetchall()
     by_lower = {str(v): int(rid) for v, rid in rows}

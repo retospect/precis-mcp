@@ -115,7 +115,11 @@ def _expected(a: int, b: int, c: int) -> set[tuple[str, str, int | None, int | N
 
 
 def _seed(store: Store) -> tuple[int, int, int, oas.HeldIndex]:
-    a = _held(store, "a", oa="W111")
+    # `w111` is the ref_identifiers canonical form (lowercase — every
+    # mixin write normalises, gr514198); `W333` is a legacy mixed-case
+    # row left by a raw-SQL write. Both must resolve against the API's
+    # W… records — the index lowers both sides.
+    a = _held(store, "a", oa="w111")
     b = _held(store, "b", doi="10.1/x")
     c = _held(store, "c", oa="W333")
     return a, b, c, oas.load_held_index(store)

@@ -1765,20 +1765,34 @@ def _build_paper_payload(
     authors: str,
     journal: str = "",
     entry_type: str = "",
+    current_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the ``edit`` verb payload from the metadata form fields.
 
     Empty fields are dropped (an unset value must not overwrite a stored
-    one). Authors split on newline / ``;`` and forward as cleaned lines —
+    one) — EXCEPT ``doi`` / ``arxiv``: those form fields always post the
+    current identifier, so a blanked-out field on a ref that holds one is
+    the operator asking to delete it, not "keep the current value". The
+    edit verb reads ``doi=''`` as an explicit clear
+    (:meth:`Store.clear_ref_identifier`, gr353804), so the route forwards
+    ``""`` when ``current_ids`` (the ref's stored identifiers, via
+    ``identifiers_for_refs``) shows the scheme held — gr515246: dropping
+    the blank silently kept the wrong DOI, which then "came back" on the
+    Meta tab. A blank field for a scheme the ref does NOT carry stays
+    unsent, preserving the "nothing to change" no-op.
+
+    Authors split on newline / ``;`` and forward as cleaned lines —
     the paper edit handler canonicalises them to the stored shape. The
     result always carries ``kind`` + ``id``; ``len(...) > 2`` means real
     metadata is present. Shared by the ``edit`` route and the duplicate
     resolver's re-apply step.
 
-    ``journal`` / ``entry_type`` default to ``""`` (not required
-    keyword-only, unlike the rest) so a call site that predates the two
-    new Meta-tab fields still compiles — ``resolve_duplicate``'s re-apply
-    passes them through explicitly.
+    ``journal`` / ``entry_type`` / ``current_ids`` default (not required
+    keyword-only, unlike the rest) so a call site that predates them
+    still compiles — ``resolve_duplicate``'s re-apply passes
+    ``journal``/``entry_type`` explicitly and leaves ``current_ids``
+    unset: a merge re-apply never silently deletes an identifier the
+    operator didn't look at.
     """
     payload: dict[str, Any] = {"kind": "paper", "id": ref_id}
     if title.strip():
@@ -1788,10 +1802,16 @@ def _build_paper_payload(
             payload["year"] = int(year.strip())
         except ValueError:
             pass
-    if doi.strip():
-        payload["doi"] = doi.strip()
-    if arxiv.strip():
-        payload["arxiv"] = arxiv.strip()
+    doi = doi.strip()
+    if doi:
+        payload["doi"] = doi
+    elif current_ids and current_ids.get("doi"):
+        payload["doi"] = ""
+    arxiv = arxiv.strip()
+    if arxiv:
+        payload["arxiv"] = arxiv
+    elif current_ids and current_ids.get("arxiv"):
+        payload["arxiv"] = ""
     if abstract.strip():
         payload["abstract"] = abstract.strip()
     if journal.strip():
@@ -1876,7 +1896,10 @@ async def edit(
     """Update editable paper metadata.
 
     Empty fields are NOT sent (so an unset value doesn't overwrite the
-    existing one). Authors come in as a newline- or semicolon-separated
+    existing one) — except ``doi`` / ``arxiv``, where a blanked-out field
+    on a ref that holds the identifier forwards ``""``, the edit verb's
+    explicit-clear signal (gr515246). Authors come in as a newline- or
+    semicolon-separated
     string; the paper edit handler canonicalises each line to
     ``{given, family}`` (unambiguous single-comma split) or ``{name}``
     (see :func:`precis.utils.authors.normalize_authors`). ``journal`` /
@@ -1886,6 +1909,13 @@ async def edit(
     differs from the current slug the paper is re-slugged (and its PDF
     moved on disk) — see :func:`_rename_slug`.
     """
+    store = get_store(request)
+    # The form's blank field means "keep current value" everywhere except
+    # doi/arxiv, where a blanked-out held identifier is the delete the
+    # Meta tab otherwise has no door for (gr515246) — the payload builder
+    # forwards ``""`` (the edit verb's clear signal) only when the ref
+    # actually carries the scheme.
+    current_ids = store.identifiers_for_refs([ref_id]).get(ref_id, {})
     payload = _build_paper_payload(
         ref_id,
         title=title,
@@ -1896,9 +1926,9 @@ async def edit(
         authors=authors,
         journal=journal,
         entry_type=entry_type,
+        current_ids=current_ids,
     )
 
-    store = get_store(request)
     current_slug = ""
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
     if ref is not None:

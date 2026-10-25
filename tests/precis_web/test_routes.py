@@ -2022,13 +2022,15 @@ def test_paper_detail_shows_ingest_timestamps(client) -> None:
 
 def test_paper_edit_dispatches_changed_fields_only(client, runtime) -> None:
     """POST /papers/{id}/edit forwards only the non-empty fields to the
-    edit verb so an unset value doesn't overwrite the existing one."""
+    edit verb so an unset value doesn't overwrite the existing one —
+    except a blanked identifier, which forwards the clear signal (see
+    ``test_paper_edit_blank_doi_forwards_clear``)."""
     resp = client.post(
-        "/papers/10/edit",
+        "/papers/11/edit",
         data={
             "title": "New title",
             "year": "2024",
-            "doi": "",  # blank → not sent
+            "doi": "",  # ref 11 holds no doi → blank stays unsent
             "arxiv": "",
             "abstract": "",
             "authors": "",
@@ -2039,14 +2041,50 @@ def test_paper_edit_dispatches_changed_fields_only(client, runtime) -> None:
     verb, args = runtime.calls[-1]
     assert verb == "edit"
     assert args["kind"] == "paper"
-    assert args["id"] == 10
+    assert args["id"] == 11
     assert args["title"] == "New title"
     assert args["year"] == 2024
-    # Blank fields not sent.
+    # Blank fields not sent (ref 11 carries an arxiv id — blank forwards
+    # the clear, asserted below; doi it does NOT carry stays unsent).
     assert "doi" not in args
-    assert "arxiv" not in args
+    assert args["arxiv"] == ""
     assert "abstract" not in args
     assert "authors" not in args
+
+
+def test_paper_edit_blank_doi_forwards_clear(client, runtime) -> None:
+    """Blanking the DOI field on a paper that holds one forwards
+    ``doi=''`` — the edit verb's explicit-clear contract
+    (:meth:`Store.clear_ref_identifier`, gr353804). Regression for
+    gr515246: the field was silently dropped, so the wrong DOI "came
+    back" on the Meta tab (it had never been deleted)."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={"doi": ""},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "edit"
+    assert args["id"] == 10
+    assert args["doi"] == ""  # ref 10 holds a doi → blank = clear
+
+
+def test_paper_edit_blank_doi_on_doi_less_paper_not_sent(client, runtime) -> None:
+    """A blank doi field on a paper that carries no doi is still a
+    nothing-to-keep no-op — it must NOT reach the verb (otherwise every
+    save on a DOI-less paper would dispatch a spurious clear, and the
+    'Nothing to change' early return would never fire)."""
+    resp = client.post(
+        "/papers/12/edit",
+        data={"doi": ""},
+        follow_redirects=False,
+    )
+    # Nothing else changed → the route's 400 "Nothing to change" page,
+    # and crucially no edit dispatch at all.
+    assert resp.status_code == 400
+    assert "Nothing to change" in resp.text
+    assert all(v != "edit" for v, _ in runtime.calls)
 
 
 def test_paper_edit_redirect_lands_back_on_meta_tab(client, runtime) -> None:
@@ -2656,9 +2694,12 @@ def test_paper_edit_slug_rename_timeout_surfaces_error(
 
 def test_paper_edit_slug_only_skips_metadata_dispatch(client, runtime) -> None:
     """A handle-only change doesn't dispatch an `edit` (which would reject
-    an empty field set) — it goes straight to the rename path."""
+    an empty field set) — it goes straight to the rename path. Paper 90
+    carries no doi/arxiv identifier, so its blank form fields forward
+    nothing (a blanked identifier on a ref that holds one IS a change —
+    the clear signal, gr515246)."""
     resp = client.post(
-        "/papers/10/edit",
+        "/papers/90/edit",
         data={"cite_key": "piela07"},
         follow_redirects=False,
     )
@@ -2692,8 +2733,11 @@ def test_paper_edit_handle_collision_surfaces_error(client, runtime) -> None:
 
 
 def test_paper_edit_nothing_to_change_is_rejected(client, runtime) -> None:
-    """An all-blank edit (no fields, no handle change) is a clear 400."""
-    resp = client.post("/papers/10/edit", data={}, follow_redirects=False)
+    """An all-blank edit (no fields, no handle change) is a clear 400.
+    Paper 90 carries no identifiers, so its blank fields forward nothing
+    — on a paper WITH a doi, a blanked field is itself a change (the
+    clear signal, gr515246)."""
+    resp = client.post("/papers/90/edit", data={}, follow_redirects=False)
     assert resp.status_code == 400
     assert "Nothing to change" in resp.text
 

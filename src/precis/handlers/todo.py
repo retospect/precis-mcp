@@ -1706,7 +1706,13 @@ class TodoHandler(NumericRefHandler):
 
     # ── links view: synthesize the virtual parent edge ───────────
 
-    def _render_links_view(self, ref: Ref, *, of_kind: str | None = None) -> Response:
+    def _render_links_view(
+        self,
+        ref: Ref,
+        *,
+        of_kind: str | None = None,
+        rel: str | None = None,
+    ) -> Response:
         """Prepend the virtual ``parent`` edge to the stored-link view.
 
         ``parent`` lives in the ``refs.parent_id`` column, not the
@@ -1715,10 +1721,12 @@ class TodoHandler(NumericRefHandler):
         edge via ``link(rel='parent')`` reads it back here in the same
         ``kind:identifier`` form it can round-trip into a future call.
         Children aren't synthesized — ``view='tree'`` already shows the
-        full subtree downward.
+        full subtree downward. A ``rel=`` filter (gr514335) hides the
+        synthesized edge: it is no stored-links row, and ``rel='parent'``
+        is a reserved pseudo-rel ``validate_relation`` refuses anyway.
         """
-        base = super()._render_links_view(ref, of_kind=of_kind)
-        if ref.parent_id is None:
+        base = super()._render_links_view(ref, of_kind=of_kind, rel=rel)
+        if ref.parent_id is None or rel is not None:
             return base
         header, _, rest = base.body.partition("\n")
         rest = rest.lstrip("\n")

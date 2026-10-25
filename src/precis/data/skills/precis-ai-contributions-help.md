@@ -107,12 +107,28 @@ directly.
 Never write a model name from memory. Read it from the records.
 
 ```python
-get(kind='draft', id='<slug>', view='links')   # link graph: agentlog `touched` edges and `derived-from` links
+get(kind='draft', id='<slug>', view='links',
+    args={'rel': 'touched', 'of_kind': 'agentlog'})  # just the agentlog edges
 get(kind='agentlog', id=42)                    # one run: meta.model, meta.source, prompt, owning todo/job
 get(kind='agentlog', id='/recent')             # recent runs, newest first
 get(kind='llm', id='<model-slug>')             # catalog card: exact model facts for the version string
 get(kind='draft', id='dc<id>', view='fisheye+1hop')  # one chunk with what it references
 ```
+
+Always pass the `rel`/`of_kind` filters on a draft's links view — the
+unfiltered graph on a hot draft runs to hundreds of KB (gr514335), and
+`touched` edges are the ones that matter here anyway. (`args['kind']` is
+rejected at the verb — `kind` is reserved; the endpoint-kind filter is
+`of_kind`.)
+
+**Roll up the models.** The filtered links view is the provenance helper:
+each `agentlog:<id>` row is one run that touched the draft. Get each
+listed run (`get(kind='agentlog', id=<n>)`), take `meta.model` (+ the
+run's timestamp/source), and roll up **distinct models with a count of
+runs and the first/last dates** — that map, not prose guesses, is the
+per-model line list for the contributions statement. A run's
+`meta.model` may be a tier name (`opus`); resolve the exact version
+from the `llm` card before writing it.
 
 - `agentlog` runs `touched`-link every chunk they wrote or moved: that
   gives model + role per section ([[precis-agentlog-help]]). `meta.model`

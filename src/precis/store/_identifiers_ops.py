@@ -25,6 +25,18 @@ Per-scheme reliability (see migration header for full doc):
 * s2 is pragmatic — S2 sometimes merges distinct papers under one
   paperId. We adopt S2's clustering wholesale; conflicts surface in
   ``ref_identifier_conflicts`` for operator review.
+
+Canonical case rule (gr514198): ``id_value`` is stored LOWERCASE for
+every scheme — an OpenAlex id is ``w…`` here, not the ``W…`` casing
+``meta.openalex.id`` / ``meta.openalex.referenced_works`` / the OpenAlex
+API itself use. Every write and lookup through this mixin runs
+:func:`_normalise_identifier`, so the rule is invisible to mixin
+callers — but raw SQL outside the mixin must remember it on BOTH sides:
+probe ``WHERE id_kind='openalex' AND id_value = lower(:w_id)`` (or match
+``lower(id_value)`` so a legacy mixed-case row still resolves). A
+``w…`` ↔ ``W…`` miss is silent — the row exists, the join just doesn't.
+The DOI scheme is additionally enforced by the ``0049`` trigger; other
+schemes have no DB-level guard, so the Python helpers are the chokepoint.
 """
 
 from __future__ import annotations
