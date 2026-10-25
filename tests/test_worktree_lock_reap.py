@@ -1748,18 +1748,20 @@ def test_subagent_hook_logs_raw_payload(guard_repo: dict[str, Path]) -> None:
     assert rec["at"].endswith("Z")
 
 
-def test_reap_worktrees_archives_gitignored_scratch(
+def test_reap_worktrees_archives_gitignored_scratch_and_dotclaude(
     guard_repo: dict[str, Path], tmp_path: Path
 ) -> None:
-    """gr514254: a dogfood tree's gitignored scratch/ (repro fixtures) used
-    to die with the worktree. The reaper must archive it to
-    PRECIS_REAPED_SCRATCH_DIR/<tree> before ``git worktree remove``."""
+    """gr514254: a dogfood tree's gitignored scratch/ (repro fixtures) and
+    .claude/ (handoffs, ship logs) used to die with the worktree. The reaper
+    must archive both to PRECIS_REAPED_SCRATCH_DIR/<tree>/<dir> before
+    ``git worktree remove``."""
     primary, b = guard_repo["primary"], guard_repo["b"]
     archive_root = tmp_path / "reaped-scratch"
     # scratch/ must be ignored WITHOUT dirtying B (an ignored-file check is
     # against B's own checkout, and an uncommitted .gitignore would itself
     # make it dirty). The shared .git/info/exclude covers every worktree —
-    # same effect as the real repo's committed .gitignore.
+    # same effect as the real repo's committed .gitignore. (.claude/* is
+    # already ignored by the fixture's committed .gitignore.)
     exclude = primary / ".git" / "info" / "exclude"
     exclude.write_text(
         exclude.read_text(encoding="utf-8") + "scratch/\n", encoding="utf-8"
@@ -1767,6 +1769,8 @@ def test_reap_worktrees_archives_gitignored_scratch(
     payload = b / "scratch" / "unicycle"
     payload.mkdir(parents=True)
     (payload / "main.py").write_text("# the fixture\n", encoding="utf-8")
+    (b / ".claude").mkdir()
+    (b / ".claude" / "handoff.md").write_text("left: a note\n", encoding="utf-8")
 
     reap = primary / "scripts" / "reap-worktrees"
     result = subprocess.run(
@@ -1782,9 +1786,12 @@ def test_reap_worktrees_archives_gitignored_scratch(
     )
     assert result.returncode == 0, result.stderr
     assert not b.exists()
-    saved = archive_root / "B" / "unicycle" / "main.py"
+    saved = archive_root / "B" / "scratch" / "unicycle" / "main.py"
     assert saved.read_text(encoding="utf-8") == "# the fixture\n"
+    saved_claude = archive_root / "B" / ".claude" / "handoff.md"
+    assert saved_claude.read_text(encoding="utf-8") == "left: a note\n"
     assert "archived B/scratch" in result.stdout
+    assert "archived B/.claude" in result.stdout
 
 
 def test_ship_wires_the_lock_re_assertion_at_both_windows() -> None:

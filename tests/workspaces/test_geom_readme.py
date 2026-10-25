@@ -28,9 +28,25 @@ def test_readme_python_blocks_execute(tmp_path: Path, monkeypatch) -> None:
     scratch = tmp_path / "scratch"
     monkeypatch.setattr(out, "_SCRATCH_DIR", scratch)
     blocks = _BLOCKS.findall(README.read_text(encoding="utf-8"))
-    assert sum(1 for kind, _ in blocks if kind == "python") >= 9, (
-        "packaging/geom/README.md must keep its runnable ```python blocks"
-    )
+    # Named coverage, not a counted floor (gr514182): every anchor below is
+    # one recipe the README must keep documenting — a counted ```python
+    # floor drifts on every README addition. The anchors also prove at
+    # least one ```python block exists (an empty match list fails them).
+    src = "\n".join(body for kind, body in blocks if kind == "python")
+    for anchor in (
+        "mod.build()",  # load and build a board main.py
+        "b.nets_of(",  # netlist queries
+        "b.check()",  # offline L0 check
+        "b.shape().fits(",  # mechanical fit against an enclosure
+        "trace.run(",  # construction tracing
+        "tr.dump()",  # trace document
+        'out.run("blinky")',  # importer-layout run record
+        "prism_tube(",  # hexfold atomic builder
+        'o.block("prism"',  # geometry written under scratch/out/
+    ):
+        assert anchor in src, (
+            f"packaging/geom/README.md lost its {anchor!r} recipe block"
+        )
     ns: dict[str, Any] = {}
     for i, (kind, body) in enumerate(blocks):
         if kind != "python":

@@ -26,7 +26,12 @@
 #     identifiers and collapses match sets (gr514332, gr513881, gr514780;
 #     Reto ruling 2026-10-24): the exact lines a search returns must reach
 #     the model verbatim, so these never go to rtk at all.
-#  2. When the session cwd is under .claude/worktrees/ and the command
+#  2. A pipe into `head`/`tail` — in ANY session (gr515157): rtk's rewrite
+#     of a truncation pipeline (`docker ps | head -10`) either drops the
+#     pipe entirely or substitutes its own digest truncation for the exact
+#     cut the command asked for. An explicit head/tail IS the truncation —
+#     never let the wrapper replace it.
+#  3. When the session cwd is under .claude/worktrees/ and the command
 #     mentions `git` as a word: the isolation guard still vets the plain
 #     command; only rtk's digest is lost.
 # Everything else goes to rtk as before.
@@ -108,6 +113,13 @@ if [ "$verdict" = "deny" ]; then
   exit 0
 fi
 if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_])(rg|[a-z]*grep)([^[:alnum:]_]|$)'; then
+  exit 0
+fi
+# A pipe (single |, not || — the [^|] lookbehind skips `a || head`) whose
+# next word is head/tail: the command already carries its truncation — rtk's
+# digest would drop or replace it (gr515157). [[:space:]]* covers `cmd|head`.
+if printf '%s' "$cmd" \
+    | grep -qE '(^|[^|])\|[[:space:]]*(head|tail)([^[:alnum:]_]|$)'; then
   exit 0
 fi
 case "$cwd" in

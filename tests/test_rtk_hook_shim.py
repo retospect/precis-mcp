@@ -30,6 +30,12 @@ Only a bare ``-r`` followed by a quoted argument (``rg -r 'x'``) and
 ``--replace``/``--replace=`` stay allowed; ``rg -r x`` is the grep ``-r``
 idiom and is denied.
 
+Fourth defect (2026-10-25, gr515157): rtk's rewrite of a truncation
+pipeline — ``docker ps | head -10`` — drops the pipe (or substitutes rtk's
+own digest truncation for it), so the model gets the wrapper's cut instead
+of the 10 lines it asked for. An explicit ``| head``/``| tail`` already IS
+the truncation, so the shim leaves such commands unrewritten in any session.
+
 The real ``rtk`` is replaced by a stub on PATH so the delegation path is
 observable and the test does not depend on rtk being installed.
 """
@@ -161,6 +167,45 @@ def test_search_commands_pass_through(
     res = _run(stub_rtk, cwd, command)
     assert res.returncode == 0
     assert res.stdout == "", "an empty hook reply means: leave the command unrewritten"
+
+
+@pytest.mark.parametrize(
+    ("cwd", "command"),
+    [
+        (PRIMARY_CWD, "docker ps | head -10"),  # the gr515157 report
+        (PRIMARY_CWD, "docker ps|head -10"),  # no spaces around the pipe
+        (PRIMARY_CWD, "docker compose logs | tail -5"),
+        (WORKTREE_CWD, "git log --oneline | head"),
+        (PRIMARY_CWD, "pytest -x 2>&1 | tail -30"),
+        (PRIMARY_CWD, "cat log | sort -u | head -20"),  # mid-pipeline too
+        (PRIMARY_CWD, "ls | tail -n +2 | wc -l"),
+    ],
+)
+def test_truncation_pipes_pass_through(
+    stub_rtk: dict[str, str], cwd: str, command: str
+) -> None:
+    """gr515157: an explicit ``| head``/``| tail`` is the truncation the
+    command asked for — rtk must not drop the pipe or replace it with its
+    own digest cut."""
+    res = _run(stub_rtk, cwd, command)
+    assert res.returncode == 0
+    assert res.stdout == "", "an empty hook reply means: leave the command unrewritten"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "head -10 file.txt",  # head as a command, not after a pipe
+        "docker ps || head -10",  # || is not a truncation pipe
+        "printf 'a|b' | wc -c",  # a pipe whose consumer is not head/tail
+    ],
+)
+def test_non_truncation_forms_still_delegate(
+    stub_rtk: dict[str, str], command: str
+) -> None:
+    res = _run(stub_rtk, PRIMARY_CWD, command)
+    assert res.returncode == 0
+    assert res.stdout.startswith(STUB_MARK)
 
 
 @pytest.mark.parametrize(
