@@ -2620,6 +2620,71 @@ class ChunkStore:
         with self.pool.connection() as c:
             return _do(c)
 
+    def delete_body_chunk(
+        self,
+        ref_id: int,
+        *,
+        chunk_kind: str,
+        source: str = "agent",
+        reason: str | None = None,
+        op: str | None = None,
+        conn: Connection | None = None,
+    ) -> str | None:
+        """Delete the single body chunk of ``chunk_kind`` for a ref.
+
+        The clear door ``edit(mode='replace', body='')`` uses — dropping
+        the row outright rather than storing an empty chunk (gr515178).
+        Same append-only discipline as :meth:`replace_body_chunk`: DELETE
+        cascades the derived embedding/summary rows, and a
+        ``body_replaced`` ``ref_events`` row (old text, ``new_text``
+        NULL, ``op`` naming the clear) keeps ``view='log'`` honest.
+        Returns the previous text. When no such chunk exists nothing is
+        written — no ``updated_at`` bump, no audit row — and ``None``
+        comes back so the caller can say "no body to clear".
+        """
+
+        def _do(c: Connection) -> str | None:
+            row = c.execute(
+                "SELECT text FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = %s "
+                "ORDER BY ord ASC LIMIT 1",
+                (ref_id, chunk_kind),
+            ).fetchone()
+            if row is None:
+                return None
+            old_text = row[0]
+            c.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+                (ref_id, chunk_kind),
+            )
+            c.execute(
+                "UPDATE refs SET updated_at = now() WHERE ref_id = %s",
+                (ref_id,),
+            )
+            c.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (
+                    ref_id,
+                    source,
+                    "body_replaced",
+                    Jsonb(
+                        {
+                            **({"op": op} if op else {}),
+                            **({"reason": reason} if reason else {}),
+                            "old_text": old_text,
+                            "new_text": None,
+                        }
+                    ),
+                ),
+            )
+            return old_text
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def set_ref_title(
         self,
         ref_id: int,

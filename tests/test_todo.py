@@ -9,6 +9,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, Gone, NotFound
 from precis.handlers.todo import TodoHandler
+from precis.runtime import PrecisRuntime
 
 
 @pytest.fixture
@@ -126,6 +127,155 @@ def test_edit_body_replaces_the_chunk(handler: TodoHandler) -> None:
             (tid,),
         ).fetchall()
     assert rows == [("todo_body", "new details")]
+
+
+def test_edit_text_only_replace_keeps_the_body(handler: TodoHandler) -> None:
+    """gr515178: a retitle pass (``mode='replace'`` with ``text=`` only)
+    must not silently drop the details body — omitting ``body=`` means
+    keep it, not clear it."""
+    handler.put(text="old title", body="keep these details")
+    tid = _latest_todo_id(handler)
+    handler.edit(id=tid, mode="replace", text="new title")
+    with handler.store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_kind, text FROM chunks WHERE ref_id = %s AND ord >= 0",
+            (tid,),
+        ).fetchall()
+    assert rows == [("todo_body", "keep these details")]
+    detail = handler.get(id=tid).body
+    assert "new title" in detail and "keep these details" in detail
+
+
+def test_edit_empty_body_clears_the_chunk(handler: TodoHandler) -> None:
+    """gr515178: clearing the body is the explicit ``body=''`` spelling —
+    the ``todo_body`` chunk is deleted outright, not replaced with an
+    empty text."""
+    handler.put(text="finish the report", body="details to drop")
+    tid = _latest_todo_id(handler)
+    ack = handler.edit(id=tid, mode="replace", body="").body
+    assert "cleared" in ack
+    with handler.store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_kind, text FROM chunks WHERE ref_id = %s AND ord >= 0",
+            (tid,),
+        ).fetchall()
+    assert rows == []
+    assert "details to drop" not in handler.get(id=tid).body
+
+
+def test_edit_empty_body_with_no_body_says_so(handler: TodoHandler) -> None:
+    """``body=''`` on a todo with no body is a no-op that admits it — no
+    chunk write, no ``updated_at`` bump, no audit row."""
+    handler.put(text="finish the report")
+    tid = _latest_todo_id(handler)
+    ack = handler.edit(id=tid, mode="replace", body="").body
+    assert "no details body to clear" in ack
+    with handler.store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id = %s "
+            "AND event = 'body_replaced'",
+            (tid,),
+        ).fetchone()
+    assert n is not None and n[0] == 0
+
+
+def test_edit_whitespace_body_is_not_a_clear(handler: TodoHandler) -> None:
+    """Only the exact ``body=''`` clears — a whitespace-only body reads
+    as an omitted field and raises like ``body=`` was never passed."""
+    handler.put(text="finish the report", body="details")
+    tid = _latest_todo_id(handler)
+    with pytest.raises(BadInput, match="requires text= and/or body="):
+        handler.edit(id=tid, mode="replace", body="   ")
+    assert [
+        (c.chunk_kind, c.text) for c in handler.store.chunks.list_chunks_for_ref(tid)
+    ] == [("todo_body", "details")]
+
+
+def test_edit_empty_body_combines_with_text(handler: TodoHandler) -> None:
+    """``body=''`` + ``text=`` retitles and clears in one call."""
+    handler.put(text="old title", body="details to drop")
+    tid = _latest_todo_id(handler)
+    handler.edit(id=tid, mode="replace", text="new title", body="")
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None and ref.title == "new title"
+    assert [c.chunk_kind for c in handler.store.chunks.list_chunks_for_ref(tid)] == []
+
+
+def test_edit_retitle_preserves_a_long_detail_title(handler: TodoHandler) -> None:
+    """gr515178 / td508297: the real data loss — a todo minted with its
+    details folded into a long title, no ``todo_body``. Retitling used
+    to drop the details; the old title now moves into the body."""
+    long_title = (
+        "Sweep the memory graph for stale section:threads nodes and retire "
+        "the ones at Left: none, moving anything still live into the "
+        "owning thread file or a gotcha before the daily cadence runs"
+    )
+    assert len(long_title) > 120
+    handler.put(text=long_title)
+    tid = _latest_todo_id(handler)
+    ack = handler.edit(id=tid, mode="replace", text="memory thread sweep").body
+    assert "old title preserved as body" in ack
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None and ref.title == "memory thread sweep"
+    assert [
+        (c.chunk_kind, c.text) for c in handler.store.chunks.list_chunks_for_ref(tid)
+    ] == [("todo_body", long_title)]
+    detail = handler.get(id=tid).body
+    assert "memory thread sweep" in detail and long_title in detail
+
+
+def test_edit_retitle_preserves_a_multi_sentence_title(handler: TodoHandler) -> None:
+    """The same preserve fires under the char cap when the title carries
+    a second sentence — it was doing body work either way."""
+    handler.put(text="Retitle me. The details live in this second sentence.")
+    tid = _latest_todo_id(handler)
+    ack = handler.edit(id=tid, mode="replace", text="retitled").body
+    assert "old title preserved as body" in ack
+    assert [
+        (c.chunk_kind, c.text) for c in handler.store.chunks.list_chunks_for_ref(tid)
+    ] == [("todo_body", "Retitle me. The details live in this second sentence.")]
+
+
+def test_edit_retitle_short_title_writes_no_body(handler: TodoHandler) -> None:
+    """A plain short retitle mints no ``todo_body`` — preserve is only
+    for titles that were carrying details."""
+    handler.put(text="short title")
+    tid = _latest_todo_id(handler)
+    ack = handler.edit(id=tid, mode="replace", text="shorter").body
+    assert "preserved" not in ack
+    assert handler.store.chunks.list_chunks_for_ref(tid) == []
+
+
+def test_edit_retitle_does_not_preserve_over_existing_body(
+    handler: TodoHandler,
+) -> None:
+    """With a ``todo_body`` already attached, the long title is a header
+    again — a retitle drops it without touching the body."""
+    handler.put(text="x" * 130, body="real details")
+    tid = _latest_todo_id(handler)
+    handler.edit(id=tid, mode="replace", text="new title")
+    assert [
+        (c.chunk_kind, c.text) for c in handler.store.chunks.list_chunks_for_ref(tid)
+    ] == [("todo_body", "real details")]
+
+
+def test_edit_empty_body_survives_dispatch(
+    handler: TodoHandler, runtime_with_store: PrecisRuntime
+) -> None:
+    """gr515178: ``body=''`` over the MCP verb must reach the handler
+    intact — clients have mangled empty strings before (gr503460), so
+    the clear is driven end to end through tools.core.edit."""
+    from precis.tools import core as tools_core
+
+    handler.put(text="finish the report", body="details to drop")
+    tid = _latest_todo_id(handler)
+    tools_core._runtime = runtime_with_store
+    try:
+        out = tools_core.edit(kind="todo", id=tid, mode="replace", body="")
+    finally:
+        tools_core._runtime = None
+    assert "cleared" in str(out)
+    assert [c.chunk_kind for c in handler.store.chunks.list_chunks_for_ref(tid)] == []
 
 
 def test_edit_requires_text_or_body(handler: TodoHandler) -> None:

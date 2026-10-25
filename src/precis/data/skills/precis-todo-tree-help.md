@@ -119,6 +119,8 @@ put(
 edit(kind="todo", id=42, mode="replace", body="updated acceptance criteria")
 # or rewrite both at once:
 edit(kind="todo", id=42, mode="replace", text="new title", body="new body")
+# text= alone retitles and keeps the body; clearing takes an explicit body='':
+edit(kind="todo", id=42, mode="replace", body="")
 ```
 
 ## Dashboard: strategic roots and 7d accounting

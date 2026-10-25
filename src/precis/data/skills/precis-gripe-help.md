@@ -178,15 +178,17 @@ search(kind="gripe", tags=["STATUS:wontfix"])
 
 ```python
 get(kind="gripe", id=42)
-# → title card + body: header + tags + title + comment count, then the
-#   body (a long one is head+tail-clipped; the cut marker names view='body')
+# → title card + body: header + tags + title + comment count + a one-line
+#   gist of the newest comment, then the body (a long one is head+tail-
+#   clipped; the cut marker names view='body')
 get(kind="gripe", id=42, view="body")  # the body, uncapped
 get(kind="gripe", id=42, view="comments")  # every comment, oldest first
 get(kind="gripe", id=42, view="full")  # body + every comment, uncapped
 ```
 
-A bare `get` shows the body (clipped at ~1500 chars when long); the
-comment timeline stays behind `view='comments'` (gr514351). The
+A bare `get` shows the body (clipped at ~1500 chars when long) plus a
+one-line gist of the newest comment; the full
+comment timeline stays behind `view='comments'` (gr514351, gr515189). The
 selectors work inside `view='comments'`
 or `view='full'`: `args={'comments': K}` is the newest K, `args={'comment': K}`
 is one comment uncapped (a long comment in the window is cut mid-text and

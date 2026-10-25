@@ -293,6 +293,23 @@ def test_families_are_a_closed_set_with_real_groups() -> None:
     assert 10 <= len(SKILL_FAMILIES) <= 15
 
 
+def test_toc_category_rides_args_through_get_dispatch(runtime) -> None:
+    """gr514727: the MCP spelling ``args={'category': …}`` rides the
+    ``__extras__`` channel and dispatch flattens it to the ``category=``
+    kwarg — a handler-level call can only pass ``category=`` directly,
+    so the flattening needs a test at this layer."""
+    from precis.tools import core as tools_core
+
+    tools_core._runtime = runtime
+    try:
+        body = tools_core.get(kind="skill", id="toc", args={"category": "drafting"})
+    finally:
+        tools_core._runtime = None
+    assert "## Drafting & figures" in str(body)
+    assert "precis-draft-help" in str(body)
+    assert "## Orientation" not in str(body)
+
+
 def test_have_rides_args_through_get_dispatch(runtime) -> None:
     """get(kind=skill, args={have: rev}) reaches the handler (gr477798)."""
     from precis.tools import core as tools_core

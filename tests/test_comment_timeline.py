@@ -44,11 +44,12 @@ def test_append_ack_and_display_policy(
     for i in range(1, 6):
         ack = h.put(id=rid, text=f"note-{i}").body
     assert f"appended comment 5 to {which} {rid}." in ack
-    # The ack names the kind's own display policy (gr499040: gripe's bare
-    # get is the title card — comments live behind view='comments'; todo
-    # keeps the newest-3 policy).
+    # The ack names the kind's own display policy (gripe's bare get is
+    # the title card + bounded body + newest gist — the rest of the
+    # timeline lives behind view='comments', gr515189; todo keeps the
+    # newest-3 policy).
     if which == "gripe":
-        assert "shows the title and comment count only" in ack
+        assert "shows the title, body and newest comment" in ack
         out = h.get(id=rid).body
         assert "## comment " not in out
         assert "comments: 5" in out

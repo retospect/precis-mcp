@@ -9,7 +9,10 @@ gist are not lost), and a footer naming the ways to see more.
 
 gr499040 (Reto ruling 2026-10-19) took gripe's bare get further: title +
 tags + comment count only — the body and timeline come only through
-``view='body'`` / ``view='comments'``. The comments view is selectable
+``view='body'`` / ``view='comments'``. gr514351 (and gr515189) put the
+bounded body and a one-line gist of the newest comment back on the card;
+the full timeline still lives behind ``view='comments'``. The comments
+view is selectable
 (``args={'comments': K}`` newest K, ``args={'comment': K}`` one) and caps
 each comment at :data:`COMMENT_VIEW_CHARS`; ``view='full'`` stays the
 uncapped complete read. Todo keeps the original bare-get newest-3 policy.
@@ -66,9 +69,9 @@ class _Policy(NamedTuple):
 
 _DEFAULT_POLICY = _Policy(FULL_COMMENTS, None, ONE_LINER_CAP)
 #: Kinds whose bare get renders a leaner comment timeline than the
-#: default. Gripe left the table entirely on 2026-10-19 (gr499040: its
-#: bare get is title + tags + count — the timeline lives behind
-#: ``view='comments'``).
+#: default. Gripe left the table entirely on 2026-10-19 (gr499040): its
+#: bare get is the title card + bounded body + newest-comment gist
+#: (gr514351/gr515189) — the timeline lives behind ``view='comments'``.
 _KIND_POLICY: dict[str, _Policy] = {}
 
 
@@ -304,9 +307,10 @@ def append_comment(
             ],
         ) from e
     # The ack names what a bare get now shows of the timeline — per kind
-    # (gr499040: gripe's bare get is the title card only).
+    # (gripe's bare get is the title card + bounded body + newest gist,
+    # gr514351/gr515189).
     shown = (
-        "the title and comment count only (body: view='body')"
+        "the title, body and newest comment"
         if kind == "gripe"
         else (
             "the newest comment plus older one-liners"

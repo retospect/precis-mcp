@@ -1585,7 +1585,8 @@ def edit(
     # mode='find-replace' / 'insert' (find=, text=, ...) patch a span of it.
     title: str | None = None,
     # todo (see precis-todo-tree-help): edit(mode='replace', body='…') sets/rewrites
-    # the optional details body; combine with text= to rewrite the title too.
+    # the optional details body; combine with text= to rewrite the title too
+    # (text= alone keeps the body; body='' clears it — gr515178).
     body: str | None = None,
     # paper (see precis-paper-help): edit(kind='paper', doi=…) / edit(kind=
     # 'paper', arxiv=…) upgrades a title-only stub's identifier (replaces the

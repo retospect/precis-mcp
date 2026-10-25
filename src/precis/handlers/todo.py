@@ -95,6 +95,25 @@ if TYPE_CHECKING:
 #: embedded + keyworded for free. Additive — most todos never set one.
 _BODY_KIND = TODO_BODY_KIND
 
+#: ``edit(mode='replace', text=...)`` preserves the old title as the
+#: details body when it ran past ~120 chars — the length at which a
+#: title stopped being a header and started carrying the details a
+#: ``todo_body`` would hold (gr515178, td508297).
+_PRESERVE_TITLE_CHARS = 120
+
+
+def _title_holds_details(title: str) -> bool:
+    """True when a title is doing body work: over
+    :data:`_PRESERVE_TITLE_CHARS`, or more than one sentence (a
+    ``. ``/``! ``/``? `` boundary). A wholesale retitle of one would
+    lose the details, so the replace path moves it into the body
+    first (gr515178)."""
+    if len(title) > _PRESERVE_TITLE_CHARS:
+        return True
+    return any(
+        ch in ".!?" and title[i + 1].isspace() for i, ch in enumerate(title[:-1])
+    )
+
 
 @dataclasses.dataclass(frozen=True)
 class _PutState:
@@ -951,7 +970,12 @@ class TodoHandler(NumericRefHandler):
 
         ``text=`` rewrites the title (``refs.title``); ``body=`` sets or
         rewrites the optional details body (a ``todo_body`` chunk). Pass
-        either or both. Same id; parent, links, and tags all stay attached —
+        either or both — ``text=`` alone keeps the body, and an explicit
+        ``body=''`` (whitespace stays a no-op) clears it. When a retitle
+        would drop a long detail-carrying title and no ``todo_body``
+        exists, the old title is moved into the body first — the ack
+        says "old title preserved as body" (gr515178). Same id; parent,
+        links, and tags all stay attached —
         the old text lands in ``ref_events`` as a ``body_replaced`` row
         (``view='log'``). Owner-only on strategic / tactical nodes, the same
         authority veto as delete / reparent. Distinct from delete + re-put,
@@ -1038,10 +1062,16 @@ class TodoHandler(NumericRefHandler):
         # kind rejects — which would make the parking shape this path exists
         # for (``edit(kind='todo', id=N, meta={'llm_tier': None})``)
         # unreachable over the MCP door (same trap as quest, 4db6836b).
+        # ``body=''`` (exactly the empty string — whitespace-only stays a
+        # no-op, refusing like an omitted field) is an explicit clear
+        # (gr515178): a title-only replace keeps the body, while
+        # ``body=''`` drops the ``todo_body`` chunk outright.
+        clear_body = body == ""
         meta_only = (
             meta is not None
             and (text is None or not text.strip())
             and (body is None or not body.strip())
+            and not clear_body
         )
         if not meta_only:
             require_mode(spec=self.spec, verb="edit", mode=mode)
@@ -1100,6 +1130,7 @@ class TodoHandler(NumericRefHandler):
         if (
             not has_text
             and not has_body
+            and not clear_body
             and not unset_llm_tier
             and params_value is None
             and not clear_params
@@ -1113,6 +1144,10 @@ class TodoHandler(NumericRefHandler):
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)
         ref = self._resolve_live_ref(ref_id)
+        body_present = any(
+            c.chunk_kind == _BODY_KIND
+            for c in self.store.chunks.list_chunks_for_ref(ref.id)
+        )
         if params_value is not None or clear_params:
             guards.check_recurring_params_edit(True, ref.meta)
         if dry_run:
@@ -1124,8 +1159,21 @@ class TodoHandler(NumericRefHandler):
                     f"title: {old!r} → {text!r} "
                     f"({len(old.split())} → {len(text.split())} words)"
                 )
+                if (
+                    not has_body
+                    and not clear_body
+                    and not body_present
+                    and _title_holds_details(old)
+                ):
+                    preview.append("old title would be preserved as the details body")
             if has_body:
                 preview.append("details body would be replaced")
+            elif clear_body:
+                preview.append(
+                    "details body would be cleared"
+                    if body_present
+                    else "no details body to clear"
+                )
             if unset_llm_tier:
                 preview.append("meta.llm_tier would be unset (parked)")
             if params_value is not None:
@@ -1139,6 +1187,8 @@ class TodoHandler(NumericRefHandler):
                 )
             )
         old_text: str | None = None
+        preserved_title = False
+        cleared_body: str | None = None
         with self.store.tx() as conn:
             if has_text:
                 assert text is not None
@@ -1147,6 +1197,27 @@ class TodoHandler(NumericRefHandler):
                 )
                 if self.emits_card:
                     self.store.chunks.upsert_card_combined(ref.id, text, conn=conn)
+                # gr515178 (td508297): a long title was doing body work —
+                # a retitle that drops it loses the details. When the
+                # caller didn't touch body= (an explicit ``body=`` write
+                # or ``''`` clear means they manage the details
+                # themselves) and no ``todo_body`` exists yet, move the
+                # old title into the body before it's gone.
+                if (
+                    not has_body
+                    and not clear_body
+                    and not body_present
+                    and _title_holds_details(old_text or "")
+                ):
+                    self.store.chunks.replace_body_chunk(
+                        ref.id,
+                        old_text or "",
+                        chunk_kind=_BODY_KIND,
+                        source=guards._caller_source(),
+                        op="preserve-title",
+                        conn=conn,
+                    )
+                    preserved_title = True
             if has_body:
                 assert body is not None
                 self.store.chunks.replace_body_chunk(
@@ -1154,6 +1225,14 @@ class TodoHandler(NumericRefHandler):
                     body,
                     chunk_kind=_BODY_KIND,
                     source=guards._caller_source(),
+                    conn=conn,
+                )
+            elif clear_body:
+                cleared_body = self.store.chunks.delete_body_chunk(
+                    ref.id,
+                    chunk_kind=_BODY_KIND,
+                    source=guards._caller_source(),
+                    op="clear",
                     conn=conn,
                 )
             if unset_llm_tier:
@@ -1201,8 +1280,16 @@ class TodoHandler(NumericRefHandler):
             old_words = len((old_text or "").split())
             new_words = len(text.split())
             parts.append(f"title ({old_words} → {new_words} words)")
+        if preserved_title:
+            parts.append("old title preserved as body")
         if has_body:
             parts.append("details body")
+        elif clear_body:
+            parts.append(
+                "details body (cleared)"
+                if cleared_body is not None
+                else "no details body to clear"
+            )
         if unset_llm_tier:
             parts.append("meta.llm_tier (unset, parked)")
         if params_value is not None:
