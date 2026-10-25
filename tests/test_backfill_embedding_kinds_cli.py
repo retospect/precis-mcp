@@ -26,6 +26,7 @@ def _args(**kw: Any) -> argparse.Namespace:
         "no_btree": False,
         "no_indexes": False,
         "reindex_global": False,
+        "until_pass": "paper",
         "database_url": _DSN,
         "maintenance_work_mem": "18GB",
         "max_parallel_maintenance_workers": 4,
@@ -62,6 +63,8 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr(bf, "backfill_embedding_kinds", fill)
     monkeypatch.setattr(bf, "resolve_dsn", lambda url: url)
+    # the router-readiness probe runs on the stub connection (no cursor)
+    monkeypatch.setattr(bf, "_check_validated", lambda conn: True)
     return log
 
 

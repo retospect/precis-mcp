@@ -49,7 +49,7 @@ def run(args: argparse.Namespace) -> None:
     from precis.migration_postchecks import format_pending, pending_post_steps
 
     dsn = resolve_dsn(getattr(args, "database_url", None))
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(dsn, connect_timeout=15) as conn:
         items = pending_post_steps(conn)
     print(format_pending(items))
     if args.strict and items:
