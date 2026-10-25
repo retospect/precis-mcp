@@ -36,7 +36,7 @@ unselected write dies with `No such tool available` and the record is lost
    above).
 2. **Dedup check** — before filing, search for an existing match:
    - Target `gripe`: `search(kind='gripe', q='<finding topic>')`. Look at
-     open/triaged/ready_for_fix/in_review results (skip `wontfix` — a closed
+     open/triaged/ready_for_fix/in_review/verify results (skip `wontfix` — a closed
      decision, not a live duplicate) for one describing the same symptom.
    - Target `docs/backlog/`: scan the dir's filenames and `Read` the
      generated `docs/backlog/INDEX.md` index for the same topic (run

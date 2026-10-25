@@ -16,7 +16,7 @@ justify against the diff.
    diff, `git log -1 <sha>` for the message. This diff is your only evidence
    base — don't go spelunking through unrelated history.
 2. List candidates: `search(kind='gripe', status='open')` plus `triaged` /
-   `ready_for_fix` / `in_review` (skip `wontfix` — already a closed decision,
+   `ready_for_fix` / `in_review` / `verify` (skip `wontfix` — already a closed decision,
    not a fix target). Read the `docs/backlog/INDEX.md` index for items
    (generated; run `scripts/docs-index` if missing)
    (skip one whose `snooze-until` date is still in the future — a deliberate
