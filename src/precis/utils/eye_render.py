@@ -64,6 +64,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import NotFound
+from precis.store.types import _CLOSED_VOCAB
 from precis.utils import handle_registry
 from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
@@ -123,9 +124,11 @@ _SKILL_HANDLE_PREFIX = handle_registry.code_for_kind("skill") + ":"
 
 #: The closed ``SPACE:`` tag axis (``docs/backlog/file-mirror.md``
 #: §Pillar-review deltas) — the partition a ``space=`` ring filter selects
-#: inside. Kept here so the renderer and the web pages
+#: inside. Derived from the store's closed vocabulary so a new SPACE value
+#: (e.g. ``design-conventions``) is filterable everywhere at once; kept as
+#: this module's name so the renderer and the web pages
 #: (``precis_web.graph_filters``) share one list.
-SPACE_AXIS: frozenset[str] = frozenset({"research", "repo-dev", "personal"})
+SPACE_AXIS: frozenset[str] = _CLOSED_VOCAB["SPACE"]
 
 
 @dataclass(frozen=True)

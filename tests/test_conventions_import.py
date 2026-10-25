@@ -181,6 +181,24 @@ def test_sync_rewrites_removes_edge_never_retires(store: Store, tmp_path: Path) 
     assert len(_importer_refs(store)) == 5
 
 
+def test_empty_manifest_orphans_and_reaps(store: Store, tmp_path: Path) -> None:
+    """A rules.yaml with zero entries still queries both key fields: every
+    importer ref is reported orphaned and --sync reaps its tests edges —
+    the empty-group regression (an absent enforcer group must not hide
+    enforcer refs from the orphan report)."""
+    import_conventions(store, FIXTURE)
+    empty = tmp_path / "rules.yaml"
+    empty.write_text("[]\n", encoding="utf-8")
+    rep = import_conventions(store, empty, sync=True)
+    assert (rep.created, rep.edges_added, rep.updated) == (0, 0, 0)
+    assert len(rep.orphaned) == 5  # 3 rules + 2 enforcers
+    assert rep.edges_removed == 3
+    assert _edges(store) == []
+    # refs are never retired or deleted, only reported
+    assert len(_importer_refs(store)) == 5
+    assert all(ret is None for _, _, ret in _importer_refs(store))
+
+
 def test_manifest_validation(store: Store, tmp_path: Path) -> None:
     data = yaml.safe_load(FIXTURE.read_text(encoding="utf-8"))
     before = _snapshot(store)

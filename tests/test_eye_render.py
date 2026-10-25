@@ -552,6 +552,21 @@ def test_ring_filter_narrows_the_first_hop_by_kind(hub: Hub) -> None:
     assert f"related-to: pa{paper.id}" in full
 
 
+def test_space_axis_tracks_the_closed_vocab() -> None:
+    """``SPACE_AXIS`` is derived from ``_CLOSED_VOCAB["SPACE"]`` so the web
+    graph filter (``precis_web.graph_filters.parse_space_filter``) accepts
+    every registered space — ``design-conventions`` included (gr516958)."""
+    from precis.store.types import _CLOSED_VOCAB
+    from precis.utils.eye_render import SPACE_AXIS
+    from precis_web.graph_filters import parse_space_filter
+
+    assert _CLOSED_VOCAB["SPACE"] == SPACE_AXIS
+    assert parse_space_filter("design-conventions") == frozenset({"design-conventions"})
+    assert parse_space_filter("SPACE:repo-dev") == frozenset({"repo-dev"})
+    with pytest.raises(ValueError, match="unknown space"):
+        parse_space_filter("bogus")
+
+
 def test_ring_filter_narrows_by_the_space_tag_axis(hub: Hub) -> None:
     """``space=`` selects inside the closed SPACE: partition — a tagged
     neighbour survives, an untagged one drops, and the focus itself still

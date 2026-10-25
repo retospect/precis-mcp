@@ -1,0 +1,78 @@
+fixture: design-tree S0 test fixture
+purpose: >-
+  Shared-library roots for the S0 fixture: one of each registry role
+  (axis, failure-mode, principle, criterion, process, system) plus a
+  canonical 'goal' root so a 'links' edge crosses manifest files.
+close:
+  id: close
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  def: keep an opening shut against environment, spill or tamper
+axis/locking:
+  id: axis/locking
+  role: axis
+  coverage: stub
+  summary: how a joint is kept from loosening — friction, positive lock,
+    adhesive, or none
+  asks:
+  - vibration
+failure/galvanic-corrosion:
+  id: failure/galvanic-corrosion
+  role: failure-mode
+  coverage: stub
+  summary: dissimilar metals in an electrolyte — always designed out on
+    metal pairs, never gated on outdoor use
+principle/retention-all-dof:
+  id: principle/retention-all-dof
+  role: principle
+  coverage: deep
+  applies: per-part
+  summary: every part's six DOF are intended motions or stopped both ways
+    by named features
+  checks:
+  - list the part's 6 DOF and mark each intended or stopped
+  - friction alone is not a stop under vibration
+  issues:
+  - issue: part held down by its own weight only
+    fix: latch, captive screw or positive cover stop
+    failure_mode: lost-part
+  rules:
+  - id: c1
+    text: a rigid body has six independent degrees of freedom
+    value: '6'
+    unit: DOF
+    equipment: any
+    confidence: secondary
+    source_url: https://example.invalid/exact-constraint
+    source_quality: secondary
+  literature:
+  - Blanding, Exact Constraint, ASME Press 1999
+criterion/separable:
+  id: criterion/separable
+  role: criterion
+  coverage: stub
+  summary: does the joint need to come apart — never, service or frequent
+process/desktop-fdm:
+  id: process/desktop-fdm
+  role: process
+  domain: mech
+  scale: macro
+  equipment: desktop-fdm
+  coverage: deep
+  summary: consumer filament printing; test prints on the user's printer
+    are the clearance authority
+  rules:
+  - id: c1
+    text: initial clearance for printed moving parts is at least 0.3 mm
+    value: '0.3'
+    unit: mm
+    confidence: handbook
+    source_url: https://example.invalid/prusa-kb
+    source_quality: primary
+system/t-slot-20:
+  id: system/t-slot-20
+  role: system
+  coverage: shallow
+  summary: 20 mm T-slot aluminium profile ecosystem

@@ -1,0 +1,141 @@
+fixture: design-tree S0 test fixture
+purpose: >-
+  One function tree covering every node role the join tree needs and every
+  edge type the importer mints: specialises (children and also_under
+  second parents), qualifies/fixes (issues), part-of (rules),
+  cites (node sources and rule source_url), tests (rule enforcers) and
+  related-to (links with 'as' meta to axis/failure-mode/principle/process/
+  system targets, a plain leaf-to-leaf link, and a cross-file link).
+  The threaded leaf carries a structured 'conflicts' record so the
+  export's conflicted-rule marking is exercised; pinned's rule shares the
+  marked rule's table_ref so forest-wide propagation is exercised too.
+join:
+  id: join
+  role: function
+  domain: mech
+  scale: macro
+  coverage: deep
+  def: fix two parts with no relative motion, permanent or detachable
+  asks:
+  - separable
+  - load_kind
+  children:
+    service:
+      id: join/service
+      role: branch
+      coverage: deep
+      summary: joints that come apart for service or replacement
+      when: separable=service
+      children:
+        threaded:
+          id: join/service/threaded
+          role: method
+          coverage: deep
+          summary: a screw or bolt holds the stack by preload
+          when:
+          - separable=service and a clamp load is wanted
+          avoid_when:
+          - soft plastics under cyclic shear without a metal insert
+          children:
+            clearance-tapped:
+              id: join/service/threaded/clearance-tapped
+              role: leaf
+              coverage: deep
+              principle: form
+              directness: indirect
+              also_under:
+              - join/frequent
+              implies:
+                class: rigid
+                mechanism: screw
+              summary: clearance hole in the first member, tapped hole in
+                the second; the screw head clamps the stack
+              when:
+              - separable=service
+              - access=one-side on the head side
+              variants:
+              - cap head
+              - countersunk head
+              tradeoffs:
+              - reusable and strong
+              - loosens under vibration without a lock
+              howto:
+              - drill the clearance hole to the fit class
+              - tap the core hole in the far member
+              axes:
+                locking: 'relevant: preload decays; pick a lock'
+                corrosion: 'relevant: steel screw in aluminium member'
+              issues:
+              - issue: screw backs out under vibration
+                fix: threadlocker or a prevailing-torque feature
+                failure_mode: loosening
+              - issue: galvanic couple between screw and member
+                fix: match metals or isolate and seal
+                failure_mode: galvanic-corrosion
+              rules:
+              - id: c1
+                text: thread engagement in steel at least 1x screw diameter
+                value: '1'
+                unit: x diameter
+                equipment: any
+                confidence: handbook
+                source_url: https://example.invalid/machinery-handbook
+                source_quality: primary
+                enforcers:
+                - path: src/precis_se/fasten.py::grip
+                  what: engagement depth check
+              - id: c2
+                text: printed tapped seats want extra hole compensation
+                value: '0.2'
+                unit: mm
+                equipment: desktop-fdm
+                confidence: secondary
+                standard: ISO 68-1
+                corrected: true
+                table_ref: fdm/pla
+                source_url: https://example.invalid/prusa-kb
+                source_quality: secondary
+              conflicts:
+              - topic: fdm hole compensation
+                values:
+                - '0.2 mm (Prusa KB)'
+                - '0.4 mm (Bambu wiki)'
+                reading: slicer profiles disagree on printed hole compensation
+                rules:
+                - c2
+              links:
+              - axis/locking
+              - failure/galvanic-corrosion
+              - principle/retention-all-dof
+              - process/desktop-fdm
+              - system/t-slot-20
+              - join/service/pinned
+              sources:
+              - https://example.invalid/machinery-handbook
+              - perplexity-reasoning:000000
+        pinned:
+          id: join/service/pinned
+          role: leaf
+          coverage: shallow
+          summary: a pin through both members carries shear
+          also_under:
+          - join/frequent
+          issues:
+          - issue: pin walks out of its bore
+            fix: clip, cotter or captive collar
+            failure_mode: lost-part
+          rules:
+          - id: c1
+            text: a locating pin pair needs one fixed and one slotted hole
+            value: null
+            unit: null
+            equipment: any
+            confidence: shop-rule
+            source_quality: none
+            table_ref: fdm/pla
+    frequent:
+      id: join/frequent
+      role: method
+      when: separable=frequent
+      links:
+      - close

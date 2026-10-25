@@ -35,16 +35,21 @@ first member instead of standing proud (a countersunk head always gets
 its cone — that one is physics, not preference). ``range``/``moves``/
 ``samples`` (:data:`RANGE_CLASSES`) are the declared travel of a
 revolute/prismatic joint and the end that travels, consumed by
-:mod:`precis_se.kinematics_drc`'s joint sweep. The rest of ``params``
-stays open and descriptive — that is the rule working, not an
+:mod:`precis_se.kinematics_drc`'s joint sweep. ``leaf`` is the
+design-tree leaf the connect realises (gr516958 — the walk's
+decision, recorded once), validated against the generated
+``design_rules.json`` export, never the live graph. The rest of
+``params`` stays open and descriptive — that is the rule working, not an
 exception to it.
 """
 
 from __future__ import annotations
 
+import difflib
 import math
 from typing import Any
 
+from precis import design_tree as core_design_tree
 from precis import fit_classes as core_fit_classes
 from precis import thread_forming as core_thread_forming
 
@@ -415,6 +420,30 @@ def _vet_params(params: dict[str, Any], klass: str) -> dict[str, Any]:
                 "(56 TPI) is 0.0004536, i.e. 0.4536 mm per turn"
             )
         params["thread_pitch"] = pitch_m
+    leaf = params.get("leaf")
+    if leaf is not None:
+        # contract-classed (gr516958 S0): records which design-tree leaf
+        # the connect realises — the walk's decision. The vocabulary is
+        # the generated design_rules.json export, never the live graph.
+        leaves = core_design_tree.leaf_ids()
+        if not isinstance(leaf, str) or leaf not in leaves:
+            # finding is a numeric kind — a slug can't carry the leaf id,
+            # so the lookup hint searches on the imported meta.dtree.id.
+            nearest = (
+                difflib.get_close_matches(str(leaf), sorted(leaves), n=10, cutoff=0.0)
+                if isinstance(leaf, str)
+                else sorted(leaves)[:10]
+            )
+            raise JointError(
+                f"joint param 'leaf' must name a design-tree leaf, got "
+                f"{leaf!r}; options: "
+                f"{', '.join(nearest) or '(none — design_rules.json has no leaves)'}"
+                f"; next: the leaf is a finding's meta.dtree.id — "
+                f"search(kind='finding', q={leaf!r}) to find the ref the "
+                "walk landed on, or omit 'leaf' and let DRC report the "
+                "connect as undeclared"
+            )
+        params["leaf"] = leaf
     return params
 
 

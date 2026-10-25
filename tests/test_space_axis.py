@@ -1,8 +1,9 @@
 """``SPACE:`` closed axis (docs/backlog/memory-native-authoring.md AC 1 + 2).
 
 Registered code-only in ``_CLOSED_VOCAB`` with values research / repo-dev /
-personal; allowed on memory, skill, todo and gripe; ``MemoryHandler`` stamps
-``SPACE:research`` by default and a caller's ``SPACE:`` replaces it.
+personal / design-conventions; allowed on memory, skill, todo and gripe;
+``MemoryHandler`` stamps ``SPACE:research`` by default and a caller's
+``SPACE:`` replaces it.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from precis.handlers.memory import MemoryHandler
 from precis.store import Store, Tag
 from tests.conftest import id_of
 
-_VALUES = ["personal", "repo-dev", "research"]
+_VALUES = ["design-conventions", "personal", "repo-dev", "research"]
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def test_tag_verb_accepts_each_registered_value_on_memory(
     assert "SPACE:repo-dev" in _space_tags(store, ref_id)
 
 
-def test_tag_verb_rejects_unknown_value_listing_the_three(
+def test_tag_verb_rejects_unknown_value_listing_registered_values(
     handler: MemoryHandler,
 ) -> None:
     ref_id = id_of(handler.put(text="a memory").body)

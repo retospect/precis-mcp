@@ -1388,7 +1388,10 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # Code-only like ATTEMPT — no ``data/axes/*.yaml``, no migration. Listed on
     # memory / skill / todo / gripe in ``_KIND_ALLOWED_AXES``; ``finding`` and
     # ``markdown`` are unlisted (unrestricted) and accept it without an edit.
-    "SPACE": frozenset({"research", "repo-dev", "personal"}),
+    # ``design-conventions`` is the design knowledge graph's corpus
+    # (``precis conventions import --manifest design-tree`` findings,
+    # gr516958) — written on ``finding``, which is unrestricted anyway.
+    "SPACE": frozenset({"research", "repo-dev", "personal", "design-conventions"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as
