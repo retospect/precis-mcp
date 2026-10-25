@@ -36,6 +36,7 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | re-point a merged stub | `args={'redirect_to': '<pa>', 'reason': …}` |
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` |
+| export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
 | attach a legal PDF | `put(id=…, args={'pdf_url': '<url>'})` |
 | declare a record as SI | `args={'supplement_of': '<parent>'}` — the SI section in [[precis-paper-help]] |
@@ -194,6 +195,15 @@ naming its ref — the move case. `clear_abstract` drops `meta.abstract`
 `abstract=''` refuses and points at it. Writes log `body_dropped`/
 `body_moved`/`body_split`/`abstract_cleared` ref_events; chunk links
 re-point on move/split, count on drop.
+
+Each door's `dry_run` ends with an `undo:` line naming the export to
+take first: `get(kind='paper', id='<pa>', view='ops')` dumps the ref's
+full stored state — ref row, identifiers, tags, byline, bib entries,
+inbound+outbound links (with chunk ords) and every chunk incl. cards —
+as a fenced `precis-paper-dump/1` block, paged by
+`args={'page': N, 'page_size': K}` (default 100, cap 500, 0 = the rest;
+concatenate the slices' `chunks` arrays). The operator twin
+`precis paper dump <id> --out <file>` writes every slice into one file.
 
 ## A worker stamped a paper as done/failed — how do I re-run it?
 

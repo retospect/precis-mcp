@@ -207,6 +207,7 @@ _SUPPORTED_VIEWS = (
     "claims",
     "authors",
     "chunks",
+    "ops",
 )
 
 
@@ -419,6 +420,11 @@ class PaperHandler(Handler):
     #: meaning (delegate to ``search``).
     supports_find_in_ref = True
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        # ``get`` reads the ``view='ops'`` slice window only
+        # (gr517423: :meth:`_render_ops_view`); the deprecated
+        # ``offset``/``limit`` aliases ride along through
+        # ``_slice_args.slice_window``.
+        "get": ArgsSpec({"page", "page_size", "offset", "limit"}),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
         # spelling the slim schema pushes (kind-specific fields ride
         # args=), and acquire's own BadInput hint names verify=/title=.
@@ -1352,6 +1358,7 @@ class PaperHandler(Handler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
@@ -1471,7 +1478,7 @@ class PaperHandler(Handler):
             queue_si_on_attention(self.store, ref.id, "mcp_get")
             return self._render_overview(ref)
 
-        return self._render_view(ref, effective_view)
+        return self._render_view(ref, effective_view, args)
 
     # -- batch get (``id=[...]``, gr501175) -----------------------------------
 
@@ -3352,13 +3359,14 @@ class PaperHandler(Handler):
         bibliographic identifiers, cite_key and card chunks stay, so the
         ref is a stub the fetcher can re-chase. No retire, no redirect.
         """
-        from precis.ingest import body_ops
+        from precis.ingest import body_ops, paper_dump
 
         kind = self.spec.kind
         ref, handle = self._require_live_body_ref(id, "drop_body")
         self._require_reason(reason, "drop_body", kind, handle)
         with self.store.pool.connection() as conn:
             probe = body_ops.probe_body(conn, ref.id)
+            undo = paper_dump.undo_line(conn, ref.id, handle)
         # A stub carrying stale content ids / body meta is still a drop
         # target — detach_body cleans exactly those (gr515106 LOW).
         if probe.is_stub and not probe.identifiers and not probe.meta_keys:
@@ -3376,7 +3384,8 @@ class PaperHandler(Handler):
                     f"{'pdf_sha256 cleared, ' if probe.pdf else ''}content ids "
                     f"removed ({', '.join(probe.identifiers) or 'none'}), "
                     f"meta keys stripped ({', '.join(probe.meta_keys) or 'none'}); "
-                    "a 'body_dropped' ref_event logged."
+                    "a 'body_dropped' ref_event logged.\n\n"
+                    f"{undo}"
                 )
             )
         with _body_op_tx(self.store, "drop_body") as conn:
@@ -3443,7 +3452,7 @@ class PaperHandler(Handler):
         file it wasn't extracted from is unverifiable (the target
         re-extracts from its own pdf via ``precis bodiless-heal``).
         """
-        from precis.ingest import body_ops
+        from precis.ingest import body_ops, paper_dump
 
         kind = self.spec.kind
         donor, donor_h = self._require_live_body_ref(id, "move_body_to")
@@ -3480,6 +3489,7 @@ class PaperHandler(Handler):
         with self.store.pool.connection() as conn:
             src_probe = body_ops.probe_body(conn, donor.id)
             tgt_probe = body_ops.probe_body(conn, tgt.id)
+            undo = paper_dump.undo_line(conn, donor.id, donor_h)
         if src_probe.is_stub:
             return Response(
                 body=f"no change: {donor_h} holds no body and no PDF to move."
@@ -3525,7 +3535,8 @@ class PaperHandler(Handler):
                     f"({', '.join(src_probe.identifiers) or 'none'}) and "
                     "extraction meta keys handed over; "
                     f"{donor_h} keeps its metadata and ends a live stub; "
-                    "'body_moved' ref_events logged on both."
+                    "'body_moved' ref_events logged on both.\n\n"
+                    f"{undo}"
                 )
             )
         with _body_op_tx(self.store, "move_body_to") as conn:
@@ -3641,7 +3652,7 @@ class PaperHandler(Handler):
         ref — that is the ``move_body_to`` case, not a mint.
         """
         from precis.identity import make_cite_key
-        from precis.ingest import body_ops
+        from precis.ingest import body_ops, paper_dump
 
         kind = self.spec.kind
         donor, donor_h = self._require_live_body_ref(id, "split_body")
@@ -3691,6 +3702,7 @@ class PaperHandler(Handler):
                 )
         with self.store.pool.connection() as conn:
             probe = body_ops.probe_body(conn, donor.id)
+            undo = paper_dump.undo_line(conn, donor.id, donor_h)
         if probe.is_stub:
             raise BadInput(
                 f"{donor_h} holds no body and no PDF — nothing to split off",
@@ -3710,7 +3722,8 @@ class PaperHandler(Handler):
                     f"{probe.chunk_links} chunk link(s) re-pointed"
                     f"{_links_removed_note(probe)}; "
                     f"{donor_h} keeps its metadata and ends a live stub; "
-                    "'body_split' / 'body_moved' ref_events logged."
+                    "'body_split' / 'body_moved' ref_events logged.\n\n"
+                    f"{undo}"
                 )
             )
         with _body_op_tx(self.store, "split_body") as conn:
@@ -3820,11 +3833,14 @@ class PaperHandler(Handler):
         later enrichment may re-fill the abstract — the event log is the
         audit of why it was removed.
         """
+        from precis.ingest import paper_dump
+
         kind = self.spec.kind
         ref, handle = self._require_live_body_ref(id, "clear_abstract")
         self._require_reason(reason, "clear_abstract", kind, handle)
         with self.store.pool.connection() as conn:
             meta_abstract = (ref.meta or {}).get("abstract")
+            undo = paper_dump.undo_line(conn, ref.id, handle)
             card = conn.execute(
                 "SELECT count(*) FROM chunks WHERE ref_id = %s "
                 "AND chunk_kind = 'card_abstract' AND retired_at IS NULL",
@@ -3843,7 +3859,8 @@ class PaperHandler(Handler):
                     f"DRY RUN (no write) - would clear {handle}'s abstract: "
                     f"meta.abstract {'removed' if has_meta else 'already absent'}, "
                     f"{n_card} card_abstract chunk(s) deleted, card_combined "
-                    "rebuilt without it; an 'abstract_cleared' ref_event logged."
+                    "rebuilt without it; an 'abstract_cleared' ref_event "
+                    f"logged.\n\n{undo}"
                 )
             )
         with _body_op_tx(self.store, "clear_abstract") as conn:
@@ -4415,7 +4432,44 @@ class PaperHandler(Handler):
         )
         return Response(body=body)
 
-    def _render_view(self, ref: Ref, view: str) -> Response:
+    def _render_ops_view(
+        self, ref: Ref, args: dict[str, Any] | None = None
+    ) -> Response:
+        """``view='ops'`` — the ref's whole stored state as a
+        ``precis-paper-dump/1`` fenced block (gr517423 slice 1:
+        :mod:`precis.ingest.paper_dump`), paged over every chunk by
+        ``args={'page': N, 'page_size': K}`` exactly like the se kind's
+        ops export. This is the undo the ``drop_body``/``clear_abstract``
+        /``split_body``/``move_body_to`` dry runs point at; the restore
+        door that consumes it is slice 2 of the same spec."""
+        from precis.ingest import paper_dump
+
+        handle = _pa(ref)
+        with self.store.pool.connection() as conn:
+            body = paper_dump.render_ops(
+                conn,
+                ref_id=ref.id,
+                title=ref.title or handle,
+                handle=handle,
+                args=dict(args) if args is not None else None,
+            )
+        return Response(
+            body=body,
+            # Same fold-recovery hint as the se export: a folded dump's
+            # middle is only reachable by slicing.
+            pagination_alt_hint=(
+                f"get(kind='paper', id={handle!r}, view='ops', "
+                "args={'page': <n>, 'page_size': <count>}) fetches one "
+                "slice of the dump — the concatenated slices' `chunks` "
+                "arrays are the whole export"
+            ),
+        )
+
+    def _render_view(
+        self, ref: Ref, view: str, args: dict[str, Any] | None = None
+    ) -> Response:
+        if view == "ops":
+            return self._render_ops_view(ref, args)
         if view == "log":
             # Per-ref chronological event log across every subsystem
             # that writes to ref_events (chase, fetcher, provenance,

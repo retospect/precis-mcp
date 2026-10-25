@@ -22,12 +22,17 @@ Subcommands:
   spelling of ``put(kind='paper', id=…, mode='fetch-si')`` (stamps
   ``by='cli'``); ``<id>`` takes a cite_key slug, ``paNNN`` handle,
   numeric ref_id or DOI/identifier form.
+* ``precis paper dump <id> --out <file>`` — the CLI twin of
+  ``get(kind='paper', id=…, view='ops')`` (gr517423 slice 1): writes one
+  ``precis-paper-dump/1`` JSON with every slice's chunks merged, for
+  operator batch runs ahead of body repair doors.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from typing import Any
 
 from precis.cli._common import REFUSAL_EXIT, resolve_dsn
 from precis.errors import PrecisError
@@ -99,6 +104,29 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    dp = psub.add_parser(
+        "dump",
+        help="Export one paper's full stored state as precis-paper-dump/1 JSON.",
+        description=(
+            "Write the same precis-paper-dump/1 block "
+            "get(kind='paper', view='ops') serves, every slice merged "
+            "into one JSON file — the undo artifact to take before a "
+            "drop_body/move_body_to/split_body/clear_abstract run."
+        ),
+    )
+    dp.add_argument(
+        "id",
+        help="Paper id: cite_key slug, paNNN handle, numeric ref_id or DOI.",
+    )
+    dp.add_argument(
+        "--out",
+        required=True,
+        help="Destination file for the dump JSON.",
+    )
+    dp.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def run(args: argparse.Namespace) -> None:
     if args.paper_cmd == "authors-resplit":
@@ -109,6 +137,9 @@ def run(args: argparse.Namespace) -> None:
         return
     if args.paper_cmd == "fetch-si":
         _run_fetch_si(args)
+        return
+    if args.paper_cmd == "dump":
+        _run_dump(args)
         return
     print(f"paper: unknown subcommand {args.paper_cmd!r}", file=sys.stderr)
     sys.exit(2)
@@ -242,6 +273,54 @@ def fetch_si(store: Store, id: str | int) -> tuple[str, str]:
             next=f"precis paper fetch-si {parent[1] or parent[0]}",
         )
     return slug, status
+
+
+def dump_paper(store: Store, id: str | int) -> dict[str, Any]:
+    """The lib behind ``precis paper dump``: every ``view='ops'`` slice
+    merged into one ``precis-paper-dump/1`` dict. Iterates max-size
+    windows rather than asking for ``size=0`` so the CLI exercises the
+    same paging path the agent does."""
+    from precis.handlers.paper import resolve_paper_slug
+    from precis.ingest import paper_dump
+
+    _slug, ref_id = resolve_paper_slug(store, id)
+    with store.pool.connection() as conn:
+        first = paper_dump.dump_ref(
+            conn, ref_id, offset=0, size=paper_dump.MAX_PAGE_SIZE
+        )
+        chunks = list(first["chunks"])
+        total = first["manifest"]["chunks_total"]
+        while len(chunks) < total:
+            nxt = paper_dump.dump_ref(
+                conn, ref_id, offset=len(chunks), size=paper_dump.MAX_PAGE_SIZE
+            )
+            if not nxt["chunks"]:
+                break
+            chunks += nxt["chunks"]
+        first["chunks"] = chunks
+        first["manifest"]["window"] = [0, len(chunks)]
+    return first
+
+
+def _run_dump(args: argparse.Namespace) -> None:
+    import json
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        dump = dump_paper(store, args.id)
+    except PrecisError as exc:
+        print(_render_precis_error(exc), file=sys.stderr)
+        sys.exit(REFUSAL_EXIT)
+    finally:
+        store.close()
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(dump, fh, indent=1)
+        fh.write("\n")
+    m = dump["manifest"]
+    print(
+        f"dumped {m['handle']}: {m['chunks_total']} chunk(s), "
+        f"body_sha {m['body_sha'][:12]}… → {args.out}"
+    )
 
 
 def _render_precis_error(err: PrecisError) -> str:
