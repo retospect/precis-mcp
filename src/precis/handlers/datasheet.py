@@ -39,6 +39,7 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.paper import PaperHandler
+from precis.ingest.kind_convert import DATASHEET_SUBTYPES as _DATASHEET_SUBTYPES
 from precis.pcb import jlc_api
 from precis.pcb._http import VendorError
 from precis.pcb.datasheets import datasheet_state, enqueue_facts_one, enqueue_one
@@ -62,9 +63,8 @@ _DATASHEET_VIEWS: tuple[str, ...] = (
 # The electronics-doc sub-genres a datasheet's ``meta.subtype`` may name (one
 # kind for the whole family — the PCB netlist+placement IR). ``datasheet`` is the default.
 # Labels for humans/export live in ``export.latex.DATASHEET_SUBTYPE_LABELS``.
-_DATASHEET_SUBTYPES: frozenset[str] = frozenset(
-    {"datasheet", "app-note", "errata", "reference-manual"}
-)
+# The vocabulary itself lives in ingest.kind_convert so the paper→datasheet
+# convert door validates the same set without importing this module.
 
 # Bibliographic fields handled by the inherited PaperHandler.edit — forwarded
 # there verbatim; the datasheet-specific meta fields are handled here.

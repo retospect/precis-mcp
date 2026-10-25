@@ -83,6 +83,14 @@ A family datasheet that covers several parts takes one more link per extra
 part: `link(kind='datasheet', id='<slug>', rel='datasheet-of',
 target='part:<C-number>')`.
 
+**A datasheet got ingested as a `paper`**: convert it in place —
+`edit(kind='paper', id='<slug|paN>', args={'convert_to': 'datasheet',
+'subtype': 'app-note', 'reason': …})` flips the kind keeping body,
+links, identifiers and the cite_key slug (`dry_run` previews);
+`pa<id>`/`pc<chunk>` keep resolving via a redirect, `da<id>` mints.
+Details: [[precis-paper-ref-help]] "A datasheet/manual was ingested as
+a paper".
+
 **Every URL bot-walls** (`not_pdf` / `http_403` on the part's `datasheet:`
 line — common for LCSC-hosted sheets): find the same PDF on a fetchable
 host and hand that URL over. A paid search turns one up for ~$0.005;

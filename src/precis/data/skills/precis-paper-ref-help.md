@@ -37,6 +37,7 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` |
 | export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
+| convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
 | attach a legal PDF | `put(id=…, args={'pdf_url': '<url>'})` |
 | declare a record as SI | `args={'supplement_of': '<parent>'}` — the SI section in [[precis-paper-help]] |
@@ -246,8 +247,33 @@ publisher preview (find the full text elsewhere); `identity_unchecked` on a
 `dropped` record means the stub had no usable title or DOI, so check the
 folded body yourself. The folded paper keeps the URL as `meta.source_url`.
 
+## A datasheet/manual was ingested as a paper — how do I convert it?
+
+```python
+edit(kind="paper", id="pa1429", args={"convert_to": "datasheet", "reason": "it's a datasheet"})
+edit(kind="paper", id="pa2494", args={"convert_to": "datasheet", "subtype": "reference-manual", "reason": "ref manual"})
+edit(kind="paper", id="pa1003", args={"convert_to": "datasheet", "subtype": "app-note", "reason": "AN175"}, dry_run=True)
+```
+
+`refs.kind` flips; every ref-keyed row follows untouched — body chunks,
+embeddings, links (incl. chunk-anchored), identifiers, the pdf pointer
+and authors. Paper-only ref tags (categorizer axes + `DREAM:`) are
+stripped; open tags and `SRC:`/`CACHE:` stay. `meta.subtype` (default
+`'datasheet'`; `app-note` / `errata` / `reference-manual`) + a
+`converted_from_kind` stamp are written; a `converted` ref_event logs.
+Trust: a v0 row keeps its stamp; a v1 ref is restamped
+`<caller origin>/hunch` by the trust guard (kind is semantic).
+`dry_run` reports per-table counts, the stripped tags and the v1
+restamp — writes nothing. Refuses
+a retired/merged ref, an SI record, a paper with live SI children, and
+links whose relation's endpoint-kind constraint excludes `'datasheet'`.
+`pa<id>`/`pc<chunk>` keep resolving via the converted_from_kind
+redirect — the record also answers `da<id>` and the same cite_key slug
+under `get(kind='datasheet', id=…)`.
+
 ## See also
 
+- [[precis-datasheet-help]] — read datasheets for PCB design
 - [[precis-paper-help]] — find, read, cite papers
 - [[precis-stubs-help]] — the acquisition backlog (papers we still need)
 - [[precis-author-discovery-help]] — author-network discovery over the corpus

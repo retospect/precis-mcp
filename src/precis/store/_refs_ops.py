@@ -39,7 +39,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput, NotFound
-from precis.hints import Hint, merged_redirect_hint
+from precis.hints import Hint, converted_redirect_hint, merged_redirect_hint
 from precis.store._body_predicate import has_body_sql, unusable_body_tag_sql
 from precis.store._mappers import (
     _REFS_COLS,
@@ -563,7 +563,11 @@ class RefsMixin:
         not a well-formed, live, kind-matching handle — the caller falls
         through to legacy id resolution untouched (file-backed
         ``sk``/``py``, other-table ``tg``, legacy draft ``¶`` chunk
-        handles, plain slugs, bare numerics).
+        handles, plain slugs, bare numerics). One exception to the
+        kind-match: a ref stamped ``meta.converted_from_kind`` (the
+        paper → datasheet convert door) resolves under its NEW kind
+        with ``redirected_from`` set — the old-kind handle keeps
+        working so stored text references don't break (gr515477).
         """
         parsed = handle_registry.parse(handle)
         if parsed is None:
@@ -575,7 +579,8 @@ class RefsMixin:
             "SELECT r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " LIMIT 1) AS slug, r.pdf_role "
+            " LIMIT 1) AS slug, r.pdf_role, "
+            "r.meta->>'converted_from_kind' "
             "FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL"
         )
 
@@ -593,10 +598,27 @@ class RefsMixin:
                 if row is None:
                     return None
                 row_kind, slug = str(row[0]), row[1]
-                if row_kind != kind:
-                    return None
-                public_id = slug if slug is not None else str(survivor)
                 old_handle = handle_registry.normalize(handle)
+                if row_kind != kind:
+                    # The survivor was itself converted after the merge
+                    # (pa<loser> -> survivor now a datasheet): the same
+                    # converted_from_kind redirect applies.
+                    if (row[3] or "") != kind:
+                        return None
+                    self.emit_hint(
+                        merged_redirect_hint(
+                            old_handle,
+                            handle_registry.format_handle(row_kind, survivor),
+                        )
+                    )
+                    return ResolvedHandle(
+                        ref_id=survivor,
+                        kind=row_kind,
+                        public_id=slug if slug is not None else str(survivor),
+                        cite_public_id=_si_cite_slug(c, survivor, row_kind, row[2]),
+                        redirected_from=old_handle,
+                    )
+                public_id = slug if slug is not None else str(survivor)
                 # Nudge the agent to adopt the survivor handle. Fires for every
                 # resolve of a merged record handle in a request scope (get,
                 # link=, citation source_handle, exclude=, …) — one wiring, all
@@ -613,8 +635,26 @@ class RefsMixin:
                     redirected_from=old_handle,
                 )
             row_kind, slug = str(row[0]), row[1]
-            if row_kind != kind:  # prefix/kind mismatch — not this handle
-                return None
+            if row_kind != kind:
+                # A converted ref keeps its ref_id, so the old-kind
+                # handle (pa<id> after paper -> datasheet) still
+                # resolves — with a nudge to adopt the new handle.
+                if (row[3] or "") != kind:
+                    return None  # prefix/kind mismatch — not this handle
+                old_handle = handle_registry.normalize(handle)
+                self.emit_hint(
+                    converted_redirect_hint(
+                        old_handle,
+                        handle_registry.format_handle(row_kind, pk),
+                    )
+                )
+                return ResolvedHandle(
+                    ref_id=pk,
+                    kind=row_kind,
+                    public_id=slug if slug is not None else str(pk),
+                    cite_public_id=_si_cite_slug(c, pk, row_kind, row[2]),
+                    redirected_from=old_handle,
+                )
             public_id = slug if slug is not None else str(pk)
             return ResolvedHandle(
                 ref_id=pk,
@@ -685,7 +725,7 @@ class RefsMixin:
             "SELECT c.ref_id, c.ord, r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " LIMIT 1) AS slug, r.pdf_role "
+            " LIMIT 1) AS slug, r.pdf_role, r.meta->>'converted_from_kind' "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
             "WHERE c.chunk_id = %s AND r.retired_at IS NULL"
         )
@@ -700,8 +740,28 @@ class RefsMixin:
                 str(row[2]),
                 row[3],
             )
-            if row_kind != kind:  # prefix/kind mismatch — not this handle
-                return None
+            if row_kind != kind:
+                # Same convert-redirect as the ref path: pc<id> still
+                # resolves after the owning ref went paper -> datasheet
+                # (the chunk code mints dk<id> now).
+                if (row[5] or "") != kind:
+                    return None  # prefix/kind mismatch — not this handle
+                old_handle = handle_registry.format_handle(kind, chunk_id, chunk=True)
+                self.emit_hint(
+                    converted_redirect_hint(
+                        old_handle,
+                        handle_registry.format_handle(row_kind, chunk_id, chunk=True),
+                    )
+                )
+                return ResolvedHandle(
+                    ref_id=ref_id,
+                    kind=row_kind,
+                    public_id=slug if slug is not None else str(ref_id),
+                    chunk_id=chunk_id,
+                    chunk_ord=ord_,
+                    cite_public_id=_si_cite_slug(c, ref_id, row_kind, row[4]),
+                    redirected_from=old_handle,
+                )
             public_id = slug if slug is not None else str(ref_id)
             return ResolvedHandle(
                 ref_id=ref_id,

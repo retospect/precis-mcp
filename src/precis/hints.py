@@ -52,6 +52,21 @@ def merged_redirect_hint(old: str, new: str) -> Hint:
     )
 
 
+def converted_redirect_hint(old: str, new: str) -> Hint:
+    """Non-breaking nudge after a kind convert — the ref kept its
+    ``ref_id``, so the old-kind handle (``pa<id>`` after paper →
+    datasheet) still resolves to the same record under its new kind."""
+    return Hint(
+        text=(
+            f"{old} converted to {new} — it still resolved, but please "
+            f"update your reference to {new} going forward. Sorry for the "
+            "trouble."
+        ),
+        topic=f"handle.redirect.{old}",
+        level="info",
+    )
+
+
 def bare_numeric_hint(kind: str, bare: str, handle: str) -> Hint:
     """Admonish after the bare-numeric ref_id fallback (A1) fired: the address
     is the handle, and a bare number must never land in cited text."""

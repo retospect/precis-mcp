@@ -3641,7 +3641,10 @@ class DispatchMixin(RuntimeShape):
 
         Returns ``True`` if routed, ``False`` otherwise (non-handle,
         unknown/chunk handle, or a disagreeing explicit ``kind=``), so
-        the caller falls through to bare-slug inference untouched.
+        the caller falls through to bare-slug inference untouched. One
+        exception to a disagreeing ``kind=``: a convert redirect — the
+        skills teach ``get(kind='paper', id='pa<id>')``, and that call
+        keeps working after the ref became a datasheet (gr515477).
         """
         if self.store is None:
             return False
@@ -3657,7 +3660,21 @@ class DispatchMixin(RuntimeShape):
             return self._maybe_route_unresolved_record_handle(args, normalized, suffix)
         explicit = args.get("kind")
         if explicit is not None and explicit != resolved.kind:
-            return False
+            # A converted ref resolves under its NEW kind
+            # (resolve_handle's converted_from_kind redirect, which
+            # already emitted the nudge hint); when the caller's
+            # explicit kind still names the handle's decoded —
+            # pre-convert — kind, route it through instead of
+            # NotFound-ing on the old handler. A merge redirect can't
+            # reach this branch (merge keeps kind, so a disagreeing
+            # explicit is a real mismatch there).
+            parsed = handle_registry.parse(normalized)
+            if (
+                resolved.redirected_from is None
+                or parsed is None
+                or explicit != parsed[0]
+            ):
+                return False
         if resolved.chunk_id is not None:
             # Chunk handle → per-kind chunk selector. Slug-document kinds take
             # ``slug~ord`` (ChunkRow.ord == chunks.ord). Numeric-chunk kinds
@@ -3706,8 +3723,11 @@ class DispatchMixin(RuntimeShape):
             # "already merged". Route the decoded tombstone ref_id
             # through instead so the handler can resolve it with
             # include_deleted (gr501446, gr509441, gr509659).
-            args["kind"] = resolved.kind
             parsed = handle_registry.parse(normalized)
+            # kind is the tombstone's own — decoded from the handle, not
+            # resolved.kind: the survivor may have been converted to a
+            # different kind, and the door still edits the dead ref.
+            args["kind"] = parsed[0] if parsed else resolved.kind
             args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
             return True
         args["kind"] = resolved.kind

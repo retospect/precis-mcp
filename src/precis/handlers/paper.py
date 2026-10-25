@@ -255,6 +255,7 @@ _EDIT_DOOR_ARGS = (
     "move_body_to",
     "split_body",
     "clear_abstract",
+    "convert_to",
 )
 
 
@@ -2510,6 +2511,14 @@ class PaperHandler(Handler):
                     reason=reason,
                     dry=bool(dry_mode),
                 )
+            if door == "convert_to":
+                return self._convert_to(
+                    id,
+                    raw_args["convert_to"],
+                    subtype=raw_args.get("subtype"),
+                    reason=reason,
+                    dry=bool(dry_mode),
+                )
             return self._clear_abstract(id, reason=reason, dry=bool(dry_mode))
         ref_id = self._resolve_paper_ref_id(id)
         # gr514995: an explicit blank abstract used to be a silent no-op
@@ -3908,6 +3917,214 @@ class PaperHandler(Handler):
                 "card_abstract chunk(s) deleted, card_combined rebuilt "
                 "(ref_event 'abstract_cleared' logged)."
             )
+        )
+
+    def _convert_to(
+        self,
+        id: str | int,
+        target: Any,
+        *,
+        subtype: Any,
+        reason: str,
+        dry: bool,
+    ) -> Response:
+        """``edit(args={'convert_to': 'datasheet'})`` — flip this ref's
+        kind, keeping identity (gr515477).
+
+        The datasheet/manual misfiled as a paper: the ``refs.kind``
+        column flips and every ``ref_id``-keyed row follows untouched —
+        body chunks, embeddings (the ``chunk_embeddings.kind`` denorm
+        re-stamps), links incl. chunk anchors, identifiers, the pdf
+        pointer, authors and trust stamps. The cite_key slug keeps
+        resolving under the new kind; the computed handle re-mints
+        (``pa<id>`` → ``da<id>`` — the code encodes the kind, and the old
+        handle redirects through the ``converted_from_kind`` stamp).
+        ``args['subtype']`` picks the datasheet sub-genre
+        (:data:`precis.ingest.kind_convert.DATASHEET_SUBTYPES`,
+        default ``'datasheet'``); ``meta.subtype`` + a
+        ``converted_from_kind`` stamp are written. Paper-only ref tags
+        (categorizer axes + ``DREAM``) are stripped in the same
+        transaction (each stripped axis's ``<NS>CASCADE`` sweep marker
+        goes with it); the dry run lists them. A kind flip is semantic
+        under the 0214 guard: v0 trust stamps carry, a v1 ref is
+        restamped ``<caller origin>/hunch`` (the dry run names this).
+        One transaction.
+
+        Refuses with ``next=`` when the target can't hold something:
+        an SI record, a paper with live SI children, or a link whose
+        relation's endpoint-kind constraint excludes the target.
+        """
+        from precis.ingest import kind_convert
+        from precis.ingest.kind_convert import (
+            CONVERT_TARGETS,
+            DATASHEET_SUBTYPES,
+        )
+
+        kind = self.spec.kind
+        if kind != "paper":
+            raise BadInput(
+                f"convert_to is supported only from kind='paper' "
+                f"(this door is kind='{kind}')",
+                next="only a paper converts to a datasheet — the reverse "
+                "or other pairs need a migration decision first",
+            )
+        target_s = str(target or "").strip()
+        if target_s not in CONVERT_TARGETS:
+            raise BadInput(
+                f"convert_to={target_s!r} unsupported — the only "
+                "supported conversion is paper → datasheet",
+                next="edit(kind='paper', id=<slug>, args="
+                "{'convert_to': 'datasheet', 'reason': '<why>'})",
+            )
+        ref, handle = self._require_live_body_ref(id, "convert_to")
+        self._require_reason(reason, "convert_to", kind, handle, arg="'datasheet'")
+        sub = str(subtype or "").strip() or "datasheet"
+        if sub not in DATASHEET_SUBTYPES:
+            raise BadInput(
+                f"args['subtype']={sub!r} unknown; expected one of "
+                f"{sorted(DATASHEET_SUBTYPES)}",
+                next="args={'convert_to': 'datasheet', 'subtype': "
+                "'app-note'|'errata'|'reference-manual', 'reason': '<why>'}",
+            )
+        with self.store.pool.connection() as conn:
+            probe = kind_convert.probe_convert(conn, ref.id, target_s)
+        self._convert_refuse(probe, handle, target_s)
+        new_handle = handle_registry.format_handle(target_s, ref.id)
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would convert {handle} "
+                    f"paper → {target_s}: refs.kind flipped (1 row), "
+                    f"meta.subtype='{sub}' + converted_from_kind stamped, "
+                    f"{self._convert_kept(probe)}."
+                    f"{self._convert_notes(probe)} a 'converted' "
+                    f"ref_event logged. New handle {new_handle}; "
+                    f"pa{ref.id} redirects to it (converted_from_kind "
+                    "stamp); the cite_key slug keeps resolving."
+                )
+            )
+        with _body_op_tx(self.store, "convert_to") as conn:
+            # Same TOCTOU pin as the body ops: probe ran outside the tx —
+            # lock the ref FOR UPDATE (the kind column sits in
+            # refs_ref_id_kind_key, so the flip upgrades the lock anyway)
+            # and re-verify it is still a live paper, then re-probe:
+            # an SI child or constrained link added between the outer
+            # probe and the lock converts anyway otherwise.
+            row = conn.execute(
+                "SELECT kind, retired_at, meta->>'superseded_by' "
+                "FROM refs WHERE ref_id = %s FOR UPDATE",
+                (ref.id,),
+            ).fetchone()
+            if (
+                row is None
+                or row[0] != "paper"
+                or row[1] is not None
+                or row[2] is not None
+            ):
+                raise BadInput(
+                    f"{handle} changed kind or was retired/merged since "
+                    "the check — a convert needs a live paper",
+                    next=f"re-resolve and retry: edit(kind='paper', "
+                    f"id='{handle}', args={{'convert_to': 'datasheet', "
+                    "'reason': '<why>'}})",
+                )
+            probe = kind_convert.probe_convert(conn, ref.id, target_s)
+            self._convert_refuse(probe, handle, target_s)
+            applied = kind_convert.apply_convert(
+                conn, ref_id=ref.id, target=target_s, subtype=sub
+            )
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="converted",
+                payload={
+                    "reason": reason,
+                    "from_kind": "paper",
+                    "to_kind": target_s,
+                    "subtype": sub,
+                    "body_chunks": probe.chunks,
+                    "retired_chunks": probe.retired_chunks,
+                    "embeddings": applied["embedding_rows"],
+                    "links": probe.links,
+                    "chunk_links": probe.chunk_links,
+                    "identifiers": probe.identifiers,
+                    "authors": probe.authors,
+                    "pdf_kept": probe.pdf,
+                    "stripped_tags": applied["stripped_tags"],
+                },
+                conn=conn,
+            )
+        return Response(
+            body=(
+                f"converted {handle} → kind='{target_s}': "
+                f"{self._convert_kept(probe)}.{self._convert_notes(probe)} "
+                f"(ref_event 'converted' logged). Address it as "
+                f"get(kind='datasheet', id='{ref.slug or new_handle}') "
+                f"or {new_handle} — pa{ref.id} keeps resolving through "
+                "the converted_from_kind redirect; the cite_key slug and "
+                "every identifier keep working."
+            )
+        )
+
+    @staticmethod
+    def _convert_refuse(probe: Any, handle: str, target: str) -> None:
+        """Raise the convert refusals (with ``next=``) for a probe's
+        flags — run on the outer probe AND the in-tx re-probe so a state
+        change between them can't slip a refusal through."""
+        if probe.is_supplement:
+            raise BadInput(
+                f"{handle} is an SI record — a datasheet has no supplement parent",
+                next="convert the parent paper instead, or unlink the "
+                "part-of edge first",
+            )
+        if probe.si_children:
+            raise BadInput(
+                f"{handle} has {probe.si_children} supplement record(s) "
+                "attached — converting the parent strands them",
+                next="convert or merge the SI records first "
+                "(args={'merge_into': <survivor>} / {'drop_body': True})",
+            )
+        if probe.violated_links:
+            listing = ", ".join(
+                f"link:{lid} rel='{rel}' ({side})"
+                for lid, rel, side in probe.violated_links
+            )
+            raise BadInput(
+                f"{handle} carries edge(s) a {target} cannot hold: {listing}",
+                next="unlink them first — the relation's endpoint-kind "
+                f"constraint excludes '{target}'",
+            )
+
+    @staticmethod
+    def _convert_notes(probe: Any) -> str:
+        """The trust-restamp + tag-strip trailer, built from whichever
+        probe is authoritative for the reply — the outer probe for the
+        dry run, the in-tx re-probe for the write ack."""
+        trust = (
+            " Trust stamp is v1 — the 0214 guard restamps it "
+            "<caller origin>/hunch on write (a 'considered' stamp does "
+            "not survive)."
+            if probe.trust_write_version == 1
+            else ""
+        )
+        strip = (
+            f" Paper-only tags stripped: {', '.join(probe.stripped_tags)}."
+            if probe.stripped_tags
+            else ""
+        )
+        return f"{trust}{strip}"
+
+    @staticmethod
+    def _convert_kept(probe: Any) -> str:
+        """The carried-over counts line shared by the dry run, the ack
+        and the ref_event."""
+        return (
+            f"{probe.chunks} chunk(s)"
+            + (f" (+{probe.retired_chunks} retired)" if probe.retired_chunks else "")
+            + f", {probe.embedding_rows} embedding row(s), {probe.links} "
+            f"link(s) ({probe.chunk_links} chunk-anchored), "
+            f"{probe.identifiers} identifier(s), {probe.authors} author "
+            f"row(s){', pdf' if probe.pdf else ''} kept"
         )
 
     def _declare_supplement(
