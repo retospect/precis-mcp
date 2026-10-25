@@ -119,7 +119,7 @@ def test_bodiless_stub_survivor_takes_body_pdf_and_content_ids(store: Store) -> 
 
 def test_survivor_keeps_own_paper_id(store: Store) -> None:
     """``paper_id`` is single-valued per ref: a survivor that has one keeps it
-    and the twin's stays behind (the ``refs_v`` view reads it as a scalar)."""
+    and the twin's stays behind (the ``v_refs`` view reads it as a scalar)."""
     stub = int(store.insert_ref(kind="paper", slug="wanted25", title="Wanted").id)
     with store.pool.connection() as conn:
         conn.execute(
@@ -181,3 +181,131 @@ def test_two_bodiless_refs_move_nothing(store: Store) -> None:
     _merge(store, a, b)
     assert _body_texts(store, a) == []
     assert _one(store, "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", a) is None
+
+
+def _id_rows(store: Store, ref_id: int, kinds: list[str]) -> list[tuple[str, str]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id_kind, id_value FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = ANY(%s) ORDER BY id_kind, id_value",
+            (ref_id, kinds),
+        ).fetchall()
+    return [(str(r[0]), str(r[1])) for r in rows]
+
+
+def test_survivor_stale_pdf_ids_deleted_on_move(store: Store) -> None:
+    """gr515805: (ref_id, id_kind) has no unique constraint — a bodiless,
+    pdf-less survivor holding stale pdf-kind rows would double up with the
+    re-homed ones. The stale rows are deleted in the same transaction."""
+    stub = int(store.insert_ref(kind="paper", slug="staleid24", title="Wanted").id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'pdf_sha256', %s, 'test'), "
+            "       (%s, 'content_hash', %s, 'test')",
+            (stub, "d" * 64, stub, "e" * 64),
+        )
+        conn.commit()
+    twin = _seed_bodied(store, "twinst24")
+
+    _merge(store, stub, twin)
+
+    assert _id_rows(store, stub, ["pdf_sha256", "content_hash"]) == [
+        ("content_hash", CONTENT),
+        ("pdf_sha256", SHA),
+    ]
+
+
+def test_pdf_only_move_keeps_survivor_body_content_hash(store: Store) -> None:
+    """gr515805: ``content_hash`` covers the canonical body text, not file
+    bytes — a survivor with a live markup body keeps its own row when only
+    the pdf moves; its stale ``pdf_sha256`` row is still dropped."""
+    survivor = int(store.insert_ref(kind="paper", slug="mkup24", title="Mk").id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', 'markup body')",
+            (survivor,),
+        )
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'content_hash', 'mk-body-hash', 'test'), "
+            "       (%s, 'pdf_sha256', %s, 'test')",
+            (survivor, survivor, "b" * 64),
+        )
+        conn.commit()
+    # Duplicate: pdf but no body — the pdf moves, the body does not.
+    dup = int(store.insert_ref(kind="paper", slug="dupdf24", title="Dup").id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, size_bytes, "
+            "storage_path) VALUES (%s, %s, 1, 10, '/tmp/y.pdf') "
+            "ON CONFLICT DO NOTHING",
+            ("f" * 64, "dup-content"),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, pdf_role = 'main' WHERE ref_id = %s",
+            ("f" * 64, dup),
+        )
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'pdf_sha256', %s, 'test'), "
+            "       (%s, 'content_hash', 'dup-content', 'test')",
+            (dup, "f" * 64, dup),
+        )
+        conn.commit()
+
+    _merge(store, survivor, dup)
+
+    assert _one(store, "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", survivor) == (
+        "f" * 64
+    )
+    assert _body_texts(store, survivor) == ["markup body"]  # untouched
+    assert _id_rows(store, survivor, ["pdf_sha256", "content_hash"]) == [
+        ("content_hash", "dup-content"),
+        ("content_hash", "mk-body-hash"),
+        ("pdf_sha256", "f" * 64),
+    ]
+
+
+def test_body_move_keeps_survivor_pdf_sha256_aliases(store: Store) -> None:
+    """gr515805: a survivor that holds a live pdf keeps its whole
+    ``pdf_sha256`` set — the historical-alias rows are deliberate
+    (``pdf_sha256_aliases``), not stale — while its ``content_hash``
+    row still drops (no body yet, so it described nothing it held).
+    The donor's pdf-kind rows re-home alongside them."""
+    survivor = int(store.insert_ref(kind="paper", slug="keepal24", title="K").id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, size_bytes, "
+            "storage_path) VALUES (%s, %s, 1, 10, '/tmp/z.pdf') "
+            "ON CONFLICT DO NOTHING",
+            ("a" * 64, "keep-content"),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, pdf_role = 'main' WHERE ref_id = %s",
+            ("a" * 64, survivor),
+        )
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'pdf_sha256', %s, 'test'), "
+            "       (%s, 'pdf_sha256', %s, 'test'), "
+            "       (%s, 'content_hash', 'stale-hash', 'test')",
+            (survivor, "a" * 64, survivor, "b" * 64, survivor),
+        )
+        conn.commit()
+    twin = _seed_bodied(store, "twinal24")
+
+    _merge(store, survivor, twin)
+
+    # Body moved, pdf did not.
+    assert _one(store, "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", survivor) == (
+        "a" * 64
+    )
+    assert len(_body_texts(store, survivor)) == 3
+    assert _id_rows(store, survivor, ["pdf_sha256", "content_hash"]) == [
+        ("content_hash", CONTENT),  # donor's — survivor's stale row dropped
+        ("pdf_sha256", "a" * 64),  # survivor's live pdf
+        ("pdf_sha256", SHA),  # donor's re-homed row
+        ("pdf_sha256", "b" * 64),  # survivor's historical alias
+    ]

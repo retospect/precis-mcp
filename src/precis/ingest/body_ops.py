@@ -65,7 +65,11 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from precis.ingest.db_writer import _BODY_OWNED_META_KEYS, _merge_ingest_meta
-from precis.ingest.dedup import _PDF_ID_KINDS, _SINGLE_ID_KINDS
+from precis.ingest.dedup import (
+    _PDF_ID_KINDS,
+    _SINGLE_ID_KINDS,
+    _rehome_content_identifiers,
+)
 from precis.store.revision_context import trust_door
 
 #: chunk_id-keyed tables copied onto the moved chunks' new ids, as
@@ -470,7 +474,7 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
     ``pdf_role`` fills only when the target has none (dedup's COALESCE):
     it names the record's SI designation, not a byte pointer.
     ``paper_id``/``pub_id`` move only onto a target that holds none of
-    that kind — they are single-valued per ref (``refs_v`` reads them as
+    that kind — they are single-valued per ref (``v_refs`` reads them as
     scalars), so a target carrying its own keeps it.
     """
     report = probe_body(conn, src_ref_id)
@@ -501,28 +505,16 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
 
     # Content identifiers follow the body: pdf_sha256/content_hash
     # always (the file moved), paper_id/pub_id only onto a target that
-    # lacks the kind (single-valued per ref). Nothing constrains
-    # (ref_id, id_kind) — the pk is (id_kind, id_value) — so the target's
-    # own pdf-kind rows, if any, would double up with the re-homed ones.
-    # The door guarantees the target holds no live pdf, so those rows
-    # describe a file it does not hold: stale, deleted in the same tx.
-    conn.execute(
-        "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = ANY(%s)",
-        (dst_ref_id, list(_PDF_ID_KINDS)),
-    )
-    held = {
-        str(r[0])
-        for r in conn.execute(
-            "SELECT DISTINCT id_kind FROM ref_identifiers "
-            "WHERE ref_id = %s AND id_kind = ANY(%s)",
-            (dst_ref_id, list(_SINGLE_ID_KINDS)),
-        )
-    }
-    kinds = list(_PDF_ID_KINDS) + [k for k in _SINGLE_ID_KINDS if k not in held]
-    conn.execute(
-        "UPDATE ref_identifiers SET ref_id = %s "
-        "WHERE ref_id = %s AND id_kind = ANY(%s)",
-        (dst_ref_id, src_ref_id, kinds),
+    # lacks the kind (single-valued per ref). The door guarantees the
+    # target holds no live pdf and no body, so any pdf-kind rows it
+    # carries describe bytes/text it does not hold: stale, dropped by
+    # the re-home (gr515805).
+    _rehome_content_identifiers(
+        conn,
+        src_ref_id=src_ref_id,
+        dst_ref_id=dst_ref_id,
+        dst_had_pdf=False,
+        dst_had_body=False,
     )
 
     body_meta = _body_owned_meta(conn, src_ref_id)

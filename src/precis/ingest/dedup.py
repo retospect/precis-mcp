@@ -45,16 +45,68 @@ log = logging.getLogger(__name__)
 #: External identifier kinds that belong to the *paper*, so they move to
 #: the survivor on a merge. Content-derived ids (cite_key, paper_id,
 #: pub_id, pdf_sha256, content_hash) stay on the retired ref — they
-#: describe *that* artifact, and leaving them avoids a unique-constraint
-#: fight with the survivor's own content ids — unless the survivor takes
-#: the duplicate's body/PDF (:func:`_move_body_to_survivor`).
+#: describe *that* artifact — unless the survivor takes the duplicate's
+#: body/PDF, in which case they re-home onto it
+#: (:func:`_move_body_to_survivor`, :func:`_rehome_content_identifiers`).
 _MIGRATABLE_ID_KINDS = ("doi", "arxiv", "s2", "pubmed", "openalex", "mag", "dblp")
 
 #: Content-derived identifier kinds that follow the PDF / body to the survivor.
 _PDF_ID_KINDS = ("pdf_sha256", "content_hash")
-#: Single-valued per ref (the ``refs_v`` view reads them as scalar
+#: Single-valued per ref (the ``v_refs`` view reads them as scalar
 #: subqueries), so they move only onto a survivor that holds none.
 _SINGLE_ID_KINDS = ("paper_id", "pub_id")
+
+
+def _rehome_content_identifiers(
+    conn: Any,
+    *,
+    src_ref_id: int,
+    dst_ref_id: int,
+    dst_had_pdf: bool,
+    dst_had_body: bool,
+) -> None:
+    """Re-home the donor's content identifiers onto the target.
+
+    Nothing constrains ``(ref_id, id_kind)`` — the pk is
+    ``(id_kind, id_value)`` — so a target's own same-kind rows would
+    double up with the re-homed ones (gr515805). Rows that name bytes
+    or a body the target does not hold are stale: ``pdf_sha256`` on a
+    pdf-less target, ``content_hash`` on a bodiless one (the hash
+    covers the canonical body text, not file bytes). They are dropped
+    first; the flags carry *pre-move* state because a pdf move
+    rewrites ``refs.pdf_sha256`` ahead of this step.
+    ``paper_id``/``pub_id`` are single-valued per ref (``v_refs`` reads
+    them as scalars): each moves only onto a target that holds none of
+    that kind — a target that has one keeps it and the donor's row
+    stays behind.
+    """
+    stale = [
+        kind
+        for kind, dst_had in (
+            ("pdf_sha256", dst_had_pdf),
+            ("content_hash", dst_had_body),
+        )
+        if not dst_had
+    ]
+    if stale:
+        conn.execute(
+            "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = ANY(%s)",
+            (dst_ref_id, stale),
+        )
+    held = {
+        str(r[0])
+        for r in conn.execute(
+            "SELECT DISTINCT id_kind FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = ANY(%s)",
+            (dst_ref_id, list(_SINGLE_ID_KINDS)),
+        )
+    }
+    kinds = list(_PDF_ID_KINDS) + [k for k in _SINGLE_ID_KINDS if k not in held]
+    conn.execute(
+        "UPDATE ref_identifiers SET ref_id = %s "
+        "WHERE ref_id = %s AND id_kind = ANY(%s)",
+        (dst_ref_id, src_ref_id, kinds),
+    )
 
 
 def _move_body_to_survivor(
@@ -80,7 +132,9 @@ def _move_body_to_survivor(
       stored file are keyed by sha, so the file follows the sha).
     * Either move carries the content identifiers (``pdf_sha256``,
       ``content_hash``, and ``paper_id``/``pub_id`` when the survivor has
-      none) so a re-ingest of the file probes onto the survivor.
+      none) so a re-ingest of the file probes onto the survivor; the
+      survivor's own stale rows of those kinds are dropped first
+      (:func:`_rehome_content_identifiers`, gr515805).
     """
     rows = conn.execute(
         "SELECT ref_id, pdf_sha256, pdf_pages, pdf_role, meta, "
@@ -136,19 +190,12 @@ def _move_body_to_survivor(
         )
         moved.append("body")
 
-    held = {
-        r[0]
-        for r in conn.execute(
-            "SELECT DISTINCT id_kind FROM ref_identifiers "
-            "WHERE ref_id = %s AND id_kind = ANY(%s)",
-            (survivor_ref_id, list(_SINGLE_ID_KINDS)),
-        )
-    }
-    kinds = list(_PDF_ID_KINDS) + [k for k in _SINGLE_ID_KINDS if k not in held]
-    conn.execute(
-        "UPDATE ref_identifiers SET ref_id = %s "
-        "WHERE ref_id = %s AND id_kind = ANY(%s)",
-        (survivor_ref_id, duplicate_ref_id, kinds),
+    _rehome_content_identifiers(
+        conn,
+        src_ref_id=duplicate_ref_id,
+        dst_ref_id=survivor_ref_id,
+        dst_had_pdf=sv[1] is not None,
+        dst_had_body=bool(sv[5]),
     )
     store.append_event(
         survivor_ref_id,
