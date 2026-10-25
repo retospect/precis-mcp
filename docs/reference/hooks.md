@@ -92,6 +92,17 @@ Other events: SessionStart carries `source`
 CLI adds `prompt_id`/`turn_id` to every payload (its PreToolUse
 `tool_name` is `exec`, with `tool_input.workdir` in place of `cwd`).
 
+Devin's own event names drift across versions: its shipped docs table
+(`share/devin/docs/extensibility/hooks/overview.mdx`) lists
+`PostCompaction` while the importer's allow-list accepts `PostCompact` /
+`PreCompact` (gr515491). Trust the importer, not the docs — the repo
+mirror `scripts/lib/devin_hooks.py::DEVIN_EVENTS` is copied verbatim from
+the importer's rejection message, and `scripts/gen-devin-hooks check`
+(pinned by `tests/test_devin_hooks.py`) keeps `.devin/hooks.v1.json` in
+sync with it. To inspect `bin/devin` itself on a Mac without the Xcode
+CLT — `strings`/`file` aren't installed there — `grep -a <pattern>
+bin/devin` works (gr515492).
+
 ## What you cannot verify from the repo
 
 The harness's built-in **worktree-isolation guard** (the one that refuses

@@ -400,7 +400,11 @@ never in a message: `scripts/board post <window> <one line>` appends a
 stamped line to the shared gitignored `.claude/fleet/board.log` in the
 main checkout; the coordinator reads it each sweep with
 `scripts/board read [--since <ts>]`. SendMessage is only for things that
-need action now. `scripts/board` is a repo script, so a tree stacked on
+need action now — and a harness without it (Devin) reaches the
+coordinator over tmux instead: `scripts/fleet panes say
+<coordinator-window> '<text>'` (`scripts/fleet panes status` lists the
+windows) or `scripts/fleet say -m '<text>' <window>` (gr514682).
+`scripts/board` is a repo script, so a tree stacked on
 an old base can predate it — run the main checkout's copy by absolute
 path, or rebase the tree first (gr515501). Post lines over 120 chars are
 refused: keep the line short, put detail in a handoff or gripe.

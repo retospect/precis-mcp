@@ -31,9 +31,20 @@ arrives verbatim; everything else is still a filtered digest as below.
 Because the hook silently rewrites the command, **Bash tool output is a
 filtered digest, not the raw stream.** If a detail you need is missing:
 
-- `rtk proxy <cmd>` — raw passthrough of the same command, no filtering.
+- `rtk proxy <cmd>` — raw passthrough of the same command, no filtering
+  (renamed `rtk bypass` in 1.0.x; `proxy` remains as an alias).
 - Or read the teed full log (rtk keeps the unfiltered output alongside the
   digest).
+
+When you already know you will read the whole output — `git show --stat`,
+a diff under review — skip the digest-then-overflow round trip and bypass
+up front (gr515636): `RTK_DISABLED=1 <cmd>` or an absolute binary path
+(`/usr/bin/git …` is never rewritten). `rtk bypass git …` does NOT work in
+a `claude -w` session — the worktree-isolation guard refuses rtk with git
+among its operands; `RTK_DISABLED=1` or the absolute path are the spells
+there. If a whole class of routine commands floods every session, loosen
+that subcommand in the committed `.rtk/filters.toml` instead of bypassing
+per call.
 
 ### The absence trap — a digest is not evidence of a negative
 
