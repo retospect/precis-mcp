@@ -57,8 +57,9 @@ description budgets, then Drive.
    design refs as a sort key; blocked on a ruling (moved from
    multiscale-design-core 2026-10-17).
 6. **backlog/read-scope-skill-fencing.md** — read-scoped connections get
-   skills and `Next:` hints without write recipes (gr512233); specced
-   2026-10-24, slice 1 is a request-flag measurement on one read-only agent.
+   skills and `Next:` hints without write recipes (gr512233); ready
+   2026-10-25 on Reto's option-B ruling (scope from the connection, no
+   flag); slice 1 is the filter plus `precis-gripe-help`.
 
 ## Parked
 
