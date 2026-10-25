@@ -97,6 +97,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._interpret import interpreted
+from precis.handlers._slice_args import slice_window
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import (
     DEFAULT_STACKUP,
@@ -748,6 +749,7 @@ class PcbHandler(Handler):
                 "source",
                 "item",
                 "limit",
+                "page_size",
                 # op='pin_rename' / 'pin_remove': pad number or pin name;
                 # `to` is the new net name (pin_rename only).
                 "pin",
@@ -1843,7 +1845,7 @@ class PcbHandler(Handler):
         return row is not None
 
     def _op_review(self, ref: Any, args: dict[str, Any]) -> Response:
-        """``put(args={'op':'review', 'item'?, 'limit'?})`` — pcb-datasheet-
+        """``put(args={'op':'review', 'item'?, 'page_size'?})`` — pcb-datasheet-
         review slice 7: enqueue a ``pcb_review`` job over the
         ``pcb-tapeout`` judgment items that are not checked or stale. The
         job runs the check surface fresh itself (:mod:`precis.pcb.
@@ -1861,14 +1863,18 @@ class PcbHandler(Handler):
         params: dict[str, Any] = {"pcb_ref_id": ref.id}
         if item is not None:
             params["item"] = item
-        if args.get("limit") is not None:
-            limit = int(args["limit"])
-            if not 1 <= limit <= 60:
+        readings: list[str] = []
+        _off, size, slice_readings = slice_window(
+            args, where="put(kind='pcb', args={'op': 'review'})", coerce=True
+        )
+        readings += slice_readings
+        if size is not None:
+            if not 1 <= size <= 60:
                 raise BadInput(
-                    "pcb: review limit must be 1..60 items",
-                    next="put(args={'op':'review','limit':20})",
+                    "pcb: review page_size must be 1..60 items",
+                    next="put(args={'op':'review','page_size':20})",
                 )
-            params["limit"] = limit
+            params["limit"] = size
         q = pcb_review.queue(self.store, ref.id, item=item)
         if q.reason is not None:
             raise BadInput(
@@ -1892,10 +1898,13 @@ class PcbHandler(Handler):
         work = list(q.todo)
         skipped = sum(1 for st in q.statuses if st.status == NOT_CHECKABLE)
         if not work:
-            return Response(
-                body=f"# review {ref.slug} — nothing to review\n"
-                f"every judgment item is settled ({skipped} not checkable at "
-                "the current inputs); no job queued.\n" + status_next
+            return interpreted(
+                Response(
+                    body=f"# review {ref.slug} — nothing to review\n"
+                    f"every judgment item is settled ({skipped} not checkable at "
+                    "the current inputs); no job queued.\n" + status_next
+                ),
+                readings,
             )
         # Idempotent per (design, queue state): re-submitting while the
         # same items are pending collapses onto the in-flight job.
@@ -1910,11 +1919,14 @@ class PcbHandler(Handler):
             params=params,
             idem_key=f"pcb_review:{ref.id}:{digest}",
         )
-        return Response(
-            body=f"# review {ref.slug} — enqueued ({len(work)} item(s) not "
-            f"checked or stale)\n{job_resp.body}\n\n"
-            "The job runs a fresh check (DRC + ERC) first and quotes it by id.\n"
-            f"{status_next} once the job lands — see precis-pcb-review-help."
+        return interpreted(
+            Response(
+                body=f"# review {ref.slug} — enqueued ({len(work)} item(s) not "
+                f"checked or stale)\n{job_resp.body}\n\n"
+                "The job runs a fresh check (DRC + ERC) first and quotes it by id.\n"
+                f"{status_next} once the job lands — see precis-pcb-review-help."
+            ),
+            readings,
         )
 
     @staticmethod

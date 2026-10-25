@@ -737,7 +737,9 @@ class NumericRefHandler(Handler):
         # `id='/recent'` and similar path views — subclasses may
         # implement custom list shapes (e.g. todo's open / done filters).
         if isinstance(id, str) and id.startswith("/"):
-            list_resp = self._list_view_paged(id[1:], _kw.get("page"))
+            list_resp = self._list_view_paged(
+                id[1:], _kw.get("page"), _kw.get("page_size")
+            )
             if list_resp is not None:
                 return list_resp
             # Enumerate the actual list views this handler supports
@@ -3665,12 +3667,15 @@ class NumericRefHandler(Handler):
         """
         return frozenset()
 
-    def _list_view_paged(self, view: str, page: Any) -> Response | None:
+    def _list_view_paged(
+        self, view: str, page: Any, page_size: Any = None
+    ) -> Response | None:
         """Route ``get(id='/<view>', page=N)`` to ``_list_view``.
 
-        Views in :attr:`paged_list_views` receive ``page=``; any other view
-        refuses ``page>1`` with a pointer at ``search`` instead of silently
-        returning page 1 (gr497175).
+        Views in :attr:`paged_list_views` receive ``page=`` (and the
+        canonical ``page_size=``, gr514469); any other view refuses
+        ``page>1`` or a ``page_size`` with a pointer at ``search``
+        instead of silently returning page 1 (gr497175).
         """
         try:
             n = 1 if page is None else int(page)
@@ -3681,15 +3686,28 @@ class NumericRefHandler(Handler):
                 f"page must be a positive integer, got {page!r}",
                 next=f"get(kind={self.kind!r}, id='/{view}', args={{'page': 1}})",
             )
+        ps: int | None = None
+        if page_size is not None:
+            try:
+                ps = int(page_size)
+            except (TypeError, ValueError):
+                ps = 0
+            if ps < 1:
+                raise BadInput(
+                    f"page_size must be a positive integer, got {page_size!r}",
+                    next=f"get(kind={self.kind!r}, id='/{view}', "
+                    "args={'page_size': 20})",
+                )
         if view in self.paged_list_views:
             # Only views in ``paged_list_views`` take ``page=``; the base
             # signature stays ``(view)`` so non-paging overrides still match.
             paged: Any = self._list_view
-            resp: Response | None = paged(view, page=n)
+            resp: Response | None = paged(view, page=n, page_size=ps)
             return resp
-        if n > 1:
+        if n > 1 or ps is not None:
+            bad = f"page={n}" if n > 1 else f"page_size={ps}"
             raise BadInput(
-                f"id='/{view}' on kind={self.kind!r} has no pages (page={n})",
+                f"id='/{view}' on kind={self.kind!r} has no pages ({bad})",
                 next=f"search(kind={self.kind!r}, page={n}, page_size=100)",
             )
         return self._list_view(view)

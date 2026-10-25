@@ -27,7 +27,8 @@ persisted run `view='check'` makes (geometric DRC + ERC, at the design's
 phase) — and its summary names it (`check run <id>: N finding(s)`). The put
 runs no check.
 
-`args.item='<name>'` reviews one item; `args.limit=N` (1–60, default 15)
+`args.item='<name>'` reviews one item; `args.page_size=N` (1–60, default
+15; `limit` the deprecated alias)
 caps the items one job works, and a re-run continues with the rest. The
 quest board's **Review** button sends the same `put`.
 

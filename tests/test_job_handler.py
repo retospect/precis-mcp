@@ -517,7 +517,7 @@ def test_since_negative_raises_badinput(jobs: JobHandler) -> None:
 
 
 def test_limit_zero_raises_badinput(jobs: JobHandler) -> None:
-    with pytest.raises(BadInput, match="limit"):
+    with pytest.raises(BadInput, match="page_size"):
         jobs.get(id="/logs?limit=0")
 
 

@@ -15,9 +15,17 @@ Scope:
 
 - **Resources** — two surfaces, both DRY:
 
-  * ``resources/list``: enumerated only for the small bounded sets
-    (skills, ~16 entries).  *Never* enumerates papers — there can
-    be thousands and the listing would blow client context.
+  * ``resources/list``: enumerated only for the four synthesised
+    meta-skills (``precis-help`` / ``precis-status`` / ``precis-toc``
+    / ``toc``) — the menu.  The ~200-entry on-disk skill corpus is
+    *not* enumerated: the corpus outgrew the "~16 entries" bound
+    this listing was designed around, and the dump is the
+    cold-start token blow-up of gr514390/gr515169 (~39 KB of the
+    ~50 KB ``tools/list``+``resources/list`` payload).  Every skill
+    stays readable at ``precis://skill/<slug>`` via the URI
+    template, and the full catalogue is ``precis://skill/precis-toc``
+    (or ``get(kind='skill', id='toc')`` / ``search(kind='skill')``)
+    — nothing is dropped, only unlisted.
   * ``resources/templates/list``: URI templates for the
     high-cardinality kinds (papers, memories, todos, …).  Modern
     clients use templates for autocomplete; concrete URIs are
@@ -256,14 +264,19 @@ def _parse_resource_uri(uri: str) -> tuple[str, str]:
     return kind, ident
 
 
-#: Kinds whose refs are exposed as ``resources/list`` entries.
+#: Slugs enumerated in ``resources/list`` — the synthesised
+#: meta-skills only (``precis-help`` / ``precis-status`` /
+#: ``precis-toc`` / ``toc``), the menu a client shows.
 #:
-#: Bounded sets only — anything that can grow into the thousands
-#: belongs in :data:`_TEMPLATE_KINDS` instead.  Skills are the
-#: canonical bounded set (~16 entries).  Listed kinds also appear
-#: as templates so a caller who already knows the slug can read by
-#: URI without first hitting ``resources/list``.
-_LIST_KINDS: tuple[str, ...] = ("skill",)
+#: The design rule is *bounded sets only* — anything that can grow
+#: belongs in :data:`_TEMPLATE_KINDS` or behind a ``get``/
+#: ``search`` call.  The on-disk skill corpus broke that bound:
+#: it was ~16 entries when enumeration shipped and ~218 when
+#: gr514390/gr515169 measured the listing at ~39 KB of every
+#: client's first payload.  Bounded back to the meta-menu; every
+#: skill's ``precis://skill/<slug>`` URI still reads through the
+#: skill template below, and ``precis-toc`` is the catalogue.
+_ENUMERATED_SKILLS: tuple[str, ...] = tuple(SkillHandler._SYNTHESIZED_SKILLS)
 
 
 #: Kinds advertised as URI templates.  Each entry is
@@ -360,17 +373,16 @@ def register_resources(mcp: FastMCP, runtime: PrecisRuntime) -> tuple[int, int]:
     n_resources = 0
     n_templates = 0
 
-    # Enumerated resources: only the bounded list-kinds.
-    for kind in _LIST_KINDS:
-        if kind == "skill":
-            for slug in _enumerate_prompt_skills(runtime):
-                description = (
-                    SkillHandler._SYNTHESIZED_SKILLS.get(slug)
-                    or _skill_title(slug)
-                    or slug
-                )
-                _add_skill_resource(mcp, runtime, slug, description)
-                n_resources += 1
+    # Enumerated resources: the bounded meta-skill menu only.  The
+    # on-disk corpus is reachable via the ``precis://skill/{id}``
+    # template below + ``get``/``search`` — see
+    # :data:`_ENUMERATED_SKILLS`.
+    for slug in _ENUMERATED_SKILLS:
+        description = (
+            SkillHandler._SYNTHESIZED_SKILLS.get(slug) or _skill_title(slug) or slug
+        )
+        _add_skill_resource(mcp, runtime, slug, description)
+        n_resources += 1
 
     # Templates: every reachable kind so the modern client can offer
     # autocomplete on slugs / numeric ids without enumeration.

@@ -922,6 +922,9 @@ class FindingHandler(NumericRefHandler):
         # ``view='judgments'``'s 1-based page, same channel
         # (``args={'page': 2}``).
         page: int | None = None,
+        # ``view='judgments'``'s row cap under the canonical slice name
+        # (``args={'page_size': 25}``; gr514469).
+        page_size: int | None = None,
         # ``view='diff'``'s sha (``args={'since': <sha>}``) — forwarded to
         # the base dispatch; declared so the extras gate accepts it here.
         since: str | int | None = None,
@@ -984,7 +987,9 @@ class FindingHandler(NumericRefHandler):
         if view == "judgments":
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
-            return _finding_judgments.render_judgments_view(self.store, ref, page=page)
+            return _finding_judgments.render_judgments_view(
+                self.store, ref, page=page, page_size=page_size
+            )
         if view == "nanopub":
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)

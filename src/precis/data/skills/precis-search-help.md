@@ -309,7 +309,9 @@ search(kind="paper", q="photocatalysis", page=3, page_size=20)
 `page=1` is the default. Bump `page=` to walk results. `page_size=`
 sets the page size (default 10; 25 on paper kind's default
 one-row-per-paper view, max 100) — *not* a quality cutoff
-despite the name. `page_size=` is the canonical spelling.
+despite the name. `page_size=` is the canonical spelling
+(repo-wide, with `page=`; `k=`/`limit=`/`offset=` still read as the
+old spellings for one release and say so on an `interpreted:` line).
 
 Broad-retrieval searches paginate the same way, but the `page=N+1`
 call must repeat the same `queries`/`answers`/`per_paper` `args=` keys

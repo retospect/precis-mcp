@@ -8,8 +8,11 @@ for:
    via ``prompts/list`` / ``prompts/get``.  Body text matches what
    ``get(kind='skill', id=<slug>)`` returns.
 
-2. **Skills surface as enumerated resources.**  ``resources/list``
-   contains every available skill at ``precis://skill/<slug>``.
+2. **Skills surface as resources.**  ``resources/list`` enumerates
+   only the bounded meta-menu (the synthesised skills) — the
+   on-disk corpus stays readable at ``precis://skill/<slug>``
+   through the URI template (gr514390/gr515169: full enumeration
+   was ~39 KB of every client's first payload).
 
 3. **Papers (and other high-cardinality kinds) live behind URI
    templates only — never enumerated.**  ``resources/templates/list``
@@ -191,13 +194,13 @@ def test_resources_list_enumerates_skills_only(
     resources = asyncio.run(server.list_resources())
     uris = {str(r.uri) for r in resources}
 
-    # Every skill we'd surface as a prompt must also be a resource.
-    expected = {
-        f"precis://skill/{slug}"
-        for slug in _enumerate_prompt_skills(runtime_with_store)
-    }
+    # Bounded menu only: the synthesised meta-skills (gr514390 /
+    # gr515169 — full skill enumeration was ~39 KB of every client's
+    # first payload). The on-disk corpus stays readable via the
+    # ``precis://skill/{id}`` template (covered by the read tests).
+    expected = {f"precis://skill/{slug}" for slug in SkillHandler._SYNTHESIZED_SKILLS}
     assert expected == uris, (
-        f"resources/list should be exactly the skill set; "
+        f"resources/list should be exactly the meta-skill set; "
         f"diff = {expected.symmetric_difference(uris)!r}"
     )
 

@@ -13,6 +13,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from precis import serve_ledger
+from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
 
 if TYPE_CHECKING:
     from precis.runtime import PrecisRuntime
@@ -801,6 +802,14 @@ def search(
                 )
             )
         )
+    # A deprecated spelling names its reading on the interpreted: first
+    # line (gr514469) — one release, then k=/limit= go away.
+    _psize_reading = (
+        f"'{_psize_given[0][0]}' read as 'page_size' — the deprecated "
+        "alias; 'page_size' is canonical"
+        if _psize_given and _psize_given[0][0] != "page_size"
+        else None
+    )
     page_size = _psize_given[0][1] if _psize_given else None
 
     if page_size is not None and (not isinstance(page_size, int) or page_size <= 0):
@@ -1091,7 +1100,10 @@ def search(
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
-        return _dispatch("search", payload, ctx=ctx)
+        result = _dispatch("search", payload, ctx=ctx)
+        if _psize_reading is not None and isinstance(result, str):
+            result = f"{_INTERPRETED_PREFIX}{_psize_reading}\n{result}"
+        return result
     finally:
         serve_ledger.unbind(token)
 

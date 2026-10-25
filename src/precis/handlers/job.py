@@ -313,7 +313,16 @@ _JOB_PARENT_KINDS_WITH_COORDINATOR: frozenset[str] = JOB_PARENT_KINDS | frozense
 )
 
 
-_LOGS_ARG_KEYS = ("handler", "host", "process", "level", "since", "limit", "job")
+_LOGS_ARG_KEYS = (
+    "handler",
+    "host",
+    "process",
+    "level",
+    "since",
+    "limit",
+    "page_size",
+    "job",
+)
 
 #: ``get`` view spellings with one reading on a single job (gr508686's
 #: 7d prod ledger: view='meta'/'full'/'tail'/'events'/'status' refusals
@@ -514,6 +523,9 @@ class JobHandler(NumericRefHandler):
         level: str | None = None,
         since: str | int | None = None,
         limit: str | int | None = None,
+        # ``/logs`` row cap under the canonical slice name (gr514469);
+        # ``limit`` stays accepted above as the deprecated alias.
+        page_size: str | int | None = None,
         job: str | int | None = None,
         **_kw: Any,
     ) -> Response:
@@ -529,6 +541,7 @@ class JobHandler(NumericRefHandler):
                 ("level", level),
                 ("since", since),
                 ("limit", limit),
+                ("page_size", page_size),
                 ("job", job),
             )
             if v is not None
@@ -959,7 +972,7 @@ class JobHandler(NumericRefHandler):
         return Response(body="\n".join(lines))
 
     def _render_logs_view(self, query_string: str) -> Response:
-        """``id='/logs?handler=<name>&host=<h>&process=<p>&level=<L>&since=<hrs>&q=<sub>&limit=<n>'``
+        """``id='/logs?handler=<name>&host=<h>&process=<p>&level=<L>&since=<hrs>&q=<sub>&page_size=<n>'``
 
         Read-only view onto ``worker_logs`` (migration 0015), all params
         optional. One parameterised ``SELECT`` plus one ``COUNT`` sharing
@@ -1011,15 +1024,37 @@ class JobHandler(NumericRefHandler):
             )
         since_hours = min(since_hours, _LOGS_MAX_SINCE_HOURS)
 
+        # Canonical slice name is ``page_size`` (gr514469); ``limit``
+        # stays accepted for one release and announces itself on the
+        # ``interpreted:`` line.
+        readings: list[str] = []
+        raw_ps, raw_lim = params.get("page_size"), params.get("limit")
+        if (
+            raw_ps is not None
+            and raw_lim is not None
+            and raw_ps != ""
+            and raw_lim != ""
+            and raw_ps != raw_lim
+        ):
+            raise BadInput(
+                f"conflicting page_size={raw_ps!r} and limit={raw_lim!r}",
+                next="pass one — page_size= is the canonical name",
+            )
+        if raw_lim not in (None, "") and raw_ps in (None, ""):
+            readings.append(
+                "'limit' read as 'page_size' — the deprecated alias; "
+                "'page_size' is canonical"
+            )
         limit = _parse_logs_int(
-            params.get("limit"),
+            raw_ps if raw_ps not in (None, "") else raw_lim,
             default=_LOGS_DEFAULT_LIMIT,
-            field="limit",
-            example="limit=100 (default), cap 200",
+            field="page_size",
+            example="page_size=100 (default), cap 200",
         )
         if limit <= 0:
             raise BadInput(
-                f"limit={limit} must be positive", next="limit=100 (default), cap 200"
+                f"page_size={limit} must be positive",
+                next="page_size=100 (default), cap 200",
             )
         limit = min(limit, _LOGS_MAX_LIMIT)
 
@@ -1129,7 +1164,7 @@ class JobHandler(NumericRefHandler):
                     ),
                 ]
             )
-            return Response(body=body)
+            return interpreted(Response(body=body), readings)
 
         lines = [header, ""]
         for ts, host_val, handler_val, level_val, message in rows:
@@ -1143,7 +1178,7 @@ class JobHandler(NumericRefHandler):
             lines.append(f"{ts_str} {host_val} {handler_val} {level_val} {msg}")
         lines.append("")
         lines.append(f"{len(rows)} rows shown of {total} matching")
-        return Response(body="\n".join(lines))
+        return interpreted(Response(body="\n".join(lines)), readings)
 
     def _job_log_window(self, raw: str) -> tuple[int, datetime, datetime, str | None]:
         """Resolve ``job=`` to ``(job_id, start-5min, end+5min, lease_host)``.

@@ -44,7 +44,9 @@ from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.errors import BadInput, NotFound, PrecisError, Unsupported
 from precis.format import toon
 from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
+from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import BATCH_ID_CAP
+from precis.handlers._slice_args import slice_window
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
@@ -359,7 +361,7 @@ class DraftHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"limit", "offset", "rel", "of_kind"}),
+        "get": ArgsSpec({"limit", "offset", "page", "page_size", "rel", "of_kind"}),
         "edit": ArgsSpec({"char_target"}),
     }
 
@@ -4045,7 +4047,7 @@ class DraftHandler(Handler):
     #: outline's job is shape; past a few hundred chunk rows it stops
     #: being a map and becomes noise — dr42995's 9.7k-chunk outline ran
     #: to ~842 KB, too big to scan for sections (gr514404). Overflow
-    #: rows stay reachable via ``args={'limit':…,'offset':…}`` paging,
+    #: rows stay reachable via ``args={'page':…,'page_size':…}`` paging,
     #: ``view='toc'`` for the heading skeleton, or a ``dc<heading>``
     #: subtree read.
     _OUTLINE_ROW_CAP: ClassVar[int] = 500
@@ -4088,27 +4090,18 @@ class DraftHandler(Handler):
             gloss = " ".join(gloss.split())
             rows.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
 
-        a = args or {}
-        limit_raw, offset_raw = a.get("limit"), a.get("offset")
-        try:
-            limit = None if limit_raw is None else int(limit_raw)
-            offset = 0 if offset_raw is None else int(offset_raw)
-        except (TypeError, ValueError):
+        # Slice window: canonical page/page_size; limit → page_size and
+        # offset → an absolute row index stay as one-release aliases
+        # announced on the interpreted: line (gr514469).
+        offset, size, readings = slice_window(
+            args, where="get(kind='draft')", coerce=True
+        )
+        if size is not None and size < 1:
             raise BadInput(
-                "args limit/offset must be integers",
-                next="get(kind='draft', id='<slug>', args={'limit': 200})",
-            ) from None
-        if limit is not None and limit < 1:
-            raise BadInput(
-                f"args limit must be ≥ 1, got {limit}",
-                next="get(kind='draft', id='<slug>', args={'limit': 200})",
+                f"args page_size must be ≥ 1, got {size}",
+                next="get(kind='draft', id='<slug>', args={'page_size': 200})",
             )
-        if offset < 0:
-            raise BadInput(
-                f"args offset must be ≥ 0, got {offset}",
-                next="get(kind='draft', id='<slug>', args={'limit': 200})",
-            )
-        cap = limit if limit is not None else self._OUTLINE_ROW_CAP
+        cap = size if size is not None else self._OUTLINE_ROW_CAP
         shown = rows[offset : offset + cap]
         lines.extend(shown)
         withheld = len(rows) - offset - len(shown)
@@ -4118,10 +4111,13 @@ class DraftHandler(Handler):
             span = f"rows {offset + 1}–{offset + len(shown)} of {len(rows)}"
             nxt = ""
             if withheld:
-                nxt = (
-                    f" — next: get(kind='draft', id={slug!r}, "
-                    f"args={{'limit': {cap}, 'offset': {offset + len(shown)}}})"
+                nxt_off = offset + len(shown)
+                nxt_args = (
+                    f"{{'page': {nxt_off // cap + 1}, 'page_size': {cap}}}"
+                    if nxt_off % cap == 0
+                    else f"{{'offset': {nxt_off}, 'limit': {cap}}}"
                 )
+                nxt = f" — next: get(kind='draft', id={slug!r}, args={nxt_args})"
             lines.append(
                 f"\n({span}{nxt} · view='toc' for the heading skeleton · "
                 "id='dc<heading>' reads one section)"
@@ -4133,7 +4129,7 @@ class DraftHandler(Handler):
             )
         lines.extend(self._work_lines(ref.id))
         lines.extend(self._hygiene_lines(ref.id, chunks))
-        return Response(body="\n".join(lines))
+        return interpreted(Response(body="\n".join(lines)), readings)
 
     def _hygiene_lines(
         self, ref_id: int, chunks: list[Any], *, elide: bool = True
@@ -4627,18 +4623,26 @@ class DraftHandler(Handler):
         """``view='history'`` — one chunk's ``chunk_events``, newest first.
 
         The read that replaced digging pre-edit text out of
-        ``chunk_events`` by SQL. ``args={'limit': N}`` raises the
-        default 50-row cap, up to 500."""
-        limit = (args or {}).get("limit", 50)
-        if (
-            isinstance(limit, bool)
-            or not isinstance(limit, int)
-            or not 1 <= limit <= 500
-        ):
+        ``chunk_events`` by SQL. ``args={'page_size': N}`` raises the
+        default 50-row cap, up to 500 (``limit`` the deprecated alias,
+        gr514469)."""
+        _off, size, readings = slice_window(
+            args, where="get(kind='draft', view='history')", coerce=True
+        )
+        if (args or {}).get("page") is not None or (args or {}).get(
+            "offset"
+        ) is not None:
             raise BadInput(
-                f"history limit must be an int in 1..500, got {limit!r}",
+                "view='history' is a newest-N window — 'page'/'offset' don't apply",
                 next=f"get(kind='draft', id='{handle}', view='history', "
-                "args={'limit': 100})",
+                "args={'page_size': 100})",
+            )
+        limit = 50 if size is None else size
+        if not 1 <= limit <= 500:
+            raise BadInput(
+                f"history page_size must be an int in 1..500, got {limit!r}",
+                next=f"get(kind='draft', id='{handle}', view='history', "
+                "args={'page_size': 100})",
             )
         chunk = self.store.drafts.get_draft_chunk(handle)
         if chunk is None:
@@ -4650,7 +4654,10 @@ class DraftHandler(Handler):
         events = self.store.drafts.chunk_events(chunk.chunk_id, limit=limit)
         header = f"# {chunk.dc} — history (newest first)"
         if not events:
-            return Response(body=f"{header}\n\nno chunk_events recorded for {chunk.dc}")
+            return interpreted(
+                Response(body=f"{header}\n\nno chunk_events recorded for {chunk.dc}"),
+                readings,
+            )
         rows = []
         for e in events:
             prev = (e["prev_text"] or "").strip()
@@ -4667,11 +4674,11 @@ class DraftHandler(Handler):
             )
         table = toon.dump(rows, schema=["ts", "event", "source", "sha", "prev"])
         more = (
-            f"\n\nshowing the newest {limit}; args={{'limit': N}} (≤500) for more"
+            f"\n\nshowing the newest {limit}; args={{'page_size': N}} (≤500) for more"
             if len(events) == limit
             else ""
         )
-        return Response(body=f"{header}\n\n{table}{more}")
+        return interpreted(Response(body=f"{header}\n\n{table}{more}"), readings)
 
     def _render_proposals(self, handle: str) -> Response:
         """``view='proposals'`` — open anchored todos carrying

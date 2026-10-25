@@ -324,6 +324,8 @@ class SeHandler(Handler):
                 "margin",
                 "limit",
                 "offset",
+                "page",
+                "page_size",
                 "atoms",
                 "frame",
                 "touched",
@@ -2122,7 +2124,7 @@ class SeHandler(Handler):
                 # the elided ops.
                 pagination_alt_hint=(
                     f"get(kind='se', id={slug!r}, view='ops', "
-                    "args={'offset': <0-based op index>, 'limit': <count>}) "
+                    "args={'page': <n>, 'page_size': <count>}) "
                     "fetches one slice of the ops list — the concatenated "
                     "slices' `ops` arrays are the whole replayable export"
                 ),
@@ -7866,7 +7868,17 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
         {"a", "b", "state", "previous", "sweep", "pocket_gap_A", "lining", "cargo_A3"}
     ),
     "sites": frozenset(
-        {"block", "a", "b", "face", "exposure_A", "pocket_gap_A", "limit"}
+        {
+            "block",
+            "a",
+            "b",
+            "face",
+            "exposure_A",
+            "pocket_gap_A",
+            "limit",
+            "page",
+            "page_size",
+        }
     ),
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
@@ -7915,7 +7927,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "links": frozenset(),
     "print": frozenset({"block", "fmt", "path", "scale"}),
     "fab": frozenset(),
-    "ops": frozenset({"offset", "limit"}),
+    "ops": frozenset({"offset", "limit", "page", "page_size"}),
 }
 assert {v for v, keys in _VIEW_ARGS.items() if "state" in keys} == _STATE_VIEWS
 

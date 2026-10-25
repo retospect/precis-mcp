@@ -331,8 +331,10 @@ appears. Its header lists what the round-trip drops; the two that bite are
 **declared states/transitions** (in `design_states` keyed by uid, not
 the tree). Exports run bigger than the tool-result fold (and `more()`
 re-folds, so the middle stays unreachable) — slice it:
-`args={'offset': <0-based op index>, 'limit': <count>}` (`limit=0` =
-everything from `offset`); concatenated slices are the whole payload.
+`args={'page': <n>, 'page_size': <count>}` (`page_size=0` =
+everything from the window start; `offset`/`limit` still work as
+deprecated aliases — the reply's `interpreted:` line names the
+reading); concatenated slices are the whole payload.
 
 `view='links'` renders the design's link graph both directions. Write
 edges with the `link` verb: `link(kind='se', id='<slug>',

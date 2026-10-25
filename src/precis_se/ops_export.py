@@ -65,7 +65,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from precis.errors import BadInput
+from precis.handlers._interpret import PREFIX as _INTERPRETED
+from precis.handlers._slice_args import slice_window
 from precis.utils.units import vector_canonical
 from precis_se.measures import measurand_name
 from precis_se.ops import SeTree
@@ -528,33 +529,21 @@ def design_ops(tree: SeTree) -> list[dict[str, Any]]:
     ]
 
 
-def _slice_args(args: dict[str, Any] | None) -> tuple[int, int]:
-    """``view='ops'``'s ``offset``/``limit`` slice window (gr514235).
+def _slice_args(args: dict[str, Any] | None) -> tuple[int, int, list[str]]:
+    """``view='ops'``'s slice window: canonical ``page``/``page_size``,
+    deprecated ``offset``/``limit`` aliases (gr514235, gr514469).
 
     A real design's export is bigger than the write-time fold cap and
     ``more()`` re-folds, so the middle is unrecoverable — a caller
-    slices instead: ``args={'offset': <0-based op index>, 'limit':
-    <count>}`` (the same names ``list_refs``/``view='sites'`` use;
-    ``limit=0`` means "everything from ``offset`` on"), and the
-    concatenated slices' ``ops`` arrays equal :func:`design_ops`.
+    slices instead: ``args={'page': 2, 'page_size': 40}`` (``limit``
+    reads as ``page_size``, ``offset`` as the absolute 0-based op index
+    — the deprecated spellings still work and say so on an
+    ``interpreted:`` line; ``page_size=0`` means "everything from the
+    window start on"), and the concatenated slices' ``ops`` arrays
+    equal :func:`design_ops`. Returns ``(offset, limit, readings)``.
     """
-    a = args or {}
-    offset = a.get("offset", 0)
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise BadInput(
-            f"view='ops' 'offset' must be a whole op index >= 0; got {offset!r}",
-            next="get(kind='se', id='<slug>', view='ops', "
-            "args={'offset': 0, 'limit': 50})",
-        )
-    limit = a.get("limit", 0)
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-        raise BadInput(
-            f"view='ops' 'limit' must be a whole number of ops >= 0 "
-            f"(0 = every op from 'offset' on); got {limit!r}",
-            next="get(kind='se', id='<slug>', view='ops', "
-            "args={'offset': 0, 'limit': 50})",
-        )
-    return offset, limit
+    offset, size, readings = slice_window(args, where="get(kind='se', view='ops')")
+    return offset, size if size is not None else 0, readings
 
 
 def render_ops(
@@ -563,13 +552,14 @@ def render_ops(
     """The view body: the caveats first, then one fenced JSON object in
     exactly the shape ``put(kind='se', text=...)`` accepts, so the block
     can be copied straight into a call without reshaping. ``args`` may
-    carry ``offset``/``limit`` (:func:`_slice_args`) to window the ops
+    carry ``page``/``page_size`` or the deprecated ``offset``/``limit``
+    (:func:`_slice_args`) to window the ops
     list — a slice still fences ``{"ops": [...]}``, so concatenating
     every slice's array reproduces the full payload. ``slug`` is the
     design's own id, so the "next slice" hint is the whole ``get`` call
     to continue with, not a bare args dict (gr514470)."""
     ops = design_ops(tree)
-    offset, limit = _slice_args(args)
+    offset, limit, readings = _slice_args(args)
     window = ops[offset : offset + limit] if limit else ops[offset:]
     sliced = offset > 0 or len(window) < len(ops)
     lead = (
@@ -612,12 +602,23 @@ def render_ops(
         lines += [f"- {ref}" for ref in needed]
     lines += ["", "```json", _ops_json(window), "```"]
     if len(window) < len(ops) - offset:
+        nxt_off = offset + len(window)
+        # Canonical page/page_size names when the window lands on a page
+        # boundary; an unaligned continuation still spells the
+        # (deprecated but only) absolute-offset form that can express it.
+        nxt_args = (
+            f"{{'page': {nxt_off // limit + 1}, 'page_size': {limit}}}"
+            if nxt_off % limit == 0
+            else f"{{'offset': {nxt_off}, 'limit': {limit}}}"
+        )
         lines += [
             "",
-            f"next slice: get(kind='se', id={slug!r}, view='ops', "
-            f"args={{'offset': {offset + len(window)}, 'limit': {limit}}})",
+            f"next slice: get(kind='se', id={slug!r}, view='ops', args={nxt_args})",
         ]
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    if readings:
+        body = f"{_INTERPRETED}{'; '.join(readings)}\n{body}"
+    return body
 
 
 def _ops_json(ops: list[dict[str, Any]]) -> str:

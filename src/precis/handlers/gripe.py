@@ -285,18 +285,26 @@ class GripeHandler(NumericRefHandler):
 
     paged_list_views: ClassVar[frozenset[str]] = frozenset({"open", "wontfix"})
 
-    def _list_view(self, view: str, *, page: int = 1) -> Response | None:
-        offset = (page - 1) * 20
+    def _list_view(
+        self, view: str, *, page: int = 1, page_size: int | None = None
+    ) -> Response | None:
+        size = 20 if page_size is None else page_size
+        offset = (page - 1) * size
         if view not in self.paged_list_views:
             return super()._list_view(view)
         tags = ["STATUS:open"] if view == "open" else ["STATUS:wontfix"]
+        # The next-page call must repeat a non-default page_size or the
+        # continuation silently shrinks back to 20 rows.
+        more_args = "'page': {next}"
+        if page_size is not None:
+            more_args += f", 'page_size': {size}"
         resp = self._list_by_tags(
             tags,
-            page_size=20,
+            page_size=size,
             page=page,
             offset=offset,
             sort="prio" if view == "open" else "recency",
-            more_call=f"get(kind='gripe', id='/{view}', args={{{{'page': {{next}}}}}})",
+            more_call=f"get(kind='gripe', id='/{view}', args={{{more_args}}})",
         )
         if "next page:" in resp.body:
             resp = replace(
@@ -1204,6 +1212,9 @@ class GripeHandler(NumericRefHandler):
         view: str | None = None,
         q: str | None = None,
         page: int | None = None,
+        # ``args={'page_size': N}`` — the list views' canonical row cap
+        # (gr514469), same extras channel as ``page``.
+        page_size: int | None = None,
         # ``args={'comment': K}`` / ``{'comments': K}`` — the timeline
         # selectors inside ``view='comments'``/``view='full'`` (gr499040,
         # gr503545; flattened to kwargs by the dispatcher's extras
@@ -1216,6 +1227,8 @@ class GripeHandler(NumericRefHandler):
         # base reads it back out of the forwarded kwargs (gr497175).
         if page is not None:
             _kw["page"] = page
+        if page_size is not None:
+            _kw["page_size"] = page_size
         view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r

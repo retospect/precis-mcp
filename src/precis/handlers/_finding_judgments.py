@@ -72,14 +72,15 @@ def _flag(value: object) -> str:
 
 
 def render_judgments_view(
-    store: Store, ref: Ref, *, page: int | None = None
+    store: Store, ref: Ref, *, page: int | None = None, page_size: int | None = None
 ) -> Response:
     """Render ``view='judgments'``: the hub's ``reground_log`` entries, newest
     first — action, verdict, source, the judge's ``same_setup`` / ``primary``
     / ``terminal`` and both setup texts in full, the reason, the LLM call
     reference when one was stored, and the removed link's own ``meta`` for a
     removal. ``page`` (1-based, from ``args={'page': N}``) windows the list
-    :data:`JUDGMENTS_PAGE_SIZE` at a time."""
+    ``page_size`` at a time (``args={'page_size': N}``, default
+    :data:`JUDGMENTS_PAGE_SIZE`)."""
     meta = ref.meta or {}
     entries = [e for e in (meta.get(META_REGROUND_LOG) or []) if isinstance(e, dict)]
     entries.sort(key=lambda e: str(e.get("at") or ""), reverse=True)
@@ -103,8 +104,22 @@ def render_judgments_view(
             f"page must be a positive integer, got {page!r}",
             next="get(kind='finding', id=<id>, view='judgments', args={'page': 2})",
         ) from err
-    lo = (pg - 1) * JUDGMENTS_PAGE_SIZE
-    shown = entries[lo : lo + JUDGMENTS_PAGE_SIZE]
+    try:
+        size = JUDGMENTS_PAGE_SIZE if page_size is None else int(page_size)
+    except (TypeError, ValueError) as err:
+        raise BadInput(
+            f"page_size must be a positive integer, got {page_size!r}",
+            next="get(kind='finding', id=<id>, view='judgments', "
+            "args={'page_size': 25})",
+        ) from err
+    if size < 1:
+        raise BadInput(
+            f"page_size must be a positive integer, got {page_size!r}",
+            next="get(kind='finding', id=<id>, view='judgments', "
+            "args={'page_size': 25})",
+        )
+    lo = (pg - 1) * size
+    shown = entries[lo : lo + size]
     if not shown:
         lines += ["", f"(page {pg} is past the end — {len(entries)} logged entries)"]
         return Response(body="\n".join(lines))

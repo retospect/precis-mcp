@@ -43,7 +43,7 @@ with a bare `dc<id>`, never a `-B..A` window.
 | `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full, plus house-style counts |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
 | `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
-| `get(id='dc<id>', view='history')` | the chunk's edit events, newest first, with prior text (`args={'limit':N}`, ≤500) |
+| `get(id='dc<id>', view='history')` | the chunk's edit events, newest first, with prior text (`args={'page_size':N}`, ≤500) |
 | `get(id='dc<id>', view='proposals')` | open anchored todos with `meta.proposed_text`, as diffs vs the current text |
 | `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes) |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |

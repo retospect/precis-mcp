@@ -72,6 +72,8 @@ from numpy.typing import NDArray
 from precis.blocktree.types import no_block_msg
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._interpret import PREFIX as _INTERPRETED
+from precis.handlers._slice_args import slice_window
 from precis.structure import Scene as StructScene
 from precis_se.atomic import clearance as se_atomic_clearance
 from precis_se.atomic.clearance import AtomCloud, SweepAxis
@@ -500,29 +502,42 @@ def _vet_face(args: dict[str, Any]) -> str:
 _LIMIT_DEFAULT = 50
 
 
-def _vet_limit(args: dict[str, Any]) -> int:
-    raw = args.get("limit", _LIMIT_DEFAULT)
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
-        raise BadInput(
-            "view='sites' 'limit' must be a whole number of rows >= 0 "
-            f"(0 lists every row); got {raw!r}"
-        )
-    return raw
+def _vet_limit(args: dict[str, Any]) -> tuple[int, int, list[str]]:
+    """The row window: canonical ``page``/``page_size``, ``limit`` the
+    deprecated ``page_size`` alias (gr514469). Returns ``(offset,
+    limit, readings)`` — ``limit`` 0 lists every row."""
+    offset, size, readings = slice_window(
+        args, where="get(kind='se', view='sites')", default_size=_LIMIT_DEFAULT
+    )
+    return offset, _LIMIT_DEFAULT if size is None else size, readings
+
+
+def _finish(lines: list[str], readings: list[str]) -> str:
+    """The joined view body, leading with the ``interpreted:`` line when
+    a deprecated slice spelling was used."""
+    body = "\n".join(lines) + "\n"
+    if readings:
+        body = f"{_INTERPRETED}{'; '.join(readings)}\n{body}"
+    return body
 
 
 def _fmt_sites(
-    sites: list[Site], classes: dict[str, list[str | None]], limit: int = 0
+    sites: list[Site],
+    classes: dict[str, list[str | None]],
+    limit: int = 0,
+    offset: int = 0,
 ) -> list[str]:
-    """The site table (the top ``limit`` rows by exposure; 0 = all) plus
+    """The site table (``limit`` rows by exposure from ``offset``; 0 =
+    all) plus
     the per-(class, face) summary over EVERY row — the summary covers the
     EXCLUDED classes too (``sp3``/``substituted`` count under a ``—``
     face) so a graft junction is accounted for, not dropped."""
     lines: list[str] = []
-    shown = sites[:limit] if limit else sites
+    shown = sites[offset : offset + limit] if limit else sites[offset:]
     if len(shown) < len(sites):
         lines.append(
             f"showing {len(shown)} of {len(sites)} site rows, most exposed "
-            "first — args={'limit': 0} lists every row; the summary below "
+            "first — args={'page_size': 0} lists every row; the summary below "
             "counts all of them"
         )
     if not sites:
@@ -684,7 +699,9 @@ def _data_str(v: Any) -> str:
     return str(v)
 
 
-def _stored_generated_lines(store: Store, node: Any, limit: int) -> list[str]:
+def _stored_generated_lines(
+    store: Store, node: Any, limit: int, offset: int = 0
+) -> list[str]:
     """The bound structure's stored build-record detail that only ever
     surfaced as report INFO prose (gr503027): ``generated.sites`` — the
     generator's own measured site list (ordinal, region, seam, sign,
@@ -715,11 +732,11 @@ def _stored_generated_lines(store: Store, node: Any, limit: int) -> list[str]:
                 f"{frame.get('measured_on')}; frame.to_stored maps onto "
                 "stored ordinals"
             )
-        shown = entries[:limit] if limit else entries
+        shown = entries[offset : offset + limit] if limit else entries[offset:]
         if len(shown) < len(entries):
             lines.append(
                 f"showing {len(shown)} of {len(entries)} stored site rows — "
-                "args={'limit': 0} lists every row"
+                "args={'page_size': 0} lists every row"
             )
         lines.append(
             render_agent_table(
@@ -806,7 +823,7 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
     args = args or {}
     face = _vet_face(args)
     exposure_A = _vet_exposure_A(args)
-    limit = _vet_limit(args)
+    offset, limit, readings = _vet_limit(args)
     a_name = args.get("a")
     b_name = args.get("b")
     block_name = args.get("block")
@@ -834,9 +851,9 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
         )
         lines.append(_axis_note(axis))
         lines.append(_carbon_note(name, cloud, classes))
-        lines += _fmt_sites(sites, {name: classes}, limit)
-        lines += _stored_generated_lines(store, node, limit)
-        return "\n".join(lines) + "\n"
+        lines += _fmt_sites(sites, {name: classes}, limit, offset)
+        lines += _stored_generated_lines(store, node, limit, offset)
+        return _finish(lines, readings)
 
     a_name, b_name = str(a_name).strip(), str(b_name).strip()
     if a_name == b_name:
@@ -871,8 +888,8 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
     )
     lines.append(_carbon_note(a_name, cloud_a, classes_a))
     lines.append(_carbon_note(b_name, cloud_b, classes_b))
-    lines += _fmt_sites(facing, {a_name: classes_a, b_name: classes_b}, limit)
-    return "\n".join(lines) + "\n"
+    lines += _fmt_sites(facing, {a_name: classes_a, b_name: classes_b}, limit, offset)
+    return _finish(lines, readings)
 
 
 # ── complementarity stub ──────────────────────────────────────────────

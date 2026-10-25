@@ -81,9 +81,9 @@ get(kind='job', id='/logs?handler=dispatch&since=24&level=WARNING')
 # runner's per-cycle `worker: <pass> claimed=N ok=N failed=N` INFO row
 # (payload.handler) — so level=INFO shows a quiet pass's heartbeat too
 
-get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&limit=50')
+get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&page_size=50')
 # host=, q= (substring on message), since= (hours, max 168),
-# limit= (default 100, cap 200) all compose
+# page_size= (default 100, cap 200; limit= the deprecated alias) all compose
 
 get(kind='job', id='/logs?job=jo123')
 # job= anchors on that job: its run window +-5 min on the host that claimed

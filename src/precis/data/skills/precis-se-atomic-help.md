@@ -303,8 +303,9 @@ clearance pocket report. Wall carbons show once per face.
 `args={'block'}` lists a block alone; `args={'a','b'}` lists only the
 sites that FACE the other block within `pocket_gap_A` — for the valve,
 the rotor's `out` rows and the shell's `in` rows; read-only.
-`face: 'in'|'out'|'axial'|'both'` filters (default both); `limit`
-caps the table at the N most exposed rows (default 50, `0` = all) — the
+`face: 'in'|'out'|'axial'|'both'` filters (default both); `page_size`
+caps the table at the N most exposed rows (default 50, `0` = all; `page`
+walks further windows, `limit` the deprecated `page_size` alias) — the
 summary always counts every row. A cap carbon whose wall normal runs
 along the axis takes out/in against the block's centroid. A closed cage
 (no open edge — a pillbox, a fullerene) lists its `in` sites at

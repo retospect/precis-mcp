@@ -552,7 +552,7 @@ def test_a_slice_names_its_window_and_hands_the_next_call(
     handler.put(id="big-ops2", text=json.dumps({"ops": _BIG_OPS}))
     body = handler.get(id="big-ops2", view="ops", args={"offset": 40, "limit": 40}).body
     assert "ops 41–80" in body
-    assert "args={'offset': 80, 'limit': 40}" in body
+    assert "args={'page': 3, 'page_size': 40}" in body
     assert len(_fenced_ops(body)) == 40
 
 
@@ -566,7 +566,7 @@ def test_the_next_slice_hint_names_the_design(handler: SeHandler) -> None:
     ).body
     assert (
         "next slice: get(kind='se', id='big-ops-slug', view='ops', "
-        "args={'offset': 40, 'limit': 40})" in body
+        "args={'page': 2, 'page_size': 40})" in body
     )
 
 
@@ -605,7 +605,7 @@ def test_a_folded_unsliced_view_names_the_slice_call(
     )
     assert "elided here" in body  # fixture guard: the export really folded
     assert "If you only need part of this document: " in body
-    assert "view='ops', args={'offset': <0-based op index>, 'limit': <count>}" in body
+    assert "view='ops', args={'page': <n>, 'page_size': <count>}" in body
 
 
 def test_slice_args_are_vetted_not_dropped(handler: SeHandler) -> None:
