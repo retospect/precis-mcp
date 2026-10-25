@@ -796,6 +796,26 @@ class TestSplitBody:
         assert len(ev_b) == 1 and ev_b[0].payload["moved_from"] == a
         assert f"pa{b}" in resp.body
 
+    def test_minted_ref_stays_in_fk_vocab(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr515089/gr515090: the split mint uses FK-vocabulary values —
+        ``provider='manual'`` ('agent' is not a provider) and chunk
+        ``set_by`` NULL ('edit' is not an actor; the meta.set_by='edit'
+        stamp is JSON annotation, not the column)."""
+        a = _seed(store, "splitvocab2020", year=2020)
+        _body(store, a, 1)
+        _edit(handler, a, {"split_body": {"title": "X"}, "reason": "x"})
+        ev_a = _events(store, a, "body_split")
+        b = int(ev_a[0].payload["new_ref_id"])
+        assert store.fetch_refs_by_ids([b])[b].provider == "manual"
+        with store.pool.connection() as conn:
+            non_null = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id = %s AND set_by IS NOT NULL",
+                (b,),
+            ).fetchone()
+        assert non_null is not None and non_null[0] == 0
+
     def test_refuses_taken_doi(self, store: Store, handler: PaperHandler) -> None:
         a = _seed(store, "splitdup2020", year=2020)
         other = _seed(store, "splitowner2020", year=2020)
