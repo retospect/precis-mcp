@@ -1244,7 +1244,7 @@
 # serving a two-day-old process until bounced by hand. The step-2 sha-vs-sha
 # probe cannot detect that (the venv already IS the pin once the install
 # lands — staleness here is process-vs-files, not sha-vs-sha), so the check
-# compares the unit's ActiveEnterTimestamp against the wheel's install stamp:
+# compares the unit's ActiveEnterTimestamp (wall clock) against the wheel's install stamp:
 # an older process predates the code on disk. Self-deduping — a unit another
 # play just restarted reads fresh and is left alone.
 - name: "Bounce a stale alertmanager receiver on the monitoring host (gr514256)"
@@ -1263,11 +1263,19 @@
         set -uo pipefail
         unit=precis-alertmanager-receiver.service
         systemctl cat "$unit" >/dev/null 2>&1 || { echo absent; exit 0; }
-        start_us=$(systemctl show "$unit" -p ActiveEnterTimestampUSec --value)
-        [ "${start_us:-0}" -gt 0 ] 2>/dev/null || { echo inactive; exit 0; }
+        # ActiveState decides active/inactive; the *USec timestamp property does
+        # not exist on systemd 255 (monitoring host), so the start time comes from the
+        # wall-clock ActiveEnterTimestamp, parsed to epoch seconds.
+        state=$(systemctl show "$unit" -p ActiveState --value 2>/dev/null)
+        [ "$state" = active ] || { echo inactive; exit 0; }
+        start_ts=$(systemctl show "$unit" -p ActiveEnterTimestamp --value 2>/dev/null)
+        start_s=$(date -d "$start_ts" +%s 2>/dev/null)
+        # An active unit with an unreadable start time is restarted (stale),
+        # never reported inactive.
+        [ "${start_s:-0}" -gt 0 ] 2>/dev/null || { echo stale; exit 0; }
         stamp=$(ls -t /opt/precis/venv/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json 2>/dev/null | head -1)
         [ -n "$stamp" ] || { echo no-wheel; exit 0; }
-        if [ "$start_us" -lt "$(( $(stat -c %Y "$stamp") * 1000000 ))" ]; then
+        if [ "$start_s" -lt "$(stat -c %Y "$stamp")" ]; then
           echo stale
         else
           echo fresh

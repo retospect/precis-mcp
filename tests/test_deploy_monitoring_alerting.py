@@ -293,5 +293,17 @@ def test_redeploy_bounces_a_stale_receiver_on_monitoring_hosts() -> None:
     assert "monitoring" in hosts and "gateway" in hosts
     assert play["pre_tasks"][0]["ansible.builtin.meta"] == "end_host"
     text = yaml.safe_dump(play)
-    assert "ActiveEnterTimestampUSec" in text and "direct_url.json" in text
+    assert "direct_url.json" in text
+    # gr514256/r101: ActiveEnterTimestampUSec does not exist on systemd 255.
+    assert "TimestampUSec" not in text
+    script = next(
+        t["ansible.builtin.shell"]
+        for t in play["tasks"]
+        if t["name"].startswith("Classify the receiver process")
+    )
+    assert "-p ActiveState --value" in script
+    assert "-p ActiveEnterTimestamp --value" in script
+    assert "date -d" in script
+    # an active unit with an unparseable start time must restart, not skip
+    assert "echo stale; exit 0" in script
     assert "precis-alertmanager-receiver" in text
