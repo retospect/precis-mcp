@@ -349,7 +349,16 @@ def _tag_response_body(
 #: ``view=`` spellings agents reach for meaning "just the listing" (the
 #: memory kind's ``view='index'``); the hit page is already index-shaped
 #: here, so they fold to the default view (gr492994, gr492996).
-_PLAIN_LISTING_VIEWS = frozenset({"index", "ids"})
+_PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
+
+#: Page budget (chars) for the batch ``view=`` read (gr515524): only
+#: whole per-id blocks go on a page, so a block (a gripe's body or
+#: comment timeline) is never cut mid-text behind a ``more()`` cursor.
+#: Sized under the agent-facing fold (~4 KiB,
+#: :data:`precis._pagination.DEFAULT_FOLD_BODY_BYTES`) with headroom
+#: for the batch header and the ``next:`` id list; a single block over
+#: budget still renders whole (same as a singleton ``get``).
+_BATCH_VIEW_PAGE_CHARS = 3500
 
 
 def plain_listing_view(view: str | None, own_views: Any) -> str | None:
@@ -884,12 +893,15 @@ class NumericRefHandler(Handler):
         id_max: int | str | None = None,
         **_kw: Any,
     ) -> Response:
-        # ``view='ids'`` renders the same filtered set as one handle per
-        # line — compact enough that a full page never mid-elides behind
-        # a more() cursor (gr514477). Intercepted before
+        # ``view='ids'`` renders the same filtered set as one bare handle
+        # per line — compact enough that a full page never mid-elides
+        # behind a more() cursor (gr514477). ``view='list'`` is the same
+        # one-line-per-hit shape with the summary first line beside the
+        # handle (gr515522): the triage listing a folded hit table can't
+        # give at page_size=100. Both are intercepted before
         # ``plain_listing_view`` folds the spelling away.
-        ids_only = view == "ids"
-        if ids_only:
+        compact = view if view in ("ids", "list") else None
+        if compact is not None:
             view = None
         view = plain_listing_view(view, self._search_view_names())
         id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
@@ -1019,7 +1031,7 @@ class NumericRefHandler(Handler):
                     page=page,
                     sort=sort or self.browse_default_sort,
                     exclude_tags=excluded,
-                    ids_only=ids_only,
+                    compact=compact,
                     id_min=id_lo,
                     id_max=id_hi,
                 )
@@ -1039,7 +1051,7 @@ class NumericRefHandler(Handler):
                     offset=offset,
                     page=page,
                     exclude_tags=excluded,
-                    ids_only=ids_only,
+                    compact=compact,
                 )
             raise BadInput(
                 "search requires q= or tags= or link=",
@@ -1073,7 +1085,7 @@ class NumericRefHandler(Handler):
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 chunk_scope=chunk_scope,
-                ids_only=ids_only,
+                compact=compact,
             )
 
         # Title lexical fused with a hybrid block leg (see
@@ -1171,7 +1183,9 @@ class NumericRefHandler(Handler):
             query=q,
         )
         table = (
-            self._id_lines(hit_refs) if ids_only else self._render_hits_table(hit_refs)
+            self._id_lines(hit_refs, titles=compact == "list")
+            if compact
+            else self._render_hits_table(hit_refs)
         )
         trunc = self._tag_truncation_note(normalized_tags, matched_total=total, q=q)
         parts = [header]
@@ -1557,16 +1571,25 @@ class NumericRefHandler(Handler):
         )
         return sorted(merged)
 
-    def _id_lines(self, refs: list[Ref]) -> str:
-        """``view='ids'`` body: one handle per ref, nothing else.
+    def _id_lines(self, refs: list[Ref], *, titles: bool = False) -> str:
+        """``view='ids'``/``view='list'`` body: one line per ref.
 
         Compact on purpose (gr514477): a full page of these never
         mid-elides behind a ``more()`` cursor, so the filtered set is
-        enumerable verbatim — e.g. every open gripe's id.
+        enumerable verbatim — e.g. every open gripe's id. ``titles``
+        (``view='list'``, gr515522) puts the summary first line beside
+        the handle so a triage read sees what each id *is* — still one
+        line per hit, never a folded body.
         """
-        return "\n".join(
-            handle_registry.try_format(self.kind, r.id) or str(r.id) for r in refs
-        )
+        lines = []
+        for r in refs:
+            handle = handle_registry.try_format(self.kind, r.id) or str(r.id)
+            if titles:
+                summary, _rest = _extract_summary(r.title or "")
+                if summary:
+                    handle = f"{handle}  {summary}"
+            lines.append(handle)
+        return "\n".join(lines)
 
     def _list_by_tags(
         self,
@@ -1579,7 +1602,7 @@ class NumericRefHandler(Handler):
         sort: str = "recency",
         exclude_tags: list[str] | None = None,
         more_call: str = "",
-        ids_only: bool = False,
+        compact: str | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
     ) -> Response:
@@ -1682,7 +1705,9 @@ class NumericRefHandler(Handler):
         if note:
             parts.append(note)
         parts.append(
-            self._id_lines(refs) if ids_only else self._render_hits_table(refs)
+            self._id_lines(refs, titles=compact == "list")
+            if compact
+            else self._render_hits_table(refs)
         )
         if pages > 1:
             # Name the total and the page count so a short page can't be
@@ -1724,7 +1749,7 @@ class NumericRefHandler(Handler):
         offset: int = 0,
         page: int = 1,
         exclude_tags: list[str] | None = None,
-        ids_only: bool = False,
+        compact: str | None = None,
     ) -> Response:
         """Recency-ordered list of ``self.kind`` refs linked to ``link``.
 
@@ -1804,8 +1829,8 @@ class NumericRefHandler(Handler):
         if note:
             parts.append(note)
         parts.append(
-            self._id_lines(page_rows)
-            if ids_only
+            self._id_lines(page_rows, titles=compact == "list")
+            if compact
             else self._render_hits_table(page_rows)
         )
         return Response(body="\n".join(parts), result_count=len(page_rows))
@@ -2099,7 +2124,7 @@ class NumericRefHandler(Handler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         chunk_scope: str | None = None,
-        ids_only: bool = False,
+        compact: str | None = None,
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref."""
         hits, total = self._best_body_hits(
@@ -2176,8 +2201,12 @@ class NumericRefHandler(Handler):
         trunc = self._tag_truncation_note(tags, matched_total=total, q=q)
         if trunc:
             lines.append(trunc)
-        if ids_only:
-            lines.extend(self._id_lines([ref for _, ref, _ in hits]).splitlines())
+        if compact:
+            lines.extend(
+                self._id_lines(
+                    [ref for _, ref, _ in hits], titles=compact == "list"
+                ).splitlines()
+            )
         else:
             for block, ref, rank in hits:
                 lines.append(self._render_body_search_hit(ref, block, rank))
@@ -3197,6 +3226,12 @@ class NumericRefHandler(Handler):
         soft-deleted id renders a one-line block, same as the summary
         form. A view-level error (unknown view for the kind) raises on
         the first live id instead of stamping one refusal per id.
+
+        Pages whole blocks under :data:`_BATCH_VIEW_PAGE_CHARS`
+        (gr515524): a batch whose join would overflow emits the ids that
+        fit and names the unread rest as the ``next:`` call's id list —
+        a self-describing cursor, instead of letting the transport fold
+        cut a block mid-text behind a ``more()`` cursor.
         """
         blocks: list[str] = []
         for rid in ref_ids:
@@ -3207,11 +3242,25 @@ class NumericRefHandler(Handler):
                 blocks.append(f"{handle}  not found")
             except Gone:
                 blocks.append(f"{handle}  deleted")
-        return Response(
-            body=f"# {len(ref_ids)} {self._sense()} (batch, view={view!r})\n\n"
-            + "\n\n".join(blocks),
-            result_count=len(ref_ids),
+        shown: list[str] = []
+        used = 0
+        for block in blocks:
+            if shown and used + len(block) > _BATCH_VIEW_PAGE_CHARS:
+                break
+            shown.append(block)
+            used += len(block) + 2  # the "\n\n" join
+        rest = ref_ids[len(shown) :]
+        body = (
+            f"# {len(ref_ids)} {self._sense()} (batch, view={view!r})\n\n"
+            + "\n\n".join(shown)
         )
+        if rest:
+            body += (
+                f"\n\n{len(rest)} more — next: "
+                f"get(kind={self.kind!r}, "
+                f"id=[{', '.join(str(i) for i in rest)}], view={view!r})"
+            )
+        return Response(body=body, result_count=len(shown))
 
     def _tag_batch(self, ids: list[Any], **kw: Any) -> Response:
         """``tag(id=[...])``: the same edit on every id, all or nothing.

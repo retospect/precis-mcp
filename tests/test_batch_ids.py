@@ -330,6 +330,33 @@ def test_get_batch_view_gripe_comments_and_missing(hub: Hub) -> None:
     assert f"gr{missing}  not found" in body
 
 
+def test_get_batch_view_pages_whole_blocks(hub: Hub) -> None:
+    """gr515524: a batch view join that would overflow the fold emits the
+    whole per-id blocks that fit and names the unread ids as the next
+    call — never a mid-text cut behind a more() cursor."""
+    handler = GripeHandler(hub=hub)
+    ids = [
+        id_of(handler.put(text=f"paged batch {i}\n" + "x" * 1200).body)
+        for i in range(4)
+    ]
+    resp = handler.get(id=_batch(*ids), view="full")
+    body = resp.body
+    assert body.startswith("# 4 gripe (batch, view='full')")
+    assert f"# gripe {ids[0]}" in body and f"# gripe {ids[1]}" in body
+    assert f"# gripe {ids[2]}" not in body and f"# gripe {ids[3]}" not in body
+    assert (
+        f"2 more — next: get(kind='gripe', id=[{ids[2]}, {ids[3]}], "
+        "view='full')" in body
+    )
+    assert resp.result_count == 2
+    # The named continuation is the remaining ids verbatim — re-issuing
+    # it returns them whole, no cursor needed.
+    rest = handler.get(id=_batch(ids[2], ids[3]), view="full").body
+    assert rest.startswith("# 2 gripe (batch, view='full')")
+    assert f"# gripe {ids[2]}" in rest and f"# gripe {ids[3]}" in rest
+    assert "more — next:" not in rest
+
+
 def test_get_batch_view_unknown_view_raises(hub: Hub) -> None:
     handler, ids = _gripes(hub, 1)
     with pytest.raises(Unsupported, match="unknown view"):

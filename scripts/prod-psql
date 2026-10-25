@@ -26,6 +26,29 @@
 # chunk_embeddings not chunks, events are in ref_events, links use
 # src_ref_id/dst_ref_id.
 #
+# Tag joins: ref_tags is a bare join table (ref_id, tag_id) — there is no
+# tag text column on it. The tag text lives in tags(namespace, value):
+# join tags t ON t.tag_id = rt.tag_id and filter the pair
+# (gr515525, gr515529):
+#
+#   SELECT r.ref_id FROM refs r
+#     JOIN ref_tags rt ON rt.ref_id = r.ref_id
+#     JOIN tags t ON t.tag_id = rt.tag_id
+#    WHERE r.kind = 'gripe'
+#      AND t.namespace = 'STATUS' AND t.value = 'open';
+#
+# Closed axes lift their prefix to namespace ('STATUS:open' →
+# namespace='STATUS', value='open'); flags store under namespace='FLAG';
+# free-form tags — dogfood, theme:<slug>, cluster:<slug> — sit under
+# namespace='OPEN' with the whole 'theme:<slug>' as value, and some
+# displays render that storage form back as 'OPEN:dogfood'. So filter
+# t.namespace = 'OPEN' AND t.value LIKE 'theme:%' — there is no
+# 'theme' namespace (and no 'OPEN' axis on the MCP side).
+#
+# Prose lives in chunks, not refs.title: a gripe's body is
+# chunk_kind='gripe_body', its comments 'gripe_comment' — join
+# chunks c ON c.ref_id = r.ref_id for text.
+#
 # Row cap (.claude/fleet/authority.md, 2026-10-15): a one-shot or piped SQL
 # text without --ro that mentions UPDATE or DELETE runs inside BEGIN; the
 # rows the transaction updated or deleted (all its statements, see

@@ -146,6 +146,14 @@ search(kind="gripe", tags=["STATUS:open"], view="ids")  # gr… one per line
 search(kind="gripe", q="chase", view="ids")  # ranked search too
 ```
 
+`view='list'` is the same one-line-per-hit shape with the summary
+first line beside the handle — `gr514477 enumerate open gripes` — for
+triage reads that need the title, not just the id:
+
+```python
+search(kind="gripe", tags=["STATUS:open"], view="list", page_size=100)
+```
+
 `args={'id_min': N}` / `args={'id_max': M}` bound any search to a
 ref-id range — a lone bound is legal — so "open gripes filed since
 gr514000" is `args={'id_min': 514000}`. The range applies on the
@@ -204,7 +212,10 @@ returns one summary block per id (tags, prio, link count, first line; up to
 50); add a single-id view to map it over the batch —
 `get(kind='gripe', id=[42, 43], view='comments')` (or `'body'`, `'full'`,
 `'links'`, `'log'`). Batch `view='body'` is one title+body section per
-id — the comment timeline is not included.
+id — the comment timeline is not included. A batch whose joined view
+would overflow the page returns the whole blocks that fit and names the
+rest verbatim — `next: get(kind='gripe', id=[<unread ids>], view='full')`
+— so re-issuing that call continues without a `more()` cursor.
 `view='index'` is accepted and equals the default listing; use `view='count'` /
 `'meta'` for aggregates.
 `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of them in

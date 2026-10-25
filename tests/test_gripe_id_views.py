@@ -66,6 +66,69 @@ def test_ids_view_ranked_search_too(handler: GripeHandler) -> None:
     assert "rank=" not in body
 
 
+# ── view='list': the compact id + title listing (gr515522) ──────────
+
+
+def test_list_view_is_handle_plus_title_per_line(handler: GripeHandler) -> None:
+    ids = _seed(handler)
+    body = handler.search(tags=["STATUS:open"], view="list", page_size=100).body
+    lines = [ln for ln in body.splitlines() if ln.startswith("gr")]
+    assert len(lines) == len(ids)
+    for i, gid in enumerate(ids):
+        assert f"gr{gid}  id view probe {i}" in lines
+    # still one line per hit — no folded hit-table cells
+    assert "remaining_words" not in body
+    assert "links=" not in body
+
+
+def test_list_view_paginates_without_eliding(handler: GripeHandler) -> None:
+    _seed(handler, n=12)
+    body = handler.search(tags=["STATUS:open"], view="list", page_size=10).body
+    id_lines = [ln for ln in body.splitlines() if ln.startswith("gr")]
+    assert len(id_lines) == 10
+    assert "page 1 of" in body
+
+
+def test_list_view_ranked_search_too(handler: GripeHandler) -> None:
+    ids = [
+        id_of(handler.put(text=f"list view probe {i}\ndetail {i}").body)
+        for i in range(5)
+    ]
+    body = handler.search(q="list view probe", view="list", page_size=100).body
+    id_lines = [ln for ln in body.splitlines() if ln.startswith("gr")]
+    assert {ln.split(" ")[0] for ln in id_lines} == {f"gr{g}" for g in ids}
+    assert "rank=" not in body
+
+
+def test_list_view_stays_one_line_for_long_title(handler: GripeHandler) -> None:
+    insert_gripe(handler.store, "long title " + "padding " * 40 + "\nrest")
+    body = handler.search(tags=["STATUS:open"], view="list", page_size=100).body
+    lines = [ln for ln in body.splitlines() if ln.startswith("gr")]
+    assert len(lines) == 1
+    assert len(lines[0]) < 250
+    assert "rest" not in body
+
+
+def test_list_view_through_dispatch(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    handler = GripeHandler(hub=hub)
+    ids = _seed(handler)
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "gripe",
+            "view": "list",
+            "tags": ["STATUS:open"],
+            "page_size": 100,
+        },
+    )
+    lines = [ln for ln in body.splitlines() if ln.startswith("gr")]
+    assert {ln.split(" ")[0] for ln in lines} == {f"gr{g}" for g in ids}
+    assert "id view probe" in body
+    assert "[error" not in body
+
+
 # ── args={'id_min', 'id_max'}: the id-range filter ───────────────────
 
 
