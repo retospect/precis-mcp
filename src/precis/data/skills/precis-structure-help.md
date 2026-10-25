@@ -37,8 +37,7 @@ other kind that talks to it (`se`'s atomic-mode design↔atomistic boundary,
 `precis_bio`'s fold-to-Scene projection) converts at *its own* seam, never
 inside `structure`. Every length here — op args, `frac`/Cartesian
 coordinates, `radius`/`reach`/`thickness`, `add_atom_site`'s `height` — is Å
-unless a view's payload says otherwise (`unit: "°"` for an angle,
-`unit: ""` for a coordination count); forces are eV/Å, energies eV. Never
+unless a view's payload says otherwise; forces are eV/Å, energies eV. Never
 pass a metre-scale or SI-derived number here expecting silent conversion.
 
 Seven verbs, no new ones: `put` (create/replace), `edit` (apply ops / relax),
@@ -224,6 +223,19 @@ atom (slab = the largest connected metal cluster — a dopant inside it
 counts as slab). Site anchor labels come from the design TOC — the
 `aCu*` above are just top-layer atoms. Both land starting-guess geometry —
 `relax` each endpoint at `fidelity:"ml"` before the pair means anything.
+
+Then check the pair — read-only, zero compute:
+
+```python
+get(kind="structure", id="cu_is", view="pair", args={"other": "cu_fs"})
+```
+
+One row per gate — same atoms/cell/fixed set · slab anchored (≥1 fixed
+slab atom) · validator-clean · a converged `ml` run at one model on
+*both* current versions · distinct basins (max adsorbate move ≥ 0.3 Å)
+· ≤2 bond changes · no >5 Å drag — each `fail` row's `next` is the
+working fix; `warn` never blocks. `relaxed` fails until both endpoints
+have relaxed at `ml`.
 
 ## Edit — `edit(id=<slug>, ops=[…])`
 
@@ -554,8 +566,7 @@ Each design carries **one** embeddable card (title + composition + your
 the cross-kind fan-out `search(kind='*', q='…')`. Hits are design-level
 (`st<id>`); open one with `get(id='<slug>')`. The `gen` column names the
 generator that built a hit plus its key params
-(`hexfold_scene rows=6 periods=8 …`, `—` for a hand-authored design) —
-the same record `view='generator'` shows in full.
+(`hexfold_scene rows=6 periods=8 …`, `—` for a hand-authored design).
 
 ### From a structure to the literature — `get(view='literature')`
 
@@ -577,12 +588,10 @@ get(kind="structure", id="pd111", view="pourbaix")
 ```
 
 The resting-state termination map over (U_RHE, pH) folded from the
-structure's `surface_coverage_scan` jobs (a scan is tied by parenting the
-job on it): validity regions per U interval, boundaries with propagated
-and model-form bands kept apart, plus the bulk Pourbaix verdict as a
-labelled uncertain overlay. One map per footing; `dropped:` names anchors
-the sweep left out. `no anchors` until a scan lands; SVG at
-`/pourbaix/<handle>`.
+design's `surface_coverage_scan` jobs: validity regions per U interval,
+boundaries with propagated and model-form bands kept apart, the bulk
+Pourbaix verdict as a labelled overlay. `no anchors` until a scan lands;
+SVG at `/pourbaix/<handle>`.
 
 ### The reaction staircase — `get(view='staircase')`
 
@@ -590,13 +599,11 @@ the sweep left out. `no anchors` until a scan lands; SVG at
 get(kind="structure", id="pd111", view="staircase", args={"U": -0.3})
 ```
 
-The best linked pathway's staircase from the engine's affine CHE export
-(`che_affine`, engine ≥ 0.25.0) at `U` (default: the quest's operating
-point): each rung's ΔG(U), the limiting rung, per-route U_L/U_opt, the HER
-margin. A coverage-scan map names its resting termination at U as the
-starting surface. `no staircase` until a ready pathway is linked; add `pH`
-(or `point='U,pH'`) for a state per rung (`precis-quest-help`). Web:
-`/pourbaix/<handle>`.
+The best linked pathway's staircase at `U` (default: the quest's
+operating point): each rung's ΔG(U), the limiting rung, per-route
+U_L/U_opt, the HER margin. `no staircase` until a ready pathway is
+linked; `pH` (or `point='U,pH'`) for a state per rung
+(`precis-quest-help`).
 
 ### The generator record — `get(view='generator')`
 
@@ -607,9 +614,8 @@ get(kind="structure", id="hexfold_prism", view="generator")
 The stored `meta['generated']` build record for a design a `generate` op
 (or a workspace import) minted: the generator name, the key facts, the
 authored params (`scene`/`params`/`spec` — the regeneration input) as
-JSON, per-atom record keys elided. Refuses for a hand-authored design or
-one minted before the record existed (2026-09-27). Search rows carry its
-one-line digest in the `gen` column.
+JSON, per-atom record keys elided. Refuses for a hand-authored design;
+search rows carry its digest in the `gen` column.
 
 ## Export — `get(view='poscar'|'extxyz'|'cif')`
 
@@ -627,8 +633,7 @@ get(
 get(kind="structure", id="pd111", view="cif")  # CIF via ASE (core dep)
 ```
 
-POSCAR and extXYZ are pure (zero deps); CIF goes through ASE, a core dep —
-no extra needed.
+POSCAR/extXYZ are pure; CIF goes through ASE (a core dep).
 
 ## Picture in a paper — a draft view figure
 

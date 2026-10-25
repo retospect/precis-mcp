@@ -8,6 +8,9 @@ prio: high
 
 # NEB structure builder (gr512126)
 
+Status 2026-10-25: slices 1–2 shipped (slice 1 in 49cae7c94; slice 2 —
+`view='pair'` — in this tree's commit). Slices 3–5 open.
+
 Reto, 2026-10-25: build it, Opus spec first, and keep it a separate tool —
 not merged with gr506762 (structured kinetics/thermochemistry lookup) or
 gr515871 (inspectable NEB trust-gate diagnostic).
@@ -278,10 +281,11 @@ with no GPU, and each later slice uses the one before.
    new ops. Useful alone: agents build a valid IS and a label-matched FS,
    relax both at `ml` with the existing path, and cite a reaction energy
    ΔE from two relaxed endpoints instead of failing preflight.
-2. **(S) Pair check.** `view='pair'` with the gate table above, read-only
-   and zero compute. Useful alone: an agent learns why a pair is not
-   NEB-ready, with a working `next=` per failed gate, before any NEB
-   exists.
+2. **(S) Pair check — shipped.** `view='pair'` with the gate table above,
+   read-only and zero compute
+   (`precis.structure.pair_check.evaluate_pair`). Useful alone: an agent
+   learns why a pair is not NEB-ready, with a working `next=` per failed
+   gate, before any NEB exists.
 3. **(M) One NEB edge.** Migration 0248; the `struct_neb` job; `put(mode=
    'neb')` with gates, cache key and caps; `view='neb'` list and band; the
    TS design; run trust without the frequency check. Measure wall time

@@ -13,6 +13,9 @@ the seven-verb surface:
   navigation
   probe (``view='line'|'plane'|'bonds_through_plane'|'bonds_in_sphere'|'path'|
   'rings'|'fragments'|'diff'|'pov'``), or an export — all with ``args=``.
+  ``view='pair'`` (``args={'other': '<fs-slug>'}``) is the read-only NEB
+  endpoint gate table (gr512126, slice 2) — see
+  :mod:`precis.structure.pair_check`.
 - ``delete`` — soft-retire a whole design.
 
 The relaxer/DFT and file export (CIF/POSCAR/XYZ) are rented backends
@@ -158,6 +161,7 @@ _VIEWS = (
     *_NAV_VIEWS,
     "atoms",
     "runs",
+    "pair",
     "generator",
     "completion",
     "completion_digest",
@@ -1676,6 +1680,8 @@ class StructureHandler(Handler):
             return self._render_rays(view, ref, scene, args or {})
         if view == "literature":
             return self._render_literature(scene, ref)
+        if view == "pair":
+            return self._render_pair(ref, scene, a)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -2264,6 +2270,63 @@ class StructureHandler(Handler):
                     "method",
                     "forces",
                 ],
+            )
+        )
+
+    def _render_pair(self, ref: Any, scene: Scene, args: dict[str, Any]) -> Response:
+        """``view='pair'`` — the IS/FS NEB-readiness gate table (gr512126,
+        slice 2). Read-only and zero compute: every gate of the spec's
+        Validation table renders one row — measured input, threshold,
+        pass/fail/warn/n/a, and a working ``next=`` on each failed row —
+        so an agent learns why a pair is not NEB-ready before any NEB
+        exists. The partner goes in ``args['other']`` (``fs``/``vs`` also
+        accepted), matching ``view='diff'``."""
+        from precis.structure import pair_check
+
+        other = str(args.get("other") or args.get("fs") or args.get("vs") or "").strip()
+        if not other:
+            raise BadInput(
+                "pair needs other= (the final-state design slug)",
+                next="get(kind='structure', id='<is-slug>', view='pair', "
+                "args={'other': '<fs-slug>'})",
+            )
+        oref = resolve_live_slug_ref(self.store, kind="structure", id=other)
+        oscene, _ = self.store.structure_load(oref.id)
+        is_slug = str(ref.slug or ref.id)
+        fs_slug = str(oref.slug or other)
+        verdict = pair_check.evaluate_pair(
+            scene,
+            oscene,
+            is_version=int((ref.meta or {}).get("version", 0)),
+            fs_version=int((oref.meta or {}).get("version", 0)),
+            is_runs=self.store.structure_runs(ref.id),
+            fs_runs=self.store.structure_runs(oref.id),
+            is_slug=is_slug,
+            fs_slug=fs_slug,
+        )
+        n_fail = len(verdict.failed)
+        n_warn = sum(1 for g in verdict.gates if g.verdict == pair_check.WARN)
+        state = (
+            "NEB-ready"
+            if verdict.ok and not n_warn
+            else "NEB-ready (with warnings)"
+            if verdict.ok
+            else f"blocked — {n_fail} gate(s) failing"
+        )
+        rows = [
+            {
+                "gate": g.gate,
+                "input": g.detail,
+                "threshold": g.threshold,
+                "verdict": g.verdict,
+                "next": g.next or "—",
+            }
+            for g in verdict.gates
+        ]
+        return Response(
+            body=f"# pair {is_slug} ↔ {fs_slug} · {state}\n"
+            + render_agent_table(
+                rows, schema=["gate", "input", "threshold", "verdict", "next"]
             )
         )
 
