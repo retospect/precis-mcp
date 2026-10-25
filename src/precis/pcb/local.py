@@ -1037,6 +1037,138 @@ def route(
     )
 
 
+# ── topo_place (topo-place spec §1c) ───────────────────────────────────
+
+
+@dataclass
+class TopoRun:
+    """What ``pcb.local.topo_place`` returns — the phase-0 topo-place
+    preview: the kernel result, the pin assignment, the pairwise part
+    map and the run files written under ``out`` (the laptop analogue of
+    a ``placer='topo'`` job's ``meta.topo_run.files``).
+    ``summary()`` renders the Decision-19 one-screen text."""
+
+    slug: str
+    out: str
+    poses: dict[str, tuple[float, float, float, float]]
+    crossings: int
+    files: dict[str, Any]
+    notes: list[str]
+    design: Any = field(repr=False)
+    result: Any = field(repr=False)
+    assignment: Any = field(repr=False)
+    pair_map: Any = field(repr=False)
+    design_ctx: _Design | None = field(repr=False, default=None)
+
+    def summary(self) -> str:
+        return str(self.files["summary.txt"])
+
+
+def topo_place(
+    board: Any,
+    *,
+    preset: str = "compact",
+    objective: Any = None,
+    effort: int = 20000,
+    seed: int = 1,
+    out: str = "out/topo",
+    catalog: dict[str, dict[str, Any]] | None = None,
+) -> TopoRun:
+    """The phase-0 topo-place run, in-process (topo-place spec §1c):
+    ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
+    files under ``out`` (``manifest.json``/``elites.json``/``pairs.json``/
+    ``pins.json``/``summary.txt``/``placement.svg``, byte-deterministic
+    per Decision 22). ``preset`` names a share vector
+    (:data:`~precis.pcb.topoplace.design.PRESETS`); ``objective=``
+    overrides it with an ``ObjectiveShares`` or a ``{crossings,
+    ratsnest}`` mapping. ``catalog=`` supplies LCSC-keyed footprint
+    rows, exactly as :func:`place`. A :class:`PinConflict` surfaces
+    unchanged — it is the board script's error, not the run's."""
+    from precis.pcb import topoplace as _tp
+    from precis.pcb.topoplace import runstore as _runstore
+    from precis.pcb.topoplace import summary as _tpsummary
+
+    if objective is None:
+        if preset not in _tp.PRESETS:
+            raise LocalError(
+                f"unknown topo-place preset {preset!r} — known: {sorted(_tp.PRESETS)}"
+            )
+        obj = _tp.PRESETS[preset]
+    elif isinstance(objective, _tp.ObjectiveShares):
+        obj = objective
+    else:
+        obj = _tp.ObjectiveShares(
+            crossings=float(objective.get("crossings", 0.8)),
+            ratsnest=float(objective.get("ratsnest", 0.2)),
+        )
+
+    design = _design(board, catalog)
+    ir = _build_ir(design)
+    footprints = _footprints(design, ir)
+    td = _tp.design_from_ir(ir, footprints)
+    _tp.check_slots(td)
+    result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed)
+    assignment = _tp.assign_pins(td, result.best_pose)
+    pm = _tp.pair_map(td)
+
+    import hashlib
+    import json
+
+    slug = str(design.batch.get("meta", {}).get("slug") or "")
+    board_hash = hashlib.sha256(
+        json.dumps(design.graph, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    summary_text = _tpsummary.render_summary(
+        td,
+        result,
+        assignment,
+        pm,
+        objective=obj,
+        effort=effort,
+        seed=seed,
+        slug=slug,
+    )
+    files = _runstore.run_files(
+        td,
+        result,
+        assignment,
+        pm,
+        summary=summary_text,
+        manifest_payload=_runstore.manifest(
+            td,
+            result,
+            objective=obj,
+            effort=effort,
+            board_hash=board_hash,
+            parts=_runstore.manifest_parts(td, design.graph),
+            footprints=_runstore.footprint_shas(footprints),
+        ),
+    )
+    _runstore.write_run(files, out)
+    poses = {
+        str(refdes): (
+            float(result.best_pose[i, 0]),
+            float(result.best_pose[i, 1]),
+            float(result.best_pose[i, 2]) * 90.0,
+            float(result.best_pose[i, 3]),
+        )
+        for i, refdes in enumerate(td.parts)
+    }
+    return TopoRun(
+        slug=slug,
+        out=str(out),
+        poses=poses,
+        crossings=int(result.crossings),
+        files=files,
+        notes=design.notes,
+        design=td,
+        result=result,
+        assignment=assignment,
+        pair_map=pm,
+        design_ctx=design,
+    )
+
+
 # ── model, DRC, exports ────────────────────────────────────────────────
 
 
@@ -1378,6 +1510,7 @@ __all__ = [
     "LocalError",
     "LocalPlacement",
     "LocalRouting",
+    "TopoRun",
     "batch_to_graph",
     "board_svg",
     "bom_csv",
@@ -1394,4 +1527,5 @@ __all__ = [
     "route",
     "run",
     "schematic_svg",
+    "topo_place",
 ]

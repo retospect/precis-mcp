@@ -64,6 +64,11 @@ class TopoPlaceResult:
     seed: int
     elites: tuple[Elite, ...]
     ladder_scores: tuple[float, ...]  # last score per registered rung
+    #: Eval index of the last incumbent improvement — the summary's
+    #: plateau signal (Decision 19's "more effort won't help"): a run
+    #: whose best stopped moving well before the budget ended has
+    #: plateaued (1c spec-call).
+    last_improve_eval: int = 0
 
     def elites_json(self) -> bytes:
         """Canonical ``elites.json`` bytes — the determinism contract:
@@ -74,23 +79,62 @@ class TopoPlaceResult:
         ).encode("utf-8")
 
 
-def _scatter(d: TopoDesign, pose: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Unplaced (NaN) movable parts get a uniform random position —
-    inside the outline bbox when there is one, else a part-count square
-    like ``autoplace``'s. Fixed parts keep their coordinates."""
+def _domain(d: TopoDesign) -> tuple[np.ndarray, np.ndarray]:
+    """The mover's board domain as ``(lo, hi)`` corners: the outline
+    bbox when there is one, else a part-count square like
+    ``autoplace``'s. ``_scatter`` seeds inside it; the translate mover
+    is also CLAMPED to it — the proxy prices crossings + length only,
+    so without the cap a move that parks a part off the board scores
+    well and the placement-DRC gate then refuses the whole run (the
+    anneal caps its translate domain the same way:
+    ``optimize._derive_placement_bounds``)."""
+    if len(d.outline) >= 3:
+        return d.outline.min(axis=0), d.outline.max(axis=0)
+    side = max(20.0, 5.0 * math.sqrt(max(len(d.parts), 1)))
+    return np.zeros(2), np.full(2, side)
+
+
+#: Extra inset past each part's pin radius — a part whose pins all sit
+#: at its centroid still has pads around them (``_EDGE_MARGIN_MM``'s
+#: role in ``optimize``; no courtyard extent exists on ``TopoDesign``).
+_EDGE_MM = 0.5
+
+
+def _legal_xy(
+    d: TopoDesign, lo: np.ndarray, hi: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-part legal centre box ``(lo_i, hi_i)`` — the domain inset by
+    the part's own pin radius + ``_EDGE_MM``, so a clamped centre keeps
+    every pin (and roughly its pads) inside the board. A part wider
+    than the board collapses its box to the domain centre on the
+    degenerate axis rather than inverting it."""
+    n = len(d.parts)
+    r = np.zeros(n)
+    for p in range(n):
+        pins = d.pin_xy[d.pin_part == p]
+        if len(pins):
+            r[p] = float(np.hypot(pins[:, 0], pins[:, 1]).max())
+    lo_i = lo + (r + _EDGE_MM)[:, None]
+    hi_i = hi - (r + _EDGE_MM)[:, None]
+    centre = np.broadcast_to((lo + hi) / 2.0, (n, 2))
+    ok = hi_i > lo_i
+    return np.where(ok, lo_i, centre), np.where(ok, hi_i, centre)
+
+
+def _scatter(
+    d: TopoDesign,
+    pose: np.ndarray,
+    rng: np.random.Generator,
+    xy_lo: np.ndarray,
+    xy_hi: np.ndarray,
+) -> np.ndarray:
+    """Unplaced (NaN) movable parts get a uniform random position inside
+    their legal centre box. Fixed parts keep their coordinates."""
     out = pose.copy()
     unplaced = ~np.isfinite(out[:, 0]) | ~np.isfinite(out[:, 1])
     if not unplaced.any():
         return out
-    if len(d.outline) >= 3:
-        lo = d.outline.min(axis=0)
-        hi = d.outline.max(axis=0)
-    else:
-        side = max(20.0, 5.0 * math.sqrt(max(len(d.parts), 1)))
-        lo, hi = np.zeros(2), np.full(2, side)
-    n = int(unplaced.sum())
-    out[unplaced, 0] = rng.uniform(lo[0], hi[0], n)
-    out[unplaced, 1] = rng.uniform(lo[1], hi[1], n)
+    out[unplaced, :2] = rng.uniform(xy_lo[unplaced], xy_hi[unplaced])
     return out
 
 
@@ -132,12 +176,14 @@ def topo_place(
         for j in range(i + 1, len(g))
     ]
 
-    # board span for rubber-band normalisation + move step scale
-    if len(d.outline) >= 3:
-        span = float(np.hypot(*(d.outline.max(axis=0) - d.outline.min(axis=0))))
-    else:
-        span = max(20.0, 5.0 * math.sqrt(max(n_parts, 1))) * math.sqrt(2.0)
+    # board span for rubber-band normalisation + move step scale; the
+    # same domain the translate mover is clamped to (per-part legal
+    # centre boxes keep each part's pins inside the board — see
+    # ``_domain``/``_legal_xy``).
+    lo, hi = _domain(d)
+    span = float(np.hypot(*(hi - lo)))
     span2 = max(span * span, 1.0)
+    xy_lo, xy_hi = _legal_xy(d, lo, hi)
 
     n_restarts = max(1, min(4, effort // 2500))
     per_restart = max(1, effort // n_restarts)
@@ -154,20 +200,24 @@ def topo_place(
 
     best_pose: np.ndarray | None = None
     best_rank: tuple[float, float] = (math.inf, math.inf)
+    last_improve = 0
     evals = 0
 
     for restart in range(n_restarts):
         elites = archive.elites
         if restart == 0 or not elites:
-            pose = _scatter(d, d.pose0, rng)
+            pose = _scatter(d, d.pose0, rng, xy_lo, xy_hi)
             anchor = None
         else:
             anchor = elites[(restart - 1) % len(elites)].pose
             # restart near the anchor: keep the elite pose, jittered
+            # (clamped back inside the legal boxes — a jitter may push
+            # an edge-sitting centre out)
             pose = anchor.copy()
             jit = rng.normal(0.0, span * 0.02, (n_parts, 2))
             pose[:, 0] += jit[:, 0]
             pose[:, 1] += jit[:, 1]
+            pose[:, :2] = np.clip(pose[:, :2], xy_lo, xy_hi)
             pose[d.fixed] = anchor[d.fixed]
 
         proxy = ProxyState(d, pose, objective)
@@ -199,6 +249,8 @@ def topo_place(
                 step = max(0.5, step0 * (step_cool**evals))
                 row[0] += rng.normal(0.0, step)
                 row[1] += rng.normal(0.0, step)
+                row[0] = np.clip(row[0], xy_lo[p, 0], xy_hi[p, 0])
+                row[1] = np.clip(row[1], xy_lo[p, 1], xy_hi[p, 1])
                 evals += 1
                 dd = abs(proxy.try_move(p, row))
                 if dd > 0:
@@ -227,6 +279,8 @@ def topo_place(
                 step = max(0.5, step0 * (step_cool**evals))
                 row[0] += rng.normal(0.0, step)
                 row[1] += rng.normal(0.0, step)
+                row[0] = np.clip(row[0], xy_lo[p, 0], xy_hi[p, 0])
+                row[1] = np.clip(row[1], xy_lo[p, 1], xy_hi[p, 1])
                 staged_rows = {p: row}
             elif mv == "r":
                 p = int(can_rotate[rng.integers(len(can_rotate))])
@@ -271,6 +325,7 @@ def topo_place(
             if rank < best_rank:
                 best_rank = rank
                 best_pose = proxy.pose.copy()
+                last_improve = evals
                 # every new incumbent is an archive candidate — the
                 # diversity rule decides whether it earns a slot.
                 archive.admit(best_pose, best_rank[1])
@@ -284,7 +339,7 @@ def topo_place(
         archive.admit(restart_best_pose, restart_best[1])
 
     if best_pose is None:
-        best_pose = _scatter(d, d.pose0, rng)
+        best_pose = _scatter(d, d.pose0, rng, xy_lo, xy_hi)
         final = ProxyState(d, best_pose, objective)
         best_rank = (final.crossings, final.cost)
 
@@ -299,6 +354,7 @@ def topo_place(
         seed=seed,
         elites=archive.elites,
         ladder_scores=tuple(ladder_scores),
+        last_improve_eval=last_improve,
     )
 
 

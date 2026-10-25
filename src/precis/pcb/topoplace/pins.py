@@ -59,12 +59,17 @@ class PinAssignment:
     declaration order). ``choice`` is the bound pin id per
     :attr:`TopoDesign.flex` slot — the write-back needs it for slots
     that carry no ``name`` (spec-call: the spec's three fields plus
-    this one)."""
+    this one). ``crossings`` is the assignment's own effective-net
+    crossing count — the number the summary's widen-a-slot edit
+    diffs against (1c spec-call: ``net_pins`` is frozen, so a
+    widened ``any_of`` is priced by re-solving, not by a placer
+    re-run)."""
 
     by_name: dict[str, tuple[str, int | str]]
     swaps: tuple[tuple[str, int | str, int | str], ...]
     cost_vs_fixed: float
     choice: tuple[int, ...] = ()
+    crossings: int = 0
 
 
 def _slot_tag(d: TopoDesign, i: int) -> str:
@@ -557,6 +562,7 @@ def assign_pins(
         swaps=tuple(swaps),
         cost_vs_fixed=float(m.crossings - base_m.crossings),
         choice=tuple(choice),
+        crossings=m.crossings,
     )
 
 

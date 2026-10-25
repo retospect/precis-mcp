@@ -56,13 +56,20 @@ def _pins_rows(d: TopoDesign, a: PinAssignment) -> dict[str, dict[str, object]]:
     return rows
 
 
-def write_lock(path: str | Path, d: TopoDesign, a: PinAssignment) -> dict:
-    """Write ``pins.lock.json`` and return its payload."""
-    payload = {
+def lock_payload(d: TopoDesign, a: PinAssignment) -> dict:
+    """The ``pins.lock.json`` payload without the write — the run
+    manifest's ``pins.json`` file and the job meta's copy both need it
+    (1c)."""
+    return {
         "schema": LOCK_SCHEMA,
         "pins": _pins_rows(d, a),
         "swaps": [list(s) for s in a.swaps],
     }
+
+
+def write_lock(path: str | Path, d: TopoDesign, a: PinAssignment) -> dict:
+    """Write ``pins.lock.json`` and return its payload."""
+    payload = lock_payload(d, a)
     Path(path).write_text(
         json.dumps(payload, indent=1, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -127,6 +134,7 @@ def summary_table(d: TopoDesign, a: PinAssignment) -> str:
 
 __all__ = [
     "LOCK_SCHEMA",
+    "lock_payload",
     "pins_h",
     "read_lock",
     "summary_table",

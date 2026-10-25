@@ -291,12 +291,13 @@ Sizes: 0 S–M, 1 L (three builds), 2 L (two builds), 3 M, 4 M–L, 5 S.
 "Devin alone" means a fresh builder can finish it from this text; "Opus
 seam review" means an Opus pass on the API before the slice lands.
 
-Progress: slice 0 (0a/0b/0c), **1a** and **1b** landed 2026-10-25 —
-`src/precis/pcb/topoplace/` exists (design, pairmap, proxy, archive,
-placer, pins, writeback); the wheel gained `Part.pin`/`pin_functions`/
-`pins_with`/`swap_group`, `net.tie(current=, source=)`, `PinConflict`,
-`pcb.Max`/`pcb.Min` and the offline `over_current`/`led_without_limit`
-checks. 1c remains open below.
+Progress: slice 0 (0a/0b/0c), **1a**, **1b** and **1c** landed
+2026-10-25 — `src/precis/pcb/topoplace/` exists (design, pairmap,
+proxy, archive, placer, pins, writeback, summary, runstore); the wheel
+gained `Part.pin`/`pin_functions`/`pins_with`/`swap_group`,
+`net.tie(current=, source=)`, `PinConflict`, `pcb.Max`/`pcb.Min` and
+the offline `over_current`/`led_without_limit` checks; `pcb_place`
+takes `placer='topo'` and the pcb kind takes `view='topo'`.
 
 1b spec-calls made (unspec'd seams, decided during the build):
 slot nets ride `decl_nets`, NOT `net_pins` — a plane net's members
@@ -316,6 +317,30 @@ entry, an LED pin is one whose function starts `LED`, and a
 current-limit part is a part with exactly two wired pins, one declaring
 `current_role("series")` — the reach from a requirement net crosses
 non-limiting two-pin bridges and stops there.
+
+1c spec-calls made (unspec'd seams, decided during the build):
+on the `pcb_place` job `iters` IS the topo eval-count effort — its own
+default 20000 (mirroring `pcb.local.topo_place`), not `PLACE_ITERS`;
+the job runs `PRESETS["compact"]` always — no `preset=`/`objective=`
+param is forwarded (the intent-shares plumbing is pcb-intent-api's);
+a `PinConflict` out of the kernel is recorded as an unclassed failure
+(the board script's error, not the job's); the winning pose folds back
+into the IR so the shared gate/ripup/`pcb_set_pose` tail is unchanged —
+`pcb_set_pose` writes x/y/rot only, so side flips ride
+`pcb_move_instance(layer=)` in the same transaction and flipped parts
+count as moved for the fixed-copper rip-up; the run files ride the job
+ref's `meta.topo_run.files` (Decision 20's store — no new table);
+`placer`/`run`/`part`/`against` joined the handler's ARGS spec (dispatch
+refuses undeclared args keys). **Mover domain (kernel gap found while
+wiring the job):** the proxy prices crossings + length only, so an
+unclamped mover parked parts outside the outline and the placement-DRC
+gate refused the whole run; translate moves, probes, restart jitter and
+the NaN scatter are now clamped to each part's legal centre box — the
+outline bbox (else the part-count square) inset by the part's pin
+radius + 0.5 mm — the same translate-domain cap
+`optimize._derive_placement_bounds` applies. `TopoDesign` still carries
+no footprint extent, so pads/board-edge clearance beyond the pin radius
+stays a later-slice concern.
 
 ### 0. Prerequisites (folded gripes)
 
@@ -537,7 +562,7 @@ Tests (`tests/test_pcb_topoplace_pins.py`, `tests/workspaces/test_pcb_pins.py`):
 - `led_without_limit` fires on a GPIO→LED→GND net and not with a series
   resistor.
 
-**1c — summary, run storage, job path.** Files: `topoplace/summary.py`,
+**1c — summary, run storage, job path.** *Landed 2026-10-25.* Files: `topoplace/summary.py`,
 `topoplace/runstore.py`, `src/precis/pcb/local.py` (`topo_place`),
 `src/precis/workers/job_types/pcb_place.py` (`placer='topo'`),
 `src/precis/handlers/pcb.py` (`view='topo'`).
@@ -678,8 +703,9 @@ routed count and via count are printed beside the bracket.
 ## In scope
 
 Slices 0–5 above; skills: `precis-pcb-workspace-help` gains the pin forms,
-`pcb.local.topo_place` and the summary format in slice 1; `precis-pcb-route-help`
-gains `placer='topo'` and `view='topo'` in slice 1c; glossary entries
+`pcb.local.topo_place` and the summary format in slice 1; the topo skill
+(`precis-pcb-topo-help`, split out of `precis-pcb-route-help` which hit the
+32KB skill cap) covers `placer='topo'` and `view='topo'`; glossary entries
 (topo-place, pairwise part map, flexible pin slot, via bracket) in slice 1.
 
 ## Explicitly NOT in scope

@@ -465,6 +465,10 @@ would collide or break the soft pin's leash keeps the unsnapped pose, and
 hard `align` measures win; snapped parts get `meta.preferred_snap`
 stamped. Idempotent — a second run is a no-op.
 
+`"op": "place"` also takes `"placer": "topo"` (default off) — the phase-0
+topological placer; opt-in, args and `view='topo'` readback in
+**[[precis-pcb-topo-help]]**.
+
 `args={'autoplace': {...}}` is a **deprecated alias** for `op='place'` (same
 enqueue, same params) — kept for one release, then removed.
 

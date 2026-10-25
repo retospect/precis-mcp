@@ -26,9 +26,13 @@ Runs under the ``job_inproc`` executor (bounded, in-process — mirrors
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
@@ -47,6 +51,7 @@ from precis.pcb.optimize import (
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
+    from precis.pcb.ir import PcbIR
     from precis.workers.executors._context import DispatchContext
 
 log = logging.getLogger(__name__)
@@ -63,6 +68,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # Opt-in field polish (optimize.FIELD_POLISH_DEFAULT, off until
         # the silk gate lands); absent = the config default.
         "field_polish": {"type": "boolean"},
+        # topo-place spec §1c / Decision 21: the fast topological placer
+        # behind placer='topo' — opt-in until the bench shows it beats
+        # the default anneal. Absent = the optimize.py anneal.
+        "placer": {"type": "string", "enum": ["topo"]},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -157,10 +166,97 @@ def _support_groups_note(groups: tuple[str, ...]) -> str:
     return f"support groups: {'; '.join(groups)}\n\n"
 
 
+def _topo_run(
+    ctx: DispatchContext,
+    ir: PcbIR,
+    graph: dict[str, Any],
+    footprints: dict[str, Any] | None,
+    *,
+    effort: int,
+    seed: int,
+    slug: str,
+) -> tuple[Any, dict[str, Any], str, dict[str, str]] | None:
+    """The ``placer='topo'`` run (topo-place spec §1c, Decision 21):
+    ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
+    files, with the winning pose folded back into ``ir`` so the shared
+    gate/ripup/``pcb_set_pose`` tail below measures and writes it like
+    an anneal result. Returns ``(result, files, summary, side_changes)``
+    — ``None`` after recording an unclassed ``PinConflict`` failure (the
+    board script's error, not the job's). Lazy imports: the kernel pulls
+    scipy, which this worker otherwise never loads."""
+    from precis.pcb import topoplace as _tp
+    from precis.pcb.topoplace import runstore as _runstore
+    from precis.pcb.topoplace import summary as _tpsummary
+    from precis_geom.pcb import PinConflict
+
+    try:
+        td = _tp.design_from_ir(ir, footprints or {})
+        _tp.check_slots(td)
+        result = _tp.topo_place(
+            td, objective=_tp.PRESETS["compact"], effort=effort, seed=seed
+        )
+        assignment = _tp.assign_pins(td, result.best_pose)
+    except PinConflict as exc:
+        ctx.record_failure(str(exc))
+        return None
+    pm = _tp.pair_map(td)
+
+    bottom_before = np.asarray(ir.inst_bottom, dtype=bool).copy()
+    for i in range(len(td.parts)):
+        x, y, rot_q, side = (float(v) for v in result.best_pose[i])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        ir.inst_x[i] = x
+        ir.inst_y[i] = y
+        ir.inst_rot[i] = rot_q * 90.0
+        ir.inst_bottom[i] = side >= 0.5
+    side_changes = {
+        str(ir.instance_refdes[i]): ("bottom" if ir.inst_bottom[i] else "top")
+        for i in range(len(td.parts))
+        if bool(ir.inst_bottom[i]) != bool(bottom_before[i])
+    }
+
+    objective = _tp.PRESETS["compact"]
+    board_hash = hashlib.sha256(
+        json.dumps(graph, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    summary_text = _tpsummary.render_summary(
+        td,
+        result,
+        assignment,
+        pm,
+        objective=objective,
+        effort=effort,
+        seed=seed,
+        slug=slug,
+    )
+    files = _runstore.run_files(
+        td,
+        result,
+        assignment,
+        pm,
+        summary=summary_text,
+        manifest_payload=_runstore.manifest(
+            td,
+            result,
+            objective=objective,
+            effort=effort,
+            board_hash=board_hash,
+            parts=_runstore.manifest_parts(td, graph),
+            footprints=_runstore.footprint_shas(footprints or {}),
+        ),
+    )
+    return result, files, summary_text, side_changes
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pcb_ref_id = int(params["pcb_ref_id"])
-    iters = int(params.get("iters") or _DEFAULT_ITERS)
+    placer = str(params.get("placer") or "")
+    # ``iters`` is the placer's budget either way — for 'topo' it is the
+    # spec's eval-count effort (its own default 20000, mirroring
+    # ``pcb.local.topo_place``), for the anneal ``PLACE_ITERS``.
+    iters = int(params.get("iters") or (20000 if placer == "topo" else _DEFAULT_ITERS))
     seed = int(params.get("seed") or 0)
     snap = bool(params.get("snap") or False)
     groups = bool(params.get("groups") or False)
@@ -391,12 +487,32 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     errors_before, _report_before = (
         _placement_gate() if fully_placed_before else (None, None)
     )
-    result = optimize(ir, config)
+    side_changes: dict[str, str] = {}
+    topo_files: dict[str, Any] | None = None
+    topo_text = ""
+    topo_result: Any = None
+    result: Any = None
+    if placer == "topo":
+        ref = ctx.store.get_ref(kind="pcb", id=pcb_ref_id)
+        topo_out = _topo_run(
+            ctx,
+            ir,
+            graph,
+            footprints,
+            effort=iters,
+            seed=seed,
+            slug=(ref.slug if ref is not None and ref.slug else str(pcb_ref_id)),
+        )
+        if topo_out is None:  # PinConflict already recorded
+            return
+        topo_result, topo_files, topo_text, side_changes = topo_out
+    else:
+        result = optimize(ir, config)
     pose = pcb_session.positions(ir)
     if branches:
         moved_parts = {
             r for r, p in pose.items() if pcb_session.pose_moved(pose_before.get(r), p)
-        }
+        } | set(side_changes)
         ripped = pcb_session.fixed_copper_ripup(
             ir,
             footprints or {},
@@ -415,7 +531,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     )
     if worse and not force:
         ctx.record_failure(
-            "pcb_place: refusing to commit — the annealed placement has "
+            "pcb_place: refusing to commit — the new placement has "
             f"{n_placement_errors} pre-route DRC error(s), the stored one has "
             f"{errors_before}; nothing written.\n{placement_report}\n"
             "Pin the parts that must not move (fixed='both', or keep the "
@@ -432,20 +548,32 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
 
     # One transaction: a pose write without its rip-up is the 172-short
-    # board this exists to prevent.
+    # board this exists to prevent. ``pcb_set_pose`` writes x/y/rot only —
+    # a topo run's side flips ride ``pcb_move_instance(layer=)`` in the
+    # same transaction.
+    last_place = (
+        {
+            "placer": "topo",
+            "evals": topo_result.evals,
+            "crossings": topo_result.crossings,
+            "cost_after": round(topo_result.best_cost, 4),
+        }
+        if placer == "topo"
+        else {
+            "iters": result.iters,
+            "cost_before": round(result.cost_before, 4),
+            "cost_after": round(result.cost_after, 4),
+        }
+    )
     with ctx.store.tx() as conn:
         moved = ctx.store.pcb_set_pose(
             pcb_ref_id,
             pose,
-            meta={
-                "last_place": {
-                    "iters": result.iters,
-                    "cost_before": round(result.cost_before, 4),
-                    "cost_after": round(result.cost_after, 4),
-                }
-            },
+            meta={"last_place": last_place},
             conn=conn,
         )
+        for refdes, layer in side_changes.items():
+            ctx.store.pcb_move_instance(pcb_ref_id, refdes, layer=layer, conn=conn)
         n_ripped = (
             ctx.store.pcb_fixed_copper_retire_ids(
                 int(gate_board_id), sorted(ripped), conn=conn
@@ -453,6 +581,46 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             if ripped and gate_board_id is not None
             else 0
         )
+
+    # The pre-route DRC report (gr451052: nothing used to run a geometric
+    # check between placement and routing, so an illegal placement was
+    # carried silently into the route job) now comes from the gate above,
+    # measured on the settled positions before they were written; it is
+    # named here in the job summary — the same NAMED, up-front flag the
+    # route job raises (`pcb_session.placement_drc_findings`/
+    # `placement_drc_report`, one definition, so the two jobs cannot drift).
+    placement_summary = f"{placement_report}\n\n" if placement_report else ""
+    if placer == "topo":
+        # Decision 20: the whole run payload rides the job ref's meta for
+        # ``view='topo'`` drill-down; the summary text is the same file.
+        ctx.set_meta(topo_run={"files": topo_files})
+        flips = (
+            "side flips: "
+            + ", ".join(f"{r}->{s}" for r, s in sorted(side_changes.items()))
+            + "\n\n"
+            if side_changes
+            else ""
+        )
+        ctx.append_chunk(
+            "job_summary",
+            f"{placement_summary}"
+            f"topo-place: wrote {moved} instance(s) "
+            f"(+{len(side_changes)} side flip(s)), "
+            f"{topo_result.crossings} proxy crossing(s), airwire "
+            f"{topo_result.length:.0f} mm, {topo_result.evals} evals, "
+            f"{n_placement_errors or 0} pre-route DRC error(s)"
+            + (
+                f" (stored placement had {errors_before})"
+                if errors_before is not None
+                else ""
+            )
+            + "\nrun files: this job's meta.topo_run "
+            "(get(kind='pcb', id=<slug>, view='topo'))\n\n"
+            + pcb_session.ripup_note(n_ripped, fixed_rows, ripped)
+            + flips
+            + topo_text,
+        )
+        return
 
     # A hard align the optimizer's snap pass closed is flagged on its row
     # (`meta.snapped`, shown as `detail` by view='measures'); cleared for
@@ -468,14 +636,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     for refdes, stamp in result.preferred_snapped.items():
         ctx.store.pcb_move_instance(pcb_ref_id, refdes, meta={"preferred_snap": stamp})
 
-    # The pre-route DRC report (gr451052: nothing used to run a geometric
-    # check between placement and routing, so an illegal placement was
-    # carried silently into the route job) now comes from the gate above,
-    # measured on the settled positions before they were written; it is
-    # named here in the job summary — the same NAMED, up-front flag the
-    # route job raises (`pcb_session.placement_drc_findings`/
-    # `placement_drc_report`, one definition, so the two jobs cannot drift).
-    placement_summary = f"{placement_report}\n\n" if placement_report else ""
     ctx.append_chunk(
         "job_summary",
         f"{placement_summary}"

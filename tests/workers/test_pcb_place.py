@@ -48,8 +48,8 @@ class _FakeCtx:
     def set_status(self, value: str) -> None:  # pragma: no cover — unused here
         pass
 
-    def set_meta(self, **_kw: Any) -> None:  # pragma: no cover — unused here
-        pass
+    def set_meta(self, **kw: Any) -> None:
+        self.meta.update(kw)
 
     def is_cancel_requested(self) -> bool:  # pragma: no cover — unused here
         return False
@@ -602,3 +602,117 @@ def test_pcb_place_fails_legibly_on_empty_design(store: Store) -> None:
     _dispatch(ctx)
     assert ctx.failures
     assert "no instances" in ctx.failures[0][0]
+
+
+def test_pcb_place_topo_writes_poses_and_stores_the_run(store: Store) -> None:
+    """topo-place spec §1c (Decision 21): ``placer='topo'`` runs the
+    phase-0 kernel, writes poses through the same ``pcb_set_pose`` tail
+    (fixed parts still never move), and stores the run files on the job's
+    ``meta.topo_run`` for ``view='topo'``."""
+    ref_id = _seed(store, "place-topo", {**_CROSSED, "features": [closed_outline()]})
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 500, "seed": 1},
+    )
+    _dispatch(ctx)
+
+    assert not ctx.failures
+    assert "topo-place" in ctx.summaries[0][1]
+    placed = {i["refdes"]: i["x"] for i in store.pcb_graph(ref_id)["instances"]}
+    assert all(x is not None for x in placed.values())
+    files = ctx.meta["topo_run"]["files"]
+    m = files["manifest.json"]
+    assert m["schema"] == "precis.topo-run/1"
+    assert m["result"]["crossings"] >= 0
+    assert m["seed"] == 1 and m["effort"] == 500
+    assert {p["refdes"] for p in m["parts"]} == {"A", "B", "C", "D"}
+    assert files["summary.txt"].startswith("topo-place — place-topo")
+    assert files["placement.svg"].startswith("<svg")
+
+
+def test_pcb_place_topo_refuses_to_commit_a_worse_placement(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The topo branch goes through the SAME pre-route DRC gate as the
+    anneal: a worse error count refuses the write, ``force=True``
+    overrides."""
+    import dataclasses
+
+    from precis.pcb import topoplace as tp
+
+    ref_id = _seed(
+        store, "place-topo-worse", {**_CROSSED, "features": [closed_outline()]}
+    )
+    before = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    real_topo = tp.topo_place
+
+    def _collapse(d: Any, **kw: Any) -> Any:
+        res = real_topo(d, **kw)
+        pose = res.best_pose.copy()
+        pose[:, 0] = pose[0, 0]
+        pose[:, 1] = pose[0, 1]
+        return dataclasses.replace(res, best_pose=pose)
+
+    monkeypatch.setattr(tp, "topo_place", _collapse)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
+    )
+    _dispatch(ctx)
+    assert ctx.failures and ctx.failures[0][1] == "non-convergence"
+    assert "refusing to commit" in ctx.failures[0][0]
+    after = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert after == before
+
+    forced = _FakeCtx(
+        store,
+        params={
+            "pcb_ref_id": ref_id,
+            "placer": "topo",
+            "iters": 50,
+            "seed": 1,
+            "force": True,
+        },
+    )
+    _dispatch(forced)
+    assert not forced.failures
+    assert "OVERRIDDEN (force=True)" in forced.summaries[0][1]
+
+
+def test_pcb_place_topo_pin_conflict_is_an_unclassed_failure(
+    store: Store,
+) -> None:
+    """A ``PinConflict`` out of the kernel (the board script's error)
+    surfaces as an unclassed failure naming the contended signals/pins —
+    never a half-written placement."""
+    args = {
+        **_CROSSED,
+        "components": [
+            {
+                **c,
+                "pins": [{"name": str(p)} for p in (1, 2, 3, 4)],
+                "pin_decls": {
+                    "slots": [
+                        {"pins": ["1", "4"], "name": n, "net": "N1"}
+                        for n in ("A1", "A2", "A3")
+                    ]
+                },
+            }
+            if c["refdes"] == "A"
+            else c
+            for c in _CROSSED["components"]
+        ],
+    }
+    ref_id = _seed(store, "place-topo-conflict", args)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
+    )
+    _dispatch(ctx)
+    assert ctx.failures and ctx.failures[0][1] is None
+    assert "3 signals, 2 pins" in ctx.failures[0][0]
+    assert "topo_run" not in ctx.meta

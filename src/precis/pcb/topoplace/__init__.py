@@ -35,6 +35,7 @@ from precis.pcb.topoplace.archive import Elite, EliteArchive
 from precis.pcb.topoplace.design import (
     FREEDOM_BACK_SIDE,
     FREEDOM_ROTATE,
+    PRESETS,
     FlexSlot,
     ObjectiveShares,
     SwapGroup,
@@ -49,6 +50,7 @@ from precis.pcb.topoplace.proxy import ProxyState, evaluate, pin_world
 __all__ = [
     "FREEDOM_BACK_SIDE",
     "FREEDOM_ROTATE",
+    "PRESETS",
     "Elite",
     "EliteArchive",
     "FlexSlot",

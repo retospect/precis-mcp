@@ -216,6 +216,11 @@ _STATUS_VIEWS = ("route-status",)
 #: authored plane assignments. ``stackup`` (gr486893) is the board's
 #: copper stackup as the router sees it — role, plane net, routable.
 _SESSION_VIEWS = ("congestion", "planes", "stackup", "channel-map")
+#: topo-place spec §1c (Decision 20): drill-down over a ``placer='topo'``
+#: job's stored run files (``meta.topo_run.files``) — the Decision-19
+#: summary, the pairwise part map, elites, the placement SVG, and a
+#: run-vs-run pose/crossing diff (:meth:`PcbHandler._render_topo`).
+_TOPO_VIEWS = ("topo",)
 
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
@@ -251,6 +256,7 @@ _VIEWS = (
     *_ROUTE_VIEWS,
     *_STATUS_VIEWS,
     *_SESSION_VIEWS,
+    *_TOPO_VIEWS,
     *_RENDER_VIEWS,
     *_OTHER_VIEWS,
 )
@@ -585,6 +591,145 @@ def _margin_delta[T](
     return worse, standing
 
 
+# ── view='topo' (topo-place spec §1c, Decision 20) ─────────────────────
+
+
+def _topo_runs(store: Any, ref_id: int) -> list[Any]:
+    """A board's stored topo-place runs, newest first — a
+    ``placer='topo'`` job carries the run files on ``meta.topo_run``."""
+    return [
+        r
+        for r in store.recent_refs(["job"], parent_id=ref_id, limit=50)
+        if (r.meta or {}).get("topo_run")
+    ]
+
+
+def _topo_pick(runs: list[Any], sel: Any) -> Any:
+    """``run=``/``against=`` selection — a job ref_id, or 'latest'
+    (the default) for the newest run on the board."""
+    if sel is None or str(sel).strip().lower() in ("", "latest"):
+        return runs[0]
+    try:
+        want = int(sel)
+    except (TypeError, ValueError):
+        raise BadInput(
+            f"pcb: topo run must be a job ref_id or 'latest', got {sel!r}",
+            options=[str(r.id) for r in runs],
+            next="get(kind='pcb', id='<slug>', view='topo', args={'run':'latest'})",
+        ) from None
+    for r in runs:
+        if int(r.id) == want:
+            return r
+    raise BadInput(
+        f"pcb: no topo-place run with job ref_id={want} on this design",
+        options=[str(r.id) for r in runs],
+        next="get(kind='pcb', id='<slug>', view='topo', args={'run':'latest'})",
+    )
+
+
+def _topo_files(run: Any) -> dict[str, Any]:
+    return dict(((run.meta or {}).get("topo_run") or {}).get("files") or {})
+
+
+def _topo_pose(files: dict[str, Any]) -> tuple[list[str], list[Any]]:
+    """``(refdes per pose row, best-elite pose rows)`` — elites.json is
+    cost-sorted so ``elites[0]`` is the run's best pose;
+    ``manifest.parts`` carries the refdes in pose-row order."""
+    elites = (files.get("elites.json") or {}).get("elites") or []
+    names = [
+        str(p.get("refdes"))
+        for p in (files.get("manifest.json") or {}).get("parts") or []
+    ]
+    return names, list(elites[0]["pose"]) if elites else []
+
+
+def _topo_diff_text(run_a: Any, run_b: Any) -> str:
+    """``against=`` — the poses that changed between the two runs' best
+    elites, plus the crossing delta (``manifest.result``)."""
+    fa, fb = _topo_files(run_a), _topo_files(run_b)
+    names_a, pose_a = _topo_pose(fa)
+    names_b, pose_b = _topo_pose(fb)
+    res_a = (fa.get("manifest.json") or {}).get("result") or {}
+    res_b = (fb.get("manifest.json") or {}).get("result") or {}
+    lines = [f"topo diff — run {run_a.id} vs run {run_b.id}"]
+    if res_a.get("crossings") is not None and res_b.get("crossings") is not None:
+        ca, cb = int(res_a["crossings"]), int(res_b["crossings"])
+        lines.append(f"crossings: {ca} -> {cb} ({cb - ca:+d})")
+    if names_a != names_b or len(pose_a) != len(pose_b):
+        lines.append("poses not comparable — the runs' part lists differ")
+        return "\n".join(lines) + "\n"
+    changed = []
+    for name, ra, rb in zip(names_a, pose_a, pose_b):
+        if any(abs(float(x) - float(y)) > 1e-6 for x, y in zip(ra, rb)):
+            changed.append(
+                f"  {name}: ({float(ra[0]):.1f},{float(ra[1]):.1f}) rot "
+                f"{int(ra[2]) * 90} side {'B' if ra[3] else 'T'} -> "
+                f"({float(rb[0]):.1f},{float(rb[1]):.1f}) rot "
+                f"{int(rb[2]) * 90} side {'B' if rb[3] else 'T'}"
+            )
+    lines.append(f"changed poses: {len(changed)}")
+    lines += changed
+    return "\n".join(lines) + "\n"
+
+
+def _topo_pairs_text(files: dict[str, Any]) -> str:
+    """``part='pairs'`` — the board stats line, then the worst
+    best-crossing pairs first (Decision 8's steer-the-placer list)."""
+    pj = files.get("pairs.json") or {}
+    st = pj.get("stats") or {}
+    pairs = sorted(
+        pj.get("pairs") or [],
+        key=lambda r: (-int(r.get("best_crossings") or 0), str(r.get("a"))),
+    )[:25]
+    out = [
+        f"pairs: {st.get('pairs', 0)} connected pair(s), best-crossings "
+        f"mean {float(st.get('mean') or 0):.2f} p95 "
+        f"{float(st.get('p95') or 0):.0f}"
+    ]
+    if pairs:
+        out.append(
+            render_agent_table(
+                [
+                    {
+                        "a": r["a"],
+                        "b": r["b"],
+                        "strength": round(float(r.get("strength") or 0), 3),
+                        "best_rot": "/".join(str(v) for v in r.get("best_rot") or []),
+                        "best_crossings": r.get("best_crossings"),
+                    }
+                    for r in pairs
+                ],
+                schema=["a", "b", "strength", "best_rot", "best_crossings"],
+            )
+        )
+    return "\n".join(out) + "\n"
+
+
+def _topo_elites_text(files: dict[str, Any]) -> str:
+    """``part='elites'`` — one row per archived elite: cost and how many
+    parts sit differently from the best elite (Decision 9's diversity)."""
+    elites = (files.get("elites.json") or {}).get("elites") or []
+    base = elites[0].get("pose") or [] if elites else []
+    rows = []
+    for i, e in enumerate(elites):
+        pose = e.get("pose") or []
+        n_diff = sum(
+            1
+            for a, b in zip(pose, base)
+            if any(abs(float(x) - float(y)) > 1e-6 for x, y in zip(a, b))
+        )
+        rows.append(
+            {
+                "elite": i,
+                "cost": round(float(e.get("cost") or 0), 4),
+                "parts_diff": n_diff,
+            }
+        )
+    if not rows:
+        return "no elites stored\n"
+    return render_agent_table(rows, schema=["elite", "cost", "parts_diff"]) + "\n"
+
+
 _FOOTPRINT_SCHEMA = [
     "lcsc",
     "cached",
@@ -722,6 +867,9 @@ class PcbHandler(Handler):
                 "label_spot",
                 "priority",
                 "snap",
+                # op='place' placer selection (topo-place spec §1c,
+                # Decision 21): 'topo' runs the phase-0 kernel.
+                "placer",
                 "net",
                 "a",
                 "b",
@@ -795,6 +943,12 @@ class PcbHandler(Handler):
                 "phase",
                 "rule",
                 "severity",
+                # view='topo' drill-down (topo-place spec §1c, Decision
+                # 20): run=<job ref_id|'latest'>, part=summary|pairs|
+                # elites|svg, against=<job ref_id> for a run-vs-run diff.
+                "run",
+                "against",
+                "part",
                 # view='check'/'drc': force the inline run past reuse
                 # (gr496242).
                 "fresh",
@@ -1675,6 +1829,18 @@ class PcbHandler(Handler):
             params["seed"] = int(opts["seed"])
         if op == "place" and opts.get("snap") is not None:
             params["snap"] = bool(opts["snap"])
+        # topo-place spec §1c (Decision 21): the phase-0 topological
+        # placer, opt-in via placer='topo'; results land through the same
+        # placement-DRC gate, runs stored on the job's meta.topo_run.
+        if op == "place" and opts.get("placer") is not None:
+            placer = str(opts["placer"])
+            if placer != "topo":
+                raise BadInput(
+                    f"pcb: placer must be 'topo' (or omit for the "
+                    f"default anneal), got {placer!r}",
+                    next="put(args={'op':'place','placer':'topo'})",
+                )
+            params["placer"] = placer
         # Opt-in support-passive organisation (optimize.OptimizeConfig.
         # support_groups): pull-up banks, per-IC decoupling rows and
         # series pairs re-laid as organised rows post-anneal.
@@ -3681,6 +3847,8 @@ class PcbHandler(Handler):
             return self._render_route(ref_id, args)
         if view in _STATUS_VIEWS:
             return self._render_route_status(ref_id)
+        if view in _TOPO_VIEWS:
+            return self._render_topo(ref_id, args)
         if view == "congestion":
             return self._render_congestion(ref_id)
         if view == "planes":
@@ -5200,6 +5368,42 @@ class PcbHandler(Handler):
         layers = [str(layer.get("name")) for layer in board["stackup"]]
         found = pcb_length_ratio.net_lengths(copper, self._drc_pads(ref_id, layers))
         return {n: f"{v.ratio:.2f}" for n, v in found.items() if v.ratio is not None}
+
+    # ── topo-place run drill-down (topo-place spec §1c, Decision 20) ───
+    def _render_topo(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """Read back a ``placer='topo'`` job's stored run — never runs a
+        solve (the job meta IS the store). ``run`` picks a job ref_id or
+        'latest' (default); ``part`` is ``summary`` (default) / ``pairs``
+        / ``elites`` / ``svg``; ``against`` diffs this run's best pose
+        and crossing count against another run's."""
+        args = args or {}
+        runs = _topo_runs(self.store, ref_id)
+        if not runs:
+            return Response(
+                body="no topo-place runs on this design — "
+                "put(args={'op':'place','placer':'topo'}) runs one, then "
+                "read it back here"
+            )
+        run = _topo_pick(runs, args.get("run"))
+        if args.get("against") is not None:
+            return Response(
+                body=_topo_diff_text(run, _topo_pick(runs, args["against"]))
+            )
+        files = _topo_files(run)
+        part = str(args.get("part") or "summary").strip().lower()
+        if part == "summary":
+            return Response(body=str(files.get("summary.txt") or ""))
+        if part == "svg":
+            return Response(body=str(files.get("placement.svg") or ""))
+        if part == "pairs":
+            return Response(body=_topo_pairs_text(files))
+        if part == "elites":
+            return Response(body=_topo_elites_text(files))
+        raise BadInput(
+            f"pcb: topo part {part!r} unknown",
+            options=["summary", "pairs", "elites", "svg"],
+            next="get(kind='pcb', id='<slug>', view='topo', args={'part':'pairs'})",
+        )
 
     def _render_congestion(self, ref_id: int) -> Response:
         """The latest ``op='route'`` run's congestion digest — per-gap

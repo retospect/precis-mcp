@@ -92,6 +92,7 @@ executor lane (see `precis-job-help`).
   the annealed poses). `fixed`/`max_travel_mm`/edge-mated/hard-aligned
   parts are never members. Detection is deterministic per netlist;
   nothing persists but poses.
+- `op='place'` also accepts `placer='"topo"'` — the phase-0 topological placer, see [[precis-pcb-topo-help]].
 
 ## Assign pins by supply and client roles
 
@@ -227,10 +228,6 @@ After a route job lands:
 get(kind="pcb", id="sensor-node", view="route-status")  # per-net: unrouted|sketched|realized|failed
 get(kind="pcb", id="sensor-node", view="congestion")     # the run's over-capacity-gap warnings
 ```
-
-local job result: `chunks WHERE ref_id=<job> AND chunk_kind='job_summary'`
-(what `get(kind='job')` prints as `## summary`; tests read it with
-`job_summary_text(store, job_id)`).
 
 A net only ever reads `'realized'` when it is **actually clean** — no
 residual same-layer crossing, no over-capacity gap, and its pads plus
@@ -578,5 +575,3 @@ Everything else — `TRANSLATE`, `SWAP`, `LAYER_ASSIGN`,
 - [[precis-pcb-help]] — author the netlist this op surface acts on.
 - [[precis-net-class-help]] — the `rules` shape `op='class_rules'` stores
   (not yet consumed downstream — see above).
-- `get(kind='pcb', view='drc')` — geometric DRC on realized copper, a
-  separate check from anything here (see that view's own help text).

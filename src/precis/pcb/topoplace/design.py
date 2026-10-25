@@ -93,6 +93,19 @@ class ObjectiveShares:
         object.__setattr__(self, "ratsnest", self.ratsnest / total)
 
 
+#: The named share vectors (Decision 18's presets) over the terms slice 1
+#: prices. ``low-via`` and ``2-layer-only`` differ from ``compact`` only on
+#: terms later rungs price (via count, inner-layer direction), so they
+#: collapse onto crossings-heavy shares here — a via exists exactly where
+#: a crossing cannot be resolved on one layer, so crossings are the
+#: slice-1 proxy for both (spec-call, 1c).
+PRESETS: dict[str, ObjectiveShares] = {
+    "compact": ObjectiveShares(crossings=0.8, ratsnest=0.2),
+    "low-via": ObjectiveShares(crossings=0.95, ratsnest=0.05),
+    "2-layer-only": ObjectiveShares(crossings=1.0, ratsnest=0.0),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class TopoDesign:
     """The placer's whole world (spec §1 input shape). Index = part id
@@ -129,6 +142,10 @@ class TopoDesign:
     decl_net_route: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
     decl_net_plane: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
     decl_net_name: tuple[str, ...] = ()
+    #: The 1b ``pin_functions`` tables as pin-id-keyed function sets,
+    #: indexed by part — ``pin_functions[part][pin_id] = ("GPIO","INT1")``.
+    #: The summary's widen-a-slot ranked edit needs them (1c spec-call).
+    pin_functions: tuple[Mapping[int, tuple[str, ...]], ...] = ()
 
 
 def _pin_sides(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.ndarray:
@@ -252,6 +269,7 @@ def design_from_ir(
         decl_net_route=decl["net_route"],
         decl_net_plane=decl["net_plane"],
         decl_net_name=decl["net_name"],
+        pin_functions=decl["pin_functions"],
     )
 
 
@@ -326,9 +344,24 @@ def _decls(
     flex: list[FlexSlot] = []
     swap_groups: list[SwapGroup] = []
     claims: list[tuple[int, str]] = []
+    pin_functions: list[dict[int, tuple[str, ...]]] = [{} for _ in parts]
     for i in sorted(by_inst):
         decl = by_inst[i]
         funcs = decl.get("pin_functions") or {}
+
+        # The table is informational for every pin of the part — labels
+        # that never became live pins (undeclared, no pad) resolve to
+        # nothing and drop out; a slot's candidates are checked through
+        # ``pin_id`` separately, so this cannot mask a decl typo.
+        def _funcs_of(rec: Any) -> tuple[str, ...]:
+            fl = rec.get("functions") if isinstance(rec, Mapping) else rec
+            return tuple(str(f) for f in (fl or ()))
+
+        pin_functions[i] = {
+            pid: _funcs_of(funcs.get(label))
+            for label in funcs
+            if (pid := pin_of.get((i, str(label)))) is not None
+        }
         for c in decl.get("claims") or []:
             claims.append((pin_id(i, c["pin"]), str(c["name"])))
         for s in decl.get("slots") or []:
@@ -383,6 +416,7 @@ def _decls(
         "net_route": np.asarray(net_route, dtype=np.int64),
         "net_plane": np.asarray(net_plane, dtype=bool),
         "net_name": tuple(net_name),
+        "pin_functions": tuple(pin_functions),
     }
 
 
@@ -392,6 +426,7 @@ __all__ = [
     "FREEDOM_BACK_SIDE",
     "FREEDOM_ROTATE",
     "NO_NET",
+    "PRESETS",
     "FlexSlot",
     "ObjectiveShares",
     "SwapGroup",

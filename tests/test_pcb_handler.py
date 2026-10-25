@@ -4388,3 +4388,193 @@ def test_roles_and_supplies_validation(pcb):
                 ]
             },
         )
+
+
+# ── view='topo' (topo-place spec §1c, Decision 20) ─────────────────────
+
+
+def _topo_files(crossings: int, pose: list[list[float]] | None = None) -> dict:
+    """A minimal ``meta.topo_run.files`` payload — the shape
+    ``runstore.run_files`` emits (manifest/elites/pairs/summary/svg)."""
+    return {
+        "manifest.json": {
+            "schema": "precis.topo-run/1",
+            "seed": 1,
+            "effort": 20000,
+            "result": {"crossings": crossings, "length": 12.3},
+            "parts": [{"refdes": r} for r in ("A", "B", "C", "D")],
+        },
+        "elites.json": {
+            "elites": [
+                {
+                    "cost": 0.2,
+                    "pose": pose
+                    or [
+                        [1.0, 2.0, 0.0, 0.0],
+                        [3.0, 4.0, 0.0, 0.0],
+                        [1.0, 4.0, 0.0, 0.0],
+                        [3.0, 2.0, 0.0, 0.0],
+                    ],
+                }
+            ]
+        },
+        "pairs.json": {
+            "stats": {"pairs": 2, "mean": 1.0, "p95": 2.0},
+            "pairs": [
+                {
+                    "a": "A",
+                    "b": "B",
+                    "strength": 1.0,
+                    "best_rot": [0, 0],
+                    "best_crossings": 0,
+                }
+            ],
+        },
+        "summary.txt": "topo-place — topo-view\nverdict: routable on 2 layers\n",
+        "placement.svg": "<svg><rect/></svg>",
+    }
+
+
+def _topo_job(store, pcb_ref_id: int, files: dict) -> int:
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="pcb_place topo test",
+        parent_id=pcb_ref_id,
+        meta={
+            "executor": "job_inproc",
+            "job_type": "pcb_place",
+            "topo_run": {"files": files},
+        },
+    )
+    return int(ref.id)
+
+
+def test_topo_view_no_runs_points_at_the_enqueue(pcb):
+    pcb.put(id="topo-none", args=_CROSSED)
+    body = pcb.get(id="topo-none", view="topo").body
+    assert "no topo-place runs" in body
+    assert "placer':'topo'" in body or "placer='topo'" in body
+
+
+def test_topo_view_reads_the_stored_run(pcb, store):
+    """``view='topo'`` reads a ``placer='topo'`` job's ``meta.topo_run``
+    files — summary by default, pairs/elites/svg on ``part=`` — and
+    refuses an unknown part or run selector."""
+    pcb.put(id="topo-view", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="topo-view")
+    assert ref is not None
+    job_id = _topo_job(store, int(ref.id), _topo_files(crossings=0))
+
+    body = pcb.get(id="topo-view", view="topo").body
+    assert "verdict: routable on 2 layers" in body  # part='summary'
+
+    pairs = pcb.get(id="topo-view", view="topo", args={"part": "pairs"}).body
+    assert "2 connected pair(s)" in pairs and "best_crossings" in pairs
+
+    elites = pcb.get(id="topo-view", view="topo", args={"part": "elites"}).body
+    assert "elite" in elites and "0.2" in elites
+
+    svg = pcb.get(id="topo-view", view="topo", args={"part": "svg"}).body
+    assert svg.startswith("<svg")
+
+    picked = pcb.get(id="topo-view", view="topo", args={"run": job_id}).body
+    assert "verdict: routable on 2 layers" in picked
+
+    with pytest.raises(BadInput, match="part"):
+        pcb.get(id="topo-view", view="topo", args={"part": "bogus"})
+    with pytest.raises(BadInput, match="run"):
+        pcb.get(id="topo-view", view="topo", args={"run": "bogus"})
+    with pytest.raises(BadInput, match="no topo-place run"):
+        pcb.get(id="topo-view", view="topo", args={"run": 999999})
+
+
+def test_topo_view_against_diffs_two_runs(pcb, store):
+    """``args={'run': a, 'against': b}`` reports the crossing delta off
+    ``manifest.result`` and the poses that changed between the two runs'
+    best elites (Decision 20's ``diff runA runB``)."""
+    pcb.put(id="topo-diff", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="topo-diff")
+    assert ref is not None
+    pose_a = [
+        [1.0, 2.0, 0.0, 0.0],
+        [3.0, 4.0, 0.0, 0.0],
+        [1.0, 4.0, 0.0, 0.0],
+        [3.0, 2.0, 0.0, 0.0],
+    ]
+    pose_b = [
+        [1.0, 2.0, 0.0, 0.0],
+        [9.0, 9.0, 1.0, 1.0],
+        [1.0, 4.0, 0.0, 0.0],
+        [3.0, 2.0, 0.0, 0.0],
+    ]
+    job_a = _topo_job(store, int(ref.id), _topo_files(crossings=0, pose=pose_a))
+    job_b = _topo_job(store, int(ref.id), _topo_files(crossings=2, pose=pose_b))
+
+    body = pcb.get(
+        id="topo-diff",
+        view="topo",
+        args={"run": job_a, "against": job_b},
+    ).body
+    assert f"run {job_a} vs run {job_b}" in body
+    assert "crossings: 0 -> 2 (+2)" in body
+    assert "changed poses: 1" in body
+    # B rotated a quarter turn and flipped to the bottom side.
+    assert "B:" in body and "rot 90 side B" in body
+
+
+def test_op_place_placer_topo_forwards_and_validates(pcb, store, monkeypatch):
+    """``placer='topo'`` reaches the job params and the idem key; any
+    other value is refused at enqueue naming 'topo'."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    hub = Hub(store=store)
+    PcbHandler(hub=hub).put(id="place-topo-opts", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="place-topo-opts")
+    assert ref is not None
+    job = Mock()
+    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
+    monkeypatch.setattr(hub, "sibling", lambda kind: job)
+    handler = PcbHandler(hub=hub)
+
+    handler._enqueue_op(ref, "place", {"placer": "topo"})
+    assert job.put.call_args.kwargs["params"]["placer"] == "topo"
+    topo_key = job.put.call_args.kwargs["idem_key"]
+
+    handler._enqueue_op(ref, "place", {})
+    assert "placer" not in job.put.call_args.kwargs["params"]
+    assert job.put.call_args.kwargs["idem_key"] != topo_key
+
+    with pytest.raises(BadInput, match="placer"):
+        handler._enqueue_op(ref, "place", {"placer": "bogus"})
+
+
+def test_op_place_placer_reaches_the_job_row(pcb, store):
+    """The put-level arg must reach the enqueued job's params — a bug
+    class the ``_enqueue_op`` tests can't see (they enter below the
+    dispatch validation). The job row is deleted afterwards
+    (gr295496)."""
+    pcb.put(id="place-topo-put", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="place-topo-put")
+    assert ref is not None
+    try:
+        resp = pcb.put(id="place-topo-put", args={"op": "place", "placer": "topo"})
+        assert "enqueued" in resp.body
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'params'->>'placer' FROM refs "
+                "WHERE kind = 'job' AND parent_id = %s "
+                "ORDER BY ref_id DESC LIMIT 1",
+                (ref.id,),
+            ).fetchone()
+        assert row is not None and row[0] == "topo"
+        with pytest.raises(BadInput, match="placer"):
+            pcb.put(id="place-topo-put", args={"op": "place", "placer": "bogus"})
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (ref.id,),
+            )
+            conn.commit()
