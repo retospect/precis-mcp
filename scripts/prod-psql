@@ -16,6 +16,15 @@
 #
 #   scripts/prod-psql --ro "SELECT ..."               # read-only: agent_ro role,
 #                                                      # wrapped in BEGIN READ ONLY
+#   scripts/prod-psql --help                          # this text
+#
+# Schema: docs/reference/schema.md is the generated map of prod (every
+# table's columns, PK/FK, comments) — grep it before guessing a column
+# name (gr514333). To list one table's columns live:
+#   scripts/prod-psql --ro "\d <table>"
+# Frequently mistyped: refs has no `id` (PK is ref_id), embeddings live in
+# chunk_embeddings not chunks, events are in ref_events, links use
+# src_ref_id/dst_ref_id.
 #
 # Row cap (.claude/fleet/authority.md, 2026-10-15): a one-shot or piped SQL
 # text without --ro that mentions UPDATE or DELETE runs inside BEGIN; the
@@ -45,6 +54,13 @@ RO=0
 if [[ "${1:-}" == "--ro" ]]; then
     RO=1
     shift
+fi
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    # The header comment IS the manual — print it rather than keep a
+    # second copy that drifts.
+    sed -n '2,/^set -euo pipefail$/p' "$0" | sed -e '$d' -e 's/^#//' -e 's/^ //'
+    exit 0
 fi
 
 HOST="${PRECIS_PROD_SSH_HOST:-caspar}"

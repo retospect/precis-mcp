@@ -1,6 +1,7 @@
 """The production CLI wrapper forwards configuration using synthetic files only."""
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -192,3 +193,21 @@ def test_stale_tree_override_runs_write(tmp_path: Path) -> None:
     )
     assert r.returncode == 0, r.stderr
     assert "ran run --extra paper precis quest redispatch 1" in r.stdout
+
+
+def test_read_only_table_is_the_single_source(tmp_path: Path) -> None:
+    """gr514998: every entry in the script's READ_ONLY table must behave
+    read-only on a stale tree (warn, not refuse) — the table is the single
+    source, so this loop pins behavior to whatever it lists."""
+    text = _WRAPPER.read_text(encoding="utf-8")
+    m = re.search(r"^READ_ONLY=\(\n([^)]*)\)", text, re.MULTILINE)
+    assert m, "READ_ONLY table not found in scripts/prod-precis"
+    patterns = m.group(1).split()
+    assert patterns, "READ_ONLY table is empty"
+    clone, env = _stale_tree_fixture(tmp_path, stale=True)
+    for pat in patterns:
+        sub, _, second = pat.partition(":")
+        args = (sub, second, "x") if second else (sub, "x")
+        r = _run(clone, env, *args)
+        assert r.returncode == 0, f"{pat} refused on a stale tree: {r.stderr}"
+        assert "WARNING" in r.stderr, f"{pat} did not warn on a stale tree"

@@ -147,7 +147,10 @@ SMOKE_TESTS = (
     "tests/precis_web/test_env_context.py",
 )
 
-_DOC_PATH = re.compile(r"^(docs/|[^/]+\.md$|\.gitignore$|LICENSE$|CITATION\.cff$)")
+_DOC_PATH = re.compile(
+    r"^(docs/|\.claude/commands/[^/]+\.md$|[^/]+\.md$"
+    r"|\.gitignore$|LICENSE$|CITATION\.cff$)"
+)
 
 # A coverage DB older than this many hours, or older than the base commit,
 # is stale: static evidence + widening only.

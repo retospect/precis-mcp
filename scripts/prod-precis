@@ -17,26 +17,39 @@
 # `uv run precis` executes THIS tree's code, so a tree that is not a
 # descendant of origin/prod runs old logic (e.g. without the live-node guard)
 # against production (gr496163). Fetch, then: read subcommands warn, write
-# subcommands refuse. Reads = `tools get|search`, `quest status`, `logs`,
-# `stats`, `resolve`, `schema-doc`, `secret check`, `post-migration-check`,
-# anything with --dry-run or -h/--help;
-# every other subcommand counts as a write. Emergency override (silent, skips
-# the fetch): PRECIS_ALLOW_STALE_PROD_TREE=1. Fix instead: rebase onto
-# origin/prod (`git rebase origin/prod`), or run from a tree that is.
+# subcommands refuse. Reads = the READ_ONLY table below — `name` marks a
+# whole subcommand read-only, `name:second` only when its first argument is
+# `second` — plus anything with --dry-run or -h/--help; every other
+# subcommand counts as a write. The table is the single source (gr514998):
+# to mark a new subcommand read-only, add one entry there. Emergency
+# override (silent, skips the fetch): PRECIS_ALLOW_STALE_PROD_TREE=1.
+# Fix instead: rebase onto origin/prod (`git rebase origin/prod`), or run
+# from a tree that is.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# The single read-only list — the doc above points here instead of carrying
+# a second copy to drift from. A bare word is a whole-subcommand match;
+# `a:b` matches subcommand `a` only when $2 is `b`.
+READ_ONLY=(
+    logs stats resolve schema-doc post-migration-check
+    tools:get tools:search
+    quest:status
+    secret:check
+)
 
 is_read_only() {
     local a
     for a in "$@"; do
         case "$a" in --dry-run | -h | --help) return 0 ;; esac
     done
-    case "${1:-}" in
-        logs | stats | resolve | schema-doc | post-migration-check) return 0 ;;
-        tools) [[ "${2:-}" == get || "${2:-}" == search ]] && return 0 ;;
-        quest) [[ "${2:-}" == status ]] && return 0 ;;
-        secret) [[ "${2:-}" == check ]] && return 0 ;;
-    esac
+    local pat
+    for pat in "${READ_ONLY[@]}"; do
+        case "$pat" in
+            *:*) [[ ${1:-} == "${pat%%:*}" && ${2:-} == "${pat#*:}" ]] && return 0 ;;
+            *) [[ ${1:-} == "$pat" ]] && return 0 ;;
+        esac
+    done
     return 1
 }
 

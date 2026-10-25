@@ -50,8 +50,29 @@ SQL="$(uv run python -c 'from precis.cli.schema_doc import INTROSPECT_SQL; print
 SCHEMA_TIMEOUT_MS="${PRECIS_SCHEMA_TIMEOUT_MS:-600000}"
 
 echo "gen-schema: introspecting ${DB_NAME} via ssh ${SSH_HOST} → ${OUT}"
+# Rows stream through awk, which reports each record-type phase and every
+# 200 rows on stderr (gr514884): the introspection takes several minutes on
+# prod, and a silent pipe looks hung.
 printf 'BEGIN;\nSET LOCAL statement_timeout = %s;\n%s\nCOMMIT;\n' \
       "$SCHEMA_TIMEOUT_MS" "$SQL" \
   | ssh -o IdentityAgent=none "$SSH_HOST" \
       "psql -X -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME} -tA -F\$'\t'" \
+  | awk -v out="$OUT" '
+      $1 != rec {
+          rec = $1
+          if (rec == "fk" || rec == "col") {
+              printf "gen-schema: %s rows streaming\n", \
+                  (rec == "fk" ? "foreign-key" : "column") > "/dev/stderr"
+          }
+      }
+      {
+          if (++n % 200 == 0) {
+              printf "gen-schema: %d introspection rows so far\n", n > "/dev/stderr"
+          }
+          print
+      }
+      END {
+          printf "gen-schema: introspection done — %d rows; rendering %s\n", \
+              n, out > "/dev/stderr"
+      }' \
   | uv run precis schema-doc --from-tsv - --snapshot "${DB_NAME} @ ${DATE}" -o "$OUT"

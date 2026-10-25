@@ -199,6 +199,27 @@ def test_docs_only_selects_hygiene(mod: ModuleType, toy_repo: Path) -> None:
     assert res["files"]
 
 
+def test_doc_path_covers_slash_command_docs(mod: ModuleType) -> None:
+    """gr515142: .claude/commands/*.md is doc-shaped — a slash-command doc
+    must not spoil docs-only classification."""
+    assert mod._DOC_PATH.match(".claude/commands/qland.md")
+    assert not mod._DOC_PATH.match(".claude/agents/coder.md")
+    assert not mod._DOC_PATH.match(".claude/commands/nested/deep.md")
+
+
+def test_slash_command_only_diff_selects_hygiene(
+    mod: ModuleType, toy_repo: Path
+) -> None:
+    head = _commit(toy_repo, {".claude/commands/run.md": "# run\n"})
+    res = _sel(mod, toy_repo, f"{head}^", head)
+    assert res["mode"] == "selected"
+    allowed = set(mod._DOCS_HYGIENE) | {
+        t for t in mod.CONTRACT if (toy_repo / t.split("::", 1)[0]).is_file()
+    }
+    assert set(res["files"]) <= allowed
+    assert res["files"]
+
+
 def test_unknown_data_file_gets_smoke_floor(mod: ModuleType, toy_repo: Path) -> None:
     head = _commit(toy_repo, {"src/pkg/data/blob.bin": "\x00\x01"})
     res = _sel(mod, toy_repo, f"{head}^", head)
