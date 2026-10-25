@@ -36,8 +36,10 @@ closure about 3:1 at peak, throttled only by a coordinator's attention.
 
 ```
 open --triage--> triaged --batch+size--> ready_for_fix --claim--> in_review
-  ^                 |                                               | confirmed deploy
-  |                 +-- not a bug: triaged + disagreement (Reto)    v
+  |                 |                                               | confirmed deploy
+  |                 +-- noise / not a bug --> wontfix               v
+  |                 +-- owner-filed dispute: triaged + disagreement  |
+  |                 +-- fixed: sha deployed --> done; on main --> verify
   +---- reopened (STATUS:open + evidence) <--- probe fails ------ verify
                                           done <-- probe ok -------+
 ```
@@ -141,7 +143,9 @@ session (full-context wake-ups are the expensive part of today's flow).
   `fix:reto` also gets `reto:ask` and a `recommend:` comment. Priority =
   severity (1..5, fixed rubric: wrong result 5, blocked 4, papercut 2,
   wish 1) x (1 + dups) x (1 + age_days / 7), bucketed to PRIO 1..10
-  (thresholds in config).
+  (thresholds in config) — with age capped: it may lift PRIO by at most
+  one band above what severity and dups alone give (gr514124 dry-run
+  ruling; a size-S gripe should never reach PRIO 2 on age alone).
 - **Dedup resolution, same call:** for every gripe with a non-empty
   `dup_parents`, the model judges "same root cause?" per pair. Same:
   **suggestion only** (comment `dup-suggest: gr<N> - <why>` plus the pair in
@@ -164,10 +168,64 @@ session (full-context wake-ups are the expensive part of today's flow).
   tx; the write tx replaces tags/PRIO, stamps `triaged_at`, clears
   `claimed_at`. Crashed claims expire by TTL; writes are replaces, so a
   doubled tick converges.
-- **Disagreement.** On "not a bug" triage never closes: it keeps
-  `STATUS:triaged`, adds tag `disagreement` and `triage: not a bug -
-  <reason>`; the Reto batch shows both views. Reto rules `wontfix` (reason
-  becomes `resolved:`) or overrules to `ready_for_fix`.
+- **Close verdicts (dry-run ruling 2026-10-25, Opus review
+  2026-10-25).** The tick may close, not only label. Before the call
+  it collects fix evidence from the repo clone it already uses —
+  commits citing `gr<id>` on the deployed ref and on main, each
+  classified `deployed`/`on_main` by `merge-base --is-ancestor`. The
+  cite is strict: the id sits in the commit SUBJECT, or on a body line
+  in closing form (`fixes|closes|resolves gr<id>`) — a `Refs gr<id>`
+  mention is not evidence, and a `docs(` subject never counts
+  (builders cite fixes as
+  `type(scope): subject (gr<id>)` or a `fixes gr<id>` body line). The
+  deployed ref is `origin/prod` or the `PRECIS_TRIAGE_DEPLOYED_REF`
+  pin — nothing else is deploy proof: a prod worker runs an installed
+  wheel with no `.git`, so its deployed proof is a FOLLOW-UP
+  `deployed_history.txt` generated at build time from the build's own
+  sha (round-2 review R2-1 — a committed snapshot can't describe the
+  build it ships in; until the follow-up lands a clone-less worker
+  has no deployed proof and `fixed` never closes `done` there). A
+  clone with `origin/prod` wins whenever present. The evidence is
+  quoted in the
+  gripe's prompt block, and the verdict vocabulary gains `fixed`,
+  `noise` and `working-as-designed`:
+  - `fixed` is honoured **only** with a cited sha from that gripe's
+    evidence (a unique ≥7-hex prefix, either direction) — ancestor of
+    the deployed ref or in the history file → `STATUS:done` +
+    `resolved: <sha> <subject> (<UTC date>)`; on main only →
+    `STATUS:verify` + a `fix-sha:` comment (the verify lane then
+    applies). A `fixed` verdict is NEVER honoured on a reopened
+    gripe — its citing commit is the fix that failed. An inadmissible
+    `fixed` (no evidence, ambiguous or foreign sha) or `noise`
+    (pre-filter never flagged) downgrades to a normal `bug` triage —
+    never a miss, never a close — so squash merges that dropped the
+    id stay a normal triage and a stubborn model can't strand the
+    gripe on `triage_misses`.
+  - `noise` (bare command/path/log fragment, no complaint) is honoured
+    only when the deterministic pre-filter flagged the gripe — a
+    steered reply can't mass-close real reports. The pre-filter needs
+    a command-ish opening AND no complaint word (`fails`, `refused`,
+    `hangs`, `wrong`, `broken`, `error`, `closes`, `crash`, …): a
+    command-shaped title that still says what is wrong is a report.
+    Writes `wontfix` + reason.
+  - `not-a-bug`/`working-as-designed` write `STATUS:wontfix` +
+    `resolved: wontfix — <verdict>: <reason> (<UTC date>)` — **except**
+    when held: an empty/missing reason never closes, a reopened
+    gripe is never closed at all (no `fixed`, `noise` or dispute
+    close), an owner-filed gripe
+    (`refs.set_by='user'`, an OPEN/FLAG tag naming `PRECIS_OWNER` or
+    the migration-0028 `elmsfeuer` handle, or the `/gripes` web-form
+    body marker — the route also stamps a server-side `user:<login>`
+    tag at filing) never closes on a dispute, and the per-tick dispute
+    cap is 5 closes. A held dispute stays `STATUS:triaged` + tag
+    `disagreement` + `triage: <verdict> - <reason>` and lands in the
+    Reto batch; cap overflow also posts a board line. Reto rules
+    `wontfix` (reason becomes `resolved:`) or overrules to
+    `ready_for_fix`.
+  - Every closing verdict needs a `reason`, every `resolved:` line
+    carries its sha and UTC close date and appends unconditionally
+    (always the newest comment), and a verdict that closes never gets
+    `reto:ask` or a digest entry.
 - Gripe text is untrusted: quoted in the prompt, no tools, output
   schema-validated before any write.
 

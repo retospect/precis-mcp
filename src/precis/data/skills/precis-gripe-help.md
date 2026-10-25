@@ -464,10 +464,23 @@ A `gripe_triage` tick fires every 15 minutes, off unless a
 `STATUS:open` gripes (`reopened` first) once the parents pass has run
 (or the row is an hour old), makes one Sonnet-class batch call, and
 writes `fix:<type>`, `cluster:<slug>`, `size:S|M|L`, a computed PRIO
-and `STATUS:triaged`. Duplicates are suggestion-only (`dup-suggest:`
-comment + `meta.dup_suggested`), "not a bug" stays open as
-`disagreement`, and `fix:reto` gripes land in a review-queue digest.
-It never closes, links `supersedes`, or edits the gripe body.
+and `STATUS:triaged`. It can also CLOSE: a `fixed` verdict backed by a
+commit citing the gripe writes `STATUS:done` when the commit is
+provably deployed (ancestor of `origin/prod`; a build-time
+`deployed_history.txt` for clone-less workers is a follow-up —
+cite fixes as `type(scope): subject (gr<id>)` or a `fixes gr<id>`
+body line; a `Refs gr<id>` mention does not count, and a `docs(`
+subject never counts) and `STATUS:verify` when it is
+on main only. `noise`, `not-a-bug` and `working-as-designed` verdicts
+write `STATUS:wontfix` with the reason. Holds: a closing verdict
+needs a reason; a reopened gripe is never closed (no `fixed`, `noise`
+or dispute close);
+an owner-filed gripe's dispute stays `triaged` + `disagreement` for
+the owner's ruling; dispute closes cap at 5 per tick, the overflow
+held the same way. Duplicates are suggestion-only (`dup-suggest:`
+comment + `meta.dup_suggested`), and `fix:reto` gripes land in a
+review-queue digest.
+It never links `supersedes` or edits the gripe body.
 
 ## Link a gripe to a related paper or chunk {write}
 

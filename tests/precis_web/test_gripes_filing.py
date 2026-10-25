@@ -109,6 +109,9 @@ def test_filed_text_names_the_signed_in_user(runtime, client) -> None:
     assert args["text"] == (
         "the slug error suggests nothing\n\n— filed by reto via the /gripes web form"
     )
+    # …and the trusted, server-side filer tag rides along — triage's
+    # owner rulings key on it, not on the untrusted body line.
+    assert args["tags"] == ["user:reto"]
 
 
 def test_the_form_shows_who_it_will_attribute_to(client) -> None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -170,7 +171,20 @@ def _status(store: Store, ref_id: int) -> str | None:
 def _run(store: Store, llm: Any, **kw: Any) -> Any:
     kw.setdefault("notify", False)
     kw.setdefault("threads", _index())
+    # Never evidence-scan the real clone: a nonexistent repo keeps the
+    # fix-evidence collector empty unless a test passes a fixture repo.
+    kw.setdefault("repo", Path("/nonexistent-triage-test-repo"))
     return gripe_triage.run_gripe_triage_pass(store, llm=llm, **kw)
+
+
+@pytest.fixture(autouse=True)
+def _no_release_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the suite from the shipped ``deployed_history.txt``: the
+    release-time evidence file must never feed a test tick unless the
+    test pins a file of its own."""
+    monkeypatch.setenv(
+        "PRECIS_TRIAGE_DEPLOYED_HISTORY", "/nonexistent-deployed-history"
+    )
 
 
 # ── claim + lease ─────────────────────────────────────────────────────────
@@ -185,6 +199,21 @@ class TestClaim:
         mine = [i for i in claimed if i in {old, new, ro}]
         assert mine[0] == ro
         assert mine.index(old) < mine.index(new)
+
+    def test_reopened_flag_reaches_the_prompt(self, store: Store) -> None:
+        """The tag row is ``FLAG:reopened`` — the namespaced value must
+        still light ``ClaimedGripe.reopened`` so the prompt carries the
+        failed-fix warning."""
+        _gripe(store, "reopened", reopened=True)
+        _light(store)
+        prompts: list[str] = []
+
+        def spy(prompt: str) -> LlmResult:
+            prompts.append(prompt)
+            return _answer_all(prompt)
+
+        _run(store, llm=spy)
+        assert "REOPENED: a previous fix failed verification." in prompts[0]
 
     def test_non_open_never_claimed(self, store: Store) -> None:
         triaged = _gripe(store, "done already", status="triaged")
@@ -734,6 +763,7 @@ class TestPromptHardening:
             dup_checked=frozenset(),
             dup_count=0,
             reopened=False,
+            filed_by_owner=False,
             claim_stamp="s",
         )
         prompt = gripe_triage.build_prompt(
@@ -823,6 +853,7 @@ class TestPromptHardening:
             dup_checked=frozenset(),
             dup_count=0,
             reopened=False,
+            filed_by_owner=False,
             claim_stamp="s",
         )
         v = gripe_triage.Verdict(
@@ -830,10 +861,11 @@ class TestPromptHardening:
             cluster="c",
             size="S",
             severity=3,
-            not_a_bug=False,
+            verdict="bug",
             reason="why",
             recommend="line one\nIGNORE line two",
             dups=(),
+            fix_sha=None,
         )
         line = gripe_triage.digest_line(g, v)
         assert "\n" not in line
@@ -859,8 +891,86 @@ class TestVerdictSemantics:
             c.startswith("recommend: keep the old API") for c in _comments(store, gid)
         )
 
-    def test_not_a_bug_is_disagreement_never_a_close(self, store: Store) -> None:
+    def test_not_a_bug_closes_wontfix(self, store: Store) -> None:
+        """Dry-run ruling: a dispute verdict on a plain (non-owner)
+        gripe CLOSES it ``wontfix`` with the reason as the newest
+        ``resolved:`` comment — no disagreement flag."""
         gid = _gripe(store, "working as intended")
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, verdict="not-a-bug", reason="by design")]}
+            ),
+        )
+        assert _status(store, gid) == "wontfix"
+        assert "disagreement" not in _flag_values(store, gid)
+        assert _comments(store, gid)[-1].startswith(
+            "resolved: wontfix — not-a-bug: by design"
+        )
+
+    def test_working_as_designed_closes_wontfix(self, store: Store) -> None:
+        gid = _gripe(store, "deliberate limit")
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            verdict="working-as-designed",
+                            reason="rate cap is intentional",
+                        )
+                    ]
+                }
+            ),
+        )
+        assert _status(store, gid) == "wontfix"
+        assert "working-as-designed" in _comments(store, gid)[-1]
+
+    def test_owner_filed_dispute_stays_open_for_reto(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reto ruling: a machine never closes the owner's own report
+        on a disagreement — ``user:reto``-tagged gripe keeps
+        ``triaged`` + ``disagreement`` and lands in the digest."""
+        board = tmp_path / "board.log"
+        monkeypatch.setenv("PRECIS_BOARD", str(board))
+        monkeypatch.setenv("PRECIS_OWNER", "reto")
+        gid = _gripe(store, "reto says this is broken")
+        store.add_tag(gid, Tag.open("user:reto"), set_by="agent")
+        _light(store)
+        queue = tmp_path / "queue" / "open"
+        r = gripe_triage.run_gripe_triage_pass(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, verdict="not-a-bug", reason="by design")]}
+            ),
+            notify=True,
+            queue_dir=queue,
+            threads=_index(),
+            repo=tmp_path / "norepo",
+        )
+        assert _status(store, gid) == "triaged"
+        assert "disagreement" in _flag_values(store, gid)
+        assert any(
+            c.startswith("triage: not a bug - by design") for c in _comments(store, gid)
+        )
+        # …and it went to the owner digest, not to a silent tag.
+        assert r.extra["reto"] == 1
+        items = list(queue.glob("gripe-triage-*.md"))
+        assert len(items) == 1 and f"gr{gid}" in items[0].read_text(encoding="utf-8")
+
+    def test_owner_identity_tag_elmsfeuer_stays_open(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The migration-0028 canonical handle: ``user:elmsfeuer`` is
+        the owner mark prod actually carries (``PRECIS_OWNER`` unset →
+        default ``reto``, which would miss it)."""
+        monkeypatch.delenv("PRECIS_OWNER", raising=False)
+        gid = _gripe(store, "reto says this is broken")
+        store.add_tag(gid, Tag.open("user:elmsfeuer"), set_by="agent")
         _light(store)
         _run(
             store,
@@ -870,9 +980,42 @@ class TestVerdictSemantics:
         )
         assert _status(store, gid) == "triaged"
         assert "disagreement" in _flag_values(store, gid)
-        assert any(
-            c.startswith("triage: not a bug - by design") for c in _comments(store, gid)
+
+    def test_web_form_body_marker_marks_owner_filed(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pre-tag filings name the filer only in the body attribution
+        line (``_attribute`` in the web route) — still owner-filed."""
+        monkeypatch.delenv("PRECIS_OWNER", raising=False)
+        gid = _gripe(
+            store,
+            "reto says this is broken",
+            body="it is broken\n\n— filed by reto via the /gripes web form",
         )
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, verdict="not-a-bug", reason="by design")]}
+            ),
+        )
+        assert _status(store, gid) == "triaged"
+        assert "disagreement" in _flag_values(store, gid)
+
+    def test_other_filer_tag_closes_wontfix(self, store: Store) -> None:
+        """A ``user:``/``source:`` tag for someone who is NOT the owner
+        does not shield the gripe from a dispute close."""
+        gid = _gripe(store, "a bot-filed complaint")
+        store.add_tag(gid, Tag.open("source:call_errors"), set_by="system")
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, verdict="not-a-bug", reason="by design")]}
+            ),
+        )
+        assert _status(store, gid) == "wontfix"
+        assert "disagreement" not in _flag_values(store, gid)
 
     def test_dup_same_is_suggestion_only(self, store: Store) -> None:
         parent = _gripe(store, "the keeper")
@@ -1153,6 +1296,20 @@ class TestPrio:
         assert prio_for(5, 1, 0) == 2  # ×2 dups → 10
         assert prio_for(5, 1, 21) == 1  # ×2 ×4 = 40 → PRIO 1
 
+    def test_age_raises_at_most_one_band(self) -> None:
+        """Dry-run ruling (gr514124): a papercut that aged for months
+        may climb ONE band past what severity × dups alone give — never
+        more. Bands 1/2/4/6 below the 8 default."""
+        # sev 2 → base band 6; 14 days ⇒ score 6 → one band up (4), the cap.
+        assert prio_for(2, 0, 14) == 4
+        # Same gripe a year old: score ~106 would hit band 1 — capped at 4.
+        assert prio_for(2, 0, 365) == 4
+        # sev 1 below the ladder (default 8): even ancient age reaches
+        # only the LAST band (6), one step above the default slot.
+        assert prio_for(1, 0, 365) == 6
+        # Severity and dups already at band 1: age has nothing to add.
+        assert prio_for(5, 3, 400) == 1
+
     def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRECIS_TRIAGE_PRIO_BANDS", "100:1,0:9")
         assert prio_for(5, 1, 21) == 9
@@ -1178,6 +1335,7 @@ class TestParse:
             dup_checked=frozenset(),
             dup_count=0,
             reopened=False,
+            filed_by_owner=False,
             claim_stamp="s",
         )
 
@@ -1271,3 +1429,445 @@ def test_post_board_trims_and_reports_refusal(
     with caplog.at_level("WARNING", logger="precis.workers.gripe_triage"):
         gripe_triage._post_board("not-a-state", "hi")
     assert any("refused" in r.message for r in caplog.records)
+
+
+# ── fix evidence (the already-fixed close) ────────────────────────────────
+
+
+def _g(repo: Path, *args: str) -> str:
+    cp = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert cp.returncode == 0, cp.stderr
+    return cp.stdout.strip()
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A throwaway clone: branch ``main`` plus a ``prod`` ref trailing it —
+    the deployed/not-yet-deployed pair the collector distinguishes."""
+    r = tmp_path / "repo"
+    r.mkdir()
+    _g(r, "init", "-q", "-b", "main")
+    _g(r, "config", "user.email", "test@example.test")
+    _g(r, "config", "user.name", "test")
+    _g(r, "config", "commit.gpgsign", "false")
+    (r / "f.txt").write_text("base\n", encoding="utf-8")
+    _g(r, "add", "f.txt")
+    _g(r, "commit", "-q", "-m", "base")
+    return r
+
+
+def _commit(repo: Path, subject: str, body: str | None = None) -> str:
+    (repo / "f.txt").write_text(f"{subject}\n", encoding="utf-8")
+    _g(repo, "add", "f.txt")
+    args = ["commit", "-q", "-m", subject]
+    if body:
+        args += ["-m", body]
+    _g(repo, *args)
+    return _g(repo, "rev-parse", "--short", "HEAD")
+
+
+class TestFixEvidence:
+    def test_deployed_commit_is_ancestor_of_prod(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _commit(repo, "fix(thing): handle it (gr101)")
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        sha = _commit(repo, "unrelated follow-up")
+        _commit(repo, "docs: no gripe cite")
+        idx = gripe_triage.collect_fix_evidence(repo, [101])
+        (ev,) = idx.by_gripe[101]
+        assert idx.deployed_ref == "prod" and idx.main_ref == "main"
+        assert ev.deployed is True and ev.on_main is True
+        # The unrelated commit cites nobody.
+        assert sha not in ev.sha
+
+    def test_commit_on_main_only_is_not_deployed(self, repo: Path) -> None:
+        _g(repo, "branch", "prod")
+        _commit(repo, "fix(thing): landed, awaiting deploy (gr102)")
+        idx = gripe_triage.collect_fix_evidence(repo, [102])
+        (ev,) = idx.by_gripe[102]
+        assert ev.on_main is True and ev.deployed is False
+
+    def test_cite_in_commit_body_counts(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _commit(repo, "fix(thing): repair the widget", body="Closes gr103")
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        idx = gripe_triage.collect_fix_evidence(repo, [103])
+        assert idx.by_gripe[103][0].deployed is True
+
+    def test_body_mention_is_not_evidence(self, repo: Path) -> None:
+        """``Refs gr<id>`` in a commit body is a mention, not a fix —
+        only a subject cite or a closing-form body line counts."""
+        _commit(repo, "feat(thing): partial work", body="Refs gr106 ruling 2")
+        idx = gripe_triage.collect_fix_evidence(repo, [106])
+        assert idx.by_gripe == {}
+
+    def test_docs_subject_is_not_evidence(self, repo: Path) -> None:
+        """A ``docs(`` commit's id cite is paperwork, not a fix — even
+        with a closing-form body line (round-2 review residual)."""
+        _commit(repo, "docs(backlog): spec for gr108", body="Fixes gr108")
+        idx = gripe_triage.collect_fix_evidence(repo, [108])
+        assert idx.by_gripe == {}
+
+    def test_history_file_counts_as_deployed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clone-less prod worker: the release-time deployed-history
+        file is the deploy proof — a citing sha in it IS deployed."""
+        hist = tmp_path / "deployed_history.txt"
+        hist.write_text(
+            "# deployed history — generated test\n"
+            "deadbee1234567890abcdef0123456789abcdef\t"
+            "fix(thing): repair the widget (gr107)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", str(hist))
+        idx = gripe_triage.collect_fix_evidence(None, [107])
+        assert idx.deployed_ref == "deployed_history.txt"
+        (ev,) = idx.by_gripe[107]
+        assert ev.deployed is True
+
+    def test_longer_id_does_not_match_prefix(self, repo: Path) -> None:
+        _commit(repo, "fix(thing): work (gr1044)")
+        idx = gripe_triage.collect_fix_evidence(repo, [104])
+        assert idx.by_gripe == {}
+
+    def test_no_repo_means_empty(self, tmp_path: Path) -> None:
+        assert gripe_triage.collect_fix_evidence(tmp_path, [1]).by_gripe == {}
+        assert gripe_triage.collect_fix_evidence(None, [1]).by_gripe == {}
+
+    def test_env_pins_the_refs(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _commit(repo, "fix(thing): on a side branch (gr105)")
+        _g(repo, "branch", "side")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "side")
+        monkeypatch.setenv("PRECIS_TRIAGE_MAIN_REF", "side")
+        idx = gripe_triage.collect_fix_evidence(repo, [105])
+        assert idx.deployed_ref == "side"
+        assert idx.by_gripe[105][0].deployed is True
+
+
+class TestCloseOutcomes:
+    """The dry-run rulings end to end: fixed → done/verify, noise →
+    wontfix, disputes → wontfix unless owner-filed."""
+
+    def test_fixed_deployed_closes_done(
+        self, store: Store, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gid = _gripe(store, "the widget is broken")
+        _light(store)
+        sha = _commit(repo, f"fix(thing): repair the widget (gr{gid})")
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        r = _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, verdict="fixed", sha=sha)]}),
+            repo=repo,
+        )
+        assert r.ok == 1 and r.extra["closed_done"] == 1
+        assert _status(store, gid) == "done"
+        last = _comments(store, gid)[-1]
+        assert last.startswith(f"resolved: {sha}")
+        assert "repair the widget" in last
+
+    def test_fixed_on_main_only_writes_verify(
+        self, store: Store, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gid = _gripe(store, "the widget is broken")
+        _light(store)
+        _g(repo, "branch", "prod")  # deployed ref frozen before the fix
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        sha = _commit(repo, f"fix(thing): repair the widget (gr{gid})")
+        r = _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, verdict="fixed", sha=sha)]}),
+            repo=repo,
+        )
+        assert r.ok == 1 and r.extra["closed_verify"] == 1
+        assert _status(store, gid) == "verify"
+        assert any(c.startswith(f"fix-sha: {sha}") for c in _comments(store, gid))
+
+    def test_fixed_without_evidence_bug_triages(self, store: Store, repo: Path) -> None:
+        """Squash-merged fix dropped the id → no evidence → the model's
+        ``fixed`` downgrades to a normal bug triage, never a miss and
+        never a close (a stalled gripe can't burn its miss budget)."""
+        gid = _gripe(store, "the widget is broken")
+        _light(store)
+        _commit(repo, "fix(thing): repaired but cites nobody")
+        payload = {"verdicts": [_verdict(gid, verdict="fixed", sha="deadbee")]}
+        r = _run(store, llm=_llm(payload), repo=repo)
+        assert r.ok == 1 and r.extra["misses"] == 0
+        assert _status(store, gid) == "triaged"
+
+    def test_fixed_with_invented_sha_bug_triages(
+        self, store: Store, repo: Path
+    ) -> None:
+        gid = _gripe(store, "the widget is broken")
+        _light(store)
+        _commit(repo, f"fix(thing): repair the widget (gr{gid})")
+        payload = {"verdicts": [_verdict(gid, verdict="fixed", sha="cafe99")]}
+        r = _run(store, llm=_llm(payload), repo=repo)
+        assert r.ok == 1 and r.extra["misses"] == 0
+        assert _status(store, gid) == "triaged"
+
+    def test_cross_gripe_sha_is_rejected(
+        self, store: Store, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``fixed`` verdict citing ANOTHER gripe's evidence sha is
+        inadmissible — evidence is per-gripe (Opus review test gap)."""
+        a = _gripe(store, "the widget is broken")
+        b = _gripe(store, "the sprocket is loose")
+        _light(store)
+        sha_a = _commit(repo, f"fix(thing): repair the widget (gr{a})")
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        payload = {
+            "verdicts": [
+                _verdict(a, verdict="fixed", sha=sha_a, reason="done"),
+                _verdict(b, verdict="fixed", sha=sha_a, reason="same fix"),
+            ]
+        }
+        r = _run(store, llm=_llm(payload), repo=repo)
+        assert _status(store, a) == "done"
+        assert _status(store, b) == "triaged"
+        assert r.extra["misses"] == 0
+
+    def test_reopened_gripe_never_closes_fixed(
+        self, store: Store, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reopened gripe's citing commit is the fix that FAILED —
+        ``fixed`` is never honoured on it, even with deployed evidence
+        (the worst wrong-close path in the dry run)."""
+        gid = _gripe(store, "the widget is still broken", reopened=True)
+        _light(store)
+        sha = _commit(repo, f"fix(thing): repair the widget (gr{gid})")
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        prompts: list[str] = []
+
+        def spy(prompt: str) -> LlmResult:
+            prompts.append(prompt)
+            return _llm({"verdicts": [_verdict(gid, verdict="fixed", sha=sha)]})(prompt)
+
+        r = _run(store, llm=spy, repo=repo)
+        assert r.ok == 1
+        assert _status(store, gid) == "triaged"
+        # …and the prompt never even offered the stale evidence.
+        section = prompts[0].split(f"### gr{gid} ", 1)[1]
+        assert "fix-evidence" not in section
+
+    def test_identical_resolved_text_still_appends(
+        self, store: Store, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``resolved:`` line matching an existing comment still
+        appends — the close comment must be the gripe's NEWEST comment
+        (the old dedup could swallow a re-close, review item 6)."""
+        gid = _gripe(store, "the widget is broken")
+        _light(store)
+        sha = _commit(repo, f"fix(thing): repair the widget (gr{gid})")
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        stale = f"resolved: {sha} fix(thing): repair the widget (gr{gid}) ({day})"
+        store.chunks.insert_chunks(
+            gid,
+            [ChunkInsert(ord=0, text=stale, meta={"chunk_kind": "gripe_comment"})],
+        )
+        r = _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, verdict="fixed", sha=sha, reason="done")]}
+            ),
+            repo=repo,
+        )
+        assert r.extra.get("closed_done") == 1
+        resolved = [c for c in _comments(store, gid) if c.startswith("resolved:")]
+        assert len(resolved) == 2 and resolved[-1] == stale
+
+    def test_noise_closes_wontfix_on_flagged_gripe(self, store: Store) -> None:
+        gid = _gripe(store, "uv run python scratch/hexprism.py p6 4 4 2 ++++++")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, verdict="noise", reason="command dump")]}
+            ),
+        )
+        assert r.ok == 1 and r.extra["closed_wontfix"] == 1
+        assert _status(store, gid) == "wontfix"
+        assert _comments(store, gid)[-1].startswith("resolved: wontfix — noise:")
+
+    def test_noise_on_unflagged_gripe_bug_triages(self, store: Store) -> None:
+        """The close needs BOTH the pre-filter and the verdict — a
+        steered reply can't mass-close real reports; the inadmissible
+        verdict downgrades to a normal bug triage, never a miss."""
+        gid = _gripe(store, "the scheduler drops tasks under load")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, verdict="noise")]}),
+        )
+        assert r.ok == 1 and r.extra["misses"] == 0
+        assert _status(store, gid) == "triaged"
+
+    def test_prefilter_hint_and_evidence_in_prompt(
+        self, store: Store, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fixed = _gripe(store, "a real complaint")
+        noisy = _gripe(store, "uv run python scratch/x.py")
+        _light(store)
+        sha = _commit(repo, f"fix(thing): done already (gr{fixed})")
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        prompts: list[str] = []
+
+        def spy(prompt: str) -> LlmResult:
+            prompts.append(prompt)
+            return _llm({"verdicts": []})(prompt)
+
+        _run(store, llm=spy, repo=repo)
+        (prompt,) = prompts
+        fsec = prompt.split(f"### gr{fixed} ", 1)[1]
+        assert f'{sha} "fix(thing): done already' in fsec
+        assert "DEPLOYED (prod)" in fsec
+        nsec = prompt.split(f"### gr{noisy} ", 1)[1].split("--- gripe", 1)[0]
+        assert "prefilter:" in nsec
+
+    def test_complaint_word_vetoes_the_prefilter(self, store: Store) -> None:
+        """A command-shaped title that still SAYS what is wrong is a
+        report, not a dump — the review's false-positive titles stay
+        unflagged, so ``noise`` can never close them (review item 8)."""
+        titles = (
+            "git push refused on deploy",
+            "make test hangs",
+            "pytest -x crashes on collect",
+            "gripe_triage.py closes wrong gripes",
+        )
+        gids = [_gripe(store, t) for t in titles]
+        _light(store)
+        payload = {
+            "verdicts": [
+                _verdict(g, verdict="noise", reason="command dump") for g in gids
+            ]
+        }
+        r = _run(store, llm=_llm(payload))
+        assert r.extra["misses"] == 0
+        assert all(_status(store, g) == "triaged" for g in gids)
+
+    def test_closing_verdict_never_reto_ask(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A verdict that closes — even ``fix:reto`` — gets no
+        ``reto:ask`` tag and no digest entry (Opus review item 7)."""
+        monkeypatch.setenv("PRECIS_BOARD", str(tmp_path / "board.log"))
+        queue = tmp_path / "queue" / "open"
+        gid = _gripe(store, "uv run python scratch/x.py")
+        _light(store)
+        r = gripe_triage.run_gripe_triage_pass(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="have a human glance",
+                            verdict="noise",
+                            reason="command dump",
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+            queue_dir=queue,
+            threads=_index(),
+            repo=tmp_path / "norepo",
+        )
+        assert _status(store, gid) == "wontfix"
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert r.extra["reto"] == 0
+        assert not list(queue.glob("gripe-triage-*.md"))
+
+    def test_dispute_close_cap_holds_the_overflow(self, store: Store) -> None:
+        """At most 5 dispute closes per tick — the 6th+ stays triaged +
+        disagreement for a human ruling, and the tick reports the
+        overflow (Opus review item 4: mass-dispute can't mass-close)."""
+        gids = [_gripe(store, f"complaint number {i}") for i in range(7)]
+        _light(store)
+        payload = {
+            "verdicts": [
+                _verdict(g, verdict="not-a-bug", reason="by design") for g in gids
+            ]
+        }
+        r = _run(store, llm=_llm(payload))
+        closed = [g for g in gids if _status(store, g) == "wontfix"]
+        held = [g for g in gids if _status(store, g) == "triaged"]
+        assert len(closed) == 5 and len(held) == 2
+        assert all("disagreement" in _flag_values(store, g) for g in held)
+        assert r.extra["dispute_overflow"] == 2
+
+    def test_dispute_without_reason_never_closes(self, store: Store) -> None:
+        """An empty/missing reason means no close — the wontfix comment
+        would carry no justification (Reto ruling: closes need a
+        reason)."""
+        gid = _gripe(store, "the widget is broken")
+        _light(store)
+        _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, verdict="not-a-bug", reason="")]}),
+        )
+        assert _status(store, gid) == "triaged"
+        assert "disagreement" in _flag_values(store, gid)
+
+    def test_reopened_gripe_never_dispute_closed(self, store: Store) -> None:
+        """A reopened gripe already failed one ruling — a dispute can
+        never close it (Opus review item 4)."""
+        gid = _gripe(store, "still broken after the fix", reopened=True)
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, verdict="not-a-bug", reason="by design")]}
+            ),
+        )
+        assert _status(store, gid) == "triaged"
+        assert "disagreement" in _flag_values(store, gid)
+
+    def test_reopened_gripe_never_noise_closed(self, store: Store) -> None:
+        """The reopened gate covers every closing verdict — a prefilter-
+        flagged reopened gripe can't close ``wontfix`` on ``noise``
+        either (round-2 review minor)."""
+        gid = _gripe(store, "uv run python scratch/x.py", reopened=True)
+        _light(store)
+        _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, verdict="noise", reason="dump")]}),
+        )
+        assert _status(store, gid) == "triaged"
+        assert "disagreement" in _flag_values(store, gid)
+
+    def test_prompt_declares_non_bug_outcomes_expected(self, store: Store) -> None:
+        _gripe(store, "x")
+        _light(store)
+        prompts: list[str] = []
+
+        def spy(prompt: str) -> LlmResult:
+            prompts.append(prompt)
+            return _llm({"verdicts": []})(prompt)
+
+        _run(store, llm=spy)
+        # The head itself quotes "### gr" in the injection warning — the
+        # head/items boundary is a header at LINE start.
+        head = prompts[0].split("\n### gr", 1)[0]
+        for v in ("not-a-bug", "working-as-designed", "noise", "fixed"):
+            assert f'"{v}"' in head

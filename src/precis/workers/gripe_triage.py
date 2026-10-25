@@ -11,12 +11,23 @@ tool-agent pattern and not a coordinator session.
 
 Each fire claims up to :data:`_DEFAULT_BATCH` of the oldest
 ``STATUS:open`` gripes (``reopened``-tagged first — a reopen is a failed
-fix and outranks age), runs ONE Sonnet-class batch call through the LLM
-router (``source='gripe_triage:tick'``, model overridable via
-:data:`_MODEL_ENV`), schema-validates the reply against the claimed set,
-and writes per gripe: ``fix:<type>``, ``cluster:<slug>``, ``size:S|M|L``,
-a computed ``PRIO`` (severity × (1 + parked dups) × (1 + age_days/7),
-bucketed to 1..10 by :func:`prio_for`) and ``STATUS:triaged``.
+fix and outranks age), collects already-fixed commit evidence per gripe
+from the clone (:func:`collect_fix_evidence`), runs ONE Sonnet-class
+batch call through the LLM router (``source='gripe_triage:tick'``, model
+overridable via :data:`_MODEL_ENV`), schema-validates the reply against
+the claimed set, and writes per gripe: ``fix:<type>``,
+``cluster:<slug>``, ``size:S|M|L``, a computed ``PRIO`` (severity ×
+(1 + parked dups) × (1 + age_days/7), bucketed to 1..10 by
+:func:`prio_for` — age alone may lift at most one band) and a STATUS
+verdict: ``triaged`` normally; ``done`` (``resolved: <sha> <subject>``)
+when the ``fixed`` verdict's cited commit is provably deployed;
+``verify`` when it is on main but not yet deployed; ``wontfix`` on
+``noise`` (only a pre-filtered gripe) or a dispute
+(``not-a-bug``/``working-as-designed``). A close needs a reason and
+is never written on a reopened gripe; an owner-filed dispute and any
+verdict past the per-tick dispute cap stay ``triaged`` +
+``disagreement`` for the Reto batch, and a closing verdict never
+takes ``reto:ask``.
 
 Lease, not a lock (the 0045 lesson, 30766194a — never hold a transaction
 across the model call): the claim is one short transaction stamping
@@ -137,6 +148,12 @@ _TIMEOUT_BATCH_FLOOR = 5
 #: past the cap keep ``fix:reto`` but skip ``reto:ask`` and the digest,
 #: taking a ``reto:overflow`` tag instead (N5 — silent otherwise).
 _RETO_CAP = 5
+#: Dispute closes (``not-a-bug``/``working-as-designed``) allowed per
+#: tick — the same anti-steering bound as :data:`_RETO_CAP` (Opus review
+#: item 4: a mass-dispute reply must not mass-close the backlog).
+#: Verdicts past the cap stay ``triaged`` + ``disagreement`` for a human
+#: ruling, and the overflow posts a board line.
+_DISPUTE_CAP = 5
 #: Seconds a halt stands before the tick runs ONE probe batch of
 #: :data:`_TIMEOUT_BATCH_FLOOR` — a transient fault self-heals instead
 #: of waiting forever on an operator (N1 ruling). A good probe clears
@@ -296,7 +313,363 @@ def load_threads(path: Path | None = None) -> ThreadIndex:
 _POINTER_RE = re.compile(r"\b(gr|td|qu)(\d+)\b")
 
 
+# ── fix evidence (the already-fixed close) ────────────────────────────────
+#
+# Before the model call the tick looks for commits citing ``gr<id>`` in
+# the clone's git history — or, on a clone-less prod worker, in the
+# release-time deployed-history file (a follow-up slice, absent today:
+# clone-less workers have no deployed proof and ``fixed`` can't close).
+# The cite is strict: the id sits in the commit SUBJECT, or on a body line in
+# closing form (``fixes gr<id>``) — a bare "Refs gr<id>" is a mention,
+# not evidence. A citing commit provably deployed closes ``done``; one
+# that reached main but not the deploy takes ``verify``; a squash-merge
+# that dropped the id leaves no evidence — normal triage.
+
+#: ``origin/prod`` or nothing: ``scripts/deploy`` moves it only after
+#: PRECIS_DEPLOY_COMPLETE. A checkout's bare ``HEAD`` or a local
+#: ``prod`` branch could be ANY ref, so they are NOT deploy proof —
+#: without ``origin/prod`` (or the env pin) a ``fixed`` close can reach
+#: ``verify`` at most. ``PRECIS_TRIAGE_DEPLOYED_REF`` pins it outright.
+_DEPLOYED_REF_ENV = "PRECIS_TRIAGE_DEPLOYED_REF"
+_DEPLOYED_REF_CANDIDATES = ("origin/prod",)
+#: "Landed on main" — the shipped-but-not-deployed middle state.
+_MAIN_REF_ENV = "PRECIS_TRIAGE_MAIN_REF"
+_MAIN_REF_CANDIDATES = ("origin/main", "main")
+#: Citing commits shown per gripe — bounds the prompt block.
+_EVIDENCE_MAX = 4
+#: ``--grep`` candidates pulled per gripe before the strict Python
+#: filter (the filter rejects mentions, so oversample).
+_EVIDENCE_CANDIDATES = 32
+_GIT_TIMEOUT = 15
+
+#: Release-time deployed evidence — a FOLLOW-UP slice (round-2 review
+#: R2-1: the committed snapshot could never describe the build it
+#: shipped in, so the file generates at build time from the build's
+#: own sha, not from a checkout's origin/main). Until it lands a
+#: clone-less prod worker — an installed wheel under
+#: ``/opt/precis/venv``, no ``.git`` — has no deployed proof at all:
+#: ``fixed`` can never close ``done`` there, which is the safe
+#: direction. When the file is present a citing commit in it IS
+#: deployed. ``PRECIS_TRIAGE_DEPLOYED_HISTORY`` points at a different
+#: file (tests).
+_DEPLOYED_HISTORY_ENV = "PRECIS_TRIAGE_DEPLOYED_HISTORY"
+_DEPLOYED_HISTORY_NAME = "deployed_history.txt"
+_DEPLOYED_HISTORY_LABEL = "deployed_history.txt"
+
+
+def _cite_line(gid: int, subject: str, body: str) -> str | None:
+    """The line that makes a commit fix evidence for ``gr<gid>``, or
+    ``None`` (Opus-review strict rule): the subject when it names the
+    id, else a body line in closing form (``fixes|closes|resolves
+    gr<id>``). A ``Refs``/``see``/``after`` mention is not evidence —
+    and neither is a ``docs(`` commit, whose id cite is paperwork, not
+    a fix (round-2 review residual)."""
+    if re.match(r"\s*docs\(", subject, re.IGNORECASE):
+        return None
+    if re.search(rf"gr{int(gid)}(?![0-9])", subject, re.IGNORECASE):
+        return _one_line(subject)[:120]
+    closing = re.compile(
+        rf"^\s*(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)[: ]+"
+        rf"gr{int(gid)}(?![0-9])",
+        re.IGNORECASE,
+    )
+    for line in str(body).splitlines():
+        if closing.match(line):
+            return _one_line(line)[:120]
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class FixEvidence:
+    """One commit that cites ``gr<id>`` in evidence form — the
+    already-fixed proof offered in the gripe's prompt block.
+    ``deployed`` = provably on the deployed ref or in the deployed
+    history file (close ``done``); ``on_main`` = on the main ref but
+    not deployed (``verify``). ``matched`` is the exact line that
+    qualified the commit — the model cites it, not just the subject."""
+
+    sha: str
+    subject: str
+    #: The subject or closing-form body line the strict filter matched.
+    matched: str
+    deployed: bool
+    on_main: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceIndex:
+    """Per-gripe fix evidence plus the labels it was measured against
+    (``None`` when nothing resolves — evidence simply stays empty and
+    everything triages normally). ``deployed_ref`` is ``origin/prod``
+    (or the env pin) or :data:`_DEPLOYED_HISTORY_LABEL` — a display
+    label, not a revspec."""
+
+    by_gripe: dict[int, tuple[FixEvidence, ...]]
+    deployed_ref: str | None
+    main_ref: str | None
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """One git read in ``repo``; ``None`` on any failure — a missing
+    repo or a bad ref degrades evidence to "none", never kills the tick."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=_GIT_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _resolve_ref(repo: Path, env: str, candidates: tuple[str, ...]) -> str | None:
+    """The first ref name that verifies in ``repo`` (env pin wins)."""
+    raw = os.environ.get(env)
+    for name in (raw,) if raw else candidates:
+        if not name:
+            continue
+        cp = _git(repo, "rev-parse", "--verify", "--quiet", name)
+        if cp is not None and cp.returncode == 0:
+            return str(name)
+    return None
+
+
+def _is_ancestor(repo: Path, sha: str, ref: str) -> bool:
+    cp = _git(repo, "merge-base", "--is-ancestor", sha, ref)
+    return cp is not None and cp.returncode == 0
+
+
+def _same_sha(a: str, b: str) -> bool:
+    """Abbrev-tolerant sha equality: equal when the shorter string
+    prefixes the longer (a ``%h`` abbrev vs a full sha, or the model's
+    prefix of either)."""
+    a, b = a.strip().lower(), b.strip().lower()
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+
+
+def _deployed_history() -> dict[str, str]:
+    """``{sha: subject}`` from the release-time deployed-history file —
+    ``{}`` when it is absent or unreadable (dev checkouts, pre-release
+    installs). ``#`` header lines are skipped."""
+    path = os.environ.get(_DEPLOYED_HISTORY_ENV)
+    try:
+        if path:
+            text = Path(path).read_text(encoding="utf-8")
+        else:
+            from importlib.resources import files
+
+            text = (files("precis.data") / _DEPLOYED_HISTORY_NAME).read_text(
+                encoding="utf-8"
+            )
+    except (OSError, FileNotFoundError, ModuleNotFoundError):
+        return {}
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        sha, _, subject = line.partition("\t")
+        sha = sha.strip()
+        if sha:
+            out[sha] = _one_line(subject)[:120]
+    return out
+
+
+def _log_cites(repo: Path, refs: list[str], gid: int) -> list[tuple[str, str, str]]:
+    """``(sha, subject, matched_line)`` triples for ``gr<gid>``: a
+    ``--grep`` candidate pass (cheap, loose — it also hits mentions)
+    narrowed by :func:`_cite_line`'s strict subject/closing-form rule.
+    Bounded to :data:`_EVIDENCE_MAX` after filtering."""
+    cp = _git(
+        repo,
+        "log",
+        *refs,
+        "-i",
+        "-E",
+        f"--grep=gr{int(gid)}([^0-9]|$)",
+        f"--max-count={_EVIDENCE_CANDIDATES}",
+        "--format=%x1e%h%x09%s%x09%b",
+    )
+    if cp is None or not cp.stdout.strip():
+        return []
+    out: list[tuple[str, str, str]] = []
+    for rec in cp.stdout.split("\x1e"):
+        rec = rec.strip("\n")
+        if not rec.strip():
+            continue
+        sha, _, rest = rec.partition("\t")
+        subject, _, body = rest.partition("\t")
+        sha = sha.strip()
+        matched = _cite_line(gid, subject, body)
+        if sha and matched is not None:
+            out.append((sha, _one_line(subject)[:120], matched))
+        if len(out) >= _EVIDENCE_MAX:
+            break
+    return out
+
+
+def collect_fix_evidence(repo: Path | None, ids: Any) -> EvidenceIndex:
+    """Commits citing ``gr<id>``, classified deployed/on-main.
+
+    Sources, in precedence order (Opus review): a clone with
+    ``origin/prod`` (or the env pin) is the deployed proof —
+    ``merge-base --is-ancestor``; without it, the deployed-history
+    file is (a listed cite IS deployed — a follow-up slice, absent
+    until a build-time generator ships); without either, evidence
+    from a resolvable main ref can reach ``verify`` only, and with
+    nothing at all the index is empty — ``fixed`` can never close
+    ``done`` on a checkout that can't prove the deploy."""
+    root = Path(repo) if repo is not None and Path(repo).is_dir() else None
+    deployed = (
+        _resolve_ref(root, _DEPLOYED_REF_ENV, _DEPLOYED_REF_CANDIDATES)
+        if root is not None
+        else None
+    )
+    main = (
+        _resolve_ref(root, _MAIN_REF_ENV, _MAIN_REF_CANDIDATES)
+        if root is not None
+        else None
+    )
+    history: dict[str, str] = {} if deployed else _deployed_history()
+    if not (deployed or main or history):
+        return EvidenceIndex(by_gripe={}, deployed_ref=None, main_ref=None)
+    refs = [r for r in dict.fromkeys((deployed, main)) if r]
+    deployed_label = deployed or (_DEPLOYED_HISTORY_LABEL if history else None)
+    by_gripe: dict[int, tuple[FixEvidence, ...]] = {}
+    for gid in ids:
+        merged: list[tuple[str, str, str]] = []
+        if root is not None and refs:
+            merged.extend(_log_cites(root, refs, int(gid)))
+        if history:
+            # The file stores subjects only — the strict subject rule
+            # applies as-is; a body closing-form can't exist there.
+            merged.extend(
+                (sha, subject, subject)
+                for sha, subject in history.items()
+                if _cite_line(gid, subject, "") is not None
+            )
+        ev: list[FixEvidence] = []
+        for sha, subject, matched in merged:
+            in_history = any(_same_sha(sha, h) for h in history)
+            ev.append(
+                FixEvidence(
+                    sha=sha,
+                    subject=subject,
+                    matched=matched,
+                    deployed=bool(
+                        root is not None
+                        and deployed
+                        and _is_ancestor(root, sha, deployed)
+                    )
+                    or in_history,
+                    on_main=bool(
+                        root is not None and main and _is_ancestor(root, sha, main)
+                    )
+                    or in_history,
+                )
+            )
+            if len(ev) >= _EVIDENCE_MAX:
+                break
+        if ev:
+            by_gripe[int(gid)] = tuple(ev)
+    return EvidenceIndex(by_gripe=by_gripe, deployed_ref=deployed_label, main_ref=main)
+
+
 # ── claim (short-tx lease; nothing open across the model call) ───────────
+
+#: The owner identity a "filed by Reto" ruling checks —
+#: ``config.py::owner``'s env var; same default.
+_OWNER_ENV = "PRECIS_OWNER"
+_OWNER_DEFAULT = "reto"
+#: The migration-0028 canonical owner handle: prod's ``user:`` tags say
+#: ``elmsfeuer`` while ``PRECIS_OWNER`` is unset on prod (so the default
+#: ``reto`` applies) — the same human spelled two ways; both count.
+_OWNER_TAG_HANDLE = "elmsfeuer"
+
+#: The /gripes web route's body attribution
+#: (``precis_web.routes.gripes::_attribute``): ``— filed by <login> via
+#: the /gripes web form``. Untrusted text — but a forged marker only
+#: errs a dispute toward staying open, the safe direction for this
+#: ruling; new filings also carry a server-side ``user:<login>`` tag.
+_WEBFORM_FILED_RE = re.compile(
+    r"filed by (\S+) via the /gripes web form", re.IGNORECASE
+)
+
+
+def _owner_handles() -> frozenset[str]:
+    """The spellings that count as "the owner": ``PRECIS_OWNER`` (or its
+    default) plus the migration-0028 canonical tag handle."""
+    owner = os.environ.get(_OWNER_ENV, _OWNER_DEFAULT).strip().lower()
+    return frozenset(h for h in (owner, _OWNER_TAG_HANDLE) if h)
+
+
+def _filed_by_owner(*, set_by: str, tags: frozenset[str], body: str) -> bool:
+    """Was this gripe filed by the instance owner?
+
+    Deliberately narrow: an actor-stamped ``refs.set_by = 'user'``, an
+    ``OPEN``/``FLAG`` tag naming an owner handle (``user:<h>``,
+    ``agent:<h>``, ``source:<h>``, ``filer:<h>`` for
+    :func:`_owner_handles`), or the web route's ``— filed by <owner>
+    via the /gripes web form`` body line (untrusted, but the only
+    channel pre-tag filings have — a forged one errs open, not shut).
+    ``refs.set_by`` is NULL on today's gripe inserts
+    (``file_gripe_readonly``), so in practice the tags and marker carry
+    it — and an *unmarked* gripe is NOT owner-filed, which is the safe
+    direction: the dispute close errs toward ``wontfix``, and the
+    owner can always reopen."""
+    if set_by == "user":
+        return True
+    handles = _owner_handles()
+    want = {f"{k}:{h}" for h in handles for k in ("user", "agent", "source", "filer")}
+    # ``tags`` entries are ``<NS>:<value>`` (``OPEN:user:reto``) — the
+    # owner name is the value, not the whole string.
+    if any(t.split(":", 1)[1] in want for t in tags if ":" in t):
+        return True
+    m = _WEBFORM_FILED_RE.search(body or "")
+    return bool(m and m.group(1).strip().lower() in handles)
+
+
+#: The deterministic noise pre-filter (dry-run gr514054/gr514059/
+#: gr514239): the line reads like a bare shell command or file path —
+#: a command dump, not a complaint. Advisory only: it gates whether
+#: the MODEL may return ``noise``; nothing closes on the filter alone.
+_COMMANDISH_RE = re.compile(
+    r"^\s*(?:uv\s+run\b|python3?\b|pytest\b|pip3?\b|git\b|rg\b|grep\b|"
+    r"cat\b|cd\b|ls\b|echo\b|bash\b|zsh\b|sh\b|node\b|npm\b|npx\b|yarn\b|"
+    r"cargo\b|make\b|docker\b|kubectl\b|psql\b|sqlite3?\b|"
+    r"scripts/\S+|scratch/\S+|\./\S+|[^\s/]+\.(?:py|sh|sql|js|ts|rs|mjs|ipynb)\b)",
+    re.IGNORECASE,
+)
+
+#: Complaint words that VETO the pre-filter — a command-shaped title
+#: that still says what is wrong is a report, not a dump (Opus review
+#: item 8: "git push refused on …", "make test hangs", "pytest -x
+#: crashes …", "gripe_triage.py closes wrong gripes" were all flagged).
+_COMPLAINT_RE = re.compile(
+    r"\b(?:fails?|failed|refus(?:es|ed)|hangs?|hung|wrong|broken|"
+    r"errors?|clos(?:es|ed)|crash(?:es|ed|ing)?|stall(?:s|ed)?|stuck|"
+    r"bug|slow)\b",
+    re.IGNORECASE,
+)
+
+
+def _commandish(text: str) -> bool:
+    """True when ``text`` opens like a shell command or a bare path AND
+    carries no complaint word — the noise pre-filter's unit test (title
+    or first body line). A command-shaped title that still SAYS what is
+    wrong ("make test hangs") is a report, not a dump."""
+    text = str(text).strip()
+    return bool(_COMMANDISH_RE.match(text)) and not _COMPLAINT_RE.search(text)
+
+
+def _noise_flagged(g: ClaimedGripe) -> bool:
+    """The pre-filter over the gripe's title and first body line: a
+    ``noise`` verdict is honoured only on a flagged gripe, so a steered
+    reply can't mass-close real reports."""
+    first = next((ln for ln in g.body.splitlines() if ln.strip()), "")
+    return _commandish(g.title) or _commandish(first)
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,7 +681,7 @@ class ClaimedGripe:
     title: str
     body: str
     created_at: datetime
-    #: ``OPEN``/``FLAG`` tag values, namespaced (``open:thread:x``).
+    #: ``OPEN``/``FLAG`` tag values, namespaced (``OPEN:thread:x``).
     tags: frozenset[str]
     #: ``meta.dup_parents`` as written by ``gripe_parents`` — ``[]`` or
     #: absent when the parents pass hasn't run yet.
@@ -319,6 +692,13 @@ class ClaimedGripe:
     #: Outbound ``supersedes`` links — parked duplicates of this keeper.
     dup_count: int
     reopened: bool
+    #: Filed by the instance owner (``PRECIS_OWNER``, default ``reto``):
+    #: a ``not-a-bug``/``working-as-designed`` verdict on it keeps it
+    #: open + ``disagreement`` for the owner's ruling instead of closing
+    #: ``wontfix``. See :func:`_filed_by_owner` — the detection is
+    #: deliberately narrow (tags + ``refs.set_by``), so an undetectable
+    #: filer is *not* owner-filed.
+    filed_by_owner: bool
     #: The ``claimed_at`` stamp THIS tick wrote — the write tx checks it
     #: still matches, so a gripe closed or re-leased mid-call is skipped
     #: instead of being re-opened or drained under a foreign lease.
@@ -424,7 +804,7 @@ def _batch_rows(store: Store, claimed: list[tuple[int, str]]) -> list[ClaimedGri
         rows = conn.execute(
             """
             SELECT r.ref_id, coalesce(r.title, ''), r.created_at,
-                   coalesce(r.meta, '{}'::jsonb),
+                   coalesce(r.meta, '{}'::jsonb), r.set_by,
                    coalesce((SELECT c.text FROM chunks c
                               WHERE c.ref_id = r.ref_id
                                 AND c.chunk_kind = 'gripe_body'
@@ -444,7 +824,7 @@ def _batch_rows(store: Store, claimed: list[tuple[int, str]]) -> list[ClaimedGri
         ).fetchall()
     stamps = {int(i): s for i, s in claimed}
     by_id: dict[int, ClaimedGripe] = {}
-    for ref_id, title, created_at, meta, body, tags, dup_count in rows:
+    for ref_id, title, created_at, meta, set_by, body, tags, dup_count in rows:
         meta = meta if isinstance(meta, dict) else {}
         parents = meta.get("dup_parents") or ()
         checked = meta.get("dup_checked") or ()
@@ -460,8 +840,12 @@ def _batch_rows(store: Store, claimed: list[tuple[int, str]]) -> list[ClaimedGri
                 int(i) for i in checked if str(i).lstrip("-").isdigit()
             ),
             dup_count=int(dup_count),
-            reopened=f"flag:{_REOPENED_TAG}" in open_tags
-            or f"open:{_REOPENED_TAG}" in open_tags,
+            reopened=any(
+                t.split(":", 1)[1] == _REOPENED_TAG for t in open_tags if ":" in t
+            ),
+            filed_by_owner=_filed_by_owner(
+                set_by=str(set_by or ""), tags=open_tags, body=str(body)
+            ),
             claim_stamp=stamps[int(ref_id)],
         )
     # Claim order (reopened first, then oldest) drives the prompt order.
@@ -558,9 +942,25 @@ For EACH gripe decide:
   or cross-cutting.
 - severity: 1..5 — 5 wrong result or data loss, 4 a blocked workflow,
   3 degraded but workable, 2 papercut, 1 wish/polish.
-- verdict: "bug" or "not-a-bug". "not-a-bug" is a disagreement flag, NOT
-  a close — the gripe stays open for a human ruling.
-- reason: one short sentence.
+- verdict: one of "bug" | "not-a-bug" | "working-as-designed" |
+  "noise" | "fixed". Non-bug verdicts are EXPECTED outcomes of a batch
+  this size — do not force "bug":
+  - "bug": the report describes real broken behavior or a real gap.
+  - "not-a-bug": the report is mistaken — the complained-about
+    behavior does not exist or is already correct.
+  - "working-as-designed": the behavior exists and is deliberate.
+  - "noise": title/body is a bare command, path or log fragment with
+    NO actual complaint (a command dump, not a report) — honoured
+    only on a gripe whose header carries the prefilter line.
+  - "fixed": ONLY when the gripe's fix-evidence block lists a commit —
+    cite that commit's sha in "sha". Never say "fixed" without
+    listed evidence.
+  Closes: "fixed" (done when the cited commit is deployed, verify when
+  it is only on main), "noise", and "not-a-bug"/"working-as-designed"
+  all write wontfix with your reason — except a dispute on an
+  owner-filed gripe, which stays open for the owner's ruling.
+- reason: one short sentence (required for the closing verdicts — it
+  becomes the close comment).
 - recommend: REQUIRED when fix is "reto" — the one-line recommendation
   you would put to the human.
 - dups: when the gripe lists potential duplicate parents, one entry per
@@ -589,7 +989,9 @@ per gripe shown, exactly {n} entries:
       "cluster": "<slug>",
       "size": "S|M|L",
       "severity": <1-5>,
-      "verdict": "bug" | "not-a-bug",
+      "verdict": "bug" | "not-a-bug" | "working-as-designed" | "noise"
+                 | "fixed",
+      "sha": "<evidence sha — required for verdict=fixed>",
       "reason": "<one sentence>",
       "recommend": "<only for fix=reto>",
       "dups": [{{"parent": <gr id>, "same": true|false|"unsure",
@@ -606,13 +1008,21 @@ def _clean_untrusted(text: str, nonce: str) -> str:
     return str(text).replace(nonce, "")
 
 
-def _gripe_block(g: ClaimedGripe, now: datetime, nonce: str) -> str:
+def _gripe_block(
+    g: ClaimedGripe,
+    now: datetime,
+    nonce: str,
+    evidence: tuple[FixEvidence, ...] = (),
+    evidence_refs: tuple[str | None, str | None] = (None, None),
+) -> str:
     """One gripe's prompt section. The trusted header (id, age, dup
-    count, tags, reopen flag) sits OUTSIDE the quoted block; every
-    untrusted string — title, body, parent titles — sits INSIDE it. The
-    delimiter carries the per-tick ``nonce`` so a body can't close the
-    block and forge a sibling ``### gr<N>`` section or instructions that
-    steer the rest of the batch (Opus re-review item 7)."""
+    count, tags, reopen flag, owner flag, prefilter hint, fix evidence)
+    sits OUTSIDE the quoted block; every untrusted string — title, body,
+    parent titles — sits INSIDE it. The delimiter carries the per-tick
+    ``nonce`` so a body can't close the block and forge a sibling
+    ``### gr<N>`` section or instructions that steer the rest of the
+    batch (Opus re-review item 7). ``evidence_refs`` is
+    ``(deployed_ref, main_ref)`` for the evidence labels."""
     tags = " ".join(sorted(t.split(":", 1)[1] for t in g.tags)) or "(none)"
     head = (
         f"### gr{g.ref_id} — age {g.age_days(now):.1f}d, "
@@ -621,6 +1031,23 @@ def _gripe_block(g: ClaimedGripe, now: datetime, nonce: str) -> str:
     )
     if g.reopened:
         head += "REOPENED: a previous fix failed verification.\n"
+    if g.filed_by_owner:
+        head += "filed by the owner — a disagreement stays open for their ruling.\n"
+    if _noise_flagged(g):
+        head += (
+            "prefilter: title/body reads as a bare command or path — if "
+            'it states no complaint, verdict "noise".\n'
+        )
+    if evidence and not g.reopened:
+        deployed_ref, main_ref = evidence_refs
+        head += "fix-evidence (commit(s) citing this gripe in repo history):\n"
+        for ev in evidence:
+            where = (
+                f"DEPLOYED ({deployed_ref})"
+                if ev.deployed
+                else f"on {main_ref}, NOT yet deployed"
+            )
+            head += f'  - {ev.sha} "{ev.matched or ev.subject}" — {where}\n'
     return (
         head
         + f"--- gripe {nonce} (untrusted, quoted verbatim) ---\n"
@@ -636,6 +1063,7 @@ def build_prompt(
     threads: ThreadIndex,
     clusters: list[str],
     parent_titles: dict[int, str] | None = None,
+    evidence: EvidenceIndex | None = None,
     nonce: str | None = None,
 ) -> str:
     """The ONE batch prompt for the tick. Gripe text is quoted, never
@@ -646,8 +1074,19 @@ def build_prompt(
     nonce = nonce if nonce is not None else secrets.token_hex(4)
     items: list[str] = []
     titles = parent_titles or {}
+    refs = (
+        (evidence.deployed_ref, evidence.main_ref)
+        if evidence is not None
+        else (None, None)
+    )
     for g in gripes:
-        block = _gripe_block(g, now, nonce)
+        block = _gripe_block(
+            g,
+            now,
+            nonce,
+            evidence=evidence.by_gripe.get(g.ref_id, ()) if evidence else (),
+            evidence_refs=refs,
+        )
         seen = g.dup_checked
         pending = [
             p
@@ -688,6 +1127,24 @@ class DupVerdict:
     why: str
 
 
+#: Verdict vocabulary (dry-run ruling 2026-10-25): ``bug`` triages
+#: normally; the dispute pair ``not-a-bug``/``working-as-designed``
+#: closes ``wontfix`` unless the gripe is owner-filed (then it keeps
+#: ``triaged`` + ``disagreement`` for the Reto batch); ``noise`` closes
+#: ``wontfix`` but is honoured only on a pre-filtered gripe; ``fixed``
+#: closes ``done``/``verify`` and requires collected commit evidence.
+_VERDICTS = frozenset({"bug", "not-a-bug", "working-as-designed", "noise", "fixed"})
+_DISPUTES = frozenset({"not-a-bug", "working-as-designed"})
+#: ``verdict`` spellings normalized onto the canonical hyphenated forms.
+_VERDICT_ALIASES = {
+    "not_a_bug": "not-a-bug",
+    "not a bug": "not-a-bug",
+    "working_as_designed": "working-as-designed",
+    "working as designed": "working-as-designed",
+    "by design": "working-as-designed",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Verdict:
     """One gripe's validated triage answer."""
@@ -696,15 +1153,26 @@ class Verdict:
     cluster: str
     size: str
     severity: int
-    not_a_bug: bool
+    #: One of :data:`_VERDICTS`.
+    verdict: str
     reason: str
     recommend: str | None
     dups: tuple[DupVerdict, ...]
+    #: The citing commit sha for a ``fixed`` verdict — a prefix of (or
+    #: equal to) one of the gripe's collected evidence shas.
+    fix_sha: str | None
+
+    @property
+    def not_a_bug(self) -> bool:
+        """Back-compat alias: a dispute verdict (``not-a-bug`` or
+        ``working-as-designed``)."""
+        return self.verdict in _DISPUTES
 
 
 def _needs_reto(v: Verdict) -> bool:
     """Does this verdict land in the Reto batch? ``fix:reto`` always;
-    per spec an ``unsure`` dedup verdict at severity ≥ 4 does too."""
+    per spec an ``unsure`` dedup verdict at severity ≥ 4 does too.
+    Owner-filed disputes are added by the caller (they need the gripe)."""
     return v.fix == "reto" or (v.severity >= 4 and any(d.same is None for d in v.dups))
 
 
@@ -727,8 +1195,34 @@ def _slugify(value: Any) -> str:
 _extract_json = extract_json_object
 
 
+def _match_evidence(
+    g: ClaimedGripe, sha: Any, evidence: EvidenceIndex | None
+) -> FixEvidence | None:
+    """The :class:`FixEvidence` a ``fixed`` verdict names, or ``None``.
+
+    A ``fixed`` verdict is only honourable when the collector found a
+    citing commit for THIS gripe and the verdict's ``sha`` names it:
+    a hex string of ≥7 chars matching exactly ONE evidence entry —
+    either direction's prefix (the model's abbrev of the evidence sha,
+    or the model's longer form the abbrev prefixes). No evidence or an
+    ambiguous prefix → ``None``: a squash-merge that dropped the id
+    leaves the gripe to normal triage, and a model can never close on
+    its own say-so."""
+    raw = str(sha or "").strip().lower()
+    if len(raw) < 7 or not re.fullmatch(r"[0-9a-f]+", raw):
+        return None
+    hits = [
+        ev
+        for ev in ((evidence.by_gripe.get(g.ref_id) or ()) if evidence else ())
+        if _same_sha(ev.sha, raw)
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 def parse_verdicts(
-    data: Any, gripes: list[ClaimedGripe]
+    data: Any,
+    gripes: list[ClaimedGripe],
+    evidence: EvidenceIndex | None = None,
 ) -> tuple[dict[int, Verdict], list[int]]:
     """``{ref_id: Verdict}`` + the claimed ids with no usable verdict.
 
@@ -737,6 +1231,11 @@ def parse_verdicts(
     dropped), closed vocabularies, cluster slug sanitization, and —
     for ``dups`` — that each parent id was actually offered in that
     gripe's ``dup_parents`` (an invented pair is dropped, not judged).
+    An inadmissible ``fixed`` (no evidence, ambiguous sha, or a
+    reopened gripe) or ``noise`` (pre-filter never flagged) verdict is
+    downgraded to ``bug`` — normal triage, never a close and never a
+    miss (a model repeating it can't strand the gripe on
+    ``triage_misses``).
     """
     claimed = {g.ref_id: g for g in gripes}
     verdicts: dict[int, Verdict] = {}
@@ -760,7 +1259,35 @@ def parse_verdicts(
         if fix not in _FIX_TYPES or size not in _SIZES or not 1 <= severity <= 5:
             continue
         raw_verdict = str(item.get("verdict", "bug")).strip().lower()
-        not_a_bug = raw_verdict in ("not-a-bug", "not_a_bug", "not a bug")
+        verdict = _VERDICT_ALIASES.get(raw_verdict, raw_verdict)
+        if verdict not in _VERDICTS:
+            continue
+        ev: FixEvidence | None = None
+        if verdict == "fixed":
+            if g.reopened:
+                # A reopened gripe's citing commit is the fix that
+                # FAILED — ``fixed`` is never honoured on it (Opus
+                # review): the verdict degrades to a normal bug triage.
+                log.warning(
+                    "gripe_triage: gr%d fixed verdict on a reopened gripe — bug",
+                    gid,
+                )
+                verdict = "bug"
+            else:
+                ev = _match_evidence(g, item.get("sha"), evidence)
+                if ev is None:
+                    log.warning(
+                        "gripe_triage: gr%d fixed verdict without admissible "
+                        "evidence — downgraded to bug",
+                        gid,
+                    )
+                    verdict = "bug"
+        elif verdict == "noise" and not _noise_flagged(g):
+            log.warning(
+                "gripe_triage: gr%d noise verdict on an unflagged gripe — bug",
+                gid,
+            )
+            verdict = "bug"
         rec = item.get("recommend")
         recommend = str(rec).strip() or None if rec is not None else None
         if fix == "reto" and recommend is None:
@@ -800,10 +1327,11 @@ def parse_verdicts(
             cluster=_slugify(item.get("cluster")),
             size=size,
             severity=severity,
-            not_a_bug=not_a_bug,
+            verdict=verdict,
             reason=reason,
             recommend=recommend,
             dups=tuple(dups),
+            fix_sha=ev.sha if ev is not None else None,
         )
     return verdicts, sorted(set(claimed) - set(verdicts))
 
@@ -833,14 +1361,28 @@ def _prio_bands() -> tuple[tuple[float, int], ...]:
     return _PRIO_BANDS_DEFAULT
 
 
+def _band_for(score: float, bands: tuple[tuple[float, int], ...]) -> int:
+    """Index of the first band whose floor ``score`` meets, else
+    ``len(bands)`` (the :data:`_PRIO_DEFAULT` slot below the ladder)."""
+    for i, (floor, _prio) in enumerate(bands):
+        if score >= floor:
+            return i
+    return len(bands)
+
+
 def prio_for(severity: int, dups: int, age_days: float) -> int:
     """``severity × (1 + dups) × (1 + age_days/7)`` bucketed to PRIO
-    1..10 (lower is hotter) by the configured band ladder."""
-    score = severity * (1 + max(0, dups)) * (1 + max(0.0, age_days) / 7.0)
-    for floor, prio in _prio_bands():
-        if score >= floor:
-            return prio
-    return _PRIO_DEFAULT
+    1..10 (lower is hotter) by the configured band ladder. Age alone may
+    raise the verdict at most ONE band past what severity and parked
+    dups give (dry-run ruling 2026-10-25: an old papercut must not climb
+    to PRIO 2 on age alone)."""
+    bands = _prio_bands()
+    base = _band_for(severity * (1 + max(0, dups)), bands)
+    aged = _band_for(
+        severity * (1 + max(0, dups)) * (1 + max(0.0, age_days) / 7.0), bands
+    )
+    i = max(base - 1, aged)
+    return bands[i][1] if i < len(bands) else _PRIO_DEFAULT
 
 
 # ── write-back ────────────────────────────────────────────────────────────
@@ -898,7 +1440,9 @@ def _write_verdict(
     *,
     reto: bool,
     reto_overflow: bool = False,
-) -> bool:
+    may_close: bool = True,
+    evidence: FixEvidence | None = None,
+) -> str | None:
     """The per-gripe write tx (spec: "the write tx replaces tags/PRIO,
     stamps ``triaged_at``, clears ``claimed_at``"). Every write is a
     replace, so a doubled tick — or a re-claim after a crashed write —
@@ -908,11 +1452,24 @@ def _write_verdict(
     candidate without ``fix:reto`` must not go silent). Both live under
     the ``reto`` replace prefix, so a re-triaged gripe sheds either.
 
+    Close verdicts (dry-run ruling) write only when the caller's
+    ``may_close`` allows it — a verdict held back (no reason, a
+    reopened or owner-filed gripe, or past the per-tick dispute cap)
+    stays ``triaged`` + ``disagreement`` for a human ruling instead.
+    ``fixed`` writes ``done`` + ``resolved: <sha> <subject>`` when the
+    cited commit is an ancestor of the deployed ref, else ``verify`` +
+    a ``fix-sha:`` note; ``noise`` and a non-owner dispute write
+    ``wontfix`` + a ``resolved: wontfix — …`` reason. Every
+    ``resolved:`` line carries the UTC close date and is appended LAST
+    and unconditionally — always the gripe's newest comment (the
+    ``_require_resolved_comment`` convention; Opus review item 6 — the
+    old text-dedup could swallow a re-close).
+
     Ownership guard (Opus review): the ``FOR UPDATE`` read requires
     ``STATUS:open`` AND ``pipeline.claimed_at`` == the stamp this tick
     wrote. A gripe closed or re-leased while the call ran is skipped —
     never re-opened, its lease left to whoever now holds it. Returns
-    False on that stale skip."""
+    the STATUS written (``None`` on that stale skip)."""
     from precis.store.types import Tag
 
     stamp = when.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -932,7 +1489,7 @@ def _write_verdict(
             (g.ref_id, g.claim_stamp),
         ).fetchone()
         if row is None:
-            return False
+            return None
         meta = _drop_lease(dict(row[0] or {}))
         pipeline = meta.get("pipeline")
         meta["pipeline"] = {
@@ -963,6 +1520,28 @@ def _write_verdict(
             meta["dup_suggested"] = sorted(suggested.values(), key=lambda e: e["id"])
         if checked:
             meta["dup_checked"] = sorted(checked)
+        # The verdict → STATUS outcome + its close comment(s) (appended
+        # last so a `resolved:` stays the newest comment). ``may_close``
+        # is the caller's per-tick decision — reason present, not
+        # reopened, not owner-filed, inside the dispute cap.
+        day = when.strftime("%Y-%m-%d")
+        status = "triaged"
+        close: list[str] = []
+        if may_close and v.verdict == "fixed":
+            if evidence is not None and evidence.deployed:
+                status = "done"
+                close.append(f"resolved: {evidence.sha} {evidence.subject} ({day})")
+            else:
+                status = "verify"
+                sha = evidence.sha if evidence is not None else (v.fix_sha or "?")
+                close.append(f"fix-sha: {sha}")
+                close.append("triage: fix cites main — landed, not yet deployed")
+        elif may_close and v.verdict == "noise":
+            status = "wontfix"
+            close.append(f"resolved: wontfix — noise: {v.reason} ({day})")
+        elif may_close and v.verdict in _DISPUTES:
+            status = "wontfix"
+            close.append(f"resolved: wontfix — {v.verdict}: {v.reason} ({day})")
         # Replace the OPEN triage tags + a stale disagreement flag.
         conn.execute(
             """
@@ -976,7 +1555,7 @@ def _write_verdict(
         )
         store.add_tag(
             g.ref_id,
-            Tag.closed("STATUS", "triaged"),
+            Tag.closed("STATUS", status),
             set_by="system",
             replace_prefix=True,
             conn=conn,
@@ -995,16 +1574,24 @@ def _write_verdict(
             store.add_tag(
                 g.ref_id, Tag.open("reto:overflow"), set_by="system", conn=conn
             )
-        if v.not_a_bug:
+        if status == "triaged" and v.verdict != "bug":
+            # A close verdict held back — no reason, a reopened or
+            # owner-filed gripe, or past the dispute cap: stays open
+            # under the disagreement flag for a human ruling, never
+            # silently (Opus review item 4).
             store.add_tag(
                 g.ref_id, Tag.flag("disagreement"), set_by="system", conn=conn
             )
             comments.append(
-                f"{_TRIAGE_PREFIX}not a bug - {v.reason or '(no reason given)'}"
+                f"{_TRIAGE_PREFIX}{v.verdict.replace('-', ' ')} - "
+                f"{v.reason or '(no reason given)'}"
             )
         store.set_prio(g.ref_id, prio, conn=conn)
         # A doubled write (claim re-won after a crashed first write)
-        # must not re-post comments already on the gripe.
+        # must not re-post comments already on the gripe — but the
+        # close lines append unconditionally: a `resolved:` re-close
+        # carries its sha + UTC date, stays unique, and must end up the
+        # newest comment (the `_require_resolved_comment` convention).
         existing = {
             str(r[0])
             for r in conn.execute(
@@ -1016,11 +1603,13 @@ def _write_verdict(
         for text in comments:
             if text not in existing:
                 pos = _add_comment(conn, store, g.ref_id, text, pos)
+        for text in close:
+            pos = _add_comment(conn, store, g.ref_id, text, pos)
         conn.execute(
             "UPDATE refs SET meta = %s WHERE ref_id = %s",
             (Jsonb(meta), g.ref_id),
         )
-    return True
+    return status
 
 
 def _record_miss(store: Store, g: ClaimedGripe, when: datetime) -> bool:
@@ -1270,6 +1859,7 @@ def run_gripe_triage_pass(
     llm: Any = None,
     notify: bool = True,
     queue_dir: Path | None = None,
+    repo: Path | None = None,
 ) -> BatchResult:
     """One triage tick. Dark (all zeros) unless
     :func:`gripe_triage_enabled`. ``claimed`` = gripes leased this fire,
@@ -1325,12 +1915,22 @@ def run_gripe_triage_pass(
     gripes = _batch_rows(store, claimed)
     if threads is None:
         threads = load_threads()
+    # Already-fixed evidence, from the same clone the threads hint
+    # reads (``PRECIS_THREADS_DIR``'s checkout, else this package's
+    # repo root): commits citing gr<id> on the deployed and main refs.
+    # Reopened gripes are skipped outright — their citing commit is the
+    # fix that FAILED, so it is never admissible evidence anyway.
+    if repo is None:
+        td = _threads_dir()
+        repo = td if td.is_dir() else _REPO_ROOT
+    evidence = collect_fix_evidence(repo, [g.ref_id for g in gripes if not g.reopened])
     prompt = build_prompt(
         gripes,
         now=when,
         threads=threads,
         clusters=_live_clusters(store),
         parent_titles=_parent_titles(store, gripes),
+        evidence=evidence,
     )
     res = llm(prompt) if llm is not None else _route_call(prompt, len(gripes))
     if getattr(res, "timed_out", False) or getattr(res, "interrupted", False):
@@ -1445,11 +2045,14 @@ def run_gripe_triage_pass(
     if probe:
         store.set_setting(_BLOCKED_KEY, "")
         log.warning("gripe_triage: probe succeeded — halt cleared")
-    verdicts, misses = parse_verdicts(data, gripes)
+    verdicts, misses = parse_verdicts(data, gripes, evidence)
     ok = failed = stale = 0
+    closed: dict[str, int] = {}
     reto: list[tuple[ClaimedGripe, Verdict]] = []
     reto_budget = _RETO_CAP
     reto_overflow = 0
+    dispute_budget = _DISPUTE_CAP
+    dispute_overflow = 0
     for g in gripes:
         v = verdicts.get(g.ref_id)
         if v is None:
@@ -1459,7 +2062,26 @@ def run_gripe_triage_pass(
             except Exception:
                 log.exception("gripe_triage: miss write failed for gr%d", g.ref_id)
             continue
-        wants_reto = _needs_reto(v)
+        # Close gates (Opus review 4): a closing verdict needs a reason
+        # and is never written on a reopened gripe — its old ruling
+        # already failed once (a reopened gripe's ``fixed`` never even
+        # reaches here: parse downgrades it). A dispute additionally
+        # needs a non-owner gripe inside the per-tick cap. A held
+        # verdict stays triaged + disagreement instead of closing.
+        may_close = bool(v.reason) and not g.reopened
+        if v.verdict in _DISPUTES and may_close:
+            may_close = not g.filed_by_owner
+            if may_close and dispute_budget <= 0:
+                may_close = False
+                dispute_overflow += 1
+            elif may_close:
+                dispute_budget -= 1
+        closing = may_close and v.verdict != "bug"
+        # Owner-filed disputes go to the Reto batch (a machine never
+        # closes the owner's own report on a disagreement) — and NO
+        # verdict that closes gets reto:ask or a digest entry (Opus
+        # review 7): a written done/verify/wontfix needs no ruling.
+        wants_reto = not closing and (_needs_reto(v) or v.verdict in _DISPUTES)
         ask = wants_reto and reto_budget > 0
         if wants_reto and not ask:
             reto_overflow += 1
@@ -1471,7 +2093,11 @@ def run_gripe_triage_pass(
                 _RETO_CAP,
             )
         try:
-            if not _write_verdict(
+            ev = next(
+                (e for e in evidence.by_gripe.get(g.ref_id, ()) if e.sha == v.fix_sha),
+                None,
+            )
+            written = _write_verdict(
                 store,
                 g,
                 v,
@@ -1479,10 +2105,15 @@ def run_gripe_triage_pass(
                 when,
                 reto=ask,
                 reto_overflow=wants_reto and not ask,
-            ):
+                may_close=may_close,
+                evidence=ev,
+            )
+            if written is None:
                 stale += 1
                 continue
             ok += 1
+            if written != "triaged":
+                closed[written] = closed.get(written, 0) + 1
         except Exception:
             log.exception("gripe_triage: write failed for gr%d", g.ref_id)
             failed += 1
@@ -1504,9 +2135,18 @@ def run_gripe_triage_pass(
             1 for v in verdicts.values() for d in v.dups if d.same is True
         ),
         "reto": len(reto),
+        **{f"closed_{s}": n for s, n in sorted(closed.items())},
     }
     if reto_overflow:
         extra["reto_overflow"] = reto_overflow
+    if dispute_overflow:
+        extra["dispute_overflow"] = dispute_overflow
+        if notify:
+            _post_board(
+                "waiting",
+                f"gripe triage: {dispute_overflow} dispute close(s) past "
+                f"per-tick cap {_DISPUTE_CAP} — held as disagreement",
+            )
     log.info(
         "gripe_triage: claimed=%d ok=%d failed=%d misses=%d reto=%d",
         len(gripes),

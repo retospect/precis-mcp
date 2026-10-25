@@ -287,10 +287,20 @@ async def file_gripe(request: Request, text: str = Form(...)) -> Response:
     """
     if not text.strip():
         return RedirectResponse(url="/gripes", status_code=303)
+    user = current_user(request)
+    args: dict[str, Any] = {
+        "kind": "gripe",
+        "text": _attribute(text, _filed_by(request)),
+    }
+    if user is not None:
+        # Server-side filer tag — the trusted "filed by" channel (the
+        # body attribution line is untrusted text; triage's owner
+        # rulings key on the tag).
+        args["tags"] = [f"user:{user.login}"]
     return await redirect_or_error(
         request,
         "put",
-        {"kind": "gripe", "text": _attribute(text, _filed_by(request))},
+        args,
         redirect="/gripes",
         error_title="Filing error",
     )
