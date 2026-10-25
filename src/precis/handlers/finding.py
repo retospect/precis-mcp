@@ -1026,7 +1026,16 @@ class FindingHandler(NumericRefHandler):
         slug resolves like it does on ``get``."""
         ref = self._resolve_live_ref(self._coerce_id(self._resolve_pub_id_slug(id)))
         resp = super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
-        return Response(body=_hub_eye_header(self.store, ref) + resp.body)
+        header = _hub_eye_header(self.store, ref)
+        # gr515633: the categorizer hint line, but only once the operator
+        # opted the kind in (``categorize_kind:finding`` — findings are
+        # default-OFF in ``workers/_claim.py``'s OPT_IN_KINDS).
+        from precis.categorizers import ref_hint_line
+
+        hint = ref_hint_line(self.store, ref)
+        if hint:
+            header += hint + "\n\n"
+        return Response(body=header + resp.body)
 
     def _find_resolve_ref(self, id: Any) -> Ref:
         """pub_id slug resolves like it does on ``get``."""

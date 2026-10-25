@@ -671,6 +671,49 @@ def _ref_carries_ns(hub: Any, kind: str, ref_id: Any, ns: str) -> bool:
     return False
 
 
+#: Search kinds the categorizer coverage note can appear on (gr515633
+#: review): the axes' populations are paper+patent refs (finding when
+#: opted in) and their chunks — on any other kind the note's math names
+#: a corpus the search didn't even touch.
+_CATEGORIZER_NOTE_KINDS = frozenset({"paper", "patent", "finding"})
+
+
+def _with_categorizer_filter_notes(
+    runtime: Any, args: dict[str, Any], response: Response
+) -> Response:
+    """Append the categorizer coverage note to a search response (gr515633).
+
+    ``tags=[<NS>:<value>]`` on a below-threshold categorizer axis is an
+    AND/exclusive filter over a partially-classified corpus — the
+    unclassified share is dropped without a word. The note names it.
+    Best-effort: a coverage-read failure (no store, pre-migration schema,
+    DB blip) leaves the response untouched rather than breaking a search.
+    """
+    store = runtime.hub.store
+    if store is None or not args.get("tags"):
+        return response
+    if _ERROR_TYPE_RE.match(response.body or ""):
+        return response
+    kind_arg = args.get("kind")
+    kinds = (
+        {runtime._expand_kind_code(k.strip()) for k in kind_arg.split(",") if k.strip()}
+        if isinstance(kind_arg, str)
+        else set()
+    )
+    if not kinds or not kinds <= _CATEGORIZER_NOTE_KINDS:
+        return response
+    try:
+        from precis.categorizers import categorizer_filter_notes
+
+        notes = categorizer_filter_notes(store, args.get("tags"))
+    except Exception:
+        log.exception("categorizer filter-note read failed; leaving body as-is")
+        return response
+    if not notes:
+        return response
+    return replace(response, body=response.body + "\n\n" + "\n".join(notes))
+
+
 def _refuse_envelope_denied_verb(verb: str, args: dict[str, Any], hub: Any) -> None:
     """Raise :class:`Denied` when the run's envelope forbids ``verb``.
 
@@ -1061,6 +1104,13 @@ class DispatchMixin(RuntimeShape):
                 _refuse_envelope_denied_verb(verb, args, self.hub)
                 _refuse_agent_secrets(verb, args, self.hub)
                 response = self._dispatch_with_retry(verb, args)
+                # gr515633 ask 2: a ``tags=`` that names a categorizer
+                # axis silently drops the still-unclassified share of the
+                # corpus (the filter is AND/exclusive) — append the
+                # coverage note while the axis sits below the
+                # filter-ready bar. Best-effort: never fails a search.
+                if verb == "search":
+                    response = _with_categorizer_filter_notes(self, args, response)
                 # Chunk over-large bodies so they don't blow the
                 # MCP stdio frame. On a long-lived runtime (MCP
                 # server / `precis repl`) the pagination cache stashes

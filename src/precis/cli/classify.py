@@ -1,5 +1,5 @@
-"""``precis classify {role3,topics}`` — targeted-scope drivers for the two
-Controlled chunk tagging chunk/paper classifier cascades (``workers/classify.py``,
+"""``precis classify {role3,topics,progress}`` — classifier-cascade drivers
+and the auth-free coverage readout (``workers/classify.py``,
 ``workers/classify_topics.py``).
 
 The worker passes (``--only classify`` / ``--only classify_topics``) sweep the
@@ -17,6 +17,11 @@ claims nothing.
     precis classify topics --all
     precis classify topics --cites-of 43020
     precis classify topics --topic nanobuds
+
+``progress`` is the read side — one ``done/total`` line per categorizer,
+reusing :func:`precis.categorizers.progress_rows` (the same counts the
+``/categorizers/progress`` web fragment renders), so coverage is checkable
+without web auth (gr515633 ask 4).
 """
 
 from __future__ import annotations
@@ -73,7 +78,8 @@ def _add_scope_args(sub: Any, *, include_all: bool) -> None:
 
 def add_parser(subparsers: Any) -> None:
     p = subparsers.add_parser(
-        "classify", help="Chunk/paper classifier cascades — targeted-scope drivers."
+        "classify",
+        help="Classifier cascades — targeted-scope drivers + coverage readout.",
     )
     csub = p.add_subparsers(dest="classify_cmd", required=True)
 
@@ -90,6 +96,13 @@ def add_parser(subparsers: Any) -> None:
         "specific set of papers, or --all for the global sweep.",
     )
     _add_scope_args(t, include_all=True)
+
+    pr = csub.add_parser(
+        "progress",
+        help="Coverage readout — one done/total/last-minted line per "
+        "categorizer (the /categorizers progress numbers, no web auth).",
+    )
+    pr.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
 
 def _resolve_cites_of(store: Store, ref_id: int) -> list[int]:
@@ -240,6 +253,21 @@ def _cmd_topics(store: Store, args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_progress(store: Store, args: argparse.Namespace) -> None:
+    from precis import categorizers
+
+    for name, row in categorizers.progress_rows(store).items():
+        if row.get("error"):
+            print(f"{name}: error")
+            continue
+        done, total = int(row["done"]), int(row["total"])
+        pct = f"{100.0 * done / total:.0f}%" if total else "n/a"
+        last = row.get("last_minted")
+        last_s = last.isoformat() if last is not None else "never"
+        hits = f" hits={int(row['hit_count'])}" if "hit_count" in row else ""
+        print(f"{name}: {done}/{total} ({pct}){hits} last_minted={last_s}")
+
+
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     bind_process_store(store)
@@ -247,3 +275,5 @@ def run(args: argparse.Namespace) -> None:
         _cmd_role3(store, args)
     elif args.classify_cmd == "topics":
         _cmd_topics(store, args)
+    elif args.classify_cmd == "progress":
+        _cmd_progress(store, args)

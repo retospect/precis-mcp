@@ -17,6 +17,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis import categorizers as catz
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.service_config import (
@@ -112,7 +113,7 @@ def test_axis_row_service_mapping() -> None:
     """Each non-cascade axis governs its own ``axis:<id>`` service;
     role3/junk both map to the shared ``classify`` cascade service."""
     effective: dict[str, dict[str, object]] = {}
-    rows = {str(a["id"]): cz._axis_row(a, effective) for a in cz._load_axes()}
+    rows = {str(a["id"]): cz._axis_row(a, effective) for a in catz.load_axes()}
     assert rows["domain"]["service"] == "axis:domain"
     assert rows["material"]["service"] == "axis:material"
     assert rows["role3"]["service"] == "classify"
@@ -128,7 +129,7 @@ def test_topic_row_service_mapping() -> None:
     longer the shared ``classify_topics`` service — and carries no
     shared-toggle note."""
     effective: dict[str, dict[str, object]] = {}
-    rows = [cz._topic_row(t, effective, None) for t in cz._load_topics()]
+    rows = [cz._topic_row(t, effective, None) for t in catz.load_topics()]
     assert rows
     assert all(r["service"] == f"topic:{r['name']}" for r in rows)
     assert all(r["shared_note"] is None for r in rows)
@@ -139,7 +140,7 @@ def test_axis_row_includes_prompt_preview() -> None:
     the /categorizers hover popover, built in-process from the real
     ``workers/axis_pass.prompt_preview``."""
     effective: dict[str, dict[str, object]] = {}
-    rows = {str(a["id"]): cz._axis_row(a, effective) for a in cz._load_axes()}
+    rows = {str(a["id"]): cz._axis_row(a, effective) for a in catz.load_axes()}
     preview = rows["domain"]["prompt_preview"]
     assert preview is not None
     assert preview["system"]
@@ -152,7 +153,7 @@ def test_topic_row_includes_passed_through_prompt_preview() -> None:
     taxonomy) and threaded through unchanged."""
     effective: dict[str, dict[str, object]] = {}
     shared_preview = {"system": "sys", "user": "usr"}
-    rows = [cz._topic_row(t, effective, shared_preview) for t in cz._load_topics()]
+    rows = [cz._topic_row(t, effective, shared_preview) for t in catz.load_topics()]
     assert rows
     assert all(r["prompt_preview"] == shared_preview for r in rows)
 
@@ -161,7 +162,7 @@ def test_allowed_services_includes_per_topic_and_kill_switch() -> None:
     """Every topic gets its own ``topic:<slug>`` service, and the
     shared ``classify_topics`` service is retained as the global
     kill-switch target."""
-    allowed = cz._allowed_services()
+    allowed = catz.allowed_services()
     assert "topic:nh3-synthesis" in allowed
     assert "classify_topics" in allowed
 
@@ -256,9 +257,9 @@ def test_chunk_axis_progress_counts_tagged_over_eligible(store: Store) -> None:
 
     store.add_tag(ref.id, Tag.closed("ROLE3", "own"), pos=0, set_by="agent")
 
-    chunk_total = cz._chunk_eligible_total(store)
+    chunk_total = catz.chunk_eligible_total(store)
     assert chunk_total >= 2
-    done, total, last_ts = cz._chunk_axis_progress(store, "ROLE3", chunk_total)
+    done, total, last_ts = catz.chunk_axis_progress(store, "ROLE3", chunk_total)
     assert done >= 1
     assert total == chunk_total
     assert done <= total
@@ -276,8 +277,8 @@ def test_ref_axis_progress_dormant_reads_zero(store: Store) -> None:
     """No axis writes a ref-level closed tag yet (the non-role3/junk axes
     are default-OFF and nothing has run them) — the query must still run
     cleanly and report 0."""
-    total = cz._paper_patent_total(store)
-    done, reported_total, last_ts = cz._ref_axis_progress(store, "DOMAIN", total)
+    total = catz.paper_patent_total(store)
+    done, reported_total, last_ts = catz.ref_axis_progress(store, "DOMAIN", total)
     assert done == 0
     assert reported_total == total
     assert last_ts is None
@@ -288,18 +289,18 @@ def test_topic_hit_count_and_marker_done(store: Store) -> None:
         kind="paper", slug="cz-test-mof-paper", title="a mof paper", meta={}
     )
     store.add_tag(ref.id, Tag.open("topic:mof"), set_by="agent")
-    marker_value = cz._current_marker_value(["mof"])
+    marker_value = catz.current_marker_value(["mof"])
     assert marker_value is not None
     store.add_tag(
-        ref.id, Tag.closed(cz._TOPIC_MARKER_NAMESPACE, marker_value), set_by="agent"
+        ref.id, Tag.closed(catz.TOPIC_MARKER_NAMESPACE, marker_value), set_by="agent"
     )
 
-    hit_count, last_ts = cz._topic_hit_count(store, "mof")
+    hit_count, last_ts = catz.topic_hit_count(store, "mof")
     assert hit_count >= 1
     assert last_ts is not None
-    assert cz._topics_marker_done(store, marker_value) >= 1
+    assert catz.topics_marker_done(store, marker_value) >= 1
     # A slug nothing was tagged with reads 0, not an error.
-    no_hit_count, no_last_ts = cz._topic_hit_count(store, "no-such-topic-slug")
+    no_hit_count, no_last_ts = catz.topic_hit_count(store, "no-such-topic-slug")
     assert no_hit_count == 0
     assert no_last_ts is None
 
@@ -334,7 +335,7 @@ def test_progress_fragment_shows_last_minted_timestamp(
         conn.commit()
     store.add_tag(ref.id, Tag.closed("ROLE3", "own"), pos=0, set_by="agent")
 
-    progress = cz._progress_rows(store)
+    progress = catz.progress_rows(store)
     assert progress["role3"]["last_minted"] is not None
     # An axis nothing has ever tagged has no minted timestamp.
     assert progress["domain"]["last_minted"] is None
@@ -367,19 +368,19 @@ def test_effective_state_reflects_service_config(store: Store) -> None:
     try:
         # A prio>=1 row forces a default-OFF axis ON, and is flagged overridden.
         set_service_prio(store, ALL_HOSTS, "axis:material", 5, actor="test")
-        eff = cz._effective_state(store)
+        eff = catz.effective_state(store)
         assert eff["axis:material"]["enabled"] is True
         assert eff["axis:material"]["overridden"] is True
 
         # A prio 0 row is the live OFF switch.
         set_service_prio(store, ALL_HOSTS, "axis:material", 0, actor="test")
-        assert cz._effective_state(store)["axis:material"]["enabled"] is False
+        assert catz.effective_state(store)["axis:material"]["enabled"] is False
 
         # Overriding the shared `classify` cascade flips BOTH role3 and junk
         # rows (they map to the one service), reflected in the rendered rows.
         set_service_prio(store, ALL_HOSTS, "classify", 5, actor="test")
-        eff = cz._effective_state(store)
-        rows = {str(a["id"]): cz._axis_row(a, eff) for a in cz._load_axes()}
+        eff = catz.effective_state(store)
+        rows = {str(a["id"]): cz._axis_row(a, eff) for a in catz.load_axes()}
         assert rows["role3"]["status"] == "active"
         assert rows["junk"]["status"] == "active"
     finally:
@@ -392,12 +393,12 @@ def test_effective_state_includes_independent_per_topic_rows(store: Store) -> No
     topic ON does NOT flip a sibling topic (the old shared-toggle behavior
     this step replaces)."""
     try:
-        eff = cz._effective_state(store)
+        eff = catz.effective_state(store)
         assert "topic:nh3-synthesis" in eff
         assert "topic:mof" in eff
 
         set_service_prio(store, ALL_HOSTS, "topic:nh3-synthesis", 5, actor="test")
-        eff = cz._effective_state(store)
+        eff = catz.effective_state(store)
         assert eff["topic:nh3-synthesis"]["enabled"] is True
         assert eff["topic:nh3-synthesis"]["overridden"] is True
         # A sibling topic's state is untouched by the flip above.
@@ -513,8 +514,8 @@ def test_concurrency_endpoint_writes_row_and_rejects_unknown_service(
 def test_axis_row_reports_concurrency(store: Store) -> None:
     try:
         set_service_concurrency(store, ALL_HOSTS, "classify", 4, actor="test")
-        eff = cz._effective_state(store)
-        rows = {str(a["id"]): cz._axis_row(a, eff) for a in cz._load_axes()}
+        eff = catz.effective_state(store)
+        rows = {str(a["id"]): cz._axis_row(a, eff) for a in catz.load_axes()}
         assert rows["role3"]["concurrency"] == 4
         assert rows["junk"]["concurrency"] == 4
     finally:

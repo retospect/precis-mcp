@@ -290,7 +290,7 @@ COMMANDS: tuple[Command, ...] = (
     _c(
         "classify",
         "classify",
-        "Chunk/paper classifier cascades — targeted-scope drivers.",
+        "Classifier cascades — targeted-scope drivers + coverage readout.",
     ),
     _c("llm", "llm", "LLM catalog — model choice as a queryable resource."),
     _c(

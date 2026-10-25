@@ -607,9 +607,8 @@ class PatentHandler(Handler):
         # one sentence only when OPS didn't serve description or
         # claims at ingest time, so the agent knows what happened
         # and whether to expect an auto-retry.
-        open_tags = {
-            t.value for t in self.store.tags_for(ref.id) if t.namespace == "open"
-        }
+        ref_tags = self.store.tags_for(ref.id)
+        open_tags = {t.value for t in ref_tags if t.namespace == "open"}
         if FULLTEXT_UNAVAILABLE_TAG in open_tags:
             lines.append("")
             lines.append(
@@ -623,6 +622,15 @@ class PatentHandler(Handler):
             lines.append(
                 f"_full text not yet indexed by OPS - queued for auto-retry on {when}_"
             )
+
+        # gr515633: the categorizer hint line — for patents this is the
+        # topic: axis (ref-level axes claim papers only); marked as a
+        # machine filter hint, not curated truth.
+        from precis.categorizers import ref_hint_line
+
+        hint = ref_hint_line(self.store, ref, tags=ref_tags)
+        if hint:
+            lines.append(hint)
 
         abstract = meta.get("abstract")
         if abstract:

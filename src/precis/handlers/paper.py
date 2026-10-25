@@ -4107,6 +4107,14 @@ class PaperHandler(Handler):
             lines.append(f"doi: {doi}")
         lines.extend(self._si_overview_lines(ref))
         lines.extend(self._overview_meta_lines(ref))
+        # gr515633: the categorizer hint line — enabled ref-level axes +
+        # topic: tags, "(not yet classified)" per missing axis. Machine
+        # output, marked as a filter hint, not curated truth.
+        from precis.categorizers import ref_hint_line
+
+        hint = ref_hint_line(self.store, ref)
+        if hint:
+            lines.append(hint)
         lines.append("")
         lines.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
         abstract = meta.get("abstract")
