@@ -79,6 +79,28 @@ def test_for_hook_in_sync_is_silent(rig: dict[str, str]) -> None:
     assert r.stdout == ""
 
 
+def test_for_hook_drift_is_one_line(rig: dict[str, str]) -> None:
+    _copy_hook(rig, "read-dedup.py", "# stale copy\n")
+    r = _run(rig, "--for-hook")
+    assert r.returncode == 0
+    assert r.stdout == "hook-sync: 1 global hooks stale — run scripts/hook-sync\n"
+
+
+def test_closed_pipe_is_quiet(rig: dict[str, str]) -> None:
+    _copy_hook(rig, "read-dedup.py", "# stale copy\n")
+    p = subprocess.run(
+        f'bash "{SCRIPT}" | head -1 >/dev/null',
+        shell=True,
+        env={**os.environ, **rig},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert p.stderr == ""
+
+
 def test_drifted_copy_reports_the_diff_and_cp(rig: dict[str, str]) -> None:
     g = _copy_hook(rig, "read-dedup.py", "# stale copy\n")
     r = _run(rig)
