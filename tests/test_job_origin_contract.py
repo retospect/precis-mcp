@@ -49,6 +49,11 @@ _ALLOWED_UNRESOLVED: dict[tuple[str, str], tuple[str, int]] = {
         "lang.kind — a diagram language's own ref kind",
         1,
     ),
+    ("precis/cli/conventions.py", "_converge.ensure"): (
+        "kind param — memory/finding manifest items only "
+        "(_BODY_KIND[kind] has no 'job' entry)",
+        1,
+    ),
     ("precis/handlers/_finding_acquire.py", "put_acquiring"): (
         "kind param — finding mint",
         1,

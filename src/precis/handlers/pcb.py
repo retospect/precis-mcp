@@ -910,6 +910,8 @@ class PcbHandler(Handler):
                 # `to` is the new net name (pin_rename only).
                 "pin",
                 "to",
+                # op='fork': the source board slug or pb<id>.
+                "from",
                 # op='check': force the inline run past reuse (gr496242).
                 "fresh",
                 # op='order' (_op_order / _order_dry_run); gr495025.

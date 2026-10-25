@@ -316,6 +316,20 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # lists, per-system atoms and a per-atom map; nested and variable,
         # read whole by the structure fisheye, never queried by key.
         "structure_pi.data",
+        # 0250: NEB edge run (struct_neb_runs). params = the engine knob set
+        # (images/fmax/optimizer/... plus request-context stamps) read whole
+        # to rebuild the band and hash the cache key; trust = one
+        # autocatpath.trust-shaped record per check (variable length, check
+        # set grows with the engine), replayed whole by the trust gate;
+        # multistart = k-start aggregation evidence, read whole. Only
+        # params->>'quest_ref_id' is probed by key and that has its own
+        # expression index.
+        "struct_neb_runs.multistart",
+        "struct_neb_runs.params",
+        "struct_neb_runs.trust",
+        # 0250: one relaxed band image's canonical-rank frac rows + lattice,
+        # the same shape as struct_runs.final_geometry; read whole.
+        "struct_neb_images.positions",
         "summarizers.config",
         "tool_calls.arg_sample",
         "tool_calls.input_keys",

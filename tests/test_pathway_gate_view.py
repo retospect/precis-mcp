@@ -15,6 +15,10 @@ from typing import Any
 
 import pytest
 
+from tests._autocatpath import needs_engine
+
+needs_engine()
+
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_pathway.handler import PathwayHandler
