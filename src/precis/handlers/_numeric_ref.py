@@ -47,6 +47,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Any, ClassVar
 
 from psycopg import Connection
@@ -366,6 +367,56 @@ _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 #: for the batch header and the ``next:`` id list; a single block over
 #: budget still renders whole (same as a singleton ``get``).
 _BATCH_VIEW_PAGE_CHARS = 3500
+
+
+@lru_cache(maxsize=1)
+def _no_chunk_handle_read_kinds() -> frozenset[str]:
+    """Kinds whose ``<code><id>`` chunk handles have no ``get(id=…)`` read.
+
+    A chunk handle resolves through dispatch's chunk-selector path
+    only when the kind's public id is a slug (``slug~ord``) or the kind
+    declares ``supports_chunk_selectors`` — numeric-ref kinds (public
+    id IS the ref_id) take neither, so ``gc42``/``jc7`` fall through
+    with no read: those chunks show under their owning ref's views.
+    Derived from ``handle_registry.CHUNK_CODES`` ∩ declared numeric
+    specs (a numeric kind that later declares
+    ``supports_chunk_selectors`` must be removed here — pinned by
+    ``tests/test_gripe_get_hints.py``).
+    """
+    from precis.utils import kind_facts
+
+    # ``all_declared_specs`` walks ``precis.handlers`` itself, so the set
+    # doesn't depend on which handler modules happen to be imported in
+    # this process (a bare ``NumericRefHandler.__subclasses__()`` walk
+    # under-reports in tests and other hub-less contexts).
+    kinds: set[str] = {
+        s.kind
+        for s in kind_facts.all_declared_specs()
+        if s.is_numeric and s.supports_chunk_selectors is None
+    }
+    # Plugin ``NumericRefHandler`` subclasses (their specs live outside
+    # ``precis.handlers``, so the declared-spec scan can't see them) —
+    # best-effort over the subclasses imported in this process.
+    stack: list[type] = [NumericRefHandler]
+    while stack:
+        klass = stack.pop()
+        stack.extend(klass.__subclasses__())
+        spec = getattr(klass, "spec", None)
+        if (
+            getattr(spec, "is_numeric", False)
+            and getattr(spec, "supports_chunk_selectors", None) is None
+        ):
+            kind = getattr(klass, "kind", None)
+            if kind:
+                kinds.add(kind)
+    out: set[str] = set()
+    for k in kinds:
+        try:
+            handle_registry.code_for_kind(k, chunk=True)
+        except KeyError:
+            continue
+        out.add(k)
+    return frozenset(out)
 
 
 def plain_listing_view(view: str | None, own_views: Any) -> str | None:
@@ -3196,6 +3247,52 @@ class NumericRefHandler(Handler):
         try:
             return int(s)
         except (ValueError, TypeError):
+            # gr514629: a universal handle pasted into the wrong kind's
+            # id= (a gripe-reader doing get(kind='gripe', id='pc5155615')
+            # on a handle quoted inside the gripe) is not a slug miss —
+            # the handle already routes. Say so: get(id='<handle>')
+            # resolves it to its own kind (a pc<N> chunk reads that
+            # chunk's text, a jo<N> job its card) — a search for the
+            # numeric id would send the caller hunting for a row it
+            # already named. A chunk handle of a numeric-chunk kind
+            # (gc/mb/jc/…) has no direct read — its owning ref's views
+            # list the chunks — so name the owning ref instead.
+            parsed = handle_registry.parse(s)
+            if parsed is not None:
+                h_kind, h_chunk, h_pk = parsed
+                if h_chunk and h_kind in _no_chunk_handle_read_kinds():
+                    hint = (
+                        f"{s!r} is a {h_kind} chunk handle — {h_kind} "
+                        "chunks have no handle read; they show under "
+                        "the owning ref's views "
+                        f"(get(kind={h_kind!r}, id=<ref>) lists them)"
+                    )
+                elif h_chunk:
+                    hint = (
+                        f"{s!r} is a {h_kind} chunk handle — "
+                        f"get(id={s!r}) reads the chunk directly "
+                        "(pc<N> paper text, dc<N> draft node, "
+                        "pe<N> plan node, …)"
+                    )
+                elif h_kind == cls.kind:
+                    hint = (
+                        f"{s!r} is this kind's own handle — the id is "
+                        f"{h_pk} (dispatch rewrites the handle for you "
+                        f"through the MCP surface)"
+                    )
+                else:
+                    hint = (
+                        f"{s!r} is a {h_kind} handle — get(id={s!r}) "
+                        "resolves it to its kind, no kind= needed"
+                    )
+                raise BadInput(
+                    f"{cls._sense()} id must be an integer, got {id!r}",
+                    next=(
+                        hint
+                        + f". A {cls.kind} id instead: "
+                        + f"search(kind={cls.kind!r}, q='...')"
+                    ),
+                ) from None
             # gr48523-adjacent: agents repeatedly pass a slug/filename-style
             # id (e.g. a local memory-file stem like 'backlog_foo') here —
             # this kind has no slug column (dropped slug

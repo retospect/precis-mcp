@@ -24,7 +24,11 @@ Surface (see ``precis-gripe-help``):
   comment-then-close is one call.
 - ``get(kind='gripe', id=N)`` is the title card plus the body
   (gr499040's card, gr514351's body): header + tags + ``title:`` +
-  a comment-count line + the newest-comment gist, then the body —
+  a comment-count line + the newest-comment gist + a ``refs in text:``
+  line naming the universal handles the body quotes (gr514629 — an
+  intake reader needs to know ``get(id='<handle>')`` reads a ``pc<N>``
+  chunk's text or a ``jo<N>`` job's card, no kind= needed), then the
+  body —
   head+tail-clipped at :data:`_BODY_HEAD_CHARS`, the marker naming
   ``view='body'`` for the uncapped read. The ruling's measured cost
   was the *timeline* (no pagination then), which stays behind
@@ -207,6 +211,43 @@ def _filing_refusal(exc: BaseException) -> Denied | BadInput | None:
     if "run cap" in cause or "hourly cap" in cause:
         return Denied(cause, next=fallback)
     return None
+
+
+#: Universal-handle tokens (``pc5155615``, ``jo512227``) inside a gripe's
+#: text — the ``refs in text:`` card line names them. Case-insensitive
+#: (``PC5155615``); ``handle_registry.normalize`` folds the prefix.
+_HANDLE_TOKEN_RE = re.compile(r"\b([a-z]{2}\d+)\b", re.IGNORECASE)
+
+#: Cap on handles the card line lists — a log-paste gripe can quote dozens.
+_REF_LINE_CAP = 12
+
+
+def _referenced_handles(text: str) -> list[str]:
+    """Universal handles a gripe's text quotes, first-appearance order.
+
+    ``handle_registry.parse`` keeps only the decimal codes that decode
+    to a row-backed ref or chunk — a ``pa5`` paper and a ``pc10`` chunk
+    count, a file-backed ``sk``/``py`` token or a coincidence like
+    ``ab123`` (no such code) does not. Chunk handles of the numeric
+    kinds (``gc<N>``, ``jc<N>`` — :func:`._numeric_ref._no_chunk_handle_read_kinds`)
+    are dropped: they have no ``get(id=…)`` read, so naming them under
+    "each reads via get(id='<handle>')" would promise a dead path.
+    """
+    from precis.handlers._numeric_ref import _no_chunk_handle_read_kinds
+    from precis.utils import handle_registry
+
+    no_chunk = _no_chunk_handle_read_kinds()
+    seen: dict[str, None] = {}
+    for m in _HANDLE_TOKEN_RE.finditer(text):
+        tok = m.group(1)
+        parsed = handle_registry.parse(tok)
+        if tok in seen or parsed is None:
+            continue
+        kind, is_chunk, _pk = parsed
+        if is_chunk and kind in no_chunk:
+            continue
+        seen[tok] = None
+    return list(seen)
 
 
 class _CreatedGripe(NamedTuple):
@@ -1574,6 +1615,24 @@ class GripeHandler(NumericRefHandler):
         if newest is not None:
             gist = " ".join(newest.text.split())[:60]
             lines.append(f"newest: comment {newest.ord} · {tl._stamp(newest)} · {gist}")
+        # gr514629: a gripe's text routinely quotes universal handles —
+        # a ``pc<N>`` chunk, a ``jo<N>`` job, a ``pa<N>`` paper. Name
+        # the read path up front (``get(id='<handle>')`` resolves each,
+        # no kind= needed) so an intake reader doesn't hunt for a
+        # chunk-text verb that isn't there.
+        handles = _referenced_handles(body or "")
+        if handles:
+            shown = ", ".join(handles[:_REF_LINE_CAP])
+            more = (
+                f", +{len(handles) - _REF_LINE_CAP} more"
+                if len(handles) > _REF_LINE_CAP
+                else ""
+            )
+            lines.append(
+                f"refs in text: {shown}{more} — each reads via "
+                "get(id='<handle>'): pc<N> is the chunk's text, "
+                "jo<N> the job card (status + summary stats)"
+            )
         lines += [
             "",
             tl.clip_middle(

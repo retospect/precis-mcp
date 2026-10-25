@@ -99,3 +99,132 @@ def test_unknown_view_leads_with_the_nearest(hub: Hub) -> None:
     with pytest.raises(Unsupported) as exc:
         handler.get(id=rid, view="bogus")
     assert exc.value.options is not None and "full" in exc.value.options
+
+
+# ── gr514629: handles quoted in a gripe name their read path ─────────
+#
+# A gripe's body routinely quotes the rows it is about by handle
+# (``pc<N>`` a chunk, ``jo<N>`` a job, ``pa<N>`` a paper). The title
+# card lists them on a ``refs in text:`` line naming
+# ``get(id='<handle>')`` as the read path; a handle pasted into the
+# wrong kind's ``id=`` refuses with the same call as the ``next=``.
+
+
+def test_card_names_the_universal_handles_the_body_quotes(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    handler.put(
+        text="re-run lost rows from table pc5155615 (job jo512227, "
+        "paper pa509706); b1 and zz99 are not handles"
+    )
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    body = handler.get(id=rid).body
+    assert "refs in text: pc5155615, jo512227, pa509706" in body
+    assert "get(id='<handle>')" in body
+    assert "zz99" not in body.split("refs in text:")[1].split("—")[0]
+
+
+def test_card_matches_handles_case_insensitively(hub: Hub) -> None:
+    """``PC5155615`` (a shouted handle) lists the same — the registry
+    folds the prefix case at resolve time."""
+    handler = GripeHandler(hub=hub)
+    handler.put(text="the table PC5155615 lost five rows")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    body = handler.get(id=rid).body
+    assert "refs in text: PC5155615" in body
+
+
+def test_card_drops_chunk_handles_with_no_handle_read(hub: Hub) -> None:
+    """``gc<N>``/``jc<N>`` (numeric-kind chunks) have no ``get(id=…)``
+    path — naming them under "each reads via get" would lie."""
+    handler = GripeHandler(hub=hub)
+    handler.put(text="comment gc12 and event jc34 plus the table pc55")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    body = handler.get(id=rid).body
+    assert "refs in text: pc55" in body
+    refs_line = next(l for l in body.splitlines() if l.startswith("refs in text:"))
+    assert "gc12" not in refs_line and "jc34" not in refs_line
+
+
+def test_card_omits_refs_line_when_no_handle_parses(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    rid = _gripe(handler)
+    body = handler.get(id=rid).body
+    assert "refs in text:" not in body
+
+
+def test_handle_in_wrong_kinds_id_names_the_direct_get(hub: Hub) -> None:
+    """``get(kind='gripe', id='pc5155615')`` (a chunk handle under the
+    wrong kind=) refuses naming ``get(id='pc5155615')`` — the call that
+    reads the chunk's text — instead of only the search misdirection."""
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="pc5155615")
+    nxt = str(exc.value.next)
+    assert "get(id='pc5155615')" in nxt
+    assert "search(kind='gripe'" in nxt
+
+
+def test_record_handle_in_wrong_kind_names_the_direct_get(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="jo512227")
+    nxt = str(exc.value.next)
+    assert "get(id='jo512227')" in nxt
+    assert "no kind=" in nxt
+
+
+def test_same_kind_record_handle_names_the_int(hub: Hub) -> None:
+    """``gr5`` on kind='gripe' itself (a direct handler call — dispatch
+    rewrites it to 5 upstream) names the integer, not a redirect."""
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="gr42")
+    assert "the id is 42" in str(exc.value.next)
+
+
+def test_same_kind_chunk_handle_names_the_owning_ref(hub: Hub) -> None:
+    """A ``gc<N>`` (this kind's own chunk code) has no direct handle
+    read — the hint names the owning ref's views, not ``get(id=…)``."""
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="gc42")
+    nxt = str(exc.value.next)
+    assert "owning ref" in nxt
+    assert "get(id='gc42')" not in nxt
+
+
+def test_other_numeric_chunk_handle_also_names_the_owning_ref(hub: Hub) -> None:
+    """A ``jc<N>`` (job chunk — another no-read kind) gets the same
+    honest refusal, not the ``get(id=…)`` promise."""
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="jc42")
+    nxt = str(exc.value.next)
+    assert "owning ref" in nxt
+    assert "get(id='jc42')" not in nxt
+
+
+def test_no_chunk_handle_read_kinds_is_the_numeric_chunk_kinds() -> None:
+    """Pin the derived set: exactly the numeric-ref kinds that expose a
+    chunk code. A numeric kind that later declares
+    ``supports_chunk_selectors`` must leave this set (and earns its
+    ``get(id=…)`` naming back)."""
+    from precis.handlers._numeric_ref import _no_chunk_handle_read_kinds
+
+    assert _no_chunk_handle_read_kinds() == {
+        "gripe",
+        "message",
+        "finding",
+        "job",
+        "quest",
+        "llm",
+    }
+
+
+def test_non_handle_still_names_the_search_path(hub: Hub) -> None:
+    """A slug-ish non-handle keeps the pre-existing search hint."""
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="backlog_foo")
+    assert "search(kind='gripe'" in str(exc.value.next)
+    assert "get(id=" not in str(exc.value.next)

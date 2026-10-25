@@ -1508,7 +1508,7 @@ def _drop_all_public_objects(dsn: str) -> None:
         # etc. in public, and dropping those nukes the extension's
         # operators. The pg_depend EXISTS predicate filters them out.
         funcs = conn.execute(
-            "SELECT proname FROM pg_proc p "
+            "SELECT p.oid::regprocedure::text FROM pg_proc p "
             "JOIN pg_namespace n ON n.oid = p.pronamespace "
             "WHERE n.nspname = 'public' "
             "  AND NOT EXISTS ("
@@ -1516,8 +1516,11 @@ def _drop_all_public_objects(dsn: str) -> None:
             "     WHERE d.objid = p.oid AND d.deptype = 'e'"
             "  )"
         ).fetchall()
-        for (name,) in funcs:
-            _run_with_lock_retry(conn, f'DROP FUNCTION IF EXISTS "{name}" CASCADE')
+        for (sig,) in funcs:
+            # Drop by identity signature, not bare name: 0244 overloads
+            # file_gripe_readonly ((text) and (text, text)), and a
+            # name-only DROP raises AmbiguousFunction on the pair.
+            _run_with_lock_retry(conn, f"DROP FUNCTION IF EXISTS {sig} CASCADE")
 
 
 def _ensure_vocab_seeds(dsn: str) -> None:

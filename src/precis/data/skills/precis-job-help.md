@@ -267,6 +267,7 @@ search(kind="job", tags=["STATUS:failed"])
 get(kind="job", id=101)
 # → header + current status + summary chunk (when finished) +
 #   recent job_event chunks (telemetry, kept for forensics)
+get(id="jo101")  # the job's universal handle resolves the same way
 ```
 
 The `job_summary` chunk is the human-readable account ("Fix

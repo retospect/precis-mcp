@@ -226,6 +226,18 @@ rest verbatim — `next: get(kind='gripe', id=[<unread ids>], view='full')`
 `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of them in
 a single transaction.
 
+A gripe's text routinely quotes the rows it is about by their
+universal handles — `pa509706` a paper, `pc5155615` one paper *chunk*,
+`jo512227` a job, `mx1118` a measure, `tn511707` a taxon. The title
+card lists them on a `refs in text:` line. Each resolves with a bare
+`get(id='<handle>')`, no `kind=` needed: a chunk handle returns that
+chunk's text; a record handle routes to its kind — `jo<N>` opens the
+job card (status, `wall_s`, and the `job_summary` chunk holding the
+run's counters, e.g. `proposals=`/`dropped=`). A `kind=` that
+disagrees with the handle's code is refused with `get(id='<handle>')`
+named as the fix. Chunk handles of the numeric kinds (`gc<N>`,
+`jc<N>`, …) have no direct read — their owning ref's views list them.
+
 ## Add context to an existing gripe
 ## Comment on a gripe
 ## Reply to a gripe thread
