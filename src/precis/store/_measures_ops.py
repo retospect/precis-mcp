@@ -289,6 +289,20 @@ def legacy_value(
 #: as 1.4e-10 m by one path and 0.14 nm by another must still meet at 1.4 Å).
 _REL_TOL = 1e-9
 
+#: ``anchor_lost``: the row can't produce an anchor — either it was written
+#: with one (``anchor_scheme`` is stamped at insert exactly when ``anchor=``
+#: was given) whose link is gone (the chunk or paper was deleted and the
+#: foreign key set ``primary_link_id`` NULL), or it is a ``measured`` row
+#: with no link at all (its anchor IS the claim, so a linkless measured row
+#: is flaggable on its own — every ``best_measure``/``search_measures``
+#: exclusion then carries this flag as its reason). Other tiers with a
+#: never-recorded anchor are legal (``asserted`` needs none) and stay
+#: unflagged; a lost anchor already stales their reviews through the sha.
+_ANCHOR_LOST_SQL = (
+    "(m.primary_link_id IS NULL AND (m.anchor_scheme IS NOT NULL "
+    "OR coalesce(m.tier = 'measured', false)))"
+)
+
 _MEASURE_COLS = (
     "m.*, t.meta ->> 'name' AS measurand, t.meta ->> 'slug' AS measurand_slug, "
     "t.meta -> 'aliases' AS measurand_aliases, "
@@ -296,8 +310,8 @@ _MEASURE_COLS = (
     "t.meta ->> 'display_unit' AS display_unit, "
     "t.meta -> 'higher_is_better' AS higher_is_better, "
     "s.title AS subject_title, s.kind AS subject_kind, p.kind AS paper_kind, "
-    "(coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL) AS anchor_lost, "
-    "sx.meta -> 'conversion' AS rebase"
+    + _ANCHOR_LOST_SQL
+    + " AS anchor_lost, sx.meta -> 'conversion' AS rebase"
 )
 _MEASURE_FROM = (
     "FROM measures m JOIN refs t ON t.ref_id = m.measurand_ref_id "
@@ -1373,14 +1387,16 @@ class MeasuresMixin:
         """Every measure of one subject ref (live rows unless
         ``include_superseded``), grouped by run, outputs before inputs,
         oldest run first. Each row carries the measurand's name
-        (``measurand``) and canonical unit, and ``anchor_lost``: a
-        ``tier='measured'`` row whose anchoring link is gone (the chunk or
-        paper was deleted; the foreign key set it NULL). Numbers are stored
+        (``measurand``) and canonical unit, and ``anchor_lost``: the row
+        can't produce an anchor — either it recorded one (``anchor_scheme``)
+        whose link is gone (the chunk or paper was deleted and the foreign
+        key set ``primary_link_id`` NULL), or it is a ``measured`` row with
+        no link at all. Numbers are stored
         SI (the taxon's ``canonical_unit``); the row also carries the taxon's
         ``display_unit``, its ``legacy_source`` and, for a legacy taxon, the
         ``measure_unit_compat`` row (``legacy_unit``, ``legacy_factor``,
         ``legacy_offset``) so a caller can convert at the edge. ``best_measure``
-        excludes those rows; re-anchoring is a follow-up. The ids
+        excludes the ``measured`` ones only; re-anchoring is a follow-up. The ids
         in ``meta.extra_anchors`` are not foreign keys and may dangle the same
         way."""
         sql = (
@@ -1391,7 +1407,7 @@ class MeasuresMixin:
             "       c.legacy_unit, c.factor AS legacy_factor, "
             "       c.si_offset AS legacy_offset, sr.kind AS source_kind, "
             "       s.kind AS subject_kind, sx.meta -> 'conversion' AS rebase, "
-            "       (m.tier = 'measured' AND m.primary_link_id IS NULL) AS anchor_lost "
+            f"       {_ANCHOR_LOST_SQL} AS anchor_lost "
             "FROM measures m JOIN refs t ON t.ref_id = m.measurand_ref_id "
             "LEFT JOIN measure_unit_compat c "
             "  ON c.legacy_table = t.meta -> 'legacy_source' ->> 'table' "
@@ -1609,7 +1625,11 @@ class MeasuresMixin:
         ``meta.escalation`` (a missing required condition, no molar mass), an
         anchor-lost ``measured`` row, ``trusted = false``, a newest current
         review of ``rejected``, and anything without a single numeric reading
-        (an interval, a bound, a category).
+        (an interval, a bound, a category). The anchor filter stops at
+        ``measured`` on purpose: there the anchor IS the claim, while an
+        asserted/computed/derived row keeps its claim when the link dies —
+        it stays ranked, marked ``anchor_lost``, and its anchor-covered
+        reviews go stale (gr515817).
         ``reference`` keeps only rows stated against that reference; a
         conversion between references is not built, so a SHE row never stands
         in for an RHE one.
@@ -1779,7 +1799,9 @@ class MeasuresMixin:
         bounds; a point is a degenerate interval, ``<x`` reaches down from x,
         ``>x`` up); every condition filter against the run's input rows;
         every word of ``text`` in the subject label. Without ``include_all``
-        superseded, ambiguous, flagged and anchor-lost rows are left out.
+        superseded, ambiguous, flagged and anchor-lost ``measured`` rows are
+        left out (only ``measured`` drops its claim with the link — see
+        :meth:`best_measure`; other tiers stay, marked ``anchor_lost``).
         Scans at most ``scan_cap`` candidate rows (``truncated`` says so)."""
         where = ["m.direction = 'output'"]
         params: dict[str, Any] = {"cap": scan_cap + 1}

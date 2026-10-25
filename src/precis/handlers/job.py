@@ -2223,6 +2223,13 @@ class JobHandler(NumericRefHandler):
         the parent's existing ``meta.llm_select`` (if any) is left
         untouched — a bare tier swap shouldn't silently wipe a prior
         structured selection.
+
+        If the parent todo carries no dispatch signal at all
+        (``meta.executor``, ``meta.llm_tier``, or an OPEN ``executor:*``
+        tag — e.g. a job hand-submitted under a plain todo, gr515804),
+        nothing ever re-mints: the bubble is still cleared (the tag is
+        handled) but the ack says there is no executor and names the
+        resubmit path instead of promising a sweep that cannot happen.
         """
         if id is None:
             raise BadInput(
@@ -2231,7 +2238,7 @@ class JobHandler(NumericRefHandler):
             )
         job_id = self._coerce_id(id)
         # Validates the job exists and is live (not soft-deleted).
-        self._resolve_live_ref(job_id)
+        job_ref = self._resolve_live_ref(job_id)
         status = _status_of(self.store.tags_for(job_id))
         if status not in ("failed", "cancelled"):
             raise BadInput(
@@ -2254,13 +2261,26 @@ class JobHandler(NumericRefHandler):
                 ),
             )
 
+        # Whether the dispatch worker can re-mint anything under this
+        # parent at all (dispatch.py's auto-run signal): meta.executor /
+        # meta.llm_tier set, or an OPEN executor:* tag. A directly
+        # submitted job under a plain todo has none — clearing the bubble
+        # is still right, but promising a re-mint is a lie.
+        parent_ref = self.store.fetch_refs_by_ids({parent_id}).get(parent_id)
+        parent_meta = dict(parent_ref.meta or {}) if parent_ref is not None else {}
+        parent_dispatchable = (
+            "executor" in parent_meta
+            or "llm_tier" in parent_meta
+            or any(
+                t.namespace == "open" and t.value.startswith("executor:")
+                for t in self.store.tags_for(parent_id)
+            )
+        )
+
         new_llm_tier: str | None = None
         new_llm_select: dict[str, Any] | None = None
         if model is not None or select is not None:
-            parent_ref = self.store.fetch_refs_by_ids({parent_id}).get(parent_id)
-            has_llm_tier = bool(
-                parent_ref is not None and (parent_ref.meta or {}).get("llm_tier")
-            )
+            has_llm_tier = bool(parent_meta.get("llm_tier"))
             if not has_llm_tier:
                 raise BadInput(
                     f"model=/select= only apply to LLM-planner todos; parent "
@@ -2329,11 +2349,27 @@ class JobHandler(NumericRefHandler):
             if cleared_final
             else ""
         )
+        if parent_dispatchable:
+            outcome = (
+                ". The dispatch worker re-mints a fresh job on its next sweep (~1 min)"
+            )
+        else:
+            # gr515804: no executor/llm_tier on the parent means the
+            # dispatcher has nothing to mint from — say so, and name the
+            # manual path, instead of promising a sweep that never comes.
+            jt = (job_ref.meta or {}).get("job_type")
+            outcome = (
+                f". Todo #{parent_id} carries no executor "
+                "(meta.executor/meta.llm_tier/OPEN:executor:* tag), so "
+                "nothing re-mints — resubmit the work directly with "
+                f"put(kind='job', parent_id={parent_id}, "
+                f"meta={{'job_type': {jt or '<job_type>'!r}, 'params': {{...}}}}) "
+                f"or set an executor on the todo first"
+            )
         return Response(
             body=(
                 f"retry queued: cleared child-failed:{job_id} on todo "
-                f"#{parent_id}{model_note}{final_note}. The dispatch worker "
-                f"re-mints a fresh job on its next sweep (~1 min); the failed "
+                f"#{parent_id}{model_note}{final_note}{outcome}; the failed "
                 f"job #{job_id} stays for forensics. poll: get(kind='todo', "
                 f"id={parent_id})."
             )

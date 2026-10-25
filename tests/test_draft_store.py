@@ -7,6 +7,7 @@ import pytest
 
 from precis.errors import BadInput
 from precis.store.store import Store
+from tests.factories import insert_gist
 
 
 def _project(store: Store) -> int:
@@ -490,13 +491,8 @@ def test_edit_text_invalidates_embedding_and_summary_cascade(store: Store) -> No
             "VALUES (%s, %s, %s, 'ok', %s)",
             (p.chunk_id, embedder_name, [0.0] * store.embedding_dim(), old_sha),
         )
-        conn.execute(
-            "INSERT INTO chunk_summaries "
-            "(chunk_id, summarizer, text, status, content_sha) "
-            "VALUES (%s, 'llm-v1', 'old summary', 'ok', %s)",
-            (p.chunk_id, old_sha),
-        )
         conn.commit()
+    insert_gist(store, p.chunk_id, "old summary", sha=old_sha)
 
     store.drafts.edit_text(p.handle, "v2")
 

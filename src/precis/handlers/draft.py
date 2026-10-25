@@ -500,12 +500,21 @@ class DraftHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
 
-    def _chunk_of_selector(self, s: str) -> str:
-        """``<draft>~dc<N>`` → ``dc<N>``, checking the chunk belongs to that
-        draft; ``<draft>~<heading title>`` resolves to the dc<N> of the one
-        live heading with that text (gr514226). Canonical
-        ``kind:identifier[~selector]`` form; the one parser behind plain
-        ``get`` and the eye ladder (gr495026)."""
+    def _parse_selector(self, s: str) -> tuple[Any, str]:
+        """``<draft>~<selector>`` → ``(live draft ref, dc<N> handle)`` — the
+        ONE parser behind plain ``get``, the eye ladder and
+        :meth:`find_in_ref`'s ``~`` scope (gr515830: it was duplicated in
+        ``find_in_ref`` and the ``~<heading>`` form had to be edited in
+        both copies).
+
+        The head resolves like a plain draft id (``dr<N>`` handle or
+        slug). A ``dc<N>``/``¶<base58>`` selector must name a chunk that
+        belongs to that draft; anything else resolves through
+        :meth:`_chunk_of_heading` — the ONE live heading whose text
+        matches (case-insensitive, gr514226). Note a *retired* chunk still
+        resolves here — :meth:`find_in_ref` adds its own liveness check,
+        plain get renders the tombstone.
+        """
         head, _, sel = s.partition("~")
         head, sel = head.strip(), sel.strip()
         if not head:
@@ -513,20 +522,25 @@ class DraftHandler(Handler):
                 f"unknown draft selector {sel!r} in id={s!r} — nothing before the '~'",
                 next="get(kind='draft', id='<slug>~dc<N>')",
             )
-        m = re.fullmatch(r"dr(\d+)", head)
-        owner = self.store.get_ref(kind="draft", id=int(m.group(1))) if m else None
-        if owner is None:
-            owner = resolve_live_slug_ref(self.store, kind="draft", id=head)
-        if _is_draft_chunk_handle(sel):
-            chunk = self.store.drafts.get_draft_chunk(sel)
-            if chunk is None or int(chunk.ref_id) != int(owner.id):
-                raise NotFound(
-                    f"draft chunk {sel!r} not found in draft {head!r}",
-                    next=f"get(kind='draft', id={head!r}, view='toc') lists "
-                    "its chunk handles",
-                )
-            return sel
-        return self._chunk_of_heading(s, owner, sel)
+        owner = resolve_live_slug_ref(self.store, kind="draft", id=head)
+        if not _is_draft_chunk_handle(sel):
+            return owner, self._chunk_of_heading(s, owner, sel)
+        chunk = self.store.drafts.get_draft_chunk(sel)
+        if chunk is None or int(chunk.ref_id) != int(owner.id):
+            raise NotFound(
+                f"draft chunk {sel!r} not found in draft {head!r}",
+                next=f"get(kind='draft', id={head!r}, view='toc') lists "
+                "its live chunk handles",
+            )
+        return owner, sel
+
+    def _chunk_of_selector(self, s: str) -> str:
+        """``<draft>~dc<N>`` → ``dc<N>``, checking the chunk belongs to that
+        draft; ``<draft>~<heading title>`` resolves to the dc<N> of the one
+        live heading with that text (gr514226). Canonical
+        ``kind:identifier[~selector]`` form; the one parser behind plain
+        ``get`` and the eye ladder (gr495026)."""
+        return self._parse_selector(s)[1]
 
     def _chunk_of_heading(self, s: str, owner: Any, sel: str) -> str:
         """The ``~<heading title>`` selector → the dc<N> of the ONE live
@@ -599,44 +613,39 @@ class DraftHandler(Handler):
 
         find_preflight(kind="draft", id=id, view=view, q=q)
         s = str(id).strip()
-        sel: str | None = None
-        if "~" in s:
-            s, _, sel = s.partition("~")
-            sel = sel.strip()
-            if not s.strip():
-                raise BadInput(
-                    f"unknown draft selector {sel!r} in id={id!r}",
-                    next="selector must be a chunk handle or heading title: "
-                    "get(kind='draft', id='dr<N>~dc<M>', q='…')",
-                )
-            s = s.strip()
-        if _is_draft_chunk_handle(s):
-            only = self.store.drafts.get_draft_chunk(s)
+        head = s.partition("~")[0].strip()
+        ref_id: int
+        root_id: int | None = None
+        if _is_draft_chunk_handle(head):
+            # A bare dc<N>/¶<base58> id — also covers the ``dcA~dcB``
+            # quirk, which scopes to the head chunk and ignores the ~part
+            # (same as before; use ``<draft>~dc<N>`` to address a chunk
+            # inside a draft).
+            only = self.store.drafts.get_draft_chunk(head)
             if only is None or only.retired:
                 raise NotFound(
-                    f"draft chunk {s!r} not found",
+                    f"draft chunk {head!r} not found",
                     next="get(kind='draft', id='<slug>', view='toc') lists a "
                     "draft's live dc<id> chunk handles",
                 )
             ref_id = int(only.ref_id)
-            root_id: int | None = int(only.chunk_id)
+            root_id = int(only.chunk_id)
+        elif "~" in s:
+            # ``<draft>~<dc|heading>`` — the shared selector parser
+            # resolves owner + dc; here a retired chunk is refused too.
+            ref, dc = self._parse_selector(s)
+            only = self.store.drafts.get_draft_chunk(dc)
+            if only is None or only.retired:
+                raise NotFound(
+                    f"draft chunk {dc!r} not found in draft {head!r}",
+                    next=f"get(kind='draft', id={head!r}, view='toc') lists "
+                    "its live chunk handles",
+                )
+            ref_id = int(ref.id)
+            root_id = int(only.chunk_id)
         else:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
             ref_id = int(ref.id)
-            root_id = None
-            if sel is not None:
-                if not _is_draft_chunk_handle(sel):
-                    # ``~<heading title>`` — the same resolution plain
-                    # get's selector does (gr514226).
-                    sel = self._chunk_of_heading(str(id), ref, sel)
-                only = self.store.drafts.get_draft_chunk(sel)
-                if only is None or only.retired or int(only.ref_id) != ref_id:
-                    raise NotFound(
-                        f"draft chunk {sel!r} not found in draft {s!r}",
-                        next=f"get(kind='draft', id={s!r}, view='toc') lists "
-                        "its live chunk handles",
-                    )
-                root_id = int(only.chunk_id)
         chunks = self.store.drafts.reading_order(ref_id)
         display = handle_registry.try_format("draft", ref_id) or str(ref_id)
         if root_id is not None:

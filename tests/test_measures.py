@@ -1343,6 +1343,48 @@ class TestAnchorLossAndSupersession:
                 store, "UPDATE measures SET superseded_at = now() WHERE id = %s", (a,)
             )
 
+    def test_anchor_lost_marks_an_anchored_asserted_row_too(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        """gr515817: ``anchor_lost`` covers every tier an anchor can apply
+        to — an asserted row that lost its recorded anchor reads True. The
+        *exclusion* still stops at ``measured``: the asserted row keeps its
+        claim (the anchor was evidence) and stays searchable, flagged."""
+        anchored = store.insert_measure(
+            MeasureSpec(
+                world["energy"],
+                "1",
+                world["paper"],
+                tier="asserted",
+                anchor=_anchor(world, "s1"),
+                reported_unit="eV",
+            ),
+            actor="reader",
+        ).output_id
+        unanchored = store.insert_measure(
+            MeasureSpec(
+                world["energy"],
+                "2",
+                world["paper"],
+                tier="asserted",
+                reported_unit="eV",
+            ),
+            actor="reader",
+        ).output_id
+        _update(
+            store,
+            "DELETE FROM chunks WHERE ref_id = %s AND ord >= 0",
+            (world["paper"],),
+        )
+        gone = _row(store, anchored)
+        assert gone["primary_link_id"] is None and gone["anchor_lost"] is True
+        assert _row(store, unanchored)["anchor_lost"] is False
+        # The ranking/search filter stays measured-only: the asserted row
+        # remains eligible, carrying the flag for the caller to weigh.
+        found = store.search_measures(world["energy"]).rows
+        flagged = {r["id"]: r["anchor_lost"] for r in found}
+        assert flagged == {anchored: True, unanchored: False}
+
     def test_superseded_by_cannot_point_at_itself(
         self, store: Store, world: dict[str, Any]
     ) -> None:

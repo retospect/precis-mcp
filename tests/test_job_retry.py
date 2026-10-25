@@ -212,6 +212,33 @@ def test_retry_rejects_orphan_job(jobs: JobHandler, store: Store) -> None:
         jobs.put(id=job.id, mode="retry")
 
 
+def test_retry_on_a_direct_job_promises_no_re_mint(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """gr515804: a job put() directly under a plain todo leaves nothing
+    the dispatcher can mint from — the bubble still clears, but the ack
+    must not promise a re-mint sweep that never comes."""
+    rid = id_of(todos.put(text="plain todo").body)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="manual",
+        meta={"job_type": "survey_extract"},
+        parent_id=rid,
+    )
+    _fail(store, job.id)
+
+    resp = jobs.put(id=job.id, mode="retry")
+
+    assert f"child-failed:{job.id}" not in _parent_tags(store, rid)
+    assert "re-mints a fresh job on its next sweep" not in resp.body
+    assert "no executor" in resp.body and "nothing re-mints" in resp.body
+    assert "survey_extract" in resp.body  # names the resubmit job_type
+    # Nothing actually mints on the next pass either.
+    run_dispatch_pass(store)
+    assert [c["id"] for c in _child_jobs(store, rid)] == [job.id]
+
+
 def test_retry_rejects_bad_model(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:

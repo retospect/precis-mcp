@@ -13,6 +13,7 @@ from precis.draft import lint as _draft_lint
 from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
+from tests.factories import insert_gist
 
 
 def _dc(body: str) -> str:
@@ -426,13 +427,8 @@ def test_outline_prefers_summary_then_keywords_then_text(
     by_text = {c.text: c for c in order}
     summ = by_text["Para with summary."]
     kw = by_text["Para with keywords."]
+    insert_gist(hub.live_store, summ.chunk_id, "A crisp one-line gist.")
     with hub.live_store.pool.connection() as conn:
-        conn.execute(
-            "INSERT INTO chunk_summaries (chunk_id, summarizer, text, "
-            "content_sha) VALUES (%s, 'llm-v1', %s, "
-            "(SELECT content_sha FROM chunks WHERE chunk_id = %s))",
-            (summ.chunk_id, "A crisp one-line gist.", summ.chunk_id),
-        )
         conn.execute(
             "UPDATE chunks SET keywords = %s WHERE chunk_id = %s",
             (["alpha", "beta", "gamma"], kw.chunk_id),
@@ -463,16 +459,7 @@ def test_stale_gist_falls_back_to_text(draft: DraftHandler, hub: Hub) -> None:
     )
     para = _order(hub, "nt")[1]
     store = hub.live_store
-    with store.pool.connection() as conn:
-        conn.execute(
-            "INSERT INTO chunk_summaries (chunk_id, summarizer, text, "
-            "content_sha) VALUES (%s, 'llm-v1', %s, 'deadbeef'::text)",
-            (
-                para.chunk_id,
-                "Stale gist about replaced text.",
-            ),
-        )
-        conn.commit()
+    insert_gist(store, para.chunk_id, "Stale gist about replaced text.", sha="deadbeef")
 
     views = store.drafts.block_views(para.ref_id)
     assert views[para.handle]["summary"] == ""

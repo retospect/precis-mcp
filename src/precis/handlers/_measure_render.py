@@ -103,7 +103,9 @@ def subject_label(row: dict[str, Any]) -> str:
 
 def flags(row: dict[str, Any]) -> list[str]:
     """Why a row would be left out of a ranking: superseded, ambiguous,
-    escalated, anchor-lost."""
+    escalated, anchor-lost (only a ``measured`` row is actually excluded
+    over it — for other tiers the flag marks lost evidence, not a lost
+    claim)."""
     out = []
     if row.get("superseded_by") is not None:
         out.append(f"superseded by {row['superseded_by']}")

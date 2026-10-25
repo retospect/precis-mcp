@@ -74,10 +74,18 @@ needed and a bare ``coderef callers`` scan doesn't have:
   (``from precis.pcb import session as pcb_session``, then
   ``pcb_session.build_ir(...)``) false-flags nearly every real production
   entry point in this package as dead.
+- a leaf imported under an alias (``from m import f as _f``) never puts
+  the LEAF name in Load position — only ``_f`` loads — so those callers
+  were invisible and a function used only through an alias read as dead
+  (gr515710). The merged leaf-name scan also couldn't tell a bare
+  ``layer_name`` parameter load from a use of ``ir.layer_name`` the
+  function, so any file importing ``precis.pcb.ir`` for other reasons
+  counted as its caller (``_pcb_ops.py`` masked it for months).
 
-:func:`_all_imports` below fixes both (whole-tree walk, submodule-import
-resolution); everything else is coderef's own resolve/leaf-match logic,
-unmodified.
+:func:`_all_imports` fixes the first two (whole-tree walk,
+submodule-import resolution); :func:`_is_production_caller_scan` fixes
+the third (import-bound name loads, root-aware attribute loads);
+everything else is coderef's own resolve logic, unmodified.
 """
 
 from __future__ import annotations
@@ -87,6 +95,7 @@ import functools
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -202,6 +211,13 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "stitch-via redundancy check; no DRC pass calls it yet (tiling.py's "
         "own docstring names this the topological proxy a later module "
         "combines with its geometric floating-tile check)"
+    ),
+    "src/precis/pcb/ir.py::layer_name": (
+        "public index→name map whose only real consumer is "
+        "precis_geom.pcb._layer_name, a byte-identical copy kept because "
+        "the geom wheel can't import precis (its own docstring says so) "
+        "-- zero in-src call sites; _pcb_ops.py's same-named layer_name "
+        "params masked this under the pre-gr515710 merged leaf scan"
     ),
     "src/precis/pcb/realize.py::rip_net": (
         "rip-up hook for the not-yet-wired route-edit loop (routeclean, "
@@ -460,27 +476,109 @@ def _tracked_py_files() -> list[Path]:
     return sorted(p for p in base.rglob("*.py") if ".git" not in p.parts)
 
 
-#: One AST pass per file, memoized process-wide: (import map, {referenced
-#: leaf name -> [line numbers]}). 141 parametrized cases over ~1700 repo
-#: files means a per-anchor ``git grep`` + re-parse (coderef's own
-#: per-call shape) is O(anchors x files); this test instead pays the
-#: parse cost O(files) ONCE (first anchor a given pytest-xdist worker
-#: handles) and every anchor after that is a dict lookup — the difference
-#: between a ~2 minute run and a ~10 second one.
-@functools.cache
-def _file_index(path_str: str) -> tuple[dict[str, str], dict[str, list[int]]] | None:
-    path = Path(path_str)
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-    except (SyntaxError, UnicodeDecodeError, OSError):
-        return None
-    leaves: dict[str, list[int]] = {}
+def _attr_load_root(node: ast.Attribute) -> str | None:
+    """Leftmost ``Name`` of an attribute chain — ``a.b.c``'s root is
+    ``a``. A chain hanging off something with no name (``factory().x``,
+    ``items[0].x``) returns ``None``."""
+    value = node.value
+    while isinstance(value, ast.Attribute):
+        value = value.value
+    return value.id if isinstance(value, ast.Name) else None
+
+
+#: One file's caller-scan index: (import map, bare-name loads, attribute
+#: loads) — attribute loads carry each load's leftmost root Name (or
+#: None) so a bound root can be checked against the import map.
+_FileScan = tuple[
+    dict[str, str],
+    dict[str, list[int]],
+    dict[str, list[tuple[str | None, int]]],
+]
+
+
+def _scan_tree(tree: ast.Module) -> _FileScan:
+    """One AST pass -> (import map, bare-name loads, attribute loads).
+
+    Bare-name loads and attribute loads stay SEPARATE (the pre-gr515710
+    merged ``leaves`` dict couldn't): a bare ``f`` load only proves a
+    caller when ``f`` itself is import-bound to the target leaf, while a
+    ``.f`` attribute load is judged by the module/class its leftmost
+    root resolves to — see :func:`_is_production_caller_scan`."""
+    name_loads: dict[str, list[int]] = {}
+    attr_loads: dict[str, list[tuple[str | None, int]]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            leaves.setdefault(node.id, []).append(getattr(node, "lineno", 0))
+            name_loads.setdefault(node.id, []).append(getattr(node, "lineno", 0))
         elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
-            leaves.setdefault(node.attr, []).append(getattr(node, "lineno", 0))
-    return _all_imports(tree), leaves
+            attr_loads.setdefault(node.attr, []).append(
+                (_attr_load_root(node), getattr(node, "lineno", 0))
+            )
+    return _all_imports(tree), name_loads, attr_loads
+
+
+#: One AST pass per file, memoized process-wide. 141 parametrized cases
+#: over ~1700 repo files means a per-anchor ``git grep`` + re-parse
+#: (coderef's own per-call shape) is O(anchors x files); this test
+#: instead pays the parse cost O(files) ONCE (first anchor a given
+#: pytest-xdist worker handles) and every anchor after that is a dict
+#: lookup — the difference between a ~2 minute run and a ~10 second one.
+@functools.cache
+def _file_index(path_str: str) -> _FileScan | None:
+    try:
+        tree = ast.parse(Path(path_str).read_text(encoding="utf-8", errors="ignore"))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return None
+    return _scan_tree(tree)
+
+
+def _is_production_caller_scan(
+    imports: dict[str, str],
+    name_loads: dict[str, list[int]],
+    attr_loads: dict[str, list[tuple[str | None, int]]],
+    *,
+    leaf: str,
+    target_module: str,
+    acceptable: set[str],
+) -> bool:
+    """Whether one indexed file is a real caller of ``target_module``'s
+    ``leaf``. Two evidence shapes, each checked against the file's own
+    import bindings — gr515710's fix, replacing the old "leaf name
+    appears somewhere as a Load AND some acceptable import exists" test,
+    which both missed aliased callers and counted phantoms:
+
+    - **Bare-name load**: a name load counts only when that name is
+      import-bound to ``target_module.leaf`` itself — ``from m import
+      f`` AND ``from m import f as _f`` (the alias binds ``_f -> m.f``
+      in the import map, and ``_f``'s own loads are what count; the leaf
+      ``f`` never appears as a Load node, which is exactly what the old
+      scan missed). A same-named local variable or parameter is NOT
+      evidence — ``_pcb_ops.py``'s ``layer_name`` params made
+      ``ir.layer_name`` look wired for months while having zero real
+      call sites.
+    - **Attribute load** ``root.leaf``: a root import-bound to an
+      acceptable form (``m`` via ``import m`` / ``import m as y`` /
+      ``from pkg import m``, or the owning class via ``from m import
+      Owner``) counts on its own. A root that is unbound (a local
+      variable / parameter / ``self`` — the dominant ``ir.field``
+      consumer shape, unresolvable without type inference) or has no
+      Name root (``factory().leaf``, ``items[0].leaf``) counts only when
+      the file separately imports an acceptable form — the old scan's
+      file-level gate, kept: without it every ``x.emit``/``x.run`` on a
+      local anywhere in the tree counts. A root import-bound to a
+      DIFFERENT module never counts for that load — ``other.leaf`` is
+      ``other``'s leaf, not ours.
+    """
+    dotted_leaf = f"{target_module}.{leaf}"
+    if any(imports.get(name) == dotted_leaf for name in name_loads):
+        return True
+    module_gate = any(dotted in acceptable for dotted in imports.values())
+    for root, _line in attr_loads.get(leaf, []):
+        if root is not None and root in imports:
+            if imports[root] in acceptable:
+                return True
+        elif module_gate:
+            return True
+    return False
 
 
 def _production_callers(anchor: str) -> set[str]:
@@ -528,16 +626,21 @@ def _production_callers(anchor: str) -> set[str]:
         indexed = _file_index(str(path))
         if indexed is None:
             continue
-        imports, leaves = indexed
-        lines = leaves.get(leaf)
-        if not lines:
-            continue
-        same_file = path.resolve() == def_path
-        if not same_file:
-            if not any(dotted in acceptable for dotted in imports.values()):
-                continue
-            callers.add(rel.as_posix())
-        elif any(ln != def_line for ln in lines):
+        imports, name_loads, attr_loads = indexed
+        if path.resolve() == def_path:
+            lines = name_loads.get(leaf, []) + [
+                ln for _root, ln in attr_loads.get(leaf, [])
+            ]
+            if any(ln != def_line for ln in lines):
+                callers.add(rel.as_posix())
+        elif _is_production_caller_scan(
+            imports,
+            name_loads,
+            attr_loads,
+            leaf=leaf,
+            target_module=target_module,
+            acceptable=acceptable,
+        ):
             callers.add(rel.as_posix())
     return callers
 
@@ -857,6 +960,215 @@ def test_known_unwired_list_has_no_stale_entries() -> None:
         f"known-unwired entries that now HAVE a production caller -- "
         f"remove them from _KNOWN_UNWIRED: {stale}"
     )
+
+
+# ─── gr515710: alias-import callers + phantom-name guards ─────────────────
+#
+# Regression cases for :func:`_is_production_caller_scan` on synthetic
+# modules — the two directions the old merged-leaf scan got wrong in ONE
+# predicate: callers it couldn't see (``from m import f as _f`` — the
+# leaf never loads, only the alias does) and callers it invented (a bare
+# ``layer_name`` parameter load in a file importing ``precis.pcb.ir``
+# for other reasons counted as calling ``ir.layer_name``).
+
+
+def _scan_source(source: str) -> _FileScan:
+    return _scan_tree(ast.parse(textwrap.dedent(source)))
+
+
+@pytest.mark.parametrize(
+    ("source", "leaf", "target_module", "extra_importable", "expected", "why"),
+    [
+        (
+            """
+            from precis.pcb.pose import rotate_cw as _rotate_cw
+            def turn(p):
+                return _rotate_cw(p)
+            """,
+            "rotate_cw",
+            "precis.pcb.pose",
+            set(),
+            True,
+            "the gr515710 case: `from m import f as _f` — only the alias "
+            "ever loads, and the import map binds it to m.f",
+        ),
+        (
+            """
+            import precis.pcb.pose as pose_mod
+            def turn(p):
+                return pose_mod.rotate_cw(p)
+            """,
+            "rotate_cw",
+            "precis.pcb.pose",
+            set(),
+            True,
+            "`import m as y` — y binds to the module, y.f's root resolves",
+        ),
+        (
+            """
+            import precis.pcb.pose
+            def turn(p):
+                return precis.pcb.pose.rotate_cw(p)
+            """,
+            "rotate_cw",
+            "precis.pcb.pose",
+            set(),
+            True,
+            "unaliased `import m` — the first-segment binding still "
+            "carries the full dotted path",
+        ),
+        (
+            """
+            from precis.pcb.pose import rotate_cw
+            def turn(p):
+                return rotate_cw(p)
+            """,
+            "rotate_cw",
+            "precis.pcb.pose",
+            set(),
+            True,
+            "baseline unaliased from-import (already counted before)",
+        ),
+        (
+            """
+            from precis.pcb.pose import rotate_cw as _rotate_cw
+            def turn(p):
+                return p
+            """,
+            "rotate_cw",
+            "precis.pcb.pose",
+            set(),
+            False,
+            "imported but never loaded — an import alone isn't a call",
+        ),
+        (
+            """
+            from precis.pcb import ir
+            def pour(layer_name, net):
+                return {"layer": layer_name, "net": net}
+            """,
+            "layer_name",
+            "precis.pcb.ir",
+            set(),
+            False,
+            "the _pcb_ops phantom: a bare `layer_name` LOCAL in a file "
+            "importing the module for other reasons is not a call of "
+            "ir.layer_name",
+        ),
+        (
+            """
+            from precis.pcb import ir
+            from precis.pcb import drc
+            def f(item):
+                return drc.layer_name(item)
+            """,
+            "layer_name",
+            "precis.pcb.ir",
+            set(),
+            False,
+            "attr-side phantom: `drc.layer_name` is drc's leaf — a root "
+            "import-bound to a different module doesn't count",
+        ),
+        (
+            """
+            from precis.pcb import ir
+            def f(idx, n):
+                return ir.layer_name(idx, n)
+            """,
+            "layer_name",
+            "precis.pcb.ir",
+            set(),
+            True,
+            "the real shape the phantom aped: `.leaf` on the imported module",
+        ),
+        (
+            """
+            from precis.pcb import ir
+            def f(board):
+                return board.layer_name
+            """,
+            "layer_name",
+            "precis.pcb.ir",
+            set(),
+            True,
+            "an unbound local root stays loose — `ir.field` on a local "
+            "PcbIR is the dominant consumer shape and unresolvable "
+            "without type inference",
+        ),
+        (
+            """
+            def f(handler):
+                handler.emit(record)
+            """,
+            "emit",
+            "precis.pcb.board_script",
+            set(),
+            False,
+            "the file-level gate: `.leaf` on an unbound local counts "
+            "only when the file imports the target — otherwise every "
+            "`x.emit`/`x.run`/`x.missing` anywhere reads as a caller",
+        ),
+        (
+            """
+            from precis.pcb.ir import PcbIR
+            def f(board):
+                board.set_layer(0)
+            """,
+            "set_layer",
+            "precis.pcb.ir",
+            {"precis.pcb.ir.PcbIR"},
+            True,
+            "member anchor: an unbound instance root still counts (the "
+            "PcbIR-field consumer pattern)",
+        ),
+        (
+            """
+            from precis.pcb.ir import PcbIR
+            def f():
+                return PcbIR.set_layer
+            """,
+            "set_layer",
+            "precis.pcb.ir",
+            {"precis.pcb.ir.PcbIR"},
+            True,
+            "member anchor: `.leaf` off the imported owning class",
+        ),
+        (
+            """
+            import precis.pcb
+            def f(p):
+                return precis.pcb.pose.rotate_cw(p)
+            """,
+            "rotate_cw",
+            "precis.pcb.pose",
+            set(),
+            False,
+            "known miss, unchanged: `import pkg` + pkg.sub.f() binds "
+            "only `precis.pcb`, which isn't an acceptable form",
+        ),
+    ],
+)
+def test_caller_scan_alias_imports_and_phantom_guards(
+    source: str,
+    leaf: str,
+    target_module: str,
+    extra_importable: set[str],
+    expected: bool,
+    why: str,
+) -> None:
+    acceptable = {target_module, f"{target_module}.{leaf}"} | extra_importable
+    imports, name_loads, attr_loads = _scan_source(source)
+    assert (
+        _is_production_caller_scan(
+            imports,
+            name_loads,
+            attr_loads,
+            leaf=leaf,
+            target_module=target_module,
+            acceptable=acceptable,
+        )
+        is expected
+    ), why
 
 
 #: A reason that would make the allow list a rubber stamp — "the test

@@ -1008,6 +1008,11 @@ def _survey_done(
             + f"{acceptance.get('sampled')} sampled "
             + f"(Wilson upper {acceptance.get('wilson_hi')}"
             f" vs bar {acceptance.get('bar')})"
+            + (
+                f"; {acceptance['unanchored']} unanchored, excluded"
+                if acceptance.get("unanchored")
+                else ""
+            )
         )
     if escalations:
         lines.append(f"escalations ({len(escalations)}):")
@@ -1092,7 +1097,12 @@ def _batch_rows(
     """The batch's live output rows — the run token's rows on ``paper``, or
     across papers when ``paper`` is None (the batch *is* the run token —
     corpus finding 1). Newest-first is irrelevant: the sample is drawn
-    deterministically over the id set."""
+    deterministically over the id set. A row with no anchor
+    (``primary_link_id`` NULL — legal for ``tier='asserted'``, and the
+    state an anchored row ends in when its link is deleted) is still a
+    batch row: it lands flagged ``anchored=False`` and reads as
+    ``unanchored`` when sampled — named in the output, counted apart,
+    out of the Wilson math (gr515505)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT m.id, m.measurand_ref_id, m.literal, m.reported_unit, "
@@ -1100,7 +1110,7 @@ def _batch_rows(
             "       m.conditions, l.src_chunk_id, t.meta->>'slug', "
             "       m.subject_ref_id "
             "  FROM measures m "
-            "  JOIN links l ON l.link_id = m.primary_link_id "
+            "  LEFT JOIN links l ON l.link_id = m.primary_link_id "
             "  LEFT JOIN refs t ON t.ref_id = m.measurand_ref_id "
             " WHERE (%s::bigint IS NULL OR m.subject_ref_id = %s) "
             "   AND m.direction = 'output' "
@@ -1120,6 +1130,7 @@ def _batch_rows(
             "run_key": r[7],
             "conditions": r[8],
             "chunk_id": r[9],
+            "anchored": r[9] is not None,
             "measurand": r[10] or str(r[1]),
             "subject_ref_id": int(r[11]),
         }
@@ -1282,6 +1293,28 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         if measure is None:
             verdicts[str(mid)] = {"verdict": "undecidable", "reason": "row gone"}
             continue
+        if not measure.get("anchored"):
+            # In the batch and on the output, out of the verdict math:
+            # there is no passage to check the literal against, so the
+            # row is unverifiable — but unverifiable is not a sampled
+            # error either (gr515505's first cut counted it as one, which
+            # flipped re-accepts of anchor-lost batches to FAILED; the
+            # gripe asked for visibility, not new math). It is flagged
+            # "unanchored", named in the summary, and counted apart —
+            # see the "N unanchored, excluded" note below. Two distinct
+            # reasons: never anchored (legal for tier='asserted') vs the
+            # anchor was recorded and its link died afterwards (a
+            # deleted chunk/paper NULLs primary_link_id, anchor_scheme
+            # stays stamped).
+            verdicts[str(mid)] = {
+                "verdict": "unanchored",
+                "reason": (
+                    "anchor lost — the anchored link is gone, unverifiable"
+                    if measure.get("anchor_scheme")
+                    else "no anchor on the row — unverifiable"
+                ),
+            }
+            continue
         span = _span_text(ctx.store, measure)
         if span is None:
             verdicts[str(mid)] = {
@@ -1351,12 +1384,22 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
             wake_when=_wake_s(1),
         )
 
-    errors = sum(1 for v in verdicts.values() if v.get("verdict") != "correct")
+    # "unanchored" verdicts are visibility, not evidence: they sit out of
+    # both Wilson terms (numerator AND denominator) so a re-accept of a
+    # batch whose anchors died after extraction lands the same verdict
+    # it did before they were drawn (gr515505 review).
+    scored = [
+        mid
+        for mid in sampled
+        if verdicts.get(str(mid), {}).get("verdict") != "unanchored"
+    ]
+    n_unanchored = len(sampled) - len(scored)
+    errors = sum(1 for mid in scored if verdicts[str(mid)].get("verdict") != "correct")
     z = params.get("z") if isinstance(params.get("z"), (int, float)) else None
     bar = params.get("bar") if isinstance(params.get("bar"), (int, float)) else None
     acc = _accept.acceptance(
         errors,
-        len(sampled),
+        len(scored),
         z=float(z) if z else _accept.DEFAULT_Z,
         bar=float(bar) if bar else _accept.DEFAULT_BAR,
     )
@@ -1387,6 +1430,8 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         "run_token": run_token,
         "total_rows": int(state.get("total_rows") or len(rows)),
     }
+    if n_unanchored:
+        acc_meta["unanchored"] = n_unanchored
     if covered:
         acc_meta["papers"] = papers
         acc_meta["max_id"] = max_id
@@ -1394,8 +1439,13 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
     verdict = "ACCEPTED" if acc.accepted else "FAILED"
     bad = [
         (mid, verdicts[str(mid)])
-        for mid in sampled
+        for mid in scored
         if verdicts.get(str(mid), {}).get("verdict") != "correct"
+    ]
+    excluded = [
+        (mid, verdicts[str(mid)])
+        for mid in sampled
+        if verdicts.get(str(mid), {}).get("verdict") == "unanchored"
     ]
     if paper is not None:
         scope = f"pa{paper}"
@@ -1403,12 +1453,17 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         scope = f"{len(papers)} papers"
     else:
         scope = "the run"
-    lines = [
+    head = (
         f"measure_accept: batch {verdict} for run {run_token} on {scope}: "
         f"{acc.errors} error(s) in {acc.sampled} sampled "
-        f"(Wilson upper {acc.wilson_hi:.3f} vs bar {acc.bar})",
-    ]
+        f"(Wilson upper {acc.wilson_hi:.3f} vs bar {acc.bar})"
+    )
+    if n_unanchored:
+        head += f"; {n_unanchored} unanchored, excluded"
+    lines = [head]
     for mid, v in bad[:50]:
+        lines.append(f"  mx{mid}: {v.get('verdict')} — {v.get('reason') or ''}")
+    for mid, v in excluded[:50]:
         lines.append(f"  mx{mid}: {v.get('verdict')} — {v.get('reason') or ''}")
     ctx.append_chunk("job_summary", "\n".join(lines))
     return Done(

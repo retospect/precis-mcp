@@ -337,6 +337,96 @@ class TestMeasureAcceptDispatch:
         assert not done.success
         assert "no live output rows" in done.summary
 
+    def test_unanchored_row_is_flagged_but_out_of_the_verdict_math(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr515505: an asserted row with no anchor is still a live output
+        row of the run — it joins the frame, is drawn, and is NAMED in the
+        summary, flagged "unanchored". But it is not a sampled error:
+        unverifiable sits out of both Wilson terms, so its presence leaves
+        the batch's verdict exactly what the three checkable rows earn."""
+        store = world["store"]
+        anchored = self._batch(world)
+        unanchored = store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["jtot"],
+                literal="42",
+                subject_ref_id=world["paper"],
+                reported_unit="A m-2",
+                tier="asserted",
+                meta={"extraction_run": "test-run"},
+            ),
+            actor="test",
+        ).output_id
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"}),
+                "frontier-x",
+            ),
+        )
+        done, events = drive(
+            self._accept_meta(world, sample_n=10), store, job.ACCEPT_SPEC
+        )
+        acc = next(v for k, v in events if k == "meta")["acceptance"]
+        # The batch has 4 rows, the draw saw 4, but the Wilson math ran
+        # on the 3 checkable ones — same verdict as before the LEFT JOIN.
+        assert acc["total_rows"] == 4 and acc["sampled"] == 3
+        assert acc["errors"] == 0 and acc["unanchored"] == 1
+        assert "ACCEPTED" in done.summary
+        assert "; 1 unanchored, excluded" in done.summary
+        assert f"mx{unanchored}: unanchored — no anchor on the row" in done.summary
+        assert f"mx{anchored[0]}:" not in done.summary
+        # No review lands for a row that was never checkable.
+        assert store.reviews_for("measure", unanchored) == []
+
+    def test_anchor_lost_row_is_excluded_and_named(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The re-accept case the review caught: a batch row whose anchor
+        died after extraction (the chunk delete NULLs the link, the scheme
+        stays stamped) reads "anchor lost", not "no anchor on the row" —
+        and the verdict matches the pre-flag math for the surviving rows."""
+        store = world["store"]
+        self._batch(world)
+        lost = store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["jtot"],
+                literal="42",
+                subject_ref_id=world["paper"],
+                reported_unit="A m-2",
+                tier="measured",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"], world["c3"], "offsets", [world["c3"], 0, 10]
+                ),
+                meta={"extraction_run": "test-run"},
+            ),
+            actor="test",
+        ).output_id
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (world["c3"],))
+        gone = next(r for r in store.measures_for(world["paper"]) if r["id"] == lost)
+        assert gone["primary_link_id"] is None and gone["anchor_lost"] is True
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"}),
+                "frontier-x",
+            ),
+        )
+        done, events = drive(
+            self._accept_meta(world, sample_n=10), store, job.ACCEPT_SPEC
+        )
+        acc = next(v for k, v in events if k == "meta")["acceptance"]
+        assert acc["errors"] == 0 and acc["sampled"] == 3
+        assert acc["unanchored"] == 1
+        assert "ACCEPTED" in done.summary
+        assert f"mx{lost}: unanchored — anchor lost" in done.summary
+        assert "no anchor on the row" not in done.summary
+
     def test_undecidable_counts_as_error(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -752,8 +842,9 @@ class TestRunLevelAcceptance:
         assert group["n"] == 1 and group["best"]["id"] == seen
 
     def test_anchorless_token_rows_fail_the_gate(self, world: dict) -> None:
-        """A token row with no anchor was never in the sampling frame
-        (_batch_rows inner-joins links) — the gate must not pass it."""
+        """A token row with no anchor is flagged ``unanchored`` in the
+        batch and stays out of the verdict math — the gate must not pass
+        it either."""
         store = world["store"]
         quest = seed_ref(store, title="anchor quest", kind="quest")
         store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
