@@ -15,6 +15,9 @@ samples the batch at a 5% error bar — no per-value human sign-off.
 * :mod:`precis.extract.prompt` — the reader and sampler prompts.
 * :mod:`precis.extract.accept` — stratified sampling + the Wilson
   acceptance rule.
+* :mod:`precis.extract.tables` — the deterministic pipe-table grid
+  parse (header, rows, exact-offset cells, footnote/citation markers,
+  caption lookup); the one definition of a table line and separator.
 
 Pure functions only: the DB and LLM glue lives in
 ``precis.workers.job_types.survey_extract``.

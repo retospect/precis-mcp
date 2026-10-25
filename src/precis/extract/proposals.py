@@ -69,6 +69,7 @@ from typing import Any
 
 from precis.extract import anchors as _anchors
 from precis.extract import verify as _verify
+from precis.extract.tables import _is_table_separator, _table_line_cells
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.taxonomy.measure_units import parse_literal
 from precis.utils.text import slugify
@@ -229,27 +230,6 @@ def _resolve(
     if resolved[0] != chunk_id:
         raise ValueError(f"anchor {raw!r} resolves off this chunk")
     return resolved
-
-
-def _table_line_cells(text: str) -> list[tuple[int, int, int]]:
-    """``(start, end, cell_count)`` for every line that reads as a
-    pipe-table row — at least one ``|`` separating cells. An empty cell
-    still counts: it keeps its column ('| a | | b |' is three cells)."""
-    rows = []
-    pos = 0
-    for line in text.splitlines():
-        start, end = pos, pos + len(line)
-        pos = end + 1
-        if "|" not in line:
-            continue
-        rows.append((start, end, len(line.strip().strip("|").split("|"))))
-    return rows
-
-
-def _is_table_separator(line: str) -> bool:
-    """A ``|---|`` divider row: every cell is only dashes/colons."""
-    cells = line.strip().strip("|").split("|")
-    return all(re.fullmatch(r"[:-]+", cell.strip()) for cell in cells)
 
 
 def _literal_table_row(

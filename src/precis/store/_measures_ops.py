@@ -1892,6 +1892,24 @@ class MeasuresMixin:
             for r in rows
         ]
 
+    def measure_counts_by_anchor_chunk(self, chunk_ids: list[int]) -> dict[int, int]:
+        """Live output rows per anchoring chunk — the ``measures: N
+        extracted`` counter of ``get(view='tables')``. The anchor is the
+        measure's ``primary_link_id`` edge's ``src_chunk_id``; a chunk
+        with no rows is absent from the map (caller reads ``0``)."""
+        if not chunk_ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT l.src_chunk_id, count(*) FROM measures m "
+                "JOIN links l ON l.link_id = m.primary_link_id "
+                "WHERE l.src_chunk_id = ANY(%s) "
+                "AND m.direction = 'output' AND m.superseded_by IS NULL "
+                "GROUP BY l.src_chunk_id",
+                (list(chunk_ids),),
+            ).fetchall()
+        return {int(cid): int(n) for cid, n in rows}
+
     def live_measure_count(self, measurand_ref_id: int) -> int:
         """Live (unsuperseded) rows keyed on this one measurand — the
         pin count behind the taxon unit guard (ontology-v2 slice 0b): a

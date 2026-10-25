@@ -946,6 +946,7 @@ class ChunkStore:
         include_speculative: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
+        chunk_kinds: list[str] | None = None,
     ) -> int:
         """Count chunks matching the ``mode='verbatim'`` keyword-
         containment filter (no LIMIT). Companion to
@@ -1008,6 +1009,7 @@ class ChunkStore:
         if self._fence_refuted(tags):
             clauses.append(refuted_fence("r"))
         clauses.extend(_year_range_clauses(year_from, year_to))
+        clauses.extend(_chunk_scope_clauses(chunk_kinds, None))
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -3438,6 +3440,51 @@ class ChunkStore:
         where = " AND ".join(clauses)
         with nullcontext(conn) if conn is not None else self.pool.connection() as c:
             return _fetch_chunks(c, where, params, with_embedding=with_embedding)
+
+    def table_chunks_for_ref(
+        self, ref_id: int, *, neighbour_window: int = 2
+    ) -> tuple[list[tuple[int, int, str, list[str]]], list[tuple[int, int, str]]]:
+        """One read for ``get(view='tables')``: the ref's live body
+        chunks of ``chunk_kind='table'`` plus every live chunk within
+        ``neighbour_window`` ords of one (the caption candidates
+        :func:`precis.extract.tables.assign_captions` scans).
+
+        Returns ``(tables, neighbours)`` in ord order — tables as
+        ``(chunk_id, ord, text, section_path)``, neighbours as
+        ``(chunk_id, ord, text)`` of the *non-table* chunks only
+        (table rows land in ``tables``, never both)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.chunk_id, c.ord, c.chunk_kind, c.text, c.section_path
+                  FROM chunks c
+                 WHERE c.ref_id = %s AND c.retired_at IS NULL AND c.ord >= 0
+                   AND (c.chunk_kind = 'table'
+                        OR EXISTS (
+                            SELECT 1 FROM chunks t
+                             WHERE t.ref_id = c.ref_id
+                               AND t.retired_at IS NULL AND t.ord >= 0
+                               AND t.chunk_kind = 'table'
+                               AND c.ord BETWEEN t.ord - %s AND t.ord + %s))
+                 ORDER BY c.ord
+                """,
+                (ref_id, neighbour_window, neighbour_window),
+            ).fetchall()
+        tables: list[tuple[int, int, str, list[str]]] = []
+        neighbours: list[tuple[int, int, str]] = []
+        for chunk_id, ord_, kind, text, section_path in rows:
+            if kind == "table":
+                tables.append(
+                    (
+                        int(chunk_id),
+                        int(ord_),
+                        str(text or ""),
+                        [str(s) for s in (section_path or [])],
+                    )
+                )
+            else:
+                neighbours.append((int(chunk_id), int(ord_), str(text or "")))
+        return tables, neighbours
 
     def chunk_pages(self, ref_id: int, ords: list[int]) -> dict[int, int]:
         """Map body-chunk ``ord`` → ``page_first`` for the given ords.

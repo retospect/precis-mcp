@@ -287,6 +287,18 @@ search(kind="paper", q="ammonia", args={"serves": "quest:164903"})
 search(kind="paper", q="ammonia", args={"serves": "quest:164903", "has_fulltext": True})
 ```
 
+To keep only chunks of one body kind — e.g. table-chunk hits across
+the corpus, the search-side companion to `view='tables'`:
+
+```python
+search(kind="paper", q="sticking prefactor", args={"chunk_kind": "table"})
+```
+
+`args={'chunk_kind': …}` takes one slug or a list from the
+`chunk_kinds` catalogue (`paragraph`, `table`, `caption`, `equation`,
+`figure`, …), implies the per-chunk hit shape like `scope=`, and
+refuses an unknown slug with the valid list.
+
 ## Filter papers by publication year
 ## Find recent papers / papers from a date range
 ## Only papers published after / before a year
@@ -339,7 +351,25 @@ extracted keyword string. Use it to scan every chunk's gist at once (the
 web reader's Semantic/Keyword sidebar reads the same data); fall back to
 the keyword column where a gloss hasn't been written yet.
 
-Views: `abstract`, `toc`, `summaries`, `bibtex` (`cite/bib`), `ris`
+`view='tables'` renders every `chunk_kind='table'` chunk as a parsed
+grid — one `T<n>` section per *logical* table with its `pc` chunk
+handle, the nearest `Table <n>` caption chunk, header-unit hints
+(`(ML)`, `(kJ/mol)`), a `measures: N extracted` counter, and numbered
+rows you cite back as `pc<id> row R col C`. A big table ingest split
+into consecutive chunks stays one `T<n>` — continuations are labelled
+`T1 (part 2)` and share the caption. A table chunk that isn't a
+well-formed pipe grid renders raw rather than being guessed at.
+`args={'table': 2}` (or a `pc` handle) renders one table;
+`args={'match': 'sticking prefactor'}` keeps tables whose header,
+caption or row labels hold any of the words.
+
+```python
+get(kind="paper", id="pa40", view="tables")
+get(kind="paper", id="pa40", view="tables", args={"table": 2})
+get(kind="paper", id="pa40", view="tables", args={"match": "sticking"})
+```
+
+Views: `abstract`, `toc`, `summaries`, `tables`, `bibtex` (`cite/bib`), `ris`
 (`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
 (signed download URL for the held PDF — see precis-paper-ref-help). The

@@ -229,6 +229,7 @@ _SUPPORTED_VIEWS = (
     "chunks",
     "ops",
     "pdf_link",
+    "tables",
 )
 
 
@@ -449,7 +450,12 @@ class PaperHandler(Handler):
         # ``offset``/``limit`` aliases ride along through
         # ``_slice_args.slice_window``. ``ttl_s`` is the
         # ``view='pdf_link'`` token-lifetime knob (gr517423 slice 3).
-        "get": ArgsSpec({"page", "page_size", "offset", "limit", "ttl_s"}),
+        # ``view='tables'`` (gr506762): ``args={'table': n|<pc handle>}``
+        # renders one table, ``args={'match': 'w1 w2'}`` keeps tables
+        # whose header/caption/row labels hold any word.
+        "get": ArgsSpec(
+            {"page", "page_size", "offset", "limit", "ttl_s", "match", "table"}
+        ),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
         # spelling the slim schema pushes (kind-specific fields ride
         # args=), and acquire's own BadInput hint names verify=/title=.
@@ -1779,6 +1785,23 @@ class PaperHandler(Handler):
                     ),
                 )
 
+        # ``args={'table'|'match'}`` belong to view='tables' — anywhere
+        # else (another view, a chunk range, the bare overview) they'd
+        # be silently dropped; refuse and name the view they need.
+        if (
+            effective_view != "tables"
+            and isinstance(args, dict)
+            and (args.get("table") is not None or args.get("match") is not None)
+        ):
+            raise BadInput(
+                "args={'table'|'match'} only apply to view='tables', "
+                f"not view={effective_view!r}",
+                next=(
+                    f"get(id='{_pa(ref)}', view='tables', "
+                    "args={'table': 1} or args={'match': 'word'})"
+                ),
+            )
+
         # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
         # Only ``view='toc'`` is valid with a chunk_spec; other views
         # don't have a sensible "this range only" meaning yet.
@@ -1813,7 +1836,7 @@ class PaperHandler(Handler):
             queue_si_on_attention(self.store, ref.id, "mcp_get")
             return self._render_overview(ref)
 
-        return self._render_view(ref, effective_view, args)
+        return self._render_view(ref, effective_view, args=args)
 
     # -- batch get (``id=[...]``, gr501175) -----------------------------------
 
@@ -2010,6 +2033,11 @@ class PaperHandler(Handler):
         serves: str | None = None,
         has_fulltext: bool | None = None,
         record_type: str | None = None,
+        # ``args={'chunk_kind': 'table'}`` (gr506762): restrict hits to
+        # chunks of the named kind(s) — a table-only search for the
+        # parsed-grid read. Validated against ``chunk_kinds.slug``;
+        # implies the per-chunk drill shape like ``scope=``.
+        chunk_kind: str | list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -2164,12 +2192,43 @@ class PaperHandler(Handler):
                 f"unique_per='paper' is a paper-search shape, not kind='{kind}'",
                 next="drop unique_per= — chunked hits are the shape here",
             )
+        # ``args={'chunk_kind': 'table'}`` — validate against the
+        # ``chunk_kinds`` catalogue; an unknown slug gets the body-kind
+        # list back, like the enum on a bad ``view=``.
+        chunk_kinds: list[str] | None = None
+        if chunk_kind is not None:
+            raw_kinds = (
+                [chunk_kind] if isinstance(chunk_kind, str) else list(chunk_kind)
+            )
+            if not raw_kinds:
+                raise BadInput(
+                    "args={'chunk_kind': []} is empty",
+                    next="args={'chunk_kind': 'table'} keeps only table chunks",
+                )
+            with self.store.pool.connection() as conn:
+                known = {
+                    str(r[0])
+                    for r in conn.execute("SELECT slug FROM chunk_kinds").fetchall()
+                }
+            bad = [k for k in raw_kinds if str(k) not in known]
+            if bad:
+                raise BadInput(
+                    f"unknown chunk_kind {bad[0]!r} for kind={kind!r}",
+                    options=sorted(known),
+                    next="args={'chunk_kind': 'table'} restricts hits to one "
+                    "body chunk kind",
+                )
+            chunk_kinds = [str(k) for k in raw_kinds]
+
         resolved_unique_per = (
             unique_per_norm
             if unique_per_norm is not None
             else (
                 "paper"
-                if kind == "paper" and scope is None and not verbatim_mode
+                if kind == "paper"
+                and scope is None
+                and not verbatim_mode
+                and chunk_kinds is None
                 else "chunk"
             )
         )
@@ -2269,6 +2328,7 @@ class PaperHandler(Handler):
             extra_exclude_ref_ids=exclude_ref_ids,
             extra_include_ref_ids=include_ref_ids,
             has_body=has_fulltext,
+            chunk_kinds=chunk_kinds,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
 
@@ -5327,7 +5387,7 @@ class PaperHandler(Handler):
         return Response(body="\n".join(lines))
 
     def _render_view(
-        self, ref: Ref, view: str, args: dict[str, Any] | None = None
+        self, ref: Ref, view: str, *, args: dict[str, Any] | None = None
     ) -> Response:
         if view == "ops":
             return self._render_ops_view(ref, args)
@@ -5440,6 +5500,11 @@ class PaperHandler(Handler):
 
         if view == "chunks":
             return self._render_chunk_stats(ref)
+
+        if view == "tables":
+            from precis.handlers._paper_tables import render_tables_view
+
+            return render_tables_view(self.store, ref, args=args)
 
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper

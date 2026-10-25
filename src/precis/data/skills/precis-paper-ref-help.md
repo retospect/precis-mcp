@@ -202,6 +202,11 @@ edit(kind="paper", id="pa174214", args={"clear_abstract": True, "reason": "junk 
 ```
 
 `reason` required, `dry_run` previews, one DELETE+INSERT transaction.
+Judge the body before you drop it — `get(id=…, view='tables')` renders
+its `chunk_kind='table'` chunks as parsed grids (caption, units, a
+`pc<id> row R col C` cell cite), and
+`search(kind='paper', q=…, args={'chunk_kind': 'table'})` restricts
+hits to table chunks.
 `drop_body` deletes body chunks + embeddings, clears `pdf_sha256` and
 content ids, keeps metadata — a live stub, refetchable via `pdf_url`.
 Add `'keep_pdf': True` when the ref's own PDF is the right file and only

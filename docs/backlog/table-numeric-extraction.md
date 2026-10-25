@@ -168,7 +168,7 @@ def parse_table(chunk_id: int, text: str) -> ParsedTable | None: ...
 def header_unit(header: str) -> str | None: ...
 def strip_footnote(cell: str) -> tuple[str, str | None]: ...
 def has_citation_marker(cell: str) -> bool: ...
-def find_caption(neighbours: Sequence[tuple[int, int, str]], table_ord: int) -> tuple[int, str] | None: ...
+def assign_captions(tables: Sequence[tuple[int, int]], neighbours: Sequence[tuple[int, int, str]]) -> dict[int, tuple[int, str]]: ...
 ```
 
 Rules:
@@ -197,10 +197,14 @@ Rules:
 - **Citation marker.** `has_citation_marker` is true for `et al`,
   `<sup>\d+(,\d+)*</sup>`, `^{\d+}`, `[\d+(,\d+)*]` and `ref.`/`refs.`
   (case-insensitive).
-- **Caption.** `find_caption` scans the table's neighbours at ord −2…+2
-  for a chunk whose text matches `^\s*(\*\*)?(Table|TABLE)\s+[0-9IVXS]+`
-  and returns the nearest `(chunk_id, first 300 chars)`, ties going to
-  the one before.
+- **Caption.** `assign_captions` pairs tables with caption chunks
+  one-to-one across the ref: candidates open `Table <n>` followed by
+  `.`, `:` or a closing `**` (so `Table 2 shows…` prose is out), sit
+  within ord −2…+2, and a numbered caption only attaches to the table
+  with that running number. Greedy by distance, numbered matches ahead
+  of unnumbered, ties going to the caption before the table; an
+  unpaired table gets no caption — never a neighbour's. Returns
+  `{table_chunk_id: (caption_chunk_id, first 300 chars)}`.
 
 ### 1b. `get(kind='paper', id=X, view='tables')`
 
@@ -221,11 +225,11 @@ are gated, and check how `view='chunks'` receives args.
   ```
   ## T2 · pc180352 · §3.1 Oxidation kinetics
   caption (pc180351): Table 2. Kinetic parameters for O2 on Ni single crystals at 300 K …
-  columns: [1] Oxidation rate constant K_i N_0 (L^-2) · [2] Saturation coverage θ_sat (ML) [unit ML] · … · [4] Saturation sticking s_rev
-  | row | label | [1] | [2] | [3] | [4] |
+  columns: [2] Oxidation rate constant K_i N_0 (L^-2) · [3] Saturation coverage θ_sat (ML) [unit ML] · … · [5] Saturation sticking s_rev
+  | row | label | [2] | [3] | [4] | [5] |
   | 1 | Ni{100} | 0.0002 | 3.6 | 0.68 | 0.062 |
   …
-  measures: 0 extracted · cite a cell as pc180352 row 1 col 4
+  measures: 0 extracted · cite a cell as pc180352 row 1 col 5
   ```
 
   Headers and cells are shown through `markup_surface` for reading. A
@@ -414,7 +418,7 @@ that is ragged, keeps today's per-cell prompt, so nothing regresses.
 - New param `chunk_kinds: list[str] | null`. `["table"]` runs the
   tables-only pass. It defaults to `_EXTRACT_CHUNK_KINDS`, and an
   unknown kind refuses the job up front.
-- The caption lookup reuses slice 1's `find_caption` over the
+- The caption lookup reuses slice 1's `assign_captions` over the
   `_chunks` list the job already loads.
 - `summary_meta` gains `drops_by_reason`, `flags_by_kind` and
   `tables: {recipe, fallback, no_results, ragged}` (T1's escalation
