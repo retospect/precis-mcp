@@ -94,3 +94,75 @@ def test_pooler_with_no_indexes_is_allowed(
     bf.run(_args(no_indexes=True, no_btree=True))
     assert [c[0] for c in calls] == ["connect", "fill"]
     assert all("options" not in c[1] for c in calls)
+
+
+def _bounded_fill_stub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[list[str]], frozenset[str]]:
+    """Wire ``run()`` for an apply-mode --until-pass scenario: permissive
+    connect (the probe needs options=), a fill that completed the
+    non-paper pass with one partial kind ('gripe') still unfilled, and a
+    recording ``build_kind_indexes``. Returns ``(built_kinds_calls,
+    marked)``."""
+    built: list[list[str]] = []
+    marked = frozenset(k for k in bf._ANN_PARTIAL_KINDS if k != "gripe")
+
+    def connect(dsn: str, **kw: Any) -> _Conn:
+        return _Conn()
+
+    def fill(*a: object, **k: object) -> bf.BackfillResult:
+        return bf.BackfillResult(
+            10,
+            5,
+            0,
+            False,
+            "non-paper",
+            3,
+            unfilled_by_kind={"gripe": 3},
+            marked=marked,
+        )
+
+    def build(conn: Any, kinds: list[str] | None = None) -> dict[str, bool]:
+        built.append(list(kinds or []))
+        return {k: True for k in (kinds or [])}
+
+    monkeypatch.setattr(psycopg, "connect", connect)
+    monkeypatch.setattr(bf, "backfill_embedding_kinds", fill)
+    monkeypatch.setattr(bf, "resolve_dsn", lambda url: url)
+    monkeypatch.setattr(bf, "_check_validated", lambda conn: False)
+    monkeypatch.setattr(bf, "build_kind_indexes", build)
+    monkeypatch.setattr(bf, "_unfilled_rows", lambda conn: [])
+    return built, marked
+
+
+def test_until_pass_bounded_run_with_unready_kind_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr516948: ``--until-pass non-paper`` bounds the fill, but an
+    unready *partial* kind afterwards is a real fill failure — ``paper``
+    is a global kind and never lands in ``unready``, so every unfilled
+    partial kind is one the non-paper pass was asked to fill. The run
+    exits 1 with the unfilled-row listing and builds no index."""
+    built, _marked = _bounded_fill_stub(monkeypatch)
+
+    with pytest.raises(SystemExit) as e:
+        bf.run(_args(until_pass="non-paper", no_btree=True))
+    assert e.value.code == 1
+    assert built == []
+    err = capsys.readouterr().err
+    assert "still have unfilled rows" in err
+    assert "fill incomplete" in err
+
+
+def test_full_fill_with_unready_kind_still_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure path is kept for a run that was meant to fill
+    everything (default ``--until-pass paper``): unready partial kinds
+    still refuse the index phase with exit 1."""
+    built, _marked = _bounded_fill_stub(monkeypatch)
+
+    with pytest.raises(SystemExit) as e:
+        bf.run(_args(until_pass="paper", no_btree=True))
+    assert e.value.code == 1
+    assert built == []

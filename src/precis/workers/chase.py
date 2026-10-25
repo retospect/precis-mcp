@@ -711,24 +711,38 @@ def _stub_exhausted(conn: Connection, stub_ref_id: int) -> bool:
     return (not has_id) or tried_and_failed
 
 
-def _select_grounding_chunk(
+#: How many pinnable candidates the acquiring arm's verifier may judge
+#: before the stub is shelved (``rejected_stubs``). The grounding pick
+#: is a top-1 heuristic — semantic when an embedder is wired, lexical
+#: overlap otherwise — so a single "no" verdict used to condemn the
+#: whole paper: the claim's real evidence often sits a few chunks past
+#: the pick (gr517168: three findings stalled in ``acquiring`` on stubs
+#: whose full text had landed, each rejected on one judged chunk).
+#: Verify calls are paid and sequential, so the shortlist stays small
+#: and stops at the first ``yes``/``partial``.
+_GROUNDING_CANDIDATES = 3
+
+
+def _grounding_candidates(
     store: Store,
     embedder: Any,
     claim_text: str,
     stub_ref_id: int,
     chunks: list[tuple[int, int, str]],
-) -> tuple[int, int, str]:
-    """Pick the chunk in a freshly-grounded stub that best supports the
-    claim: ``(chunk_id, ord, text)``.
+) -> list[tuple[int, int, str]]:
+    """Ordered grounding candidates in a freshly-grounded stub:
+    ``[(chunk_id, ord, text)]``, best first, capped at
+    :data:`_GROUNDING_CANDIDATES`.
 
     Claim-text embedding search (:meth:`~precis.store.Store.search_chunks`
     ``mode='semantic'``, scoped to the stub) over the paper's own chunks
     when ``embedder`` is available — the "existing grounding machinery"
-    the acquisition-mode design calls for. Degrades to the same
-    lexical title/claim-overlap heuristic :func:`_select_target_chunk`
-    uses for the ordinary chase when there's no embedder, or when the
-    search errors — never a hard failure (mirrors the taproot forward
-    bridge's own embedder-unavailable degrade).
+    the acquisition-mode design calls for — followed by the lexical
+    claim-overlap ranking :func:`_select_target_chunk` uses for the
+    ordinary chase, deduplicated. Degrades to the lexical ranking alone
+    when there's no embedder or the search errors — never a hard failure
+    (mirrors the taproot forward bridge's own embedder-unavailable
+    degrade).
 
     Candidates are restricted to pinnable chunks
     (:func:`_pinnable_chunks`): a grounding pin on a title page or a
@@ -737,6 +751,7 @@ def _select_grounding_chunk(
     chunks = _pinnable_chunks(chunks)
     if not chunks:
         raise _NoPinnableChunk
+    out: list[tuple[int, int, str]] = []
     if embedder is not None and claim_text.strip():
         try:
             query_vec = embedder.embed_one(claim_text)
@@ -746,13 +761,10 @@ def _select_grounding_chunk(
                 mode="semantic",
                 kind="paper",
                 scope_ref_id=stub_ref_id,
-                limit=1,
+                limit=_GROUNDING_CANDIDATES,
             )
-            if hits:
-                block, _ref, _score = hits[0]
-                match = next((c for c in chunks if c[0] == block.id), None)
-                if match is not None:
-                    return match
+            by_id = {c[0]: c for c in chunks}
+            out = [by_id[b.id] for b, _ref, _score in hits if b.id in by_id]
         except Exception:  # pragma: no cover — defensive
             log.warning(
                 "chase: acquire-arm embedding search failed for stub "
@@ -760,10 +772,17 @@ def _select_grounding_chunk(
                 stub_ref_id,
                 exc_info=True,
             )
+    ranked = chunks
     claim_tokens = _tokenize(claim_text)
-    if not claim_tokens:
-        return chunks[0]
-    return max(chunks, key=lambda c: _overlap(claim_tokens, _tokenize(c[2])))
+    if claim_tokens:
+        ranked = sorted(
+            chunks,
+            key=lambda c: _overlap(claim_tokens, _tokenize(c[2])),
+            reverse=True,
+        )
+    seen = {c[0] for c in out}
+    out.extend(c for c in ranked if c[0] not in seen)
+    return out[:_GROUNDING_CANDIDATES]
 
 
 def _ground_on_stub(
@@ -783,53 +802,92 @@ def _ground_on_stub(
     discipline).
 
     Returns ``None`` when the stub is *rejected* instead of grounded:
-    its best pinnable chunk's STANCE verdict is ``no`` (the
+    every shortlisted pinnable chunk drew a STANCE ``no`` verdict (the
     acquiring→established path requires at least ``partial`` — the same
     gate the tracing arm applies before ``_snapshot_chain``), or the
     stub holds no pinnable chunk at all (:class:`_NoPinnableChunk` —
-    title-page / reference-list only). The caller records the rejection
-    so a rejected stub is not re-verified every pass."""
+    title-page / reference-list only). Also ``None`` on a transient
+    verify error after a paid-for ``no`` — that case flags
+    ``ev.frontier["verify_retry"]`` so the caller retries next pass
+    instead of recording a rejection. Only a true rejection lands in
+    ``meta.rejected_stubs`` and is not re-verified every pass."""
     from precis.store.types import Tag
 
     claim_text = _claim_body(conn, finding.ref_id)
     try:
-        chunk_id, chunk_ord, chunk_text = _select_grounding_chunk(
+        candidates = _grounding_candidates(
             store, embedder, claim_text, stub_ref_id, chunks
         )
     except _NoPinnableChunk:
         ev.reason = "no_pinnable_chunk"
         ev.frontier = {"ref_id": stub_ref_id, "rejected": "no_pinnable_chunk"}
         return None
+
+    chunk_id, chunk_ord = candidates[0][:2]
     ev.frontier = {"ref_id": stub_ref_id, "ord": chunk_ord, "chunk_id": chunk_id}
+    verification: dict[str, Any] | None = None
+    if with_llm:
+        # STANCE gate: a stub whose chunk does NOT support the claim
+        # (verdict "no") must not ground it — the same "at least partial"
+        # rule the tracing arm applies before establishing. But the gate
+        # judges a *chunk*, and the pick is a top-1 heuristic: a "no"
+        # rejects that candidate, not the stub — the next candidates are
+        # verified in turn and the stub is shelved only when every
+        # shortlisted chunk fails (gr517168). A failed/absent verdict
+        # grounds the candidate anyway — the pre-shortlist semantics —
+        # but NOT once a paid-for "no" is on the table: then a transient
+        # error stops the loop without grounding and without rejecting,
+        # so the next pass retries instead of minting an unverified pin
+        # over negative evidence.
+        target = _fetch_ref(conn, stub_ref_id)
+        accepted = False
+        attempts = 0
+        saw_no = False
+        for cand_id, cand_ord, cand_text in candidates:
+            verification = None
+            chunk_id, chunk_ord = cand_id, cand_ord
+            ev.frontier["ord"] = cand_ord
+            ev.frontier["chunk_id"] = cand_id
+            verdict = _verify_support_with_caveats(
+                claim=claim_text,
+                scope=finding.meta.get("scope") or {},
+                target_cite_key=(target or {}).get("slug") or f"ref:{stub_ref_id}",
+                target_chunk_ord=cand_ord,
+                target_chunk_text=cand_text,
+            )
+            if verdict:
+                attempts += 1
+                ev.llm = {
+                    "hook": "verify",
+                    "supports": verdict.get("supports"),
+                    "caveats_n": len(verdict.get("caveats") or []),
+                    "cited_others_n": len(verdict.get("cited_others") or []),
+                    "attempts": attempts,
+                }
+                if str(verdict.get("supports") or "") not in ("yes", "partial"):
+                    saw_no = True
+                    continue
+                verification = verdict
+            elif saw_no:
+                ev.frontier["verify_retry"] = True
+                ev.reason = "verify_retry"
+                return None
+            accepted = True
+            break
+        if not accepted:
+            # Every shortlisted chunk drew a stance "no" — the stub is
+            # rejected; other linked stubs may still ground.
+            ev.frontier["rejected"] = "stance_no"
+            ev.reason = "stub_rejected"
+            return None
 
     hop: dict[str, Any] = {
         "ref_id": stub_ref_id,
         "chunk_id": chunk_id,
         "ord": chunk_ord,
     }
-    if with_llm:
-        target = _fetch_ref(conn, stub_ref_id)
-        verification = _verify_support_with_caveats(
-            claim=claim_text,
-            scope=finding.meta.get("scope") or {},
-            target_cite_key=(target or {}).get("slug") or f"ref:{stub_ref_id}",
-            target_chunk_ord=chunk_ord,
-            target_chunk_text=chunk_text,
-        )
-        if verification:
-            hop["verification"] = verification
-            ev.llm = {
-                "hook": "verify",
-                "supports": verification.get("supports"),
-                "caveats_n": len(verification.get("caveats") or []),
-                "cited_others_n": len(verification.get("cited_others") or []),
-            }
-            # STANCE gate: a stub whose best chunk does NOT support the
-            # claim (verdict "no") must not ground it — the same "at least
-            # partial" rule the tracing arm applies before establishing.
-            # The stub is rejected; other linked stubs may still ground.
-            if str(verification.get("supports") or "") not in ("yes", "partial"):
-                return None
+    if verification:
+        hop["verification"] = verification
 
     store.add_link(
         src_ref_id=finding.ref_id,
@@ -909,6 +967,12 @@ def _advance_acquiring(
             )
             if out is not None:
                 return out
+            if ev.frontier.get("verify_retry"):
+                # A paid-for "no" then a transient verify failure — not a
+                # rejection: the stub retries next pass and does not
+                # count toward the give-up check.
+                all_exhausted = False
+                continue
             # Stub rejected (stance "no", or nothing pinnable) — record it
             # so a later pass doesn't re-verify the same paid call. A
             # rejected stub counts as exhausted for the give-up check.

@@ -1077,6 +1077,222 @@ def test_acquiring_stays_acquiring_when_fetch_ok_pending_ingest_past_grace(
     assert int(chain[0]["ref_id"]) == stub_id
 
 
+def test_acquiring_stance_no_on_pick_tries_next_candidates(store) -> None:
+    """gr517168: a stance 'no' on the top grounding pick rejects the
+    *chunk*, not the stub — the verifier walks the pinnable shortlist
+    and the finding grounds on a later candidate."""
+    claim_text = "methanotroph symbiont methane oxidation coupling"
+    fid, stub_id = _seed_acquiring_finding(
+        store, wants=[{"doi": "10.1/acq-shortlist"}], body=claim_text
+    )
+    store.chunks.insert_chunks(
+        stub_id,
+        [
+            # ord 0 ranks first on claim-token overlap (and is the chunk
+            # the verifier turns down); ord 1 is where the pin lands.
+            # (Both need ≥8-word terminated sentences to stay pinnable.)
+            ChunkInsert(ord=0, text=f"{claim_text} as a heading.", meta={}),
+            ChunkInsert(
+                ord=1,
+                text="Seasonal turnover reshapes the wetland microbial community structure.",
+                meta={},
+            ),
+        ],
+    )
+    verdicts = {
+        0: {"supports": "no", "caveats": [], "cited_others": [], "terminal": False},
+        1: {"supports": "yes", "caveats": [], "cited_others": [], "terminal": True},
+    }
+    seen_ords: list[int] = []
+
+    def verdict(**kw: Any) -> dict[str, Any]:
+        seen_ords.append(kw["target_chunk_ord"])
+        return verdicts[kw["target_chunk_ord"]]
+
+    with patch(_VERIFY_PATH, side_effect=verdict):
+        result = run_finding_chase_pass(store, limit=10, with_llm=True)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "tracing"
+    assert seen_ords == [0, 1]
+    chain = _chain(store, fid)
+    assert len(chain) == 1
+    assert int(chain[0]["ref_id"]) == stub_id
+    assert chain[0]["ord"] == 1
+    assert chain[0]["verification"]["supports"] == "yes"
+
+
+def test_acquiring_stub_rejected_only_after_shortlist_all_no(store) -> None:
+    """gr517168: the stub is shelved only once every shortlisted chunk
+    drew a 'no' — and the rejection is visible in the event (not the
+    misleading 'stub has no chunks yet')."""
+    claim_text = "methanotroph symbiont methane oxidation coupling"
+    fid, stub_id = _seed_acquiring_finding(
+        store, wants=[{"doi": "10.1/acq-allno"}], body=claim_text
+    )
+    store.chunks.insert_chunks(
+        stub_id,
+        [
+            ChunkInsert(ord=0, text=f"{claim_text} as a heading.", meta={}),
+            ChunkInsert(
+                ord=1,
+                text="Seasonal turnover reshapes the wetland microbial community structure.",
+                meta={},
+            ),
+        ],
+    )
+    seen_ords: list[int] = []
+
+    def verdict(**kw: Any) -> dict[str, Any]:
+        seen_ords.append(kw["target_chunk_ord"])
+        return {"supports": "no", "caveats": [], "cited_others": []}
+
+    with patch(_VERIFY_PATH, side_effect=verdict):
+        result = run_finding_chase_pass(store, limit=10, with_llm=True)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "acquiring"
+    assert seen_ords == [0, 1]
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta, (SELECT payload FROM ref_events "
+            "WHERE ref_id = %s AND source = 'chase' "
+            "ORDER BY ts DESC LIMIT 1) AS last_event "
+            "FROM refs WHERE ref_id = %s",
+            (fid, fid),
+        ).fetchone()
+    assert row[0]["rejected_stubs"] == [stub_id]
+    assert row[1]["reason"] == "stub_rejected"
+    assert row[1]["frontier"]["rejected"] == "stance_no"
+
+    # A rejected stub is not re-verified every pass — the next pass
+    # makes no verify call at all. Age out the waiting-backoff first.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_events SET ts = ts - INTERVAL '2 hours' "
+            "WHERE ref_id = %s AND source = 'chase'",
+            (fid,),
+        )
+        conn.commit()
+    with patch(_VERIFY_PATH, side_effect=verdict):
+        result2 = run_finding_chase_pass(store, limit=10, with_llm=True)
+    assert result2 == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "acquiring"
+    assert seen_ords == [0, 1]
+
+
+def test_acquiring_no_then_verify_error_retries_next_pass(store) -> None:
+    """gr517168: a paid-for 'no' followed by a transient verify error
+    neither grounds nor rejects — grounding the next candidate on a
+    failed call would mint an unverified pin over negative evidence, and
+    rejecting would freeze the stub on a verdict that was never reached.
+    The stub stays out of ``meta.rejected_stubs`` so the next pass
+    retries it."""
+    claim_text = "methanotroph symbiont methane oxidation coupling"
+    fid, stub_id = _seed_acquiring_finding(
+        store, wants=[{"doi": "10.1/acq-retry"}], body=claim_text
+    )
+    store.chunks.insert_chunks(
+        stub_id,
+        [
+            ChunkInsert(ord=0, text=f"{claim_text} as a heading.", meta={}),
+            ChunkInsert(
+                ord=1,
+                text="Seasonal turnover reshapes the wetland microbial community structure.",
+                meta={},
+            ),
+        ],
+    )
+    verdicts: dict[int, dict[str, Any] | None] = {
+        0: {"supports": "no", "caveats": [], "cited_others": []},
+        # a route error — _verify_support_with_caveats returns None.
+        1: None,
+    }
+    seen_ords: list[int] = []
+
+    def verdict(**kw: Any) -> dict[str, Any] | None:
+        seen_ords.append(kw["target_chunk_ord"])
+        return verdicts[kw["target_chunk_ord"]]
+
+    with patch(_VERIFY_PATH, side_effect=verdict):
+        result = run_finding_chase_pass(store, limit=10, with_llm=True)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "acquiring"
+    assert seen_ords == [0, 1]
+    assert _chain(store, fid) == []
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta, (SELECT payload FROM ref_events "
+            "WHERE ref_id = %s AND source = 'chase' "
+            "ORDER BY ts DESC LIMIT 1) AS last_event "
+            "FROM refs WHERE ref_id = %s",
+            (fid, fid),
+        ).fetchone()
+    assert not row[0].get("rejected_stubs")
+    assert row[1]["reason"] == "verify_retry"
+
+    # The next pass retries the verify — a "yes" on the second candidate
+    # grounds normally.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_events SET ts = ts - INTERVAL '2 hours' "
+            "WHERE ref_id = %s AND source = 'chase'",
+            (fid,),
+        )
+        conn.commit()
+    verdicts[1] = {"supports": "yes", "caveats": [], "cited_others": []}
+    seen_ords.clear()
+    with patch(_VERIFY_PATH, side_effect=verdict):
+        result2 = run_finding_chase_pass(store, limit=10, with_llm=True)
+    assert result2 == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "tracing"
+    assert seen_ords == [0, 1]
+    chain = _chain(store, fid)
+    assert int(chain[0]["ref_id"]) == stub_id
+    assert chain[0]["ord"] == 1
+
+
+def test_acquiring_hop_carries_only_accepted_candidates_verdict(store) -> None:
+    """gr517168: ``verification`` resets per candidate — the verdict that
+    lands on ``hop['verification']`` is the *accepted* candidate's, never
+    a stale 'no' carried over from an earlier pick."""
+    claim_text = "methanotroph symbiont methane oxidation coupling"
+    fid, stub_id = _seed_acquiring_finding(
+        store, wants=[{"doi": "10.1/acq-stale"}], body=claim_text
+    )
+    store.chunks.insert_chunks(
+        stub_id,
+        [
+            ChunkInsert(ord=0, text=f"{claim_text} as a heading.", meta={}),
+            ChunkInsert(
+                ord=1,
+                text="Seasonal turnover reshapes the wetland microbial community structure.",
+                meta={},
+            ),
+        ],
+    )
+    verdicts = {
+        0: {"supports": "no", "caveats": ["stale-no"], "cited_others": []},
+        1: {"supports": "yes", "caveats": ["fresh-yes"], "cited_others": []},
+    }
+
+    def verdict(**kw: Any) -> dict[str, Any]:
+        return verdicts[kw["target_chunk_ord"]]
+
+    with patch(_VERIFY_PATH, side_effect=verdict):
+        result = run_finding_chase_pass(store, limit=10, with_llm=True)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "tracing"
+    chain = _chain(store, fid)
+    assert int(chain[0]["ref_id"]) == stub_id
+    assert chain[0]["ord"] == 1
+    assert chain[0]["verification"]["supports"] == "yes"
+    assert chain[0]["verification"]["caveats"] == ["fresh-yes"]
+
+
 # ── furniture pins refused (_pinnable_chunks) ──────────────────────────
 
 #: Title/author front matter — no terminated sentence, so

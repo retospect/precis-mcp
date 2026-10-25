@@ -129,6 +129,14 @@ def _summarise_chase(event: str, payload: dict[str, Any]) -> str:
     if event == "terminated":
         return f"{front_str} (primary)"
     if event == "waiting":
+        # gr517168: a stub the stance gate just rejected used to render
+        # as "stub has no chunks yet" — the masked rejection is what made
+        # the acquiring stall invisible. Name the rejection instead.
+        rejected = front.get("rejected")
+        if rejected:
+            return f"{front_str} (stub rejected: {rejected})"
+        if front.get("verify_retry"):
+            return f"{front_str} (verify error — will retry)"
         return f"{front_str} (stub has no chunks yet)"
     if event == "dead":
         return f"{front_str} ({payload.get('reason', 'unknown')})"

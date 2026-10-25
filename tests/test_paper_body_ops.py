@@ -1395,3 +1395,54 @@ class TestBodyOpTxTimeout:
                     "canceling statement due to statement timeout"
                 )
         assert exc.value.next and "retry" in exc.value.next
+
+
+class TestBodyOpLockContention:
+    """gr516772: a second body op on a ref whose row lock another session
+    still holds dies on ``lock_timeout`` — the dispatcher's boundary map
+    turns it into a typed ``Upstream`` retry refusal, never a raw
+    internal error (regression cover for the gripe's claimed raw die)."""
+
+    def test_drop_body_lock_maps_through_dispatch(self, store: Store) -> None:
+        import psycopg
+        from psycopg.conninfo import make_conninfo
+
+        from precis.config import PrecisConfig
+        from precis.dispatch import boot
+        from precis.runtime import PrecisRuntime
+
+        ref = _seed(store, "lockheld2020", year=2020)
+        _body(store, ref, 2)
+        _pdf(store, ref)
+
+        # The contending call runs on a second store whose sessions carry
+        # a tight lock_timeout — prod's agent_rw 5 s bound, compressed.
+        contending_dsn = make_conninfo(
+            store.dsn or "",
+            options="-c statement_timeout=120s -c lock_timeout=300ms",
+        )
+        store2 = Store.connect(contending_dsn, min_size=1, max_size=2)
+        try:
+            runtime = PrecisRuntime(config=PrecisConfig(), hub=boot(store=store2))
+            with psycopg.connect(store.dsn or "") as blocker:
+                blocker.execute(
+                    "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                    (ref,),
+                )
+                body, is_error = runtime.dispatch_with_status(
+                    "edit",
+                    {
+                        "kind": "paper",
+                        "id": f"pa{ref}",
+                        "__extras__": {"drop_body": True, "reason": "probe"},
+                    },
+                )
+        finally:
+            store2.close()
+        assert is_error, body
+        assert "[error:Upstream]" in body
+        assert "internal error" not in body
+        assert "retry" in body
+        # The lock-specific boundary-map text — a QueryCanceled row would
+        # also render Upstream+retry, so this pins the LockNotAvailable arm.
+        assert "locked by another writer" in body
