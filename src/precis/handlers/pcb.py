@@ -3138,95 +3138,24 @@ class PcbHandler(Handler):
                 ),
             )
 
-        # `plane_net` on a stackup entry was a DEAD key until now — nothing
-        # in the engine read it, so the v1 DEFAULT_STACKUP's own In1.Cu/GND
-        # declaration never poured anything. Applying it through the
-        # same `pcb_planes` write `op='plane_net'` uses makes the
-        # declaration true instead of decorative; a named net that does not
-        # exist is an error, never a silent skip.
-        declared = {e["name"]: e["plane_net"] for e in stackup if "plane_net" in e}
-        # `pour_nets` declares the same thing for a fill-carried net on a
-        # signal layer (gr486958): exactly one named net -> the same
-        # pcb_planes write. A layer listing several is recorded only —
-        # one sheet cannot pour two nets.
-        for e in stackup:
-            pour_nets = e.get("pour_nets") or []
-            if e["name"] not in declared and len(pour_nets) == 1:
-                declared[str(e["name"])] = str(pour_nets[0])
-        existing = {str(row["layer"]): str(row["net"]) for row in planes}
-        clashes = [
-            f"{layer} already pours {existing[layer]!r}"
-            for layer, net in declared.items()
-            if layer in existing and existing[layer] != net
-        ]
-        if clashes:
-            raise BadInput(
-                "stackup: " + "; ".join(clashes) + " — a layer is one sheet "
-                "of copper, so drop the plane_net here or reassign the layer",
-                next="put(args={'op':'plane_net','layer':'In1.Cu','net':'GND'})",
-            )
-        # CHECKED before any of it is WRITTEN. `pcb_assign_plane` returns 0
-        # for a net that does not resolve, so assigning-and-checking in one
-        # pass would leave the first declaration written and the second
-        # rejected — the board keeping half of an instruction this call
-        # then reports as an error, with the stackup itself never stored.
-        # `design["nets"]` is already in hand and already filters retired
-        # rows; a second `pcb_graph` read for the same names would be a
-        # heavier query for a fact this one carries.
-        known = {str(net["name"]) for net in design["nets"]}
-        missing = [
-            f"{layer}: no net {net!r}"
-            for layer, net in declared.items()
-            if net not in known
-        ]
-        # A `fill` is resolved at route time from the stackup (never mirrored
-        # into pcb_planes, so dropping the key turns the fill off), but a
-        # fill naming no net is the same author error as a plane_net.
-        missing += [
-            f"{e['name']}: fill names no net {e['fill']!r}"
-            for e in stackup
-            if e.get("fill") and str(e["fill"]) not in known
-        ]
-        if missing:
-            raise BadInput(
-                "stackup: " + "; ".join(missing) + " — author the nets before "
-                "declaring a plane_net or fill for them, or omit the key"
-                + (
-                    "; a preset's ground net is renamed with ground="
-                    if preset_name
-                    else ""
-                ),
-                next=(
-                    f"put(args={{'op':'stackup','preset':'{preset_name}',"
-                    "'ground':'<your ground net>'})"
-                    if preset_name
-                    else f"get(kind='pcb', id='{ref.slug}')"
-                ),
-            )
-
+        # The stackup's plane_net/pour_nets declarations reach pcb_planes
+        # through the same checked apply the batch put path reuses
+        # (gr515869): check first so a rejected declaration writes
+        # nothing, then store the stackup, then assign.
+        declared = self.store.pcb_check_stackup_planes(
+            ref.id,
+            board_id,
+            stackup,
+            preset_name=preset_name,
+            slug=ref.slug,
+        )
         self.store.pcb_set_stackup(
             board_id,
             stackup,
             preset=preset_name,
             sides=PRESET_SIDES.get(preset_name or ""),
         )
-        # The `known` check above is a READ, so a concurrent retire of one
-        # of these nets can still land between it and this loop. Re-checked
-        # on the return value rather than trusted: 0 means the assignment
-        # did not happen, and the one thing this op must never do is report
-        # success over a declaration it silently dropped. The stackup IS
-        # stored by then — that half succeeded — so the message says so.
-        for layer, net in declared.items():
-            if not self.store.pcb_assign_plane(ref.id, layer, net):
-                raise BadInput(
-                    f"stackup stored, but {layer}'s plane_net {net!r} could "
-                    "not be applied — that net stopped existing during this "
-                    "call (a concurrent edit retired it)",
-                    next=(
-                        f"put(args={{'op':'plane_net','layer':'{layer}',"
-                        f"'net':'{net}'}}) once the net is back"
-                    ),
-                )
+        self.store.pcb_apply_stackup_planes(ref.id, declared)
         routable = [e["name"] for e in stackup if pcb_ir.layer_is_routable(e)]
         return Response(
             body=f"# {ref.slug} stackup set — {len(stackup)} layers"

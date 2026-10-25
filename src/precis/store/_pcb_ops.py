@@ -645,8 +645,10 @@ class PcbMixin:
         board_id = self.pcb_ensure_board(ref.id, conn=conn)
         # A batch-authored stackup (precis_geom's Board(stackup=…) writes
         # these meta keys) reaches the board row here, not stranded on
-        # refs.meta — a refusal rolls back the whole put with it.
-        self._pcb_apply_meta_stackup(conn, board_id, meta)
+        # refs.meta — a refusal rolls back the whole put with it. Its
+        # plane_net/pour_nets declarations mirror into pcb_planes only
+        # after the batch's own nets upsert below (gr515869).
+        meta_stackup = self._pcb_apply_meta_stackup(conn, board_id, meta)
 
         # Generators land BEFORE footprints/components/nets/connections/
         # features: an unchanged-params generator is a no-op (nothing
@@ -897,6 +899,21 @@ class PcbMixin:
                 continue
             net_by_name[name] = self._pcb_insert_net(conn, ref.id, n)
             counts["nets"] += 1
+
+        # gr515869 — a batch-meta stackup's plane_net/pour_nets mirror
+        # into pcb_planes through the same checked apply op='stackup'
+        # runs. Deferred to here so a declaration naming a net authored
+        # in THIS batch resolves against the upserted rows above; a
+        # refusal still rolls the whole put back.
+        if meta_stackup is not None:
+            m_stackup, m_preset = meta_stackup
+            self._pcb_apply_stackup_planes(
+                conn,
+                ref.id,
+                self._pcb_check_stackup_planes(
+                    conn, ref.id, board_id, m_stackup, m_preset, ref.slug
+                ),
+            )
 
         # pcb-pre-place-route-blocks Slice 1 -- runs AFTER nets so a
         # generator's own copper rows (named nets it just introduced above)
@@ -4333,7 +4350,7 @@ class PcbMixin:
 
     def _pcb_apply_meta_stackup(
         self, conn: Connection, board_id: int, meta: dict[str, Any] | None
-    ) -> None:
+    ) -> tuple[list[dict[str, Any]], str | None] | None:
         """Apply a batch-authored stackup to the board row (gr515320).
 
         ``precis_geom.pcb.Board(stackup=…)`` writes its stackup into the
@@ -4351,21 +4368,36 @@ class PcbMixin:
         (inner layers ``routable``, matching the rows
         ``_pcb_ensure_board`` stamps). Neither key present leaves the
         board on DEFAULT_STACKUP — the one case the default applies.
-        ``plane_net``/``fill``/``pour_nets`` stay declarations on the
-        stored rows; applying them to ``pcb_planes`` remains
-        ``op='stackup'``/``op='plane_net'``'s job, which checks the named
-        nets exist.
+
+        ``meta.placement_sides`` lands on ``pcb_boards.meta`` whenever
+        authored (gr515869): beside a preset it overrides the preset's
+        default sides, beside bare ``stackup_layers`` or alone it is
+        merged into the board meta with no stackup change — the same end
+        state ``op='stackup'``'s preset sides write.
+
+        Returns the validated stackup and preset name so ``_pcb_apply``
+        can mirror the rows' ``plane_net``/``pour_nets`` declarations
+        into ``pcb_planes`` — AFTER the batch's own nets upsert, through
+        the same checked apply ``op='stackup'`` runs (gr515869). ``None``
+        means no stackup was authored, nothing to mirror.
 
         Refusals — never a silent fall-back to the default: an unknown
         preset, or a preset whose layer count disagrees with a
         ``stackup_layers`` authored alongside it, is a
         :class:`BadInput` naming the valid presets."""
         if not meta:
-            return
+            return None
         preset = meta.get("stackup_preset")
         layers = meta.get("stackup_layers")
         if preset is None and not layers:
-            return
+            sides_only = meta.get("placement_sides")
+            if sides_only is not None:
+                conn.execute(
+                    "UPDATE pcb_boards SET meta = meta || %s::jsonb "
+                    "WHERE board_id = %s AND retired_at IS NULL",
+                    (Jsonb({"placement_sides": str(sides_only)}), board_id),
+                )
+            return None
         preset_name: str | None = None
         sides: str | None = None
         if preset is not None:
@@ -4412,6 +4444,11 @@ class PcbMixin:
                 }
                 for entry in layers
             ]
+            # No preset to name a sides default — an authored
+            # placement_sides still reaches the board meta (gr515869).
+            authored_sides = meta.get("placement_sides")
+            if authored_sides is not None:
+                sides = str(authored_sides)
         try:
             stackup = pcb_ir.validate_stackup(resolved)
         except ValueError as exc:
@@ -4422,6 +4459,7 @@ class PcbMixin:
                 "meta.stackup_preset with one of " + ", ".join(sorted(STACKUP_PRESETS)),
             ) from exc
         self._pcb_set_stackup(conn, board_id, stackup, preset_name, sides)
+        return stackup, preset_name
 
     def pcb_set_stackup(
         self,
@@ -4450,7 +4488,10 @@ class PcbMixin:
         ``preset`` (``op='stackup', preset=``; pcb-stackup-regions slice 3)
         records the preset name and its ``sides`` on ``pcb_boards.meta``
         (``stackup_preset``, ``placement_sides``) so ``view='stackup'`` can
-        name it; a stackup written without one drops the preset label."""
+        name it; a stackup written without one drops the preset label.
+        ``sides`` without a ``preset`` (the batch put's authored
+        ``meta.placement_sides`` beside bare ``stackup_layers``, gr515869)
+        still lands on ``pcb_boards.meta`` — only the label is dropped."""
         if conn is not None:
             self._pcb_set_stackup(conn, board_id, stackup, preset, sides)
             return
@@ -4466,11 +4507,24 @@ class PcbMixin:
         sides: str | None = None,
     ) -> None:
         if preset is None:
-            conn.execute(
-                "UPDATE pcb_boards SET stackup = %s, meta = meta - 'stackup_preset' "
-                "WHERE board_id = %s AND retired_at IS NULL",
-                (Jsonb(stackup), board_id),
-            )
+            if sides is None:
+                conn.execute(
+                    "UPDATE pcb_boards SET stackup = %s, "
+                    "meta = meta - 'stackup_preset' "
+                    "WHERE board_id = %s AND retired_at IS NULL",
+                    (Jsonb(stackup), board_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE pcb_boards SET stackup = %s, "
+                    "meta = (meta - 'stackup_preset') || %s::jsonb "
+                    "WHERE board_id = %s AND retired_at IS NULL",
+                    (
+                        Jsonb(stackup),
+                        Jsonb({"placement_sides": sides}),
+                        board_id,
+                    ),
+                )
             return
         conn.execute(
             "UPDATE pcb_boards SET stackup = %s, meta = meta || %s::jsonb "
@@ -4481,6 +4535,167 @@ class PcbMixin:
                 board_id,
             ),
         )
+
+    def pcb_check_stackup_planes(
+        self,
+        ref_id: int,
+        board_id: int,
+        stackup: list[dict[str, Any]],
+        *,
+        preset_name: str | None = None,
+        slug: str | None = None,
+        conn: Connection | None = None,
+    ) -> dict[str, str]:
+        """Resolve a validated stackup's plane declarations and CHECK them
+        before anything is written — the check half of
+        ``put(args={'op':'stackup'})``'s apply, shared with the batch put
+        path so a batch-meta preset reaches the same end state (gr515869).
+
+        Returns ``{layer: net}`` — the declarations
+        :meth:`pcb_apply_stackup_planes` writes once the caller has stored
+        the stackup itself. Reuses ``conn`` inside an existing transaction
+        (the batch apply, where the batch's own freshly-upserted nets must
+        resolve); opens a read connection otherwise."""
+        if conn is not None:
+            return self._pcb_check_stackup_planes(
+                conn, ref_id, board_id, stackup, preset_name, slug
+            )
+        with self._pcb_conn() as c:
+            return self._pcb_check_stackup_planes(
+                c, ref_id, board_id, stackup, preset_name, slug
+            )
+
+    def _pcb_check_stackup_planes(
+        self,
+        conn: Connection,
+        ref_id: int,
+        board_id: int,
+        stackup: list[dict[str, Any]],
+        preset_name: str | None,
+        slug: str | None,
+    ) -> dict[str, str]:
+        # `plane_net` on a stackup entry was a DEAD key until op='stackup'
+        # — nothing in the engine read it, so the v1 DEFAULT_STACKUP's own
+        # In1.Cu/GND declaration never poured anything. Applying it through
+        # the same `pcb_planes` write `op='plane_net'` uses makes the
+        # declaration true instead of decorative; a named net that does not
+        # exist is an error, never a silent skip.
+        declared = {e["name"]: e["plane_net"] for e in stackup if "plane_net" in e}
+        # `pour_nets` declares the same thing for a fill-carried net on a
+        # signal layer (gr486958): exactly one named net -> the same
+        # pcb_planes write. A layer listing several is recorded only —
+        # one sheet cannot pour two nets.
+        for e in stackup:
+            pour_nets = e.get("pour_nets") or []
+            if e["name"] not in declared and len(pour_nets) == 1:
+                declared[str(e["name"])] = str(pour_nets[0])
+        existing = {
+            str(r[0]): str(r[1])
+            for r in conn.execute(
+                "SELECT pl.layer, n.name FROM pcb_planes pl "
+                "JOIN pcb_nets n ON n.net_id = pl.net_id "
+                "WHERE pl.board_id = %s AND pl.retired_at IS NULL "
+                "ORDER BY pl.layer, n.name",
+                (board_id,),
+            ).fetchall()
+        }
+        clashes = [
+            f"{layer} already pours {existing[layer]!r}"
+            for layer, net in declared.items()
+            if layer in existing and existing[layer] != net
+        ]
+        if clashes:
+            raise BadInput(
+                "stackup: " + "; ".join(clashes) + " — a layer is one sheet "
+                "of copper, so drop the plane_net here or reassign the layer",
+                next="put(args={'op':'plane_net','layer':'In1.Cu','net':'GND'})",
+            )
+        # CHECKED before any of it is WRITTEN. `pcb_assign_plane` returns 0
+        # for a net that does not resolve, so assigning-and-checking in one
+        # pass would leave the first declaration written and the second
+        # rejected — the board keeping half of an instruction this call
+        # then reports as an error, with the stackup itself never stored.
+        known = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT name FROM pcb_nets WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall()
+        }
+        missing = [
+            f"{layer}: no net {net!r}"
+            for layer, net in declared.items()
+            if net not in known
+        ]
+        # A `fill` is resolved at route time from the stackup (never mirrored
+        # into pcb_planes, so dropping the key turns the fill off), but a
+        # fill naming no net is the same author error as a plane_net.
+        missing += [
+            f"{e['name']}: fill names no net {e['fill']!r}"
+            for e in stackup
+            if e.get("fill") and str(e["fill"]) not in known
+        ]
+        if missing:
+            raise BadInput(
+                "stackup: " + "; ".join(missing) + " — author the nets before "
+                "declaring a plane_net or fill for them, or omit the key"
+                + (
+                    "; a preset's ground net is renamed with ground="
+                    if preset_name
+                    else ""
+                ),
+                next=(
+                    f"put(args={{'op':'stackup','preset':'{preset_name}',"
+                    "'ground':'<your ground net>'})"
+                    if preset_name
+                    else f"get(kind='pcb', id='{slug}')"
+                ),
+            )
+        return declared
+
+    def pcb_apply_stackup_planes(
+        self,
+        ref_id: int,
+        declared: dict[str, str],
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Write a checked stackup's plane declarations to ``pcb_planes``
+        through the same :meth:`pcb_assign_plane` upsert ``op='plane_net'``
+        uses — the write half of ``op='stackup'``'s apply, shared with the
+        batch put path (gr515869). ``declared`` is
+        :meth:`pcb_check_stackup_planes`'s return; run that first so a
+        rejected declaration lands nothing at all.
+
+        Reuses ``conn`` inside an existing transaction (the batch apply);
+        opens its own otherwise."""
+        if conn is not None:
+            self._pcb_apply_stackup_planes(conn, ref_id, declared)
+            return
+        with self._pcb_tx() as c:
+            self._pcb_apply_stackup_planes(c, ref_id, declared)
+
+    def _pcb_apply_stackup_planes(
+        self, conn: Connection, ref_id: int, declared: dict[str, str]
+    ) -> None:
+        # The checker's `known` read is a READ, so a concurrent retire of
+        # one of these nets can still land between it and this loop.
+        # Re-checked on the return value rather than trusted: 0 means the
+        # assignment did not happen, and the one thing this op must never
+        # do is report success over a declaration it silently dropped. The
+        # stackup IS stored by then — that half succeeded — so the message
+        # says so.
+        for layer, net in declared.items():
+            if not self._pcb_assign_plane(conn, ref_id, layer, net):
+                raise BadInput(
+                    f"stackup stored, but {layer}'s plane_net {net!r} could "
+                    "not be applied — that net stopped existing during this "
+                    "call (a concurrent edit retired it)",
+                    next=(
+                        f"put(args={{'op':'plane_net','layer':'{layer}',"
+                        f"'net':'{net}'}}) once the net is back"
+                    ),
+                )
 
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:
         """Live measures of a design. ``measure_id`` and ``meta`` ride along

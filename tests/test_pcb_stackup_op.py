@@ -453,3 +453,104 @@ def test_put_without_meta_stackup_keeps_the_default(pcb, store):
     ref = store.get_ref(kind="pcb", id="stk-meta-none")
     assert ref is not None
     assert store.pcb_graph(ref.id)["board"]["stackup"] == DEFAULT_STACKUP
+
+
+# ── batch-meta parity with op='stackup' (gr515869) ──────────────────────
+#
+# A batch-meta preset must reach the SAME end state as op='stackup' with
+# that preset: the board row (stackup + meta) and the pcb_planes rows the
+# preset's plane_net/pour_nets declarations produce. Until this ran the
+# batch path stored the stackup rows and stopped — placement_sides only
+# rode along when a preset named it, and the plane declarations were
+# never applied.
+
+
+def test_put_meta_preset_matches_op_stackup_preset_end_state(pcb, store):
+    """``Board(stackup='4l-two-sided')`` and ``op='stackup', preset=
+    '4l-two-sided'`` yield identical pcb_boards and pcb_planes rows —
+    including the In1.Cu/GND plane the preset declares (the batch put
+    carries its own GND net, which the apply resolves)."""
+    pcb.put(
+        id="stk-meta-eq",
+        args={**_GND_DESIGN, "meta": {"stackup_preset": "4l-two-sided"}},
+    )
+    pcb.put(id="stk-op-eq", args=_GND_DESIGN)
+    pcb.put(id="stk-op-eq", args={"op": "stackup", "preset": "4l-two-sided"})
+    meta_ref = store.get_ref(kind="pcb", id="stk-meta-eq")
+    op_ref = store.get_ref(kind="pcb", id="stk-op-eq")
+    assert meta_ref is not None and op_ref is not None
+    meta_board = store.pcb_graph(meta_ref.id)["board"]
+    op_board = store.pcb_graph(op_ref.id)["board"]
+    assert meta_board["stackup"] == op_board["stackup"]
+    assert meta_board["meta"] == op_board["meta"]
+    assert store.pcb_planes_list(meta_ref.id) == store.pcb_planes_list(op_ref.id)
+    # The regression this guards: the preset's declared plane landed.
+    assert [
+        (r["layer"], r["net"], r["source"]) for r in store.pcb_planes_list(meta_ref.id)
+    ] == [("In1.Cu", "GND", "authored")]
+
+
+def test_put_meta_layers_pour_nets_assign_like_the_op(pcb, store):
+    """``pour_nets`` in batch-meta ``stackup_layers`` reaches the same
+    ``pcb_planes`` write ``op='stackup'`` gives it — one named net, one
+    authored row."""
+    layers = [
+        {"name": "F.Cu", "role": "signal"},
+        {"name": "In1.Cu", "role": "plane", "plane_net": "N1"},
+        {"name": "In2.Cu", "role": "signal"},
+        {"name": "B.Cu", "role": "signal", "pour_nets": ["N2"]},
+    ]
+    pcb.put(id="stk-meta-pour", args={**_DESIGN, "meta": {"stackup_layers": layers}})
+    ref = store.get_ref(kind="pcb", id="stk-meta-pour")
+    assert ref is not None
+    assert {(r["layer"], r["net"]) for r in store.pcb_planes_list(ref.id)} == {
+        ("In1.Cu", "N1"),
+        ("B.Cu", "N2"),
+    }
+
+
+def test_put_meta_preset_missing_ground_net_is_an_error(pcb):
+    """Same refusal the op raises: a declared plane/fill naming no live
+    net is an author error, never a silent skip — and the whole put rolls
+    back with it."""
+    with pytest.raises(BadInput, match="no net 'GND'"):
+        pcb.put(id="stk-meta-nognd", args={**_DESIGN, "meta": {"stackup_preset": "2l"}})
+
+
+def test_put_meta_placement_sides_lands_without_stackup_keys(pcb, store):
+    """A ``Board(sides='top')`` upload authors ``meta.placement_sides``
+    with no stackup key at all — it still reaches ``pcb_boards.meta`` and
+    the stackup keeps the default."""
+    pcb.put(id="stk-sides", args={**_DESIGN, "meta": {"placement_sides": "top"}})
+    ref = store.get_ref(kind="pcb", id="stk-sides")
+    assert ref is not None
+    board = store.pcb_graph(ref.id)["board"]
+    assert board["meta"]["placement_sides"] == "top"
+    assert board["stackup"] == DEFAULT_STACKUP
+
+
+def test_put_meta_placement_sides_lands_beside_stackup_layers(pcb, store):
+    """The half-applied case from the gripe: ``stackup_layers`` alone
+    carried no preset to stamp sides, so ``placement_sides`` stranded on
+    ``refs.meta``. It lands on the board row now."""
+    pcb.put(
+        id="stk-sides-layers",
+        args={
+            **_DESIGN,
+            "meta": {
+                "placement_sides": "top",
+                "stackup_layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
+            },
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="stk-sides-layers")
+    assert ref is not None
+    board = store.pcb_graph(ref.id)["board"]
+    assert board["meta"]["placement_sides"] == "top"
+    assert "stackup_preset" not in board["meta"]
+    assert [e["name"] for e in board["stackup"]] == [
+        "F.Cu",
+        "In1.Cu",
+        "In2.Cu",
+        "B.Cu",
+    ]
