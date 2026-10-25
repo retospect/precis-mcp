@@ -34,6 +34,15 @@ approval quote for the tier, with its UTC time).
    line per group with reason+fix"), give a character budget or say
    which wins — a literal reading of both can be unsatisfiable, and the
    builder resolves it by measuring instead of building (gr513765).
+   Carry each gripe's rulings in the brief itself: fold the
+   `view='comments'` notes that bound the work — "parked", "deferred",
+   a narrowed scope — into the gripe text; a bare triage verdict like
+   "fixable without design" that drops them sends the builder guessing
+   scope from conflicting signals (gr514903; gr512667's parked-hexfold
+   landed in a fix batch, gr514870). When a brief constrains a surface,
+   name the allowed functions — "_TOP_KEYS only" is ambiguous about
+   whether a related refusal may live in a neighbouring helper
+   (gr514946).
    The footer is appended at launch; do not restate its rules. When the tier grants precis writes
    (W), include one line in the brief: the write verbs are deferred
    tools — before the first `mcp__precis__put`/`edit`/`tag`/`link`, load

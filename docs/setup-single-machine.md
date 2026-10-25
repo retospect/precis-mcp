@@ -65,10 +65,12 @@ self-migrates. Alternatives to the manual `precis migrate` step:
 
 `scripts/dev db-up` starts this worktree's `precis-test-db` container,
 creates `precis_dev` when missing and applies the packaged migrations —
-idempotent, and needs no prod access. It prints the DSN for
-`scripts/dev env PRECIS_DATABASE_URL=… uv run --no-sync precis …`. Use it
-when a write-path test only needs an empty schema; `scripts/dev` alone
-carries no test-DB URL and does not start the DB container.
+idempotent, and needs no prod access. `scripts/dev` exports
+`PRECIS_DATABASE_URL` at the dev DSN by default, so
+`scripts/dev uv run --no-sync precis …` reaches it directly (an explicit
+host `PRECIS_DATABASE_URL` wins; `PRECIS_DEV_ENV="NAME=value …"` forwards
+other host vars). `db-up` does not run on a plain `scripts/dev` call —
+bring the DB up once per worktree, then `precis` commands inside see it.
 
 ### Prod-shaped dev data (repo dev, cluster access)
 

@@ -43,6 +43,20 @@ and exits 0. It never fails the ship or the deploy. Off switch:
 refuses writes from a tree behind `origin/prod`, so a stale tree prints a
 failed post and posts nothing.
 
+Write the commit message to a file and `git commit -F <file>` — never
+`git commit -m "$(cat <<'EOF' …)"`. A commit wrapped in a heredoc or
+`$(…)` substitution is a shape the worktree guard cannot statically
+parse, so it dies at parse time with a bare syntax error that names no
+fix (`scripts/hooks/guard-commit-on-main.py` refuses it earlier, naming
+this fix — gr514943), and the recipe's quoting breaks on apostrophes,
+backticks and `$` in the message anyway (gr513763, gr514743). The
+scratch file goes under `.claude/` — e.g. `.claude/msg-1.txt` — the
+named gitignored session-state dir, so the message file can never be
+committed and never trips ship's dirty-tree refusal (gr515326,
+gr515092; `scratch/` is the other gitignored scratch dir). A plain
+literal `-m "subject"` plus a second `-m` for the body stays fine when
+the text carries no shell-active characters.
+
 ## Red main, and "did it land"
 
 `check.yml` runs the slim lane (lint + the docs lane for docs-only diffs;

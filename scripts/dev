@@ -16,6 +16,14 @@
 # The container bind-mounts this repo at /app, so file edits on the host
 # are visible inside the container immediately (no rebuild needed).
 #
+# Env crossing the boundary: PRECIS_DATABASE_URL defaults to this
+# worktree's dev DB (precis_dev on precis-test-db, gr514999) so
+# `scripts/dev uv run precis …` works after `db-up`; an explicit host
+# value wins and is named on stderr. PRECIS_DEV_ENV="NAME=value …"
+# forwards other host vars, mirroring scripts/test's PRECIS_TEST_ENV
+# (gr513868); an exported NANO_*/ESP32C3_*/PRECIS_PCB_* var that is not
+# forwarded is named once on stderr.
+#
 # See: docs/decisions/0009-dockerfile-relocation-container-first.md
 set -euo pipefail
 
@@ -48,7 +56,7 @@ if [[ "${1:-}" == "db-up" ]]; then
     docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev \
         run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
         uv run --no-sync python scripts/_seed_prod_shaped.py ensure --dsn "$DEV_DSN"
-    echo "dev DB ready: scripts/dev env PRECIS_DATABASE_URL=${DEV_DSN} uv run --no-sync precis …"
+    echo "dev DB ready: scripts/dev exports PRECIS_DATABASE_URL=${DEV_DSN} by default — e.g. scripts/dev uv run --no-sync precis …"
     exit 0
 fi
 
@@ -68,11 +76,62 @@ if [[ "${1:-}" == "seed-prod-shaped" ]]; then
     docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev \
         run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
         uv run --no-sync python scripts/_seed_prod_shaped.py load --slice "$SLICE" --dsn "$DEV_DSN"
-    echo "dev DB ready: scripts/dev env PRECIS_DATABASE_URL=${DEV_DSN} uv run --no-sync precis …"
+    echo "dev DB ready: scripts/dev exports PRECIS_DATABASE_URL=${DEV_DSN} by default — e.g. scripts/dev uv run --no-sync precis …"
     exit 0
 fi
+
+# Env that crosses the container boundary has to be named — a host export
+# silently stops at `compose run` (gr513868's NANO_SEEDS run). The dev DSN
+# is deterministic per worktree (one precis-test-db service per compose
+# project), so PRECIS_DATABASE_URL defaults to precis_dev: `scripts/dev uv
+# run precis …` then finds the dev DB the way tests find precis_test
+# (gr514999). An explicit host value wins — forwarding it is the caller's
+# choice, so name the override on stderr rather than silently replacing
+# the dev default.
+DEV_DB_DSN="postgresql://postgres@precis-test-db:5432/precis_dev"
+if [[ -n "${PRECIS_DATABASE_URL:-}" && "${PRECIS_DATABASE_URL}" != "${DEV_DB_DSN}" ]]; then
+    echo "scripts/dev: forwarding host PRECIS_DATABASE_URL; the dev default would be ${DEV_DB_DSN}" >&2
+fi
+DEV_ENV=(-e "PRECIS_DATABASE_URL=${PRECIS_DATABASE_URL:-${DEV_DB_DSN}}")
+_FORWARDED_ENV=" PRECIS_DATABASE_URL"
+
+# PRECIS_DEV_ENV="NAME=value …" — the opt-in for anything else, same rules
+# as scripts/test's PRECIS_TEST_ENV: names match ^[A-Z][A-Z0-9_]*$, may not
+# shadow container/runtime internals, values carry no whitespace.
+for _kv in ${PRECIS_DEV_ENV:-}; do
+    _env_name="${_kv%%=*}"
+    if [[ "$_kv" != *=* || ! "$_env_name" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+        echo "ERR: PRECIS_DEV_ENV entry '${_kv}' is not NAME=value (name must match ^[A-Z][A-Z0-9_]*$)" >&2
+        exit 1
+    fi
+    case "$_env_name" in
+        PATH|HOME|PYTHON*|DATABASE*|PG*)
+            echo "ERR: PRECIS_DEV_ENV may not forward ${_env_name} (container/runtime internal)" >&2
+            exit 1
+            ;;
+    esac
+    DEV_ENV+=(-e "$_kv")
+    _FORWARDED_ENV="$_FORWARDED_ENV $_env_name"
+done
+
+# A tuning variable exported on the host but not forwarded reads as "set"
+# to the author and is silently absent inside the container — name it
+# once on stderr so the run isn't wasted guessing why it was ignored.
+while IFS= read -r _host_var; do
+    case "$_host_var" in
+        NANO_*|ESP32C3_*|PRECIS_PCB_*)
+            case " $_FORWARDED_ENV " in
+                *" $_host_var "*) ;;
+                *)
+                    printf 'scripts/dev: %s is set but not forwarded into the container; use PRECIS_DEV_ENV="%s=%s"\n' \
+                        "$_host_var" "$_host_var" "${!_host_var:-}" >&2
+                    ;;
+            esac
+            ;;
+    esac
+done < <(compgen -e)
 
 # `--no-deps` skips bringing up any depends_on services. precis-dev has
 # none right now, but make it explicit so we never accidentally spin up
 # heavier siblings (acatome-watch, corpus-server).
-exec docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev run --rm --no-deps -v "${WORKTREE}":/app precis-dev "$@"
+exec docker compose -f "${INFRA_COMPOSE}" -p "${COMPOSE_PROJECT}" --profile dev run --rm --no-deps "${DEV_ENV[@]}" -v "${WORKTREE}":/app precis-dev "$@"
