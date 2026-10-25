@@ -429,8 +429,9 @@ same door is on the tick's tool surface: a tick emits
 (cap 2/tick) and the compute stage executes each through the same path,
 with per-entry refusals recorded as logbook observations. Fresh seed
 numbers give the `endpoint_agreement` trust check new basins to compare;
-`get(kind='pathway', view='trust')` shows each check's `delta_meV` next to
-the `tol_eV` it was judged against.
+`get(kind='pathway', view='trust')` shows the whole trust gate — each
+check's verdict, input and threshold — then per-state `delta_meV` next to
+the `tol_eV` it was judged against (see `precis-pathway-help`).
 
 Where the new seeds run: by default they round-robin over the live gpu
 nodes. `--node <name>` pins every new seed to that node; `--spread` gives

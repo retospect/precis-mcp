@@ -10,12 +10,20 @@ prio: high
 
 Bottom line: every input the barrier trust gate uses is already stored on
 the `pathway` ref. What is missing is a read that puts them together.
-Slice 1 adds `get(kind='pathway', id=<pw>, view='gate')`: one row per gate
-with its input, threshold and verdict, replayed from stored records. Slice 2
-adds `args={'with': [...]}`: it pools the stored endpoint records of
-compatible sibling pathways and reruns the endpoint-agreement check over
-them, with no new compute. Neither slice needs a migration. Reto ruled this
-a separate tool from gr512126 (`neb-structure-builder.md`), 2026-10-25.
+~~Slice 1~~ (shipped): `get(kind='pathway', id=<pw>, view='trust')` renders
+one row per gate with its input, threshold and verdict, replayed from
+stored records. Slice 2 adds `args={'with': [...]}`: it pools the stored
+endpoint records of compatible sibling pathways and reruns the
+endpoint-agreement check over them, with no new compute. Neither slice
+needs a migration. Reto ruled this a separate tool from gr512126
+(`neb-structure-builder.md`), 2026-10-25.
+
+Rulings (Reto, 2026-10-25): **no separate `view='gate'`** — the gate
+rendering REPLACED the body of `view='trust'` (`trust_gate.py` stays the
+pure core); tick prompt and skills updated to match. **No pooling across
+engine versions** (slice 2 refuses on `autocatpath_version` mismatch too,
+not warn-and-pool). The vacuous 1-seed pass stays a label only — a
+follow-up that untrusts it is a separate item needing its own ruling.
 
 ## Motivation / why
 
@@ -91,14 +99,14 @@ rides along on the candidate and never gates.
 
 ## Where it lives
 
-- **On the `pathway` kind, as a new view `gate`.** The gate's inputs and
-  verdict live on the pathway ref; the candidate holds only the verdict.
-  `view='trust'` keeps its flat record table, so its readers (tick prompt,
-  `precis-quest-help`) keep working. `gate` is the summary over it.
+- **On the `pathway` kind, as the body of `view='trust'`** (Reto
+  2026-10-25: no separate `view='gate'` — open question 2 ruled for
+  replace). The gate's inputs and verdict live on the pathway ref; the
+  candidate holds only the verdict.
 - **Not on the structure kind.** `get(kind='structure')` has no meta view,
   and `barrier_blocked_by` on the candidate is a copy. The candidate side
   gets one pointer instead: the tick's barrier-trust line names
-  `get(kind='pathway', id='<pw>', view='gate')`.
+  `get(kind='pathway', id='<pw>', view='trust')`.
 - **Not on stored barrier measures.** `measures` rows carry the value, not
   the per-seed basins.
 - **The evaluator is core and pure:** `src/precis/utils/trust_gate.py`,
@@ -114,8 +122,8 @@ rides along on the candidate and never gates.
 
 ## MCP surface
 
-**Slice 1:** `get(kind='pathway', id='<pw>', view='gate')`. Read-only,
-zero compute.
+**Slice 1 (shipped):** `get(kind='pathway', id='<pw>', view='trust')`.
+Read-only, zero compute.
 
 ```
 gate · pw515950 · candidate st336035 · mace:medium · seeds [0,1,2] · engine 0.39.0 · tier neb
@@ -152,11 +160,16 @@ Rules:
 - Pre-schema pathways (no `trust_schema` 1–2) get the same refusal text
   `view='trust'` uses. A pathway with no graph gets the existing "not
   computed yet" message.
+- Records stamped to another engine version (`engine` /
+  `autocatpath_version` vs `meta.autocatpath_version`, Reto 2026-10-25)
+  never count toward the gate: the row input names the set-aside count
+  (`N stale, engine x.y`), endpoint rows render `stale, rerun on
+  current`, and an unstamped record counts as current.
 - When `endpoint_agreement` fails, the footer gives one `next=`: the
   slice-2 pooled call over the candidate's compatible siblings, with real
   handles. Before slice 2 ships, it gives `view='trust'` instead.
 
-**Slice 2:** `get(kind='pathway', id='<pw>', view='gate', args={'with':
+**Slice 2:** `get(kind='pathway', id='<pw>', view='trust', args={'with':
 ['pw512178', 'pw513347']})`, or `args={'with': 'siblings'}` for every
 computed pathway with the same `candidate_ref`. It pools each pathway's
 `endpoint_identity` records, relabelling seeds as `pw<id>/s<seed>`. It
@@ -177,8 +190,9 @@ Pooling rules:
   `repeat`. It counts once for agreement, and the header says how many
   independent seeds remain.
 - Refuse, naming the field, when pathways differ in model,
-  `network_digest`, slab config (`config.slab`) or tier. Warn but pool
-  when only `autocatpath_version` differs.
+  `network_digest`, slab config (`config.slab`), tier or
+  `autocatpath_version` (Reto 2026-10-25: no pooling across engine
+  versions — open question 3 ruled for refuse).
 - The headline says `hypothetical: pooled over N pathways, nothing
   stored`. The view never stamps meta, mints a job or changes
   `barrier_trusted`.
@@ -187,27 +201,15 @@ Pooling rules:
 
 Each slice ships alone. Neither touches the engine, a migration or a job.
 
-1. **(S) Single-pathway gate read.** `precis/utils/trust_gate.py` has
-   these functions:
-   - `route_scope(results)` derives the route nodes from `route_steps`.
-   - `replay_barrier_gate(records, scope)` returns the blocked set by the
-     engine's `_trust_summary` rule.
-   - `gate_rows(records, scope, thresholds)` returns one row per check:
-     verdict, input digest, threshold, blocking count, and `not-run` when
-     the check is silent.
-
-   Also in slice 1:
-   - `view='gate'` in `precis_pathway/handler.py` plus `gate_toon` in
-     `toon_views.py`. The precis guards are read from `meta.candidate_ref`.
-   - The tick prompt's trust line (`quest/tick.py`, the paragraph that
-     names `view='trust'` for `delta_meV`) names `view='gate'` first.
-   - `precis-pathway-help` gets a "Reading the trust gate" section with
-     the pw515950 example; `precis-quest-help`'s endpoint-agreement
-     paragraph points at it.
-
-   Useful alone: the st336035 question ("would it clear?") is answered
-   by one read of pw512178, which is `BLOCKED`, seed 1 split on 4 route
-   states, before any rerun.
+1. **(S) Single-pathway gate read — SHIPPED** (per Reto's ruling it
+   replaced `view='trust'`'s body rather than adding `view='gate'`).
+   `precis/utils/trust_gate.py` has `route_scope` (route nodes from
+   `route_steps`), `replay_barrier_gate` (blocked set by the engine's
+   `_trust_summary` rule) and `gate_rows` (one row per check: verdict,
+   input digest, threshold, blocking count, `not-run` when silent);
+   `toon_views.trust_toon` renders it, the handler reads the precis
+   guards off `meta.candidate_ref`, and the tick prompt plus
+   `precis-pathway-help`/`precis-quest-help` describe the gate.
 2. **(S) Pooled dry check.** `args={'with': [...] | 'siblings'}`:
    compatibility refusal, seed relabel and repeat dedupe, pooled
    `endpoint_agreement` via the engine function, and the `## basins` and
@@ -237,8 +239,8 @@ Each slice ships alone. Neither touches the engine, a migration or a job.
   and the whole body is under 12,000 chars.
 - `tests/test_mcp_raise_next_ratchet.py` and
   `tests/test_plugin_import_boundary.py` stay green.
-- Post-deploy: `get(kind='pathway', id='pw515950', view='gate')` on
-  prod shows `BLOCKED`, 11 blocking, `replay agrees`. `view='gate'` on
+- Post-deploy: `get(kind='pathway', id='pw515950', view='trust')` on
+  prod shows `BLOCKED`, 11 blocking, `replay agrees`. `view='trust'` on
   pw336193 shows the vacuous pass.
 
 **Slice 2:**
@@ -251,10 +253,10 @@ Each slice ships alone. Neither touches the engine, a migration or a job.
     each).
   - A model or `network_digest` mismatch raises `BadInput` naming the
     field, with `next=` set to the call without that pathway. A version
-    mismatch pools with a warning.
+    mismatch refuses too (ruled 2026-10-25).
   - Pooled records are relabelled `pw<id>/s<seed>`, and
     `endpoint_agreement` sees distinct seeds.
-- Post-deploy: `view='gate', args={'with': 'siblings'}` on pw515950
+- Post-deploy: `view='trust', args={'with': 'siblings'}` on pw515950
   lists pw512178/pw513347/pw336193 (or refuses pw336193 on tier/version,
   naming why). It shows the NH2-family split under seed 1 in every run.
 
@@ -277,13 +279,13 @@ Each slice ships alone. Neither touches the engine, a migration or a job.
 ## Target + blast radius
 
 New `src/precis/utils/trust_gate.py`. `src/precis_pathway/handler.py`
-(one view name, one branch). `src/precis_pathway/toon_views.py`
-(`gate_toon`, which reuses `_trust_context`/`_trust_subject`/`_on_route`).
-`src/precis/quest/tick.py` (one prompt line). Skills `precis-pathway-help`
-and `precis-quest-help`. Read path only: no migration, no meta write, no
-job type. `view='trust'`/`view='warnings'` output is unchanged. Post-deploy
-look: the two prod reads in §Acceptance, then qu164903's next tick citing
-`view='gate'` instead of dispatching a confirmation rerun.
+(the `trust` branch fetches the candidate meta). `src/precis_pathway/
+toon_views.py` (`trust_toon` renders the gate). `src/precis/quest/tick.py`
+(one prompt line). Skills `precis-pathway-help` and `precis-quest-help`.
+Read path only: no migration, no meta write, no job type.
+`view='warnings'` output is unchanged; `view='trust'` is the gate. Post-
+deploy look: the two prod reads in §Acceptance, then qu164903's next tick
+citing `view='trust'` instead of dispatching a confirmation rerun.
 
 ## Open questions / decisions log
 
@@ -295,11 +297,9 @@ look: the two prod reads in §Acceptance, then qu164903's next tick citing
    independent seeds. That changes quest rankings, so it needs its own
    ruling. (Not a blocker.)
 2. **`view='gate'` as a new name, or replace the body of `view='trust'`?**
-   Recommendation: a new view. `trust` is cited in the tick prompt and a
-   skill as the per-record table, and the flat table stays useful for
-   record-id lookups. (Not a blocker.)
-3. **Pool across engine versions.** Recommendation: warn and pool.
-   pw512178 (0.37.0) and pw513347 (0.39.0) are the case the quest asked
-   about. Refusing would hide exactly the cross-run basin pattern the read
-   exists to show, and the energy delta per state is printed, so a
-   version shift is visible. Refuse only on model, network, slab or tier.
+   RULED 2026-10-25: replace `view='trust'`'s body. The per-record flat
+   table's record ids remain citable via `view='warnings'`' blocking
+   section and the gate view's own `blocked_by` line.
+3. **Pool across engine versions.** RULED 2026-10-25: refuse — slice 2
+   treats `autocatpath_version` like model/network/slab/tier. (Spec had
+   recommended warn and pool; ruling supersedes.)

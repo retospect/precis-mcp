@@ -335,18 +335,28 @@ def _trust_evidence(rec: dict[str, Any]) -> str:
     return ", ".join(f"{k}={v}" for k, v in ev.items())
 
 
-def trust_toon(meta: dict[str, Any]) -> str:
-    """Per-step structured trust records (catpath ``trust_schema`` 1-2,
-    ``docs/backlog/per-step-trust-records.md`` upstream) as a TOON table
-    grouped by step/state — the artifact answers "which step, which check,
-    which evidence" directly, no prose regex. Record ids render VERBATIM
-    (:mod:`precis.quest.compute` ``_pathway_quality_v1`` cites them as
-    handles; they are designed to be stable). A pathway harvested before the
-    trust-records contract existed (``results`` carries no ``trust_schema``,
-    or an older/absent one) gets a guidance message instead of an empty or
-    misleadingly-silent table — never guess at a shape this reader doesn't
-    understand.
+def trust_toon(
+    meta: dict[str, Any],
+    *,
+    pw_handle: str | None = None,
+    candidate: dict[str, Any] | None = None,
+    candidate_handle: str | None = None,
+) -> str:
+    """The barrier trust gate, replayed from stored trust records
+    (``trust_schema`` 1-2): one row per gating check with its input,
+    threshold and verdict, then the per-state/per-seed endpoint table.
+    The verdict line quotes the stored ``trust_summary.barrier`` and
+    re-derives the blocked set from the records via
+    :mod:`precis.utils.trust_gate` — a disagreement between the two says
+    the stored summary no longer matches its records. A check that
+    emitted no records reads ``not-run`` with a reason, never ``pass``
+    (the 1-seed vacuous pass is labelled, not hidden). A pathway
+    harvested before the trust-records contract existed gets the same
+    guidance message it always did — never guess at a shape this reader
+    doesn't understand.
     """
+    from precis.utils import trust_gate
+
     results = meta.get("results")
     results = results if isinstance(results, dict) else {}
     schema = results.get("trust_schema")
@@ -361,24 +371,144 @@ def trust_toon(meta: dict[str, Any]) -> str:
     if not records:
         return f"trust_schema={schema} but no trust records on this pathway."
 
-    rows = [
-        {
-            "step": _trust_subject(r),
-            "seed": r.get("seed"),
-            "check": r.get("check"),
-            "verdict": r.get("verdict"),
-            "severity": r.get("severity"),
-            "evidence": _trust_evidence(r),
-            "id": r.get("id"),
-        }
-        for r in sorted(
-            records,
-            key=lambda r: (_trust_subject(r), r.get("seed") or 0, r.get("check") or ""),
+    engine = meta.get("autocatpath_version")
+    engine = engine if isinstance(engine, str) and engine else None
+    scope = trust_gate.route_scope(results)
+    thresholds = trust_gate.thresholds_from(records, meta.get("config"))
+    blocked = trust_gate.replay_barrier_gate(records, scope, engine=engine)
+    rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
+
+    graph = meta.get("graph") or {}
+    root, target = _roots(meta)
+    rl = analysis.rate_limiting(graph, root, target)
+    rl_std = rl.get("std") if rl else None
+    barrier = (candidate or {}).get("barrier")
+    if not isinstance(barrier, int | float) or isinstance(barrier, bool):
+        barrier = meta.get("rate_Ea")
+    barrier = (
+        float(barrier)
+        if isinstance(barrier, int | float) and not isinstance(barrier, bool)
+        else None
+    )
+    low_conf = bool(
+        (candidate or {}).get("barrier_low_confidence", meta.get("low_confidence"))
+    )
+    rows += trust_gate.precis_guard_rows(
+        candidate,
+        barrier_ea=barrier,
+        rate_limit_std=(
+            float(rl_std)
+            if isinstance(rl_std, int | float) and not isinstance(rl_std, bool)
+            else None
+        ),
+        low_confidence=low_conf,
+        thresholds=thresholds,
+    )
+
+    head = [
+        " · ".join(
+            b
+            for b in (
+                f"gate · {pw_handle or 'pathway'}",
+                f"candidate {candidate_handle}" if candidate_handle else "",
+                ", ".join(str(m) for m in results.get("models") or [])
+                or str(results.get("backend") or ""),
+                f"seeds {results['seeds']}" if results.get("seeds") else "",
+                f"engine {meta['autocatpath_version']}"
+                if meta.get("autocatpath_version")
+                else "",
+                (
+                    f"tier {(candidate or {}).get('barrier_fidelity') or (candidate or {}).get('tier')}"
+                    if (candidate or {}).get("barrier_fidelity")
+                    or (candidate or {}).get("tier")
+                    else ""
+                ),
+            )
+            if b
         )
     ]
-    return toon.dump(
-        rows, schema=["step", "seed", "check", "verdict", "severity", "evidence", "id"]
+
+    stored_summary = results.get("trust_summary")
+    stored = (stored_summary if isinstance(stored_summary, dict) else {}).get(
+        "barrier"
+    ) or {}
+    stored_blocked = [str(s) for s in stored.get("blocked_by") or []]
+    available = stored.get("available")
+    if isinstance(available, bool):
+        verdict = "PASS" if available else "BLOCKED"
+    else:
+        verdict = "BLOCKED" if blocked else "PASS"
+    # The precis-side guards (absurd magnitude, twin disagreement) gate a
+    # harvested barrier on top of the engine verdict — a failed one blocks
+    # even when the engine's records were clean.
+    if any(r["verdict"] == "fail" for r in rows if r["gate"].endswith("(precis)")):
+        verdict = "BLOCKED"
+    ea_row = next((r for r in rows if r["gate"] == "endpoint_agreement"), None)
+    if verdict == "PASS" and ea_row is not None and ea_row["verdict"] == "not-run":
+        verdict += f" (vacuous: endpoint agreement not run — {ea_row['input']})"
+    replay = (
+        "replay agrees with stored trust_summary"
+        if sorted(stored_blocked) == blocked
+        else (
+            "replay DISAGREES with stored trust_summary — "
+            f"replay-only: {sorted(set(blocked) - set(stored_blocked)) or '—'} · "
+            f"stored-only: {sorted(set(stored_blocked) - set(blocked)) or '—'}"
+        )
     )
+    head.append(f"verdict: {verdict} · {len(blocked)} fatal on-route fails · {replay}")
+    if rl:
+        step_label = str(rl["step"]).replace("→", "->")
+        by_seed = sorted(
+            (
+                (r.get("seed"), (r.get("evidence") or {}).get("barrier_eV"))
+                for r in records
+                if r.get("check") == "saddle_verified" and r.get("step") == step_label
+            ),
+            key=lambda t: (t[0] is None, t[0]),
+        )
+        seed_bits = " · ".join(
+            f"s{s} {e:g}" for s, e in by_seed if isinstance(e, int | float)
+        )
+        flag = "  [LOW CONFIDENCE]" if rl.get("low_confidence") else ""
+        head.append(
+            f"rate-limiting: {step_label} · Ea {_b(rl.get('ea'))} ± {_b(rl.get('std'))} eV{flag}"
+            + (f" · by seed: {seed_bits}" if seed_bits else "")
+        )
+    head.append("")
+    head.append(
+        toon.dump(rows, schema=["gate", "verdict", "input", "threshold", "blocking"])
+    )
+    if blocked:
+        head.append("")
+        head.append("blocked_by: " + " · ".join(blocked))
+
+    erows, folded = trust_gate.endpoint_rows(records, scope, engine=engine)
+    head += ["", "## endpoint agreement"]
+    if erows:
+        head.append(
+            toon.dump(
+                erows,
+                schema=["state", "seed", "e_eV", "Δ meV", "fingerprint", "verdict"],
+            )
+        )
+    if folded:
+        head.append(f"({folded} route states agree across seeds — one basin each)")
+    if not erows and not folded:
+        head.append("no endpoint_identity records on the route.")
+    if ea_row is not None and ea_row["verdict"] == "fail":
+        seeds = [
+            s
+            for s in (results.get("seeds") or [])
+            if isinstance(s, int) and not isinstance(s, bool)
+        ]
+        nxt = seeds + [max(seeds, default=-1) + 1]
+        head += [
+            "",
+            "next: put(kind='structure', "
+            f"id='{candidate_handle or '<st>'}', mode='rerun', args={{'seeds': {nxt}}})"
+            " — fresh seed numbers give endpoint_agreement new basins to compare",
+        ]
+    return "\n".join(head)
 
 
 def potential_line(U: float) -> str:

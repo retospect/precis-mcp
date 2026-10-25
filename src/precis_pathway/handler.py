@@ -716,7 +716,34 @@ class PathwayHandler(Handler):
         if v == "trust":
             from .toon_views import trust_toon
 
-            return Response(body=trust_toon(meta))
+            # The gate's precis-side rows (absurd magnitude, twin
+            # disagreement) live on the candidate structure, not the
+            # pathway — read ``meta.candidate_ref`` through.
+            cand_meta: dict[str, Any] | None = None
+            cand_handle: str | None = None
+            cand = meta.get("candidate_ref")
+            if isinstance(cand, str) and cand.isdigit():
+                cand = int(cand)
+            if isinstance(cand, int) and not isinstance(cand, bool):
+                cref = store.get_ref(kind="structure", id=cand)
+                if cref is not None:
+                    cand_meta = dict(cref.meta or {})
+                    cand_handle = (
+                        handle_registry.try_format("structure", int(cref.id))
+                        or f"structure:{cref.id}"
+                    )
+            pw_handle = (
+                handle_registry.try_format("pathway", int(ref.id))
+                or f"pathway:{ref.id}"
+            )
+            return Response(
+                body=trust_toon(
+                    meta,
+                    pw_handle=pw_handle,
+                    candidate=cand_meta,
+                    candidate_handle=cand_handle,
+                )
+            )
         if v == "warnings":
             from .toon_views import warnings_toon
 

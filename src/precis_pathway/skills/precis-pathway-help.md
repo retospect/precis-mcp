@@ -274,7 +274,7 @@ barriers). Scan a `‡` column to see which candidate lowers that step; read a r
 for one candidate's whole landscape. Add `args={'U': x}` to rank the same
 table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 
-## Other reads
+## The staircase read — per-rung ΔG(U), U_L and the reset contour
 
 - `view='staircase'` — the reaction staircase from the engine's affine CHE
   export (`che_affine`, engine ≥ 0.25.0): per scored route every rung's
@@ -304,7 +304,20 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
   guaranteed) as a togglable layer. `reset_window_area` /
   `reset_window_fraction` are declared quest measures beside
   `window_area_VpH` — the guaranteed window, never blended into it.
+
+## Other reads
+
 - `view='intermediates'` / `view='steps'` — the states / elementary steps as tables.
+- `view='trust'` — the barrier trust gate, replayed from the stored trust
+  records: a `gate × verdict × input × threshold × blocking` table (the
+  engine checks, then the precis-side absurd-magnitude and twin-
+  disagreement guards and the never-gating spread readout), the recomputed
+  `blocked_by` checked against the stored `trust_summary` (`replay
+  DISAGREES` names the difference), then `## endpoint agreement` — one row
+  per route state and seed with `delta_meV` next to the `tol_eV` it was
+  judged against. A check that never ran reads `not-run`, never `pass`; a
+  1-seed run reads `PASS (vacuous …)`. Read this first; `view='warnings'`
+  keeps the per-record detail.
 - `view='warnings'` — where to distrust the numbers, in three sections:
   **blocking** (real fatal, on-route trust-record fails — read these first),
   **counts** (everything else, one row per check/verdict, e.g. `wrong_binder

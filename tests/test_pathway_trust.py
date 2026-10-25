@@ -1,8 +1,11 @@
 """precis_pathway trust view: ``get(kind='pathway', id='<slug>',
-view='trust')`` — catpath's structured per-step trust records
-(``trust_schema == 1``, catpath ``docs/backlog/per-step-trust-records.md``)
-rendered as a TOON table, record ids verbatim. See
-``docs/handoff/precis-trust-consumer.md`` (catpath repo) for the contract.
+view='trust')`` — the barrier trust gate replayed from catpath's stored
+per-step trust records (``trust_schema`` 1-2, catpath
+``docs/backlog/per-step-trust-records.md``): one row per gating check with
+input/threshold/verdict/blocking, the blocked set re-derived and checked
+against the stored ``trust_summary``. See
+``docs/handoff/precis-trust-consumer.md`` (catpath repo) for the record
+contract and ``precis.utils.trust_gate`` for the replay.
 
 Store-seeded fake ``meta['results']`` (no calculator, no NEB) — same
 rationale as ``test_pathway_kinetics.py``: split out to stay cheap to target
@@ -14,10 +17,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
-from tests._autocatpath import needs_engine
-
-needs_engine()
 
 from precis.dispatch import Hub
 from precis.store import Store
@@ -129,9 +128,14 @@ def _seed(store: Store, slug: str, meta: dict[str, Any]) -> int:
     return ref.id
 
 
-def test_trust_view_renders_records_grouped_with_verbatim_ids(
+def test_trust_view_renders_gate_rows_and_verdict(
     pathway_store: Store,
 ) -> None:
+    """The gate table renders one row per check. The fixture's only fatal
+    fail is off-route (``M->S`` — a selectivity blocker, not a barrier
+    one), so the stored ``available: True`` stands, the replay agrees, and
+    with one seed the pass is labelled vacuous rather than read as a real
+    endpoint-agreement pass."""
     h = _handler(pathway_store)
     _seed(
         pathway_store,
@@ -140,14 +144,13 @@ def test_trust_view_renders_records_grouped_with_verbatim_ids(
     )
 
     r = h.get(id="trust-rows", view="trust")
-    for rec in _TRUST_RECORDS:
-        assert str(rec["id"]) in r.body  # ids are citable handles — never rewritten
+    assert "gate ·" in r.body
+    assert "verdict: PASS (vacuous" in r.body
+    assert "replay agrees with stored trust_summary" in r.body
     assert "detachment" in r.body
     assert "neb_convergence" in r.body
-    assert "relax_convergence" in r.body
-    assert "marginal" in r.body
-    assert "fail" in r.body
-    assert "pass" in r.body
+    assert "not-run" in r.body
+    assert "## endpoint agreement" in r.body
 
 
 def test_trust_view_no_trust_schema_gets_guidance_not_empty_table(
