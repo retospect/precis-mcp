@@ -589,6 +589,35 @@ def test_cancelled_runs_do_not_veto_a_verdict_on_the_same_sha(
     assert capsys.readouterr().out.strip() == GATED
 
 
+def test_the_slim_push_lanes_skipped_matrix_does_not_veto_a_gate_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A main push takes the slim lane: green lint plus one bare SKIPPED
+    `test-linux` (the matrix never expanded). A gate dispatch on the same
+    sha must still count; before the fix the bare name failed the shard
+    regex and no main sha could ever be gated."""
+    mod = _load()
+    runs = _shards() + [
+        _run_node("lint", "SUCCESS", 0.5),
+        _run_node("test-linux", "SKIPPED", 0.5),
+    ]
+    _stub(mod, monkeypatch, {GATED: runs})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+
+
+def test_a_skipped_only_suite_is_not_a_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Dropping skipped runs must not create verdicts: the slim push alone
+    (lint green, matrix skipped) has no shards and is walked past."""
+    mod = _load()
+    slim = [_run_node("lint", "SUCCESS", 0.5), _run_node("test-linux", "SKIPPED", 0.5)]
+    _stub(mod, monkeypatch, {BURST: slim, GATED: _shards()})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+
+
 def test_a_fully_cancelled_suite_is_still_not_a_verdict(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

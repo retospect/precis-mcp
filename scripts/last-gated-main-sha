@@ -36,8 +36,11 @@ dropped before the rule applies (gr495187): a run displaced by main's shared
 group or superseded by a retry is not a verdict, and its cancelled lint/shard
 runs must not veto the real verdict that lands on the same sha — a release
 cut's gate and the nightly both attach their check-runs to a main sha that
-can also carry a displaced slim run's cancelled lint. An in-flight run still
-vetoes (its conclusion is simply unknown).
+can also carry a displaced slim run's cancelled lint. SKIPPED check-runs are
+dropped the same way: every main push takes the slim lane, whose matrix job
+never expands and reports one bare SKIPPED `test-linux` beside the gate run's
+ten green shards. An in-flight run still vetoes (its conclusion is simply
+unknown).
 
 Source: one batched GraphQL query (`gh api graphql`, 100 commits per call) over
 main's history, `since` the window cutoff. It reads the same per-sha check-run
@@ -305,13 +308,17 @@ def first_parent_shas(start: str, limit: int, since: str) -> list[str] | None:
 def _runs_of(node: Any) -> list[Run]:
     """Flatten one commit's check suites into its check-runs.
 
-    CANCELLED runs are dropped (the verdict rule in the module doc): a
-    displaced/superseded run is not a verdict and must not veto one."""
+    CANCELLED and SKIPPED runs are dropped (the verdict rule in the module
+    doc): a displaced, superseded or never-run job is not a verdict and must
+    not veto one."""
     runs: list[Run] = []
     suites = ((node.get("checkSuites") or {}).get("nodes")) or []
     for suite in suites:
         for run in ((suite or {}).get("checkRuns") or {}).get("nodes") or []:
-            if isinstance(run, dict) and run.get("conclusion") != "CANCELLED":
+            if isinstance(run, dict) and run.get("conclusion") not in (
+                "CANCELLED",
+                "SKIPPED",
+            ):
                 runs.append(run)
     return runs
 
