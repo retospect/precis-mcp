@@ -226,6 +226,18 @@ Field notes:
 - **`nets[].domain`** — only `'electrical'` (the default) is accepted
   today; any other value is rejected.
 
+## Cite the DB in the board script
+
+When the design is built by a workspace script (`precis_geom`), every
+part choice or number that came out of precis carries its handle in a
+comment — `# <handle> (<why>)` on the deciding line: `# fi349615 (I2C
+pull-up sizing)`, `# ds:<slug>~p12 (AMS1117 dropout 1.1 V @1 A)`,
+`# gr513665`. Annotate part choice, datasheet-derived values
+(decoupling, dropout, thermal), constraint numbers (clearance,
+creepage, trace width) and anything taken from a paper or finding. The
+full convention and the export-expansion rule:
+[[precis-workspace-help]] §Cite the DB in the script (gr514049).
+
 ## Read it as a graph — `get`
 
 ```python

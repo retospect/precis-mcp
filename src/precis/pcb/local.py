@@ -39,6 +39,7 @@ from precis.pcb import drc as pcb_drc
 from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
+from precis.pcb import route_digest as pcb_route_digest
 from precis.pcb import rows as pcb_rows
 from precis.pcb import session as pcb_session
 from precis.pcb.geom import segments_cross
@@ -710,6 +711,9 @@ class LocalRouting:
     ir: PcbIR = field(repr=False)
     rres: Any = field(repr=False)
     footprints: dict[str, dict[str, Any]] = field(repr=False)
+    #: The run-level conflict roll-up (gr513871) — the same object the
+    #: job stamps onto ``refs.meta.last_route.digest``.
+    digest: dict[str, Any] = field(default_factory=dict)
     committed_round: int = 0
     ready: bool = True
 
@@ -824,6 +828,9 @@ def _status_rows(
             details = [str(p["message"])[:220] for p in problems if p.get("message")]
             note = f"failed: {', '.join(kinds)}"
             if details:
+                # Same dedupe as the job's note builder — the first 3
+                # shown are three DISTINCT blockers (gr513871).
+                details = pcb_route_digest.dedupe_details(details)
                 note += f" — {'; '.join(details[:3])}"
                 if len(details) > 3:
                     note += f" (+{len(details) - 3} more)"
@@ -957,6 +964,7 @@ def route(
         findings=findings,
         unrouted_reasons=unrouted_reasons,
         notes=design.notes,
+        digest=pcb_route_digest.conflict_digest(rows, design.layer_names),
         design=design,
         ir=ir,
         rres=rres,
@@ -1337,6 +1345,7 @@ def copper_json(routing: LocalRouting) -> dict[str, Any]:
         ),
         "routes": routing.rows,
         "unrouted_reasons": routing.unrouted_reasons,
+        "digest": routing.digest,
         "committed_round": routing.committed_round,
     }
 

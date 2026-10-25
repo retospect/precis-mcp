@@ -139,6 +139,7 @@ from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import review as pcb_review
+from precis.pcb import route_digest as pcb_route_digest
 from precis.pcb import route_state as pcb_route_state
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
@@ -5120,6 +5121,12 @@ class PcbHandler(Handler):
         last_route = (
             ((ref.meta or {}).get("last_route") or {}) if ref is not None else {}
         )
+        # The last run's binding-constraint digest (gr513871), stamped by
+        # the job onto last_route — the "which blocker failed the run"
+        # roll-up the per-net notes can't show.
+        conflict_lines = pcb_route_digest.digest_lines(last_route.get("digest"))
+        if conflict_lines:
+            body += "\n\n# route conflicts (last run)\n" + "\n".join(conflict_lines)
         # What the supply/client matching bought per role (gr491373):
         # the stored warm_start cost pair, same lines the job summary prints.
         for line in format_warm_start(last_route.get("warm_start")):

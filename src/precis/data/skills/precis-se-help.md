@@ -515,6 +515,14 @@ design). `view='chain'` reads helices/strands/pairing; `view='topology'`
 gains the domain rows; `view='export'` writes the design to
 scadnano/caDNAno/oxDNA/PDB.
 
+## Cite the DB in the design script
+
+Same convention as pcb: when a workspace script authors the design, a
+decision taken from precis gets `# <handle> (<why>)` on its line —
+material/atom choices, constraint numbers, load values, objective
+weights. Full convention: [[precis-workspace-help]] §Cite the DB in the
+script (gr514049).
+
 ## See also
 
 - [[precis-se-check-help]] — checking views: stability, drc, fasten, clearance, surface_deviation

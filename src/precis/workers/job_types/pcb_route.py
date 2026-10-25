@@ -78,6 +78,7 @@ from precis.pcb.optimize import (
     optimize,
     resolve_measures,
 )
+from precis.pcb.route_digest import conflict_digest, dedupe_details, digest_lines
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.workers.job_types import JobTypeSpec
 
@@ -1555,6 +1556,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     details.append(str(p["message"]))
             note = f"failed: {', '.join(kinds)}" if kinds else "failed"
             if details:
+                # One blocker repeated on every segment used to fill the
+                # note ("crosses CC1 on F.Cu" ×183): dedupe first so the 3
+                # shown are three DISTINCT constraints (gr513871).
+                details = dedupe_details(details)
                 head = [d[:220] for d in details[:3]]
                 note += " — " + "; ".join(head)
                 if len(details) > 3:
@@ -1595,6 +1600,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # attempt would store. A worse attempt writes NOTHING — the board
     # keeps its previous poses, planes, pin swaps, copper and statuses —
     # and the job reports the attempt instead of committing it.
+    # The run-level conflict digest (gr513871): the same `problems` the
+    # per-net notes render, aggregated into binding constraints — stamped
+    # onto last_route so view='route-status' and a later reader get it too.
+    digest = conflict_digest(rows, [str(layer.get("name")) for layer in stackup])
+    digest_block = "\n".join(digest_lines(digest))
+
     n_unrealized = sum(1 for r in rows.values() if r["status"] != "realized")
     n_new_drc_errors = n_placement_errors + committed_drc_errors
     worse: list[str] = []
@@ -1685,7 +1696,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{len(drc_fail)} net(s) stripped by post-route DRC, "
         f"{n_disconnected} net(s) failed as disconnected copper"
         f"{match_summary}{pin_swap_summary}\n"
-        f"vias_under_part: {vias_under_part}\n\n" + groups_line + digest_text
+        f"vias_under_part: {vias_under_part}\n\n"
+        + (digest_block + "\n\n" if digest_block else "")
+        + groups_line
+        + digest_text
     )
 
     if worse:
@@ -1828,6 +1842,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         "unrouted_reasons": {
             pcb_session.segment_key(ir, r.seg_id): r.kind for r in rres.unrouted_reasons
         },
+        # The binding-constraint roll-up (gr513871) — the same per-net
+        # problems, aggregated: persisted with the run so route-status
+        # and a later run-diff can read it without re-deriving it.
+        "digest": digest,
         "class_layer_drops": list(rres.class_layer_drops),
         "pre_route_drc": {
             "errors": n_placement_errors,

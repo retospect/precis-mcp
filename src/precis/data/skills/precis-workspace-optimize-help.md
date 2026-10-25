@@ -97,6 +97,11 @@ geometry:
 cost = -w_b * o.measures["breakthrough-fraction"] + w_n * len(holes) / n_ref
 ```
 
+Annotate what set the weights: a paper/finding-derived `w_b` or `n_ref`
+carries `# <handle> (<why>)` on its line, same convention as the rest of
+workspace code ([[precis-workspace-help]] §Cite the DB in the script,
+gr514049).
+
 **Common random numbers.** `seed=` reseeds the tracer identically on
 every call. Use one seed for the whole search, so two candidate shapes
 differ by geometry and not by tracer noise. The same `(shape, spec,

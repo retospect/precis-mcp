@@ -246,6 +246,33 @@ reports no construction trace.
 frames only from the conversion call — the OCP internals are
 untraced.
 
+## Cite the DB in the script — `# <handle> (<why>)`
+
+A workspace script gets read later by someone with a different DB or
+none, so every decision that came out of precis carries its source in a
+comment — a compact handle plus a few words of why, on the line where
+the decision lives:
+
+```python
+r_pu = b.part("R_PU_SDA", label="RES-0402-4k7")  # fi349615 (I2C pull-up sizing at 400 kHz)
+vbus = b.net("VBUS", cls="power", current=5.0)   # gr513665 (PDO table: 20 V fixed)
+u1 = b.part("U1", lcsc="C14877")                 # pa481516~chunk3 (sleep current vs rail budget)
+```
+
+Annotate a part choice, a value taken from a datasheet (decoupling,
+dropout, thermal), a constraint number (clearance, creepage, trace
+width), and any weight or param a paper/finding set. One handle plus the
+why — short enough that the code still reads as code. A citation into a
+chunk of a document uses the `~` selector form (`pa481516~chunk3`,
+`ds:<slug>~p<n>`).
+
+The lint that checks the handles still resolve and the export pass that
+expands each into a self-contained citation (title / part number / DOI /
+page + a short verbatim excerpt, inline or a REFERENCES block — a reader
+without this DB can check it) are later slices; the convention stands on
+the handles alone today (gr514049). Generators that emit workspace code
+(an EasyEDA → script rewrite) write the same convention.
+
 ## Import a run — the `import_workspace` op
 
 One `edit(kind='se')` carries the run's `out/` tree inline as
