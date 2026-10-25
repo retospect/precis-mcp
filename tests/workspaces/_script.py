@@ -13,7 +13,12 @@ def load_module(path: Path, name: str = "main") -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Compile from source, never via the loader's ``__pycache__``: tests
+    # rewrite the same ``main.py`` repeatedly, and a same-size rewrite in
+    # the same second matches the stale pyc's (mtime-s, size) stamp, so
+    # the old code runs (CI writes bytecode; the dev container doesn't).
+    source = path.read_text(encoding="utf-8")
+    exec(compile(source, str(path), "exec"), mod.__dict__)
     return mod
 
 

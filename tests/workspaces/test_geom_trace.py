@@ -673,3 +673,15 @@ def test_out_run_rotates_previous_trace(tmp_path: Path) -> None:
     with geom_out.run(out_dir, work_root=_WORK_ROOT):
         strip(rows=4, periods=16)
     assert prev.read_text(encoding="utf-8") == second
+
+
+def test_rewritten_script_never_runs_stale_bytecode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A same-size ``main.py`` rewrite inside one second must run the new
+    text even when bytecode is written (CI; the dev container sets
+    PYTHONDONTWRITEBYTECODE, which hid the stale-pyc hit)."""
+    monkeypatch.setattr("sys.dont_write_bytecode", False)
+    first = load_script(tmp_path, "X = 'ab'\n")
+    second = load_script(tmp_path, "X = 'ba'\n")
+    assert (first.X, second.X) == ("ab", "ba")
