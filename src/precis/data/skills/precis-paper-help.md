@@ -163,10 +163,9 @@ edit(
 the tier that wrote it, a `✓ verified <date>` mark once ORCID has
 cross-checked the row, and up to three links — ORCID (`orcid.org/<iD>`
 plus the `oi<id>` node handle when a `kind='orcid'` identity node is
-linked), OpenAlex (`openalex.org/<A…>`), and a Google Scholar name
-search (links-only — Scholar has no API and isn't scraped). A
-paper-level Scholar lookup (DOI-keyed when a DOI is on file, else
-title) follows the table.
+linked), OpenAlex, and a Google Scholar name search (links-only —
+Scholar has no API). A paper-level Scholar lookup (DOI-keyed when a DOI
+is on file, else title) follows the table.
 
 **Tier ladder** (a write only ever raises the paper toward a more
 authoritative source): `orcid` (ORCID's own record) >
@@ -213,22 +212,20 @@ mis-filed record's year and venue repair the same way — `year=2007`,
 `journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`).
 
 The needs-triage backfill (`precis.ingest.metadata_resolve`, "Bucket B")
-guards against pulling in the *wrong* identity in the first place
-(gr353804): when a Crossref/S2 registry hit's title shares zero
-distinctive words with the paper's own chunk-0 text (e.g. an SI PDF that
-would otherwise take an unrelated paper's DOI), it withholds the write
-instead — tags the ref `paper-meta:title-mismatch`, records the withheld
-`doi`/`title`/`reason` under `meta.registry_mismatch` on the Meta tab, and
-clears the stored DOI only for the zero-overlap case. Parked refs leave the
-triage sweep until the tag is removed by hand; `human_verified_at` is never
-touched.
+guards against pulling in the *wrong* identity (gr353804): a Crossref/S2
+registry hit whose title shares zero distinctive words with the paper's
+own chunk-0 text (e.g. an SI PDF) gets the write withheld — tags the ref
+`paper-meta:title-mismatch`, records the withheld `doi`/`title`/`reason`
+under `meta.registry_mismatch` on the Meta tab, and clears the stored DOI
+only for the zero-overlap case. Parked refs leave the triage sweep until
+the tag is removed by hand; `human_verified_at` is never touched.
 
-ALL-CAPS titles are repaired by the paper-meta enrich worker, not by agents:
-for a DOI paper whose stored title is all caps, the agreeing Crossref title
-replaces it (old kept as `meta.title_raw`); `human_verified_at` freezes a
-title, and a substantively different registry title is left alone. Do not
-hand-normalise titles; BibTeX export brace-protects acronym/formula tokens
-(`{DFT}`) so styles don't lowercase them.
+ALL-CAPS titles are repaired by the paper-meta enrich worker, not by
+agents: for a DOI paper whose stored title is all caps, the agreeing
+Crossref title replaces it (old kept as `meta.title_raw`);
+`human_verified_at` freezes a title; a substantively different registry
+title is left alone. Do not hand-normalise titles; BibTeX export
+brace-protects acronym/formula tokens (`{DFT}`).
 
 ## Resolving a duplicate ref
 ## `already belongs to ref id=N` — what now?
@@ -296,24 +293,46 @@ an attached PDF, an external identifier, live inbound cites (edges,
 `supersedes` (move each tombstone's redirect with `redirect_to` first).
 A duplicate of a real record wants a merge instead. `dry_run` previews.
 
+## A ref holds the wrong paper's body — how do I detach or re-home it?
+
+```python
+edit(kind="paper", id="pa506039", args={"drop_body": True, "reason": "wrong pdf"})
+edit(kind="paper", id="pa1108", args={"move_body_to": "pa42053", "reason": "it's 42053's"})
+edit(kind="paper", id="pa41", args={"split_body": {"title": "Companion paper"}, "reason": "different work"})
+edit(kind="paper", id="pa174214", args={"clear_abstract": True, "reason": "junk abstract"})
+```
+
+`reason` required, `dry_run` previews, one DELETE+INSERT transaction.
+`drop_body` deletes body chunks + embeddings, clears `pdf_sha256` and
+content ids, keeps metadata — a live stub, refetchable via `pdf_url`.
+`move_body_to` gives body, pdf and content ids to a live ref holding
+zero body chunks and no pdf (refuses otherwise: `drop_body`/
+`merge_into`/`bodiless-heal`); the donor ends a live stub.
+`split_body` mints a NEW ref from the dict
+(`title` required) and moves the body onto it; a held DOI refuses
+naming its ref — the move case. `clear_abstract` drops `meta.abstract`
++ the `card_abstract` chunk and rebuilds `card_combined`; blank
+`abstract=''` refuses and points at it. Writes log `body_dropped`/
+`body_moved`/`body_split`/`abstract_cleared` ref_events; chunk links
+re-point on move/split, count on drop.
+
 ## A worker stamped a paper as done/failed — how do I re-run it?
 
 ```python
 edit(kind="paper", id=[101, 102, 103], args={"clear_stamp": "context_sentence_no_abstract"})
 ```
 
-Some worker passes stamp a converged/skip key into `refs.meta` and then
-stop re-claiming the paper; removing the stamp re-opens it for the next
-sweep. `id=` takes one ref or a list — re-arming a cohort is one call —
-and the ack reports, per key, refs cleared vs already clear. Each
-cleared ref gets a `metadata_edited` ref_event; `dry_run` previews.
+Some worker passes stamp a converged/skip key into `refs.meta` and stop
+re-claiming the paper; removing the stamp re-opens it. `id=` takes one
+ref or a list; the ack reports, per key, refs cleared vs already clear,
+each cleared ref getting a `metadata_edited` ref_event. `dry_run`
+previews.
 
 Only allow-listed retry stamps clear — `context_sentence_failed`,
 `context_sentence_no_abstract`, `s2_enriched_at`, `s2_enrich_failed`,
 `llm_band_failures`, `openalex` — anything else is refused naming the
-allowed set. The registry is `precis/workers/retry_stamps.py`: a worker
-registers its keys beside the constants that write them. There is no
-generic `refs.meta` delete door, and `clear_stamp` combines with no
+allowed set. The registry is `precis/workers/retry_stamps.py`; there is
+no generic `refs.meta` delete door, and `clear_stamp` combines with no
 other edit field.
 
 ## I found a legal PDF for a body-less stub — how do I attach it?
@@ -346,58 +365,48 @@ folded body yourself. The folded paper keeps the URL as `meta.source_url`.
 put(kind="paper", id="smith2023", mode="fetch-si")  # queue the SI fetch
 ```
 
-This only **queues**: it stamps the paper, and the fetch worker's next
-tick looks for the SI (Figshare mirrors, Crossref component DOIs, the
-publisher landing page) and downloads each PDF it finds. Calling it again
-while the request is still pending is a no-op; a fresh call after the check
-re-arms it. `mode=` other than `'fetch-si'` raises `BadInput`.
+This only **queues**: the fetch worker's next tick looks for the SI
+(Figshare mirrors, Crossref component DOIs, the publisher landing page)
+and downloads each PDF it finds. Calling again while pending is a no-op;
+a fresh call re-arms it. `mode=` other than `'fetch-si'` raises `BadInput`.
 
-What it records, on the paper: `meta.si_checked_at`, `si_found` (candidate
-files), `si_fetched` (PDFs queued for ingest), `si_misses` (`{url, source,
-reason}` — e.g. `cloudflare_403` when the publisher answers with a
-challenge: that is a recorded miss, never retried around), `si_skipped`
-(non-PDF files: zip/xlsx/cif/docx are not ingested; `reason='non_pdf'`
-and the source URL are retained and shown on the paper overview/Meta tab), and one `si_found` /
-`si_none` / `si_blocked` (publisher wall) / `si_error` (network failure, retried) row in `get(id=..., view='log')`. A paper with no
-SI is checked once and not re-checked until you call it again; a check cut
-short by the pass time budget (`deadline` miss), or one that queued nothing
-because of a transient network failure (connect/read timeout), retries on the
-next pass, up to 3 times.
+Records on the paper: `meta.si_checked_at`, `si_found` (candidates),
+`si_fetched` (PDFs queued), `si_misses` (`{url, source, reason}` —
+`cloudflare_403` is a recorded miss, never retried around), `si_skipped`
+(non-PDF files not ingested), and one `si_found` / `si_none` /
+`si_blocked` / `si_error` row in `get(view='log')`. A paper with no SI
+is not re-checked until you call again; a check cut short by budget or
+transient failure retries up to 3 times.
 
-`si_misses`/`si_skipped` describe the latest check; earlier misses stay in
-the log, so a successful re-check can show zero current misses.
-
-You rarely need to call it: opening a paper that has a DOI (web page, `get`
-overview, or a fisheye ring that cites it) queues **one** SI check
-automatically, ahead of the stub backlog; only an explicit `fetch-si`
-forces a re-check.
+You rarely need to call it: opening a paper that has a DOI (web page,
+`get` overview, or a citing fisheye ring) queues **one** SI check
+automatically, ahead of the stub backlog; only `fetch-si` forces a
+re-check.
 
 Each SI PDF becomes **its own paper ref** titled `Supporting Information:
-<parent title>`, linked to the parent (edge `part-of` → parent, read as
-`contains` from the parent; the edge carries `meta.role='supplement'`), and
-its chunks are searchable like any body text. It carries no DOI of the
-parent's. **An SI ref cites as its parent:** a search hit in SI text reads
-`SI of <parent> — cite as <parent>`, and a `pc<id>`/`pa<id>` handle of the SI
-exports as the parent's citation. `get(id=<parent>)` lists its SI refs;
-`get(id=<SI>)` names its parent. To attach an SI PDF by hand, drop it in the
-inbox with a sidecar `role: supplement` and `ref_id` = the parent's ref id.
-To supply the PDF for a wanted stub by hand, drop it in the inbox named by
-the stub's handle: `pa<id>.pdf` or `pa<id>-<anything>.pdf` (e.g.
-`pa343399-hedberg1987.pdf`). It folds into that stub, keeping its metadata,
-instead of minting a twin. A handle that names a paper which already has a
-body, a retired ref or a non-paper is ignored and the file ingests as a new
-paper.
-You can also attach a PDF to a Discord message to asa in a served channel
-after linking your Discord identity on `/account` — asa queues it in the
-inbox and replies with the paper handle. One `pa<id>` in the message
-requests the same stub fold (the same identity checks apply); multiple
-handles are refused as ambiguous.
-To declare an existing record as an SI after the fact, run
+<parent title>`, linked to the parent (`part-of` → parent, the edge
+carrying `meta.role='supplement'`); its chunks are searchable like any
+body text and it carries no DOI of the parent's. **An SI ref cites as its
+parent:** a search hit in SI text reads `SI of <parent> — cite as
+<parent>`, and a `pc<id>`/`pa<id>` handle of the SI exports as the
+parent's citation. `get(id=<parent>)` lists its SI refs; `get(id=<SI>)`
+names its parent. To attach an SI PDF by hand, inbox it with a sidecar
+`role: supplement` and `ref_id` = the parent; to supply the PDF for a
+wanted stub, inbox it named by the stub's handle (`pa<id>.pdf` or
+`pa<id>-<anything>.pdf`) — it folds into that stub instead of minting a
+twin; a handle naming a paper that has a body, a retired ref or a
+non-paper is ignored and the file ingests as a new paper.
+Or attach a PDF to a Discord message to asa in a served channel after
+linking on `/account` — asa queues it and replies with the handle. One
+`pa<id>` requests the same stub fold; multiple handles are refused as
+ambiguous.
+To declare an existing record as an SI after the fact:
 `edit(kind="paper", id="<si handle>", mode="replace",
-args={"supplement_of": "<parent slug or paN>"})`; it refuses when the record
-already is an SI, holds a DOI of its own, or the parent is itself an SI. Draft
-exports cite an SI record as its parent with an SI postnote (`\cite[SI]{parent}`
-in LaTeX, `\cites{a}[SI]{parent}` inside a group, "[n] (SI)" in docx).
+args={"supplement_of": "<parent slug or paN>"})`; refuses when the record
+is already an SI, holds its own DOI, or the parent is itself an SI. Draft
+exports cite an SI record as its parent with an SI postnote
+(`\cite[SI]{parent}` in LaTeX, `\cites{a}[SI]{parent}` in a group,
+"[n] (SI)" in docx).
 
 ## See additional papers after a search
 ## Page through more search results
@@ -645,10 +654,8 @@ Full contract + backlog view in `precis-stubs-help`.
 **A slow put is backoff, not a wedge.** Minting a stub resolves the
 identifier against Semantic Scholar, and S2 rate-limits burst traffic —
 after several rapid puts, the next one can sit in auto-backoff for
-minutes before returning. The server handles requests serially, so an
-unrelated call issued behind it waits too. Don't re-issue the put (it's
-idempotent, but re-sending just re-queues work); space out bulk stub
-minting and let the slow call finish.
+minutes (and the serial server makes later calls wait too). Don't
+re-issue the put; space out bulk stub minting and let it finish.
 
 ## Find the paper to request — walk a citation graph
 ## What does this paper cite? Who cites it?

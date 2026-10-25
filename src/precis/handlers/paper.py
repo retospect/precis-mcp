@@ -6,7 +6,10 @@ or ``precis watch`` with a PDF in ``inbox/papers/``. ``put`` requests paper
 stubs or queues supplementary-information acquisition with ``mode='fetch-si'``;
 it never writes a body. ``edit`` is scoped to *bibliographic metadata*
 (authors / year / title / abstract / doi / arxiv / journal / entry_type)
-— it never touches block text.
+plus the ``args=`` lifecycle doors — ``retire`` / ``redirect_to`` /
+``merge_into`` and the wrong-body repair set (``drop_body`` /
+``move_body_to`` / ``split_body`` / ``clear_abstract``, gr514995); it
+never edits block text in place.
 
 Slug parsing supports the canonical slug-with-chunk syntax used across
 v2:
@@ -22,16 +25,20 @@ v2:
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import difflib
 import logging
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+import psycopg
+
 from precis import settings
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported, Upstream
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._eye import is_eye_view
@@ -63,6 +70,7 @@ from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.store._identifiers_ops import detect_identifier_scheme
+from precis.store._review_ops import trust_refusal
 from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE
 from precis.utils import handle_registry
@@ -104,6 +112,52 @@ def _pa(ref: Ref) -> str:
     ``cf<id>`` — letting :class:`CfpHandler` reuse the paper rendering
     path verbatim without minting cross-kind handles."""
     return handle_registry.format_handle(ref.kind, ref.id)
+
+
+def _retired_note(report: Any) -> str:
+    """The body-ops ack suffix naming retired chunks the delete also
+    took (``BodyReport.retired_chunks``); empty when there were none."""
+    n = getattr(report, "retired_chunks", 0)
+    return f" (+{n} retired)" if n else ""
+
+
+def _links_removed_note(report: Any) -> str:
+    """The body-ops ack suffix naming chunk-anchored links the delete's
+    cascade took (``BodyReport.chunk_links_removed``) — links anchored
+    on retired donor chunks have no copy to re-point onto."""
+    n = getattr(report, "chunk_links_removed", 0)
+    return f", {n} retired-chunk link(s) removed" if n else ""
+
+
+@contextlib.contextmanager
+def _body_op_tx(store: Store, door: str) -> Iterator[Any]:
+    """``store.tx()`` with the body doors' DB-error mapping.
+
+    ``deadlock_detected`` becomes ``Upstream`` with a retry hint — the
+    op is atomic, so the victim rolls back cleanly and a retry is safe.
+    A check violation becomes ``BadInput``: a ``trust:`` refusal
+    (migration 0214's guards, on a link or ref the ``computed`` door
+    can't restamp) carries the trigger's hint as ``next=`` via
+    :func:`trust_refusal`; anything else is a constraint the caller
+    tripped and gets a gripe-pointers ``next=``.
+    """
+    try:
+        with store.tx() as conn:
+            yield conn
+    except psycopg.errors.DeadlockDetected as exc:
+        raise Upstream(
+            f"{door} lost a lock deadlock — nothing was written",
+            next="retry the edit; if deadlocks repeat, another session is "
+            "holding a write on one of the refs — file a gripe naming them",
+        ) from exc
+    except psycopg.errors.CheckViolation as exc:
+        refusal = trust_refusal(exc)
+        if refusal is not None:
+            raise refusal from exc
+        raise BadInput(
+            f"{door} refused by a database check: {exc.diag.message_primary}",
+            next=exc.diag.message_hint or "file a gripe naming the refs",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +222,19 @@ _MERGE_TITLE_SIM_FLOOR = 0.85
 #: uses (``Store.upsert_stub_paper``). A known-year mismatch always
 #: refuses.
 _MERGE_UNKNOWN_YEAR_SIM = 0.95
+
+#: The ``edit(args=…)`` door keys, in dispatch order — at most one per
+#: call, and never combined with the metadata fields. Every door takes
+#: ``args['reason']``.
+_EDIT_DOOR_ARGS = (
+    "retire",
+    "redirect_to",
+    "merge_into",
+    "drop_body",
+    "move_body_to",
+    "split_body",
+    "clear_abstract",
+)
 
 
 # ``_coerce_search_year`` / ``_embed_query_batch`` / ``_broad_args_suffix`` used
@@ -355,13 +422,27 @@ class PaperHandler(Handler):
         # redirect (:meth:`_repoint_supersede`); ``retire`` soft-deletes a
         # phantom stub (:meth:`_retire_stub`); ``merge_into`` folds a live
         # duplicate into a named survivor (:meth:`_merge_duplicate_into`);
-        # ``reason`` is the audit string all three write into their
-        # ref_event; ``clear_stamp`` removes allow-listed worker-retry
-        # meta keys so the owning pass re-claims the ref
-        # (:meth:`_clear_worker_stamps`). Subclass hooks read their own
+        # ``clear_stamp`` removes allow-listed worker-retry meta keys
+        # so the owning pass re-claims the ref
+        # (:meth:`_clear_worker_stamps`); ``drop_body`` / ``move_body_to``
+        # / ``split_body`` / ``clear_abstract`` are the wrong-body
+        # repair doors (gr514995: :meth:`_drop_body`,
+        # :meth:`_move_body_to`, :meth:`_split_body`,
+        # :meth:`_clear_abstract`); ``reason`` is the audit string every
+        # door writes into its ref_event. Subclass hooks read their own
         # keys via _edit_args.
         "edit": ArgsSpec(
-            {"redirect_to", "retire", "merge_into", "reason", "clear_stamp"}
+            {
+                "redirect_to",
+                "retire",
+                "merge_into",
+                "clear_stamp",
+                "drop_body",
+                "move_body_to",
+                "split_body",
+                "clear_abstract",
+                "reason",
+            }
         ),
     }
 
@@ -2143,9 +2224,7 @@ class PaperHandler(Handler):
         raw_args = dict(args) if args else {}
         if "clear_stamp" in raw_args:
             if (
-                "retire" in raw_args
-                or "redirect_to" in raw_args
-                or "merge_into" in raw_args
+                any(k in raw_args for k in _EDIT_DOOR_ARGS)
                 or supplement_of is not None
                 or any(
                     v is not None
@@ -2176,10 +2255,11 @@ class PaperHandler(Handler):
                     "one call per ref — only args={'clear_stamp': ...} accepts id=[...]"
                 ),
             )
-        if "retire" in raw_args:
+        doors = [k for k in _EDIT_DOOR_ARGS if k in raw_args]
+        if doors:
+            door = doors[0]
             if (
-                "redirect_to" in raw_args
-                or "merge_into" in raw_args
+                len(doors) > 1
                 or supplement_of is not None
                 or any(
                     v is not None
@@ -2196,68 +2276,61 @@ class PaperHandler(Handler):
                 )
             ):
                 raise BadInput(
-                    "retire= cannot be combined with other edit fields",
-                    next="make the retire call alone, then edit the rest",
+                    f"{door}= cannot be combined with other edit fields",
+                    next=f"make the {door} call alone, then edit the rest",
                 )
-            return self._retire_stub(
-                id,
-                raw_args["retire"],
-                reason=str(raw_args.get("reason") or _kw.get("reason") or "").strip(),
-                dry=bool(dry_mode),
-            )
-        if "redirect_to" in raw_args:
-            if (
-                "merge_into" in raw_args
-                or supplement_of is not None
-                or any(
-                    v is not None
-                    for v in (
-                        title,
-                        year,
-                        authors,
-                        abstract,
-                        doi,
-                        arxiv,
-                        journal,
-                        entry_type,
-                    )
+            reason = str(raw_args.get("reason") or _kw.get("reason") or "").strip()
+            if door == "retire":
+                return self._retire_stub(
+                    id, raw_args["retire"], reason=reason, dry=bool(dry_mode)
                 )
-            ):
-                raise BadInput(
-                    "redirect_to= cannot be combined with other edit fields",
-                    next="make the redirect_to call alone, then edit the rest",
+            if door == "redirect_to":
+                return self._repoint_supersede(
+                    id,
+                    raw_args["redirect_to"],
+                    reason=reason,
+                    dry=bool(dry_mode),
                 )
-            return self._repoint_supersede(
-                id,
-                raw_args["redirect_to"],
-                reason=str(raw_args.get("reason") or _kw.get("reason") or "").strip(),
-                dry=bool(dry_mode),
-            )
-        if "merge_into" in raw_args:
-            if supplement_of is not None or any(
-                v is not None
-                for v in (
-                    title,
-                    year,
-                    authors,
-                    abstract,
-                    doi,
-                    arxiv,
-                    journal,
-                    entry_type,
+            if door == "merge_into":
+                return self._merge_duplicate_into(
+                    id,
+                    raw_args["merge_into"],
+                    reason=reason,
+                    dry=bool(dry_mode),
                 )
-            ):
-                raise BadInput(
-                    "merge_into= cannot be combined with other edit fields",
-                    next="make the merge_into call alone, then edit the rest",
+            if door == "drop_body":
+                return self._drop_body(id, reason=reason, dry=bool(dry_mode))
+            if door == "move_body_to":
+                return self._move_body_to(
+                    id,
+                    raw_args["move_body_to"],
+                    reason=reason,
+                    dry=bool(dry_mode),
                 )
-            return self._merge_duplicate_into(
-                id,
-                raw_args["merge_into"],
-                reason=str(raw_args.get("reason") or _kw.get("reason") or "").strip(),
-                dry=bool(dry_mode),
-            )
+            if door == "split_body":
+                return self._split_body(
+                    id,
+                    raw_args["split_body"],
+                    reason=reason,
+                    dry=bool(dry_mode),
+                )
+            return self._clear_abstract(id, reason=reason, dry=bool(dry_mode))
         ref_id = self._resolve_paper_ref_id(id)
+        # gr514995: an explicit blank abstract used to be a silent no-op
+        # (a *wrong* abstract had no removal door). Blank means "keep"
+        # for every other field, so rather than overload it the caller
+        # gets pointed at the clear door; the web form never sends empty
+        # fields, so nothing that used to work changes.
+        if abstract is not None and not (
+            isinstance(abstract, str) and abstract.strip()
+        ):
+            raise BadInput(
+                "abstract=<blank> does not clear the abstract — blank "
+                "fields keep the stored value",
+                next=f"edit(kind='{self.spec.kind}', "
+                f"id='{handle_registry.format_handle(self.spec.kind, ref_id)}', "
+                "args={'clear_abstract': True, 'reason': '<why>'})",
+            )
         extra_changes = self._edit_args(ref_id, args, dry=bool(dry_mode))
         if supplement_of is not None and str(supplement_of).strip():
             if any(
@@ -3001,6 +3074,600 @@ class PaperHandler(Handler):
         return Response(
             body=(
                 f"restored {handle} (retired_at cleared; ref_event 'restored' logged)."
+            )
+        )
+
+    # -- body ops (gr514995): detach / re-home / re-parent / clear abstract --
+
+    def _require_live_body_ref(self, id: str | int, door: str) -> tuple[Ref, str]:
+        """Resolve a body-op's source ref; refuse a tombstone/retired ref.
+
+        All four doors act on a *live* ref — a merged tombstone's body is
+        the survivor's to manage, and a plain-retired one restores first.
+        Returns ``(ref, handle)``."""
+        kind = self.spec.kind
+        ref = self._resolve_ref_incl_retired(id)
+        if ref is None:
+            raise NotFound(
+                f"{kind} id={id!r} resolves to no ref (live or retired)",
+                next=f"search(kind='{kind}', q='...') to find the ref",
+            )
+        handle = _pa(ref)
+        if ref.retired_at is not None:
+            if (ref.meta or {}).get("superseded_by") is not None:
+                raise BadInput(
+                    f"{handle} is a merge tombstone — its leftover body is "
+                    "the survivor's to manage",
+                    next=f"get(kind='{kind}', id='{handle}') to see which "
+                    "survivor it redirects to",
+                )
+            raise BadInput(
+                f"{handle} is retired — {door} acts on a live ref",
+                next=f"restore it first: edit(kind='{kind}', id='{handle}', "
+                "args={'retire': False, 'reason': '<why>'})",
+            )
+        return ref, handle
+
+    @staticmethod
+    def _require_reason(
+        reason: str, door: str, kind: str, handle: str, arg: str = "True"
+    ) -> None:
+        """Every body door carries the caller's reason into its ref_event."""
+        if not reason:
+            raise BadInput(
+                f"args['{door}'] needs args['reason'] — the ref_event carries it",
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                f"{{'{door}': {arg}, 'reason': '<why>'}})",
+            )
+
+    def _drop_body(self, id: str | int, *, reason: str, dry: bool) -> Response:
+        """``edit(args={'drop_body': True})`` — detach the body, keep the
+        record (gr514995).
+
+        The wrong-PDF repair's class-b door: DELETEs the ref's ``ord >= 0``
+        chunks (the cascade clears embeddings/summaries/citations/blobs),
+        NULLs ``refs.pdf_sha256``/``pdf_pages``, removes the content-derived
+        identifiers (``pdf_sha256``/``content_hash``/``paper_id``/``pub_id``)
+        and strips the extraction meta keys — title, year, authors,
+        bibliographic identifiers, cite_key and card chunks stay, so the
+        ref is a stub the fetcher can re-chase. No retire, no redirect.
+        """
+        from precis.ingest import body_ops
+
+        kind = self.spec.kind
+        ref, handle = self._require_live_body_ref(id, "drop_body")
+        self._require_reason(reason, "drop_body", kind, handle)
+        with self.store.pool.connection() as conn:
+            probe = body_ops.probe_body(conn, ref.id)
+        if probe.is_stub:
+            return Response(
+                body=f"no change: {handle} already holds no body and no PDF."
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would drop {handle}'s body: "
+                    f"{probe.chunks} chunk(s) + {probe.embeddings} embedding "
+                    f"row(s) deleted"
+                    f"{_retired_note(probe)}, "
+                    f"{probe.chunk_links_total} chunk link(s) removed, "
+                    f"{'pdf_sha256 cleared, ' if probe.pdf else ''}content ids "
+                    f"removed ({', '.join(probe.identifiers) or 'none'}), "
+                    f"meta keys stripped ({', '.join(probe.meta_keys) or 'none'}); "
+                    "a 'body_dropped' ref_event logged."
+                )
+            )
+        with _body_op_tx(self.store, "drop_body") as conn:
+            # Same TOCTOU pin as _move_body_to/_split_body: the probe ran
+            # outside the tx — lock the ref row (dedup's FOR NO KEY UPDATE
+            # pattern) and re-verify it is still live, else a concurrent
+            # merge_into could tombstone it between check and delete.
+            row = conn.execute(
+                "SELECT retired_at, meta->>'superseded_by' "
+                "FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (ref.id,),
+            ).fetchone()
+            if row is None or row[0] is not None or row[1] is not None:
+                raise BadInput(
+                    f"{handle} was retired or merged since the check — "
+                    "a body drop needs a live ref",
+                    next=f"re-resolve and retry: edit(kind='{kind}', "
+                    f"id='{handle}', args={{'drop_body': True, "
+                    f"'reason': '{reason}'}})",
+                )
+            report = body_ops.detach_body(ref_id=ref.id, conn=conn)
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="body_dropped",
+                payload={
+                    "reason": reason,
+                    "body_chunks": report.chunks,
+                    "retired_chunks": report.retired_chunks,
+                    "embeddings": report.embeddings,
+                    "chunk_links_removed": report.chunk_links_removed,
+                    "pdf_cleared": report.pdf,
+                    "identifiers_removed": report.identifiers,
+                },
+                conn=conn,
+            )
+        return Response(
+            body=(
+                f"dropped {handle}'s body: {report.chunks} chunk(s) + "
+                f"{report.embeddings} embedding row(s) deleted"
+                f"{_retired_note(report)}, "
+                f"{report.chunk_links_removed} chunk link(s) removed"
+                f"{', pdf_sha256 cleared' if report.pdf else ''}; "
+                "bibliographic metadata kept — the ref is a stub again "
+                "(ref_event 'body_dropped' logged). Refetch with "
+                f"put(kind='{kind}', id='{handle}', args={{'pdf_url': ...}})."
+            )
+        )
+
+    def _move_body_to(
+        self, id: str | int, target: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'move_body_to': <live paper>})`` — hand this ref's
+        body to a bodiless live ref (gr514995).
+
+        The b+move repair door: the body's *content* (chunks, embeddings,
+        summaries, citations, blobs, pdf, content ids, extraction meta
+        keys) lands on the target; the donor keeps its metadata,
+        identifiers and cite_key and ends a live stub — no retire, no
+        identifier migration, no supersede redirect (that is
+        ``merge_into``'s job for a same-paper pair). The target must hold
+        zero ``ord >= 0`` chunks and no pdf of its own — two files can't
+        both be the body, and pairing a pdf-less donor's body text with a
+        file it wasn't extracted from is unverifiable (the target
+        re-extracts from its own pdf via ``precis bodiless-heal``).
+        """
+        from precis.ingest import body_ops
+
+        kind = self.spec.kind
+        donor, donor_h = self._require_live_body_ref(id, "move_body_to")
+        self._require_reason(reason, "move_body_to", kind, donor_h, arg="'pa<M>'")
+        tgt_raw = "" if target is None else str(target).strip()
+        tgt = self._resolve_ref_incl_retired(tgt_raw) if tgt_raw else None
+        if tgt is None:
+            raise BadInput(
+                f"move_body_to={tgt_raw!r} resolves to no {kind} ref",
+                next=f"search(kind='{kind}', q='...') for the live "
+                "target's pa<id> or slug",
+            )
+        tgt_h = _pa(tgt)
+        if tgt.id == donor.id:
+            raise BadInput(
+                "move_body_to names the record itself",
+                next="pass the other live ref the body belongs to",
+            )
+        if tgt.retired_at is not None:
+            chain_end = self.store.follow_supersede(tgt.id)
+            if chain_end is not None:
+                end_h = handle_registry.format_handle(tgt.kind, chain_end)
+                raise BadInput(
+                    f"{tgt_h} is itself merged into {end_h} — a move must "
+                    "land on a live ref",
+                    next=f"edit(kind='{kind}', id='{donor_h}', args="
+                    f"{{'move_body_to': '{end_h}', 'reason': '{reason}'}})",
+                )
+            raise BadInput(
+                f"{tgt_h} is deleted (retired, no survivor) — a move must "
+                "land on a live ref",
+                next=f"search(kind='{kind}', q='...') for a live target",
+            )
+        with self.store.pool.connection() as conn:
+            src_probe = body_ops.probe_body(conn, donor.id)
+            tgt_probe = body_ops.probe_body(conn, tgt.id)
+        if src_probe.is_stub:
+            return Response(
+                body=f"no change: {donor_h} holds no body and no PDF to move."
+            )
+        if tgt_probe.chunks:
+            raise BadInput(
+                f"{tgt_h} already holds {tgt_probe.chunks} body chunk(s) — "
+                "a move lands only on an empty ref",
+                next=f"if the pair is the same paper, merge instead: "
+                f"edit(kind='{kind}', id='{donor_h}', args="
+                f"{{'merge_into': '{tgt_h}', 'reason': '<why>'}}); if {tgt_h}'s "
+                f"body is the wrong one, drop it first: edit(kind='{kind}', "
+                f"id='{tgt_h}', args={{'drop_body': True, 'reason': '<why>'}})",
+            )
+        if src_probe.pdf and tgt_probe.pdf:
+            raise BadInput(
+                f"{tgt_h} already holds a pdf — two files can't both be the body",
+                next="decide which file is right first "
+                "(drop_body on the wrong side), then retry",
+            )
+        if tgt_probe.pdf:
+            raise BadInput(
+                f"{tgt_h} holds a pdf and {donor_h} holds none — the move "
+                "would weld body text extracted from a different file "
+                f"onto {tgt_h}'s pdf",
+                next=f"re-extract {tgt_h}'s body from its own pdf "
+                "instead ('precis bodiless-heal' judges and extracts a "
+                "pdf-holding bodiless ref); if this body truly is "
+                f"{tgt_h}'s, drop the pdf first: edit(kind='{kind}', "
+                f"id='{tgt_h}', args={{'drop_body': True, "
+                "'reason': '<why>'}})",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would move {donor_h}'s body to "
+                    f"{tgt_h}: {src_probe.chunks} chunk(s) + "
+                    f"{src_probe.embeddings} embedding row(s) re-inserted "
+                    f"under {tgt_h} (summaries/citations/blobs follow), "
+                    f"{src_probe.chunk_links} chunk link(s) re-pointed"
+                    f"{_links_removed_note(src_probe)}, "
+                    f"{'pdf moved, ' if src_probe.pdf else ''}content ids "
+                    f"({', '.join(src_probe.identifiers) or 'none'}) and "
+                    "extraction meta keys handed over; "
+                    f"{donor_h} keeps its metadata and ends a live stub; "
+                    "'body_moved' ref_events logged on both."
+                )
+            )
+        with _body_op_tx(self.store, "move_body_to") as conn:
+            # Re-check inside the tx (TOCTOU): the probe ran outside it.
+            # FOR NO KEY UPDATE pins both ref rows (dedup's pattern) so a
+            # concurrent retire/merge/pdf-write can't slip past; then the
+            # same conditions the pre-checks proved are re-verified.
+            # ORDER BY ref_id takes the two locks in one fixed order, so
+            # two opposing moves can't deadlock — one would still surface
+            # as Upstream via _body_op_tx.
+            locked = {
+                int(r[0]): r
+                for r in conn.execute(
+                    "SELECT ref_id, pdf_sha256, retired_at, "
+                    "       meta->>'superseded_by' "
+                    "FROM refs WHERE ref_id = ANY(%s) "
+                    "ORDER BY ref_id FOR NO KEY UPDATE",
+                    ([donor.id, tgt.id],),
+                )
+            }
+            for ref_id, handle in ((donor.id, donor_h), (tgt.id, tgt_h)):
+                row = locked.get(ref_id)
+                if row is None or row[2] is not None or row[3] is not None:
+                    raise BadInput(
+                        f"{handle} was retired or merged since the check — "
+                        "a body move needs both refs live",
+                        next=f"re-resolve and retry: edit(kind='{kind}', "
+                        f"id='{donor_h}', args={{'move_body_to': '<live "
+                        f"target>', 'reason': '{reason}'}})",
+                    )
+            if conn.execute(
+                "SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0 LIMIT 1",
+                (tgt.id,),
+            ).fetchone():
+                raise BadInput(
+                    f"{tgt_h} gained a body since the check — a move "
+                    "lands only on an empty ref",
+                    next=f"retry, or drop it first: edit(kind='{kind}', "
+                    f"id='{tgt_h}', args={{'drop_body': True, "
+                    "'reason': '<why>'}})",
+                )
+            if locked[tgt.id][1] is not None and locked[donor.id][1] is not None:
+                raise BadInput(
+                    f"{tgt_h} gained a pdf since the check — two files "
+                    "can't both be the body",
+                    next="decide which file is right first "
+                    "(drop_body on the wrong side), then retry",
+                )
+            if locked[tgt.id][1] is not None:
+                raise BadInput(
+                    f"{tgt_h} gained a pdf since the check and {donor_h} "
+                    "has none — the move would weld body text extracted "
+                    "from a different file onto it",
+                    next=f"re-extract {tgt_h} from its own pdf "
+                    "('precis bodiless-heal'), or drop the pdf first: "
+                    f"edit(kind='{kind}', id='{tgt_h}', args="
+                    "{'drop_body': True, 'reason': '<why>'})",
+                )
+            report = body_ops.move_body(
+                src_ref_id=donor.id, dst_ref_id=tgt.id, conn=conn
+            )
+            cards = body_ops.ensure_paper_cards(conn, tgt.id)
+            payload = {
+                "reason": reason,
+                "body_chunks": report.chunks,
+                "retired_chunks": report.retired_chunks,
+                "embeddings": report.embeddings,
+                "chunk_links_repointed": report.chunk_links,
+                "chunk_links_removed": report.chunk_links_removed,
+                "pdf_moved": report.pdf,
+                "identifiers_moved": report.identifiers,
+                "cards_written": cards,
+            }
+            self.store.append_event(
+                donor.id,
+                source="agent",
+                event="body_moved",
+                payload={**payload, "moved_to": tgt.id},
+                conn=conn,
+            )
+            self.store.append_event(
+                tgt.id,
+                source="agent",
+                event="body_moved",
+                payload={**payload, "moved_from": donor.id},
+                conn=conn,
+            )
+        return Response(
+            body=(
+                f"moved {donor_h}'s body to {tgt_h}: {report.chunks} "
+                f"chunk(s) + {report.embeddings} embedding row(s) "
+                f"re-inserted{_retired_note(report)}, "
+                f"{report.chunk_links} chunk link(s) re-pointed"
+                f"{_links_removed_note(report)}"
+                f"{', pdf moved' if report.pdf else ''}; "
+                f"{donor_h} kept its metadata and is now a live stub; "
+                "ref_events 'body_moved' logged on both."
+            )
+        )
+
+    def _split_body(
+        self, id: str | int, spec: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'split_body': {…}})`` — mint a new paper ref that
+        takes this ref's body (gr514995).
+
+        The class-c repair door: the body is a different work than the
+        record's metadata describes, so it gets its own ref — caller
+        metadata (``title`` required; ``year``/``authors``/``journal``/
+        ``doi`` optional) mints it, then the same move primitive hands
+        the body over. The donor keeps its metadata and ends a live
+        stub. A ``doi`` already held by a live ref refuses naming that
+        ref — that is the ``move_body_to`` case, not a mint.
+        """
+        from precis.identity import make_cite_key
+        from precis.ingest import body_ops
+
+        kind = self.spec.kind
+        donor, donor_h = self._require_live_body_ref(id, "split_body")
+        self._require_reason(reason, "split_body", kind, donor_h, arg="{'title': …}")
+        if not isinstance(spec, dict):
+            raise BadInput(
+                "args['split_body'] takes a metadata dict — "
+                "{'title': …, 'year': …, 'authors': […], 'journal': …, 'doi': …}",
+                next=f"edit(kind='{kind}', id='{donor_h}', args="
+                "{'split_body': {'title': '<the body\\'s real title>'}, "
+                "'reason': '<why>'})",
+            )
+        new_title = spec.get("title")
+        if not isinstance(new_title, str) or not new_title.strip():
+            raise BadInput(
+                "split_body needs a 'title' — the minted ref's title",
+                next=f"edit(kind='{kind}', id='{donor_h}', args="
+                "{'split_body': {'title': '<the body\\'s real title>'}, "
+                "'reason': '<why>'})",
+            )
+        new_title = new_title.strip()
+        new_year = spec.get("year")
+        if new_year is not None and not isinstance(new_year, int):
+            raise BadInput(
+                f"split_body 'year' must be an int, got {new_year!r}",
+                next="pass the body's real publication year, or omit it",
+            )
+        new_authors = (
+            normalize_authors(spec["authors"]) if spec.get("authors") else None
+        )
+        new_journal = spec.get("journal")
+        if new_journal is not None and not str(new_journal).strip():
+            new_journal = None
+        new_doi = spec.get("doi")
+        if new_doi is not None and not str(new_doi).strip():
+            new_doi = None
+        if new_doi:
+            owner = self.store.find_ref_by_identifier("doi", str(new_doi), kind="paper")
+            if owner is not None:
+                owner_h = handle_registry.format_handle("paper", owner)
+                raise BadInput(
+                    f"split_body doi={str(new_doi).strip()!r} already belongs "
+                    f"to {owner_h} — that is the move case, not a mint",
+                    next=f"hand the body to that ref instead: "
+                    f"edit(kind='{kind}', id='{donor_h}', args="
+                    f"{{'move_body_to': '{owner_h}', 'reason': '{reason}'}})",
+                )
+        with self.store.pool.connection() as conn:
+            probe = body_ops.probe_body(conn, donor.id)
+        if probe.is_stub:
+            raise BadInput(
+                f"{donor_h} holds no body and no PDF — nothing to split off",
+                next=f"to mint the other work as a stub instead: "
+                f"put(kind='{kind}', title=..., doi=...)",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would mint a new {kind} ref "
+                    f"{new_title!r} (year={new_year}, "
+                    f"authors={len(new_authors or [])}, "
+                    f"journal={new_journal!r}, doi={new_doi!r}) taking "
+                    f"{donor_h}'s body: {probe.chunks} chunk(s) + "
+                    f"{probe.embeddings} embedding row(s)"
+                    f"{', pdf moved' if probe.pdf else ''}, "
+                    f"{probe.chunk_links} chunk link(s) re-pointed"
+                    f"{_links_removed_note(probe)}; "
+                    f"{donor_h} keeps its metadata and ends a live stub; "
+                    "'body_split' / 'body_moved' ref_events logged."
+                )
+            )
+        with _body_op_tx(self.store, "split_body") as conn:
+            # The probe ran outside the tx — pin the donor row (dedup's
+            # FOR NO KEY UPDATE pattern) and re-verify it is still live
+            # and still carries the body before minting off it.
+            row = conn.execute(
+                "SELECT pdf_sha256, retired_at, meta->>'superseded_by' "
+                "FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (donor.id,),
+            ).fetchone()
+            if row is None or row[1] is not None or row[2] is not None:
+                raise BadInput(
+                    f"{donor_h} was retired or merged since the check — "
+                    "a split needs a live donor",
+                    next=f"re-resolve and retry: edit(kind='{kind}', "
+                    f"id='<live ref>', args={{'split_body': {{'title': "
+                    f"'{new_title}'}}, 'reason': '{reason}'}})",
+                )
+            if (
+                not conn.execute(
+                    "SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0 LIMIT 1",
+                    (donor.id,),
+                ).fetchone()
+                and row[0] is None
+            ):
+                raise BadInput(
+                    f"{donor_h} lost its body since the check — nothing to split off",
+                    next="re-resolve the donor and retry",
+                )
+            slug = self.store.suggest_cite_key(new_authors or [], new_year, conn=conn)
+            if not slug:
+                first = new_title.split()
+                slug = make_cite_key(
+                    [{"family": first[0] if first else "anon"}], new_year
+                )
+            meta: dict[str, Any] = {"set_by": "edit"}
+            if new_journal:
+                meta["journal"] = str(new_journal).strip()
+            new_ref = self.store.insert_ref(
+                kind="paper",
+                slug=slug,
+                title=new_title,
+                authors=new_authors,
+                year=new_year,
+                provider="manual",
+                meta=meta,
+                authors_source="human",
+                conn=conn,
+            )
+            if new_doi:
+                self.store.set_ref_identifier(
+                    new_ref.id, "doi", str(new_doi), source="edit", conn=conn
+                )
+            report = body_ops.move_body(
+                src_ref_id=donor.id, dst_ref_id=new_ref.id, conn=conn
+            )
+            cards = body_ops.ensure_paper_cards(conn, new_ref.id)
+            payload = {
+                "reason": reason,
+                "body_chunks": report.chunks,
+                "retired_chunks": report.retired_chunks,
+                "embeddings": report.embeddings,
+                "chunk_links_repointed": report.chunk_links,
+                "chunk_links_removed": report.chunk_links_removed,
+                "pdf_moved": report.pdf,
+                "identifiers_moved": report.identifiers,
+                "cards_written": cards,
+            }
+            self.store.append_event(
+                donor.id,
+                source="agent",
+                event="body_split",
+                payload={**payload, "new_ref_id": new_ref.id},
+                conn=conn,
+            )
+            self.store.append_event(
+                new_ref.id,
+                source="agent",
+                event="body_moved",
+                payload={**payload, "moved_from": donor.id, "via": "body_split"},
+                conn=conn,
+            )
+        new_h = _pa(new_ref)
+        return Response(
+            body=(
+                f"split {donor_h}: minted {new_h} {new_title!r} and moved "
+                f"the body over ({report.chunks} chunk(s) + "
+                f"{report.embeddings} embedding row(s)"
+                f"{', pdf moved' if report.pdf else ''}, "
+                f"{report.chunk_links} chunk link(s) re-pointed"
+                f"{_links_removed_note(report)}); "
+                f"{donor_h} kept its metadata and is now a live stub "
+                "(ref_events 'body_split' / 'body_moved' logged)."
+            )
+        )
+
+    def _clear_abstract(self, id: str | int, *, reason: str, dry: bool) -> Response:
+        """``edit(args={'clear_abstract': True})`` — remove a junk
+        abstract (gr514995).
+
+        ``meta.abstract`` is deleted outright and the ``card_abstract``
+        chunk (the ``ord < 0`` search card a bad abstract pollutes, e.g.
+        extraction junk like ``'Nasl. z nasl. zaslona.'``) goes with it;
+        ``card_combined`` is rebuilt by ``rewrite_cards`` without the
+        abstract so semantic search stops matching the junk text. A
+        later enrichment may re-fill the abstract — the event log is the
+        audit of why it was removed.
+        """
+        kind = self.spec.kind
+        ref, handle = self._require_live_body_ref(id, "clear_abstract")
+        self._require_reason(reason, "clear_abstract", kind, handle)
+        with self.store.pool.connection() as conn:
+            meta_abstract = (ref.meta or {}).get("abstract")
+            card = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'card_abstract' AND retired_at IS NULL",
+                (ref.id,),
+            ).fetchone()
+        has_meta = isinstance(meta_abstract, str) and bool(meta_abstract.strip())
+        n_card = int(card[0]) if card else 0
+        if not has_meta and not n_card:
+            return Response(
+                body=f"no change: {handle} carries no meta.abstract and no "
+                "card_abstract chunk."
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would clear {handle}'s abstract: "
+                    f"meta.abstract {'removed' if has_meta else 'already absent'}, "
+                    f"{n_card} card_abstract chunk(s) deleted, card_combined "
+                    "rebuilt without it; an 'abstract_cleared' ref_event logged."
+                )
+            )
+        with _body_op_tx(self.store, "clear_abstract") as conn:
+            if has_meta:
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'abstract', "
+                    "updated_at = now() WHERE ref_id = %s",
+                    (ref.id,),
+                )
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND "
+                "chunk_kind = 'card_abstract' AND retired_at IS NULL",
+                (ref.id,),
+            )
+            fresh = conn.execute(
+                "SELECT title, authors, meta FROM refs WHERE ref_id = %s",
+                (ref.id,),
+            ).fetchone()
+            assert fresh is not None
+            meta = fresh[2] if isinstance(fresh[2], dict) else {}
+            kw = meta.get("keywords", [])
+            rewrite_cards(
+                conn,
+                ref.id,
+                title=fresh[0] or "",
+                author_names=_shared_author_names(fresh[1] or []),
+                abstract="",
+                keywords=list(kw) if isinstance(kw, list) else [],
+            )
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="abstract_cleared",
+                payload={
+                    "reason": reason,
+                    "had_meta_abstract": has_meta,
+                    "card_abstract_removed": n_card,
+                },
+                conn=conn,
+            )
+        return Response(
+            body=(
+                f"cleared {handle}'s abstract: meta.abstract "
+                f"{'removed' if has_meta else 'was absent'}, {n_card} "
+                "card_abstract chunk(s) deleted, card_combined rebuilt "
+                "(ref_event 'abstract_cleared' logged)."
             )
         )
 
