@@ -88,6 +88,19 @@ _VOCAB_EXAMPLE_SCRIPT: list[dict] = [
     {"op": "set_element", "atom": "aPd1", "element": "Ag"},
     {"op": "vacancy", "atom": "aPd2"},
     {"op": "set_cell", "a": 12.0, "b": 12.0, "c": 12.0, "pbc": [True, True, False]},
+    # transfer/move_group examples (gr512126): an O-H pair the H can leave
+    # for aPd1 (which has no neighbours left, so 'direction' is supplied),
+    # then the lone O group moved onto the top site over it.
+    {"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.6]},
+    {"op": "add_atom", "element": "H", "frac": [0.5, 0.5, 0.7]},
+    {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
+    {"op": "transfer", "atom": "aH1", "to": "aPd1", "direction": [0, 0, 1]},
+    {
+        "op": "move_group",
+        "atom": "aO1",
+        "site": {"type": "top", "anchors": ["aPd1"]},
+        "height": 2.5,
+    },
 ]
 
 

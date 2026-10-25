@@ -17,9 +17,17 @@ fractional coordinates. :func:`_resolve_site` turns the name into exact
 coordinates and delegates to :func:`_op_add_atom` — one label-minting/
 validation path for both raw and site-symbolic placement.
 ``add_adsorbate`` is its multi-atom twin: a catalogued group (H · O · N ·
-OH · H2O · NH · NH2 · NH3) placed from the same named site with its own
-gas-phase internal geometry and bonds, so a coverage/solvation series
-never hand-places an H.
+OH · H2O · NH · NH2 · NH3 · C · CH · CH2 · CH3 · CH4) placed from the same
+named site with its own gas-phase internal geometry and bonds, so a
+coverage/solvation series never hand-places an H.
+
+**Reaction-endpoint ops** (gr512126, NEB endpoint authoring): ``transfer``
+moves ONE atom onto an acceptor atom along the acceptor's open
+coordination direction — the elementary bond-swap step of a surface
+reaction (CH4 + O* → CH3* + OH* is one transfer of an H from C to O);
+``move_group`` rigidly moves a whole declared-bond fragment (an adsorbate)
+so its named atom lands on a new site. Both keep atom labels stable, so
+the edited design stays pairable with its pre-edit parent.
 
 **Fragment-building ops** (built for the molecule-mode fragment library the
 retired ``nm`` kind — now ``se`` atomic mode, docs/backlog/nm-se-merge.md —
@@ -42,6 +50,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -64,7 +73,15 @@ _FIX_KINDS = {
 
 
 class OpError(ValueError):
-    """A rejected op (bad reference, unknown op, malformed payload)."""
+    """A rejected op (bad reference, unknown op, malformed payload).
+
+    ``options`` carries the closed-vocabulary / ambiguous-candidate list a
+    refusal wants to surface (e.g. ``transfer``'s equidistant tie) — the
+    handler boundary forwards it onto the ``BadInput``'s ``options=``."""
+
+    def __init__(self, cause: str, *, options: Sequence[str] | None = None) -> None:
+        self.options = list(options) if options is not None else None
+        super().__init__(cause)
 
 
 def apply_ops(scene: Scene, ops: list[dict[str, Any]]) -> Scene:
@@ -316,6 +333,43 @@ ADSORBATES: dict[
             ("H", (-0.469, -0.812, 0.381)),
         ],
         [(0, 1), (0, 2), (0, 3)],
+    ),
+    # Hydrocarbon adsorbates (gr512126, NEB endpoint authoring): all bind
+    # through C. CH4 is a physisorbate — one H pointing down at the surface,
+    # the other three up in the tetrahedral cap (C–H 1.09 Å); CH3/CH2/CH
+    # are the progressive dehydrogenation fragments with the H's up and away
+    # from the C–surface bond. Starting guesses like the rows above.
+    "C": ("C", [("C", (0.0, 0.0, 0.0))], []),
+    "CH": ("C", [("C", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 1.12))], [(0, 1)]),
+    "CH2": (
+        "C",
+        [
+            ("C", (0.0, 0.0, 0.0)),
+            ("H", (0.862, 0.0, 0.699)),
+            ("H", (-0.862, 0.0, 0.699)),
+        ],
+        [(0, 1), (0, 2)],
+    ),
+    "CH3": (
+        "C",
+        [
+            ("C", (0.0, 0.0, 0.0)),
+            ("H", (1.028, 0.0, 0.363)),
+            ("H", (-0.514, 0.890, 0.363)),
+            ("H", (-0.514, -0.890, 0.363)),
+        ],
+        [(0, 1), (0, 2), (0, 3)],
+    ),
+    "CH4": (
+        "C",
+        [
+            ("C", (0.0, 0.0, 0.0)),
+            ("H", (0.0, 0.0, -1.090)),
+            ("H", (1.028, 0.0, 0.363)),
+            ("H", (-0.514, 0.890, 0.363)),
+            ("H", (-0.514, -0.890, 0.363)),
+        ],
+        [(0, 1), (0, 2), (0, 3), (0, 4)],
     ),
 }
 
@@ -833,14 +887,16 @@ def _neighbor_unit_sum(
     return total
 
 
-def _attach_direction(op: dict[str, Any], key: str, atom_label: str) -> np.ndarray:
+def _attach_direction(
+    op: dict[str, Any], key: str, atom_label: str, op_name: str = "attach"
+) -> np.ndarray:
     """The explicit ``direction``/``from_direction`` fallback arg (unit
     vector), for when a bonding-direction sum is unavailable or degenerate.
     Raises a retryable ``OpError`` naming the atom and the arg when absent."""
     raw = op.get(key)
     if raw is None:
         raise OpError(
-            f"attach can't find a bonding direction at {atom_label!r} — it has "
+            f"{op_name} can't find a bonding direction at {atom_label!r} — it has "
             f"no bonded neighbours (or their directions cancel out, e.g. "
             f"perfectly linear/symmetric surroundings); pass an explicit "
             f"{key!r}: [x, y, z]"
@@ -848,10 +904,10 @@ def _attach_direction(op: dict[str, Any], key: str, atom_label: str) -> np.ndarr
     try:
         vec = np.asarray(raw, dtype=float).reshape(3)
     except (TypeError, ValueError) as exc:
-        raise OpError(f"attach {key!r} must be a 3-vector, got {raw!r}") from exc
+        raise OpError(f"{op_name} {key!r} must be a 3-vector, got {raw!r}") from exc
     norm = float(np.linalg.norm(vec))
     if norm < 1e-9:
-        raise OpError(f"attach {key!r} must be a nonzero vector, got {raw!r}")
+        raise OpError(f"{op_name} {key!r} must be a nonzero vector, got {raw!r}")
     return vec / norm
 
 
@@ -1130,6 +1186,223 @@ def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
         )
 
 
+def _declared_adjacency(scene: Scene) -> dict[str, set[str]]:
+    """Bond-graph adjacency over DECLARED bonds only — the intent graph a
+    ``transfer``/``move_group`` reads. Unlike :func:`_combined_adjacency`
+    (which adds inferred contacts so a physically-touching fragment moves
+    as one body), an adsorbate resting on a slab is deliberately NOT
+    declared-bonded to it, so a physisorbed group stays its own component
+    here instead of merging into the whole slab."""
+    adj: dict[str, set[str]] = {label: set() for label in scene.atoms}
+    for b in scene.bonds:
+        if b.i in adj and b.j in adj:
+            adj[b.i].add(b.j)
+            adj[b.j].add(b.i)
+    return adj
+
+
+def _largest_metal_component(scene: Scene, adj: dict[str, set[str]]) -> set[str]:
+    """The slab, for slab-vs-adsorbate splits (gr512126's rule): the
+    largest connected component over the combined adjacency restricted to
+    metal atoms (``elements.max_valence`` is ``None``). A dopant swapped in
+    via ``set_element`` chains in through inferred metal–metal contacts, so
+    a Pd slab with one surface Cu counts the Cu as slab — the dominant-
+    element heuristic ``preflight._slab_adsorbate_indices`` still carries
+    gets this wrong."""
+    metals = {
+        label
+        for label, atom in scene.atoms.items()
+        if elements.max_valence(atom.element) is None
+    }
+    best: set[str] = set()
+    seen: set[str] = set()
+    for start in metals:
+        if start in seen:
+            continue
+        comp = {start}
+        seen.add(start)
+        stack = [start]
+        while stack:
+            cur = stack.pop()
+            for nxt in adj.get(cur, ()):
+                if nxt in metals and nxt not in comp:
+                    comp.add(nxt)
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if len(comp) > len(best):
+            best = comp
+    return best
+
+
+#: ``transfer``'s ``from``-mode pick: candidates whose MIC distance to the
+#: acceptor sits within this of the minimum count as equidistant, and the
+#: op refuses rather than silently picking one (rule 9: one reading).
+_TRANSFER_TIE_A = 0.05
+
+
+def _op_transfer(scene: Scene, op: dict[str, Any]) -> None:
+    """Move ONE atom onto an acceptor atom — the elementary bond-swap step
+    of a reaction endpoint (gr512126: CH4 + O* → CH3* + OH* is one
+    transfer of an H from C onto the bridging O).
+
+    ``{"op": "transfer", "atom": "aH3", "to": "aO1", "distance?": <Å>,
+    "order?": <bond order>, "direction?": [x,y,z]}`` — moves ``atom`` onto
+    ``to`` along ``to``'s open coordination direction at the
+    covalent-radius sum (or ``distance``), drops ``atom``'s declared
+    bonds, and mints the ``atom``–``to`` bond.
+
+    ``{"op": "transfer", "from": "aC1", "to": "aO1", ...}`` — picks the
+    atom declared-bonded to ``from`` that sits nearest ``to`` and writes
+    its label back into the op (``op['atom']``) so the stored revision
+    names the one reading taken. Two candidates equidistant within
+    :data:`_TRANSFER_TIE_A` refuse with both labels as ``options=`` — the
+    caller picks by naming ``atom`` itself.
+    """
+    to_label = op.get("to")
+    if not to_label:
+        raise OpError("transfer needs 'to' (the acceptor atom label)")
+    to_label = str(to_label)
+    to_atom = _require_atom(scene, to_label)
+    atom_label = op.get("atom")
+    from_label = op.get("from")
+    if bool(atom_label) == bool(from_label):
+        raise OpError(
+            "transfer needs exactly one of 'atom' (the atom to move) or "
+            "'from' (pick the atom bonded to it that is nearest 'to')"
+        )
+    if from_label:
+        from_label = str(from_label)
+        _require_atom(scene, from_label)
+        declared = _declared_adjacency(scene)
+        candidates = declared.get(from_label, set()) - {to_label, from_label}
+        if not candidates:
+            raise OpError(
+                f"no atom is declared-bonded to {from_label!r} — name the "
+                "atom to move directly with 'atom' instead of 'from'"
+            )
+        dists = {
+            cand: scene.cell.mic(scene.atoms[cand].frac, to_atom.frac)[0]
+            for cand in candidates
+        }
+        nearest = min(dists.values())
+        tied = sorted(c for c, d in dists.items() if d - nearest <= _TRANSFER_TIE_A)
+        if len(tied) > 1:
+            raise OpError(
+                f"transfer(from={from_label!r}) is ambiguous: {len(tied)} "
+                f"candidates sit equidistant (within {_TRANSFER_TIE_A} Å) "
+                f"from {to_label!r} — name one with 'atom'",
+                options=tied,
+            )
+        moved_label = tied[0]
+        # Write the pick back into the op dict so the revision record (and
+        # any echo of the authored ops) names the atom moved.
+        op["atom"] = moved_label
+    else:
+        moved_label = str(atom_label)
+        _require_atom(scene, moved_label)
+        if moved_label == to_label:
+            raise OpError(f"transfer can't move {moved_label!r} onto itself")
+    moved = scene.atoms[moved_label]
+    if moved.fixed:
+        raise OpError(
+            f"transfer can't move {moved_label!r} — it is constrained "
+            "('fixed'); release it with constrain kind='none' first"
+        )
+    dist_raw = op.get("distance")
+    if dist_raw is None:
+        distance = elements.covalent_radius(moved.element) + elements.covalent_radius(
+            to_atom.element
+        )
+    else:
+        try:
+            distance = float(dist_raw)
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"transfer 'distance' must be a number, got {dist_raw!r}"
+            ) from exc
+        if distance <= 0:
+            raise OpError(f"transfer 'distance' must be positive Å, got {dist_raw!r}")
+
+    adj = _combined_adjacency(scene)
+    to_sum = _neighbor_unit_sum(scene, adj, to_label)
+    if to_sum is None or float(np.linalg.norm(to_sum)) < 1e-6:
+        d_to = _attach_direction(op, "direction", to_label, op_name="transfer")
+    else:
+        d_to = -to_sum / float(np.linalg.norm(to_sum))
+
+    to_cart = scene.cell.frac_to_cart(to_atom.frac)
+    new_cart = to_cart + distance * d_to
+    moved.frac = scene.cell.wrap(scene.cell.cart_to_frac(new_cart))
+    scene.bonds = [b for b in scene.bonds if moved_label not in (b.i, b.j)]
+    _, img = scene.cell.mic(moved.frac, to_atom.frac)
+    order_raw = op.get("order", 1.0)
+    try:
+        order = float(order_raw)
+    except (TypeError, ValueError) as exc:
+        raise OpError(f"transfer 'order' must be a number, got {order_raw!r}") from exc
+    scene.bonds.append(
+        Bond(
+            i=moved_label,
+            j=to_label,
+            order=order,
+            kind=str(op.get("kind", "pairwise")),
+            provenance="declared",
+            image=img,
+        )
+    )
+
+
+def _op_move_group(scene: Scene, op: dict[str, Any]) -> None:
+    """Rigidly move the whole fragment containing ``atom`` so ``atom``
+    lands on a named site — repositioning a whole adsorbate (CH3* to
+    another top site) instead of rebuilding it atom by atom (gr512126).
+
+    ``{"op": "move_group", "atom": "aC1", "site": {"type": "top",
+    "anchors": ["aCu32"]}, "height?": <Å>}``
+
+    The fragment is the connected component over DECLARED bonds only
+    (:func:`_declared_adjacency`): a physisorbed group is never
+    declared-bonded to the slab, so the slab stays behind. Refuses when
+    the fragment contains a fixed atom or a slab atom — the slab being the
+    largest connected metal-atom component over inferred contacts
+    (:func:`_largest_metal_component`), so an adsorbate declared-bonded to
+    a surface atom also refuses (drop that bond first).
+    """
+    atom_label = op.get("atom")
+    if not atom_label:
+        raise OpError("move_group needs 'atom' (a label in the fragment to move)")
+    atom_label = str(atom_label)
+    atom = _require_atom(scene, atom_label)
+    site = op.get("site")
+    if not isinstance(site, dict):
+        raise OpError(
+            "move_group needs a 'site' object: "
+            "{'type': 'top'|'bridge'|'hollow', 'anchors': [labels]}"
+        )
+    frag = _fragment_labels(_declared_adjacency(scene), atom_label)
+    fixed = sorted(la for la in frag if scene.atoms[la].fixed)
+    if fixed:
+        raise OpError(
+            f"move_group refuses: the fragment containing {atom_label!r} "
+            f"includes fixed atom(s) {fixed} — release them with "
+            "constrain kind='none' first, or move atoms individually with "
+            "displace"
+        )
+    slab = _largest_metal_component(scene, _combined_adjacency(scene))
+    on_slab = sorted(frag & slab)
+    if on_slab:
+        raise OpError(
+            f"move_group refuses: the fragment containing {atom_label!r} "
+            f"includes slab atom(s) {on_slab} — the slab does not move; "
+            "drop the declared bond tying the group to the surface, or "
+            "move adsorbate atoms individually with displace"
+        )
+    target_frac = _resolve_site(scene, site, str(atom.element), op.get("height"))
+    delta = np.asarray(target_frac, dtype=float) - atom.frac
+    for label in frag:
+        scene.atoms[label].frac = scene.cell.wrap(scene.atoms[label].frac + delta)
+
+
 _OPS = {
     "set_cell": _op_set_cell,
     "slab": _op_slab,
@@ -1150,4 +1423,6 @@ _OPS = {
     "ring": _op_ring,
     "attach": _op_attach,
     "from_smiles": _op_from_smiles,
+    "transfer": _op_transfer,
+    "move_group": _op_move_group,
 }

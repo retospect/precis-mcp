@@ -103,12 +103,11 @@ put(
 )
 ```
 
-- **`cell`** is either `{a,b,c,alpha?,beta?,gamma?,pbc}` (lengths/angles, °)
-  **or** `{lattice: [[…],[…],[…]], pbc}` (an explicit 3×3, Å). `pbc` is a
-  per-axis `[bool,bool,bool]`; a hand-authored vacuum-gap cell conventionally
-  sets `[true,true,false]`. The **`slab` op** ignores this — it always emits
-  `(true,true,true)` (ASE's fcc111 convention; the vacuum gap is geometric,
-  not a pbc flag).
+- **`cell`**: `{a,b,c,alpha?,beta?,gamma?,pbc}` (lengths/angles, °) **or**
+  `{lattice: [[…],[…],[…]], pbc}` (explicit 3×3, Å). `pbc` is per-axis
+  `[bool,bool,bool]` — a hand-authored vacuum-gap cell is `[true,true,false]`;
+  the **`slab` op** ignores it and emits `(true,true,true)` (ASE convention —
+  the vacuum gap is geometric, not a pbc flag).
 - **A periodic cell tiles — a lone defect has no absolute position.**
   Placements that differ only by a lattice translation (or an in-plane
   rotation/mirror) are the same crystal; only the relative offset between
@@ -139,7 +138,9 @@ record as a read-only design. Caps, refusals and provenance:
 | `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell + `pbc (true,true,true)` (ASE-exact atom order, so autocatpath can inject it). Omit the top-level `cell`. `size` is `nx×ny` in-plane repeats × `nz` layers — the cell tiles, so one substitution = 1/(nx·ny) ML coverage. `fix_layers` is an **integer count** of *bottom* layers to freeze (`2` = bottom two layers), **not** a list of layer indices. |
 | `add_atom` | `element`, `frac:[fa,fb,fc]`, `charge?` | place an atom at a raw fractional coordinate (wraps into the cell) — an escape hatch; for an adsorbate on an existing site, use `add_atom_site` instead. `charge` is the declared formal/net charge (integer, default 0 — e.g. a quaternary N `+1`, a carboxylate O `-1`); it feeds the validator's charge-aware valence budget |
 | `add_atom_site` | `element`, `site:{type:"top"\|"bridge"\|"hollow", anchors:[atom labels]}`, `height?` | place an atom by **naming** a site (1/2/3 anchors) instead of guessing coordinates — `xy` = the anchors' centroid, `z` = the anchors' top + `height` (Å; default the covalent-radius sum of anchor + placed element) |
-| `add_adsorbate` | `species:"H"\|"O"\|"N"\|"OH"\|"H2O"\|"NH"\|"NH2"\|"NH3"`, `site:{…}` (as above), `height?`, `rotate?` (angle with unit, `"30deg"` or `"0.5 rad"`, about the surface normal; bare nonzero is rejected) | place a whole adsorbate **group** from one named site: the binding atom lands where `add_atom_site` would put it, the rest follow at the species' gas-phase internal geometry, and the intra-group bonds are minted. The upright orientation is a **pre-relaxation starting guess**, not an adsorbed equilibrium — relax after placing. Use it for coverage series (θ_H, θ_O, θ_OH) and explicit-water spectators instead of hand-placing each H |
+| `add_adsorbate` | `species:"H"\|"O"\|"N"\|"OH"\|"H2O"\|"NH"\|"NH2"\|"NH3"\|"C"\|"CH"\|"CH2"\|"CH3"\|"CH4"`, `site:{…}` (as above), `height?`, `rotate?` (angle with unit, `"30deg"` or `"0.5 rad"`, about the surface normal; bare nonzero is rejected) | place a whole adsorbate **group** from one named site: the binding atom lands where `add_atom_site` would put it, the rest follow at the species' gas-phase internal geometry, and the intra-group bonds are minted. The upright orientation is a **pre-relaxation starting guess**, not an adsorbed equilibrium — relax after placing. The CHₓ species bind through C (CH₄ sits one H down, a physisorption guess; CH₃/CH₂/CH have the H's up). Use it for coverage series and spectators instead of hand-placing each H |
+| `transfer` | `atom`\|`from`, `to`, `distance?`, `order?`, `direction?` | move ONE atom onto an acceptor along the acceptor's open coordination direction (default distance = covalent-radius sum) — the bond-swap step of a reaction endpoint. The moved atom's declared bonds drop and `atom`–`to` is minted. `from` picks the atom bonded to it nearest `to`; an equidistant tie refuses naming the candidates — pick with `atom` |
+| `move_group` | `atom`, `site:{…}` (as above), `height?` | rigidly move the whole declared-bond fragment containing `atom` so `atom` lands on the site; refuses when the fragment holds a fixed atom or a slab atom (slab = the largest connected metal cluster, so a dopant inside it counts as slab) |
 | `set_element` | `atom`, `element` | transmute — **keeps the atom's label & position** (see caution below) |
 | `vacancy` | `atom` | remove an atom (label not recycled) |
 | `displace` | `atom`, `vector:[dx,dy,dz]`, `cartesian?` | nudge (Cartesian Å by default; `cartesian:false` for a fractional delta) |
@@ -157,7 +158,7 @@ record as a read-only design. Caps, refusals and provenance:
 | `ring` | `element`, `n:3-12`, `aromatic?`, `center?:[x,y,z]`, `normal?:[nx,ny,nz]`, `bond_length?` | mint a regular n-gon ring (Cartesian plane through `center` ⟂ `normal`); `aromatic:true` → order-1.5 aromatic bonds + `hybridization:sp2` on each atom, else order-1 pairwise bonds |
 | `attach` | `from`, `to`, `order?`, `distance?`, `direction?:[x,y,z]`, `from_direction?:[x,y,z]` | rigidly move the whole fragment containing `from` so it bonds to `to` (aligned to `to`'s open coordination direction); `from`/`to` already in the same fragment is rejected — use `add_bond` for a ring closure |
 | `import_fragment` | `design`, `offset?:[x,y,z]` | copy another design's atoms + declared bonds in as a positioned fragment (handler-level; response echoes the old→new label mapping so a follow-up `attach` can reference the new labels) |
-| `from_smiles` | `smiles`, `offset?:[x,y,z]`, `seed?` | mint a whole organic fragment from a SMILES string via rdkit's ETKDG 3D embedder (needs `precis-mcp[chem]`); deterministic per `(smiles, seed)`; aromatic atoms get `hybridization:sp2` and order-1.5 `aromatic` bonds, others order 1/2/3 `pairwise`; each atom's declared formal charge carries in from rdkit (`[N+](C)(C)(C)C` mints a `charge:+1` N); a best-effort MMFF cleanup runs but never fails the op; v1 carries geometry + formal charge only — no stereo beyond what ETKDG encodes |
+| `from_smiles` | `smiles`, `offset?:[x,y,z]`, `seed?` | mint a whole organic fragment from a SMILES via rdkit ETKDG (needs `precis-mcp[chem]`); deterministic per `(smiles, seed)`; aromatic atoms get `sp2` + order-1.5 `aromatic` bonds; declared formal charge carries in (`[N+](C)(C)(C)C` → `charge:+1`); best-effort MMFF cleanup never fails; v1: geometry + charge only |
 | `relax` | `fidelity?`, `steps?`, `model?`, `cell?`, `fmax?`, `dispersion?` | terminal op — see the ladder below |
 
 **Bonds are intent, not a DFT input.** Declare the bonds you mean; the
@@ -183,12 +184,46 @@ edit(
 
 `z` comes from the anchors' own geometry, never a remembered constant — a
 `frac` copied from another cell doesn't transfer. Use raw `add_atom` only
-when no anchor exists yet, then derive `z` from *this* cell: top-layer
-`frac z` + bond length / cell height. On the standard Pd(111)
-`[3,3,4]`/vacuum-10 cell (height ≈16.74 Å, top layer `frac z≈0.403`),
-on-surface hollow `z≈0.46–0.47` for a ~0.9–1.2 Å H–metal bond — `frac
-z=0.66` looks plausible but floats H ~4.3 Å off the surface: it fails
-preflight or relaxes in 0 steps to a subsurface-degenerate energy.
+when no anchor exists yet; on the standard Pd(111) `[3,3,4]`/vacuum-10
+cell, on-surface hollow is `z≈0.46` (a ~1 Å H–metal bond) — `frac z=0.66`
+looks plausible but floats H ~4.3 Å off the surface: preflight fails or
+the relax finishes in 0 steps at a subsurface-degenerate energy.
+
+## Reaction endpoints — a label-matched IS/FS pair
+
+An NEB band interpolates between endpoints **by atom label** — a final
+state re-`put` from scratch gets fresh labels and can never pair. Branch
+the FS off the IS instead (`args={'derive_from': …}` on `put`), so labels,
+elements, cell and the fixed set carry over:
+
+```python
+# IS: Cu(111) [3,3,4], bottom two layers frozen; O* on a bridge site,
+# CH4 physisorbed on a neighbouring top site.
+put(kind="structure", id="cu_is", text='{"ops":[
+  {"op":"slab","element":"Cu","size":[3,3,4],"fix_layers":2},
+  {"op":"add_adsorbate","species":"O","site":{"type":"bridge","anchors":["aCu28","aCu29"]},"height":1.9},
+  {"op":"add_adsorbate","species":"CH4","site":{"type":"top","anchors":["aCu31"]},"height":2.5}]}')
+
+# FS: CH4 + O* → CH3* + OH* — one transfer of an H from C onto O, then
+# the remaining CH3 fragment moved to a fresh top site.
+put(kind="structure", id="cu_fs", args={
+  "derive_from": "cu_is",
+  "ops": [
+    {"op":"transfer","from":"aC1","to":"aO1"},
+    {"op":"move_group","atom":"aC1","site":{"type":"top","anchors":["aCu34"]},"height":2.4},
+  ]})
+```
+
+The derive ack reports the pair verdict: `labels preserved …
+NEB-pairable` when the atom set survives, `atom set changed (+a/-r): not
+NEB-pairable` when an op added or removed atoms. `transfer`'s `from:`
+picks the declared-bonded atom nearest `to` (an equidistant tie refuses
+naming both — pick with `atom:`); `move_group` carries the whole
+declared-bond fragment rigidly and refuses when it holds a fixed or slab
+atom (slab = the largest connected metal cluster — a dopant inside it
+counts as slab). Site anchor labels come from the design TOC — the
+`aCu*` above are just top-layer atoms. Both land starting-guess geometry —
+`relax` each endpoint at `fidelity:"ml"` before the pair means anything.
 
 ## Edit — `edit(id=<slug>, ops=[…])`
 
@@ -223,15 +258,11 @@ coordination · fixed) are inlined only for ≤40 atoms; above that use
 reduced (Wyckoff-orbit) collapse is a later increment.
 
 `view='stats'` is the geometry digest: bond lengths per element pair
-(count · mean ± std · min..max Å, with the atom labels of the extremes so
-they can be probed), bond angles per centre element split by ring size,
-and POAV1 pyramidalization θp per three-coordinated atom (mean / p95 /
-max, counts above the C60 value 11.6° and above 15°), each beside its
-reference (sp2 C–C 1.42 Å, 120°; θp graphene 0, C60 11.6, sp3 19.47) and
-stamped with the geometry tier the coordinates were measured on (`relax[…]`
-or `unknown` — stick-preview numbers are 1.42 Å by construction). The TOC
-head carries a one-line digest of the same numbers, so a relax reads as
-before/after figures rather than as warning rows.
+(count · mean ± std · min..max Å with the extreme labels), bond angles
+per centre element split by ring size, and POAV1 θp per 3-coordinated
+atom beside references (sp2 C–C 1.42 Å; θp graphene 0, C60 11.6, sp3
+19.47), stamped with the geometry tier measured (`relax[…]` or
+`unknown`). The TOC head carries a one-line digest of the same numbers.
 
 ## Probe it — `get(view=…, args={…})`
 
@@ -326,40 +357,17 @@ survives an edit.
 
 ```python
 # a named navigation handle over a support set
-edit(
-    kind="structure",
-    id="pd111",
-    ops=[
-        {
-            "op": "eye",
-            "name": "active_site",
-            "atoms": ["aPd12"],
-            "reach": 3.0,
-            "for": "the reactive Pd",
-        }
-    ],
-)
+edit(kind="structure", id="pd111", ops=[
+    {"op": "eye", "name": "active_site", "atoms": ["aPd12"],
+     "reach": 3.0, "for": "the reactive Pd"}])
 
 # a pinned measurement with a graded goal
-edit(
-    kind="structure",
-    id="pd111",
-    ops=[
-        {
-            "op": "measure",
-            "kind": "distance",
-            "atoms": ["aH1", "aPd12"],
-            "direction": "target",
-            "goal": {"target": 2.4, "tol": 0.1},
-            "strength": "soft",
-            "for": "keep the H bound",
-        }
-    ],
-)
+edit(kind="structure", id="pd111", ops=[
+    {"op": "measure", "kind": "distance", "atoms": ["aH1", "aPd12"],
+     "direction": "target", "goal": {"target": 2.4, "tol": 0.1},
+     "strength": "soft", "for": "keep the H bound"}])
 
-get(
-    kind="structure", id="pd111", view="markers"
-)  # all eyes + measures, live value + verdict
+get(kind="structure", id="pd111", view="markers")  # eyes + measures, live
 ```
 
 - **measure `kind`**: `distance`/`bond_length` (2 atoms) · `angle` (3) ·
@@ -431,15 +439,12 @@ host** doesn't crash — it dispatches to the GPU node as a `struct_relax` job
 (see "Energy rungs run on the GPU node" below), never a bare error. `relax`
 honours `fixed` constraints — a frozen atom never moves.
 
-**`dispersion=True` on the `ml` rung** adds a DFT-D3 correction on top of the
-MLIP. Default off (unchanged), but turn it **on for anything held together by
-van der Waals contact** rather than covalent bonds — a host–guest complex, an
-interlocked mechanical bond, stacked aromatic faces. The MLIP's receptive
-field is a few Å, so without D3 those contacts read as barely bound. It is
-part of the calculator's identity (the run-cube keys on it; `view='runs'`
-shows `dispersion=True` in the `calc:` header). Local-only — the GPU
-container contract carries no dispersion flag, so a host without `[dft-ml]`
-gets a clean `Unsupported`; `model='chgnet'` has no D3 and rejects the flag.
+**`dispersion=True` on the `ml` rung** adds a DFT-D3 correction — turn it
+on for anything held together by **van der Waals contact** (host–guest,
+interlocked mechanical bonds, stacked aromatics); the MLIP's receptive
+field reads those as barely bound otherwise. Part of the calculator's
+identity (run-cube keys on it; `view='runs'` shows it). Local-only;
+`model='chgnet'` has no D3 and rejects the flag.
 
 ```python
 edit(
@@ -459,13 +464,10 @@ get(
 
 `get(kind='structure', id='<design>', view='completion')` returns the shared
 v1 completion envelope; `completion_digest` gives a human-readable summary —
-one coherent geometry/run/request snapshot, read-only (`next.can_submit`
-always false). Legacy run flags do not establish force convergence. Optional
-args (`requested_display` default `{"kind":"current"}`, `shown_geometry_token`,
-`selected_run_id`, `history_limit`/`request_limit` 1–64) take lossless number
-tags (`{"selected_run_id":{"$int":"12"}}`); decode with the shared codec.
-A missing/foreign run never selects another; artifact/historic selectors
-echo as typed unavailable rather than borrowing current rows.
+one geometry/run/request snapshot, read-only (`next.can_submit` always
+false). Optional args (`requested_display`, `shown_geometry_token`,
+`selected_run_id`, `history_limit`/`request_limit`) take lossless number
+tags (`{"$int":"12"}`); a missing/foreign run never selects another.
 
 ## Relax — the GPU dispatch path
 
@@ -479,12 +481,11 @@ requirement is gone). The relaxed geometry lands in the run-cube on
 completion; poll `view='runs'`. An identical relax — same geometry, same
 rung — is a **zero-compute cache hit** (returns synchronously, mints no job).
 
-**Pre-flight gate before the GPU spend.** A dispatch first runs the
-`validate` gate as a **hard reject** (an overlap, over-valence, or
-impossibly-long bond errors out naming the pair — fix the geometry first),
+**Pre-flight before the GPU spend.** A dispatch first runs `validate` as a
+hard reject (overlap / over-valence / impossible bond, naming the pair),
 then a cheap local `clean` pre-relax (`preflight='emt'` for EMT), then
-re-checks the cache. The GPU is the last resort, not the first thing on bad
-geometry. (A plain local `clean`/`emt` relax to *fix* a clash is never gated.)
+re-checks the cache. The GPU is the last resort on bad geometry. (A plain
+local `clean`/`emt` to *fix* a clash is never gated.)
 
 ```python
 edit(
@@ -492,11 +493,10 @@ edit(
 )  # dispatches, then poll view='runs'
 ```
 
-**Want an intentful task to block on the build?** Pass `requested_by=<todo_id>`
-on the relax op. That links the todo `requested`→the job and arms a
-`derived_job_succeeded` auto_check, so the todo closes when the relax
-converges and gets a `child-failed` bubble if it fails. Two tasks that
-request the *same* relax share one job (idempotent on the cache key).
+**Want an intentful task to block on the build?** `requested_by=<todo_id>`
+on the relax op links the todo to the job and arms `derived_job_succeeded`,
+so it closes when the relax converges (`child-failed` bubble otherwise);
+two tasks requesting the same relax share one job.
 
 ```python
 edit(
@@ -523,28 +523,23 @@ put(
     params={
         "seed_ref_id": <seed structure ref id>,
         "on_version": <seed's current version>,
-        "box": [[0.0, 1.0], [0.0, 1.0], [0.5, 0.65]],  # fractional [[fx0,fx1],[fy0,fy1],[fz0,fz1]]
-        "add": {"Pd": 2, "N": 1, "O": 1},  # fixed stoichiometry placed inside the box
-        "algo": "gofee",  # or "basin_hopping" / "random" — cheaper baselines
-        "budget": 200,  # oracle single-point evaluations, capped at 1000
+        "box": [[0.0, 1.0], [0.0, 1.0], [0.5, 0.65]],  # fractional bounds
+        "add": {"Pd": 2, "N": 1, "O": 1},  # stoichiometry placed in the box
+        "algo": "gofee",  # or "basin_hopping" / "random"
+        "budget": 200,  # oracle evaluations, capped at 1000
         "top_k": 10,
         "timeout_s": 7200,
     },
 )
 ```
 
-The **whole seed slab is frozen** for the search — only the `add`
-atoms move. Relax a returned candidate afterward (the ladder above)
-for a real equilibrium; this search never does that itself. `box`/
-`add` need a slab seed periodic in both in-plane axes — a free
-(non-periodic) cluster is rejected.
-
-Returns up to `top_k` new `structure` rows, `derived-from` the seed,
-each tagged `search:agox` and carrying `meta.search` (`algo`, `model`,
-`budget_used`, `iteration`, `oracle_energy_eV`, `rank`, …). Each
-candidate's `ml` energy is already on its run-cube (`view='runs'`)
-like any relax — but these oracle calls never touch the relax cache,
-so re-running the identical search re-evaluates rather than hitting it.
+The **whole seed slab is frozen** — only the `add` atoms move. Relax a
+returned candidate (the ladder above); the search never relaxes itself.
+`box`/`add` need a seed periodic in both in-plane axes — a free cluster
+is rejected. Returns up to `top_k` new `structure` rows, `derived-from`
+the seed, tagged `search:agox` with `meta.search` (`algo`, `budget_used`,
+`oracle_energy_eV`, `rank`, …); the `ml` energy is on the run-cube —
+oracle calls never hit the relax cache.
 
 ## Find a design — `search`
 
@@ -582,13 +577,12 @@ get(kind="structure", id="pd111", view="pourbaix")
 ```
 
 The resting-state termination map over (U_RHE, pH) folded from the
-structure's `surface_coverage_scan` jobs (a scan is tied to the structure by
-parenting the job on it or on a todo under it): validity regions per U
-interval, every boundary with its propagated and model-form bands kept
-apart, plus the bulk Pourbaix verdict as a labelled uncertain overlay. One
-map per footing (anchor_key · engine · correction set — partitioned, never
-blended); `dropped:` names anchors the sweep left out. `no anchors` until
-a scan lands; the same map as an SVG page at `/pourbaix/<handle>`.
+structure's `surface_coverage_scan` jobs (a scan is tied by parenting the
+job on it): validity regions per U interval, boundaries with propagated
+and model-form bands kept apart, plus the bulk Pourbaix verdict as a
+labelled uncertain overlay. One map per footing; `dropped:` names anchors
+the sweep left out. `no anchors` until a scan lands; SVG at
+`/pourbaix/<handle>`.
 
 ### The reaction staircase — `get(view='staircase')`
 
@@ -598,12 +592,11 @@ get(kind="structure", id="pd111", view="staircase", args={"U": -0.3})
 
 The best linked pathway's staircase from the engine's affine CHE export
 (`che_affine`, engine ≥ 0.25.0) at `U` (default: the quest's operating
-point, else the pathway's, else 0): each rung's ΔG(U), the limiting rung,
-per-route U_L/U_opt, the HER margin. A coverage-scan map names its resting
-termination at U as the starting surface, with the coads-mismatch verdict.
-`no staircase` until a ready pathway is linked; pre-0.25.0 reports
-`che_affine absent`. Add `pH` (or `point='U,pH'`) for a state per rung at
-that point (`precis-quest-help`). Web: `/pourbaix/<handle>`.
+point): each rung's ΔG(U), the limiting rung, per-route U_L/U_opt, the HER
+margin. A coverage-scan map names its resting termination at U as the
+starting surface. `no staircase` until a ready pathway is linked; add `pH`
+(or `point='U,pH'`) for a state per rung (`precis-quest-help`). Web:
+`/pourbaix/<handle>`.
 
 ### The generator record — `get(view='generator')`
 
@@ -612,13 +605,11 @@ get(kind="structure", id="hexfold_prism", view="generator")
 ```
 
 The stored `meta['generated']` build record for a design a `generate` op
-(or a workspace import) minted: the generator name, the key facts
-(`n_atoms`, `rings`, …), the authored params (`scene`/`params`/`spec` —
-the regeneration input) as stored JSON, with the per-atom record keys
-(`sites`, `terminated`, `report`, …) elided and named in a trailer.
-Refuses for a design authored by hand or minted before the record
-existed (2026-09-27). Search rows carry the same record's one-line
-digest in the `gen` column.
+(or a workspace import) minted: the generator name, the key facts, the
+authored params (`scene`/`params`/`spec` — the regeneration input) as
+JSON, per-atom record keys elided. Refuses for a hand-authored design or
+one minted before the record existed (2026-09-27). Search rows carry its
+one-line digest in the `gen` column.
 
 ## Export — `get(view='poscar'|'extxyz'|'cif')`
 

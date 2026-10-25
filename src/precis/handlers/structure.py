@@ -971,10 +971,17 @@ class StructureHandler(Handler):
 
         ``mode='rerun'`` does not touch the design at all — it asks the quest
         compute lane for a deliberate replay of this candidate's autocatpath
-        evaluation (:func:`precis.quest.compute.request_rerun`)."""
+        evaluation (:func:`precis.quest.compute.request_rerun`).
+
+        ``args={'derive_from': '<parent>', 'ops': [...]}`` branches a NEW
+        design (``id=``) off ``<parent>`` with the ops applied and the
+        parent's atom labels kept — the label-matched-endpoint door
+        (gr512126; :meth:`_put_derive` → :meth:`derive`)."""
         if mode == "rerun":
             return self._rerun(id=id, args=args)
         a = args or {}
+        if a.get("derive_from") is not None:
+            return self._put_derive(id=id, title=title, args=a)
         cif_text = a.get("cif")
         cif_url = a.get("cif_url")
         if (
@@ -1024,8 +1031,8 @@ class StructureHandler(Handler):
             raise BadInput(
                 "this is an imported reference config (provenance:external) "
                 "— derive a variant instead of overwriting it in place",
-                next=f"derive(kind='structure', id={slug!r}, "
-                "to='<new-slug>', ops=[...])",
+                next=f"put(kind='structure', id='<new-slug>', "
+                f"args={{'derive_from': {slug!r}, 'ops': [...]}})",
             )
         payload = _payload(text, args)
         ops = payload.get("ops") or []
@@ -1246,8 +1253,8 @@ class StructureHandler(Handler):
             raise BadInput(
                 "this is an imported reference config (provenance:external) "
                 "— derive a variant instead of overwriting it in place",
-                next=f"derive(kind='structure', id={slug!r}, "
-                "to='<new-slug>', ops=[...])",
+                next=f"put(kind='structure', id='<new-slug>', "
+                f"args={{'derive_from': {slug!r}, 'ops': [...]}})",
             )
         if normalize:
             normalize_scene(scene)
@@ -1307,8 +1314,8 @@ class StructureHandler(Handler):
             raise BadInput(
                 "this is an imported reference config (provenance:external) "
                 "— derive a variant instead of overwriting it in place",
-                next=f"derive(kind='structure', id={slug!r}, "
-                "to='<new-slug>', ops=[...])",
+                next=f"put(kind='structure', id='<new-slug>', "
+                f"args={{'derive_from': {slug!r}, 'ops': [...]}})",
             )
         if normalize:
             normalize_scene(scene)
@@ -1371,8 +1378,8 @@ class StructureHandler(Handler):
             raise BadInput(
                 "this is an imported reference config (provenance:external) "
                 "— derive a variant instead of editing it in place",
-                next=f"derive(kind='structure', id={ref.slug!r}, "
-                "to='<new-slug>', ops=[...])",
+                next=f"put(kind='structure', id='<new-slug>', "
+                f"args={{'derive_from': {ref.slug!r}, 'ops': [...]}})",
             )
         op_list = ops
         if op_list is None:
@@ -1439,6 +1446,49 @@ class StructureHandler(Handler):
             _combine_echo(import_echo, preflight_caveats),
         )
 
+    def _put_derive(
+        self,
+        *,
+        id: str | int | None,
+        title: str | None,
+        args: dict[str, Any],
+    ) -> Response:
+        """``put(kind='structure', id='<new-slug>', args={'derive_from':
+        '<parent>', 'ops': [...]})`` — the MCP door onto :meth:`derive`
+        (gr512126): branch a new design off a parent, keeping the parent's
+        atom labels, so the new design can be a label-matched NEB endpoint
+        partner. ``id=`` is the NEW slug; ``derive_from`` is the parent."""
+        slug = str(id).strip() if id is not None else ""
+        call = (
+            "put(kind='structure', id='<new-slug>', "
+            "args={'derive_from': '<parent-slug>', 'ops': [...]})"
+        )
+        if not slug:
+            raise BadInput(
+                "put(kind='structure', args={'derive_from'}) requires id= "
+                "(the NEW design's slug — the parent goes in derive_from=)",
+                next=call,
+            )
+        parent_slug = str(args.get("derive_from") or "").strip()
+        if not parent_slug:
+            raise BadInput(
+                "args 'derive_from' needs the parent design's slug",
+                next=call,
+            )
+        if self.store.get_ref(kind="structure", id=slug) is not None:
+            raise BadInput(
+                f"design {slug!r} already exists",
+                next=f"put(kind='structure', id={slug + '-2'!r}, "
+                f"args={{'derive_from': {parent_slug!r}, 'ops': [...]}})",
+            )
+        ops = args.get("ops") or []
+        if not isinstance(ops, list):
+            raise BadInput(
+                "args 'ops' must be a list of op objects",
+                next="args={'derive_from': '<parent>', 'ops': [{'op': ...}]}",
+            )
+        return self.derive(id=parent_slug, to=slug, ops=ops, title=title)
+
     # ── derive ───────────────────────────────────────────────────────
     def derive(
         self,
@@ -1449,18 +1499,22 @@ class StructureHandler(Handler):
         title: str | None = None,
     ) -> Response:
         """Branch a **new** design ``to`` from ``id`` with ``ops`` applied, linked
-        ``derived-from`` the parent (bundle — the instruction-box Apply).
+        ``derived-from`` the parent (bundle — the instruction-box Apply; over
+        MCP this is ``put(id=<new-slug>, args={'derive_from': <parent>})``).
 
         The parent is untouched, so a before/after ``view='diff'`` works. Applies
         graph/marker ops only — a relax is a separate compute step, never part of
-        a proposal. The parent's markers carry over (they live on the scene)."""
+        a proposal. The parent's markers carry over (they live on the scene).
+        The ack names whether the atom label set survived the ops — labels
+        preserved means the child is pairable with the parent as an endpoint
+        pair; a changed atom set is not."""
         parent = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
         to_slug = str(to).strip()
         if not to_slug:
             raise BadInput(
                 "derive requires to= (the new design slug)",
-                next="derive(kind='structure', id=<parent-slug>, "
-                "to='<new-slug>', ops=[...])",
+                next="put(kind='structure', id='<new-slug>', "
+                "args={'derive_from': '<parent-slug>', 'ops': [...]})",
             )
         if self.store.get_ref(kind="structure", id=to_slug) is not None:
             raise BadInput(
@@ -1468,13 +1522,14 @@ class StructureHandler(Handler):
                 next="pick a fresh slug for the derived design",
             )
         scene, _ = self.store.structure_load(parent.id)
+        parent_labels = set(scene.atoms)
         op_list = ops or []
         if any(o.get("op") == "relax" for o in op_list):
             raise BadInput(
                 "derive applies graph/marker ops only (no relax)",
                 next="drop the relax op, then relax the derived design with "
                 "edit(kind='structure', id='<new-slug>', "
-                "ops=[{'op':'relax','fidelity':'clean'}])",
+                "ops=[{'op':'relax','fidelity':'ml','steps':300}])",
             )
         # Same interception as put/edit so import_fragment works in a derive
         # too (relax was rejected above, so the returned relax tail is empty).
@@ -1499,7 +1554,37 @@ class StructureHandler(Handler):
         _scene, handles = self.store.structure_load(ref.id)
         return self._with_echo(
             self._toc_response(_scene, ref, handles, head_verb="derived"),
-            import_echo,
+            _combine_echo(
+                import_echo,
+                self._pairability_echo(scene, parent, op_list, parent_labels),
+            ),
+        )
+
+    @staticmethod
+    def _pairability_echo(
+        scene: Scene,
+        parent: Any,
+        op_list: list[dict[str, Any]],
+        parent_labels: set[str],
+    ) -> str:
+        """The derive ack's endpoint-pair verdict (gr512126): whether the
+        child's atom LABEL SET still matches the parent's — an NEB band
+        interpolates between endpoints by label, so a label-matched pair is
+        a candidate and a changed atom set is not."""
+        parent_handle = handle_registry.try_format(
+            "structure", parent.id, chunk=False
+        ) or str(parent.slug)
+        added = sorted(set(scene.atoms) - parent_labels)
+        removed = sorted(parent_labels - set(scene.atoms))
+        if not added and not removed:
+            return (
+                f"labels preserved · {len(op_list)} ops · "
+                f"{len(scene.atoms)} atoms — NEB-pairable with {parent_handle}"
+            )
+        return (
+            f"atom set changed (+{len(added)}/-{len(removed)}): "
+            "not NEB-pairable with "
+            f"{parent_handle}"
         )
 
     # ── get ──────────────────────────────────────────────────────────
@@ -2640,6 +2725,7 @@ class StructureHandler(Handler):
                         f"op error: {exc}",
                         next="get(kind='skill', id='precis-structure-help') "
                         "for the op vocabulary",
+                        options=exc.options,
                     ) from exc
                 continue
             echoes.append(self._import_fragment(scene, op))
@@ -2666,6 +2752,7 @@ class StructureHandler(Handler):
                 f"op error: {exc}",
                 next="get(kind='skill', id='precis-structure-help') "
                 "for the op vocabulary",
+                options=exc.options,
             ) from exc
         if not relax_ops:
             return None

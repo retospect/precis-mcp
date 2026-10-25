@@ -1446,8 +1446,18 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "- add_adsorbate — a whole GROUP on a named site (coverage series, "
         "explicit-water spectators), placed with its own internal geometry: "
         '{"op":"add_adsorbate","species":"OH","site":{"type":"top",'
-        '"anchors":["aPd1"]}} (species: H·O·N·OH·H2O·NH·NH2·NH3; add '
-        '"rotate": <degrees> to spin it about the surface normal)\n'
+        '"anchors":["aPd1"]}} (species: H·O·N·OH·H2O·NH·NH2·NH3·C·CH·CH2·'
+        'CH3·CH4; add "rotate": <degrees> to spin it about the surface '
+        "normal)\n"
+        "- transfer — move ONE atom onto an acceptor (the bond-swap step "
+        "of a reaction endpoint, e.g. an H from C onto an adsorbed O): "
+        '{"op":"transfer","from":"aC1","to":"aO1"} or name the atom '
+        'directly {"op":"transfer","atom":"aH3","to":"aO1"}\n'
+        "- move_group — rigidly move a whole adsorbate fragment to a new "
+        "site: "
+        '{"op":"move_group","atom":"aC1","site":{"type":"top",'
+        '"anchors":["aPd1"]}} (refuses if the fragment holds a fixed or '
+        "slab atom)\n"
         "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
         f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'
         '"element":"Cu"}\n'
