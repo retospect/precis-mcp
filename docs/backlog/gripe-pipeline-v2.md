@@ -28,7 +28,7 @@ closure about 3:1 at peak, throttled only by a coordinator's attention.
 | Dedup | `args={'observation': True}` files closed; theme registry `_gripe_themes.py`: 10 slugs, folds a match into the `theme:<slug>` keeper as a `+1` comment; `link(rel='supersedes')` (`precis-gripe-help`) | embedding-nearest potential duplicate parents on every gripe; `x N` in listings |
 | Statuses | `open triaged ready_for_fix in_review done wontfix`, DB-checked by 0176 triggers; `_KIND_STATUS_VALUES` (`store/types.py`) | one value: `verify` (forward migration, ~12 enumerations, see Slice 1) |
 | Semantic search | `search(kind='gripe', q=...)`; `gripe` is in `_ANN_PARTIAL_KINDS` (`store/_chunks_ops.py`): own partial HNSW index on `chunk_embeddings` (0226) | reused by the parents pass; no new index |
-| Triage today | `workers/gripe_triage.py`: deterministic, no LLM, daily `gripe_triage` Cadence (`scheduler.py`), dark unless a `service_config` row lights it; one `triage:` PRIO/thread suggestion comment per stale gripe, max 10/fire, never retags or closes | extended, not replaced: see Triage tick |
+| Triage today | `workers/gripe_triage.py`: deterministic, no LLM, daily `gripe_triage` Cadence (`scheduler.py`), dark unless `service_config` lights it for the calling host (exact-host row beats `*`); one `triage:` PRIO/thread suggestion comment per stale gripe, max 10/fire, never retags or closes | extended, not replaced: see Triage tick |
 | Fix lane | `backlog_groom.py` (OFF), `job_types/diagnose_gripe.py`, `fix_gripe.py`; `fixer/` (`writeback.py`, `claude_inproc` flip a landed build to `in_review`); `scripts/gripe-note` comments gripes on deploy | groomer stays OFF; the tick is NOT a `claude_inproc` tool-agent job |
 | Manual flow, cost | `/tmp/gripe-fix` census/groom, `issue-closer`, `workers/auto_gripe.py`, `scripts/board`, `fleet-wave ctx`, `precis llm cost` | tick emits the same classes as tags; verify takes the "deployed" half; flow metrics |
 
@@ -128,7 +128,9 @@ dropped; ro-gripes caps stay tighter.
 
 **Extends `workers/gripe_triage.py`; no `triage_gripes` job type.** That
 module is already scheduler-registered (daily `gripe_triage` Cadence,
-`service_config` dark gate, `run_gripe_triage_pass`). Slice 3 keeps its
+per-host `service_config` dark gate — the cadence's `service=` field
+skips the claim on a host whose resolved prio is 0, and
+`run_gripe_triage_pass` re-checks the same gate inside). Slice 3 keeps its
 name, gate and registration and changes the pass: cadence 15 minutes,
 `spends=True`, writes tags and PRIO instead of `triage:` suggestion
 comments (retired in the same slice, so two triage writers never run);

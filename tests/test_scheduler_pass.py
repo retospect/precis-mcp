@@ -181,6 +181,41 @@ def test_ineligible_everywhere_cadence_still_seeds_a_row_for_health_digest(
     assert cad.name in names
 
 
+def test_service_gated_cadence_resolves_prio_per_host(store) -> None:
+    """gr518089: a cadence naming ``service`` gates the claim on that
+    service's per-host resolved ``service_config`` prio — dark with no
+    row, and an exact-host ``prio 0`` row dims a fleet-wide ``*`` light
+    WITHOUT the dimmed host claiming (the fire stays due for a lit
+    host)."""
+    from precis.workers.service_config import set_service_prio
+
+    ran: list[str] = []
+    cad = Cadence(
+        name=f"c-{uuid4().hex}",
+        interval_s=60,
+        run=lambda s, b: ran.append("fired"),
+        service="svc_x",
+    )
+    # No row at all: dark on every host — a service-gated cadence is
+    # lit-only, matching the dark-switch semantics the pass enforces.
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    assert ran == []
+
+    set_service_prio(store, "*", "svc_x", 5)
+    set_service_prio(store, "balthazar", "svc_x", 0)
+    r2 = run_scheduler_pass(store, host="balthazar", cadences=(cad,))
+    assert (r2.claimed, r2.ok, r2.failed) == (0, 0, 0)
+    assert ran == []
+    # Seeded (health_digest sees it) but never claimed by the dimmed host.
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.last_fired_at is None and lease.last_host is None
+
+    r3 = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    assert (r3.claimed, r3.ok, r3.failed) == (1, 1, 0)
+    assert ran == ["fired"]
+
+
 def test_exactly_once_under_two_concurrent_claimants(store) -> None:
     """Extends the single-threaded exactly-once cover in
     ``test_scheduler_leases.py`` with a REAL concurrent race at the pass

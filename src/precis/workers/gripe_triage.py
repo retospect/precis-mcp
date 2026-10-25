@@ -3,8 +3,9 @@
 Gripe pipeline v2 slice 3 (``docs/backlog/gripe-pipeline-v2.md`` §Triage
 tick; Reto approved 2026-10-25): the old daily comment-only suggestion
 pass became a 15-minute LLM tick, still fired by the ``gripe_triage``
-scheduler Cadence, still dark unless a ``service_config`` row lights
-``gripe_triage`` (``prio > 0``) on some host
+scheduler Cadence, still dark unless ``service_config`` lights
+``gripe_triage`` (resolved ``prio > 0``) for the calling host — the
+exact-host row beats the ``*`` wildcard
 (:func:`gripe_triage_enabled`, the ``graph_garden`` gate shape). It is a
 **direct LLM call** — batch in, JSON out — not the ``claude_inproc``
 tool-agent pattern and not a coordinator session.
@@ -101,9 +102,11 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
+from precis.corpus_layout import host_name
 from precis.utils.env import env_float, env_int
 from precis.utils.llm.json_reply import extract_json_object
 from precis.workers.runner import BatchResult
+from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -199,22 +202,31 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MISS_RE = re.compile(r"^\d+$")
 
 
-def gripe_triage_enabled(store: Store, *, conn: Any = None) -> bool:
-    """True iff a ``service_config`` row lights ``gripe_triage`` anywhere.
-    Never raises: a missing table or a connection blip reads as dark."""
-
-    def _q(c: Any) -> bool:
-        row = c.execute(
-            "SELECT 1 FROM service_config WHERE service = %s AND prio > 0 LIMIT 1",
-            (SERVICE_NAME,),
-        ).fetchone()
-        return row is not None
-
+def gripe_triage_enabled(
+    store: Store, *, conn: Any = None, host: str | None = None
+) -> bool:
+    """True iff ``service_config`` lights ``gripe_triage`` for ``host``
+    (default: this host). The resolution is per host, the
+    :class:`ServiceConfigResolver` way — an exact-host row beats the
+    ``*`` wildcard, and a resolved ``prio`` of 0 (or no row at all)
+    reads dark: a fleet-wide ``*`` light must not fire the tick on a
+    host an operator has dimmed (gr518089). Never raises: a missing
+    table or a connection blip reads as dark."""
+    h = host or host_name()
     try:
-        if conn is not None:
-            return _q(conn)
-        with store.pool.connection() as c:
-            return _q(c)
+        if conn is None:
+            return ServiceConfigResolver(store, h).enabled(
+                SERVICE_NAME, default_on=False
+            )
+        # In-transaction callers keep their conn: the same
+        # exact-host-over-``*`` precedence, on that connection.
+        row = conn.execute(
+            "SELECT prio FROM service_config "
+            "WHERE service = %s AND host IN (%s, %s) "
+            "ORDER BY (host = %s) DESC LIMIT 1",
+            (SERVICE_NAME, h, ALL_HOSTS, h),
+        ).fetchone()
+        return row is not None and int(row[0]) > 0
     except Exception:
         log.warning("gripe_triage: service_config lookup failed", exc_info=True)
         return False

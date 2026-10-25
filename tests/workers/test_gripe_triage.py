@@ -75,13 +75,16 @@ def _gripe(
     return int(ref.id)
 
 
-def _light(store: Store, prio: int = 1) -> None:
+def _light(store: Store, prio: int = 1, host: str = "*") -> None:
+    """Light (or dim, ``prio=0``) ``gripe_triage`` for ``host`` — the
+    ``*`` wildcard default lights every host; an exact-host row beats it
+    (:func:`gripe_triage.gripe_triage_enabled`)."""
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO service_config (host, service, prio) "
-            "VALUES ('test-host', 'gripe_triage', %s) "
+            "VALUES (%s, 'gripe_triage', %s) "
             "ON CONFLICT (host, service) DO UPDATE SET prio = EXCLUDED.prio",
-            (prio,),
+            (host, prio),
         )
 
 
@@ -1395,13 +1398,91 @@ def test_missing_threads_dir_is_an_empty_index(tmp_path: Path) -> None:
 # ── wiring ────────────────────────────────────────────────────────────────
 
 
-def test_cadence_is_15min_host_agnostic_and_spendy() -> None:
+def test_cadence_is_15min_service_gated_and_spendy() -> None:
     from precis.workers.scheduler import CADENCES
 
     cad = next(c for c in CADENCES if c.name == "gripe_triage")
     assert cad.interval_s == 15 * 60
     assert cad.host_affinity is None and cad.eligible is None
+    # gr518089: the claim is gated on the host's resolved
+    # `gripe_triage` service_config prio — a dimmed host skips so a lit
+    # host still gets the fire.
+    assert cad.service == "gripe_triage"
     assert cad.spends is True
+
+
+def test_enabled_resolves_per_host(store: Store) -> None:
+    """gr518089: ``*``=5 lights every host, but an exact-host ``prio 0``
+    row dims only that host — the dimmed host stays dark while the rest
+    of the fleet runs the tick."""
+    _light(store, prio=5)
+    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
+    _light(store, prio=0, host="balthazar")
+    assert not gripe_triage.gripe_triage_enabled(store, host="balthazar")
+    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
+
+
+def test_enabled_host_row_lights_only_that_host(store: Store) -> None:
+    """A host-only row lights that host and no other — the old
+    any-row-anywhere query lit the whole fleet."""
+    _light(store, host="melchior")
+    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
+    assert not gripe_triage.gripe_triage_enabled(store, host="caspar")
+
+
+def test_dimmed_host_skips_the_tick(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pass level: ``*``=5 plus a ``prio 0`` row for this host → the tick
+    is a dark no-op here and still runs on a lit host."""
+    gid = _gripe(store, "dimmed host")
+    _light(store, prio=5)
+    _light(store, prio=0, host="balthazar")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "balthazar")
+    called: list[str] = []
+
+    def spy(prompt: str) -> LlmResult:
+        called.append(prompt)
+        return _llm({})(prompt)
+
+    r = _run(store, llm=spy)
+    assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    assert called == []
+    assert _status(store, gid) == "open"
+    # … and the same config still runs the tick on a lit host.
+    monkeypatch.setenv("PRECIS_HOST_NAME", "melchior")
+    r2 = _run(store, llm=_llm({"verdicts": [_verdict(gid)]}))
+    assert (r2.claimed, r2.ok) == (1, 1)
+
+
+def test_cadence_skips_a_dimmed_host_without_claiming(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr518089: the cadence's ``service`` gate runs BEFORE the lease
+    claim — a ``prio 0`` host drops-no-fire, so the due tick stays
+    claimable for a lit host."""
+    from precis.workers.runner import BatchResult
+    from precis.workers.scheduler import CADENCES, run_scheduler_pass
+
+    fired: list[Any] = []
+
+    def _fake_pass(s: Any) -> BatchResult:
+        fired.append(s)
+        return BatchResult("gripe_triage", 0, 0, 0)
+
+    monkeypatch.setattr(gripe_triage, "run_gripe_triage_pass", _fake_pass)
+    cad = next(c for c in CADENCES if c.name == "gripe_triage")
+    _light(store, prio=5)
+    _light(store, prio=0, host="balthazar")
+    r = run_scheduler_pass(store, host="balthazar", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    assert fired == []
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.last_fired_at is None and lease.last_host is None
+    # The fire was left claimable: a lit host takes it and runs.
+    r2 = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    assert (r2.claimed, r2.ok, r2.failed) == (1, 1, 0)
+    assert fired == [store]
 
 
 def test_service_spec_has_no_default_profile() -> None:

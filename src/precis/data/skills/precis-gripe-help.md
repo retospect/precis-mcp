@@ -459,8 +459,9 @@ when the condition clears (call_errors: no matching error for three
 daily passes) with a `resolved: auto-closed: …` comment and
 `STATUS:done`.
 
-A `gripe_triage` tick fires every 15 minutes, off unless a
-`gripe_triage` service_config row lights it. It leases up to 40 oldest
+A `gripe_triage` tick fires every 15 minutes, off on a host unless its
+resolved `gripe_triage` service_config prio is > 0 (an exact-host row
+beats `*`, so a `prio 0` host skips even under a fleet-wide light). It leases up to 40 oldest
 `STATUS:open` gripes (`reopened` first) once the parents pass has run
 (or the row is an hour old), makes one Sonnet-class batch call, and
 writes `fix:<type>`, `cluster:<slug>`, `size:S|M|L`, a computed PRIO

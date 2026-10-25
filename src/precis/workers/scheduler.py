@@ -22,7 +22,10 @@ claimant.
 call is skipped, so the lease is never advanced by a host that can't do
 the work. A cadence's ``eligible`` callable is a cheaper local gate
 (env/file presence) checked before the claim attempt, so an ineligible
-worker never wins the lease over the truly-capable one. Both are
+worker never wins the lease over the truly-capable one. A cadence naming
+``service`` gates the same way on that service's per-host resolved
+``service_config`` prio — a host dimmed to 0 skips the claim so a lit
+host still gets the fire. All are
 short-circuits ahead of :meth:`Store.claim_scheduler_lease` — but the row
 is still *seeded* (:meth:`Store.seed_scheduler_lease`) unconditionally
 first, so health_digest's cadence-staleness check (which iterates existing
@@ -56,6 +59,7 @@ from precis.workers.runner import BatchResult
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.workers.service_config import ServiceConfigResolver
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +80,14 @@ class Cadence:
     e.g. a DB-overridable knob — instead of the static ``interval_s``
     (``interval_s`` stays as the cadence's documented/default value).
 
+    ``service`` names the ``service_config`` row whose per-host resolved
+    ``prio`` gates the claim, resolved the
+    :class:`~precis.workers.service_config.ServiceConfigResolver` way
+    (exact-host row beats ``*``): a host resolving to 0 — or to nothing,
+    a service-gated cadence is dark until lit — skips before the claim,
+    so the fire stays claimable by a lit host (gr518089: a fleet-wide
+    ``*`` light must not let a host an operator dimmed win the tick).
+
     ``spends`` marks a cadence whose work bills an LLM, so it is gated on the
     global daily ceiling — see :func:`_over_daily_budget`."""
 
@@ -85,6 +97,7 @@ class Cadence:
     host_affinity: str | None = None
     eligible: Callable[[], bool] | None = None
     resolve_interval: Callable[[Any], int] | None = None
+    service: str | None = None
     spends: bool = False
 
 
@@ -251,10 +264,11 @@ def _run_call_errors(store: Store, batch_size: int) -> None:
 def _run_gripe_triage(store: Store, batch_size: int) -> None:
     """One gripe triage tick (pipeline v2 slice 3): claim up to 40 open
     gripes, ONE Sonnet-class batch call, write fix:/cluster:/size:/PRIO
-    + STATUS:triaged. Dark unless a ``gripe_triage`` service_config row
-    lights it (gated inside the pass). ``batch_size`` is unused — the
-    pass's own batch cap is the throttle. spends=True: the tick bills
-    one model call."""
+    + STATUS:triaged. Dark unless ``service_config`` lights
+    ``gripe_triage`` for this host — gated per host on the cadence
+    (``service=``, resolved ``prio``) and again inside the pass.
+    ``batch_size`` is unused — the pass's own batch cap is the
+    throttle. spends=True: the tick bills one model call."""
     del batch_size
     from precis.workers.gripe_triage import run_gripe_triage_pass
 
@@ -952,14 +966,17 @@ CADENCES: tuple[Cadence, ...] = (
         run=_run_call_errors,
     ),
     # Gripe pipeline v2 slice 3: the LLM triage tick — 15 minutes, one
-    # Sonnet-class batch call per fire. Host-agnostic. No `eligible`
-    # check: the pass is dark-gated on the gripe_triage service_config
-    # row, so an unset fleet just no-ops. spends=True: the tick bills
-    # the model call, so the daily ceiling gates it.
+    # Sonnet-class batch call per fire. `service` gates the claim on the
+    # host's resolved gripe_triage prio (gr518089: an exact-host `prio 0`
+    # row dims a fleet-wide `*` light — a dimmed host skips the claim so
+    # a lit one still gets the fire); the pass re-checks the same gate
+    # inside. spends=True: the tick bills the model call, so the daily
+    # ceiling gates it.
     Cadence(
         name="gripe_triage",
         interval_s=15 * 60,
         run=_run_gripe_triage,
+        service="gripe_triage",
         spends=True,
     ),
     # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
@@ -1099,6 +1116,7 @@ def run_scheduler_pass(
         else env_float(_RUN_DEADLINE_ENV, _RUN_DEADLINE_DEFAULT_S, lo=0.0)
     )
     claimed = ok = failed = 0
+    svc_resolver: ServiceConfigResolver | None = None
 
     for cad in cadences:
         # gr194430: seed the row BEFORE either gate, unconditionally — a
@@ -1127,6 +1145,16 @@ def run_scheduler_pass(
                 )
                 continue
             if not is_eligible:
+                continue
+        if cad.service is not None:
+            # Per-host service_config gate (dark until lit): a host whose
+            # resolved prio is 0 skips WITHOUT claiming — the lease stays
+            # due so a lit host can still take this fire.
+            if svc_resolver is None:
+                from precis.workers.service_config import ServiceConfigResolver
+
+                svc_resolver = ServiceConfigResolver(store, host)
+            if not svc_resolver.enabled(cad.service, default_on=False):
                 continue
         interval_s = cad.interval_s
         if cad.resolve_interval is not None:
