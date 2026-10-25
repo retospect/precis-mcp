@@ -174,7 +174,11 @@ def test_clearance_at_nm_scale_reports_metres(handler: SeHandler) -> None:
     """The exact prod crash: view='clearance' on nanometre envelopes. The
     panel and hub genuinely interpenetrate by ~0.3 nm — the gap must come
     back negative, in metres, at nanometre magnitude (not kernel units)."""
-    resp = handler.get(id="boxel1", view="clearance", args={"a": "panel", "b": "vtx"})
+    # 'panel' is instanced by panel_xm, so under gr514241 it is a
+    # template — never placed; the query names the placed instance.
+    resp = handler.get(
+        id="boxel1", view="clearance", args={"a": "panel_xm", "b": "vtx"}
+    )
     # gap reads through the shared neat formatter (e.g. "gap: -300 pm") —
     # parse it back rather than assume a bare metre float.
     m = re.search(r"gap: (\S+ \S+)", resp.body)
@@ -199,15 +203,19 @@ def test_validate_at_nm_scale_runs_and_finds_the_overlap(
 
 
 def test_clearance_view_refuses_cross_scale_pair(handler: SeHandler) -> None:
+    # site and panel are templates now (gr514241): the same size refusal
+    # must fire on their placed array/instance nodes.
     with pytest.raises(BadInput, match="differ too much in size"):
-        handler.get(id="boxel1", view="clearance", args={"a": "site", "b": "panel"})
+        handler.get(
+            id="boxel1", view="clearance", args={"a": "site_row", "b": "panel_xm"}
+        )
 
 
 def test_envelope_overlaps_gap_is_in_metres() -> None:
     tree = _nano_tree()
     overlaps, _cross, _unchecked = envelope_overlaps(tree)
     pairs = {frozenset((a, b)): gap for a, b, gap in overlaps}
-    gap = pairs.get(frozenset(("panel", "vtx")))
+    gap = pairs.get(frozenset(("panel_xm", "vtx")))
     assert gap is not None, overlaps
     assert gap == pytest.approx(-3e-10, rel=0.2)
 

@@ -52,15 +52,24 @@ out`.
 ```python
 import precis_geom.out as out
 
-with out.run("hcol") as o:                    # scratch/out/hcol/
-    o.block("p", scene, desc="carbon strip",
-            ports=[{"name": "tail", "atom": "aC4", "roles": ["join"]}])
-    o.block("plate", "plate add box:w40mmd20mmh10mm")   # macro DSL text
-    o.instance("pin", template="plate", parent="p",
-               pose="[0 0 10] mm")
+with out.run("hcol") as o:  # scratch/out/hcol/
+    o.block(
+        "p",
+        scene,
+        desc="carbon strip",
+        ports=[{"name": "tail", "atom": "aC4", "roles": ["join"]}],
+    )
+    o.block("plate", "plate add box:w40mmd20mmh10mm")  # macro DSL text
+    o.instance("pin", template="plate", parent="p", pose="[0 0 10] mm")
     o.connect("p.tail", "pin.top")
-    o.ray("bolt-a1", block="plate", origin=[0, 0, -0.003],
-          direction=[0, 0, 1], length=0.028, kind="bolt_axis")
+    o.ray(
+        "bolt-a1",
+        block="plate",
+        origin=[0, 0, -0.003],
+        direction=[0, 0, 1],
+        length=0.028,
+        kind="bolt_axis",
+    )
 # exit: manifest.json + trace.json written
 ```
 
@@ -160,7 +169,7 @@ is refused by name — the vet is the contract, and the key set is:
 
 | entry | keys |
 |---|---|
-| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `frame` |
+| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `mode`, `measures`, `loads`, `template`, `frame` |
 | port (inside `ports`) | `name`, `atom` (atomic only), `roles`, `direction`, `expected_element`, `expected_hybridization`, `pose`, `annotations`, `frame` |
 | instance | `name`, `template`, `parent`, `pose`, `rot`, `pose_unit`, `rot_unit`, `linear`, `polar`, `frame` |
 | connect | `a`, `b`, `kind`, `joint`, `objectives`, `frame` |
@@ -171,6 +180,10 @@ Every `frame` is that entry's maker trace-frame id. Port
 `thread` (text like `'M5x0.8'`). A `rays` entry replaces the
 workspace's previous rays wholesale — one the run stops writing
 retires. A macro port's `atom` is refused (atoms are atomic-only).
+A block's `mode`/`measures`/`loads` are its manufacturing mode, named
+measures and load declarations — replayed on import as the
+`set_mode`/`add_measure`/`set_load` ops; `template` (`true`) marks a
+library part that is never itself placed (gr514241).
 
 **Not yet supported.** The manifest has no `material`, `measure`,
 `binding` or `bom` keys — the vet refuses them as unknown. Ruling
@@ -239,7 +252,7 @@ from precis.dispatch import Hub
 from precis_se.handler import SeHandler
 from precis_se.workspace_import import import_workspace_run
 
-OUT_DIR = Path("scratch/out/<run>")   # the run's out/ dir
+OUT_DIR = Path("scratch/out/<run>")  # the run's out/ dir
 DESIGN = "zz-<run>"
 VIEWS = ("tree", "drc", "validate")
 

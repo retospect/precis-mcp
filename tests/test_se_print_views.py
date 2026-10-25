@@ -456,9 +456,10 @@ class TestFab:
         )
         resp = handler.get(id="print4-fab-array", view="fab")
         # the array node itself never gets its own row — only its template,
-        # with qty = its own placement (1) + the array's 4 members.
+        # with qty = the array's 4 members (a template is never itself
+        # placed, gr514241).
         assert "spokes" not in resp.body
-        assert "spoke\t5\t" in resp.body
+        assert "spoke\t4\t" in resp.body
         assert len(re.findall(r"\bspoke\t", resp.body)) == 1
 
 

@@ -99,8 +99,9 @@ def test_bound_leaf_through_an_array_counts_once_with_multiplied_qty(
     (line,) = report.purchasable
     assert line.item_kind == "component"
     assert line.item == "caster-wheel-100"
-    # the template's own placement (1) + the array's 4 members
-    assert line.qty == pytest.approx(5.0)
+    # the template is a library part, never placed (gr514241) — only the
+    # array's 4 members count
+    assert line.qty == pytest.approx(4.0)
     # the array node itself (`node.template is not None`) never becomes a
     # second contribution — only the template block does.
     assert [c.label for c in line.contributions] == ["wheel"]

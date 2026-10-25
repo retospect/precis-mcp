@@ -28,7 +28,7 @@ _SQL = re.compile(
 _GRANDFATHERED = frozenset(
     {
         "claim_render", "design_turn", "env_context", "nav", "pcb_design",
-        "quest_board", "agentlogs", "blocktree_view", "cad", "categorizers",
+        "quest_board", "agentlogs", "blocktree_view", "cad",
         "clusters", "design", "drafts", "factory", "items", "papers",
         "preview", "refs",
     }
