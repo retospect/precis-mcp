@@ -577,8 +577,15 @@ required for a meta-only patch.
 `barrier_trusted` (behind the confirmed/provisional split above) goes
 `False` on: adsorbate detached, wrong binding site, NEB not converged,
 `|barrier| > 8 eV` (nonphysical), relax converged in 0 steps (the geometry
-never actually moved), and symmetry-identical structures disagreeing
-(re-measure both — neither is trusted until they agree). **A barrier near
+never actually moved), symmetry-identical structures disagreeing
+(re-measure both — neither is trusted until they agree), and fewer than 2
+independent seeds at neb tier (`barrier_seed_blocker`: `seeds:
+<n>-independent` — fewer than 2 distinct seeds across the run and its
+ready sibling pathways, pooling over the union so a rerun re-using a
+seed number re-verifies rather than wastes it — or `seeds:unknown` when
+no seed evidence exists at all; `barrier_independent_seeds` carries the
+count). Pooled seeds must agree too: `endpoint:union-disagree` /
+`endpoint:union-not-run`. **A barrier near
 0 eV carries none of these flags** — it's usually a broken/degenerate NEB
 (both endpoints collapsing to the same state), not a record-low. Treat any
 ~0 eV read as invalid until checked, never as a leaderboard entry.

@@ -4490,6 +4490,335 @@ class TestAutocatpathHarvest:
         assert meta["barrier_neb_failed"] == 0
         assert meta["barrier_desorbed"] == 0
 
+    _pw_seq = 0
+
+    def _trust_pathway(
+        self,
+        store: Any,
+        sid: int,
+        *,
+        seeds: list[int],
+        engine: str = "0.39.0",
+        status: str = "ready",
+        reaction_key: str = "rk-shared",
+        slab_sha: str = "slabsha",
+        tier: str = "neb",
+        endpoints: dict[str, dict[int, float]] | None = None,
+    ) -> int:
+        """A computed ``pathway`` ref in the trust-records shape — clean
+        records (the engine gate passes), so only the seed-independence
+        count decides (gr517804). Carries the full sibling-key stamps
+        (status/reaction_key/slab sha) so same-key pathways pool.
+        ``endpoints`` adds ``endpoint_identity`` records —
+        ``{state: {seed: e_eV}}`` — the material the union agreement
+        replay (round-2 R1) compares across seeds."""
+        type(self)._pw_seq += 1
+        recs: list[dict[str, Any]] = [
+            {
+                "check": "neb_convergence",
+                "verdict": "pass",
+                "severity": "fatal",
+                "seed": s,
+                "step": "R->A",
+                "evidence": {},
+                "id": f"R->A#s{s}#neb_convergence",
+            }
+            for s in seeds
+        ]
+        for state, per_seed in (endpoints or {}).items():
+            for s, e_ev in per_seed.items():
+                recs.append(
+                    {
+                        "check": "endpoint_identity",
+                        "verdict": "pass",
+                        "severity": "warn",
+                        "seed": s,
+                        "state": state,
+                        "evidence": {"e_eV": e_ev, "fingerprint": "fp"},
+                        "id": f"{state}#s{s}#endpoint_identity",
+                    }
+                )
+        return store.insert_ref(
+            kind="pathway",
+            slug=f"pw-seed-{type(self)._pw_seq}",
+            title="pw",
+            meta={
+                "status": status,
+                "candidate_ref": sid,
+                "autocatpath_version": engine,
+                "tier": tier,
+                "reaction_key": reaction_key,
+                "validation_manifest": {"inputs": {"slab_extxyz_sha256": slab_sha}},
+                "results": {
+                    "trust_schema": 2,
+                    "trust": recs,
+                    "seeds": seeds,
+                    "route_steps": ["R->A"],
+                    "trust_summary": {"barrier": {"available": True, "blocked_by": []}},
+                },
+            },
+            parent_id=sid,
+        ).id
+
+    def test_single_seed_neb_pathway_is_untrusted(self, store: Any) -> None:
+        """gr517804: one seed leaves ``endpoint_agreement`` silent — a
+        neb-tier barrier needs ≥2 independent same-engine seeds, so the
+        harvest untrusts it and names the synthetic blocker."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        assert meta["barrier_independent_seeds"] == 1
+        logs = [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("seed-independence gate" in b.text for b in logs)
+
+    def test_two_seed_neb_pathway_stays_trusted(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(store, sid, seeds=[0, 1])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_independent_seeds"] == 2
+        assert meta.get("barrier_seed_blocker") is None
+
+    def test_sibling_seed_reuse_pools_into_union(self, store: Any) -> None:
+        """gr517804 R6: union semantics replace the claim model — a
+        sibling re-running seeds {0,1} re-verified them rather than
+        adding nothing, so the pooled union is 2 distinct seeds and the
+        candidate stays trusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._trust_pathway(store, sid, seeds=[0, 1])  # ready sibling
+        pw = self._trust_pathway(store, sid, seeds=[0, 1])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_independent_seeds"] == 2
+        assert meta.get("barrier_seed_blocker") is None
+
+    def test_disjoint_sibling_seeds_agree_over_union(self, store: Any) -> None:
+        """Sibling ran seed {1}, this run seed {0} — the union is {0,1}
+        AND the merged endpoint_identity evidence agrees on both route
+        states (round-2 R1) → 2 independent, trusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        same = {"R": {1: -10.0}, "A": {1: -10.0}}
+        self._trust_pathway(store, sid, seeds=[1], endpoints=same)
+        pw = self._trust_pathway(
+            store, sid, seeds=[0], endpoints={"R": {0: -10.0}, "A": {0: -10.0}}
+        )
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_independent_seeds"] == 2
+        assert meta.get("barrier_seed_blocker") is None
+
+    def test_disjoint_sibling_seeds_disagree_is_untrusted(self, store: Any) -> None:
+        """R1: union {0,1} but the sibling's seed-1 endpoints land in a
+        different basin on state A — endpoint:union-disagree."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._trust_pathway(
+            store, sid, seeds=[1], endpoints={"R": {1: -10.0}, "A": {1: -9.1}}
+        )
+        pw = self._trust_pathway(
+            store, sid, seeds=[0], endpoints={"R": {0: -10.0}, "A": {0: -10.0}}
+        )
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "endpoint:union-disagree"
+        assert meta["barrier_independent_seeds"] == 2
+
+    def test_disjoint_sibling_seeds_no_endpoint_evidence_is_untrusted(
+        self, store: Any
+    ) -> None:
+        """R1: union {0,1} via pooling but NO endpoint_identity records
+        anywhere — agreement is unprovable → endpoint:union-not-run,
+        the two-vacuous-passes shape the ruling killed."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._trust_pathway(store, sid, seeds=[1])
+        pw = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "endpoint:union-not-run"
+        assert meta["barrier_independent_seeds"] == 2
+
+    def test_barrierless_non_neb_harvest_keeps_seed_blocker(self, store: Any) -> None:
+        """Round-2 recheck item 8: a later screening-tier harvest that
+        carries no barrier must NOT wipe the untrusted neb verdict — the
+        canonical barrier is still the seed-blocked neb one."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw1 = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw1}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        assert meta["barrier_independent_seeds"] == 1
+        pw2 = self._trust_pathway(store, sid, seeds=[0], tier="screening")
+        self._autocatpath_job(store, sid, {"result": {"span": 0.9}, "pathway_ref": pw2})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        assert meta["barrier_independent_seeds"] == 1
+
+    def test_same_seed_union_shortfall_is_untrusted(self, store: Any) -> None:
+        """Sibling and run both sampled only seed 0 — the union is one
+        seed → seeds:1-independent."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._trust_pathway(store, sid, seeds=[0])
+        pw = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        assert meta["barrier_independent_seeds"] == 1
+
+    def test_different_engine_sibling_never_pools(self, store: Any) -> None:
+        """Through the real store query: a sibling stamped to a different
+        engine is a different computation — its seeds never pool."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._trust_pathway(store, sid, seeds=[0, 1], engine="0.37.0")
+        pw = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+
+    def test_different_route_sibling_never_pools(self, store: Any) -> None:
+        """Same candidate/engine/tier/geometry but a different
+        reaction_key — a different computation, seeds never pool."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._trust_pathway(store, sid, seeds=[0, 1], reaction_key="rk-other")
+        pw = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+
+    def test_unready_sibling_contributes_nothing(self, store: Any) -> None:
+        """A sibling run that failed (or is still computing) does not
+        claim or pool seeds — R6."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._trust_pathway(store, sid, seeds=[0, 1], status="failed")
+        self._trust_pathway(store, sid, seeds=[0, 1], status="computing")
+        pw = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        assert meta["barrier_independent_seeds"] == 1
+
+    def test_unknowable_seed_set_is_untrusted(self, store: Any) -> None:
+        """R7: no record seed fields and no declared seeds — unprovable
+        is untrusted, stamped seeds:unknown."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="pathway",
+            slug="pw-noseed",
+            title="pw",
+            meta={
+                "status": "ready",
+                "candidate_ref": sid,
+                "autocatpath_version": "0.39.0",
+                "tier": "neb",
+                "results": {
+                    "trust_schema": 2,
+                    "trust": [
+                        {
+                            "check": "neb_convergence",
+                            "verdict": "pass",
+                            "severity": "fatal",
+                            "step": "R->A",
+                            "evidence": {},
+                            "id": "R->A#neb_convergence",
+                        }
+                    ],
+                    "route_steps": ["R->A"],
+                    "trust_summary": {"barrier": {"available": True, "blocked_by": []}},
+                },
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:unknown"
+        assert meta.get("barrier_independent_seeds") is None
+
+    def test_later_trusted_harvest_clears_seed_blocker(self, store: Any) -> None:
+        """Item 8: a first 1-seed harvest stamps the blocker; a later
+        same-key run pooling to ≥2 clears both blocker keys."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw1 = self._trust_pathway(store, sid, seeds=[0])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw1}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        pw2 = self._trust_pathway(store, sid, seeds=[0, 1])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.42}, "pathway_ref": pw2}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta.get("barrier_seed_blocker") is None
+        assert meta["barrier_independent_seeds"] == 2
+
     def test_adsorption_barrier_harvested_as_diagnostic(self, store: Any) -> None:
         """The tether's reseat adsorption barrier is harvested onto the candidate
         meta as an annotation (not a Pareto objective)."""

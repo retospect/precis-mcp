@@ -2690,6 +2690,102 @@ def _flag_barrier_twin_disagreement(
         )
 
 
+def _flag_few_independent_seeds(
+    store: Store,
+    pw_meta: dict[str, Any],
+    *,
+    pathway_ref: int,
+    measures: dict[str, Any],
+) -> str | None:
+    """Untrust a freshly-landed neb-tier barrier backed by fewer than 2
+    DISTINCT same-engine seeds pooled across the pathway's sibling set
+    (gr517804, R6/R7 ruling 2026-10-25): one seed leaves
+    ``endpoint_agreement`` silent and the stored ``trust_summary`` still
+    reads available (the pw336193 vacuous pass). Siblings share
+    candidate_ref + engine + tier + IS-geometry + route/config
+    (:func:`trust_gate.sibling_key`) and pool their seeds into a union —
+    ordering and overlap no longer matter, so a rerun re-using the same
+    seed numbers re-verified them rather than wasting them. A sibling
+    that never completed contributes nothing, and an unknowable seed set
+    (no record seed fields, no declared list) is untrusted, stamped
+    ``seeds:unknown``.
+
+    Round-2 R1: when pooled seeds make the union reach 2, endpoint
+    agreement is REPLAYED over the merged ``endpoint_identity`` evidence
+    (:func:`trust_gate.endpoint_union_blocker`) — two runs that each
+    passed only their own vacuous 1-seed check stay untrusted
+    (``endpoint:union-not-run``), as does a union whose seeds disagree
+    (``endpoint:union-disagree``).
+
+    Mutates ``measures`` in place: stamps ``barrier_independent_seeds``
+    (the union size, ``None`` when unknowable) and clears
+    ``barrier_seed_blocker`` once the gate passes so a later trusted
+    harvest drops a stale blocker; on a shortfall stamps
+    ``barrier_trusted=False`` + ``barrier_seed_blocker`` carrying the
+    synthetic id (``seeds:<n>-independent`` / ``seeds:unknown`` /
+    ``endpoint:union-*``) that ``view='trust'`` renders. The clears only
+    run when ``measures`` actually carries a barrier — a barrierless
+    (or other-tier) harvest leaves the canonical barrier's verdict alone.
+    Like :func:`_flag_absurd_barrier` it only ever ADDS distrust — it
+    never resets a ``False`` back to ``True``.
+    Returns the blocker id or ``None``.
+    """
+    from precis.utils import trust_gate
+
+    tier = _pathway_tier(pw_meta)
+    if tier != _TIER_NEB:
+        # A barrier landing at another tier must not carry a stale
+        # neb-tier seed verdict — clear both keys, but only when this
+        # harvest actually replaces the canonical barrier (round-2
+        # review: a barrierless screening harvest must not wipe the
+        # untrusted neb verdict still on the candidate).
+        if "barrier" in measures:
+            measures["barrier_seed_blocker"] = None
+            measures["barrier_independent_seeds"] = None
+        return None
+    results = pw_meta.get("results")
+    results = results if isinstance(results, dict) else {}
+    records = [r for r in results.get("trust") or [] if isinstance(r, dict)]
+    engine = pw_meta.get("autocatpath_version")
+    engine = engine if isinstance(engine, str) and engine else None
+    pooled, pooled_identity = trust_gate.sibling_evidence(
+        store, meta=pw_meta, exclude_ref_id=pathway_ref
+    )
+    run = trust_gate.run_seeds(records, engine=engine, declared=results.get("seeds"))
+    measures["barrier_independent_seeds"] = (
+        len(run | pooled) if run is not None else None
+    )
+    blk = trust_gate.seed_blocker(
+        records,
+        engine=engine,
+        declared=results.get("seeds"),
+        pooled=pooled,
+        tier=tier,
+    )
+    if blk is None and pooled and run is not None:
+        # R1: the union reached ≥2 with sibling help — its seeds must
+        # actually AGREE at the endpoints, replayed over the merged
+        # endpoint_identity records, or the barrier stays untrusted.
+        blk = trust_gate.endpoint_union_blocker(
+            records,
+            pooled_identity,
+            trust_gate.route_scope(results),
+            run=run,
+            union=run | pooled,
+            engine=engine,
+            tol_eV=trust_gate.thresholds_from(
+                records, pw_meta.get("config")
+            ).endpoint_tol_ev,
+        )[0]
+    if blk is None:
+        if "barrier" in measures:
+            measures["barrier_seed_blocker"] = None
+        return None
+    measures["barrier_trusted"] = False
+    measures["barrier_seed_blocker"] = blk
+    return blk
+
+
 def _fresh_autocatpath_jobs(
     store: Store, structure_ref_id: int, upto: int
 ) -> list[tuple[int, dict[str, Any]]]:
@@ -3815,6 +3911,7 @@ def harvest_measures(
             cp_seen = max(cp_seen, job_id)
             pathway_ref = jmeta.get("pathway_ref")
             pw_meta: dict[str, Any] | None = None
+            pw_is_pathway = False
             if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):
                 # Defensive: an unfetchable / meta-less pathway ref stamps no
                 # trust flags at all (treated as unknown by graduate_frontier),
@@ -3823,6 +3920,7 @@ def harvest_measures(
                     pw_refs = store.fetch_refs_by_ids({pathway_ref})
                     pw_ref = pw_refs.get(pathway_ref)
                     pw_meta = pw_ref.meta if pw_ref is not None else None
+                    pw_is_pathway = pw_ref is not None and pw_ref.kind == "pathway"
                     if isinstance(pw_meta, dict):
                         measures.update(_pathway_quality(pw_meta))
                 except Exception:
@@ -3830,6 +3928,30 @@ def harvest_measures(
             # Guard 2 (absurd magnitude): overrides `_pathway_quality`'s
             # verdict, never the reverse — see `_flag_absurd_barrier`.
             absurd = _flag_absurd_barrier(measures)
+            # Guard 4 (seed independence, gr517804 R6/R7): a neb-tier
+            # barrier needs ≥2 distinct same-engine seeds pooled across
+            # its ready same-geometry/same-route siblings. Defensive like
+            # the twin guard: a lookup failure is a no-op, never a crash.
+            seed_blk: str | None = None
+            if (
+                pw_is_pathway
+                and isinstance(pw_meta, dict)
+                and isinstance(pathway_ref, int)
+                and not isinstance(pathway_ref, bool)
+            ):
+                try:
+                    seed_blk = _flag_few_independent_seeds(
+                        store,
+                        pw_meta,
+                        pathway_ref=pathway_ref,
+                        measures=measures,
+                    )
+                except Exception:
+                    log.debug(
+                        "harvest_measures: seed-independence check failed for %s",
+                        s.id,
+                        exc_info=True,
+                    )
             # Guard 3 (unrelaxed geometry): a WARNING, not an untrust — the
             # barrier still ranks, but the logbook flags it for scrutiny.
             # "No runs / no converged run" is unknown, not zero-step, so it
@@ -3887,6 +4009,35 @@ def harvest_measures(
                         f"barrier for [{handle}] ({name}) measured on a geometry "
                         "whose relax converged in 0 steps — likely never actually "
                         "relaxed; verify before trusting the ranking"
+                    ),
+                    entry_type="result",
+                    by=MEASURED_BY,
+                )
+            if seed_blk:
+                if seed_blk == "seeds:unknown":
+                    detail = (
+                        "seed set unknowable — no record seed fields "
+                        "and no declared seeds"
+                    )
+                elif seed_blk == "endpoint:union-disagree":
+                    detail = "pooled sibling endpoints disagree across seeds"
+                elif seed_blk == "endpoint:union-not-run":
+                    detail = (
+                        "seeds pooled but no cross-seed endpoint "
+                        "evidence — agreement unprovable"
+                    )
+                else:
+                    detail = (
+                        "fewer than 2 distinct same-engine seeds across "
+                        "the run and its ready siblings"
+                    )
+                append_entry(
+                    store,
+                    quest_id,
+                    text=(
+                        f"seed-independence gate for [{handle}] ({name}): "
+                        f"{seed_blk} — {detail}; auto-untrusted (rerun "
+                        "with fresh seed numbers)"
                     ),
                     entry_type="result",
                     by=MEASURED_BY,
@@ -5073,6 +5224,10 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_desorbed",
     "barrier_wrong_site",
     "barrier_low_confidence",
+    # seed-independence gate stamps (gr517804) — cleared alongside the
+    # barrier they annotate
+    "barrier_seed_blocker",
+    "barrier_independent_seeds",
     "barrier_screen",
     "barrier_fidelity",
     "tier",

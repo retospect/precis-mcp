@@ -31,6 +31,9 @@ gr508948): the module imports and tests run on a venv without the
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
+from collections.abc import Iterable
 from typing import Any
 
 #: Gating checks in display order — autocatpath.trust.CHECKS minus
@@ -68,6 +71,33 @@ _DEFAULT_ENDPOINT_TOL_EV = 0.05
 #: record counts as current (its provenance is unprovable — never
 #: fabricate staleness). Stale records never gate; they render
 #: ``stale, rerun on current`` instead.
+#:
+#: Seed independence (gr517804, R6/R7 ruling 2026-10-25): a neb-tier
+#: barrier needs ≥2 DISTINCT same-version seeds in the UNION pooled
+#: across the run and its ready siblings — one seed leaves
+#: ``endpoint_agreement`` silent and the stored summary reads available
+#: anyway (the pw336193 vacuous pass). Siblings share ``candidate_ref``
+#: + engine + tier + the IS-geometry stamp + the same route/config
+#: (:func:`sibling_key`); a sibling that never completed
+#: (``meta.status`` other than ``ready``) contributes nothing, and a
+#: reused seed counts once — ordering and overlap no longer matter, so
+#: pw512178/pw513347 both running seeds 0,1 pool to a 2-seed union.
+#: An unknowable seed set — no record ``seed`` fields and no declared
+#: ``results.seeds`` — is NOT trusted: the gate emits ``seeds:unknown``,
+#: or ``seeds:<n>-independent`` on a shortfall, alongside the record ids.
+#:
+#: Union agreement (round-2 review R1): counting pooled seeds is not
+#: enough — endpoint agreement must be REPLAYED over the union, or a
+#: 1-seed run plus a 1-seed sibling passes two vacuous checks and
+#: harvests trusted with no comparison ever run.
+#: :func:`sibling_evidence` returns the ready siblings' pooled seeds AND
+#: their current-engine ``endpoint_identity`` records, and
+#: :func:`endpoint_union_blocker` replays the per-state energy spread
+#: across the merged seed set against the recorded ``tol_eV`` — fail
+#: closed as ``endpoint:union-not-run`` when the union reached ≥2 only
+#: via pooling and no cross-seed pair exists, ``endpoint:union-disagree``
+#: when it disagrees. Harvest, ``view='trust'`` and the drylist share
+#: the one helper.
 
 
 def record_engine(rec: dict[str, Any]) -> str | None:
@@ -88,6 +118,344 @@ def is_stale(rec: dict[str, Any], current_engine: str | None) -> bool:
         return False
     engine = record_engine(rec)
     return engine is not None and engine != current_engine
+
+
+def run_seeds(
+    records: list[dict[str, Any]],
+    *,
+    engine: str | None = None,
+    declared: Any = None,
+) -> set[int] | None:
+    """The distinct seed ints the run actually sampled at ``engine``:
+    non-stale record seeds (a seed is only as real as its records). The
+    declared ``results.seeds`` list counts only when NO record carries a
+    seed field at all (pre-stamp / record-poor runs) — seeded records that
+    are all stale mean the run sampled nothing at this engine, so the set
+    is empty rather than the stale-claimed list (gr517804 R6). ``None``
+    when neither source exists — unknowable, never guess."""
+    seeded = [
+        r
+        for r in records
+        if isinstance(r.get("seed"), int) and not isinstance(r.get("seed"), bool)
+    ]
+    if not seeded:
+        if isinstance(declared, list):
+            return {
+                int(s)
+                for s in declared
+                if isinstance(s, int) and not isinstance(s, bool)
+            }
+        return None
+    return {int(r["seed"]) for r in seeded if not is_stale(r, engine)}
+
+
+def seed_blocker(
+    records: list[dict[str, Any]],
+    *,
+    engine: str | None = None,
+    declared: Any = None,
+    pooled: Iterable[int] = (),
+    tier: str = "neb",
+) -> str | None:
+    """The synthetic blocker id for the seed-independence gate
+    (gr517804 R6/R7): ``None`` when ≥2 distinct same-version seeds ran
+    across the run plus its ready siblings (``pooled`` — union semantics,
+    a reused seed counts once) or when the rule doesn't apply (it is
+    neb-tier only); ``"seeds:unknown"`` when the run's own seed set is
+    unknowable (no record ``seed`` fields and no declared list —
+    unprovable is untrusted); otherwise ``"seeds:<n>-independent"`` with
+    ``n`` the union size."""
+    if tier != "neb":
+        return None
+    run = run_seeds(records, engine=engine, declared=declared)
+    if run is None:
+        return "seeds:unknown"
+    n = len(run | {int(s) for s in pooled})
+    if n >= 2:
+        return None
+    return f"seeds:{n}-independent"
+
+
+def seed_row(
+    records: list[dict[str, Any]],
+    *,
+    engine: str | None = None,
+    declared: Any = None,
+    pooled: Iterable[int] = (),
+    tier: str = "neb",
+    lookup_failed: bool = False,
+) -> dict[str, Any]:
+    """The gate-table row for the seed-independence rule — a precis-side
+    gate like the absurd/twin rows: it renders for every pathway, counts
+    ``blocking`` when it fails, and fails closed on an unknowable seed
+    set (R7) — ``not-run`` only for a non-neb tier or a sibling-lookup
+    failure, which must never read as a pass."""
+    pooled_set = {int(s) for s in pooled}
+    run = run_seeds(records, engine=engine, declared=declared)
+    extra = pooled_set - (run or set())
+    note = (
+        f"; s{', s'.join(str(s) for s in sorted(extra))} pooled from ready sibling runs"
+        if extra
+        else ""
+    )
+    n = len((run or set()) | pooled_set)
+    if tier != "neb":
+        verdict, input_ = "not-run", f"rule is neb-tier only (tier={tier})"
+        blocking: int | str = 0
+    elif lookup_failed:
+        verdict, input_, blocking = (
+            "not-run",
+            "sibling lookup failed — pooled seeds unprovable; retry the view",
+            1,
+        )
+    elif run is None:
+        verdict, input_, blocking = (
+            "fail",
+            "seed set unknowable (no record seed fields, no declared seeds)",
+            1,
+        )
+    elif n >= 2:
+        verdict, input_, blocking = "pass", f"{n} independent seeds{note}", 0
+    else:
+        verdict, input_, blocking = (
+            "fail",
+            f"{n} independent (needs ≥ 2){note}",
+            1,
+        )
+    return {
+        "gate": "seed independence (precis)",
+        "verdict": verdict,
+        "input": input_,
+        "threshold": "≥ 2 distinct seeds, same engine (sibling union)",
+        "blocking": blocking,
+    }
+
+
+def _geometry_id(meta: dict[str, Any]) -> str | None:
+    """The same-geometry half of the sibling key: the exported slab's sha
+    (``validation_manifest.inputs.slab_extxyz_sha256`` — the injected
+    initial-structure geometry) when the manifest carried it; else the
+    ``structure_refs`` value set, which is geometry-content-addressed
+    (the whole-map compare is stricter than IS-only but is the only
+    stored identity older pathways carry). ``None`` → the pathway can't
+    prove its geometry and pools with itself only."""
+    vm = meta.get("validation_manifest")
+    inputs = vm.get("inputs") if isinstance(vm, dict) else None
+    sha = inputs.get("slab_extxyz_sha256") if isinstance(inputs, dict) else None
+    if isinstance(sha, str) and sha:
+        return f"slab:{sha}"
+    refs = meta.get("structure_refs")
+    if isinstance(refs, dict):
+        ids = sorted({str(v) for v in refs.values() if v is not None})
+        if ids:
+            return "refs:" + ",".join(ids)
+    return None
+
+
+def _reaction_id(meta: dict[str, Any]) -> str | None:
+    """The same-route/config half of the sibling key: ``meta.reaction_key``
+    (the dispatch stamp of the canonical spec — see
+    ``compute._autocatpath_reaction_key``) wins; a pre-stamp pathway falls
+    back to a hash of its stored normalized ``meta.config``. ``None`` → no
+    provable route identity."""
+    rk = meta.get("reaction_key")
+    if isinstance(rk, str) and rk:
+        return f"rk:{rk}"
+    config = meta.get("config")
+    if isinstance(config, dict) and config:
+        return (
+            "cfg:"
+            + hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+        )
+    return None
+
+
+def sibling_key(meta: dict[str, Any]) -> tuple[str, str, str, str, str] | None:
+    """``(candidate_ref, engine, tier, geometry, reaction)`` — what two
+    pathways must share to pool seeds into the union (gr517804 R6). One
+    function shared by the harvest, the view and the drylist. ``None``
+    when any half can't be proven from stored meta — empty
+    ``candidate_ref``/engine, no geometry stamp, no route identity — so
+    the pathway pools with itself only rather than misgrouping."""
+    cand = meta.get("candidate_ref")
+    engine = meta.get("autocatpath_version")
+    if cand in (None, "") or not isinstance(engine, str) or not engine:
+        return None
+    geom = _geometry_id(meta)
+    rxn = _reaction_id(meta)
+    if geom is None or rxn is None:
+        return None
+    from precis.quest.compute import _pathway_tier
+
+    return (str(cand), engine, _pathway_tier(meta), geom, rxn)
+
+
+def _sibling_metas(
+    store: Any,
+    *,
+    meta: dict[str, Any],
+    exclude_ref_id: int | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """``(engine, ready same-key sibling metas)`` — the one store scan
+    behind :func:`sibling_seeds` and :func:`sibling_evidence`. The query
+    narrows by ``candidate_ref`` + engine and the full
+    :func:`sibling_key` is re-checked per fetched meta (tier, geometry,
+    route); a sibling that never completed is dropped here.
+    ``("", [])`` when this pathway's own key can't be formed."""
+    key = sibling_key(meta)
+    if key is None:
+        return "", []
+    cand, engine = key[0], key[1]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'pathway' "
+            "AND retired_at IS NULL AND meta->>'candidate_ref' = %s "
+            "AND meta->>'autocatpath_version' = %s",
+            (cand, engine),
+        ).fetchall()
+    ids = {int(r[0]) for r in rows}
+    if exclude_ref_id is not None:
+        ids.discard(int(exclude_ref_id))
+    if not ids:
+        return engine, []
+    metas: list[dict[str, Any]] = []
+    for ref in store.fetch_refs_by_ids(ids).values():
+        smeta = ref.meta if isinstance(ref.meta, dict) else {}
+        if smeta.get("status") != "ready" or sibling_key(smeta) != key:
+            continue
+        metas.append(smeta)
+    return engine, metas
+
+
+def sibling_evidence(
+    store: Any,
+    *,
+    meta: dict[str, Any],
+    exclude_ref_id: int | None = None,
+) -> tuple[set[int], list[dict[str, Any]]]:
+    """The union material this pathway's READY same-key siblings
+    contribute (gr517804 R6 + round-2 R1): ``(pooled seeds, pooled
+    endpoint_identity records)``. Each returned record carries a ``seed``
+    the sibling actually ran (:func:`run_seeds` rules apply per sibling)
+    and is non-stale at the shared engine — the material
+    :func:`endpoint_union_blocker` replays agreement over. ``(set(),
+    [])`` when this pathway's key can't be formed."""
+    engine, metas = _sibling_metas(store, meta=meta, exclude_ref_id=exclude_ref_id)
+    seeds: set[int] = set()
+    identity: list[dict[str, Any]] = []
+    for smeta in metas:
+        sresults = smeta.get("results")
+        sresults = sresults if isinstance(sresults, dict) else {}
+        srecs = [r for r in sresults.get("trust") or [] if isinstance(r, dict)]
+        run = run_seeds(srecs, engine=engine, declared=sresults.get("seeds"))
+        if not run:
+            continue
+        seeds |= run
+        identity += [
+            r
+            for r in srecs
+            if r.get("check") == "endpoint_identity"
+            and r.get("seed") in run
+            and not is_stale(r, engine)
+        ]
+    return seeds, identity
+
+
+def sibling_seeds(
+    store: Any,
+    *,
+    meta: dict[str, Any],
+    exclude_ref_id: int | None = None,
+) -> set[int]:
+    """The distinct same-engine seeds this pathway's READY siblings
+    already ran — the pool the seed-independence gate unions with the
+    run's own seeds (gr517804 R6). Siblings share :func:`sibling_key`; a
+    sibling that never completed (``meta.status`` other than ``ready``)
+    contributes nothing, as does one whose seed evidence is unknowable or
+    stale (:func:`run_seeds` rules apply per sibling). Union semantics
+    make ordering irrelevant — the earlier/later ``ref_id`` claim model
+    is gone. ``set()`` when this pathway's own key can't be formed."""
+    return sibling_evidence(store, meta=meta, exclude_ref_id=exclude_ref_id)[0]
+
+
+def endpoint_union_blocker(
+    records: list[dict[str, Any]],
+    sibling_identity: list[dict[str, Any]],
+    scope: tuple[set[str] | None, set[str]],
+    *,
+    run: set[int] | None,
+    union: set[int],
+    engine: str | None = None,
+    tol_eV: float,
+) -> tuple[str | None, str]:
+    """Replay endpoint agreement over the sibling union (gr517804
+    round-2 R1): counting pooled seeds is not enough — the merged
+    ``endpoint_identity`` evidence must show the union's seeds agreeing
+    on each route state.
+
+    Reads the pathway's own trust ``records`` plus ``sibling_identity``
+    (:func:`sibling_evidence`'s second half, or the drylist's equivalent
+    column), keeps ``endpoint_identity`` records on the route whose
+    ``seed`` is in ``union``, and spreads each state's ``e_eV`` across
+    every contributing seed — one state disagreeing beyond ``tol_eV``
+    fails. Returns ``(blocker, input-text)``:
+
+    * ``endpoint:union-disagree`` — a route state's merged energies span
+      wider than ``tol_eV`` (names the worst state and its delta);
+    * ``endpoint:union-not-run`` — the union reached ≥2 only via pooling
+      (``run`` shorter than 2) and some route state with identity
+      evidence has no cross-seed pair, so agreement is unprovable — the
+      vacuous-pass shape one level up;
+    * ``None`` — the merged evidence agrees (or the run stands on ≥2 own
+      seeds, where the engine's own agreement governs).
+    """
+    by_state: dict[Any, dict[int, list[float]]] = {}
+    for r in [*records, *sibling_identity]:
+        if r.get("check") != "endpoint_identity" or not _on_route(r, scope):
+            continue
+        seed = r.get("seed")
+        if not isinstance(seed, int) or isinstance(seed, bool) or seed not in union:
+            continue
+        state = r.get("state")
+        if not state or is_stale(r, engine):
+            continue
+        ev = r.get("evidence")
+        e = ev.get("e_eV") if isinstance(ev, dict) else None
+        if not isinstance(e, int | float) or isinstance(e, bool):
+            continue
+        by_state.setdefault(state, {}).setdefault(seed, []).append(float(e))
+    worst: tuple[float, Any] | None = None
+    thin = sorted(str(s) for s, per in by_state.items() if len(per) < 2)
+    for state, per_seed in by_state.items():
+        if len(per_seed) < 2:
+            continue
+        es = [e for vals in per_seed.values() for e in vals]
+        delta = max(es) - min(es)
+        if delta > tol_eV and (worst is None or delta > worst[0]):
+            worst = (delta, state)
+    if worst is not None:
+        delta, state = worst
+        return (
+            "endpoint:union-disagree",
+            f"union replay: {state} endpoints {delta * 1000:g} meV apart "
+            f"across seeds (tol {tol_eV:g} eV)",
+        )
+    if (run is None or len(run) < 2) and (thin or not by_state):
+        missing = (
+            f"no cross-seed pair on {', '.join(thin)}"
+            if thin
+            else "no endpoint_identity records"
+        )
+        return (
+            "endpoint:union-not-run",
+            f"union replay: {missing} — pooled-seed agreement unprovable",
+        )
+    n_states = sum(1 for per in by_state.values() if len(per) >= 2)
+    return (
+        None,
+        f"union replay: {n_states} route states agree across "
+        f"{len(union)} pooled seeds (tol {tol_eV:g} eV)",
+    )
 
 
 @dataclasses.dataclass(frozen=True)

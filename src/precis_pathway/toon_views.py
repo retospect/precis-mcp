@@ -341,6 +341,9 @@ def trust_toon(
     pw_handle: str | None = None,
     candidate: dict[str, Any] | None = None,
     candidate_handle: str | None = None,
+    pooled_seeds: set[int] | None = None,
+    pooled_identity: list[dict[str, Any]] | None = None,
+    seed_lookup_failed: bool = False,
 ) -> str:
     """The barrier trust gate, replayed from stored trust records
     (``trust_schema`` 1-2): one row per gating check with its input,
@@ -371,12 +374,65 @@ def trust_toon(
     if not records:
         return f"trust_schema={schema} but no trust records on this pathway."
 
+    from precis.quest.compute import _pathway_tier
+
     engine = meta.get("autocatpath_version")
     engine = engine if isinstance(engine, str) and engine else None
+    tier = _pathway_tier(meta)
+    pooled = pooled_seeds or set()
     scope = trust_gate.route_scope(results)
     thresholds = trust_gate.thresholds_from(records, meta.get("config"))
-    blocked = trust_gate.replay_barrier_gate(records, scope, engine=engine)
+    record_blocked = trust_gate.replay_barrier_gate(records, scope, engine=engine)
+    # A sibling-lookup failure renders the seed gate "not-run (lookup
+    # failed)" and the verdict never PASS — a quiet fall-through here is
+    # exactly the silent-PASS shape this gate exists to kill (gr517804
+    # review item 10).
+    seed_blk = (
+        "seeds:lookup-failed"
+        if seed_lookup_failed
+        else trust_gate.seed_blocker(
+            records,
+            engine=engine,
+            declared=results.get("seeds"),
+            pooled=pooled,
+            tier=tier,
+        )
+    )
+    # Round-2 R1: pooled seeds must also AGREE at the endpoints — the
+    # merged endpoint_identity evidence is replayed over the union, and
+    # the endpoint_agreement gate row below reflects that verdict.
+    union_blk: str | None = None
+    union_input = ""
+    if tier == "neb" and pooled and seed_blk is None and not seed_lookup_failed:
+        union_run = trust_gate.run_seeds(
+            records, engine=engine, declared=results.get("seeds")
+        )
+        if union_run is not None:
+            union_blk, union_input = trust_gate.endpoint_union_blocker(
+                records,
+                pooled_identity or [],
+                scope,
+                run=union_run,
+                union=union_run | pooled,
+                engine=engine,
+                tol_eV=thresholds.endpoint_tol_ev,
+            )
+    blocked = sorted(
+        record_blocked
+        + ([seed_blk] if seed_blk else [])
+        + ([union_blk] if union_blk else [])
+    )
     rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
+    rows.append(
+        trust_gate.seed_row(
+            records,
+            engine=engine,
+            declared=results.get("seeds"),
+            pooled=pooled,
+            tier=tier,
+            lookup_failed=seed_lookup_failed,
+        )
+    )
 
     graph = meta.get("graph") or {}
     root, target = _roots(meta)
@@ -438,24 +494,53 @@ def trust_toon(
         verdict = "PASS" if available else "BLOCKED"
     else:
         verdict = "BLOCKED" if blocked else "PASS"
-    # The precis-side guards (absurd magnitude, twin disagreement) gate a
-    # harvested barrier on top of the engine verdict — a failed one blocks
-    # even when the engine's records were clean.
+    # The precis-side guards (seed independence, absurd magnitude, twin
+    # disagreement) gate a harvested barrier on top of the engine verdict
+    # — a failed one blocks even when the engine's records were clean.
     if any(r["verdict"] == "fail" for r in rows if r["gate"].endswith("(precis)")):
         verdict = "BLOCKED"
+    if seed_lookup_failed:
+        # item 10: an unverifiable sibling pool never reads as a pass,
+        # even when the stored summary is clean.
+        verdict = "BLOCKED"
     ea_row = next((r for r in rows if r["gate"] == "endpoint_agreement"), None)
+    # R1: the endpoint_agreement row reflects the union replay — a
+    # union disagreement is a real fail and forces BLOCKED even when the
+    # engine's own records were clean; a vacuous own check that the union
+    # answered renders as the union's pass, never the bare not-run.
+    union_threshold = f"tol {thresholds.endpoint_tol_ev:g} eV across the sibling union"
+    if union_blk is not None:
+        verdict = "BLOCKED"
+        if ea_row is not None:
+            ea_row.update(
+                verdict="fail",
+                input=union_input,
+                threshold=union_threshold,
+                blocking=1,
+            )
+    elif union_input and ea_row is not None and ea_row["verdict"] == "not-run":
+        ea_row.update(
+            verdict="pass",
+            input=union_input,
+            threshold=union_threshold,
+            blocking=0,
+        )
     if verdict == "PASS" and ea_row is not None and ea_row["verdict"] == "not-run":
         verdict += f" (vacuous: endpoint agreement not run — {ea_row['input']})"
     replay = (
         "replay agrees with stored trust_summary"
-        if sorted(stored_blocked) == blocked
+        if sorted(stored_blocked) == record_blocked
         else (
             "replay DISAGREES with stored trust_summary — "
-            f"replay-only: {sorted(set(blocked) - set(stored_blocked)) or '—'} · "
-            f"stored-only: {sorted(set(stored_blocked) - set(blocked)) or '—'}"
+            f"replay-only: {sorted(set(record_blocked) - set(stored_blocked)) or '—'} · "
+            f"stored-only: {sorted(set(stored_blocked) - set(record_blocked)) or '—'}"
         )
     )
-    head.append(f"verdict: {verdict} · {len(blocked)} fatal on-route fails · {replay}")
+    head.append(
+        f"verdict: {verdict} · {len(record_blocked)} fatal on-route fails"
+        + (f" · {seed_blk}" if seed_blk else "")
+        + f" · {replay}"
+    )
     if rl:
         step_label = str(rl["step"]).replace("→", "->")
         by_seed = sorted(
@@ -495,18 +580,21 @@ def trust_toon(
         head.append(f"({folded} route states agree across seeds — one basin each)")
     if not erows and not folded:
         head.append("no endpoint_identity records on the route.")
-    if ea_row is not None and ea_row["verdict"] == "fail":
-        seeds = [
-            s
-            for s in (results.get("seeds") or [])
-            if isinstance(s, int) and not isinstance(s, bool)
-        ]
-        nxt = seeds + [max(seeds, default=-1) + 1]
+    if (seed_blk and not seed_lookup_failed) or (
+        ea_row is not None and ea_row["verdict"] == "fail"
+    ):
+        run = (
+            trust_gate.run_seeds(records, engine=engine, declared=results.get("seeds"))
+            or set()
+        )
+        hi = max(run | pooled, default=-1)
+        nxt = sorted(run | {hi + 1, hi + 2})
         head += [
             "",
             "next: put(kind='structure', "
             f"id='{candidate_handle or '<st>'}', mode='rerun', args={{'seeds': {nxt}}})"
-            " — fresh seed numbers give endpoint_agreement new basins to compare",
+            " — ≥2 fresh seed numbers give endpoint_agreement independent "
+            "basins to compare (a seed an earlier sibling ran is a repeat)",
         ]
     return "\n".join(head)
 

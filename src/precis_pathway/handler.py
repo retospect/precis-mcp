@@ -20,6 +20,7 @@ and need a core edit to extend.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -45,6 +46,8 @@ from .persist import BODY_KIND, pathway_title, persist_result
 #: node instead of running autocatpath in-process (slice 1). The gateway sets it to
 #: the GPU node's PRECIS_NODE (e.g. 'spark'); unset → in-process EMT (slice 0).
 _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
+
+log = logging.getLogger(__name__)
 
 
 #: Views that accept the CHE potential lever ``args={'U': <V vs RHE>}``
@@ -736,12 +739,38 @@ class PathwayHandler(Handler):
                 handle_registry.try_format("pathway", int(ref.id))
                 or f"pathway:{ref.id}"
             )
+            # Seed independence (gr517804 R6 + round-2 R1): the gate
+            # pools the distinct same-engine seeds this pathway's READY
+            # siblings ran AND their endpoint_identity records, so the
+            # endpoint_agreement row reflects the union. A lookup failure
+            # logs at WARNING and renders the seed gate
+            # "not-run (lookup failed)" — never a silent PASS (review item
+            # 10); the view is read-only either way.
+            pooled_seeds: set[int] | None = None
+            pooled_identity: list[dict[str, Any]] = []
+            seed_lookup_failed = False
+            try:
+                from precis.utils import trust_gate
+
+                pooled_seeds, pooled_identity = trust_gate.sibling_evidence(
+                    store, meta=meta, exclude_ref_id=int(ref.id)
+                )
+            except Exception:
+                seed_lookup_failed = True
+                log.warning(
+                    "pathway %s trust view: sibling seed lookup failed",
+                    ref.id,
+                    exc_info=True,
+                )
             return Response(
                 body=trust_toon(
                     meta,
                     pw_handle=pw_handle,
                     candidate=cand_meta,
                     candidate_handle=cand_handle,
+                    pooled_seeds=pooled_seeds,
+                    pooled_identity=pooled_identity,
+                    seed_lookup_failed=seed_lookup_failed,
                 )
             )
         if v == "warnings":

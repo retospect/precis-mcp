@@ -133,9 +133,10 @@ def test_trust_view_renders_gate_rows_and_verdict(
 ) -> None:
     """The gate table renders one row per check. The fixture's only fatal
     fail is off-route (``M->S`` — a selectivity blocker, not a barrier
-    one), so the stored ``available: True`` stands, the replay agrees, and
-    with one seed the pass is labelled vacuous rather than read as a real
-    endpoint-agreement pass."""
+    one), so the replay agrees with the stored ``available: True`` — but
+    a single seed leaves endpoint_agreement silent, and under the
+    seed-independence gate (gr517804 R6) a 1-seed neb barrier is BLOCKED,
+    the vacuous pass labelled, never read as a real pass."""
     h = _handler(pathway_store)
     _seed(
         pathway_store,
@@ -145,11 +146,15 @@ def test_trust_view_renders_gate_rows_and_verdict(
 
     r = h.get(id="trust-rows", view="trust")
     assert "gate ·" in r.body
-    assert "verdict: PASS (vacuous" in r.body
+    assert "verdict: BLOCKED" in r.body
+    assert "seeds:1-independent" in r.body
     assert "replay agrees with stored trust_summary" in r.body
     assert "detachment" in r.body
     assert "neb_convergence" in r.body
-    assert "not-run" in r.body
+    ea_line = next(
+        ln for ln in r.body.splitlines() if ln.startswith("endpoint_agreement")
+    )
+    assert "not-run" in ea_line
     assert "## endpoint agreement" in r.body
 
 

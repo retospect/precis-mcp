@@ -310,14 +310,23 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 - `view='intermediates'` / `view='steps'` — the states / elementary steps as tables.
 - `view='trust'` — the barrier trust gate, replayed from the stored trust
   records: a `gate × verdict × input × threshold × blocking` table (the
-  engine checks, then the precis-side absurd-magnitude and twin-
-  disagreement guards and the never-gating spread readout), the recomputed
-  `blocked_by` checked against the stored `trust_summary` (`replay
-  DISAGREES` names the difference), then `## endpoint agreement` — one row
-  per route state and seed with `delta_meV` next to the `tol_eV` it was
-  judged against. A check that never ran reads `not-run`, never `pass`; a
-  1-seed run reads `PASS (vacuous …)`. Read this first; `view='warnings'`
-  keeps the per-record detail.
+  engine checks, then the precis-side `seed independence`, absurd-magnitude
+  and twin-disagreement guards and the never-gating spread readout), the
+  recomputed `blocked_by` checked against the stored `trust_summary`
+  (`replay DISAGREES` names the difference), then `## endpoint agreement` —
+  one row per route state and seed with `delta_meV` next to the `tol_eV` it
+  was judged against. A check that never ran reads `not-run`, never `pass`.
+  The seed-independence row is a real gate: a neb-tier run needs ≥2
+  distinct same-engine seeds in the union pooled across its ready
+  siblings — 1 seed (`seeds:1-independent`) or no provable seed evidence
+  (`seeds:unknown`) block as `BLOCKED`, and the `next:` footer names a
+  rerun with fresh seed numbers. When pooling makes the union, the
+  `endpoint_agreement` row replays agreement over the merged
+  `endpoint_identity` records across seeds: a spread beyond `tol_eV`
+  reads `fail` with `endpoint:union-disagree` in `blocked_by`, and no
+  cross-seed pair blocks as `endpoint:union-not-run`; when the union
+  answers a check the run's own seeds couldn't, the row shows the
+  union's verdict instead of a bare `not-run`. Read this first; `view='warnings'` keeps the per-record detail.
 - `view='warnings'` — where to distrust the numbers, in three sections:
   **blocking** (real fatal, on-route trust-record fails — read these first),
   **counts** (everything else, one row per check/verdict, e.g. `wrong_binder

@@ -1974,7 +1974,9 @@ for whichever rerun the system schedules on its own. It re-measures, never \
 revises — a changed reaction or geometry is a `proposals` entry, not a \
 rerun. An optional `"seeds"` list names the seed set the rerun dispatches \
 (each seed is a full network evaluation, at most 8; fresh seed numbers \
-give the endpoint_agreement trust check new basins to compare — read \
+give the endpoint_agreement trust check new basins to compare — a neb-tier \
+barrier needs ≥2 distinct seeds across the run and its ready siblings, \
+reused numbers add nothing new — read \
 `get(kind='pathway', view='trust')` for each gate's verdict and the \
 per-state `delta_meV` versus the recorded `tol_eV`). \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \

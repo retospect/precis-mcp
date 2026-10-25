@@ -93,6 +93,25 @@ The gate a harvested barrier passes is assembled from three places:
    `frontier._BARRIER_ABSURD_EV` (8 eV).
 3. **precis:** `_flag_barrier_twin_disagreement`: same `geom_hash_c` twins
    at the same tier must agree within `_TWIN_BARRIER_TOL_EV` (0.5 eV).
+4. **precis (gr517804, ruled 2026-10-25):** `_flag_few_independent_seeds`:
+   a neb-tier barrier needs ≥2 *distinct* same-`autocatpath_version` seeds
+   in the UNION pooled across the run and its ready siblings —
+   `trust_gate.sibling_key` (same `candidate_ref` + engine + tier +
+   IS-geometry + route/config) via `sibling_seeds`. A sibling that never
+   completed contributes nothing; a reused seed number counts once.
+   `seeds:unknown` fires when the set is unprovable (no record seed
+   fields, no declared `results.seeds`). When pooling makes the union,
+   endpoint agreement is replayed over the merged `endpoint_identity`
+   records (`endpoint_union_blocker`, round-2 R1): a per-state spread
+   beyond `tol_eV` is `endpoint:union-disagree`; a union that reached 2
+   only via pooling with no cross-seed pair is `endpoint:union-not-run`
+   (two vacuous 1-seed passes never add up). On a shortfall the
+   candidate's
+   `barrier_trusted` goes False, `barrier_seed_blocker` carries the
+   synthetic id (`seeds:<n>-independent` / `seeds:unknown` /
+   `endpoint:union-*`) and
+   `barrier_independent_seeds` the union count; both clear on a later
+   trusted (or non-neb) harvest.
 
 `barrier_low_confidence` (std > `energy_thresh`, or fewer than 2 samples)
 rides along on the candidate and never gates.
@@ -138,6 +157,7 @@ saddle_verified	pass	N pass · M marginal (warn)	ts not at endpoint, curvature <
 multistart	pass	K records, all n_valid ≥ 1	n_valid ≥ 1	0
 relax_convergence	…
 wrong_binder	…
+seed independence (precis)	pass	3 independent seeds	≥ 2 independent seeds, same engine	0
 absurd magnitude (precis)	pass	|1.004| eV	≤ 8.0 eV	0
 twin disagreement (precis)	not-run	no geom_hash_c twin at tier neb	≤ 0.5 eV	0
 spread (info, never gates)	warn	std 0.938 eV on the rate-limiting step	energy_thresh <config> eV	—
@@ -151,8 +171,8 @@ Rules:
 
 - A check that emitted no records on the route renders `not-run` with a
   reason (`1 seed: agreement needs ≥ 2`, `no band`). It never renders
-  `pass`. The pw336193 case reads: `verdict: PASS (vacuous: endpoint
-  agreement not run, 1 seed)`.
+  `pass`. The pw336193 case is now gated (gr517804): `verdict: BLOCKED ·
+  seeds:1-independent`.
 - The `blocking` column counts record ids in the replayed blocked set.
   If the replay differs from the stored `trust_summary.barrier.blocked_by`,
   the header says `replay DISAGREES` and lists the difference. The stored
@@ -289,13 +309,15 @@ citing `view='trust'` instead of dispatching a confirmation rerun.
 
 ## Open questions / decisions log
 
-1. **Vacuous single-seed pass.** One seed leaves `endpoint_agreement`
-   silent, so `trust_summary` reads available (pw336193). Should harvest
-   treat a 1-seed neb-tier barrier as trusted? Recommendation: no change
-   here; the view labels it `vacuous`. If Reto wants it gated, file a
-   follow-up so precis untrusts a neb-tier barrier with fewer than 2
-   independent seeds. That changes quest rankings, so it needs its own
-   ruling. (Not a blocker.)
+1. **Vacuous single-seed pass.** RULED 2026-10-25 (gr517804): gated — a
+   neb-tier barrier with fewer than 2 independent same-version seeds is NOT
+   trusted (`_flag_few_independent_seeds` in the harvest,
+   `seed independence (precis)` row in `view='trust'`). "Independent" is
+   the UNION of distinct seeds across the run and its ready siblings
+   (`sibling_key`: same candidate + engine + tier + IS-geometry +
+   route/config) — an unknowable set is untrusted (`seeds:unknown`); the
+   dry-list of stored pathways that would flip is
+   `scripts/neb-seed-trust-drylist` (read-only).
 2. **`view='gate'` as a new name, or replace the body of `view='trust'`?**
    RULED 2026-10-25: replace `view='trust'`'s body. The per-record flat
    table's record ids remain citable via `view='warnings'`' blocking
