@@ -304,7 +304,7 @@ class GripeHandler(NumericRefHandler):
             page=page,
             offset=offset,
             sort="prio" if view == "open" else "recency",
-            more_call=f"get(kind='gripe', id='/{view}', args={{{more_args}}})",
+            more_call=f"get(kind='gripe', id='/{view}', args={{{{{more_args}}}}})",
         )
         if "next page:" in resp.body:
             resp = replace(
