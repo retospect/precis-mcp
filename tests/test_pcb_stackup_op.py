@@ -17,6 +17,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import DEFAULT_STACKUP, STACKUP_PRESETS
 from precis.pcb import ir as pcb_ir
 from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
@@ -375,3 +376,80 @@ def test_op_stackup_is_listed_in_the_unknown_op_error(pcb):
     with pytest.raises(BadInput) as exc:
         pcb.put(id="stk-list", args={"op": "layers"})
     assert "stackup" in str(exc.value.options or [])
+
+
+# ── batch-meta stackup authoring (gr515320) ─────────────────────────────
+#
+# ``precis_geom.pcb.Board(stackup=…)`` writes ``meta.stackup_preset`` /
+# ``meta.stackup_layers`` into the put batch. The store's put path applies
+# them to the board row; neither key present leaves the board on
+# DEFAULT_STACKUP.
+
+
+def test_put_meta_stackup_preset_applies_to_the_board(pcb, store):
+    """A ``Board(stackup='2l')`` upload gets the 2-layer preset, not the
+    silent 4-layer default."""
+    pcb.put(id="stk-meta-2l", args={**_GND_DESIGN, "meta": {"stackup_preset": "2l"}})
+    ref = store.get_ref(kind="pcb", id="stk-meta-2l")
+    assert ref is not None
+    stored = store.pcb_graph(ref.id)["board"]["stackup"]
+    assert [e["name"] for e in stored] == ["F.Cu", "B.Cu"]
+    assert all(e.get("fill") == "GND" for e in stored)
+    body = pcb.get(id="stk-meta-2l", view="stackup").body
+    assert "preset 2l (sides: both)" in body
+
+
+def test_put_meta_stackup_layers_applies_to_the_board(pcb, store):
+    """A ``Board(stackup=4)``-style bare layer list is normalised like
+    ``local._stackup`` — signal rows, inner layers routable."""
+    pcb.put(
+        id="stk-meta-layers",
+        args={
+            **_DESIGN,
+            "meta": {"stackup_layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]},
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="stk-meta-layers")
+    assert ref is not None
+    stored = store.pcb_graph(ref.id)["board"]["stackup"]
+    assert stored == [
+        {"name": "F.Cu", "role": "signal"},
+        {"name": "In1.Cu", "role": "signal", "routable": True},
+        {"name": "In2.Cu", "role": "signal", "routable": True},
+        {"name": "B.Cu", "role": "signal"},
+    ]
+
+
+def test_put_meta_stackup_refusals(pcb):
+    """An unknown preset, or a preset whose layer count disagrees with
+    ``stackup_layers``, is refused — the error names the valid presets."""
+    with pytest.raises(BadInput, match="not a stackup preset") as exc:
+        pcb.put(
+            id="stk-meta-bad",
+            args={**_DESIGN, "meta": {"stackup_preset": "6l"}},
+        )
+    for name in sorted(STACKUP_PRESETS):
+        assert name in str(exc.value.next)
+
+    with pytest.raises(BadInput, match="disagree") as exc:
+        pcb.put(
+            id="stk-meta-bad",
+            args={
+                **_DESIGN,
+                "meta": {
+                    "stackup_preset": "2l",
+                    "stackup_layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
+                },
+            },
+        )
+    for name in sorted(STACKUP_PRESETS):
+        assert name in str(exc.value.next)
+
+
+def test_put_without_meta_stackup_keeps_the_default(pcb, store):
+    """The default applies only when the batch authors no stackup at
+    all."""
+    pcb.put(id="stk-meta-none", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="stk-meta-none")
+    assert ref is not None
+    assert store.pcb_graph(ref.id)["board"]["stackup"] == DEFAULT_STACKUP

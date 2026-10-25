@@ -37,10 +37,13 @@ import hashlib
 import importlib.metadata
 import json
 import re
+import warnings
 from collections.abc import Callable, Iterable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 from precis_geom import pcb_shape as _shape
@@ -579,17 +582,23 @@ class CatalogPart:
     error: str | None = None
 
 
-#: Pending :func:`catalog` reads made before ANY board existed, keyed by
-#: lcsc — claimed once by the next manifest written (a pre-board read has
-#: no owner to bind to). Once a board exists, module-level reads bind at
-#: read time to ``_LAST_BOARD`` instead of racing manifests.
+#: Pending :func:`catalog` reads made with no board to bind to, keyed by
+#: lcsc — claimed once by the next manifest written (gr515495: a read's
+#: owner is the ``board=`` argument or the ``with board:`` block it ran
+#: in; an unbound read lands here deprecated, and whichever board next
+#: writes a manifest claims the pool — reads cannot leak into a SECOND
+#: board, but nothing makes the claim order deterministic).
 _CATALOG_READS: dict[str, dict[str, Any]] = {}
 
-#: The board a module-level :func:`catalog` read binds to — the most
-#: recently constructed one, i.e. the board a script is presumably
-#: building when it reads. ``None`` before the first :class:`Board`;
-#: :meth:`Board.catalog` always binds to its own board regardless.
-_LAST_BOARD: Board | None = None
+#: The context-managed "current board" — the ``Board`` a ``with board:``
+#: block is inside. A module-level :func:`catalog` read binds to it at
+#: read time; :meth:`Board.__exit__` resets the binding on exit (a
+#: ContextVar token restore), so a board can never leak its binding past
+#: the block that names it — the defect the old ``_LAST_BOARD`` global
+#: had (gr515495).
+_CURRENT_BOARD: ContextVar[Board | None] = ContextVar(
+    "precis_geom_pcb_current_board", default=None
+)
 
 
 def _manifest_entry(part: CatalogPart) -> dict[str, Any]:
@@ -675,17 +684,32 @@ def _catalog_read(lcsc: str) -> CatalogPart:
     return part
 
 
-def catalog(lcsc: str) -> CatalogPart:
-    """Read a catalog footprint and bind its manifest entry to the board
-    under construction (``_LAST_BOARD``), or to the pending pool when no
-    board exists yet — claimed once by the next manifest written."""
+def catalog(lcsc: str, *, board: Board | None = None) -> CatalogPart:
+    """Read a catalog footprint and bind its manifest entry to a board —
+    the ``board=`` argument, else the board whose ``with board:`` block
+    this read runs inside (``_CURRENT_BOARD``; gr515495 — binding is
+    explicit, never a process-global "board most recently built").
+
+    A read with no board at all lands in the pending pool
+    (:data:`_CATALOG_READS`), claimed once by the next manifest written —
+    the DEPRECATED implicit path every ``Board(...)``-then-``catalog()``
+    script written before ``board=``/``with`` still works through, with a
+    warning. :meth:`Board.catalog` binds to its own board regardless."""
     part = _catalog_read(lcsc)
     if part.resolved or part.error is not None:
-        board = _LAST_BOARD
-        if board is not None:
-            board._catalog_reads[part.lcsc] = _manifest_entry(part)
-        else:
+        target = board if board is not None else _CURRENT_BOARD.get()
+        if target is None:
+            warnings.warn(
+                "pcb.catalog() with no board — pass board=, call "
+                "b.catalog(lcsc), or read inside `with b:`; the read is "
+                "pending for whatever board next writes a manifest "
+                "(implicit binding is deprecated)",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             _CATALOG_READS[part.lcsc] = _manifest_entry(part)
+        else:
+            target._catalog_reads[part.lcsc] = _manifest_entry(part)
     return part
 
 
@@ -747,8 +771,7 @@ class Board:
         self._catalog_reads: dict[str, dict[str, Any]] = {}
         self._used_prefixes: set[str] = set()
         self._frame_stack: list[_ModuleFrame] = []
-        global _LAST_BOARD
-        _LAST_BOARD = self
+        self._board_ctx_tokens: list[Any] = []
 
         if isinstance(stackup, list):
             raise PcbBuilderError(
@@ -776,6 +799,22 @@ class Board:
             self.meta["placement_sides"] = sides
         if outline is not None:
             self.outline(outline)
+
+    def __enter__(self) -> Board:
+        """``with board:`` makes this board the current one — a
+        module-level :func:`catalog` read in the block binds here.
+        Exiting resets the binding (ContextVar token), so the board's
+        reach ends with the block."""
+        self._board_ctx_tokens.append(_CURRENT_BOARD.set(self))
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        _CURRENT_BOARD.reset(self._board_ctx_tokens.pop())
 
     def catalog(self, lcsc: str) -> CatalogPart:
         """:func:`catalog` bound to THIS board — the read's manifest

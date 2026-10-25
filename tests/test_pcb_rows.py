@@ -280,7 +280,7 @@ def test_catalog_resolves_via_precis_client(monkeypatch: pytest.MonkeyPatch) -> 
     pcb._CATALOG_READS.clear()
 
     b = pcb.Board("m")
-    part = pcb.catalog("C1")
+    part = pcb.catalog("C1", board=b)
     assert part.resolved
     assert part.pads == _CATALOG_FP["pads"]
     assert part.part_id == "pn123"
@@ -316,8 +316,9 @@ def test_catalog_stays_unresolved_without_client(
 def test_catalog_reads_scope_per_board(monkeypatch: pytest.MonkeyPatch) -> None:
     """gr514460 seam re-review: one board's reads cannot leak into
     another board's manifest — a module-level ``catalog()`` read binds
-    at read time to the most recently constructed board (deterministic,
-    not first-manifest-wins); ``b.catalog`` binds its read outright."""
+    at read time to the board named by ``board=`` or the enclosing
+    ``with`` block (gr515495: explicit binding, not a global last-built
+    board); ``b.catalog`` binds its read outright."""
     payload = {"lcsc": "C1", "part_id": "pn1", **_CATALOG_FP, "sha": "a1"}
     monkeypatch.setitem(
         sys.modules,
@@ -327,23 +328,22 @@ def test_catalog_reads_scope_per_board(monkeypatch: pytest.MonkeyPatch) -> None:
     pcb._CATALOG_READS.clear()
 
     a = pcb.Board("a")
-    pcb.catalog("C1")  # a is the board under construction — binds to a
+    pcb.catalog("C1", board=a)
     b = pcb.Board("b")
-    pcb.catalog("C2")  # most recently constructed now — binds to b
-    b.catalog("C3")  # explicit — binds to b
+    pcb.catalog("C2", board=b)
+    b.catalog("C3")  # bound method — binds to b
 
     assert pcb.Board("c").manifest()["parts"] == []
     assert [p["lcsc"] for p in a.manifest()["parts"]] == ["C1"]
     assert [p["lcsc"] for p in b.manifest()["parts"]] == ["C2", "C3"]
 
 
-def test_module_catalog_binds_to_latest_board(
+def test_module_catalog_binds_inside_with_board(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The a/b scenario verbatim: ``a = Board(); b = Board();
-    pcb.catalog("C1")`` — the read belongs to b (the board under
-    construction at read time). A manifest a writes first cannot claim
-    it."""
+    """gr515495: ``with b:`` is the explicit current-board context —
+    reads inside bind to b, and exiting resets the binding so a stale
+    board can never claim a later read."""
     payload = {"lcsc": "C1", "part_id": "pn1", **_CATALOG_FP, "sha": "a1"}
     monkeypatch.setitem(
         sys.modules,
@@ -353,11 +353,33 @@ def test_module_catalog_binds_to_latest_board(
     pcb._CATALOG_READS.clear()
 
     a = pcb.Board("a")
-    b = pcb.Board("b")
-    pcb.catalog("C1")
+    with pcb.Board("b") as b:
+        pcb.catalog("C1")
+    # After __exit__ the binding is gone — a board-less read is pending
+    # again (deprecated), not bound to the stale b.
+    with pytest.warns(DeprecationWarning, match="no board"):
+        pcb.catalog("C2")
 
-    assert a.manifest()["parts"] == []
+    assert [p["lcsc"] for p in a.manifest()["parts"]] == ["C2"]
     assert [p["lcsc"] for p in b.manifest()["parts"]] == ["C1"]
+
+
+def test_module_catalog_without_board_warns_and_stays_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deprecation shim (gr515495): ``pcb.catalog()`` with no board=
+    and no ``with`` block still lands on the next manifest — but warns."""
+    payload = {"lcsc": "C1", "part_id": "pn1", **_CATALOG_FP, "sha": "a1"}
+    monkeypatch.setitem(
+        sys.modules,
+        "precis_client",
+        _fake_client(lambda *a, **kw: json.dumps(payload)),
+    )
+    pcb._CATALOG_READS.clear()
+
+    with pytest.warns(DeprecationWarning, match="deprecated"):
+        pcb.catalog("C1")
+    assert [p["lcsc"] for p in pcb.Board("a").manifest()["parts"]] == ["C1"]
 
 
 def test_board_catalog_does_not_steal_a_pending_read(
@@ -372,10 +394,10 @@ def test_board_catalog_does_not_steal_a_pending_read(
         "precis_client",
         _fake_client(lambda *a, **kw: json.dumps(payload)),
     )
-    monkeypatch.setattr(pcb, "_LAST_BOARD", None)
     pcb._CATALOG_READS.clear()
 
-    pcb.catalog("C1")  # no board yet — pending for the next manifest
+    with pytest.warns(DeprecationWarning):
+        pcb.catalog("C1")  # no board bound — pending for the next manifest
     b = pcb.Board("b")
     b.catalog("C1")  # b's own read; the pending one survives
     assert [p["lcsc"] for p in pcb.Board("a").manifest()["parts"]] == ["C1"]
@@ -393,7 +415,7 @@ def test_catalog_read_failure_records_unresolved(
 
     monkeypatch.setitem(sys.modules, "precis_client", _fake_client(boom))
     f = pcb.Board("f")
-    part = pcb.catalog("C7")
+    part = f.catalog("C7")
     assert not part.resolved and part.error
     entry = f.manifest()["parts"][0]
     assert entry == {"lcsc": "C7", "provenance": "unresolved", "error": part.error}
@@ -413,7 +435,8 @@ def test_catalog_paged_reply_names_paging(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setitem(sys.modules, "precis_client", _fake_client(paged))
 
     b = pcb.Board("p")
-    part = pcb.catalog("C1")
+    with b:
+        part = pcb.catalog("C1")
     assert not part.resolved
     assert part.error == "paged response, more() not followed"
     entry = b.manifest()["parts"][0]
@@ -431,6 +454,6 @@ def test_catalog_footer_wrapped_response(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setitem(sys.modules, "precis_client", _fake_client(wrapped))
     w = pcb.Board("w")
-    part = pcb.catalog("C1")
+    part = pcb.catalog("C1", board=w)
     assert part.resolved and part.pads == _CATALOG_FP["pads"]
     assert w.manifest()["parts"][0]["lcsc"] == "C1"

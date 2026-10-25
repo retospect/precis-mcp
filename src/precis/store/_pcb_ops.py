@@ -48,9 +48,13 @@ from precis.pcb import (
     DEFAULT_STACKUP,
     PIN_CURRENT_ROLES,
     PIN_ETYPES,
+    PRESET_SIDES,
+    STACKUP_PRESETS,
+    stackup_preset,
 )
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
+from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
 from precis.pcb import route_state as pcb_route_state
 from precis.pcb import rows as pcb_rows
@@ -639,6 +643,10 @@ class PcbMixin:
                 )
 
         board_id = self.pcb_ensure_board(ref.id, conn=conn)
+        # A batch-authored stackup (precis_geom's Board(stackup=…) writes
+        # these meta keys) reaches the board row here, not stranded on
+        # refs.meta — a refusal rolls back the whole put with it.
+        self._pcb_apply_meta_stackup(conn, board_id, meta)
 
         # Generators land BEFORE footprints/components/nets/connections/
         # features: an unchanged-params generator is a no-op (nothing
@@ -4322,6 +4330,98 @@ class PcbMixin:
         :meth:`pcb_upsert_net_classes` — the inline "set class rules"
         editor's write path. Reuses ``conn`` inside an existing transaction."""
         return self.pcb_upsert_net_classes(ref_id, {name: rules}, conn=conn)
+
+    def _pcb_apply_meta_stackup(
+        self, conn: Connection, board_id: int, meta: dict[str, Any] | None
+    ) -> None:
+        """Apply a batch-authored stackup to the board row (gr515320).
+
+        ``precis_geom.pcb.Board(stackup=…)`` writes its stackup into the
+        batch's ``meta`` — ``stackup_preset`` for a preset name,
+        ``stackup_layers`` for a copper list — and until this ran, the
+        keys landed on ``refs.meta`` and were never read, so a
+        ``Board(stackup=2)`` upload silently kept
+        :data:`precis.pcb.DEFAULT_STACKUP`.
+
+        Resolution mirrors ``precis.pcb.local._stackup`` so a batch and
+        its offline ``batch_to_graph`` twin hydrate the same board: a
+        preset expands through :func:`precis.pcb.stackup_preset` (and
+        wins over a same-count ``stackup_layers``); a bare layer list
+        takes dict entries verbatim and wraps bare names as signal rows
+        (inner layers ``routable``, matching the rows
+        ``_pcb_ensure_board`` stamps). Neither key present leaves the
+        board on DEFAULT_STACKUP — the one case the default applies.
+        ``plane_net``/``fill``/``pour_nets`` stay declarations on the
+        stored rows; applying them to ``pcb_planes`` remains
+        ``op='stackup'``/``op='plane_net'``'s job, which checks the named
+        nets exist.
+
+        Refusals — never a silent fall-back to the default: an unknown
+        preset, or a preset whose layer count disagrees with a
+        ``stackup_layers`` authored alongside it, is a
+        :class:`BadInput` naming the valid presets."""
+        if not meta:
+            return
+        preset = meta.get("stackup_preset")
+        layers = meta.get("stackup_layers")
+        if preset is None and not layers:
+            return
+        preset_name: str | None = None
+        sides: str | None = None
+        if preset is not None:
+            preset_name = str(preset).strip()
+            if preset_name not in STACKUP_PRESETS:
+                raise BadInput(
+                    f"meta.stackup_preset {preset_name!r} is not a stackup preset",
+                    next="meta.stackup_preset takes one of "
+                    + ", ".join(sorted(STACKUP_PRESETS)),
+                )
+            resolved = stackup_preset(preset_name)
+            if isinstance(layers, list) and len(layers) != len(resolved):
+                raise BadInput(
+                    f"meta.stackup_preset {preset_name!r} expands to "
+                    f"{len(resolved)} layers but meta.stackup_layers lists "
+                    f"{len(layers)} — the two keys disagree",
+                    next="drop one of the keys, or pick a preset whose "
+                    "count matches: " + ", ".join(sorted(STACKUP_PRESETS)),
+                )
+            sides = str(
+                meta.get("placement_sides") or PRESET_SIDES.get(preset_name) or "both"
+            )
+        else:
+            if not isinstance(layers, list):
+                raise BadInput(
+                    "meta.stackup_layers must be a list of layer entries "
+                    f"(names or stackup dicts), got {type(layers).__name__}",
+                    next="meta.stackup_layers lists copper layers top→bottom "
+                    f"(outer pair {list(pcb_ir.OUTER_LAYER_NAMES)}), or use "
+                    "meta.stackup_preset with one of "
+                    + ", ".join(sorted(STACKUP_PRESETS)),
+                )
+            resolved = [
+                entry
+                if isinstance(entry, dict)
+                else {
+                    "name": str(entry),
+                    "role": "signal",
+                    **(
+                        {"routable": True}
+                        if str(entry) not in pcb_ir.OUTER_LAYER_NAMES
+                        else {}
+                    ),
+                }
+                for entry in layers
+            ]
+        try:
+            stackup = pcb_ir.validate_stackup(resolved)
+        except ValueError as exc:
+            raise BadInput(
+                str(exc),
+                next="meta.stackup_layers lists copper layers top→bottom "
+                f"(outer pair {list(pcb_ir.OUTER_LAYER_NAMES)}), or use "
+                "meta.stackup_preset with one of " + ", ".join(sorted(STACKUP_PRESETS)),
+            ) from exc
+        self._pcb_set_stackup(conn, board_id, stackup, preset_name, sides)
 
     def pcb_set_stackup(
         self,

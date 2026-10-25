@@ -92,6 +92,16 @@ def _stackup(batch: dict[str, Any]) -> list[dict[str, Any]]:
                 f"unknown stackup preset {preset!r} — known: {sorted(STACKUP_PRESETS)}"
             )
         layers = copy.deepcopy(STACKUP_PRESETS[str(preset)])
+        # The server refuses the same disagreement
+        # (``store._pcb_apply_meta_stackup``) — an offline run accepting
+        # what the put rejects would break the twin parity.
+        authored = meta.get("stackup_layers")
+        if isinstance(authored, list) and len(authored) != len(layers):
+            raise LocalError(
+                f"stackup_preset {preset!r} expands to {len(layers)} layers "
+                f"but stackup_layers lists {len(authored)} — the two keys "
+                "disagree"
+            )
     elif meta.get("stackup_layers"):
         layers = copy.deepcopy(meta["stackup_layers"])
     else:
@@ -100,10 +110,9 @@ def _stackup(batch: dict[str, Any]) -> list[dict[str, Any]]:
         # ``Board(stackup=4)``/an authored ``meta.stackup_layers`` emits
         # bare names — validate_stackup wants dicts, so a bare name
         # becomes a signal row. Inner rows take the explicit
-        # ``routable: True`` DEFAULT_STACKUP stamps (``pcb_ensure_board``
-        # inserts that literal verbatim — ``meta.stackup_layers`` is a
-        # dead key server-side — so this expansion must match its shape
-        # for the ``batch_to_graph``/``pcb_graph`` parity to be literal).
+        # ``routable: True`` DEFAULT_STACKUP stamps, matching the
+        # normalisation ``store._pcb_apply_meta_stackup`` runs on the
+        # same keys server-side (gr515320) — the parity must be literal.
         return validate_stackup(
             [
                 entry
