@@ -121,6 +121,12 @@ paper needs.
    wall and the seed cpuset (`0-4,10-14`, runner falls back unpinned when
    the node lacks those CPUs) landed in 4181421ce; the dispatch follows
    its deploy (Resume line).
+4. **backlog/neb-structure-builder.md** (gr512126) — Reto 2026-10-25:
+   build it, kept separate from gr506762/gr515871. qu509651 has zero
+   barriers after 21 sightings. Slice 1 needs no GPU and unblocks its
+   endpoints. Draft until Reto answers the open questions; slice 3's
+   per-edge job is also the first piece Horizon 1 can reuse.
+
 ## Horizon
 
 Items 1-4 and 6 are engine items moved down from Do next 2026-10-01 to keep
