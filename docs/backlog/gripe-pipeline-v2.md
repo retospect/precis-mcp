@@ -12,289 +12,309 @@ pipeline with one new state, `verify`.
 
 ## Problem and evidence
 
-From `/tmp/gripe-fix/queue.txt` (census line, 22:45Z 2026-10-24): 376 open
-(327 dogfood), **521 filed in 24h** (417 dogfood), **170 closed in 24h**. The
-groom pass of 2026-10-25 (`/tmp/gripe-fix/groom-summary.md`) started at 126
-open and found: 31 UNBRIEFED, 30 HELD-SPEC, 27 DEPLOY:r105, 10 HELD-OPS, 6
-HELD-RETO, 6 BUILDER, 11 QUEUED. Only 2 of 5 closes were duplicates, and the
-earlier census had already merged the rest by hand.
-
-Intake outruns closure about 3:1 at peak and the only throttle is a
-coordinator's attention. "Deployed, close when r105 is live" is a hand-kept
-27-row list. Nothing asks "did the fix work": 515633 sat at "deployed r101,
-confirm at runtime".
+Census 22:45Z 2026-10-24 (`/tmp/gripe-fix/queue.txt`): 376 open, **521 filed
+in 24h**, **170 closed**. The 2026-10-25 groom started at 126 open (31
+UNBRIEFED, 30 HELD-SPEC, 27 DEPLOY:r105, 10 HELD-OPS, 6 HELD-RETO, 6
+BUILDER, 11 QUEUED); only 2 of 5 closes were duplicates. Intake outruns
+closure about 3:1 at peak, throttled only by a coordinator's attention.
+"Deployed, close when r105 is live" is a hand-kept 27-row list; nothing asks
+"did the fix work" (515633 sat at "deployed r101, confirm at runtime").
 
 ## What exists vs what is new
 
 | Piece | Exists | New in v2 |
 |---|---|---|
-| Filing | `GripeHandler.put` + `_insert_gripe` (`handlers/gripe.py`), read-only filing via `file_gripe_readonly` (0079) | `gripe_parents` pass after embedding (open+triaged only, no model); flood tag |
-| Dedup, observation | `args={'observation': True}` files closed; theme registry `_gripe_themes.py` (e49d4484a): 10 slugs, folds a match into the `theme:<slug>` keeper as `+1` | embedding-nearest potential duplicate parents on every gripe; themes stay the exact path |
-| Statuses | `open triaged ready_for_fix in_review done wontfix`, DB-checked by 0176 triggers; `_KIND_STATUS_VALUES` | one value: `verify` (forward migration) |
-| Dup links | `link(rel='supersedes')`, `precis-gripe-help` "soft-delete a duplicate" | `x N` derived from those links in listings |
-| Semantic search | `search(kind='gripe', q=...)`, HNSW per kind, `chunk_embeddings` (0226, 0243) | reused by the parents pass; no new index |
-| Read-only filing | ro-gripes spec (`ro-gripes.md`, branch `worktree-ro-gripes`): cap 3/run, 20/h/role, `source:agent_ro` | shares the flood tag; v2 does not touch its SQL |
-| Auto gripes | `workers/auto_gripe.py` (AUTO_PRIO 7, auto-close on clear), call_errors cadence | triaged like any other; `source` tag read as a signal |
-| Promotion | `workers/backlog_groom.py` (OFF), `job_types/diagnose_gripe.py`, `fix_gripe.py` | tick reuses the job-type pattern; groomer stays OFF |
-| Manual flow, closing | `/tmp/gripe-fix` census/triage/groom, `issue-closer` agent (closes only what a commit visibly fixes) | the tick emits the same classes as tags; verify tick takes the "deployed" half |
-| Fleet, cost | `scripts/board`, `fleet-wave ctx`, `precis llm cost` (`cli/llm.py`) | flow metrics, stuck flag, per-closed-gripe rollup |
+| Filing | `GripeHandler.put` + `_insert_gripe` (`handlers/gripe.py`; inserts `refs(kind, title, meta)`), `file_gripe_readonly` (0079, ro-gripes caps) | `gripe_parents` pass after embedding (no model); flood tag |
+| Dedup | `args={'observation': True}` files closed; theme registry `_gripe_themes.py`: 10 slugs, folds a match into the `theme:<slug>` keeper as a `+1` comment; `link(rel='supersedes')` (`precis-gripe-help`) | embedding-nearest potential duplicate parents on every gripe; `x N` in listings |
+| Statuses | `open triaged ready_for_fix in_review done wontfix`, DB-checked by 0176 triggers; `_KIND_STATUS_VALUES` (`store/types.py`) | one value: `verify` (forward migration, ~12 enumerations, see Slice 1) |
+| Semantic search | `search(kind='gripe', q=...)`; `gripe` is in `_ANN_PARTIAL_KINDS` (`store/_chunks_ops.py`): own partial HNSW index on `chunk_embeddings` (0226) | reused by the parents pass; no new index |
+| Triage today | `workers/gripe_triage.py`: deterministic, no LLM, daily `gripe_triage` Cadence (`scheduler.py`), dark unless a `service_config` row lights it; one `triage:` PRIO/thread suggestion comment per stale gripe, max 10/fire, never retags or closes | extended, not replaced: see Triage tick |
+| Fix lane | `backlog_groom.py` (OFF), `job_types/diagnose_gripe.py`, `fix_gripe.py`; `fixer/` (`writeback.py`, `claude_inproc` flip a landed build to `in_review`); `scripts/gripe-note` comments gripes on deploy | groomer stays OFF; the tick is NOT a `claude_inproc` tool-agent job |
+| Manual flow, cost | `/tmp/gripe-fix` census/groom, `issue-closer`, `workers/auto_gripe.py`, `scripts/board`, `fleet-wave ctx`, `precis llm cost` | tick emits the same classes as tags; verify takes the "deployed" half; flow metrics |
 
 ## State machine
 
 ```
 open --triage--> triaged --batch+size--> ready_for_fix --claim--> in_review
-  ^                 |                                               | deploy
+  ^                 |                                               | confirmed deploy
   |                 +-- not a bug: triaged + disagreement (Reto)    v
   +---- reopened (STATUS:open + evidence) <--- probe fails ------ verify
                                           done <-- probe ok -------+
 ```
 
-- `in_review` is read as "a fix is in flight" (claimed through landing);
-  no second new value. `verify` is the only new STATUS: entered when the fix
-  sha is an ancestor of `origin/prod`, left only by a probe result.
-- `reopened` is `STATUS:open` + tag `reopened` + an evidence comment; the
-  next tick takes it first. `disagreement` is a flag tag on a `triaged`
-  gripe, never a STATUS or a close.
+- `in_review` means "a fix is in flight" (claimed through landing and
+  deploy); documented in `precis-tags.md` and `precis-gripe-help.md`
+  (today: "a fix landed on a branch; awaits merge", which `fixer/writeback.py`
+  and `claude_inproc` already set after a build). `verify` is the only new
+  STATUS: entered when a runtime-CONFIRMED release contains the fix sha, or,
+  for fixes with no deployable sha, on the `prevents:` comment; left only by
+  a probe result.
+- `reopened` is `STATUS:open` + tag `reopened` + evidence comment +
+  `meta.pipeline.reopened_at`; the next tick takes it first. Only a
+  `fix-sha:` comment newer than `reopened_at` counts for the next verify
+  entry, so a stale sha cannot bounce it back. `disagreement` is a flag tag
+  on a `triaged` gripe, never a STATUS or a close.
 
 ## Data model
 
-No new table. Tags, links and `refs.meta` (confirm the gripe ref carries
-`meta` at build time; else a `pipeline:` comment kind is the fallback).
+No new table. Tags, links and `refs.meta` (`jsonb NOT NULL DEFAULT '{}'`;
+`_insert_gripe` already writes it).
 
 | Fact | Stored as |
 |---|---|
-| fix type | tag `fix:skill\|code\|mcp\|web\|docs\|infra\|ops\|spec\|reto` |
-| cluster / thread | tag `cluster:<slug>` (free-form `ns:value` already works on gripes), plus `thread:<slug>` when it maps |
-| size | tag `size:S\|M\|L` |
+| fix type, size | tags `fix:skill\|code\|mcp\|web\|docs\|infra\|ops\|spec\|reto`, `size:S\|M\|L` |
+| cluster / thread | tag `cluster:<slug>` (free-form `ns:value` works on gripes), plus `thread:<slug>` when it maps |
 | priority | existing `PRIO` column, 1..10, lower is hotter (written by the tick) |
-| dup candidates | `refs.meta.dup_parents`: `[{id, sim, status}]`, written once by the `gripe_parents` pass |
-| dup count | derived: count of `supersedes` links onto the keeper; shown as `x N` |
-| timestamps | `refs.meta.pipeline`: `triaged_at, fix_claimed_at, deployed_at, verified_at` (UTC `Z`) |
-| fix sha | comment `fix-sha: <sha>` by the builder, parsed at deploy |
+| dup candidates | `refs.meta.dup_parents`: `[{id, sim, status}]`, once, by `gripe_parents`; the title card shows `potential duplicate parents: gr1(0.91) gr2(0.84)` |
+| dup count | `supersedes` links onto the keeper, shown as `x N`. Theme folds are only `+1` comments, so `x N` would undercount: the fold also writes a `supersedes` link (recommended) |
+| timestamps | `refs.meta.pipeline`: `triaged_at, fix_claimed_at, deployed_at, verified_at, reopened_at, claimed_at` (UTC `Z`) |
+| fix sha | comment `fix-sha: <sha>` by the builder |
 | recurrence answer | comment `prevents: skill\|check\|test <path>` or `prevents: none - <reason>` |
-| verify probe | comment `probe: <path>` (see Verify) |
+| verify probe | comment `probe: ops/probes/gr<id>_*.py` |
 | Reto question | tag `reto:ask`, recommendation in a `recommend:` comment |
 
-Migration: STATUS is DB-checked (0176 deferred triggers hold the six-value
-vocabulary). `verify` needs one forward migration replacing that value list,
-plus `_KIND_STATUS_VALUES` and the `precis-tags` table; the number is checked
-at build time (latest today 0243). Opus review: yes, it edits a commit-time
-trigger.
-
-The tick writes `STATUS` through `tag()` so existing guards (terminal needs
-a `resolved:` comment) apply.
+Migration: 0176 deferred triggers hold the six-value STATUS vocabulary, so
+`verify` needs one forward migration replacing it, plus the Slice 1
+enumerations. Number: next free after 0243 (latest on main; 0244 and 0245
+are on open branches), re-checked at build. The tick writes `STATUS` through
+`tag()` so existing guards (terminal needs `resolved:`) apply.
 
 ## Intake: potential duplicate parents, no model call
 
-Reto 2026-10-25: no model is called during filing. Filing does an embedding
-search only, against gripes still in `open` or `triaged`, and attaches the
-result as **potential duplicate parents**. The LLM triage pass, which runs
-soon after, sorts through them. The filer gets success back regardless.
+Reto 2026-10-25: no model is called during filing. A worker step attaches
+**potential duplicate parents** (embedding search only); the LLM triage tick
+sorts through them. Embeddings come from the worker (repo invariant), so the
+search cannot run inside `put` without an embedder round trip per filing
+(rejected). **Latency is minutes:** the `materialize` Cadence fires every
+300 s (`workers/scheduler.py`) but mints an `embed_batch` job only when the
+unembedded backlog passes `PRECIS_EMBED_BACKLOG_HIGH` (500) or the oldest
+unembedded chunk has waited `PRECIS_EMBED_BACKLOG_AGE_MINUTES` (30)
+(`workers/materialize.py`): up to ~5 minutes on a busy backlog, ~35 in a
+quiet trickle.
 
-Embedding timing: embeddings come from the worker, not the filing path
-(repo invariant), so at filing time the new gripe has `embedding IS NULL`
-and a synchronous search is not possible without embedding inside `put`
-(adds a model/embedder round trip to every filing; rejected). So the search
-is a worker step that runs as soon as the embedding exists:
-
-1. `_insert_gripe` is unchanged: no search, no model call, no new latency.
-2. A worker pass `gripe_parents` runs right after the embedding fill (same
-   cadence family as `auto_gripe`, target a minute or two). For each gripe
-   that has an embedding and no `meta.dup_parents`, it runs one HNSW query
-   over gripe body chunks and writes the list. Idempotent: key presence is
-   the marker; no hits is written as `[]`.
-3. **k = 8**, cosine **floor 0.80** as a first guess (calibrate, see Open
-   questions). Best chunk per gripe; exclude self and gripes already linked
-   by `supersedes`.
-4. **Statuses searched: `open` and `triaged` only.** Closed gripes are not
-   candidates. A regression of a closed gripe is caught by verify-to-close
-   and by the next filing becoming a fresh gripe that triage can link.
-5. Cost: one indexed vector query per gripe, zero LLM tokens (about 1 per
-   3 minutes at peak).
-6. Triage never waits on it: a gripe reaching the tick without `dup_parents`
-   is classified now and `dedup-pending` in meta; parents resolve next tick.
-7. A theme match at filing still folds as today and skips this pass.
-
-Readers (tick, session, or an agent sent over a batch) use `meta.dup_parents`
-via `get(kind='gripe', id=N)`; the title card adds one line,
-`potential duplicate parents: gr1(0.91) gr2(0.84)`.
+1. `_insert_gripe` is unchanged. A worker pass `gripe_parents` (new Cadence,
+   every 5 minutes) takes gripes with an embedding and no `meta.dup_parents`
+   and writes the list; key presence is the marker, no hits is `[]`.
+2. **Query shape.** The ANN returns chunks, not gripes, and gripes carry
+   comment chunks too: `chunk_kinds=['gripe_body']`, oversample 3x
+   (`LIMIT 3k`), dedupe per ref keeping the best chunk, cut to k. Candidate
+   statuses are pre-filtered with `tags=` on `STATUS:*` (a post-filter
+   under-fills), after `_prepare_filtered_ann(conn, limit)`
+   (`store/_chunks_ops.py`: iterative scan so the filtered LIMIT fills;
+   `gripe` routes to its partial index). Exclude self and gripes already
+   linked by `supersedes`.
+3. **Defaults (config): k = 8, cosine floor 0.80**; expect ~0.85 after
+   calibration.
+4. **Candidate statuses.** Recommendation: all non-terminal (`open`,
+   `triaged`, `ready_for_fix`, `in_review`, `verify`); `open`+`triaged`
+   alone misses a duplicate of a gripe already being fixed or verified.
+   Pending Reto. Closed gripes are never candidates.
+5. One indexed vector query per gripe, zero LLM tokens. Triage never waits:
+   a gripe without `dup_parents` is classified now, `dedup-pending` in meta.
+   A theme match at filing still folds as today and skips this pass.
 
 ## Flood control
 
-Cap is "rather large": 100 gripes per filer per hour (filer = `source:`/
-`agent:` tag, else DB role). Past it filing still succeeds; the row gets tag
-`flood` and skips the parents pass. The tick folds `flood` rows into one
-`cluster:flood-<filer>` keeper and posts one board line. Global alarm: 400
-per hour posts `blocked`. ro-gripes caps (3/run, 20/h/role) stay tighter and
-authoritative. Nothing is dropped, expired or refused.
+100 gripes per filer per hour (`source:`/`agent:` tag, else DB role). Past
+it filing still succeeds; the row gets tag `flood` and skips the parents
+pass. The tick folds `flood` rows into one `cluster:flood-<filer>` keeper
+and posts a board line; a global 400/hour alarm posts `blocked`. Nothing is
+dropped; ro-gripes caps stay tighter.
 
 ## Triage tick
 
-A worker job type `triage_gripes` (pattern of `diagnose_gripe`), not a
-coordinator session: coordinator wake-ups at full context are the expensive
-part of today's flow.
+**Extends `workers/gripe_triage.py`; no `triage_gripes` job type.** That
+module is already scheduler-registered (daily `gripe_triage` Cadence,
+`service_config` dark gate, `run_gripe_triage_pass`). Slice 3 keeps its
+name, gate and registration and changes the pass: cadence 15 minutes,
+`spends=True`, writes tags and PRIO instead of `triage:` suggestion
+comments (retired in the same slice, so two triage writers never run);
+`load_threads` survives as a `thread:<slug>` prompt hint. It is a **direct
+LLM call** (batch in, JSON out, validated), NOT the `claude_inproc`
+`diagnose_gripe`/`fix_gripe` tool-agent pattern, and not a coordinator
+session (full-context wake-ups are the expensive part of today's flow).
 
-- **Cadence:** every 15 minutes; also runs on demand. Batch: the 40 oldest
-  `STATUS:open` gripes (parents present or pending), `reopened` first. Under
-  flood the backlog drains 160/hour, above the 520/day intake peak.
-- **Per gripe it writes:** `fix:<type>`, `cluster:<slug>` (reusing an
-  existing slug when one fits, from the live cluster list in the prompt),
-  `size:`, `PRIO`, and `STATUS:triaged`. Gripes with `fix:reto` also get
-  `reto:ask` and a `recommend:` comment.
-- **Priority = severity x dup count x age.** Severity 1..5 comes from the
-  model with a fixed rubric (data loss or wrong result 5, blocked workflow 4,
-  papercut 2, wish 1). Score = severity x (1 + dups) x (1 + age_days / 7);
-  PRIO is the score bucketed to 1..10 (thresholds in config, not code).
-- **Dedup resolution, batched:** for every gripe whose potential-parents list is
-  non-empty, the tick judges "same root cause?" per pair. Same: it links
-  `supersedes`, comments the distinct facts copied across (the groom's
-  rule: copy facts, then link), and closes the duplicate with
-  `resolved: duplicate of gr<N>`. Different: records `dup-checked` in meta so
-  the pair is not re-judged. Unsure: leaves both, adds the pair to the Reto
-  batch only when severity is 4+.
-- **Reto batch:** all `reto:ask` gripes since the last batch go out as one
-  digest (question, recommendation) via the review queue
-  (`.claude/fleet/review-protocol.md`) and one `scripts/board post` line.
-- **Idempotent:** selects `STATUS:open` with no `meta.pipeline.triaged_at`
-  (or `reopened`), claims with `FOR UPDATE SKIP LOCKED`, and every write is
-  a replace, so a crashed or doubled tick converges.
-- Gripe text is untrusted data: quoted block in the prompt, no tools beyond
-  the tick's own writes.
+- **Batch:** the 40 oldest `STATUS:open` gripes, `reopened` first (160/hour,
+  above the 520/day intake peak). **Per gripe it writes:** `fix:<type>`, `cluster:<slug>` (reusing a slug
+  from the live list in the prompt), `size:`, `PRIO`, `STATUS:triaged`;
+  `fix:reto` also gets `reto:ask` and a `recommend:` comment. Priority =
+  severity (1..5, fixed rubric: wrong result 5, blocked 4, papercut 2,
+  wish 1) x (1 + dups) x (1 + age_days / 7), bucketed to PRIO 1..10
+  (thresholds in config).
+- **Dedup resolution, same call:** for every gripe with a non-empty
+  `dup_parents`, the model judges "same root cause?" per pair. Same:
+  **suggestion only** (comment `dup-suggest: gr<N> - <why>` plus the pair in
+  `meta`); no `supersedes`, no close. Auto-close stays off until a
+  labelled-set eval gates it (zero false "same", 95%+ pair agreement on the
+  2026-10-25 groom pairs and `/tmp/gripe-fix/triage/A-summary.md`); then
+  slice 4 flips it: link `supersedes`, copy distinct facts across (the
+  groom's rule), close with `resolved: duplicate of gr<N>`. Different:
+  `dup-checked` in meta, never re-judged. Unsure: leave both; severity 4+
+  goes to the Reto batch.
+- **Reto batch:** `reto:ask` gripes go out as one digest (question,
+  recommendation) via the review queue (`.claude/fleet/review-protocol.md`)
+  and one `scripts/board post` line.
+- **Lease, not a lock.** No `FOR UPDATE SKIP LOCKED` (or any transaction)
+  is held across the LLM call: migration 0045 (`30766194a`) replaced a
+  transaction spanning per-chunk LLM calls, which starved autovacuum on hot
+  tables, with a short-tx lease. Claim = one short tx setting
+  `meta.pipeline.claimed_at = now()` on up to 40 gripes where it is absent
+  or older than the TTL (30 min), commit; the LLM call runs with no open
+  tx; the write tx replaces tags/PRIO, stamps `triaged_at`, clears
+  `claimed_at`. Crashed claims expire by TTL; writes are replaces, so a
+  doubled tick converges.
+- **Disagreement.** On "not a bug" triage never closes: it keeps
+  `STATUS:triaged`, adds tag `disagreement` and `triage: not a bug -
+  <reason>`; the Reto batch shows both views. Reto rules `wontfix` (reason
+  becomes `resolved:`) or overrules to `ready_for_fix`.
+- Gripe text is untrusted: quoted in the prompt, no tools, output
+  schema-validated before any write.
 
-### Model flag: classification vs dedup resolution
+### Model (Reto's call)
 
-Reto approved a local model for classification; on 2026-10-25 he described
-the triage pass as a normal model running soon after filing. **Flag: dedup resolution is
-a harder judgment and probably needs a bigger model.** Classification
-(type, size, cluster slug from a closed list, severity) is a lookup with a
-rubric; an error is a wrong tag, fixed on the next pass. Dedup resolution
-compares two bodies for the same root cause, and a false "same" closes a
-real gripe. Many of today's near-dups share vocabulary but not cause (the
-groom found 2 true duplicates among 5 closes after the census had merged the
-obvious ones).
-
-Recommendation: one tick, two passes. Pass A (local): all classification.
-Pass B (hosted mid-tier, Sonnet or Haiku class): only pairs above the floor,
-about 40 per tick. Pass B applies the `supersedes` link at once but defers
-closing the duplicate by one tick, when the pair must agree again. Decide on
-a labelled set (the 2026-10-25 groom pairs and the closes in
-`/tmp/gripe-fix/triage/A-summary.md`): if local matches the hosted model on
-95%+ of pairs with no false "same", drop pass B.
-
-### Disagreement
-
-Filer and triage can disagree ("not a bug": by design, already fixed, wrong
-tool). Triage writes its ruling and reason but never closes on it: it keeps
-`STATUS:triaged`, adds tag `disagreement` and a comment `triage: not a bug -
-<reason>`, and the next Reto batch shows both views. Reto rules `wontfix`
-(reason becomes the `resolved:` text) or overrules to `ready_for_fix`.
+Recommendation (CHAT and Fable review agree): **one hosted Sonnet-class
+batch call per tick for triage and dedup together.** A false "same" hides
+a real gripe and near-dups often share vocabulary, not cause (2 true
+duplicates among 5 groom closes); one call avoids a local/hosted split, and
+suggestion-only dedup means the choice cannot lose a gripe. Open question.
 
 ## Fix discipline
 
-- **Batch by cluster.** Builders are briefed per `cluster:<slug>` (today's
-  `batch-*.md` briefs), ordered by the cluster's top PRIO. `ready_for_fix`
-  means size is set and, for `fix:spec`, a spec exists.
-- **Cluster of 3 or more triggers a spec:** a cluster with 3+ live gripes
-  and no linked backlog file gets a todo for the spec agent (not code) and
-  tag `spec:pending` on its gripes.
-- **Every fix answers "what stops this recurring".** Moving to `verify`
-  requires a `prevents:` comment naming a skill edit, check or test path, or
-  `prevents: none - <reason>` (goes to the Reto batch). The gate lives in
-  `gripe.py` beside `_require_resolved_comment`, refusal names the format.
+- **Batch by cluster:** builders are briefed per `cluster:<slug>` by top
+  PRIO. `ready_for_fix` means size is set and, for `fix:spec`, a spec exists.
+  3+ live gripes in a cluster with no backlog file get a spec todo (not
+  code) and tag `spec:pending`.
+- **Every fix answers "what stops this recurring".** Entering `verify`
+  requires a `prevents:` comment (skill edit, check or test path, or
+  `prevents: none - <reason>`, which goes to the Reto batch). The gate sits
+  in `gripe.py` beside `_require_resolved_comment`; refusals name the format.
 
 ## Verify-to-close
 
 Done means prod shows it gone, not that the fix merged.
 
-1. **Claim:** the builder (or `issue-closer`) comments `fix-sha: <sha>` and
-   the gripe is `in_review`.
-2. **Deploy trigger:** `scripts/release` already knows the deployed sha. A
-   post-deploy step lists `in_review` gripes with a `fix-sha` that is an
-   ancestor of the deployed sha (`git merge-base --is-ancestor`), moves them
-   to `verify`, stamps `meta.pipeline.deployed_at`, and posts one board line
-   (`done <sha> verify: gr.. gr..`). This replaces the hand-kept
-   `DEPLOY:r105` list.
-3. **Probe author:** the fixer, in the fix commit. A probe is a read-only
-   check at `tests/prod_probes/gr<id>_*.py` (or the fix's own test, when it
-   is runnable against prod read-only), named in a `probe: <path>` comment.
-   Probes use the `precis` MCP read path or `scripts/prod-psql`
-   (read-only) and carry no hostnames or addresses (public repo).
-4. **Verify tick:** a worker or `scripts/gripe-verify` runs each `verify`
-   gripe's probe on prod. Pass: comment `resolved: verified <probe> at
-   <sha>`, `STATUS:done`. Fail: `STATUS:open`, tag `reopened`, comment with
-   the probe output, `PRIO` one step hotter; a second reopen adds
-   `disagreement` and goes to the Reto batch.
-5. **No probe** (docs, skill, many ops fixes): one attempt by a Sonnet-class
-   agent from the repro in the gripe body. Inconclusive keeps the gripe in
-   `verify` and lists it on the board; it never closes on inconclusive and
-   never times out.
+1. **Claim:** the builder (or `issue-closer`) comments `fix-sha: <sha>`; the
+   gripe is `in_review`. After a reopen only a `fix-sha:` newer than
+   `meta.pipeline.reopened_at` counts.
+2. **Trigger: runtime-CONFIRMED releases only.** `scripts/release` exits 3
+   when the rollout is done but runtime is pending (the exit a deploy takes
+   in practice; `scripts/gripe-note` already comments "runtime confirmation
+   pending"). Exit 3 must NOT move a gripe: the build may still be bad. The
+   step runs once `scripts/round deploy --confirm-runtime <sha>` records
+   `runtime_confirmed_at`: `in_review` gripes whose newest eligible
+   `fix-sha` is an ancestor of the confirmed sha (`git merge-base
+   --is-ancestor`) move to `verify`, `deployed_at` is stamped, one board
+   line posts. Replaces the `DEPLOY:r105` list.
+3. **No deployable sha** (`fix:skill|docs|ops|reto`): these enter `verify`
+   on the `prevents:` comment, not on a deploy.
+4. **Probe author:** the fixer, in the fix commit: a read-only check at
+   `ops/probes/gr<id>_*.py` (NOT under `tests/`: pytest would collect it),
+   named in a `probe: <path>` comment. The gripe body is untrusted text,
+   never executed: no "run the repro in the gripe".
+5. **Probe execution is read-only by construction.** `scripts/prod-psql`
+   defaults to `agent_rw`, so probes never call it bare. They run ONLY as
+   `agent_ro` (`--ro`; the `write:none` role of `envelope.py::db_role`) in
+   a read-only container: no shell, no network beyond that DB role (shape
+   fixed in slice 7, no wider than that envelope). No hostnames or
+   addresses (public repo).
+6. **Verify tick:** a worker or `scripts/gripe-verify` runs each probe.
+   Pass: comment `resolved: verified <probe> at <sha>`, `STATUS:done`.
+   Fail: `STATUS:open`, tag `reopened`, `reopened_at`, probe output as
+   comment, `PRIO` one step hotter; a second reopen adds `disagreement`
+   and goes to the Reto batch.
+7. **No probe:** one read-only check by a Sonnet-class agent from the
+   `prevents:`/`fix-sha:` comments and changed files, never the gripe body.
+   Inconclusive stays in `verify`, listed on the board; never closes.
 
 ## Metrics and flags
 
-- **Flow on the board:** `scripts/gripe-flow` prints in/out per UTC day and
-  median time open to triaged, triaged to `verify`, `verify` to done (from
-  `meta.pipeline`); the coordinator sweep posts the summary to `scripts/board`.
-- **Tokens per closed gripe per lane:** ticks log `llm_call_log.source` as
-  `gripe_triage:*` / `gripe_verify:*` with the gripe id as ref; `precis llm
-  cost --days N` already splits by lane/pass/ref, plus a `--per-closed`
-  rollup. Builder lanes are not in `llm_call_log`; they put `cost: <lane>
-  <tokens>` in the fix comment.
-- **Stuck builder:** the `fleet-wave` sweep (which already reads pane context
-  via `ctx`; ctx-guard untouched) posts `scripts/board post <window> --state
-  wedged` once for a window whose `.claude/purpose` names a `size:S` gripe
-  claimed (`fix_claimed_at`) more than 2 hours ago.
+- **Flow:** `scripts/gripe-flow` prints in/out per UTC day and median time
+  per stage (`meta.pipeline`); the coordinator sweep posts it to the board.
+- **Cost:** ticks log `llm_call_log.source` `gripe_triage:*` /
+  `gripe_verify:*`; `precis llm cost` gains `--per-closed`. Builders put
+  `cost: <lane> <tokens>` in the fix comment.
+- **Stuck builder:** `fleet-wave` posts `scripts/board post <window> --state
+  wedged` once for a `size:S` gripe claimed over 2 hours ago.
 
 ## Explicitly NOT in scope
 
-Any model call in the filing path; expiry or age-based closing (gripes get closed, not aged out); changes to
-`file_gripe_readonly` or the ro-gripes caps; auto-fixing (`backlog_groom`
-stays OFF); a new MCP tool or verb; web UI beyond `x N`.
+A model call in filing; age-based closing; changes to `file_gripe_readonly`
+or ro-gripes caps; auto-fixing (`backlog_groom` stays OFF); a new MCP verb.
 
 ## Slices
 
+Order: 1, 2, 3, then 5, 4, 6, 7, 8.
+
 | # | Slice | Size | Opus review |
 |---|---|---|---|
-| 1 | Migration + `_KIND_STATUS_VALUES` + skill table for `verify` | S | yes (trigger SQL) |
-| 2 | `gripe_parents` pass + title-card line | M | yes (HNSW query, claim) |
-| 3 | `triage_gripes` job: classification, PRIO, Reto batch, disagreement | L | no |
-| 4 | Dedup resolution in the tick (pass B, labelled-set eval) | M | no |
-| 5 | `x N` in listings, sort by score | S | no |
+| 1 | Migration + `verify` across the enumerations below | M | yes (trigger SQL) |
+| 2 | `gripe_parents` pass + title-card line | M | yes (ANN query, lease) |
+| 3 | `gripe_triage.py` extended: LLM tick, PRIO, Reto batch, disagreement | L | no |
+| 4 | Dedup auto-close, gated on the labelled-set eval | M | no |
+| 5 | `x N` in listings (incl. theme-fold links), sort by score | S | no |
 | 6 | `prevents:` gate, cluster-of-3 spec trigger | M | no |
-| 7 | Deploy trigger + verify tick + probe layout | L | yes (release path) |
-| 8 | `gripe-flow`, per-closed cost rollup, stuck flag | M | no |
-| 9 | Flood tag and global alarm | S | no |
+| 7 | Confirmed-release trigger + verify tick + `ops/probes/` | L | yes (release path, probe sandbox) |
+| 8 | `gripe-flow`, per-closed cost rollup, stuck flag, flood tag and alarm | M | no |
 
-Order: 1, 2, 3, then 5, 4, 6, 7, 8, 9.
+### Slice 1: every `verify` enumeration
+
+From `rg 'ready_for_fix|in_review'`; re-run at build. Paths under `src/precis/`:
+
+- DB and store: new migration (0176 triggers); `store/types.py`
+  `_KIND_STATUS_VALUES["gripe"]` + tag-value list (~L1210);
+  `handlers/gripe.py` error text (~L221).
+- Live lists that must include `verify`: `quest/needs.py`
+  `_LIVE_GRIPE_STATUSES`, `workers/call_errors.py` `_LIVE_STATUSES`,
+  `workers/health_digest.py` (~L2550).
+- Writers that must not downgrade a `verify` gripe: `handlers/job.py`
+  (~L2032), `workers/job_types/fix_gripe.py`,
+  `workers/executors/claude_inproc.py` (~L1479), `fixer/tick.py`,
+  `fixer/writeback.py`.
+- Web: `precis_web/routes/gripes.py` (~L64, L82, L99),
+  `precis_web/__init__.py` (~L170), `templates/gripes/list.html.j2`.
+- Text: `data/prompts/doctor-prompt.md`; skills `precis-tags.md` (L231, plus
+  the `in_review` = in-fix reading), `precis-gripe-help.md` (L121, L556),
+  `precis-fix-gripe-help.md`, eval `skill-evals/precis-gripe-help.yaml`;
+  `.claude/agents/gripe-filer.md`, `issue-closer.md`;
+  `docs/runbooks/tmux-worker-launch.md` (L75).
 
 ## Acceptance criteria
 
 - Filing makes no model call and no embedder call; the ack is unchanged.
-  Once the embedding exists, `meta.dup_parents` appears (target 5 minutes)
-  listing only `open`/`triaged` gripes at or above the floor.
-- `STATUS:verify` is accepted on gripes only.
-- A tick over 40 seeded gripes writes `fix:`, `cluster:`, `size:`, PRIO and
-  `STATUS:triaged`; a second run changes nothing.
-- A seeded true-duplicate pair ends linked and closed; a near-miss pair
-  stays open. A "not a bug" ruling stays open as `disagreement` in the Reto
-  batch. Listings show `x N` = `supersedes` links onto the row.
-- A deploy containing a `fix-sha` moves its gripe to `verify`; a passing
-  probe closes it, a failing one reopens it with the output.
-- `scripts/gripe-flow` prints the medians; `precis llm cost` reports tokens
-  per closed gripe per lane; a `size:S` builder past 2 hours yields one
-  `wedged` board line.
+  Once the embedding exists (up to ~35 minutes in a quiet trickle), the next
+  `gripe_parents` run writes `meta.dup_parents`: non-terminal gripes only,
+  `gripe_body` chunks only, one entry per gripe, at or above the floor.
+- `STATUS:verify` is accepted on gripes only. A tick over 40 seeded gripes
+  writes `fix:`, `cluster:`, `size:`, PRIO and `STATUS:triaged`; a second
+  run changes nothing. No transaction is held across the LLM call; an
+  expired `claimed_at` is re-claimed.
+- A seeded true-duplicate pair gets a `dup-suggest:` comment only (linked
+  and closed after slice 4's eval); a near-miss gets neither. A "not a bug"
+  ruling stays open as `disagreement`. Listings show `x N` = `supersedes`
+  links onto the row.
+- A runtime-confirmed release containing a `fix-sha` moves its gripe to
+  `verify`; exit 3 alone moves nothing. A passing probe (run as `agent_ro`)
+  closes it, a failing one reopens it with the output, and the next deploy
+  does not re-verify it on the old sha.
+- `gripe-flow` prints the medians; `precis llm cost --per-closed` works; a
+  `size:S` builder past 2 hours yields one `wedged` line.
 - No hostnames or IPs in new files; forward-only migration.
+
 ## Open questions / decisions log
-- **Similarity floor and k:** 0.80 and 8 are guesses. Calibrate on the 121
-  open gripes of the 2026-10-25 groom plus the known duplicate pairs before
-  slice 2 lands.
-- **Triage model:** is local enough for dedup resolution (see flag), or does
-  pass B run on a hosted mid-tier? Measure on the labelled set. (Reto)
-- **Dup link direction:** the groom linked the duplicate to the keeper with
-  `supersedes`. Pin it and count inbound links; reuse beats a new rel
-  (migration).
-- **`in_review` as "in fix":** accept this reading (recommended, one new
-  STATUS) or add a distinct `in_fix` (second migration value)?
-- **Does the gripe ref carry `meta`?** If not, `meta.pipeline` and
-  `dup_parents` need another home (machine comment excluded from embeddings).
-- **Flood cap numbers:** 100/h per filer, 400/h global; confirm "rather large".
-- **Probe location:** `tests/prod_probes/` vs beside the fix test; which lane runs them.
+
+Decided: `in_review` = in-fix (`precis-tags.md`); similarity 0.80 / k=8 as
+config defaults (expect ~0.85); probes in `ops/probes/`; dedup suggests only
+until a labelled-set eval gates auto-close.
+
+- **Model (Reto):** one hosted Sonnet-class batch call per tick for triage
+  and dedup together (recommended, CHAT and Fable), or a local classifier
+  plus hosted dedup.
+- **Dup candidate statuses (Reto):** all non-terminal (recommended) or just
+  `open`+`triaged`.
+- **Theme folds:** link with `supersedes` (recommended) or accept `x N`
+  undercounting.
+- **Calibration:** run 0.80 / k=8 on the 121 open gripes of the 2026-10-25
+  groom plus known duplicate pairs before slice 2.
+- **Flood caps** (100/h per filer, 400/h global) and the **verify hook
+  point** (inside `round deploy --confirm-runtime` or a follow-up step):
+  confirm in slice 7.
