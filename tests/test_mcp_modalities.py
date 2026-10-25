@@ -4,9 +4,11 @@ Pin the four behaviours the MCP critic's April 2026 re-probe asked
 for:
 
 1. **Skills surface as prompts.**  Every skill that passes the
-   availability gate (plus the synthesised meta-skills) is reachable
-   via ``prompts/list`` / ``prompts/get``.  Body text matches what
-   ``get(kind='skill', id=<slug>)`` returns.
+   availability gate resolves via ``prompts/get`` — body text
+   matches what ``get(kind='skill', id=<slug>)`` returns — while
+   ``prompts/list`` stays bounded to the same meta-menu as
+   ``resources/list`` (gr514390/gr515169: the ~200-entry
+   enumeration was ~32 KB of every client's first payload).
 
 2. **Skills surface as resources.**  ``resources/list`` enumerates
    only the bounded meta-menu (the synthesised skills) — the
@@ -27,6 +29,7 @@ for:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -74,29 +77,96 @@ def mcp_for_runtime(runtime_with_store: PrecisRuntime):
 def test_skill_prompts_register_every_available_skill(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """``prompts/list`` carries every skill that passes the
-    availability gate, plus the synthesised meta-skills.  No skill
-    text is duplicated — bodies come from ``_load_skill`` /
-    ``SkillHandler.get`` (the same path the get verb uses).
+    """Every skill that passes the availability gate (plus the
+    synthesised meta-skills) is registered so ``prompts/get``
+    resolves it.  No skill text is duplicated — bodies come from
+    ``_load_skill`` / ``SkillHandler.get`` (the same path the get
+    verb uses).  ``prompts/list`` itself is bounded to the
+    meta-menu — see the bounded-listing tests below.
     """
     from mcp.server.fastmcp import FastMCP
 
     server = FastMCP("test")
     n = register_skill_prompts(server, runtime_with_store)
-    assert n > 0, "expected at least one skill prompt to register"
+    expected = set(_enumerate_prompt_skills(runtime_with_store))
+    assert n == len(expected), (
+        "register_skill_prompts should register the full gated "
+        "enumeration so prompts/get resolves every skill"
+    )
+    assert n > len(SkillHandler._SYNTHESIZED_SKILLS), (
+        "fixture sanity: the gated corpus must be larger than the "
+        "meta-menu or the bounded-listing tests prove nothing"
+    )
+
+
+def test_prompts_list_bounded_to_meta_menu(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``prompts/list`` is exactly the four synthesised meta-skills —
+    the same allowlist ``resources/list`` applies
+    (gr514390/gr515169).  The on-disk corpus is registered but not
+    enumerated.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    server = FastMCP("test")
+    register_skill_prompts(server, runtime_with_store)
 
     listed = asyncio.run(server.list_prompts())
     listed_names = {p.name for p in listed}
 
-    expected = set(_enumerate_prompt_skills(runtime_with_store))
+    expected = set(SkillHandler._SYNTHESIZED_SKILLS)
     assert listed_names == expected, (
-        f"prompts/list should match the gated skill enumeration; "
+        f"prompts/list should be exactly the meta-skill set; "
         f"diff = {expected.symmetric_difference(listed_names)!r}"
     )
 
-    # Synthesised meta-skills must be reachable through the modality.
-    for synth in SkillHandler._SYNTHESIZED_SKILLS:
-        assert synth in listed_names, f"synth skill {synth!r} missing"
+
+def test_prompts_list_payload_stays_small(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Size bound on the serialized ``prompts/list`` payload.
+
+    The full ~200-skill enumeration measured ~32 KB (gr514390/
+    gr515169); the meta-menu is ~1 KB.  Pin well under the old
+    size so a regression can't silently re-inflate every client's
+    first payload.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    server = FastMCP("test")
+    register_skill_prompts(server, runtime_with_store)
+
+    listed = asyncio.run(server.list_prompts())
+    payload = json.dumps([p.model_dump(mode="json") for p in listed])
+    assert len(payload.encode("utf-8")) < 4096, (
+        f"prompts/list payload grew to {len(payload)} bytes; "
+        "the meta-menu bound must keep it in the low-KB range"
+    )
+
+
+def test_prompt_get_for_non_listed_skill(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Bounding ``prompts/list`` must not break ``prompts/get``: an
+    on-disk skill outside the meta-menu still resolves by name.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    server = FastMCP("test")
+    register_skill_prompts(server, runtime_with_store)
+
+    listed_names = {p.name for p in asyncio.run(server.list_prompts())}
+    assert "precis-overview" not in listed_names, (
+        "precis-overview is an on-disk skill — it must NOT be "
+        "enumerated, only get-resolvable"
+    )
+
+    result = asyncio.run(server.get_prompt("precis-overview", arguments={}))
+    rendered = "".join(
+        m.content.text for m in result.messages if hasattr(m.content, "text")
+    )
+    assert "precis" in rendered.lower()
 
 
 def test_prompt_get_returns_skill_body(

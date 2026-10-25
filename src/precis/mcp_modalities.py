@@ -8,7 +8,11 @@ Scope:
 
 - **Prompts** (``prompts/list`` + ``prompts/get``) — every skill
   that passes :func:`SkillHandler._availability_gap` is registered
-  as a prompt.  Body comes from :func:`_load_skill` (or the
+  as a prompt so ``prompts/get`` resolves it, but ``prompts/list``
+  is bounded to the same meta-menu as ``resources/list``
+  (:data:`_ENUMERATED_SKILLS`; gr514390/gr515169 — the ~200-entry
+  enumeration was ~32 KB of every client's first payload).
+  Body comes from :func:`_load_skill` (or the
   synthesised renderer for ``precis-help`` / ``precis-status``).
   Tags carry the skill's ``tier:`` and any kind it documents so
   modern clients can group / filter.
@@ -48,6 +52,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp.prompts.base import Prompt
+from mcp.server.fastmcp.prompts.manager import PromptManager
 
 from precis.handlers.skill import (
     SkillHandler,
@@ -66,13 +71,30 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+#: Slugs enumerated in ``prompts/list`` and ``resources/list`` —
+#: the synthesised meta-skills only (``precis-help`` /
+#: ``precis-status`` / ``precis-toc`` / ``toc``), the menu a client
+#: shows.
+#:
+#: The design rule is *bounded sets only* — anything that can grow
+#: belongs in :data:`_TEMPLATE_KINDS` or behind a ``get``/
+#: ``search`` call.  The on-disk skill corpus broke that bound:
+#: it was ~16 entries when enumeration shipped and ~218 when
+#: gr514390/gr515169 measured the listings at ~39 KB of every
+#: client's first payload.  Bounded back to the meta-menu; every
+#: skill still resolves through ``prompts/get`` and the
+#: ``precis://skill/<slug>`` template, and ``precis-toc`` is the
+#: catalogue.
+_ENUMERATED_SKILLS: tuple[str, ...] = tuple(SkillHandler._SYNTHESIZED_SKILLS)
+
+
 # ---------------------------------------------------------------------------
 # Skills as prompts
 # ---------------------------------------------------------------------------
 
 
 def _enumerate_prompt_skills(runtime: PrecisRuntime) -> list[str]:
-    """Return slugs eligible for ``prompts/list``.
+    """Return slugs registered as prompts (``prompts/get``-resolvable).
 
     Same gate as the existing skill index: drops skills documenting
     kinds that aren't wired in this build, plus skills whose
@@ -80,6 +102,10 @@ def _enumerate_prompt_skills(runtime: PrecisRuntime) -> list[str]:
     Synthesised meta-skills (``precis-help``, ``precis-status``) are
     always included so the modality covers the full menu users see
     via ``get(kind='skill')``.
+
+    Every returned slug is registered so ``prompts/get`` resolves
+    it; only :data:`_ENUMERATED_SKILLS` is enumerated by
+    ``prompts/list`` — see :class:`_MetaMenuPromptManager`.
 
     Programmatically derived — no hand-maintained list.
     """
@@ -184,12 +210,52 @@ def _resolved_pinned_slugs(runtime: PrecisRuntime) -> frozenset[str]:
     return frozenset(result.pinned)
 
 
+class _MetaMenuPromptManager(PromptManager):
+    """Prompt manager whose listing is bounded to the meta-menu.
+
+    ``prompts/get`` resolves every registered prompt — the backing
+    dict is untouched; only ``list_prompts`` filters to
+    :data:`_ENUMERATED_SKILLS`, the same bound ``resources/list``
+    applies (gr514390/gr515169).
+    """
+
+    def list_prompts(self) -> list[Prompt]:
+        return [p for p in super().list_prompts() if p.name in _ENUMERATED_SKILLS]
+
+
+def _bound_prompt_listing(mcp: FastMCP) -> None:
+    """Swap ``mcp._prompt_manager`` for the meta-menu-bounded manager.
+
+    FastMCP's wire handler for ``ListPromptsRequest`` reaches the
+    listing through ``self._prompt_manager.list_prompts()`` —
+    dereferenced per call — so swapping the manager bounds the wire
+    listing and ``FastMCP.list_prompts()`` alike while
+    ``prompts/get`` keeps resolving every registered skill.  Any
+    prompts already registered carry over.
+    """
+    manager = getattr(mcp, "_prompt_manager", None)
+    if not isinstance(manager, PromptManager) or isinstance(
+        manager, _MetaMenuPromptManager
+    ):
+        return
+    bounded = _MetaMenuPromptManager(
+        warn_on_duplicate_prompts=manager.warn_on_duplicate_prompts
+    )
+    bounded._prompts.update(manager._prompts)
+    mcp._prompt_manager = bounded
+
+
 def register_skill_prompts(mcp: FastMCP, runtime: PrecisRuntime) -> int:
     """Register every available skill as an MCP prompt.
 
     Returns the number of prompts registered.  Idempotent at
     runtime-build time — registration runs once before
     ``mcp.run()``.
+
+    Every gated skill resolves through ``prompts/get``; only the
+    meta-menu (:data:`_ENUMERATED_SKILLS`) is enumerated by
+    ``prompts/list`` — the same bound ``resources/list`` applies
+    (gr514390/gr515169).
 
     Each prompt's name is the slug, description is the
     front-matter ``title:`` (or the slug if missing), and the body
@@ -203,6 +269,7 @@ def register_skill_prompts(mcp: FastMCP, runtime: PrecisRuntime) -> int:
     set.
     """
     count = 0
+    _bound_prompt_listing(mcp)
     pinned_slugs = _resolved_pinned_slugs(runtime)
     for slug in _enumerate_prompt_skills(runtime):
         title = SkillHandler._SYNTHESIZED_SKILLS.get(slug) or _skill_title(slug) or slug
@@ -262,21 +329,6 @@ def _parse_resource_uri(uri: str) -> tuple[str, str]:
             f"resource URI {uri!r} must be {_RESOURCE_URI_SCHEME}<kind>/<id>"
         )
     return kind, ident
-
-
-#: Slugs enumerated in ``resources/list`` — the synthesised
-#: meta-skills only (``precis-help`` / ``precis-status`` /
-#: ``precis-toc`` / ``toc``), the menu a client shows.
-#:
-#: The design rule is *bounded sets only* — anything that can grow
-#: belongs in :data:`_TEMPLATE_KINDS` or behind a ``get``/
-#: ``search`` call.  The on-disk skill corpus broke that bound:
-#: it was ~16 entries when enumeration shipped and ~218 when
-#: gr514390/gr515169 measured the listing at ~39 KB of every
-#: client's first payload.  Bounded back to the meta-menu; every
-#: skill's ``precis://skill/<slug>`` URI still reads through the
-#: skill template below, and ``precis-toc`` is the catalogue.
-_ENUMERATED_SKILLS: tuple[str, ...] = tuple(SkillHandler._SYNTHESIZED_SKILLS)
 
 
 #: Kinds advertised as URI templates.  Each entry is
