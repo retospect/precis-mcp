@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: currency-s1
 title: Currency units for measures — USD at a stated price year, stored as reported, converted on read
 pillar: quests
 ---
