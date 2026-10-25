@@ -169,13 +169,15 @@ is refused by name — the vet is the contract, and the key set is:
 
 | entry | keys |
 |---|---|
-| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `mode`, `measures`, `loads`, `template`, `findings`, `frame` |
+| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `mode`, `measures`, `loads`, `template`, `findings`, `frame`, `sha` |
 | port (inside `ports`) | `name`, `atom` (atomic only), `roles`, `direction`, `expected_element`, `expected_hybridization`, `pose`, `annotations`, `frame` |
 | instance | `name`, `template`, `parent`, `pose`, `rot`, `pose_unit`, `rot_unit`, `linear`, `polar`, `frame` |
 | connect | `a`, `b`, `kind`, `joint`, `objectives`, `frame` |
 | ray | `name`, `block`, `origin`, `direction`, `length`, `kind`, `fields`, `step`, `reach`, `in`, `anchor`, `bundle`, `frame` |
 
-Every `frame` is that entry's maker trace-frame id. Port
+Every `frame` is that entry's maker trace-frame id. A block's `sha`
+is its written file's content hash; a re-import compares it with the
+bound ref's last one to report the block unchanged or changed. Port
 `annotations` carries `diameter`/`depth` (metres, positive) and
 `thread` (text like `'M5x0.8'`). A `rays` entry replaces the
 workspace's previous rays wholesale — one the run stops writing

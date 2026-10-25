@@ -163,6 +163,14 @@ _EXEMPT_SITES = frozenset(
         # to be relative to. See the constant's own docstring for the 0.1 pm
         # residual figure.
         "precis_se/chain/relax.py::TOL_NM",
+        # `precis_se/workspace_import.py`'s re-import pose compare (gr514249):
+        # a float-noise floor beside a rel_tol on values already in SI
+        # metres/radians, mirroring the writer-side manifest diff
+        # (`precis_geom.out._POSE_ABS_TOL`) so both sides agree on "same
+        # pose". It decides only whether a round-tripped pose changed, never
+        # whether geometry touches or is culled, so there is no governing
+        # length for it to be relative to.
+        "precis_se/workspace_import.py::_POSE_ABS_TOL",
         # `precis_se/rays.py`'s ray-digest diff noise floor: a hit counts as
         # "moved" only above the 0.001 resolution the diff prints (`.3f`),
         # applied to Å offsets and to the e / V readings alike. It decides
