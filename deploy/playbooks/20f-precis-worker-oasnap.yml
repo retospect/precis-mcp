@@ -1,0 +1,167 @@
+---
+# 20f-precis-worker-oasnap.yml — the dedicated OpenAlex-snapshot worker lane
+# (docs/backlog/openalex-snapshot-cites.md, slice 3).
+#
+# WHY A SEPARATE UNIT, NOT `worker_system`. The pass reads the public
+# `s3://openalex` works dump — 675 GB gzip on a full release, ~2 h of
+# transfer on a good pipe — streaming one ~1 GB part at a time into
+# `openalex_cite_edges`. Registering it into the collapsed `precis worker
+# --profile all` rotation (20b) would run that walk on EVERY worker host
+# simultaneously (the rotation is per-host; nothing else arbitrates it) and
+# park each host's serial rotation behind days of gzip+JSON. It runs as a
+# singleton capability instead: `precis worker --only openalex_snapshot` on
+# the hosts named by `precis_capabilities.openalex_snapshot` (the data node
+# — the one with the most local disk and a wired uplink).
+#
+# WHY A KEEPALIVE UNIT AT ALL, FOR A MONTHLY JOB. The pass paces itself:
+# `_throttle.due` on `openalex_snapshot:last_run` (~30d) makes every tick a
+# single app_state read while asleep; when due it fetches the bucket
+# manifest and no-ops again unless the release `date` moved
+# (`openalex_snapshot:last_release`). A keepalive daemon therefore costs a
+# sleeping thread, and lands a new release within hours of the check going
+# due — no cron unit, no scheduler-lease plumbing, same "lane daemon"
+# shape as 20b's dedicated fetch lane.
+#
+# SCOPE / DEPENDENCIES. `hosts: all` because the capability list is the
+# gate — the render task runs only where `inventory_hostname in
+# precis_capabilities.openalex_snapshot`, and the stale-unit retire tasks
+# run everywhere else (a host that LEFT the capability must lose the
+# daemon, not keep streaming S3). The data node runs NO other precis
+# daemon (excluded from 20b + 19a), so this play provisions the venv
+# itself: the precis_worker `provision` tasks file only (never `units.yml`
+# — a `roles:` entry would silently run the role's full main.yml and render
+# the split `--profile system` unit too; the exact bug 20b's header
+# documents). Requires 00-users (deploy user) and 19-pgpass (the DSN's
+# password file) to have run — both `hosts: all`.
+#
+# ENV — MINIMAL. The pass needs the DB (staging + checkpoints + mint +
+# app_state) and anonymous S3 only — no credentials, no embedder, no
+# MCP config. PRECIS_OPENALEX_SNAPSHOT_REFRESH_HOURS stays unset on purpose:
+# the code default (720 h) is the cadence; set it in an overlay to tune.
+#
+# TWO-KEY OPT-IN. `precis_capabilities.openalex_snapshot` names WHERE the
+# lane may run; `precis_worker_oasnap_enabled` (role default false) is the
+# go switch — the first tick on an enabled host starts the ~675 GB
+# works-dump pass straight away (`openalex_snapshot:last_release` unset
+# plans the whole tree), so flipping it is a Reto decision, not a topology
+# detail. Preview the plan first with
+# `precis openalex-snapshot --refresh --dry-run` (files + bytes, no stream).
+
+- name: Deploy the OpenAlex-snapshot worker lane (capability-gated)
+  hosts: all
+  become: true
+  vars:
+    _oasnap_lane_on: >-
+      {{ (precis_worker_oasnap_enabled | default(false) | bool)
+         and (inventory_hostname in (precis_capabilities.openalex_snapshot | default([]))) }}
+  # tasks: + import_role, NOT a `roles:` list — in a `roles:` entry,
+  # `tasks_from:` is not a selector, it silently becomes a role VAR and the
+  # role runs its FULL main.yml (the 20b bug that re-rendered the split
+  # agent unit on every run). `import_role` honors tasks_from.
+  tasks:
+    - name: Ensure uv is installed (Linux, root)
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+      args:
+        # `set -o pipefail` needs bash — a fresh node's /bin/sh may be
+        # dash, which errors "Illegal option -o pipefail" and aborts the
+        # whole fleet deploy (mirrors 20c).
+        executable: /bin/bash
+        creates: /root/.local/bin/uv
+      when: _oasnap_lane_on | bool
+
+    # The unit's HOME (deploy-owned, mirroring 20c): the pass writes no
+    # cache, but a deploy-run daemon still wants a writable $HOME.
+    - name: Ensure /var/lib/precis exists and is deploy-writable
+      ansible.builtin.file:
+        path: /var/lib/precis
+        state: directory
+        owner: deploy
+        group: deploy
+        mode: "0755"
+      when: _oasnap_lane_on | bool
+
+    - name: precis_worker provisioning only (venv + deps + service_config seed)
+      ansible.builtin.import_role:
+        name: precis_worker
+        tasks_from: provision
+      when: _oasnap_lane_on | bool
+
+    - name: render + load the OpenAlex-snapshot worker unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker-oasnap
+        service_unit_run_as: deploy
+        # /tmp: same getcwd()-EPERM-on-NFS reasoning as 20b's units.
+        service_unit_working_dir: /tmp
+        service_unit_timeout_stop_sec: 60
+        service_unit_schedule:
+          mode: keepalive
+        # --only openalex_snapshot forces exactly one pass regardless of
+        # profile (cli/worker.py); the pass's own ~30d throttle decides
+        # whether a tick does anything — --idle-seconds is just the wake
+        # interval.
+        service_unit_exec: >-
+          {{ precis_worker_venv }}/bin/precis worker --only openalex_snapshot
+          --idle-seconds {{ precis_worker_oasnap_idle_seconds }}
+        service_unit_env:
+          HOME: /var/lib/precis
+          PATH: "{{ precis_worker_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+          PRECIS_DATABASE_URL: "{{ precis_worker_dsn }}"
+          PGPASSFILE: "{{ '/home/deploy/.pgpass' if os_family == 'linux' else '/Users/deploy/.pgpass' }}"
+          PRECIS_PROCESS: precis-worker-oasnap
+          PRECIS_SOURCE: precis-worker-oasnap
+      when: _oasnap_lane_on | bool
+
+    # Host-left-the-capability cleanup: a stale lane unit would keep a
+    # monthly pass running where it no longer belongs. Bootout/disable is
+    # a no-op when the unit was never loaded; the `rm` removes the render
+    # so nothing re-loads it. Runs wherever the lane must NOT exist.
+    - name: retire a stale oasnap-lane LaunchDaemon (macOS)
+      when:
+        - os_family == 'darwin'
+        - not (_oasnap_lane_on | bool)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          launchctl bootout system/com.precis.worker-oasnap 2>/dev/null || true
+          rm -f /Library/LaunchDaemons/com.precis.worker-oasnap.plist
+      changed_when: false
+      failed_when: false
+
+    - name: retire a stale oasnap-lane systemd unit (Linux)
+      when:
+        - os_family == 'linux'
+        - not (_oasnap_lane_on | bool)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          systemctl disable --now precis-worker-oasnap.service 2>/dev/null || true
+          rm -f /etc/systemd/system/precis-worker-oasnap.service
+          systemctl daemon-reload
+      changed_when: false
+      failed_when: false
+
+    # Code-refresh bounce for the site.yml path (mirrors 20b's fetch-lane
+    # bounce): on redeploy `precis_deploy_changed` is defined and the
+    # glob restart already covers this unit; site.yml never sets the fact,
+    # so kickstart/restart here or a venv refresh above leaves the lane on
+    # stale code (service_unit's own reload fires only on a unit-FILE diff).
+    - name: Bounce the oasnap lane on a code refresh (site.yml path, macOS)
+      ansible.builtin.command: launchctl kickstart -k system/com.precis.worker-oasnap
+      when:
+        - os_family == 'darwin'
+        - _oasnap_lane_on | bool
+        - precis_deploy_changed is not defined
+      failed_when: false
+
+    - name: Bounce the oasnap lane on a code refresh (site.yml path, Linux)
+      ansible.builtin.command: systemctl restart precis-worker-oasnap.service
+      when:
+        - os_family == 'linux'
+        - _oasnap_lane_on | bool
+        - precis_deploy_changed is not defined
+      failed_when: false
+  tags: [precis-worker-oasnap, precis]

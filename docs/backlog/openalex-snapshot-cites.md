@@ -145,8 +145,8 @@ direction (who cites us) that the per-paper API cannot give cheaply.
 | # | Slice | Acceptance criteria |
 |---|---|---|
 | 1 | Loader, filter, staging — **landed** (gf-oasnap1, migration 0240 not 0239) | Migration 0239 applies on dev DB and prod-shaped schema dump; unit test on a synthetic 3-record `.gz` fixture keeps only edges touching held papers, matches by OpenAlex id then DOI, and is a no-op on a second run; one real small partition (`updated_date=2016-07-22`) loads through `--no-sign-request` into dev; a full dry run over 20 files reports files/records/edges and peak RSS under 2 GB; kill mid-file then restart resumes without duplicate rows. |
-| 2 | Link minting | After slice 1 on dev, every staging row with both ref ids set has a `cites` link via the gf-citeslink writer and `cited-by` shows in the fisheye; re-run mints nothing new; rows get `minted_at`; a held paper's outbound count equals its staging rows with `src_ref_id` set. |
-| 3 | Refresh | A second snapshot date (simulated: edit the manifest fixture) processes only newer/changed folders; deletion log applied; the timer is a no-op when manifest `date` is unchanged; capability entry and role gate present in `topology.example.yml` and the secret-gate test still passes (no hostnames/IPs). |
+| 2 | Link minting — **landed** | After slice 1 on dev, every staging row with both ref ids set has a `cites` link via the gf-citeslink writer and `cited-by` shows in the fisheye; re-run mints nothing new; rows get `minted_at`; a held paper's outbound count equals its staging rows with `src_ref_id` set. |
+| 3 | Refresh — **landed** | A second snapshot date (simulated: edit the manifest fixture) processes only newer/changed folders; deletion log applied; the timer is a no-op when manifest `date` is unchanged; capability entry and role gate present in `topology.example.yml` and the secret-gate test still passes (no hostnames/IPs). |
 
 Slice 2 is `blocked-by` gr513755 slice 1 landing. Prod first full pass is a
 separate, Reto-confirmed run after slices 1-2 are green on dev (675 GB of
@@ -161,6 +161,25 @@ embeddings or existing workers.
 
 ## Open questions / decisions log
 
+- Deploy-review hardening (Opus review after slice 3): the part stream
+  never holds a write transaction — prod `agent_rw` kills
+  idle-in-transaction sessions at 300 s, so kept edges collect in memory
+  and one short tx writes inserts + checkpoint; `deleted_ids.csv.gz` is
+  checkpointed by `content_length` like a part file (cumulative log:
+  unchanged size = nothing new); `last_release`/`last_run` advance only
+  on a clean unlimited run, so a failed part re-plans next idle tick and
+  a raised tick backs off ~6 h via `openalex_snapshot:last_error` instead
+  of re-streaming the ~234 MB log hourly. Failed files count
+  `openalex_snapshot:failed_ticks` — 4 consecutive failed ticks stamps
+  `last_run` and parks them to the next cadence. Each mint first
+  re-resolves NULL ref ids off `ref_identifiers`, driven by the live held
+  identifiers in keyset batches (every held paper probed every call —
+  staging-side paging can stall on never-held keys); retired refs never
+  resolve or mint. The lane is two-key opt-in:
+  `topology.example.yml` ships `openalex_snapshot: []` and
+  `precis_worker_oasnap_enabled` defaults false — either one starts the
+  675 GB first pass, so both need Reto's go; `precis openalex-snapshot
+  --refresh --dry-run` previews the plan (files + bytes, no stream).
 - Run location: confirm the data node class has the uplink for a 675 GB
   read (disk is not the constraint; one file in flight). No other role
   exists to fall back to.

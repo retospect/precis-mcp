@@ -101,6 +101,20 @@ precis_worker_fetch_workers: 6
 # e.g. '{"crossref": 1}') — empty = fetch_oa's code default decides.
 precis_worker_fetch_inflight: ""
 
+# ── Dedicated OpenAlex-snapshot lane (oa-cites slice 3) ──────────────────
+# `openalex_snapshot` gets its own daemon — rendered by playbook 20f as
+# com.precis.worker-oasnap / precis-worker-oasnap.service, `precis worker
+# --only openalex_snapshot`, on the hosts listed in
+# `precis_capabilities.openalex_snapshot` (the data node). Two-key opt-in:
+# the capability names WHERE the lane may run, this flag is the go switch —
+# the first tick on an enabled host starts the ~675 GB works-dump pass, so
+# it stays false until Reto confirms the prod run. The pass throttles
+# itself to ~30d via app_state, so the idle wake interval is the only
+# cadence knob here — hourly is cheap (one app_state read when asleep) and
+# lands a new release within an hour of the monthly check going due.
+precis_worker_oasnap_enabled: false
+precis_worker_oasnap_idle_seconds: 3600
+
 # Nanopub network passes (daily host-agnostic cadences: nanopub_mirror
 # registry delta sync + ots_sweep calendar anchoring). Default ON
 # cluster-wide, unlike the per-host gates above: the cadence lease is a

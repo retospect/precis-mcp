@@ -651,24 +651,29 @@ _LINK_SOURCE = "bib_parse"
 def ensure_bib_cites_links(
     store: Store,
     ref_id: int,
-    entries: Iterable[tuple[int, int]],
+    entries: Iterable[tuple[Any, int]],
     *,
     conn: Any,
     source: str = _LINK_SOURCE,
+    meta_key: str = "bib_entry_id",
 ) -> int:
     """Ensure one paper-level ``cites`` link per distinct ``held_ref_id``.
 
-    ``entries`` is ``(paper_bib_entries.id, held_ref_id)`` pairs for the
-    citing paper ``ref_id``; the lowest entry id per distinct target is
-    stamped as ``meta.bib_entry_id`` so a minted edge is traceable back
-    to the bibliography row that justified it. Self-cites
-    (``held_ref_id == ref_id``) are skipped — the schema refuses a
-    ref-level self-loop anyway — as are targets retired since the entry
-    was matched (``_held_ref_for_doi`` already excludes a retired ref at
-    match time; this rechecks at link time for rows stamped earlier,
-    which the ``backfill-bib-cites`` one-shot relies on). Idempotent:
-    ``store.add_link`` dedupes on the unique tuple, so a re-run writes
-    nothing new.
+    ``entries`` is ``(provenance_key, held_ref_id)`` pairs for the
+    citing paper ``ref_id``; the lowest key per distinct target is
+    stamped as ``meta[<meta_key>]`` so a minted edge is traceable back
+    to the row that justified it. For bib_parse callers the key is the
+    ``paper_bib_entries.id`` and ``meta_key`` its default
+    ``"bib_entry_id"``; the OpenAlex-snapshot minter (slice 2 of
+    docs/backlog/openalex-snapshot-cites.md) passes the staging edge's
+    ``"W111>W333"``-form W-id pair under ``meta_key="openalex_edge"``.
+    Self-cites (``held_ref_id == ref_id``) are skipped — the schema
+    refuses a ref-level self-loop anyway — as are targets retired since
+    the entry was matched (``_held_ref_for_doi`` already excludes a
+    retired ref at match time; this rechecks at link time for rows
+    stamped earlier, which the ``backfill-bib-cites`` one-shot relies
+    on). Idempotent: ``store.add_link`` dedupes on the unique tuple, so
+    a re-run writes nothing new.
 
     Same write shape as ``inbound_chase``: ``relation='cites'``,
     ``set_by='system'``, a ``meta.source`` marker, and no explicit trust
@@ -684,13 +689,13 @@ def ensure_bib_cites_links(
     Returns the number of ``add_link`` calls made — edges *ensured*, not
     necessarily inserted (a conflict is a no-op write).
     """
-    by_held: dict[int, int] = {}
-    for entry_id, held_ref_id in entries:
+    by_held: dict[int, Any] = {}
+    for prov_key, held_ref_id in entries:
         if held_ref_id == ref_id:
             continue
         prev = by_held.get(held_ref_id)
-        if prev is None or entry_id < prev:
-            by_held[held_ref_id] = entry_id
+        if prev is None or prov_key < prev:
+            by_held[held_ref_id] = prov_key
     if not by_held:
         return 0
     live = {
@@ -709,7 +714,7 @@ def ensure_bib_cites_links(
             dst_ref_id=held_ref_id,
             relation="cites",
             set_by="system",
-            meta={"source": source, "bib_entry_id": by_held[held_ref_id]},
+            meta={"source": source, meta_key: by_held[held_ref_id]},
             conn=conn,
         )
         ensured += 1

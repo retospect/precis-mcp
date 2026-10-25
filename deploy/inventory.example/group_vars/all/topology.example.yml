@@ -38,6 +38,14 @@ precis_capabilities:
   worker_agent:    [node-gateway]
   llm_summarize:   [node-gateway]
   oa_fetch:        [node-gateway]
+  # precis worker --only openalex_snapshot (playbook 20f): the OpenAlex
+  # works-dump cites refresh. Singleton on the data node — most local disk
+  # and a wired uplink; a 675 GB full read must not multiply across every
+  # worker_system host. Ships EMPTY on purpose: naming a host here is the
+  # first-pass go switch (the lane also needs
+  # `precis_worker_oasnap_enabled: true`), and the first tick starts the
+  # ~675 GB works-dump transfer — enabling it needs Reto's go.
+  openalex_snapshot: []
 
   # --- GPU / compute node ---------------------------------------------------
   dft:             [node-gpu]

@@ -15,15 +15,44 @@ the citation edges touching a held paper and stages them in
   per run (``openalex`` values are the short ``W…`` form, ``doi`` values
   lowercase — migration 0049's trigger enforces it). An edge survives when
   the citing work OR the cited work resolves.
-- **Per-file transaction + checkpoint.** All of one file's edge inserts and
-  its ``openalex_snapshot_files`` ``done`` row commit together, so a kill
-  mid-file rolls the file back wholesale and a re-run re-reads it from byte
-  zero — no partial state, and ``ON CONFLICT DO NOTHING`` covers the
-  cross-partition duplicate case. A ``done`` row whose ``content_length``
-  still matches the listing skips the file; a ``failed`` row never skips.
+- **Stream first, then one short write tx per file.** A part's kept edges
+  collect in memory while it streams (thousands of tuples against 400k
+  records — well under the RSS bound): a busy node's pull of a ~1 GB gz
+  can outlast prod ``agent_rw``'s
+  ``idle_in_transaction_session_timeout = 300s``, so no transaction is
+  open while the stream runs. One short transaction then writes the
+  batched inserts and the ``openalex_snapshot_files`` ``done`` row
+  together, so a kill mid-file rolls the file back wholesale and a re-run
+  re-reads it from byte zero — no partial state, and ``ON CONFLICT DO
+  NOTHING`` covers the cross-partition duplicate case. A ``done`` row
+  whose ``content_length`` still matches the listing skips the file; a
+  ``failed`` row never skips.
 
-Out of slice 1: cites-link minting (slice 2, via the gf-citeslink writer),
-the monthly partition-diff refresh and fleet wiring (slice 3). The spec's
+Slice 2 (``mint_staged_cites``) turns every staged row with BOTH ref ids
+into a paper-level ``cites`` link through the shared writer
+(:func:`precis.workers.bib_parse.ensure_bib_cites_links`, the gf-citeslink
+path — no second ``links`` insert) and stamps ``minted_at`` in the same
+commit, so a re-run's ``minted_at IS NULL`` scan finds nothing. Each call
+first re-resolves NULL ref ids off ``ref_identifiers`` (a paper held after
+its edges staged still mints — the insert's ``ON CONFLICT DO NOTHING``
+never upgrades a NULL), and retired refs never resolve or mint.
+
+Slice 3 (``refresh_snapshot`` / ``run_snapshot_refresh_pass``) is the
+standing refresh: a ``--only openalex_snapshot`` worker lane throttled to
+~30 days via ``app_state`` (``openalex_snapshot:last_run``) that, when the
+bucket manifest's release ``date`` differs from
+``openalex_snapshot:last_release``, re-plans the whole ``works/`` prefix —
+any part file whose ``(s3_key, content_length)`` is checkpointed ``done``
+under ANY snapshot is skipped, so only newer/moved/changed files stream —
+then applies the cumulative ``deleted_ids.csv.gz`` deletion log (src side
+only; minted links retire through the normal link path — its object is
+itself checkpointed by ``content_length`` so a retry never re-streams the
+~234 MB file) and mints the new staged edges. ``last_release`` advances
+only on a clean, unlimited run — a failed file leaves it set so the next
+tick re-plans (done checkpoints confine the retry to the failed files),
+and a tick that *raises* backs off ~6 h via
+``openalex_snapshot:last_error`` instead of re-pulling the listing every
+idle interval. The spec's
 ``resource_slots`` hold for the whole run lands with the job wiring — the
 slot vocabulary has no network token today (``gpu``/``podman``/``tts``/
 ``embedder`` only); slice 1 paces S3 through the ``openalex-snapshot``
@@ -39,6 +68,7 @@ import logging
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from xml.etree import ElementTree
 
@@ -123,9 +153,13 @@ class LoadSummary:
 
 # ── Held-paper index ─────────────────────────────────────────────────────
 
+#: A retired ref never resolves (same ``retired_at IS NULL`` gate the
+#: link writer applies to targets at mint time): a paper merged away
+#: before the load must not stage or mint edges under its old id.
 _HELD_SQL = (
-    "SELECT id_kind, id_value, ref_id FROM ref_identifiers "
-    "WHERE id_kind IN ('openalex', 'doi')"
+    "SELECT ri.id_kind, ri.id_value, ri.ref_id FROM ref_identifiers ri "
+    "JOIN refs r ON r.ref_id = ri.ref_id AND r.retired_at IS NULL "
+    "WHERE ri.id_kind IN ('openalex', 'doi')"
 )
 
 
@@ -288,20 +322,15 @@ def stream_part_lines(client: httpx.Client, s3_key: str) -> Iterator[str]:
 # ── Bucket listing + manifest ────────────────────────────────────────────
 
 
-def list_partition_files(
-    client: httpx.Client, partition: str, *, prefix: str = WORKS_PREFIX
-) -> Iterator[PartFile]:
-    """Yield every ``part_NNNN.gz`` under ``updated_date=<partition>/``.
+def _list_objects(client: httpx.Client, prefix: str) -> Iterator[PartFile]:
+    """Yield every ``.gz`` object under ``prefix`` (paginated listing).
 
     Anonymous ``list-type=2`` paginated listing (1,000 keys/page); each
     entry's ``Size`` doubles as the checkpoint's ``content_length``.
     """
     token: str | None = None
     while True:
-        params: dict[str, str] = {
-            "list-type": "2",
-            "prefix": f"{prefix}/updated_date={partition}/",
-        }
+        params: dict[str, str] = {"list-type": "2", "prefix": prefix}
         if token:
             params["continuation-token"] = token
         url = f"{BUCKET_URL}/"
@@ -325,6 +354,18 @@ def list_partition_files(
         token = root.findtext(f"{_S3_NS}NextContinuationToken")
         if root.findtext(f"{_S3_NS}IsTruncated") != "true" or not token:
             return
+
+
+def list_partition_files(
+    client: httpx.Client, partition: str, *, prefix: str = WORKS_PREFIX
+) -> Iterator[PartFile]:
+    """Yield every ``part_NNNN.gz`` under ``updated_date=<partition>/``."""
+    yield from _list_objects(client, f"{prefix}/updated_date={partition}/")
+
+
+def _is_works_part(s3_key: str) -> bool:
+    """``updated_date=YYYY-MM-DD/part_NNNN.gz`` — a loadable works part."""
+    return "/updated_date=" in s3_key and s3_key.rsplit("/", 1)[-1].startswith("part_")
 
 
 def fetch_snapshot_date(client: httpx.Client) -> str:
@@ -427,11 +468,17 @@ def process_file(
 ) -> FileOutcome:
     """Consume one part file's JSONL lines; stage kept edges + checkpoint.
 
-    One transaction per file: a mid-stream failure rolls the whole file
-    back, then a second (short) transaction records ``failed`` with the
-    partial counts. ``dry_run`` counts edges and writes nothing.
+    The stream runs with NO transaction open — kept edges collect in a
+    list first (a busy node's pull of a ~1 GB gz can outlast prod
+    ``agent_rw``'s ``idle_in_transaction_session_timeout = 300s``, which
+    would kill the session mid-file on every retry), then one short
+    transaction writes the batched inserts plus the ``done`` checkpoint.
+    A mid-stream failure leaves no partial rows; a second (short)
+    transaction records ``failed`` with the partial counts. ``dry_run``
+    counts edges and writes nothing.
     """
     records = 0
+    kept: list[tuple[str, str, int | None, int | None, str | None, str]] = []
 
     def gen_edges() -> Iterator[tuple[str, str, int | None, int | None, str | None]]:
         nonlocal records
@@ -449,27 +496,30 @@ def process_file(
             if isinstance(record, dict):
                 yield from iter_kept_edges(record, held)
 
-    edges = 0
     if dry_run:
+        edges = 0
         for _edge in gen_edges():
             edges += 1
         return FileOutcome(part.s3_key, "done", records, edges)
 
     try:
+        for edge in gen_edges():
+            kept.append((*edge, snapshot_date))
         with store.pool.connection() as conn, conn.transaction():
-            batch: list[tuple] = []
-            for edge in gen_edges():
-                batch.append((*edge, snapshot_date))
-                if len(batch) >= _EDGE_BATCH:
-                    conn.cursor().executemany(_INSERT_EDGE, batch)
-                    edges += len(batch)
-                    batch.clear()
-            if batch:
-                conn.cursor().executemany(_INSERT_EDGE, batch)
-                edges += len(batch)
+            cur = conn.cursor()
+            for i in range(0, len(kept), _EDGE_BATCH):
+                cur.executemany(_INSERT_EDGE, kept[i : i + _EDGE_BATCH])
             conn.execute(
                 _CHECKPOINT,
-                (snapshot_date, part.s3_key, part.size, records, edges, "done", None),
+                (
+                    snapshot_date,
+                    part.s3_key,
+                    part.size,
+                    records,
+                    len(kept),
+                    "done",
+                    None,
+                ),
             )
     except Exception as exc:
         # The file's transaction rolled back — record the failure in a
@@ -482,13 +532,13 @@ def process_file(
                     part.s3_key,
                     part.size,
                     records,
-                    edges,
+                    len(kept),
                     "failed",
                     f"{type(exc).__name__}: {exc}"[:2000],
                 ),
             )
-        return FileOutcome(part.s3_key, "failed", records, edges, str(exc))
-    return FileOutcome(part.s3_key, "done", records, edges)
+        return FileOutcome(part.s3_key, "failed", records, len(kept), str(exc))
+    return FileOutcome(part.s3_key, "done", records, len(kept))
 
 
 def run_load(
@@ -542,22 +592,515 @@ def run_load(
     return summary
 
 
+# ── Link minting (slice 2) ───────────────────────────────────────────────
+
+#: ``links.meta.source`` for edges this minter writes — distinct from
+#: ``bib_parse``'s ``_LINK_SOURCE`` and ``oa_refs``' ``OA_LINK_SOURCE`` so
+#: provenance stays attributable (and inbound_chase's source-filtered claim
+#: query never picks these up, same reasoning as ``bib_parse._LINK_SOURCE``).
+_MINT_SOURCE = "openalex_snapshot"
+
+#: ``meta`` key carrying the staging edge's ``src>dst`` W-id pair —
+#: ``ensure_bib_cites_links``' provenance slot (``bib_entry_id`` there).
+_MINT_META_KEY = "openalex_edge"
+
+#: Staging rows consumed per write transaction — bounds one commit's size,
+#: same reasoning as ``backfill.bib_cites._DEFAULT_BATCH_REFS``.
+_MINT_BATCH = 2_000
+
+#: The unminted scan — both endpoints held, not yet consumed. The 0240
+#: ``openalex_cite_edges_unminted`` partial index covers exactly this
+#: shape. The ``refs`` join reports the citing ref's liveness: a ref
+#: retired between staging and minting still stamps (the scan converges)
+#: but writes no link — ``ensure_bib_cites_links`` applies the same gate
+#: to the TARGET side.
+_UNMINTED = (
+    "SELECT e.src_ref_id, e.dst_ref_id, e.src_oa_id, e.dst_oa_id, "
+    "       (r.retired_at IS NULL) AS src_live "
+    "FROM openalex_cite_edges e "
+    "JOIN refs r ON r.ref_id = e.src_ref_id "
+    "WHERE e.src_ref_id IS NOT NULL AND e.dst_ref_id IS NOT NULL "
+    "  AND e.minted_at IS NULL "
+    "ORDER BY e.src_ref_id, e.dst_ref_id "
+    "LIMIT %s"
+)
+
+_STAMP_MINTED = (
+    "UPDATE openalex_cite_edges SET minted_at = now() "
+    "WHERE src_oa_id = %s AND dst_oa_id = %s"
+)
+
+#: Live held ``openalex`` identifiers per re-resolve round — the resolve
+#: drives from the SMALL side (held ids, keyset-paged through the
+#: ``ref_identifiers`` PK ``(id_kind, id_value)``) so every pass probes
+#: every held paper. Paging the staging side's NULL keys instead can
+#: stall forever on a front window of ids that will never be held (R1).
+_RESOLVE_BATCH = 5_000
+
+_HELD_OA_BATCH = (
+    "SELECT ri.ref_id, ri.id_value, upper(ri.id_value) AS oa "
+    "FROM ref_identifiers ri "
+    "JOIN refs r ON r.ref_id = ri.ref_id AND r.retired_at IS NULL "
+    "WHERE ri.id_kind = 'openalex' AND ri.id_value > %s "
+    "ORDER BY ri.id_value LIMIT %s"
+)
+
+#: Bare-column equality against the upper()'d stored id: staged
+#: ``*_oa_id`` is ``W…`` and ``id_value`` stores canonical lowercase
+#: ``w…``, so ``upper(ri.id_value)`` is the exact staged form and the
+#: staging column stays index-usable — the PK's ``src_oa_id`` lead on the
+#: citing side, ``openalex_cite_edges_dst_oa`` on the cited side.
+_RESOLVE_SRC_OA = (
+    "UPDATE openalex_cite_edges e SET src_ref_id = ids.ref_id "
+    "FROM unnest(%s::bigint[], %s::text[]) AS ids(ref_id, oa) "
+    "WHERE e.src_oa_id = ids.oa AND e.src_ref_id IS NULL"
+)
+_RESOLVE_DST_OA = (
+    "UPDATE openalex_cite_edges e SET dst_ref_id = ids.ref_id "
+    "FROM unnest(%s::bigint[], %s::text[]) AS ids(ref_id, oa) "
+    "WHERE e.dst_oa_id = ids.oa AND e.dst_ref_id IS NULL"
+)
+
+#: DOI side, run ONCE per call (``HeldIndex.ref_for``'s precedence is
+#: preserved: the OpenAlex pass fills first, DOI only what remains).
+#: There is no ``src_doi`` index and RULING says no migration for it —
+#: one hash-join statement over the NULL-src set, seconds on a monthly
+#: few-million-row join. ``src_doi`` is ``normalize_doi``-canonical at
+#: staging, the same lowercase form ``id_kind='doi'`` stores.
+_RESOLVE_SRC_DOI = (
+    "UPDATE openalex_cite_edges e SET src_ref_id = ri.ref_id "
+    "FROM ref_identifiers ri "
+    "JOIN refs r ON r.ref_id = ri.ref_id AND r.retired_at IS NULL "
+    "WHERE e.src_ref_id IS NULL AND e.src_doi IS NOT NULL "
+    "  AND ri.id_kind = 'doi' AND ri.id_value = e.src_doi"
+)
+
+
+@dataclass
+class MintSummary:
+    """Aggregate counters for one :func:`mint_staged_cites` call."""
+
+    rows: int = 0  # staging rows consumed (minted_at stamped)
+    links: int = 0  # add_link calls made (ensures, not necessarily inserts)
+    papers: int = 0  # distinct citing refs processed
+    resolved: int = 0  # NULL ref ids filled off live refs before minting
+
+
+def resolve_staged_ref_ids(store: Store, *, limit: int | None = None) -> int:
+    """Fill NULL ``src_ref_id``/``dst_ref_id`` on staged rows off live refs.
+
+    The ``ON CONFLICT DO NOTHING`` insert never upgrades a NULL ref id, so
+    a paper held AFTER its edges staged would leave them unmintable —
+    every mint pass re-resolves first. The walk pages the live held
+    ``openalex`` identifiers (``_RESOLVE_BATCH`` per transaction) and
+    probes the staging table by index per id, so the whole held corpus is
+    covered every call; a citing side that still has no OpenAlex match
+    then gets one hash-join pass on DOI. ``limit`` caps staging rows
+    filled per call — an early stop re-walks the identifiers next call.
+    Returns the staging rows updated.
+    """
+    filled = 0
+    after = ""
+    while True:
+        with store.pool.connection() as conn:
+            ids = conn.execute(_HELD_OA_BATCH, (after, _RESOLVE_BATCH)).fetchall()
+        if not ids:
+            break
+        after = str(ids[-1][1])
+        ref_ids = [int(r[0]) for r in ids]
+        oas = [str(r[2]) for r in ids]
+        with store.pool.connection() as conn, conn.transaction():
+            filled += conn.execute(_RESOLVE_SRC_OA, (ref_ids, oas)).rowcount
+            filled += conn.execute(_RESOLVE_DST_OA, (ref_ids, oas)).rowcount
+        if len(ids) < _RESOLVE_BATCH or (limit is not None and filled >= limit):
+            break
+    with store.pool.connection() as conn, conn.transaction():
+        filled += conn.execute(_RESOLVE_SRC_DOI).rowcount
+    return filled
+
+
+def mint_staged_cites(store: Store, *, limit: int | None = None) -> MintSummary:
+    """Mint paper-level ``cites`` links from staged both-held edges.
+
+    First runs :func:`resolve_staged_ref_ids` so papers held AFTER their
+    edges staged still mint — the insert's ``ON CONFLICT DO NOTHING``
+    never upgrades a NULL ref id. Then selects up to ``limit`` unminted
+    staging rows (``src_ref_id`` AND ``dst_ref_id`` set, ``minted_at IS
+    NULL``), groups them by citing ref and ensures each paper's edges
+    through :func:`precis.workers.bib_parse.ensure_bib_cites_links` — the
+    gf-citeslink writer, idempotent on the links unique tuple — in one
+    transaction per ``_MINT_BATCH`` rows, stamping ``minted_at`` on every
+    selected row in the same commit.
+
+    ``minted_at`` marks *consumption*, not necessarily a written link: a
+    self-cite (same held ref under two OpenAlex ids), a citing ref retired
+    since staging, or a retired target is skipped by the writer and
+    stamped anyway, so the unminted scan converges instead of re-reading
+    dead rows every run. ``limit`` bounds rows per call; a run stopped
+    early re-selects the unstamped remainder next invocation.
+    """
+    from precis.workers.bib_parse import ensure_bib_cites_links
+
+    summary = MintSummary(resolved=resolve_staged_ref_ids(store))
+    while limit is None or summary.rows < limit:
+        want = _MINT_BATCH if limit is None else min(_MINT_BATCH, limit - summary.rows)
+        with store.pool.connection() as conn:
+            rows = conn.execute(_UNMINTED, (want,)).fetchall()
+            conn.commit()
+        if not rows:
+            break
+        by_src: dict[int, list[tuple[str, int, str]]] = {}
+        live_src: set[int] = set()
+        for src_ref, dst_ref, src_oa, dst_oa, src_live in rows:
+            by_src.setdefault(int(src_ref), []).append(
+                (str(src_oa), int(dst_ref), str(dst_oa))
+            )
+            if src_live:
+                live_src.add(int(src_ref))
+        summary.papers += len(by_src)
+        with store.pool.connection() as conn, conn.transaction():
+            for src_ref in sorted(by_src):
+                if src_ref in live_src:
+                    pairs = [
+                        (f"{src_oa}>{dst_oa}", dst_ref)
+                        for src_oa, dst_ref, dst_oa in by_src[src_ref]
+                    ]
+                    summary.links += ensure_bib_cites_links(
+                        store,
+                        src_ref,
+                        pairs,
+                        conn=conn,
+                        source=_MINT_SOURCE,
+                        meta_key=_MINT_META_KEY,
+                    )
+                conn.cursor().executemany(
+                    _STAMP_MINTED,
+                    [(src_oa, dst_oa) for src_oa, _r, dst_oa in by_src[src_ref]],
+                )
+        summary.rows += len(rows)
+    return summary
+
+
+# ── Refresh: new releases, changed folders, deletions (slice 3) ─────────
+
+#: The cumulative works deletion log — one ``work_id,deleted_date`` CSV
+#: (gzipped) per release; IDs are never reused.
+DELETED_KEY = f"{WORKS_PREFIX}/deleted_ids.csv.gz"
+
+#: ``app_state`` keys: the release the staging tree was last refreshed to
+#: (the manifest ``date``) and the last time the timer pass evaluated a
+#: refresh (the ``_throttle.due`` marker — even an unchanged manifest
+#: stamps it, so the lane stays a monthly tick, not a per-cycle fetch).
+_LAST_RELEASE_KEY = "openalex_snapshot:last_release"
+_LAST_RUN_KEY = "openalex_snapshot:last_run"
+
+#: Env var + default (~30 days) for the pass cadence — see
+#: :func:`precis.workers._throttle.due`. Public data ships quarterly; a
+#: monthly tick is a cheap manifest fetch in two runs out of three.
+_REFRESH_ENV_VAR = "PRECIS_OPENALEX_SNAPSHOT_REFRESH_HOURS"
+_DEFAULT_REFRESH_HOURS = 24.0 * 30
+
+#: Done checkpoints matched across EVERY snapshot — a file already read
+#: unchanged under an older release never re-streams.
+_DONE_ANY_SNAPSHOT = (
+    "SELECT s3_key, content_length FROM openalex_snapshot_files WHERE status = 'done'"
+)
+
+#: One ``DELETE … WHERE src_oa_id = ANY`` per batch of parsed ids —
+#: spec: drop staging rows whose *citing* work was deleted (minted links
+#: retire through the normal link path, not deleted here).
+_DELETE_SRC_BATCH = "DELETE FROM openalex_cite_edges WHERE src_oa_id = ANY(%s)"
+_DELETE_BATCH = 5_000
+
+#: ``app_state`` keys + backoff for a tick that RAISES or finishes with
+#: failed files: ``last_error`` holds the retry for
+#: ``_ERROR_BACKOFF_HOURS`` instead of re-pulling the works listing and
+#: the ~234 MB deletion log (or the failed ~1 GB parts) every idle
+#: interval while a deterministic fault repeats. ``failed_ticks`` counts
+#: consecutive failed-file ticks; at ``_FAILED_TICK_GIVE_UP`` the lane
+#: stamps ``last_run`` and parks the files until the next cadence —
+#: a ~1 GB part that fails the same way every attempt costs ~23 GB/day
+#: otherwise (R2).
+_LAST_ERROR_KEY = "openalex_snapshot:last_error"
+_FAILED_TICKS_KEY = "openalex_snapshot:failed_ticks"
+_RETRY_ENV_VAR = "PRECIS_OPENALEX_SNAPSHOT_RETRY_HOURS"
+_ERROR_BACKOFF_HOURS = 6.0
+_FAILED_TICK_GIVE_UP = 4
+
+
+@dataclass
+class RefreshSummary:
+    """Aggregate counters for one :func:`refresh_snapshot` call."""
+
+    snapshot_date: str = ""
+    planned: int = 0  # part files selected for streaming
+    planned_bytes: int = 0  # gzip bytes the plan would transfer
+    load: LoadSummary = field(default_factory=LoadSummary)
+    deleted: int = 0  # staging rows dropped by the deletion log
+    minted: MintSummary = field(default_factory=MintSummary)
+
+
+@dataclass(frozen=True)
+class DeletionSummary:
+    """What one ``deleted_ids.csv.gz`` apply did."""
+
+    ids: int = 0  # work_id lines parsed
+    deleted: int = 0  # staging rows removed
+
+
+def _done_keys(store: Store) -> set[tuple[str, int]]:
+    """``(s3_key, content_length)`` pairs checkpointed ``done`` — every snapshot."""
+    with store.pool.connection() as conn:
+        return {
+            (str(r[0]), int(r[1])) for r in conn.execute(_DONE_ANY_SNAPSHOT).fetchall()
+        }
+
+
+def plan_refresh(store: Store, files: Iterable[PartFile]) -> list[PartFile]:
+    """Select the listed part files that still need reading.
+
+    A file is skipped when a ``done`` checkpoint with the same
+    ``(s3_key, content_length)`` exists under ANY ``snapshot_date`` — that
+    is what makes a whole-tree listing cheap: unchanged files keep their
+    key and size across releases, so the plan reduces to the folders the
+    new release moved or rewrote (plus files added under older folders).
+    """
+    done = _done_keys(store)
+    return [p for p in files if (p.s3_key, p.size) not in done]
+
+
+def apply_deletion_log(store: Store, lines: Iterable[str]) -> DeletionSummary:
+    """Drop staging rows whose *citing* work the release deleted.
+
+    ``lines`` is the decoded ``deleted_ids.csv.gz`` content (the same
+    ``_iter_gz_lines`` decode a part file gets — :func:`stream_part_lines`
+    in production). Only column 0 (``work_id``) is read, through
+    :func:`short_oa_id` so both the URL and the short form resolve; the
+    header line resolves to ``""`` and is skipped. One transaction, batched
+    ``ANY`` deletes; returns the ids parsed and rows removed.
+    """
+    ids = 0
+    deleted = 0
+    with store.pool.connection() as conn, conn.transaction():
+        batch: list[str] = []
+        for line in lines:
+            oa = short_oa_id(line.split(",", 1)[0].strip())
+            if not oa:
+                continue
+            ids += 1
+            batch.append(oa)
+            if len(batch) >= _DELETE_BATCH:
+                deleted += conn.execute(_DELETE_SRC_BATCH, (batch,)).rowcount
+                batch.clear()
+        if batch:
+            deleted += conn.execute(_DELETE_SRC_BATCH, (batch,)).rowcount
+    return DeletionSummary(ids, deleted)
+
+
+def refresh_snapshot(
+    store: Store,
+    *,
+    fetch_date: Callable[[], str],
+    list_files: Callable[[], Iterable[PartFile]],
+    lines_for: Callable[[PartFile], Iterable[str]],
+    deletion_lines: Callable[[], Iterable[str]],
+    dry_run: bool = False,
+    limit_files: int | None = None,
+) -> RefreshSummary | None:
+    """One release-diff refresh: plan, stream the new files, delete, mint.
+
+    ``fetch_date()`` returns the bucket manifest's release ``date``; when it
+    equals ``app_state[openalex_snapshot:last_release]`` the call is a no-op
+    returning ``None`` (the manifest fetch is the whole cost — the whole
+    point of the monthly timer). ``list_files()`` yields the whole
+    ``works/`` listing — every ``.gz`` object, e.g.
+    ``_list_objects(client, f"{WORKS_PREFIX}/")``: the ``part_`` files plan
+    through :func:`plan_refresh` and the ``deleted_ids.csv.gz`` object's
+    size doubles as its checkpoint (the log is cumulative, so a ``done``
+    row with a matching ``content_length`` under ANY snapshot means
+    nothing new was deleted — the retry path never re-streams it).
+    The selected files load under the new ``snapshot_date``, the
+    deletion log drops deleted citer rows, the new both-held edges mint,
+    and ``last_release`` advances — but only on a clean, unlimited run:
+    a failed file leaves it set, so the next evaluation re-plans and the
+    done checkpoints confine the retry to the failed files.
+
+    ``dry_run`` plans and reports ``planned``/``planned_bytes`` but
+    streams and writes nothing. ``limit_files`` bounds files read — the
+    first dev pass's escape hatch.
+    """
+    snap = fetch_date()
+    if snap == store.get_setting(_LAST_RELEASE_KEY):
+        return None
+    listed = list(list_files())
+    del_obj = next((p for p in listed if p.s3_key == DELETED_KEY), None)
+    plan = plan_refresh(store, (p for p in listed if _is_works_part(p.s3_key)))
+    summary = RefreshSummary(
+        snapshot_date=snap,
+        planned=len(plan),
+        planned_bytes=sum(p.size for p in plan),
+    )
+    if dry_run:
+        return summary
+    summary.load = run_load(
+        store,
+        plan,
+        snapshot_date=snap,
+        held=load_held_index(store),
+        lines_for=lines_for,
+        limit_files=limit_files,
+    )
+    if del_obj is not None and (DELETED_KEY, del_obj.size) in _done_keys(store):
+        pass  # unchanged cumulative log — nothing new was deleted
+    else:
+        delsum = apply_deletion_log(store, deletion_lines())
+        summary.deleted = delsum.deleted
+        if del_obj is not None:
+            with store.pool.connection() as conn, conn.transaction():
+                conn.execute(
+                    _CHECKPOINT,
+                    (
+                        snap,
+                        DELETED_KEY,
+                        del_obj.size,
+                        delsum.ids,
+                        delsum.deleted,
+                        "done",
+                        None,
+                    ),
+                )
+    summary.minted = mint_staged_cites(store)
+    if summary.load.files_failed == 0 and limit_files is None:
+        store.set_setting(_LAST_RELEASE_KEY, snap)
+    return summary
+
+
+def run_refresh(
+    store: Store, *, dry_run: bool = False, limit_files: int | None = None
+) -> RefreshSummary | None:
+    """The CLI/worker refresh path against the live bucket.
+
+    Builds the pinning-transport client and wires the production seams of
+    :func:`refresh_snapshot` — the whole ``works/`` listing, part streams,
+    and the ``deleted_ids.csv.gz`` stream.
+    """
+    with _bucket_client() as client:
+        return refresh_snapshot(
+            store,
+            fetch_date=lambda: fetch_snapshot_date(client),
+            list_files=lambda: _list_objects(client, f"{WORKS_PREFIX}/"),
+            lines_for=lambda part: stream_part_lines(client, part.s3_key),
+            deletion_lines=lambda: stream_part_lines(client, DELETED_KEY),
+            dry_run=dry_run,
+            limit_files=limit_files,
+        )
+
+
+def run_snapshot_refresh_pass(
+    store: Store,
+    *,
+    refresh: Callable[[], RefreshSummary | None] | None = None,
+) -> dict[str, Any]:
+    """The ``--only openalex_snapshot`` lane tick — ~30-day cadence.
+
+    ``_throttle.due`` gates the pass on ``openalex_snapshot:last_run``; due
+    means "evaluate a refresh now" (fetch the manifest — itself the cheap
+    part — and let :func:`refresh_snapshot` decide whether the release
+    actually moved). The stamp is written when the tick completes CLEAN —
+    an unchanged manifest or a failure-free run. A run with failed files
+    instead stamps ``openalex_snapshot:last_error`` (~6 h backoff, same as
+    a raise — a deterministically-failed ~1 GB part must not re-stream
+    hourly) and counts ``openalex_snapshot:failed_ticks``; after
+    ``_FAILED_TICK_GIVE_UP`` consecutive failed ticks it stamps
+    ``last_run`` and logs the failed keys, parking the files until the
+    next cadence. A clean tick clears both markers. ``refresh`` is the
+    test seam — production builds the networked call.
+    """
+    from precis.workers import _throttle
+
+    if not _throttle.due(
+        store, _LAST_RUN_KEY, _REFRESH_ENV_VAR, _DEFAULT_REFRESH_HOURS
+    ) or not _throttle.due(
+        store, _LAST_ERROR_KEY, _RETRY_ENV_VAR, _ERROR_BACKOFF_HOURS
+    ):
+        return {"claimed": 0, "ok": 0, "failed": 0}
+    if refresh is None:
+
+        def refresh() -> RefreshSummary | None:
+            return run_refresh(store)
+
+    try:
+        summary = refresh()
+    except Exception:
+        store.set_setting(_LAST_ERROR_KEY, datetime.now(UTC).isoformat())
+        raise
+    now = datetime.now(UTC).isoformat()
+    store.set_setting(_LAST_ERROR_KEY, "")
+    if summary is None:
+        store.set_setting(_LAST_RUN_KEY, now)
+        store.set_setting(_FAILED_TICKS_KEY, "0")
+        return {"claimed": 0, "ok": 0, "failed": 0, "release": "unchanged"}
+    if summary.load.files_failed == 0:
+        store.set_setting(_LAST_RUN_KEY, now)
+        store.set_setting(_FAILED_TICKS_KEY, "0")
+    else:
+        ticks = int(store.get_setting(_FAILED_TICKS_KEY) or "0") + 1
+        if ticks < _FAILED_TICK_GIVE_UP:
+            store.set_setting(_FAILED_TICKS_KEY, str(ticks))
+            store.set_setting(_LAST_ERROR_KEY, now)
+        else:
+            keys = ", ".join(
+                o.s3_key for o in summary.load.outcomes if o.status == "failed"
+            )
+            log.warning(
+                "openalex-snapshot: %d consecutive ticks with failed files — "
+                "parking until the next cadence; failed: %s",
+                ticks,
+                keys,
+            )
+            store.set_setting(_FAILED_TICKS_KEY, "0")
+            store.set_setting(_LAST_RUN_KEY, now)
+    return {
+        "claimed": summary.planned,
+        "ok": summary.load.files_done,
+        "failed": summary.load.files_failed,
+        "release": summary.snapshot_date,
+        "records": summary.load.records_seen,
+        "edges": summary.load.edges_kept,
+        "deleted": summary.deleted,
+        "mint_rows": summary.minted.rows,
+        "mint_links": summary.minted.links,
+        "resolved": summary.minted.resolved,
+    }
+
+
 __all__ = [
     "BUCKET_URL",
+    "DELETED_KEY",
     "MANIFEST_KEY",
     "SERVICE",
     "WORKS_PREFIX",
+    "DeletionSummary",
     "FileOutcome",
     "HeldIndex",
     "LoadSummary",
+    "MintSummary",
     "PartFile",
+    "RefreshSummary",
+    "apply_deletion_log",
     "fetch_snapshot_date",
     "iter_kept_edges",
     "list_partition_files",
     "load_held_index",
+    "mint_staged_cites",
+    "plan_refresh",
     "process_file",
+    "refresh_snapshot",
+    "resolve_staged_ref_ids",
     "run_load",
     "run_partition",
+    "run_refresh",
+    "run_snapshot_refresh_pass",
     "short_oa_id",
     "stream_part_lines",
     "work_edge",

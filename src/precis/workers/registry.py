@@ -1325,6 +1325,27 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-part-select-help",
     ),
     ServiceSpec(
+        # docs/backlog/openalex-snapshot-cites.md slice 3: the standing
+        # refresh over the public OpenAlex works dump. Same shape as
+        # parts_refresh just above: no `default_profiles`, so this registers
+        # a pass only for a manual/dedicated `--only openalex_snapshot` run —
+        # the STANDING runner is the `worker-oasnap` unit playbook 20f
+        # renders on `precis_capabilities.openalex_snapshot` hosts (the data
+        # node: most local disk, wired uplink; a 675 GB full read must not
+        # multiply across every `worker_system` host). The pass paces itself:
+        # ~30d `_throttle.due` on `openalex_snapshot:last_run`, then the
+        # manifest `date` diff makes most ticks a cheap no-op.
+        name="openalex_snapshot",
+        label="OpenAlex snapshot cites refresh",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        uses_external=("openalex-snapshot",),
+        one_line="Diff the OpenAlex works release into openalex_cite_edges "
+        "(new/changed folders, deletion log, mint); ~30d cadence.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         # email-kind slice 3. Dark until PRECIS_MAIL_POLL_ENABLED is set on one
         # host — no default profile, so it doesn't poll the same mailbox from
         # every node (a per-account lease that would make every-node safe is the

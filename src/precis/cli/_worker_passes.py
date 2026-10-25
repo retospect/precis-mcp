@@ -1258,6 +1258,26 @@ def build_ref_passes(
 
         ref_passes.append(_parts_refresh_pass)
 
+    # openalex_snapshot — the OpenAlex works-dump cites refresh (slice 3,
+    # docs/backlog/openalex-snapshot-cites.md). Same shape as parts_refresh:
+    # this registration is for a manual/dedicated `--only openalex_snapshot`
+    # run only (no `default_profiles`, no `enable_env`). The STANDING runner
+    # is the `worker-oasnap` unit (playbook 20f) on the
+    # `precis_capabilities.openalex_snapshot` host — the pass throttles
+    # itself ~30d via `openalex_snapshot:last_run` and no-ops on an
+    # unchanged manifest `date`, so a keepalive lane is cheap.
+    if _register("openalex_snapshot"):
+        from precis.workers.openalex_snapshot import run_snapshot_refresh_pass
+        from precis.workers.runner import BatchResult as _OasBatchResult
+
+        def _openalex_snapshot_pass(batch_size: int) -> _OasBatchResult:
+            # batch_size is unused — the pass bounds itself (throttle +
+            # per-file transactions; the manifest diff decides the work).
+            r = run_snapshot_refresh_pass(store)
+            return _OasBatchResult.from_dict("openalex_snapshot", r)
+
+        ref_passes.append(_openalex_snapshot_pass)
+
     # Mailbox poll (email kind, slice 3). Per-account IMAP poll for new
     # mail past the last_uid high-water + inline tier-0 regex injection
     # scan; verdicts land in email_scan (no body stored). Dark behind a

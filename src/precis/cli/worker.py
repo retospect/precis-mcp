@@ -254,6 +254,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_structural_pass": PassPriority.BACKGROUND,
     "_deep_review_pass": PassPriority.BACKGROUND,
     "_dream_agent_pass": PassPriority.BACKGROUND,
+    "_openalex_snapshot_pass": PassPriority.BACKGROUND,
 }
 
 

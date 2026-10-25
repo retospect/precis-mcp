@@ -124,6 +124,15 @@
 - name: "20e — precis agent worker lane (gateway, job_claude_inproc + job_inproc)"
   ansible.builtin.import_playbook: playbooks/20e-precis-worker-agentlane.yml
 
+# Dedicated OpenAlex-snapshot worker lane — `--only openalex_snapshot` on
+# `precis_capabilities.openalex_snapshot` hosts (the data node): the monthly
+# works-dump cites refresh (oa-cites slice 3). The pass self-throttles ~30d,
+# so the keepalive unit costs a sleeping thread between releases. After 20b
+# ordering-wise (it provisions its own venv — the data node runs no other
+# precis daemon), gated entirely by capability membership.
+- name: "20f — precis OpenAlex-snapshot worker lane (capability: openalex_snapshot)"
+  ansible.builtin.import_playbook: playbooks/20f-precis-worker-oasnap.yml
+
 - name: "20c — heartbeat-only worker (serving hosts — /status visibility, no queue claims)"
   ansible.builtin.import_playbook: playbooks/20c-precis-heartbeat-serving.yml
 
