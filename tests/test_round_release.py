@@ -1570,3 +1570,105 @@ def test_deploy_resumes_the_journal_record_with_an_open_release(rig: Rig) -> Non
     assert rig.deploy_log() == [f"{head} --pinned", f"{head} --pinned"]
     assert _rel(_round_json(rig), 1)["state"] == "deployed"
     assert _rel(_round_json(rig), 2)["state"] == "cut"
+
+
+# ── good/r<N> (gr517170) ──────────────────────────────────────────────────
+# A deployed release earns an immutable good/r<N> tag after ~24h of clean
+# runtime; the newest one is the rollback target. The verb enforces the
+# 24h floor from the round receipt's deploy stamp.
+
+
+def _good_tag(rig: Rig, n: int) -> str:
+    cp = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(rig.origin),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/tags/good/r{n}",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    return cp.stdout.strip()
+
+
+def _deployed_tag(rig: Rig, n: int, sha: str) -> None:
+    _git(rig.root, "push", "-q", "origin", f"{sha}:refs/tags/deployed/r{n}")
+
+
+def _good_receipt(rig: Rig, n: int, sha: str, hours_ago: float) -> None:
+    at = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - hours_ago * 3600)
+    )
+    path = rig.root / ".git" / "precis-round" / "receipts" / f"r{n}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "n": n,
+                "base": "",
+                "deployed": {
+                    "sha": sha,
+                    "n": n,
+                    "tag": f"deployed/r{n}",
+                    "branch": f"release/r{n}",
+                    "at": at,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_good_marks_the_newest_deployed_tag_after_24h(rig: Rig) -> None:
+    _deployed_tag(rig, 1, rig.shas["c2"])
+    _deployed_tag(rig, 2, rig.shas["c3"])
+    _good_receipt(rig, 2, rig.shas["c3"], hours_ago=30)
+    out = rig.round("good")
+    assert out.returncode == 0, out.stderr
+    assert _good_tag(rig, 2) == rig.shas["c3"]
+    assert _good_tag(rig, 1) == ""
+    # The dry-run and the resolve/status surfaces name the mark.
+    out = rig.round("good", "--dry-run")
+    assert out.returncode == 0 and "already marks" in out.stdout
+    out = rig.round("good", "--resolve")
+    assert out.returncode == 0
+    assert out.stdout.split() == ["good/r2", rig.shas["c3"]]
+    assert "good tag: good/r2" in rig.round("status").stdout
+
+
+def test_good_refuses_under_24h_and_without_a_deploy_stamp(rig: Rig) -> None:
+    _deployed_tag(rig, 1, rig.shas["c2"])
+    _good_receipt(rig, 1, rig.shas["c2"], hours_ago=2)
+    out = rig.round("good")
+    assert out.returncode == 1
+    assert "only" in out.stderr and "24h" in out.stderr
+    assert _good_tag(rig, 1) == ""
+    # No receipt: the verb cannot prove runtime and refuses, naming --at.
+    (rig.root / ".git" / "precis-round" / "receipts" / "r1.json").unlink()
+    out = rig.round("good")
+    assert out.returncode == 1 and "--at" in out.stderr
+    at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 26 * 3600))
+    out = rig.round("good", "--at", at)
+    assert out.returncode == 0, out.stderr
+    assert _good_tag(rig, 1) == rig.shas["c2"]
+
+
+def test_good_tag_is_immutable_and_an_unknown_release_refuses(rig: Rig) -> None:
+    _deployed_tag(rig, 1, rig.shas["c2"])
+    _good_receipt(rig, 1, rig.shas["c2"], hours_ago=48)
+    assert rig.round("good").returncode == 0
+    out = rig.round("good")
+    assert out.returncode == 0 and "already marks" in out.stdout
+    out = rig.round("good", "--n", "9")
+    assert out.returncode == 1 and "no deployed/r9" in out.stderr
+
+
+def test_good_resolve_with_no_good_tag(rig: Rig) -> None:
+    out = rig.round("good", "--resolve")
+    assert out.returncode == 0 and "no good/r" in out.stdout

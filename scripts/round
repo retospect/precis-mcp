@@ -101,6 +101,11 @@ from these tooling tests.
 Round numbers are global: `open` takes max(local n, highest deployed/r<N> tag
 or release/r<N> branch on origin) + 1, and `cut` refuses if deployed/r<N> exists.
 
+`good` (gr517170) pushes immutable good/r<N> onto a deployed/r<N> tag once it
+has run ~24h clean — the coordinator's sweep makes the clean-runtime call,
+the verb enforces the 24h floor from the round receipt. The newest good/r<N>
+is the rollback target; `good --resolve` prints it and `status` shows it.
+
 Exit codes: 0 ok; 3 rollout returned success, runtime confirmation pending;
 1 refused (no round open, unknown sha, bad usage). `pending`
 exits 0 with no output when everyone is in.
@@ -478,6 +483,17 @@ def _rows(state: Path, cur: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _good_line(root: Path) -> str:
+    """The current newest good/r<N> mark for status output (gr517170)."""
+    good = _numbered_tags(root, "good/")
+    if good is None:
+        return "good tag: unreadable (git ls-remote failed)"
+    if not good:
+        return "good tag: none yet — a deployed release earns good/r<N> after 24h clean runtime"
+    n = max(good)
+    return f"good tag: good/r{n} @ {good[n][:9]} (rollback target)"
+
+
 def cmd_status(state: Path, args: argparse.Namespace) -> int:
     cur = _open_round(state)
     if cur is None:
@@ -486,6 +502,7 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
             print(json.dumps({"round": last, "peers": []}))
         else:
             print(f"no round open (last: {last['n']})" if last else "no round open")
+            print(_good_line(_root()))
         return 0
     rows = _rows(state, cur)
     if args.json:
@@ -526,6 +543,7 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
         print(
             f"  {r['peer']:<{width}}  {r['status'] or '—':<4}  {r['at'][11:16] + 'Z' if r['at'] else '     '}  {tail}".rstrip()
         )
+    print(_good_line(_root()))
     return 0
 
 
@@ -534,6 +552,99 @@ def cmd_pending(state: Path, _args: argparse.Namespace) -> int:
     for r in _rows(state, cur):
         if r["status"] not in FINAL:
             print(r["peer"])
+    return 0
+
+
+# good/r<N> (gr517170): the script-moved tag recording that deployed/r<N>
+# ran ~GOOD_MIN_HOURS of clean runtime. "Deployed" only means it went live;
+# the newest good/r<N> is the rollback target runbooks and tooling name
+# instead of guessing at deployed/r<N-1>. One immutable tag per release —
+# a good/r<N> never moves once pushed. The mark is the coordinator's call
+# (no new alerts attributed to the release, doctor green); the 24h floor is
+# what this verb enforces, from the receipt's deploy timestamp.
+GOOD_MIN_HOURS = 24.0
+
+
+def _deployed_at(state: Path, n: int) -> str | None:
+    """When deployed/r<N>'s runtime was confirmed, from the round receipt."""
+    receipt = _read(state / "receipts" / f"r{n}.json") or {}
+    deployed = receipt.get("deployed")
+    at = deployed.get("at", "") if isinstance(deployed, dict) else ""
+    return at if isinstance(at, str) and at else None
+
+
+def _iso_hours_ago(at: str) -> float | None:
+    try:
+        then = datetime.fromisoformat(at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if then.tzinfo is None:
+        return None
+    return (datetime.now(UTC) - then).total_seconds() / 3600
+
+
+def _good_refuse(msg: str) -> int:
+    print(f"scripts/round: good refused — {msg}", file=sys.stderr)
+    return 1
+
+
+def cmd_good(state: Path, args: argparse.Namespace) -> int:
+    root = _root()
+    good = _numbered_tags(root, "good/")
+    if good is None:
+        return _good_refuse("could not read origin's good tags (git ls-remote failed)")
+    if args.resolve:
+        if good:
+            n = max(good)
+            print(f"good/r{n} {good[n]}")
+        else:
+            print("no good/r<N> tag on origin")
+        return 0
+    deployed = _numbered_tags(root, "deployed/")
+    if deployed is None:
+        return _good_refuse(
+            "could not read origin's deployed tags (git ls-remote failed)"
+        )
+    if not deployed:
+        return _good_refuse("no deployed/r<N> tag on origin yet")
+    n = args.n or max(deployed)
+    sha = deployed.get(n)
+    if sha is None:
+        return _good_refuse(
+            f"no deployed/r{n} tag on origin (deployed: "
+            + ", ".join(f"r{k}" for k in sorted(deployed))
+            + ")"
+        )
+    if n in good:
+        if good[n] == sha:
+            print(f"good/r{n} already marks {sha[:9]}")
+            return 0
+        return _good_refuse(
+            f"immutable good/r{n} on origin names {good[n][:9]}, not {sha[:9]}"
+        )
+    at = args.at or _deployed_at(state, n)
+    if not at:
+        return _good_refuse(
+            f"cannot verify {GOOD_MIN_HOURS:.0f}h of runtime for deployed/r{n} — "
+            f"receipts/r{n}.json has no deploy stamp (the round ran "
+            "elsewhere); re-run from that checkout or pass --at <UTC ISO>"
+        )
+    hours = _iso_hours_ago(at)
+    if hours is None:
+        return _good_refuse(f"unparseable deploy time {at!r} for deployed/r{n}")
+    if hours < GOOD_MIN_HOURS:
+        return _good_refuse(
+            f"deployed/r{n} has run only {hours:.1f}h (<{GOOD_MIN_HOURS:.0f}h "
+            "clean-runtime floor); mark it on the next sweep"
+        )
+    if args.dry_run:
+        print(f"dry-run: would tag good/r{n} at {sha[:9]} ({hours:.1f}h runtime)")
+        return 0
+    if _rgit(root, "push", "-q", "origin", f"{sha}:refs/tags/good/r{n}") is None:
+        return _good_refuse(f"pushing good/r{n} failed")
+    if _remote(root, f"refs/tags/good/r{n}") != sha:
+        return _good_refuse(f"good/r{n} push was not confirmed on origin")
+    print(f"good/r{n} → {sha[:9]} (deployed {hours:.1f}h ago)")
     return 0
 
 
@@ -581,6 +692,18 @@ def _remote(root: Path, ref: str) -> str | None:
     if out is None:
         return None
     return next((ln.split()[0] for ln in out.splitlines() if ln.split()[1] == ref), "")
+
+
+def _numbered_tags(root: Path, prefix: str) -> dict[int, str] | None:
+    """{N: sha} for origin's <prefix>r<N> tags. None = origin unreadable."""
+    out = _rgit(root, "ls-remote", "origin", f"refs/tags/{prefix}r*")
+    if out is None:
+        return None
+    return {
+        int(m.group(1)): ln.split()[0]
+        for ln in out.splitlines()
+        if (m := re.search(rf"\trefs/tags/{re.escape(prefix)}r(\d+)$", ln))
+    }
 
 
 def _release_candidate(root: Path, rel: dict[str, Any]) -> dict[str, Any]:
@@ -1890,6 +2013,33 @@ def main(argv: list[str] | None = None) -> int:
     p_cut.add_argument("--sha", default="")
     p_cut.add_argument("--dry-run", action="store_true")
     p_cut.add_argument("--abandon", action="store_true")
+    p_good = sub.add_parser(
+        "good",
+        help="mark a deployed release good/r<N> after 24h clean runtime",
+        description="Push immutable good/r<N> onto a deployed/r<N> tag once it "
+        "has run ~24h clean (the coordinator's call: no new alerts "
+        "attributed, doctor green). The newest good/r<N> is the rollback "
+        "target. Script-moved only — never a hand tag.",
+    )
+    p_good.add_argument(
+        "--n",
+        type=int,
+        default=0,
+        metavar="N",
+        help="mark deployed/r<N> (default: the newest deployed tag)",
+    )
+    p_good.add_argument(
+        "--at",
+        default="",
+        metavar="ISO",
+        help="attested deploy time (UTC) when this checkout lacks the round receipt",
+    )
+    p_good.add_argument(
+        "--resolve",
+        action="store_true",
+        help="print the newest good/r<N> tag and its sha (the rollback target)",
+    )
+    p_good.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.cmd == "gate":
         return cmd_gate(args)
@@ -1906,8 +2056,11 @@ def main(argv: list[str] | None = None) -> int:
         "status": cmd_status,
         "pending": cmd_pending,
         "cut": cmd_cut,
+        "good": cmd_good,
     }
-    if args.cmd in ("open", "close", "cut", "in", "none", "eta"):
+    if args.cmd in ("open", "close", "cut", "in", "none", "eta") or (
+        args.cmd == "good" and not args.resolve
+    ):
         # State is common-dir even when invoked by a linked peer worktree.
         with _lifecycle(Path.cwd()):
             return handlers[args.cmd](state, args)

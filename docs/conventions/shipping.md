@@ -377,7 +377,10 @@ three refs: `main` (landed), `origin/gated` (last full-gate green),
 `origin/prod` (what the cluster runs) — script-moved, fast-forward only,
 never committed to (`deploy/README.md`). While a release is open,
 `release/r<N>` is the frozen sha being gated/deployed; `deployed/r<N>` tags
-each one that went live.
+each one that went live. `good/r<N>` (gr517170) marks a deployed release
+that ran ~24h clean — `scripts/round good` pushes it from the coordinator's
+sweep, `round good --resolve` prints the newest, `round status` shows it.
+Rollbacks target the newest `good/r<N>`, not a guessed `deployed/r<N-1>`.
 
 The shared session MCP serves a plain clone kept on `origin/prod`, moved by
 the same deploy step (`env_prod_checkout_sync` in

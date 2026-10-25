@@ -30,6 +30,7 @@ Dogfood runs alongside development and does not hold the entire fleet.
 | Deploy | Pin that checked SHA; serialize deployment through completion and health verification. Respect the maintenance window in `/round`. |
 | Verify | Successful deploy exit, `origin/prod`, runtime SHA, expected migration and registered kinds agree. A failure enters repair; it does not trigger another normal release. |
 | Finish | Preserve the deployed tag, ensure release fixes reached main, retire the release, then consider the next useful batch. |
+| Good | After ~24h clean runtime (no new alerts attributed, doctor green), the sweep tags `good/r<N>` on `deployed/r<N>` via `scripts/round good`. Rollbacks target the newest `good/r<N>` (`round good --resolve`), never a guessed `deployed/r<N-1>`. |
 | Dogfood | Record results against deployed SHAs even if a newer release has begun. Blocking regressions take priority; ordinary findings enter their owner's next build. |
 
 Do not wait for every programme to finish a build or dogfood before cutting.

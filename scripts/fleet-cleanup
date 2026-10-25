@@ -16,6 +16,7 @@ branches are ever touched, never the main checkout.
 unapplied commits, or every file the branch changed already has the
 branch's content on origin/main.
 """
+
 import argparse
 import json
 import os
@@ -23,10 +24,16 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
 def _main_checkout(tree):
     """Primary checkout of the repo owning `tree` (it may be a worktree)."""
-    r = subprocess.run(["git", "-C", tree, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                       capture_output=True, text=True, encoding="utf-8")
+    r = subprocess.run(
+        ["git", "-C", tree, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
     return os.path.dirname(r.stdout.strip()) if r.returncode == 0 else tree
 
 
@@ -38,12 +45,23 @@ NEVER_TOUCH = ("CHAT", "COORDINATOR", "GRIPE_FIX", "BUILDER")
 WINDOW_PREFIXES = ("devin-", "codex-", "local-")
 # Hard denylist (gr515476): script-moved refs (scripts/ship, release, round
 # push main, prod, gated, release/r<N>, ci/<branch>, deployed/*) are always
-# "merged" because main reaches them, so they must never be deleted.
+# "merged" because main reaches them, so they must never be deleted. good/*
+# joins them (gr517170): a good/r<N> tag is the recorded rollback target.
 PROTECTED_BRANCHES = ("main", "master", "HEAD", "gated", "prod")
-PROTECTED_PREFIXES = ("release/", "deployed/", "ci/")
+PROTECTED_PREFIXES = ("release/", "deployed/", "ci/", "good/")
 # Remote-delete allowlist: only clearly task-shaped branch names.
-REMOTE_DELETABLE_PREFIXES = ("worktree-", "land-", "devin-", "codex-", "feat/",
-                             "fix/", "docs/", "chore/", "test/", "refactor/")
+REMOTE_DELETABLE_PREFIXES = (
+    "worktree-",
+    "land-",
+    "devin-",
+    "codex-",
+    "feat/",
+    "fix/",
+    "docs/",
+    "chore/",
+    "test/",
+    "refactor/",
+)
 
 
 def is_protected_branch(name):
@@ -55,8 +73,9 @@ def is_remote_deletable(name):
 
 
 def git(repo, *args):
-    r = subprocess.run(["git", "-C", repo, *args], capture_output=True,
-                       text=True, encoding="utf-8")
+    r = subprocess.run(
+        ["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8"
+    )
     return r.returncode, r.stdout.strip()
 
 
@@ -112,10 +131,18 @@ def parse_worktrees(text):
 def inflight_live(repo_path):
     """worktree path -> live session string (precis-mcp only)."""
     try:
-        r = subprocess.run([os.path.join(repo_path, "scripts/inflight"), "--json"],
-                           capture_output=True, text=True, encoding="utf-8", timeout=120)
-        return {w["path"]: w["session"] for w in json.loads(r.stdout)["worktrees"]
-                if w.get("session") not in (None, "—", "")}
+        r = subprocess.run(
+            [os.path.join(repo_path, "scripts/inflight"), "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        return {
+            w["path"]: w["session"]
+            for w in json.loads(r.stdout)["worktrees"]
+            if w.get("session") not in (None, "—", "")
+        }
     except Exception:
         return {}
 
@@ -133,7 +160,12 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
     base = "origin/main"
     print(f"-- worktree prune ({'applying' if apply else 'dry-run'})")
     flag = "-v" if apply else "-nv"
-    print("  " + (git(path, "worktree", "prune", flag)[1] or "nothing prunable").replace("\n", "\n  "))
+    print(
+        "  "
+        + (git(path, "worktree", "prune", flag)[1] or "nothing prunable").replace(
+            "\n", "\n  "
+        )
+    )
     live = inflight_live(path) if name == "precis-mcp" else {}
     wts = parse_worktrees(git(path, "worktree", "list", "--porcelain")[1])
     main_path = os.path.realpath(path)
@@ -156,9 +188,11 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
         kind = classify_worktree(merged, dirty, "locked" in wt, p in live)
         trees.append({"name": os.path.basename(p), "kind": kind})
         stats["wt_" + kind] += 1
-        print(f"  {kind:9} {os.path.basename(p)}  [{br}]"
-              + (f"  session={live[p]}" if p in live else "")
-              + (f"  lock={wt['locked']}" if isinstance(wt.get("locked"), str) else ""))
+        print(
+            f"  {kind:9} {os.path.basename(p)}  [{br}]"
+            + (f"  session={live[p]}" if p in live else "")
+            + (f"  lock={wt['locked']}" if isinstance(wt.get("locked"), str) else "")
+        )
         if kind == "remove" and apply:
             rc, out = git(path, "worktree", "remove", p)
             print(f"      -> {'removed' if rc == 0 else 'FAILED: ' + out}")
@@ -166,7 +200,9 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
                 removed_branches.add(br)
     checked_out = {(w.get("branch") or "").replace("refs/heads/", "") for w in wts}
     print("-- local branches")
-    for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/heads")[1].splitlines():
+    for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/heads")[
+        1
+    ].splitlines():
         if is_protected_branch(br):
             continue
         if is_merged(path, br, base):
@@ -180,8 +216,10 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
             stats["br_unmerged"] += 1
             print(f"  unmerged  {br}  {commit_info(path, br)}")
     print("-- remote branches (report only unless --apply-remote)")
-    for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")[1].splitlines():
-        short = br[len("origin/"):]
+    for br in git(
+        path, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"
+    )[1].splitlines():
+        short = br[len("origin/") :]
         if br == "origin" or is_protected_branch(short):
             continue
         merged = is_merged(path, br, base)
@@ -191,15 +229,25 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
             if not is_remote_deletable(short):
                 print("      -> skip (not task-shaped)")
                 continue
-            r = subprocess.run(["git", "-C", path, "push", "origin", "--delete", short],
-                               capture_output=True, text=True, encoding="utf-8")
-            print(f"      -> {'deleted' if r.returncode == 0 else 'FAILED: ' + (r.stderr.strip() or r.stdout.strip())}")
+            r = subprocess.run(
+                ["git", "-C", path, "push", "origin", "--delete", short],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            print(
+                f"      -> {'deleted' if r.returncode == 0 else 'FAILED: ' + (r.stderr.strip() or r.stdout.strip())}"
+            )
 
 
 def sweep_tmux(trees, stats):
     print("\n=== tmux session 0 windows (report only, never touched) ===")
-    r = subprocess.run(["tmux", "list-windows", "-t", "0", "-F", "#{window_name}"],
-                       capture_output=True, text=True, encoding="utf-8")
+    r = subprocess.run(
+        ["tmux", "list-windows", "-t", "0", "-F", "#{window_name}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
     if r.returncode != 0:
         print("  (no tmux session 0)")
         return
@@ -213,26 +261,54 @@ def sweep_tmux(trees, stats):
             print(f"  finished  {win}  -> tree {match['name']} merged+clean+unlocked")
         else:
             stats["win_other"] += 1
-            why = f"tree {match['name']} {match['kind']}" if match else "no matching tree"
+            why = (
+                f"tree {match['name']} {match['kind']}" if match else "no matching tree"
+            )
             print(f"  keep      {win}  ({why})")
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--apply", action="store_true",
-                    help="remove merged+clean+unlocked worktrees, delete merged local branches, prune")
-    ap.add_argument("--apply-remote", action="store_true",
-                    help="also delete merged REMOTE branches (explicit opt-in)")
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="remove merged+clean+unlocked worktrees, delete merged local branches, prune",
+    )
+    ap.add_argument(
+        "--apply-remote",
+        action="store_true",
+        help="also delete merged REMOTE branches (explicit opt-in)",
+    )
     a = ap.parse_args(argv)
-    stats = {k: 0 for k in ("prunable", "wt_remove", "wt_locked", "wt_live", "wt_dirty",
-                            "wt_unmerged", "br_merged", "br_unmerged", "rem_merged",
-                            "rem_unmerged", "win_finished", "win_other")}
-    print("fleet-cleanup " + ("APPLY" if a.apply else "DRY-RUN") + (" +REMOTE" if a.apply_remote else ""))
+    stats = {
+        k: 0
+        for k in (
+            "prunable",
+            "wt_remove",
+            "wt_locked",
+            "wt_live",
+            "wt_dirty",
+            "wt_unmerged",
+            "br_merged",
+            "br_unmerged",
+            "rem_merged",
+            "rem_unmerged",
+            "win_finished",
+            "win_other",
+        )
+    }
+    print(
+        "fleet-cleanup "
+        + ("APPLY" if a.apply else "DRY-RUN")
+        + (" +REMOTE" if a.apply_remote else "")
+    )
     trees = []
     for name, path in REPOS:
         sweep_repo(name, path, a.apply, a.apply_remote, stats, trees)
     sweep_tmux(trees, stats)
-    print("\n=== gripes ===\n  out of scope: GRIPE_FIX owns closing (see skill gripe-fleet).")
+    print(
+        "\n=== gripes ===\n  out of scope: GRIPE_FIX owns closing (see skill gripe-fleet)."
+    )
     print("\n=== counts ===")
     for k, v in stats.items():
         print(f"  {k}: {v}")

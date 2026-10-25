@@ -50,10 +50,13 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
 - One checkout per host serves as the image build context, the `/main` mount
   (and so its worktrees) and the parent of the `-prod` clone that `/src`
   serves. It is `PRECIS_MCP_REPO`, else the absolute path in `main-checkout`
-  in the state directory, else `~/work/projects/code/precis-mcp`. A host whose
+  in the state directory, else `~/work/project/code/precis-mcp`. A host whose
   agents work elsewhere (e.g. `~/precis-mcp`) writes that path to
-  `main-checkout`. A path that is not a git checkout falls back to the default
-  with a note. Since gr515239 `main-checkout` is also the canonical-checkout
+  `main-checkout`. A resolved path that is not a git checkout is REFUSED
+  (exit 3, before any docker call, the running colour untouched) — never a
+  fallback to the default. The refusal names where the value came from
+  (env, the marker, or the default) so a stale marker is fixable in one
+  step. Since gr515239 `main-checkout` is also the canonical-checkout
   marker: a run that finds none records its own resolution (env, then the
   invoker's checkout, then the default), and a later run resolving a
   different physical path refuses before touching docker — a stale second
@@ -62,6 +65,14 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   way. Backends and the proxy carry a `precis.invoker` label
   (script/pid/ppid/cwd) so the container records who created it, and
   `precis-status` shows the mounted host paths as `src_host`/`main_host`.
+- Before deleting a checkout on this host (a strays/second-copy cleanup),
+  check `main-checkout` and the mounted host paths first — `--status`,
+  `precis-status` (`src_host`/`main_host`) or `docker inspect` of the
+  backends. On 2026-10-25 a cleanup removed the marker's checkout while
+  containers still mounted it; the pre-guard script then fell back to a
+  nonexistent default and crash-looped a standby backend. The guard now
+  refuses instead, but the deleted path still leaves every run refusing
+  until the marker is corrected.
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the
   repo. The proxy mounts the **directory** `caddy/`, so the atomic `mv` that

@@ -65,6 +65,7 @@ def test_protected_and_deletable_names():
         "prod",
         "release/r1",
         "deployed/x",
+        "good/r1",
         "ci/x",
     ):
         assert fc.is_protected_branch(b)
