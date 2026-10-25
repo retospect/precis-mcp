@@ -87,7 +87,7 @@ if [[ "${rebuild_base}" == 1 ]] || ! have_image "${BASE_IMAGE}"; then
         --build-arg "UID=$(id -u)" \
         --build-arg "GID=$(id -g)" \
         --secret "id=gh_token,env=GH_TOKEN" \
-        "${base_args[@]}" \
+        ${base_args[@]+"${base_args[@]}"} \
         -t "${BASE_IMAGE}" \
         -f docker/Dockerfile \
         "${REPO_ROOT}"

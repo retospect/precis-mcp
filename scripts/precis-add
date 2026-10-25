@@ -44,6 +44,6 @@ for arg in "$@"; do
 done
 
 exec docker compose -f "${INFRA_COMPOSE}" run --rm --no-deps \
-    "${mounts[@]}" \
+    ${mounts[@]+"${mounts[@]}"} \
     precis-cli \
-    precis add "${new_args[@]}"
+    precis add ${new_args[@]+"${new_args[@]}"}

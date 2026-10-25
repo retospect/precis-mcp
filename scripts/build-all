@@ -93,7 +93,7 @@ for target in "${TARGETS[@]}"; do
         -t "${image}" \
         -f "${DOCKERFILE}" \
         "${META_ARGS[@]}" \
-        "${EXTRA_ARGS[@]}" \
+        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
         .
 done
 

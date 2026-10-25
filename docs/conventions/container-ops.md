@@ -180,6 +180,34 @@ A log audit found ~60% of Bash calls carried a redundant
 which is why this is called out explicitly rather than left as an assumed
 default.
 
+## bash 3.2 gotchas (stock macOS bash)
+
+Repo scripts must run on the bash 3.2 macOS ships (`scripts/test` header
+says so outright). Two expansions that are fine on bash ≥4.4 but break or
+corrupt data on 3.2 — both seen in the wild (gr515242, gr515243):
+
+- **`"${arr[@]}"` on an EMPTY array under `set -u`** → `unbound variable`;
+  the loop/exec dies before doing anything. `"${arr[*]}"` dies the same
+  way. Guard with the idiom already used across `scripts/deploy`,
+  `scripts/fleet`, `scripts/inflight`:
+  `${arr[@]+"${arr[@]}"}`. Safe as-is: `"${arr[@]:0:n}"` slices,
+  `"${arr[@]:-x}"`, `${#arr[@]}` counts, and any expansion inside a
+  `${#arr[@]}` non-empty check.
+- **`IFS=$'\t' read -r a b c` collapses empty fields** — tab is IFS
+  whitespace, so a run of tabs counts as one delimiter and a producer's
+  empty middle column (`git for-each-ref`'s `%(worktreepath)` for a
+  branch with no linked worktree; an awk field that came out unset)
+  shifts every later field left. Fix: emit a non-whitespace delimiter —
+  `\x1f` in bash, `\037` octal in awk printf (`scripts/inflight`,
+  `scripts/memory-lint` both do this) — or split with parameter
+  expansion. `IFS='|'`/`IFS=','`/`IFS=$'\x1f'` need no fix; only IFS
+  *whitespace* collapses.
+
+Pinned by `tests/test_bash32_gotchas.py` — a ratchet on new bare
+`"${arr[@]}"` expansions of `()`-initialised arrays and new multi-var
+`IFS=$'\t' read` sites; adding either is a deliberate act that updates
+the test's audited-sites table.
+
 ## Ship vs deploy — surfacing lag, never auto-deploying
 
 `scripts/ship` (commit → main) and `scripts/deploy` (main → cluster) are

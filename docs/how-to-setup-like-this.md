@@ -120,16 +120,8 @@ Small, single-purpose, never-block-unless-guarding:
 - **`.claude/purpose`** (gitignored, self-cleaning) — once the task is clear,
   write one line; git derives the rest.
 
-**Hook payload fields** (stdin JSON, every PreToolUse/PostToolUse hook):
-`tool_name`, `tool_input` (the call's arguments — Bash uses `command`,
-file tools `file_path`, NotebookEdit `notebook_path`), `cwd`,
-`session_id`, `tool_use_id`, `transcript_path`, and — for calls made
-*from inside a subagent* — `agent_id`. The main loop's payloads carry no
-`agent_id`; a subagent's do. That asymmetry is how a hook restricts
-itself to the main loop (`edit-delegation-nudge.py` early-returns on a
-payload that has it; `subagent-task-state.py` uses it as the task id).
-Verified against live payloads in `scripts/hooks/` callers, not the
-upstream docs — if a new field appears, record it here.
+Per-hook table (event, matcher, behaviour, payload fields read) and the
+hook-payload field reference: `docs/reference/hooks.md`.
 
 ---
 

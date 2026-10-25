@@ -553,13 +553,13 @@ _analyze_failures() {
             seen[h] = 1; n++; fh[n] = h; fp[n] = play; ft[n] = task; fi[n] = inst; fd[n] = (h in done)
         }
         /^\.\.\.ignoring/ { if (n > 0) { delete seen[fh[n]]; n-- } }
-        END { for (i = 1; i <= n; i++) printf "%s\t%s\t%s\t%s\n", fh[i], (fi[i] ? "install" : (fd[i] ? "post" : "prereq")), fp[i], ft[i] }
+        END { for (i = 1; i <= n; i++) printf "%s\037%s\037%s\037%s\n", fh[i], (fi[i] ? "install" : (fd[i] ? "post" : "prereq")), fp[i], ft[i] }
     ' "$play_out" 2>/dev/null || true)"
     FAIL_MIXED=0
     FAIL_SUMMARY=""
     [[ -n "$rows" ]] || return 0
     say "failed hosts:"
-    while IFS=$'\t' read -r host cls play task; do
+    while IFS=$'\x1f' read -r host cls play task; do
         case "$cls" in
             install) FAIL_MIXED=1; cls="precis install failed (possibly half-updated)" ;;
             post)    cls="failed after the precis install landed (code deployed)" ;;

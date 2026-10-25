@@ -102,7 +102,11 @@ while read -r name addr; do
 done <<<"$HOSTS"
 
 if [[ $n -eq 0 ]]; then
-    echo "cluster-ping: none of ${WANT[*]} is in the inventory" >&2
+    if [[ ${#WANT[@]} -gt 0 ]]; then
+        echo "cluster-ping: none of ${WANT[*]} is in the inventory" >&2
+    else
+        echo "cluster-ping: inventory empty" >&2
+    fi
     exit 2
 fi
 wait

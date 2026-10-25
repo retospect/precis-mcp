@@ -148,4 +148,4 @@ echo "▶ applying migrations"
 uv run --no-sync precis migrate >/dev/null
 echo "▶ ramping"
 uv run --no-sync python scripts/mcp_loadtest/harness.py "$@"
-' _ "${ARGS[@]}"
+' _ ${ARGS[@]+"${ARGS[@]}"}
