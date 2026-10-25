@@ -89,6 +89,7 @@ from precis.export.latex import (
     datasheet_pub_label,
     paper_bib_type,
     preprocess_draft_inline,
+    record_bib_type,
 )
 from precis.nanopub import pin_lint
 from precis.utils import handle_registry
@@ -1621,7 +1622,14 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
         "kind": pref.kind,
         "tag": slug,
         "rec_number": pref.id,
-        "bib_type": paper_bib_type(meta) if pref.kind == "paper" else "",
+        "bib_type": (
+            # A typed whole-record cite (gr514384) takes its genre entry
+            # type — EndNote ref-type Computer Program / Dataset — over
+            # the Crossref entry_type mapping.
+            record_bib_type(meta) or paper_bib_type(meta)
+            if pref.kind == "paper"
+            else ""
+        ),
         "authors": pref.authors,
         "title": pref.title or slug,
         "year": pref.year,
@@ -1851,7 +1859,7 @@ def _reference_runs(
         if part:
             runs.append((f" Part {part}.", none))
     elif kind == "paper":
-        runs += _venue_runs(meta, paper_bib_type(meta))
+        runs += _venue_runs(meta, record_bib_type(meta) or paper_bib_type(meta))
     try:
         alias = store.identifiers_for_refs([pref.id]).get(pref.id, {})
         if alias.get("doi"):
@@ -1873,6 +1881,18 @@ def _venue_runs(meta: dict[str, Any], entry_type: str) -> list[_RefRun]:
         return str(meta.get(key) or "").strip()
 
     out: list[_RefRun] = []
+    if entry_type in ("software", "dataset"):
+        # Whole-record cite (gr514384): no venue — the genre label,
+        # publisher and version carry the line:
+        # "… Title. [Software] Zenodo, version 1.2.3."
+        out.append((f" [{entry_type.capitalize()}]", none))
+        publisher = field("publisher")
+        if publisher:
+            out.append((f" {publisher}", none))
+        version = field("version")
+        if version:
+            out.append((f"{', ' if publisher else ' '}version {version}", none))
+        return _sentence(out) if out else out
     if entry_type == "article":
         journal = field("venue") or field("journal") or field("container_title")
         if journal:

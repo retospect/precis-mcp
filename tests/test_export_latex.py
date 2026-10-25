@@ -1828,6 +1828,94 @@ def test_build_bib_article_passes_through_volume_number_pages() -> None:
     assert "pages = {100-110}" in bib
 
 
+# ── gr514384: whole-record cite entries (@software / @dataset) ─────────
+
+
+def _record_store(slug: str, rt: str, **meta):
+    """A ``_BibStore`` holding one paper typed ``record_type=rt``."""
+    return _BibStore(
+        {
+            ("paper", slug): _bibref(
+                1,
+                slug,
+                "paper",
+                title="precis-mcp",
+                authors=[{"name": "Stamm, Reto"}],
+                year=2026,
+                meta={"record_type": rt, **meta},
+            )
+        }
+    )
+
+
+def test_build_bib_software_record_entry() -> None:
+    """A typed whole-record cite exports ``@software`` carrying version /
+    publisher and never a journaltitle (gr514384)."""
+    store = _record_store("precismcp", "software", version="1.2.3", publisher="Zenodo")
+    bib = latex.build_bib(store, ["precismcp"], [])
+    assert bib.startswith("@software{precismcp,")
+    assert "version = {1.2.3}" in bib
+    assert "publisher = {Zenodo}" in bib
+    assert "journaltitle" not in bib
+
+
+def test_build_bib_dataset_record_carries_doi_url() -> None:
+    """``@dataset`` plus the doi.org url fallback when meta.url is unset."""
+
+    class _DoiStore(_BibStore):
+        def identifiers_for_refs(self, ref_ids):
+            return {rid: {"doi": "10.5281/zenodo.22863181"} for rid in ref_ids}
+
+    store = _DoiStore(
+        {
+            ("paper", "corpus1"): _bibref(
+                2,
+                "corpus1",
+                "paper",
+                title="A corpus",
+                year=2025,
+                meta={"record_type": "dataset", "publisher": "Zenodo"},
+            )
+        }
+    )
+    bib = latex.build_bib(store, ["corpus1"], [])
+    assert bib.startswith("@dataset{corpus1,")
+    assert "doi = {10.5281/zenodo.22863181}" in bib
+    assert "url = {https://doi.org/10.5281/zenodo.22863181}" in bib
+    assert "journaltitle" not in bib
+
+
+def test_build_bib_record_misc_downgrade_names_genre(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bib style whose drivers lack ``@software``/``@dataset`` degrades
+    to ``@misc`` + a ``note`` naming the genre."""
+    monkeypatch.setattr(
+        latex, "_STYLES_WITHOUT_RECORD_TYPES", frozenset({"numeric-comp"})
+    )
+    store = _record_store("precismcp", "software", publisher="Zenodo")
+    bib = latex.build_bib(store, ["precismcp"], [], bib_style="numeric-comp")
+    assert bib.startswith("@misc{precismcp,")
+    assert "note = {Software}" in bib
+    assert "journaltitle" not in bib
+
+
+def test_build_bib_record_ignores_stale_journal_meta() -> None:
+    """A record typed over pre-fix meta (publisher was once relabelled
+    ``journal``) still emits no journaltitle."""
+    store = _record_store("precismcp", "dataset", journal="Zenodo", publisher="Zenodo")
+    bib = latex.build_bib(store, ["precismcp"], [])
+    assert bib.startswith("@dataset{precismcp,")
+    assert "journaltitle" not in bib
+
+
+def test_record_bib_type_truth_table() -> None:
+    assert latex.record_bib_type({"record_type": "software"}) == "software"
+    assert latex.record_bib_type({"record_type": "dataset"}) == "dataset"
+    assert latex.record_bib_type({"record_type": "article"}) == ""
+    assert latex.record_bib_type(None) == ""
+
+
 def test_build_bib_unresolved_slug_stubs_with_warning() -> None:
     """A slug that matches no paper/patent/datasheet still degrades to a
     compile-safe stub + a warning."""

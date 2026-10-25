@@ -31,6 +31,13 @@ is exactly that. (A draft pointing at a memory or another draft via
 `[me<id>]`/`[dc<id>]` is a `related-to` **link**, not a citation, and
 never appears in a bibliography.)
 
+A **whole-record cite** works the same way on the read side: a draft
+citing a typed software/dataset record whole (`[pa<id>]`, edge stamped
+`cite_mode='record'` — see `precis-draft-cite-help`) surfaces here in
+its cited-by list, and exports emit `@software`/`@dataset` (EndNote
+Computer Program / Dataset) entries carrying `version`, `publisher`,
+DOI and URL — never a `journaltitle`.
+
 ## See which claims have been verified against a paper
 ## Read the citations that cite a paper
 ## Who has cited this paper, and for what claim?

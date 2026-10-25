@@ -237,4 +237,10 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
     container_title = str(container[0]).strip() if container else ""
     if container_title:
         out["container_title"] = container_title
+    # Whole-record cite typing (gr514384): a Crossref ``dataset`` /
+    # ``software`` work is a record with no passage to chunk, typed so the
+    # ``[pa<id>]`` whole-ref cite is legitimate and exports @dataset /
+    # @software. Every other ``type`` stays untyped.
+    if str(msg.get("type") or "").strip().lower() in ("dataset", "software"):
+        out["record_type"] = str(msg["type"]).strip().lower()
     return out

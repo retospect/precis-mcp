@@ -114,6 +114,28 @@ def _datacite_meta(doi: str) -> dict[str, Any] | None:
     return _normalize_datacite(attrs, doi)
 
 
+#: DataCite ``resourceTypeGeneral`` values that are genuinely a
+#: text/journal article — only these earn ``entry_type='article'``
+#: (gr514384: the old code hard-coded ``article`` for every DataCite hit,
+#: so a Zenodo software release exported ``@article`` with
+#: ``journaltitle={Zenodo}``).
+_DATACITE_ARTICLE_TYPES = frozenset({"JournalArticle", "Text"})
+
+#: ``resourceTypeGeneral`` → ``meta.record_type`` — the two whole-record
+#: cite types (Software → ``software``, Dataset → ``dataset``); every
+#: other resource kind stays untyped.
+_DATACITE_RECORD_TYPES = {"Software": "software", "Dataset": "dataset"}
+
+#: ``resourceTypeGeneral`` → ``meta.entry_type`` for the record types —
+#: kept populated for old readers (:data:`precis.handlers._paper_format.
+#: _EXPORT_TYPE_MAP` knows both).
+_DATACITE_ENTRY_TYPES = {
+    **{t: "article" for t in _DATACITE_ARTICLE_TYPES},
+    "Software": "software",
+    "Dataset": "dataset",
+}
+
+
 def _normalize_datacite(attrs: dict[str, Any], doi: str) -> dict[str, Any]:
     """DataCite JSON:API ``attributes`` → the crossref/S2-normalized shape.
 
@@ -122,7 +144,9 @@ def _normalize_datacite(attrs: dict[str, Any], doi: str) -> dict[str, Any]:
     structured shape, anything else (consortium, unsplit ``"Family,
     Given"``) the ``{"name": ...}`` form — same contract as
     ``crossref._normalize``. ``container.title`` is the venue (a
-    journal or proceedings series), ``publisher`` the fallback.
+    journal or proceedings series) and ``publisher`` stays its own
+    field — a record with no container does not get its publisher
+    re-labelled as a journal.
     """
     title = ""
     for t in attrs.get("titles") or []:
@@ -160,8 +184,14 @@ def _normalize_datacite(attrs: dict[str, Any], doi: str) -> dict[str, Any]:
     container = attrs.get("container")
     if isinstance(container, dict):
         journal = str(container.get("title") or "").strip()
-    if not journal:
-        journal = str(attrs.get("publisher") or "").strip()
+
+    types = attrs.get("types")
+    rtg = (
+        str(types.get("resourceTypeGeneral") or "").strip()
+        if isinstance(types, dict)
+        else ""
+    )
+    record_type = _DATACITE_RECORD_TYPES.get(rtg, "")
 
     abstract = ""
     for d in attrs.get("descriptions") or []:
@@ -169,16 +199,26 @@ def _normalize_datacite(attrs: dict[str, Any], doi: str) -> dict[str, Any]:
             abstract = str(d.get("description") or "").strip()
             break
 
-    return {
+    out: dict[str, Any] = {
         "title": title,
         "authors": authors,
         "year": year,
         "doi": doi,
         "journal": journal,
         "abstract": abstract,
-        "entry_type": "article",
         "source": "datacite",
     }
+    if rtg in _DATACITE_ENTRY_TYPES:
+        out["entry_type"] = _DATACITE_ENTRY_TYPES[rtg]
+    publisher = str(attrs.get("publisher") or "").strip()
+    if publisher:
+        out["publisher"] = publisher
+    version = str(attrs.get("version") or "").strip()
+    if version:
+        out["version"] = version
+    if record_type:
+        out["record_type"] = record_type
+    return out
 
 
 def resolve_registry_doi(doi: str, *, mailto: str = "") -> dict[str, Any] | None:

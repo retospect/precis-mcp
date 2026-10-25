@@ -1100,6 +1100,62 @@ def test_format_reference_datasheet_uses_vendor_subtype_part() -> None:
     assert warnings == []
 
 
+def test_format_reference_software_record_line() -> None:
+    """A typed whole-record cite (gr514384): genre label + publisher +
+    version, no venue — the docx counterpart of the .bib ``@software``."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _format_reference
+
+    store = _RefStore(
+        {
+            ("paper", "precismcp"): SimpleNamespace(
+                id=496283,
+                slug="precismcp",
+                kind="paper",
+                title="precis-mcp",
+                authors=[{"name": "Stamm, Reto"}],
+                year=2026,
+                meta={
+                    "record_type": "software",
+                    "publisher": "Zenodo",
+                    "version": "1.2.3",
+                },
+            )
+        }
+    )
+    line = _format_reference(store, "precismcp", [])
+    assert "Stamm, Reto (2026). precis-mcp." in line
+    assert "[Software]" in line
+    assert "Zenodo" in line
+    assert "version 1.2.3" in line
+
+
+def test_resolve_source_record_bib_type() -> None:
+    """``_resolve_source`` maps a typed record's ``bib_type`` through
+    ``record_bib_type`` so the EndNote field gets ref-type Dataset."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _resolve_source
+
+    store = _RefStore(
+        {
+            ("paper", "corpus1"): SimpleNamespace(
+                id=2,
+                slug="corpus1",
+                kind="paper",
+                title="A corpus",
+                authors=None,
+                year=2025,
+                meta={"record_type": "dataset", "publisher": "Zenodo"},
+            )
+        }
+    )
+    source = _resolve_source(store, "corpus1")
+    assert source is not None
+    assert source["bib_type"] == "dataset"
+
+
 # ── Taproot claim-hub finding handle (Phase 1 — living citations reach
 # draft export): a [fi<id>] finding handle that resolves to a
 # TAPROOT:claim hub cites its *derived* establishes originator(s) via the

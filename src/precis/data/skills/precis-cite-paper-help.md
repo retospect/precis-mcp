@@ -2,7 +2,7 @@
 id: precis-cite-paper-help
 family: evidence
 title: precis — how do I cite a paper?
-summary: the cite-a-paper router — a cite is always a finding hub `[fi<id>]`; hub exists → cite it; paper in corpus → ground a hub on its passages and cite that; paper not held → stub, wait, then ground; empirical claim with no primary held → chase finding `[fi<id>]`
+summary: the cite-a-paper router — a cite is always a finding hub `[fi<id>]`, except a typed software/dataset record cited whole as `[pa<id>]`; hub exists → cite it; paper in corpus → ground a hub on its passages and cite that; paper not held → stub, wait, then ground; empirical claim with no primary held → chase finding `[fi<id>]`
 answers:
   - what's the right way to cite a paper that's already in the corpus?
   - how do I cite a paper I only have a DOI for, that isn't ingested yet?
@@ -17,7 +17,9 @@ kinds: [paper, citation, finding, todo]
 # precis-cite-paper-help — how do I cite a paper?
 
 This is the **router** for "I'm writing and I need to cite something."
-You never cite a paper directly. A citation in a draft is a **finding
+You never cite a paper directly — the one exception is a typed
+software/dataset *record* with no passages, cited whole as `[pa<id>]`
+(branch 4 below). Otherwise a citation in a draft is a **finding
 hub handle written inline**, `[fi<id>]`; the paper's passages
 (`[pc<id>]`, or `[pk<id>]` for a patent) are the hub's *grounding*,
 attached as evidence edges. Citing is a short decision about *which
@@ -52,6 +54,10 @@ Three questions, in order:
    ("2.4 kV gate bias", "12% efficiency" read in a review) → register
    a chase `kind='finding'` and cite that in-flight `[fi<id>]`; the
    chase walks the citation chain back ([[precis-finding-help]]).
+4. **A software / dataset record, not a paper?** (a Zenodo release DOI,
+   a dataset landing page — a `pa<id>` with no passages to quote) →
+   cite it **whole** as `[pa<id>]`; no hub is grounded (below: *Cite a
+   record — software and datasets*).
 
 You may *optionally* mint a `kind='citation'` verification record
 alongside (claim + `verifier_confidence`) — not how you cite and not
@@ -90,6 +96,27 @@ one bibliography entry per paper at compile time.
 **A memory / thought / other draft is a link, not a citation.** Drop a
 `[me<id>]` or `[dc<id>]` handle to record a `related-to` provenance
 edge — it never reaches the bibliography.
+
+## Cite a record — software and datasets
+## The source has no passage to quote (Zenodo release, dataset)
+
+The one exception to "cite a finding hub": a **record** — a paper ref
+typed `record_type` `software` or `dataset` carrying **no passages** — is
+cited **whole** as `[pa<id>]`. There is no `pc<id>` to ground a hub on, so
+the whole-ref cite is the canonical form: `sync_draft_links` stamps the
+`cites` edge `cite_mode='record'`, the whole-paper hint and hygiene list
+skip it, and exports emit `@software` / `@dataset` (version, publisher,
+DOI) instead of a venue-less `@article`.
+
+```python
+put(kind="paper", doi="10.5281/zenodo.22863181")  # auto-typed from DataCite
+put(kind="paper", id="pa496283", record_type="software")  # or declare it
+search(kind="paper", q="…", args={"record_type": "software"})  # list records
+```
+
+`record_type=` is refused on a paper carrying passages — normal papers
+stay on the hub rules above — and a claim *about* the record's behaviour
+still needs a passage-grounded hub (its README, its paper).
 
 ## Get a formatted reference string for a paper
 ## BibTeX / RIS / EndNote for a paper

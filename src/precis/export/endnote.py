@@ -50,6 +50,11 @@ _REF_TYPES: dict[str, tuple[str, int]] = {
     "online": ("Electronic Article", 43),
     "patent": ("Patent", 25),
     "datasheet": ("Generic", 13),
+    # Whole-record cite types (gr514384): a typed software/dataset
+    # record's bib_type (``record_bib_type``) maps to EndNote's own
+    # ref-types, codes from the standard EndNote XML type list.
+    "software": ("Computer Program", 9),
+    "dataset": ("Dataset", 59),
 }
 
 #: Canonical biblatex style (:data:`precis.export.latex._BIB_STYLES` value)

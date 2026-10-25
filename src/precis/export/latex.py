@@ -84,6 +84,7 @@ from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 from precis.utils.paper_links import doi_url, uol_url
+from precis.utils.record_cite import record_type_of
 from precis.utils.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -2604,6 +2605,26 @@ def paper_bib_type(meta: dict[str, Any] | None) -> str:
     return _CROSSREF_BIBLATEX.get(et, "article")
 
 
+#: biblatex styles whose drivers do not carry the record types
+#: (``@software`` / ``@dataset``) — a typed record under one degrades to
+#: ``@misc`` plus a ``note`` naming its genre. Empty today: every
+#: :data:`_BIB_STYLES` member rides a biblatex base that defines both.
+_STYLES_WITHOUT_RECORD_TYPES: frozenset[str] = frozenset()
+
+
+def record_bib_type(meta: dict[str, Any] | None, bib_style: str | None = None) -> str:
+    """The biblatex entry type for a whole-record cite (``meta.record_type``
+    in :data:`precis.utils.record_cite.RECORD_TYPES`, gr514384) —
+    ``'software'`` or ``'dataset'`` — or ``''`` for an untyped ref, whose
+    type keeps coming from :func:`paper_bib_type`. A ``bib_style`` whose
+    drivers lack the record types downgrades to ``'misc'``; the caller
+    adds a ``note`` label so the rendered entry still names the genre."""
+    rt = record_type_of(meta)
+    if not rt:
+        return ""
+    return "misc" if bib_style in _STYLES_WITHOUT_RECORD_TYPES else rt
+
+
 def datasheet_pub_label(meta: dict[str, Any] | None) -> str:
     """The human sub-type label for a datasheet ref's ``meta`` (default
     ``"Datasheet"``). Shared by the LaTeX bib, the docx reference line, and
@@ -2633,6 +2654,7 @@ def build_bib(
     library_links: bool = False,
     library_label: str = "",
     library_search_url: str = "",
+    bib_style: str = _BIB_STYLE_DEFAULT,
 ) -> str:
     """Generate ``refs.bib`` from the cited source refs. Resolves each
     slug to its paper / patent / datasheet ref, pulling
@@ -2659,7 +2681,13 @@ def build_bib(
         for kind, etype in _CITE_ENTRY_TYPES:
             pref = store.get_ref(kind=kind, id=slug)
             if pref is not None:
-                entry_type = paper_bib_type(pref.meta) if kind == "paper" else etype
+                # A typed whole-record cite (gr514384) takes its genre
+                # entry type over the Crossref entry_type mapping.
+                entry_type = (
+                    record_bib_type(pref.meta, bib_style) or paper_bib_type(pref.meta)
+                    if kind == "paper"
+                    else etype
+                )
                 break
         if pref is None:
             warnings.append(f"cite {slug!r}: no source in corpus — stub bib entry")
@@ -2714,6 +2742,26 @@ def build_bib(
             if lib_link:
                 fields.append(f"  addendum = {{{_tex_url(lib_link, library_label)}}}")
         entry_type = entry_type_by_slug[slug]
+        record_rt = record_type_of(pref.meta) if pref.kind == "paper" else ""
+        if record_rt:
+            # Whole-record cite (gr514384): genre fields — version /
+            # publisher / doi / url — and never a journaltitle. Under a
+            # style lacking the record types (the @misc downgrade in
+            # ``record_bib_type``) a ``note`` carries the genre label.
+            meta = pref.meta or {}
+            version = str(meta.get("version") or "").strip()
+            if version:
+                fields.append(f"  version = {{{_bib_text(version)}}}")
+            publisher = str(meta.get("publisher") or "").strip()
+            if publisher:
+                fields.append(f"  publisher = {{{_bib_text(publisher)}}}")
+            url = str(meta.get("url") or "").strip() or (
+                f"https://doi.org/{alias['doi']}" if alias.get("doi") else ""
+            )
+            if url:
+                fields.append(f"  url = {{{_tex(url)}}}")
+            if entry_type == "misc":
+                fields.append(f"  note = {{{record_rt.capitalize()}}}")
         if entry_type == "article":
             # A paper: venue/journal (+ volume/number/pages, once an
             # enricher starts filling them) from meta — matches the
@@ -3529,6 +3577,7 @@ def export_draft(
             library_links=library_links,
             library_label=cfg.library_label,
             library_search_url=cfg.library_search_url,
+            bib_style=resolved_style,
         )
     )
     title = (ref.title or ref.slug or "Untitled").split("\n", 1)[0]

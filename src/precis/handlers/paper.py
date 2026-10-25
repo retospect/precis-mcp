@@ -95,6 +95,7 @@ from precis.utils.link_tag_ops import (
     validate_link_mode,
 )
 from precis.utils.next_block import render_next_section
+from precis.utils.record_cite import RECORD_TYPES, is_record_cite, record_type_of
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
 from precis.utils.title_merge import title_merge_refusal
@@ -435,6 +436,7 @@ class PaperHandler(Handler):
                 "context_ref_id",
                 "citation",
                 "verify",
+                "record_type",
             }
         ),
         # ``redirect_to`` re-points a retired/merged stub's supersede
@@ -545,6 +547,7 @@ class PaperHandler(Handler):
         mode: str | None = None,
         citation: str | None = None,
         tags: list[str] | None = None,
+        record_type: str | None = None,
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
@@ -568,6 +571,11 @@ class PaperHandler(Handler):
             put(kind='paper', arxiv='2401.00001', title='…')
             put(kind='paper', title='…')   # title-only backlog stub
             put(kind='paper', citation='Phys. Rev. B 47, 558 (1993)')
+            put(kind='paper', id='pa496283', record_type='software')
+
+        ``record_type=`` ('software' | 'dataset', gr514384) types an
+        existing *chunkless* record so its whole-ref ``[pa<id>]`` cite is
+        legitimate — see :meth:`_set_record_type`.
 
         ``citation=`` resolves a classic journal/volume/page/year string via
         Crossref ``query.bibliographic``: one full-confidence hit is stubbed
@@ -596,6 +604,9 @@ class PaperHandler(Handler):
         )
         citation = citation or extras.get("citation")
         verify = extras.get("verify", verify)
+        record_type = (
+            record_type if record_type is not None else extras.get("record_type")
+        )
         if isinstance(verify, str):
             # ``args=`` values can arrive JSON-stringified from non-slim
             # profiles; "false"/"0"/"no" must not read truthy.
@@ -621,6 +632,33 @@ class PaperHandler(Handler):
                     next=f"put(kind={self.spec.kind!r}, id='<slug>', mode='fetch-si')",
                 )
             return self._queue_si_fetch(id)
+        if record_type is not None:
+            # Whole-record cite typing (gr514384): declare an existing
+            # chunkless paper a ``software``/``dataset`` record so its
+            # whole-ref ``[pa<id>]`` cite is legitimate. Exclusive of the
+            # stub-mint fields — a mint that also wants typing comes back
+            # typed by the registry itself, or is typed after it lands.
+            combined = [
+                name
+                for name, val in (
+                    ("doi", doi),
+                    ("arxiv", arxiv),
+                    ("identifier", identifier),
+                    ("title", title),
+                    ("citation", citation),
+                )
+                if val is not None and str(val).strip()
+            ]
+            if combined:
+                raise BadInput(
+                    "record_type= types an existing record; it does not "
+                    f"combine with stub-mint field(s): {', '.join(combined)}",
+                    next="put(kind='paper', id='<slug-or-paN>', "
+                    "record_type='software')",
+                )
+            return self._set_record_type(
+                id, record_type, supporters=_kw.get("supporters"), tags=tags
+            )
         # ``put`` mints stubs; it never writes a body. A caller passing
         # ``text=`` is trying to rewrite a paper body — reject loudly
         # rather than silently drop the text into ``_kw``. Bodies arrive
@@ -748,6 +786,81 @@ class PaperHandler(Handler):
                 "becomes its own paper ref linked to this one and cites as it. "
                 "The outcome lands on the paper "
                 "(get(id=..., view='log'): si_found / si_none / si_blocked / si_error)."
+            )
+        )
+
+    def _set_record_type(
+        self,
+        id: str | int | None,
+        record_type: Any,
+        *,
+        supporters: Any = None,
+        tags: list[str] | None = None,
+    ) -> Response:
+        """``put(kind='paper', id=<slug-or-paN>, record_type=…)`` — declare
+        an existing **chunkless** paper a whole-record cite
+        (``'software'`` | ``'dataset'``, gr514384).
+
+        Typing is what makes the ``[pa<id>]`` whole-ref cite legitimate:
+        a record has no passage to quote, so there is no ``[pc<id>]`` to
+        drill to. The write goes through
+        :meth:`Store.update_paper_fields` (``meta`` merge + a
+        ``metadata_edited`` ref_event), never a raw UPDATE. Idempotent —
+        re-declaring the same type is a no-op ack; correcting a wrong
+        auto-typed value (DataCite/Crossref registration) is the same
+        call."""
+        rt = str(record_type).strip().lower()
+        if rt not in RECORD_TYPES:
+            raise BadInput(
+                f"record_type= takes 'software' or 'dataset', got {record_type!r}",
+                options=sorted(RECORD_TYPES),
+                next="put(kind='paper', id='<slug-or-paN>', record_type='software')",
+            )
+        if supporters:
+            # A record carries no passage, so it can never ground a claim
+            # hub's supporter — claims about the software's behaviour
+            # still need a passage (a README, a paper) behind [pc<id>].
+            raise BadInput(
+                "record_type= does not take supporters= — a record has no "
+                "passage to ground a claim hub on",
+                next="cite the record whole as [pa<id>]; ground the claim "
+                "on a passage supporter ([pc<id>] of a README or paper)",
+            )
+        if id is None or (isinstance(id, str) and not id.strip()):
+            raise BadInput(
+                "record_type= types an existing paper record — pass id=<slug-or-paN>",
+                next="put(kind='paper', id='pa496283', record_type='software')",
+            )
+        slug, ref_id = self._resolve_paper_slug(id)
+        n_body = self.store.chunks.count_chunks(ref_id)
+        if n_body:
+            # Strict zero-body-chunks eligibility (gr514384): a paper
+            # with passages stays on the passage rules — the whole-paper
+            # hint is exactly what should keep firing for it.
+            raise BadInput(
+                f"{slug} has {n_body} passage{'s' if n_body != 1 else ''} — "
+                "record_type= is only for a record with no passages",
+                next="cite a finding hub [fi<id>] grounded on a passage "
+                "([pc<id>]) instead",
+            )
+        ref = self.store.get_ref(kind=self.spec.kind, id=ref_id)
+        prior = record_type_of(ref.meta if ref is not None else None)
+        handle = handle_registry.format_handle(self.spec.kind, ref_id)
+        if prior == rt:
+            return Response(
+                body=f"{slug} is already typed record_type='{rt}' — "
+                f"cite whole as [{handle}]; no passages"
+            )
+        self.store.update_paper_fields(
+            ref_id, meta_patch={"record_type": rt}, source="mcp-edit"
+        )
+        if tags:
+            apply_tag_ops(self.store, self.spec.kind, ref_id, tags=tags, untags=None)
+        return Response(
+            body=(
+                f"{slug} typed record_type='{rt}' — its whole-ref cite "
+                f"[{handle}] is legitimate (no passages); exports emit "
+                f"@{rt} and the whole-paper lint skips it"
             )
         )
 
@@ -1031,6 +1144,16 @@ class PaperHandler(Handler):
                     journal = registry_meta.get("journal")
                     if isinstance(journal, str) and journal.strip():
                         reg_patch["journal"] = journal.strip()
+                    # Whole-record cite fields (gr514384): a DataCite
+                    # Software/Dataset or a Crossref dataset/software DOI
+                    # carries ``record_type`` (and the record's ``version``
+                    # / ``publisher`` / typed ``entry_type``) through to
+                    # the stub's meta, so it registers already citable
+                    # whole — no second ``put(record_type=…)`` needed.
+                    for key in ("record_type", "version", "publisher", "entry_type"):
+                        val = registry_meta.get(key)
+                        if isinstance(val, str) and val.strip():
+                            reg_patch[key] = val.strip()
                     abstract = registry_meta.get("abstract")
                     if isinstance(abstract, str) and abstract.strip():
                         reg_patch["abstract"] = abstract.strip()
@@ -1540,8 +1663,11 @@ class PaperHandler(Handler):
         # the refs serving that quest (inbound ``serves`` edges, live
         # only). ``args={'has_fulltext': True|False}`` restricts to refs
         # with / without body chunks — SQL-level, honest in paged totals.
+        # ``args={'record_type': 'software'|'dataset'}`` (gr514384)
+        # restricts to papers typed as whole-record cites.
         serves: str | None = None,
         has_fulltext: bool | None = None,
+        record_type: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -1760,6 +1886,21 @@ class PaperHandler(Handler):
                 f"has_fulltext must be a boolean, got {has_fulltext!r}",
                 next="args={'has_fulltext': true} keeps only refs with body chunks",
             )
+        if record_type is not None:
+            rt = str(record_type).strip().lower()
+            if rt not in RECORD_TYPES:
+                raise BadInput(
+                    f"record_type= takes 'software' or 'dataset', got {record_type!r}",
+                    options=sorted(RECORD_TYPES),
+                    next="search(kind='paper', q='…', "
+                    "args={'record_type': 'software'})",
+                )
+            # The include-channel composition, same as serves= above:
+            # an empty typed set means zero hits, never unfiltered.
+            typed = self._resolve_record_type_scope(rt)
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & typed) if include_ref_ids is not None else typed
+            )
 
         # Everything else — validation, single-leg vs. broad (RRF-fused)
         # retrieval, title-introducer promotion, year-omitted notice — is
@@ -1788,6 +1929,19 @@ class PaperHandler(Handler):
             has_body=has_fulltext,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
+
+    def _resolve_record_type_scope(self, record_type: str) -> set[int]:
+        """``args={'record_type': 'software'}`` → the live refs of this kind
+        carrying that ``meta.record_type`` (gr514384 — the whole-record
+        cite discoverability filter; SQL-level, honest in paged totals via
+        the ``include_ref_ids`` channel)."""
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = %s "
+                "AND retired_at IS NULL AND meta->>'record_type' = %s",
+                (self.spec.kind, record_type),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
 
     def _resolve_serves_scope(self, serves: Any) -> set[int]:
         """``args={'serves': 'quest:<id>'}`` → the live refs serving it.
@@ -4175,6 +4329,18 @@ class PaperHandler(Handler):
             lines.append(", ".join(venue))
         if doi:
             lines.append(f"doi: {doi}")
+        # Whole-record cite marker (gr514384): a typed software/dataset
+        # record shows its genre + version, and — while it still carries
+        # no passages (the live predicate) — the cite-whole recipe the
+        # author needs. A typed record that since gained a body loses
+        # the cite-whole half and reads like an ordinary paper again.
+        rt = record_type_of(meta)
+        if rt:
+            ver = str(meta.get("version") or "").strip()
+            line = f"{rt} record" + (f" v{ver}" if ver else "")
+            if is_record_cite(self.store, ref):
+                line += f" — cite whole: [{_pa(ref)}]; no passages"
+            lines.append(line)
         lines.extend(self._si_overview_lines(ref))
         lines.extend(self._overview_meta_lines(ref))
         # gr515633: the categorizer hint line — enabled ref-level axes +

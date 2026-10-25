@@ -31,6 +31,7 @@ from typing import Any
 
 from precis.store import Ref
 from precis.utils.authors import author_names as _shared_author_names
+from precis.utils.record_cite import record_type_of
 from precis.utils.title_views import title_md, title_plain
 
 # Strip a small whitelist of inline HTML / JATS tags that publishers
@@ -204,6 +205,13 @@ _EXPORT_TYPE_MAP: dict[str, dict[str, str]] = {
         "ris": "DATA",
         "endnote": "Dataset",
     },
+    # Whole-record cite type (gr514384): DataCite ``Software`` registers
+    # with ``entry_type='software'`` alongside ``record_type``.
+    "software": {
+        "bibtex": "software",
+        "ris": "COMP",
+        "endnote": "Computer Program",
+    },
     "database": {
         "bibtex": "misc",
         "ris": "DBASE",
@@ -288,7 +296,14 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     pages = _clean_inline_text(str(meta.get("pages") or ""))
     url = _clean_inline_text(str(meta.get("url") or ""))
     entry_type = str(meta.get("entry_type") or "").strip().lower()
-    export_type = _EXPORT_TYPE_MAP.get(entry_type)
+    # Whole-record cite (gr514384): ``meta.record_type`` wins over a
+    # stale/absent ``entry_type`` — a record typed by hand carries only
+    # ``record_type``, and a registered one carries both. A record has
+    # no venue: ``publisher`` is its own field, ``journal`` suppressed.
+    record_rt = record_type_of(meta)
+    version = _clean_inline_text(str(meta.get("version") or ""))
+    publisher = _clean_inline_text(str(meta.get("publisher") or ""))
+    export_type = _EXPORT_TYPE_MAP.get(record_rt or entry_type)
     # No matched type and no venue: ``article``/``JOUR`` would claim a
     # journal that isn't there. Match export.latex.build_bib's @misc.
     venueless = export_type is None and not journal
@@ -313,13 +328,14 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
             lines.append(f"  author = {{{bx_authors}}},")
         if year:
             lines.append(f"  year = {{{year}}},")
-        if bx_journal:
+        if bx_journal and not record_rt:
             lines.append(f"  journal = {{{bx_journal}}},")
         for bib_key, value in (
             ("volume", volume),
             ("number", number),
             ("pages", pages),
             ("url", url),
+            *((("version", version), ("publisher", publisher)) if record_rt else ()),
         ):
             if value:
                 # ``url`` feeds ``\url{}``/hyperref, which wants the raw
@@ -346,8 +362,10 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
             out.append(f"AU  - {a}")
         if year:
             out.append(f"PY  - {year}")
-        if journal:
+        if journal and not record_rt:
             out.append(f"JO  - {journal}")
+        if record_rt and publisher:
+            out.append(f"PB  - {publisher}")
         if doi_clean:
             out.append(f"DO  - {doi_clean}")
         out.append("ER  - ")
@@ -368,8 +386,10 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
         out.append(f"%A {a}")
     if year:
         out.append(f"%D {year}")
-    if journal:
+    if journal and not record_rt:
         out.append(f"%J {journal}")
+    if record_rt and publisher:
+        out.append(f"%I {publisher}")
     if doi_clean:
         out.append(f"%R {doi_clean}")
     return "\n".join(out)

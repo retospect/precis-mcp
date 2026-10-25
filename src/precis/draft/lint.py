@@ -261,7 +261,7 @@ def citation_form_hint(text: str) -> str:
     )
 
 
-def whole_paper_cite_hint(new_text: str, old_text: str) -> str:
+def whole_paper_cite_hint(store: Store, new_text: str, old_text: str) -> str:
     """Nudge toward the specific chunk when a bare whole-ref citation
     (``[pa<id>]``/``[pk<id>]`` — no chunk) is newly introduced in this
     write. Tolerated, never blocked — a landmark/rhetorical mention of
@@ -269,11 +269,22 @@ def whole_paper_cite_hint(new_text: str, old_text: str) -> str:
     weaker than ``[pc<id>]`` for a specific claim: it never names a
     passage, and a later pass over this text (a reader, an editing
     agent) sees only the paper's keyword labels, never its text. Scoped
-    to what this write introduced, mirroring the abbrev hint."""
+    to what this write introduced, mirroring the abbrev hint.
+
+    A *whole-record cite* (gr514384 — a ``[pa<id>]`` naming a chunkless
+    paper typed ``record_type`` ``software``/``dataset``) is exempt:
+    there is no passage to drill to, so the hint would be wrong and
+    train authors to ignore it. The exemption is the live predicate
+    (:func:`precis.utils.record_cite.record_cite_handles`), never a
+    cached flag."""
+    from precis.utils.record_cite import record_cite_handles
+
     offenders = sorted(
         set(find_whole_ref_citations(new_text))
         - set(find_whole_ref_citations(old_text))
     )
+    if offenders:
+        offenders = sorted(set(offenders) - record_cite_handles(store, offenders))
     if not offenders:
         return ""
     shown = ", ".join(f"[{h}]" for h in offenders[:5])

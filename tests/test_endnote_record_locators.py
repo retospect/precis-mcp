@@ -52,6 +52,10 @@ def test_record_maps_bib_type_to_ref_type() -> None:
         ("inproceedings", "Conference Proceedings", 10),
         ("report", "Report", 27),
         ("thesis", "Thesis", 32),
+        # Whole-record cite types (gr514384): a typed software/dataset
+        # record's bib_type maps to EndNote's own ref-types.
+        ("software", "Computer Program", 9),
+        ("dataset", "Dataset", 59),
     ):
         rec = build_record({"kind": "paper", "bib_type": bib, "rec_number": 1})
         assert f'<ref-type name="{name}">{code}</ref-type>' in rec, bib

@@ -1309,6 +1309,12 @@ def put(
     verify: bool | None = None,
     citation: str | None = None,
     context_ref_id: int | str | None = None,
+    # paper whole-record cite (see precis-cite-paper-help, gr514384):
+    # put(kind='paper', id=<slug-or-paN>, record_type='software'|'dataset')
+    # declares a *chunkless* record a whole-cite target — its [pa<id>]
+    # cite is legitimate (no passage exists to drill to) and exports emit
+    # @software/@dataset. Refused on a paper carrying body chunks.
+    record_type: str | None = None,
     # message delivery stamp (asa_bot, precis-message-help):
     # put(kind='message', id=N, status='sent'|'failed'[, error='…']).
     status: str | None = None,
@@ -1537,6 +1543,7 @@ def put(
                 "verify": verify,
                 "citation": citation,
                 "context_ref_id": context_ref_id,
+                "record_type": record_type,
                 "status": status,
                 "error": error,
                 "entry": entry,

@@ -69,6 +69,7 @@ from precis.utils.link_tag_ops import (
     require_link_target,
     validate_link_mode,
 )
+from precis.utils.record_cite import record_cite_handles, record_type_of
 from precis.utils.table_data import (
     find_replace_cells,
     normalize_table,
@@ -1552,7 +1553,7 @@ class DraftHandler(Handler):
                     self.store, slug, ref.id, str(text), ""
                 )
                 body += _draft_lint.citation_form_hint(str(text))
-                body += _draft_lint.whole_paper_cite_hint(str(text), "")
+                body += _draft_lint.whole_paper_cite_hint(self.store, str(text), "")
                 body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
                 body += _draft_lint.glyph_cite_hint(self.store, str(text))
                 body += _draft_lint.pin_hint(self.store, str(text))
@@ -2738,7 +2739,9 @@ class DraftHandler(Handler):
                     self.store, slug, c.ref_id, new_text, old_text
                 )
                 body += _draft_lint.citation_form_hint(new_text)
-                body += _draft_lint.whole_paper_cite_hint(new_text, old_text)
+                body += _draft_lint.whole_paper_cite_hint(
+                    self.store, new_text, old_text
+                )
                 body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
                 body += _draft_lint.glyph_cite_hint(self.store, new_text)
                 body += _draft_lint.pin_hint(self.store, new_text, old_text)
@@ -2778,7 +2781,9 @@ class DraftHandler(Handler):
                     self.store, slug, c.ref_id, str(text), old_text
                 )
                 body += _draft_lint.citation_form_hint(str(text))
-                body += _draft_lint.whole_paper_cite_hint(str(text), old_text)
+                body += _draft_lint.whole_paper_cite_hint(
+                    self.store, str(text), old_text
+                )
                 body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
                 body += _draft_lint.glyph_cite_hint(self.store, str(text))
                 body += _draft_lint.pin_hint(self.store, str(text), old_text)
@@ -2939,7 +2944,7 @@ class DraftHandler(Handler):
             self.store, slug, int(block.ref_id), new_raw, old_text
         )
         body += _draft_lint.citation_form_hint(new_raw)
-        body += _draft_lint.whole_paper_cite_hint(new_raw, old_text)
+        body += _draft_lint.whole_paper_cite_hint(self.store, new_raw, old_text)
         body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_raw)
         body += _draft_lint.glyph_cite_hint(self.store, new_raw)
         body += _draft_lint.pin_hint(self.store, new_raw, old_text)
@@ -3411,6 +3416,25 @@ class DraftHandler(Handler):
                 and tref.kind == "finding"
             }
             current_pub_ids = self.store.current_pub_ids(finding_hub_ids)
+            # Whole-record cite stamp (gr514384): a ``cites`` edge to a
+            # paper typed ``record_type`` carrying zero body chunks gets
+            # ``cite_mode='record'`` + ``record_type`` — informational
+            # (the fisheye/popover can label the edge); the authoritative
+            # predicate stays the live record state, so a stamp gone stale
+            # (record gained a body) misleads nothing the live check owns.
+            record_dsts = {
+                dst
+                for (_src_ord, dst, _pos), relation in wanted.items()
+                if relation == "cites"
+                and (tref := refs_by_id.get(dst)) is not None
+                and tref.kind == "paper"
+                and record_type_of(getattr(tref, "meta", None))
+            }
+            live_record_dsts = (
+                record_dsts - self.store.refs_with_body_chunks(sorted(record_dsts))
+                if record_dsts
+                else set()
+            )
             # ord → chunk_id (the inverse of ``ord_by_chunk``, built above)
             # to test a resolved edge's source chunk against
             # ``restamp_chunk_ids`` below. ``ord`` is 1:1 with chunk_id for
@@ -3441,6 +3465,11 @@ class DraftHandler(Handler):
                         hub_ref = refs_by_id.get(dst)
                         if hub_ref is not None:
                             meta["cited_title"] = hub_ref.title
+                if relation == "cites" and dst in live_record_dsts:
+                    meta["cite_mode"] = "record"
+                    meta["record_type"] = record_type_of(
+                        getattr(refs_by_id[dst], "meta", None)
+                    )
                 # The upsert keeps ``set_by`` and merges ``meta``, so an edge
                 # whose stored meta already holds every key/value we would
                 # write is a no-op; skip its round trips (5 per edge).
@@ -4214,12 +4243,22 @@ class DraftHandler(Handler):
                 "edit(not_abbrev=['<ABBR>']) to silence."
             )
 
-        whole_refs: list[str] = []
+        whole_pairs: list[tuple[Any, str]] = []
         for c in chunks:
             if not c.text:
                 continue
             for bare in _draft_lint.find_whole_ref_citations(c.text):
-                whole_refs.append(f"{c.dc}:[{bare}]")
+                whole_pairs.append((c.dc, bare))
+        # A bare [pa<id>] naming a live whole-record cite (typed
+        # software/dataset, zero body chunks — gr514384) is exempt:
+        # there is no passage to drill to, so listing it would train
+        # authors to ignore the whole-paper line.
+        record_bares = record_cite_handles(
+            self.store, [bare for _dc, bare in whole_pairs]
+        )
+        whole_refs = [
+            f"{dc}:[{bare}]" for dc, bare in whole_pairs if bare not in record_bares
+        ]
         if whole_refs:
             shown = ", ".join(whole_refs if limit is None else whole_refs[:limit])
             tail = (

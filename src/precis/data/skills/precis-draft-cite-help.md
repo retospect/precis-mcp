@@ -2,7 +2,7 @@
 id: precis-draft-cite-help
 family: evidence
 title: precis — citing and cross-referencing inside a draft (handles route by what they name)
-summary: in draft prose a [fi<id>] finding hub is a citation and every other handle ([dc<id>], [me<id>]) is a link; cite the hub, never its paper or chunk; never fabricate or type a bare DOI/arXiv id; a paper not held is requested and the citing work parked behind the ingest, never faked
+summary: in draft prose a [fi<id>] finding hub is a citation and every other handle ([dc<id>], [me<id>]) is a link — except a typed software/dataset record, cited whole as [pa<id>]; cite the hub, never its paper or chunk; never fabricate or type a bare DOI/arXiv id; a paper not held is requested and the citing work parked behind the ingest, never faked
 answers:
   - how do I cite a paper I don't have yet without faking the reference?
   - which handles count as citations in a draft and which are only links?
@@ -55,6 +55,28 @@ meta={'executor': 'claude_inproc', 'job_type': 'taproot_backfill',
 'params': {'scope': <slug-or-dc>}})` — converts `[pc<id>]`/`[pa<id>]`
 cites to `[fi<id>]` claim-hub cites on the cluster worker; poll
 `get(kind='job', id='jo<id>')`. See `precis-taproot-backfill-help`.
+
+## Cite a software / dataset record — the one whole-ref exception
+
+A **record** — a paper ref typed `record_type` `software` or `dataset`
+carrying **no passages** (a Zenodo software release, a dataset landing
+page) — is cited **whole** as `[pa<id>]`. No `pc<id>` exists to ground a
+hub on, so the whole-ref cite is the canonical form, not a fallback: the
+`cites` edge is stamped `cite_mode='record'`, the whole-paper hint and the
+hygiene list skip it, and exports emit `@software` / `@dataset` (EndNote
+Computer Program / Dataset) with `version` and `publisher`.
+
+```python
+put(kind="paper", doi="10.5281/zenodo.22863181")  # registers typed from DataCite
+put(kind="paper", id="pa496283", record_type="software")  # declare / correct
+search(kind="paper", q="…", args={"record_type": "software"})  # list records
+get(kind="paper", id="pa496283")  # shows "software record — cite whole"
+```
+
+`record_type=` takes only `software` | `dataset` and is refused on a paper
+that has passages — normal papers stay on the hub rules. A claim *about*
+the software's behaviour still grounds on a passage (its README, its
+paper).
 
 **Never fabricate handles.** A `put`/`edit` introducing an unresolved
 handle-shaped ref (e.g. numeric `[45650]` or typo `[dc…]`) is refused with

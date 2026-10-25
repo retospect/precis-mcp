@@ -494,6 +494,40 @@ def test_acquire_s2_fault_doi_verified_by_registry(
     assert meta.get("acquire_registry") == "crossref"
 
 
+def test_acquire_registry_carries_record_fields(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr514384: a DataCite software DOI registers already typed — the
+    stub's meta carries ``record_type`` / ``version`` / ``publisher`` /
+    typed ``entry_type``, so it is citable whole with no second put."""
+
+    def _nobib(*_a: object) -> None:
+        raise ModuleNotFoundError("No module named 'semanticscholar'")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _nobib)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "precis-mcp",
+            "year": 2026,
+            "doi": "10.5281/zenodo.22863181",
+            "source": "datacite",
+            "record_type": "software",
+            "version": "1.2.3",
+            "publisher": "Zenodo",
+            "entry_type": "software",
+        },
+    )
+    r = handler.acquire(identifier="doi:10.5281/zenodo.22863181")
+    rid = _ref_id(r.body)
+    meta = _meta(store, rid)
+    assert meta.get("record_type") == "software"
+    assert meta.get("version") == "1.2.3"
+    assert meta.get("publisher") == "Zenodo"
+    assert meta.get("entry_type") == "software"
+
+
 def test_clear_acquire_unverified_flips_the_stub(
     handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
