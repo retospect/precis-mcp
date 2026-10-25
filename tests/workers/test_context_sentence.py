@@ -21,6 +21,7 @@ from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.workers.context_sentence import (
     _PASS_VERSION,
+    _STAMPED_IDS_TTL_S,
     META_FAILED_KEY,
     META_KEY,
     META_NO_ABSTRACT_KEY,
@@ -29,6 +30,7 @@ from precis.workers.context_sentence import (
     _claim,
     _generate_with_lint,
     _stamp_no_abstract,
+    _stamped_ref_ids,
     backfill_candidate_ref_ids,
     is_decline,
     lead_body_block,
@@ -1144,3 +1146,117 @@ class TestVersionedFailedStamp:
 
         assert result["claimed"] == 0
         assert client.calls == []
+
+
+class TestScheduledSweepCohort:
+    """gr514381 follow-up: the scheduled pass (no explicit ``ref_ids``)
+    unions stamp-bearing live refs into the default cohort — a stamped
+    paper that was never a grounding source still gets its heal /
+    re-trial, and an unstamped non-cohort paper stays out of scope."""
+
+    def test_legacy_no_abstract_stamp_heals_without_a_grounding_row(
+        self, store: Any
+    ) -> None:
+        """Prod's shape: ``context_sentence_no_abstract: true`` from the
+        unversioned pass, a usable ``meta.abstract``, and no nanopub
+        grounding row — the stamp alone makes it a claim candidate, so
+        the model runs and the stamp comes off."""
+        ref_id = seed_ref(store, title="A DFT paper")
+        store.update_ref(
+            ref_id,
+            meta_patch={META_NO_ABSTRACT_KEY: True, "abstract": _ABSTRACT},
+        )
+        client = _FakeClient(["Computational study; DFT-calculated properties only."])
+
+        result = run_context_sentence_pass(store, client=client)
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        assert len(client.calls) == 1
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert (
+            meta.get(META_KEY) == "Computational study; DFT-calculated properties only."
+        )
+        assert META_NO_ABSTRACT_KEY not in meta
+
+    def test_legacy_failed_stamp_earns_exactly_one_retry(self, store: Any) -> None:
+        """``context_sentence_failed: true`` enters the cohort, the
+        re-trial's verdict re-stamps at :data:`_PASS_VERSION`, and the
+        next sweep does not claim the paper again."""
+        ref_id = seed_ref(store, title="A DFT paper")
+        store.update_ref(
+            ref_id, meta_patch={META_FAILED_KEY: True, "abstract": _ABSTRACT}
+        )
+        client = _FakeClient([NO_CONTEXT])
+
+        result = run_context_sentence_pass(store, client=client)
+
+        assert result == {"claimed": 1, "ok": 0, "failed": 1}
+        assert len(client.calls) == 1
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert meta.get(META_FAILED_KEY) == {"v": _PASS_VERSION}
+
+        client2 = _FakeClient([NO_CONTEXT])
+        again = run_context_sentence_pass(store, client=client2)
+
+        assert again["claimed"] == 0
+        assert client2.calls == []
+
+    def test_an_unstamped_non_cohort_paper_is_not_claimed(self, store: Any) -> None:
+        """The union adds stamp-bearing refs only — not the whole corpus."""
+        ref_id, _chunk = _seed_paper(store, title="Never grounded, never stamped")
+        client = _FakeClient(["Never asked."])
+
+        result = run_context_sentence_pass(store, client=client)
+
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        assert client.calls == []
+
+    def test_a_retired_stamped_ref_is_not_claimed(self, store: Any) -> None:
+        """``_STAMPED_SQL`` is live-refs-only: retiring a stamped ref
+        takes it out of the candidate union (and ``_claim``'s own
+        ``retired_at IS NULL`` is the belt to that brace)."""
+        ref_id = seed_ref(store, title="A DFT paper")
+        store.update_ref(
+            ref_id, meta_patch={META_FAILED_KEY: True, "abstract": _ABSTRACT}
+        )
+        store.retire_ref(ref_id)
+        client = _FakeClient(["Never asked."])
+
+        result = run_context_sentence_pass(store, client=client)
+
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        assert client.calls == []
+
+    def test_the_stamped_union_respects_the_batch_cap(self, store: Any) -> None:
+        """3 stamped non-cohort refs + ``batch_size=2`` claims 2 — the
+        stamped half of the union rides the same ``LIMIT`` per tick."""
+        ids = [seed_ref(store, title=f"DFT paper {i}") for i in range(3)]
+        for ref_id in ids:
+            store.update_ref(
+                ref_id,
+                meta_patch={META_NO_ABSTRACT_KEY: True, "abstract": _ABSTRACT},
+            )
+        client = _FakeClient(["Computational study; DFT-calculated properties only."])
+
+        result = run_context_sentence_pass(store, client=client, batch_size=2)
+
+        assert result == {"claimed": 2, "ok": 2, "failed": 0}
+        assert len(client.calls) == 2
+
+    def test_the_stamped_ref_set_is_cached_for_the_ttl(self, store: Any) -> None:
+        """``_stamped_ref_ids`` resolves once per
+        :data:`_STAMPED_IDS_TTL_S` — a stamp written inside the TTL
+        waits for the next resolution, so the full ``refs`` scan is not
+        re-run on every worker loop (gr514381 review)."""
+        ref_id = seed_ref(store, title="A DFT paper")
+        t = [0.0]
+
+        def clock() -> float:
+            return t[0]
+
+        with store.pool.connection() as conn:
+            assert _stamped_ref_ids(conn, clock=clock) == []
+            store.update_ref(ref_id, meta_patch={META_FAILED_KEY: True})
+            assert _stamped_ref_ids(conn, clock=clock) == []
+            t[0] += _STAMPED_IDS_TTL_S + 1.0
+            assert _stamped_ref_ids(conn, clock=clock) == [ref_id]

@@ -92,8 +92,11 @@ DB reads + one outbound LLM call per paper, not a pure ``WorkerHandler``).
    (candidate through published/superseded/rejected — the artifact/
    footnote reachability set, not a publication-state filter),
    soft-delete filtered on the hub, the grounding chunk, and the source
-   ref. This is also the scheduled pass's default cohort (no explicit
-   ``ref_ids``).
+   ref. The scheduled pass's default cohort (no explicit ``ref_ids``)
+   is that set UNION every live ref carrying either stamp key
+   (:func:`_stamped_ref_ids`) — a stamped paper outside the grounding
+   cohort would otherwise never be a claim candidate, so its
+   version/``updated_at``/chunk heal arms could never fire (gr514381).
 2. **Lazy** — ``precis_web.nanopub_render._suggested_payload`` enqueues
    this pass (fire-and-forget, ``ref_ids=[ref_id]``) for a grounding
    source paper missing a sentence the moment it enters a prefill.
@@ -112,6 +115,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -825,10 +830,73 @@ _BACKFILL_SQL = r"""
 
 def backfill_candidate_ref_ids(conn: Any) -> list[int]:
     """Distinct grounding source ``ref_id``s of every live ``nanopub_publish``
-    row (see :data:`_BACKFILL_SQL`) — the batch-backfill selection, and the
-    scheduled pass's default cohort when no explicit ``ref_ids`` are given."""
+    row (see :data:`_BACKFILL_SQL`) — the batch-backfill selection: the
+    grounding half of the scheduled pass's default cohort
+    (:func:`_stamped_ref_ids` supplies the stamp-bearing half in
+    :func:`_claim`)."""
     rows = conn.execute(_BACKFILL_SQL).fetchall()
     return [int(r[0]) for r in rows]
+
+
+#: Live refs carrying either context_sentence stamp — the other half of
+#: the scheduled pass's default cohort. Without this union a stamped
+#: paper outside the grounding cohort was never a claim candidate, so
+#: the version/``updated_at``/chunk heal arms in ``_claim`` could never
+#: fire for it: prod's 26 ``no_abstract`` + 5 ``failed`` stamps sat
+#: untouched for a day after 655183090 shipped because none were
+#: grounding sources (gr514381). Membership only makes a stamped row
+#: REACHABLE — ``_claim``'s WHERE arms still decide whether it
+#: re-claims, so a converged stamp keeps the paper out of the set.
+_STAMPED_SQL = """
+    SELECT ref_id FROM refs
+     WHERE retired_at IS NULL
+       AND (meta ? %(no_abstract_key)s OR meta ? %(failed_key)s)
+"""
+
+#: TTL for the resolved stamped-ref set — the query is a full ``refs``
+#: scan (~0.7s on prod) while the scheduled pass loops every few
+#: seconds, so re-resolving per sweep was the dominant cost of the
+#: union (gr514381 review). Staleness is safe: candidacy is not
+#: eligibility, ``_claim``'s WHERE arms decide that against live meta —
+#: a cleared/current-version stamp still drops out of the claim, and a
+#: newly-stamped ref joins the cohort within one TTL.
+_STAMPED_IDS_TTL_S = 900.0
+_stamped_ids_cache: tuple[float, list[int]] | None = None
+
+
+def invalidate_stamped_ids() -> None:
+    """Drop the cached stamped-ref set — test isolation (the ``store``
+    fixture calls it per test, like the settings/secrets caches) and a
+    hook for a forced re-resolution."""
+    global _stamped_ids_cache
+    _stamped_ids_cache = None
+
+
+def _stamped_ref_ids(
+    conn: Any, *, clock: Callable[[], float] = time.monotonic
+) -> list[int]:
+    """Live ``ref_id``s carrying :data:`META_NO_ABSTRACT_KEY` or
+    :data:`META_FAILED_KEY`, unioned into ``_claim``'s default candidate
+    set so a stamped non-cohort paper's heal/re-trial arms can fire
+    (gr514381). Resolved at most once per :data:`_STAMPED_IDS_TTL_S`
+    per worker process; ``clock`` is injectable for tests."""
+    global _stamped_ids_cache
+    now = clock()
+    if (
+        _stamped_ids_cache is not None
+        and now - _stamped_ids_cache[0] < _STAMPED_IDS_TTL_S
+    ):
+        return list(_stamped_ids_cache[1])
+    rows = conn.execute(
+        _STAMPED_SQL,
+        {
+            "no_abstract_key": META_NO_ABSTRACT_KEY,
+            "failed_key": META_FAILED_KEY,
+        },
+    ).fetchall()
+    ids = [int(r[0]) for r in rows]
+    _stamped_ids_cache = (now, ids)
+    return ids
 
 
 def _claim(
@@ -839,7 +907,10 @@ def _claim(
     for up to ``limit`` still-unsentenced live papers. ``ref_ids``, when
     given, IS the candidate set (the lazy single-paper enqueue, or a
     targeted backfill/test run); ``None`` sweeps
-    :func:`backfill_candidate_ref_ids`. Excludes a paper already carrying
+    :func:`backfill_candidate_ref_ids` union :func:`_stamped_ref_ids` —
+    the grounding cohort plus every stamp-bearing live ref, so the heal
+    arms below can fire outside the cohort too (gr514381). Excludes a
+    paper already carrying
     a sentence and one that converged on "no sentence" AT THE CURRENT
     pass version — a :data:`META_FAILED_KEY` stamp older than
     :data:`_PASS_VERSION` (a legacy bare ``true`` counts as version 0)
@@ -863,7 +934,11 @@ def _claim(
     ``refs.meta['abstract']``. The body fallbacks need the store, not
     this connection, so the pass resolves them per row (see
     :func:`lead_body_block` and :func:`retrieve_body_block`)."""
-    candidates = ref_ids if ref_ids is not None else backfill_candidate_ref_ids(conn)
+    candidates = (
+        list(ref_ids)
+        if ref_ids is not None
+        else sorted(set(backfill_candidate_ref_ids(conn)) | set(_stamped_ref_ids(conn)))
+    )
     if not candidates:
         return []
     rows = conn.execute(
@@ -959,8 +1034,10 @@ def run_context_sentence_pass(
 
     ``ref_ids`` optionally restricts the sweep to specific papers (lazy
     enqueue / targeted backfill / tests); ``None`` sweeps
-    :func:`backfill_candidate_ref_ids` — the live-publish-row grounding
-    cohort. Never raises on a single paper's failure; a dropped/lint-failed
+    :func:`backfill_candidate_ref_ids` union :func:`_stamped_ref_ids` —
+    the live-publish-row grounding cohort plus every stamp-bearing live
+    ref (gr514381). Never raises on a single paper's failure; a
+    dropped/lint-failed
     sentence bumps ``failed`` and stamps :data:`META_FAILED_KEY` at
     :data:`_PASS_VERSION` so the paper is not re-claimed until the pass
     logic next moves. ``embedder`` feeds the semantic legs

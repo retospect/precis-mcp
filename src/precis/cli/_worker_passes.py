@@ -779,7 +779,9 @@ def build_ref_passes(
     # written to refs.meta['context_sentence']. NOT a corpus-wide sweep:
     # the default cohort is the distinct grounding source ref_ids of
     # live nanopub_publish rows (context_sentence.
-    # backfill_candidate_ref_ids); the web app additionally enqueues
+    # backfill_candidate_ref_ids) union every live ref carrying a
+    # context_sentence stamp, so the self-heal arms reach stamped
+    # non-cohort papers (gr514381); the web app additionally enqueues
     # this pass (ref_ids=[ref_id]) lazily on grounding prefill. Default-OFF
     # (`service prio` or --only context_sentence). Model defaults to the
     # cheap SMALL-tier chain, like llm_summarize. See

@@ -1191,6 +1191,7 @@ def store() -> Iterator[Store]:
     from precis import settings as _settings
     from precis.budget import meter as _budget_meter
     from precis.workers import _claim as _claim_queries
+    from precis.workers import context_sentence as _context_sentence
 
     _budget_meter.bind_store(None)
     _settings.invalidate()
@@ -1202,6 +1203,10 @@ def store() -> Iterator[Store]:
     # kinds), not by Store — a resolved set would otherwise hand the next
     # test's claim sweep ref_ids the TRUNCATE already deleted.
     _claim_queries.invalidate_band_ids()
+    # Same for context_sentence's stamped-ref set (gr514381): a 900s TTL
+    # holding last test's stamped ref_ids would shadow newly stamped refs
+    # out of the scheduled-sweep cohort.
+    _context_sentence.invalidate_stamped_ids()
     s = Store.connect(_active_dsn())
     dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
     # Every pre-existing client backend, idle or not: one opened by an earlier

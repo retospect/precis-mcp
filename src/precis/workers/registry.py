@@ -1103,8 +1103,10 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # ("Context: ..." line). Population is NOT a corpus-wide sweep:
         # the cohort is the distinct grounding source ref_ids of live
         # nanopub_publish rows (any state) — see
-        # context_sentence.backfill_candidate_ref_ids — plus a lazy
-        # enqueue from precis_web.nanopub_render on grounding prefill.
+        # context_sentence.backfill_candidate_ref_ids — union every live
+        # ref carrying a context_sentence stamp (the self-heal half,
+        # gr514381), plus a lazy enqueue from precis_web.nanopub_render
+        # on grounding prefill.
         name="context_sentence",
         label="Paper context sentence",
         category="discovery",
