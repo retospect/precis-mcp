@@ -347,6 +347,7 @@ class DatasheetHandler(PaperHandler):
                 link=f"part:{new_lcsc}",
                 unlink=None,
                 rel="datasheet-of",
+                hub=getattr(self, "hub", None),
             )
         except NotFound:
             return f" Part {new_lcsc} is not in the catalog: no datasheet-of edge."

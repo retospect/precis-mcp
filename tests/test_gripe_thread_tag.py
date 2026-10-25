@@ -103,8 +103,16 @@ def test_create_ack_asks_for_the_thread_unless_given(
     assert "thread:pcb-platform" in _tags(gripe, gid2)
 
 
+def _mount_markdown(hub: Hub, root: Path) -> None:
+    """Register the store-backed markdown kind rooted at *root* — the
+    thread refusal computes its link= target off the live handler."""
+    from precis.handlers.markdown import MarkdownHandler
+
+    hub.register_handler("markdown", MarkdownHandler(hub=hub, root=root))
+
+
 def test_put_with_a_backlog_item_slug_gets_the_put_door(
-    gripe: GripeHandler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    gripe: GripeHandler, hub: Hub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # gr503548: agents tag docs/backlog/<slug>.md *item* names, not
     # threads/*.md threads. The refusal says so, points at the link
@@ -114,18 +122,59 @@ def test_put_with_a_backlog_item_slug_gets_the_put_door(
     (d / "threads" / "knowledge-mesh.md").write_text("# x\n", encoding="utf-8")
     (d / "graph-gardener.md").write_text("# x\n", encoding="utf-8")
     monkeypatch.setenv("PRECIS_THREADS_DIR", str(d / "threads"))
+    _mount_markdown(hub, tmp_path)
     with pytest.raises(BadInput) as exc:
         gripe.put(text="should not file", tags=["thread:graph-gardener"])
     assert "backlog item" in str(exc.value)
-    assert "md:main/docs/backlog/graph-gardener.md" in str(exc.value)
+    # gr516697: the link door names the store-backed markdown slug —
+    # 'md:main/...' is a DB-free index id and can never be a link target.
+    assert "link='markdown:docs--backlog--graph-gardener'" in str(exc.value)
     assert isinstance(exc.value.next, str) and exc.value.next.startswith(
         "put(kind='gripe'"
     )
     assert "knowledge-mesh" in (exc.value.options or ())
 
 
+def test_backlog_item_link_suggestion_resolves_in_one_step(
+    gripe: GripeHandler, hub: Hub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gr516697: the suggested link= must actually resolve — the markdown
+    # kind's file slug, minted on first link (no get first).
+    d = tmp_path / "docs" / "backlog"
+    (d / "threads").mkdir(parents=True)
+    (d / "threads" / "knowledge-mesh.md").write_text("# x\n", encoding="utf-8")
+    (d / "graph-gardener.md").write_text("# Graph gardener\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_THREADS_DIR", str(d / "threads"))
+    _mount_markdown(hub, tmp_path)
+    with pytest.raises(BadInput) as exc:
+        gripe.put(text="should not file", tags=["thread:graph-gardener"])
+    target = "markdown:docs--backlog--graph-gardener"
+    assert f"link='{target}'" in str(exc.value)
+
+    gid, _ = _new(gripe, link=target)
+    md_ref = gripe.store.get_ref(kind="markdown", id="docs--backlog--graph-gardener")
+    assert md_ref is not None
+    out = [
+        (lk.dst_ref_id, lk.relation)
+        for lk in gripe.store.links_for(gid, direction="out")
+    ]
+    assert out == [(md_ref.id, "related-to")]
+
+
+def test_md_index_target_is_refused_with_the_linkable_sibling(
+    gripe: GripeHandler,
+) -> None:
+    # gr516697: 'md:<alias>/<path>' can never be a link target — the md
+    # index kind carries no refs rows. The refusal names the store-backed
+    # markdown form instead of the misleading "no live md ref" NotFound.
+    with pytest.raises(BadInput) as exc:
+        gripe.put(text="probe", link="md:main/docs/backlog/graph-gardener.md")
+    assert "no corpus refs" in str(exc.value)
+    assert "markdown:<file-slug>" in str(exc.value.next or "")
+
+
 def test_put_with_a_clipped_backlog_item_slug_gets_the_fuzzy_item_door(
-    gripe: GripeHandler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    gripe: GripeHandler, hub: Hub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # gr506766: 'graph-gardener' failed with the bare refusal — the slug is
     # a *clipped* docs/backlog item name ('graph-gardener-value.md'), not an
@@ -136,10 +185,11 @@ def test_put_with_a_clipped_backlog_item_slug_gets_the_fuzzy_item_door(
     (d / "threads" / "graph-memory-consumers.md").write_text("# x\n", encoding="utf-8")
     (d / "graph-gardener-value.md").write_text("# x\n", encoding="utf-8")
     monkeypatch.setenv("PRECIS_THREADS_DIR", str(d / "threads"))
+    _mount_markdown(hub, tmp_path)
     with pytest.raises(BadInput) as exc:
         gripe.put(text="should not file", tags=["thread:graph-gardener"])
     assert "backlog item" in str(exc.value)
-    assert "md:main/docs/backlog/graph-gardener-value.md" in str(exc.value)
+    assert "link='markdown:docs--backlog--graph-gardener-value'" in str(exc.value)
     assert "nearest: graph-memory-consumers" in str(exc.value)
 
 

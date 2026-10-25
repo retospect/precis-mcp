@@ -466,6 +466,9 @@ class JobHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "job"
     sense: ClassVar[str] = "job"
+    # ``get``/``tag``/``link`` take id=[...] like the other numeric kinds
+    # (gr516881): the summary batch replaces runs of singleton gets.
+    batch_ids: ClassVar[bool] = True
     # No default tag: the queued state is set after validation in put.
     default_tags_on_create: ClassVar[tuple[str, ...]] = ()
     # ``under=`` on job search is this handler's own: the hierarchical

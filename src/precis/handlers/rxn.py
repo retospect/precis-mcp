@@ -1138,7 +1138,9 @@ class RxnHandler(Handler):
             rel_err = exc
         try:
             if mode == "add" and rel_err is None:
-                mint_lazy_link_target(target, store=self.store)
+                mint_lazy_link_target(
+                    target, store=self.store, hub=getattr(self, "hub", None)
+                )
             link_target = parse_link_target(
                 target, store=self.store, include_retired=mode == "remove"
             )

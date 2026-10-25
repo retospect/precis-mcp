@@ -2835,7 +2835,7 @@ class NumericRefHandler(Handler):
         try:
             # Mint a lazy part ref only for an add that will go ahead.
             if mode == "add" and rel_err is None:
-                mint_lazy_link_target(target, store=self.store)
+                mint_lazy_link_target(target, store=self.store, hub=self.hub)
             link_target = parse_link_target(
                 target, store=self.store, include_retired=mode == "remove"
             )

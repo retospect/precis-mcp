@@ -240,6 +240,41 @@ def test_fetch_graph_empty_is_not_an_error(handler, monkeypatch) -> None:
     assert "No references found" in result.body_blocks[0].text
 
 
+def test_fetch_graph_requests_fields_s2_accepts(handler, monkeypatch) -> None:
+    """gr516727: refs:/cites: 400'd on every call — S2's graph endpoints
+    reject the ``authors.name`` subfield form. ``authors`` returns the
+    ``[{authorId, name}]`` shape ``_format_paper`` reads."""
+    captured: dict = {}
+
+    def fake_get(url, params):
+        captured["params"] = params
+        return _refs_payload()
+
+    monkeypatch.setattr(handler, "_s2_get_json", fake_get)
+    result = handler._fetch("refs:10.1038/nature12373")
+
+    fields = captured["params"]["fields"].split(",")
+    assert "authors" in fields
+    assert "authors.name" not in fields
+    # Authors still render off the ``authors`` record shape.
+    assert "S. Tans" in result.body_blocks[0].text
+
+
+def test_s2_field_lists_avoid_rejected_author_subfield() -> None:
+    """gr516727: every nested-paper field list on a non-search endpoint
+    drops ``authors.name``; the search fields keep it — ``/paper/search``
+    still accepts the subfield (the gripe reported search working)."""
+    from precis.handlers.semanticscholar import (
+        _AUTHOR_PAPERS_FIELDS,
+        _NAV_FIELDS,
+        _S2_FIELDS,
+    )
+
+    assert "authors.name" not in _NAV_FIELDS
+    assert "authors.name" not in _AUTHOR_PAPERS_FIELDS
+    assert "authors.name" in _S2_FIELDS
+
+
 # ---------------------------------------------------------------------------
 # Corpus-diff (held/stub/NEW) + exclude= on a plain topic search —
 # docs/backlog/discovery-exclude-by-container.md. DB-backed: real

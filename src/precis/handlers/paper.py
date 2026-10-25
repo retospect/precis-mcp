@@ -4252,6 +4252,7 @@ class PaperHandler(Handler):
             rel=rel,
             meta=meta,
             merge_meta=meta is not None,
+            hub=getattr(self, "hub", None),
         )
         return Response(
             body=format_link_tag_ack(
@@ -5802,40 +5803,28 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
             scheme,
             "put(kind='paper', title='<title>')",
         )
-        # The old headline recovery here was
-        # ``put(kind='finding', cited_in='doi:{doi}', ...)`` —
-        # ``FindingHandler._resolve_cited_in`` (via the shared link
-        # parser) explicitly rejects a bare ``doi:`` (only corpus
-        # handles resolve — "unknown kind 'doi' in link target"), so it
-        # failed 100% of the time (gr311341). Point at the two paths
-        # that actually work: mint the paper stub directly, or (per
-        # precis-finding-help's acquisition mode) register the claim
-        # now with ``wants=``/``provenance=`` instead of ``cited_in=``.
-        #
-        # gr494831 step 2: ``get`` refuses rather than queueing the fetch
-        # itself, because the path can spend. The mint asks Semantic
-        # Scholar and Crossref/DataCite (rate-limited), and the pinned
-        # stub's ``fetch_oa`` cascade ends on the paid OpenAlex Content
-        # leg (~$0.01 a file) on a fetch host holding its key. The hint
-        # names that cost so the caller makes the call.
+        # Point at the two paths that actually work: mint the stub
+        # directly, or register the claim now in acquisition mode
+        # (``wants=``/``provenance=`` — a bare ``cited_in='doi:'`` is
+        # rejected, the link parser has no 'doi' kind; gr311341).
+        # ``get`` refuses rather than queueing the fetch itself because
+        # the cascade can end on the paid OpenAlex Content leg (~$0.01 a
+        # file; gr494831) — the hint names the cost so the caller makes
+        # the call. Kept short: the MCP client already appends the tool
+        # schema on isError, so a long hint lands twice (gr516710).
         raise NotFound(
             f"paper with {scheme.upper()} {base!r} not ingested",
             next=(
                 f"{mint}  "
-                "to mint a stub — get does not queue it for you, because "
-                "the fetch can cost: the open-access legs "
-                "(Unpaywall/arXiv/S2/…) run first and the paid OpenAlex "
-                "Content leg (~$0.01 a file) runs last where the fetch "
-                "host has its key. Once it lands, cite its chunk directly "
-                "(cited_in='<slug-once-fetched>~0'). To register the "
-                "claim right now instead of waiting: "
-                "put(kind='finding', title='<short claim>', "
-                "body='<claim + setup>', "
+                "to mint a stub — get does not queue it: the fetch can "
+                "end on the paid OpenAlex Content leg (~$0.01/file), so "
+                "the spend is the caller's call. To register the claim "
+                "meanwhile: put(kind='finding', title='<short claim>', "
+                "body='<claim>', "
                 f"wants=[{{{scheme!r}: '{ident}'}}], "
                 "provenance='<chunk you read the claim in>')  "
-                "— acquisition mode; a bare 'doi:' cited_in is rejected, "
-                "the link parser has no 'doi' kind. Alternatively: "
-                "search(kind='paper', q='<title>') for an existing slug."
+                "— a bare 'doi:' cited_in is rejected. Held under "
+                "another slug? search(kind='paper', q='<title>')."
             ),
         )
     return slug + ("~" + sel if sel else "")

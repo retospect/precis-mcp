@@ -220,6 +220,16 @@ class TestResolveDoi:
         assert "paid OpenAlex Content" in hint
         assert len(store.list_refs(kind="paper", limit=50)) == before
 
+    def test_unknown_doi_hint_stays_bounded(self, store: Store) -> None:
+        """gr516710: the MCP client already appends the tool schema on
+        isError, so the identifier-miss hint must stay a hint — mint,
+        finding-put, search — not a wall."""
+        with pytest.raises(NotFound) as exc_info:
+            _maybe_resolve_doi(store, "10.9999/nope")
+        hint = exc_info.value.next
+        assert isinstance(hint, str)
+        assert len(hint) <= 500
+
     def test_get_by_doi_end_to_end(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
         resp = handler.get(id="10.1111/jnc.13915")

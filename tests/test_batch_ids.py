@@ -24,6 +24,7 @@ from precis.handlers._numeric_ref import BATCH_ID_CAP
 from precis.handlers.alert import AlertHandler
 from precis.handlers.anki import AnkiHandler
 from precis.handlers.gripe import GripeHandler
+from precis.handlers.job import JobHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
@@ -117,6 +118,22 @@ def _findings(store: Store, hub: Hub, n: int) -> tuple[Any, list[int]]:
         for i in range(n)
     ]
     return handler, ids
+
+
+def test_get_batch_job_summary_shaped(store: Store, hub: Hub) -> None:
+    # gr516881: job refused id=[...] ("one call per ref") while the other
+    # numeric kinds batch — now the same summary shape.
+    handler = JobHandler(hub=hub)
+    a = store.insert_ref(kind="job", slug=None, title="job one")
+    b = store.insert_ref(kind="job", slug=None, title="job two")
+    missing = max(a.id, b.id) + 100_000
+    body = handler.get(id=_batch(b.id, missing, a.id)).body
+    assert body.startswith("# 3 job (batch)")
+    blocks = body.split("\n\n")[1:4]
+    assert blocks[0].startswith(f"jo{b.id}  ")
+    assert blocks[1] == f"jo{missing}  not found"
+    assert blocks[2].startswith(f"jo{a.id}  ")
+    assert "job two" in blocks[0] and "job one" in blocks[2]
 
 
 def test_get_batch_finding_summary_in_order(store: Store, hub: Hub) -> None:

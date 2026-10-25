@@ -2478,6 +2478,7 @@ class StructureHandler(Handler):
             # opt-in: re-linking with a fresh note= updates it in place
             # (Store.add_link's merge_meta, scoped to this call site only).
             merge_meta=link_meta is not None,
+            hub=getattr(self, "hub", None),
         )
         return Response(
             body=format_link_tag_ack(

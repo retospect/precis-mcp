@@ -62,6 +62,7 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
 
 from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported
@@ -961,12 +962,15 @@ class GripeHandler(NumericRefHandler):
             if item is not None:
                 # docs/backlog/<slug>.md is a planned-work item, not a
                 # thread — agents tag item slugs (gr503548: graph-gardener,
-                # memory-graph, gardener-value). Name the link door.
+                # memory-graph, gardener-value). Name the link door with a
+                # target that resolves (gr516697): the old
+                # 'md:main/docs/backlog/<item>.md' hint could never — md is
+                # a DB-free index kind, its ids are get/search-only.
                 cause += (
                     f"; {item!r} is a backlog item, not a thread — "
-                    "threads are docs/backlog/threads/*.md; link the item "
-                    f"with link='md:main/docs/backlog/{item}.md' and pick "
-                    "a thread from options"
+                    "threads are docs/backlog/threads/*.md; "
+                    f"{self._backlog_item_link_hint(backlog_dir, item)} "
+                    "and pick a thread from options"
                 )
             fix = close[0] if close else "<slug>"
             if create:
@@ -982,6 +986,45 @@ class GripeHandler(NumericRefHandler):
                 )
             raise BadInput(cause, options=sorted(slugs), next=next_call)
         return []
+
+    def _backlog_item_link_hint(self, backlog_dir: Path, item: str) -> str:
+        """The ``link=`` target that resolves for a backlog item file.
+
+        ``docs/backlog/<item>.md`` is reachable through the DB-free
+        ``md`` index kind for get/search — never for link (that kind
+        carries no refs rows). The linkable form is the store-backed
+        ``markdown`` kind's file slug: ``docs--backlog--<item>`` under
+        the workspace root, ``<alias>/<slug>`` under a ``PRECIS_ROOTS``
+        mirror. :func:`precis.utils.link_target.mint_lazy_link_target`
+        mints the file's ref on first link, so the named call works in
+        one step. Falls back to naming the rule when no live markdown
+        handler can see the file (kind not mounted, or the file outside
+        every configured root).
+        """
+        from precis.utils.md_parse import file_slug_from_path
+
+        path = (backlog_dir / f"{item}.md").resolve()
+        hub = getattr(self, "hub", None)
+        md = hub.handler_for("markdown") if hub is not None else None
+        if md is not None:
+            roots: list[tuple[str | None, Any]] = [(None, md.root)]
+            roots += [(alias, m.path) for alias, m in md.mirrors.items()]
+            for alias, root in roots:
+                try:
+                    rel = path.relative_to(root.resolve())
+                except ValueError:
+                    continue
+                try:
+                    slug = file_slug_from_path(str(rel))
+                except ValueError:
+                    break
+                target = f"markdown:{f'{alias}/' if alias else ''}{slug}"
+                return f"link the item with link={target!r}"
+        return (
+            f"the item file docs/backlog/{item}.md is a file, not a "
+            "corpus ref — where the markdown file kind is mounted its "
+            "ref links as link='markdown:<file-slug>'"
+        )
 
     def _comments(self, ref_id: int, ref: Ref | None = None) -> list[Any]:
         """Visible comments (hidden ones, per ``refs.meta``, are skipped)."""
@@ -1158,7 +1201,7 @@ class GripeHandler(NumericRefHandler):
             if rel is not None:
                 dropped.append("rel=")
         if link is not None:
-            mint_lazy_link_target(link, store=self.store)
+            mint_lazy_link_target(link, store=self.store, hub=self.hub)
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
         if target is not None:

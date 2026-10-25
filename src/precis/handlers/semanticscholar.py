@@ -100,9 +100,11 @@ _TITLE_MATCH_FLOOR = 0.9
 #: Per-paper fields for the citation-graph (references / citations)
 #: endpoints. The nested paper record shares the search field shape,
 #: so ``_format_paper`` renders both — we only trim ``referenceCount``
-#: (not useful one hop out).
+#: (not useful one hop out). ``authors`` not ``authors.name``: S2's
+#: graph endpoints 400 the subfield form (gr516727); the bare field
+#: returns the ``[{authorId, name}]`` shape ``_format_paper`` reads.
 _NAV_FIELDS = (
-    "title,authors.name,year,abstract,externalIds,venue,citationCount,openAccessPdf"
+    "title,authors,year,abstract,externalIds,venue,citationCount,openAccessPdf"
 )
 
 #: Page size for a citation-graph walk. Reference lists run to
@@ -129,10 +131,10 @@ _S2_AUTHOR_BASE = "https://api.semanticscholar.org/graph/v1/author"
 _PAPER_AUTHORS_FIELDS = "name,externalIds,hIndex,affiliations"
 
 #: Fields for ``/author/{id}/papers`` — the outbound BFS frontier.
-#: ``paperId`` backs the compact table's ``s2 id`` column.
-_AUTHOR_PAPERS_FIELDS = (
-    "title,year,externalIds,venue,citationCount,authors.name,paperId"
-)
+#: ``paperId`` backs the compact table's ``s2 id`` column. Same
+#: ``authors.name`` → ``authors`` fix as ``_NAV_FIELDS`` (gr516727) —
+#: this is the same nested-paper field family on a non-search endpoint.
+_AUTHOR_PAPERS_FIELDS = "title,year,externalIds,venue,citationCount,authors,paperId"
 
 #: Page size for an author's default (non-``complete``) paper list.
 _AUTHOR_PAPERS_LIMIT = 50

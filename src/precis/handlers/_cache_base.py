@@ -1142,6 +1142,7 @@ class CacheBackedHandler(Handler):
             link=target if mode == "add" else None,
             unlink=target if mode == "remove" else None,
             rel=rel,
+            hub=getattr(self, "hub", None),
         )
         return Response(
             body=format_link_tag_ack(

@@ -433,21 +433,56 @@ def _resolve_part_pin(
     )
 
 
-def mint_lazy_link_target(target: str, *, store: Store) -> None:
-    """Mint the lazy ref a ``part:<C-no>`` / ``skill:<id>`` target names, if none.
+def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None:
+    """Mint the lazy ref a link target names, if none.
 
     Add-mode link doors only (``apply_link_ops``, ``NumericRefHandler.link``),
     called before :func:`parse_link_target`, which never mints: it also
     serves unlink and ``like=``. A C-number absent from the catalog raises
     ``NotFound`` and mints nothing (``precis.handlers.part`` docstring).
+
+    ``hub=`` additionally lets the store-backed file kinds
+    (``markdown`` / ``plaintext`` / ``tex``) lazy-mint the file's ref via
+    the live handler's ``ensure_ingested`` — a ``markdown:<slug>`` or
+    path-form target then resolves on first link, no get first
+    (gr516697). The DB-free index kinds (``md``, ``python``) carry no
+    refs rows at all; a ``md:`` target can never resolve, so the door
+    refuses early with the linkable sibling named — otherwise
+    :func:`parse_link_target` reports a misleading "no live md ref".
     """
     if not isinstance(target, str):
         return
     kind, sep, rest = target.strip().partition(":")
     kind = kind.strip()
-    if not sep or kind not in ("part", "skill"):
+    if not sep:
         return
+    if kind in ("md", "python"):
+        raise BadInput(
+            f"link target {target!r}: {kind!r} is a read/search index "
+            "kind — it has no corpus refs to link",
+            next=(
+                "link the file's store-backed ref instead: "
+                "link='markdown:<file-slug>' (get(kind='markdown') "
+                "lists file slugs)"
+            ),
+        )
     identifier = rest.partition("~")[0].strip()
+    if kind in ("markdown", "plaintext", "tex"):
+        handler = hub.handler_for(kind) if hub is not None else None
+        if handler is None:
+            return
+        from precis.handlers.plaintext import _parse_file_id
+
+        slug, _sel, _view = _parse_file_id(
+            identifier,
+            extensions=handler._EXTENSIONS,
+            views=handler._SUPPORTED_VIEWS,
+            aliases=handler._aliases,
+        )
+        handler.ensure_ingested(slug)
+        return
+    if kind not in ("part", "skill"):
+        return
     if kind == "skill":
         # Skills are package-data files; the row is only an anchor, minted
         # on first link. An id absent from the skill index never mints.

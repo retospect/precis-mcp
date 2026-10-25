@@ -384,6 +384,7 @@ def apply_link_ops(
     rel: str | None,
     meta: dict[str, Any] | None = None,
     merge_meta: bool = False,
+    hub: Any = None,
 ) -> tuple[int, int]:
     """Apply ``link=`` / ``unlink=`` operations against ``src_ref_id``.
 
@@ -407,6 +408,10 @@ def apply_link_ops(
     disagreement.md D1-D4) lives in
     :func:`guard_and_route_contradicts_disputes`. Both are shared with
     every other add-mode link door.
+
+    ``hub=`` rides to :func:`mint_lazy_link_target` so file-kind
+    targets (``markdown:<slug>`` …) lazy-mint their ref on first link;
+    callers on a handler should pass ``getattr(self, 'hub', None)``.
     """
     relation = validate_relation(rel, store=store)
 
@@ -414,7 +419,7 @@ def apply_link_ops(
     n_removed = 0
 
     if link is not None:
-        mint_lazy_link_target(link, store=store)
+        mint_lazy_link_target(link, store=store, hub=hub)
         target = parse_link_target(link, store=store)
         guard_taxon_hierarchy(store, src_ref_id, target, relation)
         check_relation_constraints(store, relation, src_ref_id, target)
