@@ -79,6 +79,16 @@ _WRITE_SHAPING_ARG_RE = re.compile(
 )
 
 
+#: Pointer for a dropped hint set that has no section heading to name
+#: — the ``next=`` refusal line whose every offered step was a write
+#: (``runtime/error.py::render_error``, gr512233 slice 2).
+GENERIC_POINTER = (
+    "(write recipe omitted: this connection is read-only. The hinted "
+    "steps need a write connection; to report a problem: "
+    "put(kind='gripe', text='...'))"
+)
+
+
 def _pointer(heading: str) -> str:
     """One line per dropped run — names what was cut so the reader can
     ask a write-capable caller instead of guessing the recipe doesn't

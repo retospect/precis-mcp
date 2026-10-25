@@ -11,6 +11,7 @@ answers:
 applies-to: link (every kind that supports it)
 tags: verbs, addressing
 status: active
+scope: write
 ---
 
 # precis-link-help — typed edges between refs

@@ -14,6 +14,7 @@ applies-to: put (kind='job', job_type='fix_gripe')
 tags: workflow, troubleshooting
 kinds: job, gripe, todo
 status: active
+scope: write
 ---
 
 # precis-fix-gripe-help — get a gripe fixed end-to-end

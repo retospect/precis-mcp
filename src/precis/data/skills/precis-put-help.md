@@ -11,6 +11,7 @@ answers:
 applies-to: put (every kind that supports it)
 tags: verbs
 status: active
+scope: write
 ---
 
 # precis-put-help — create a new ref

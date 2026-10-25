@@ -146,6 +146,16 @@ class HintBus:
             pending = self._pending.get()
         except LookupError:
             return []
+        # gr512233 slice 2: a read-scope connection can't run write
+        # recipes — drop hints whose text advertises one (the text-only
+        # gripe create survives ``is_write_call``). One verdict per
+        # collect. Lazy imports: ``precis.runtime`` pulls this module in
+        # during core setup, so a top-level import would cycle.
+        from precis.runtime.scope import current_scope
+        from precis.utils.skill_scope import is_write_call
+
+        if current_scope() == "read":
+            pending[:] = [h for h in pending if not is_write_call(h.text)]
         out: list[Hint] = []
         with self._lock:
             req = self._req

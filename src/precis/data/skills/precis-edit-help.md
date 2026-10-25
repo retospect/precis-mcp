@@ -13,6 +13,7 @@ applies-to: edit (kind='markdown'|'plaintext'|'tex'|'python')
 status: active
 tags: [verbs]
 kinds: [markdown, plaintext, tex, python]
+scope: write
 ---
 
 # precis-edit-help — anchored region edits across file kinds

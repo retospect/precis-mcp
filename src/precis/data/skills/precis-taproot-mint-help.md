@@ -307,7 +307,7 @@ is a short controlled term naming the regime — never a paraphrase or
 restatement of the sentence; a `scope-free-text` lint warns (advisory)
 when one reads like prose instead.
 
-## Mint a claim hub from a claim I've already sourced
+## Mint a claim hub from a claim I've already sourced {write}
 
 `put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
 `wants=`) mints/converges a claim **hub**; `cited_in=` files an ordinary
@@ -409,7 +409,7 @@ alone, and the source's spelling is the one a reader can check.
 passages. `precis-claim-fidelity-help` governs the downstream one, draft
 prose restating an existing hub.)
 
-## Mint a claim hub — link what you find, and the batch CLI
+## Mint a claim hub — link what you find, and the batch CLI {write}
 
 **What you link is what the next agent can see, and that is a smaller
 world than you think.** Measured over the live claim cohort

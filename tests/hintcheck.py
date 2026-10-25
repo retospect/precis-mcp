@@ -16,6 +16,11 @@ Conventions:
 - Hints are pulled from the first ``Next:`` marker onwards by default;
   pass ``whole_body=True`` for views that hand-roll hint lines elsewhere
   in the body.
+- On a read-scope connection (gr512233) every extracted hint must also
+  be runnable: no write calls except the text-only gripe create. The
+  check reads :func:`precis.runtime.scope.current_scope` at call time,
+  so a trailer test that flips the env to ``read`` gets the fence
+  assertion for free — write scope is unchanged.
 
 The invariant these tests guard lives in the
 ``precis.utils.next_block`` module docstring.
@@ -69,6 +74,15 @@ def assert_hints_round_trip(
     hints = extract_hints(body, whole_body=whole_body)
     if expect_hints:
         assert hints, f"no verb-call hints found in body:\n{body}"
+    from precis.runtime.scope import current_scope
+    from precis.utils.skill_scope import is_write_call
+
+    if current_scope() == "read":
+        leaked = [h for h in hints if is_write_call(h)]
+        assert not leaked, (
+            "read-scope trailer advertises write calls the connection "
+            f"cannot run: {leaked}\nbody:\n{body}"
+        )
     for hint in hints:
         verb, kwargs = parse_command(hint)  # raises on non-literal args
         if is_template(hint) or verb not in execute_verbs:

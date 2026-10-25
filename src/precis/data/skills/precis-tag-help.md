@@ -11,6 +11,7 @@ answers:
 applies-to: tag (every kind that supports it)
 status: active
 tags: verbs, workflow
+scope: write
 ---
 
 # precis-tag-help — add and remove tags on a ref

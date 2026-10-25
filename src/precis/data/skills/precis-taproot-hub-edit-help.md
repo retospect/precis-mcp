@@ -13,6 +13,7 @@ applies-to: link/edit(kind='finding') hub-editing doors; precis taproot refine (
 status: active
 tags: workflow, design
 kinds: finding
+scope: write
 ---
 
 # precis-taproot-hub-edit-help — attach evidence, reword, sharpen, or merge a claim hub

@@ -79,6 +79,16 @@ def render_next_section(calls: list[tuple[str, str]]) -> str:
     no information, and the carry cost of each one is why gr499041 was
     filed. Sessionless callers always see the block.
     """
+    # gr512233 slice 2: a read-scope connection can't run write
+    # recipes — drop rows advertising them before the table builds
+    # (the text-only gripe create survives ``is_write_call``). One
+    # scope verdict per call (round-1 review); lazy imports keep this
+    # leaf util out of the ``precis.runtime`` import cycle.
+    from precis.runtime.scope import current_scope
+    from precis.utils.skill_scope import is_write_call
+
+    if current_scope() == "read":
+        calls = [(call, desc) for call, desc in calls if not is_write_call(call)]
     lines = format_next_block(calls)
     if not lines:
         return ""

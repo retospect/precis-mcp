@@ -10,6 +10,7 @@ applies-to: put/edit (kind='draft')
 status: active
 tags: [drafting, workflow]
 kinds: [draft, quest]
+scope: write
 ---
 A protocol, not a ban — new sections are allowed, but earn their place.
 

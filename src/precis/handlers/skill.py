@@ -1025,11 +1025,17 @@ class SkillHandler(Handler):
             return ""
 
         graph = _get_skill_graph()
+        # gr512233 slice 3: on a read connection the footer must not
+        # link a ``scope: write`` skill — following it only serves the
+        # stub. One scope verdict per render.
+        conn_scope = current_scope()
         rows: list[tuple[str, str]] = []
 
         neighbours = graph.linked(slug)
+        if conn_scope == "read":
+            neighbours = tuple(s for s in neighbours if not _skill_is_write_only(s))
         if neighbours:
-            capped = graph.linked(slug, cap=_FOOTER_LINK_CAP)
+            capped = neighbours[:_FOOTER_LINK_CAP]
             shown = ", ".join(capped)
             if len(neighbours) > len(capped):
                 rows.append(
@@ -1060,6 +1066,8 @@ class SkillHandler(Handler):
             )
 
         siblings = _tree_siblings(slug)
+        if conn_scope == "read":
+            siblings = [s for s in siblings if not _skill_is_write_only(s)]
         if siblings:
             shown_siblings = ", ".join(siblings)
             rows.append(
@@ -1115,6 +1123,40 @@ class SkillHandler(Handler):
         if q is None or not q.strip():
             return self.get(tag=tag, kinds=kinds, family=family)
 
+        # gr512233 slice 3: one scope verdict per call. On a read
+        # connection, hits from a ``scope: write`` skill or a fully
+        # dropped section are filtered after ranking (the embedding
+        # index stays over the write render) and counted for the
+        # footer; per-slug read renders memoise for the hit loop.
+        conn_scope = current_scope()
+        # Hidden counts dedup by slug — a hit-heavy skill reports once
+        # (land review).
+        hidden_slugs: set[str] = set()
+        read_renders: dict[str, tuple[str, str, frozenset[str]]] = {}
+
+        def _read_render(slug: str) -> tuple[str, str, frozenset[str]]:
+            entry = read_renders.get(slug)
+            if entry is None:
+                text = _load_skill(slug) or ""
+                body, _ = scope_render(text, "read")
+                # Pointer lines are renderer output, not evidence — a
+                # verbatim query must not match them and a preview must
+                # never quote one, so probe/preview run on the body
+                # with them stripped. The normalised form is computed
+                # once per render, not per hit.
+                search_body = "\n".join(
+                    line
+                    for line in body.splitlines()
+                    if not line.strip().startswith("(write recipe omitted")
+                )
+                entry = (
+                    search_body,
+                    _norm_for_substr(search_body),
+                    _dropped_section_headings(body),
+                )
+                read_renders[slug] = entry
+            return entry
+
         # Two-stream search: cosine over chunk embeddings (best at
         # natural phrasing) merged with substring matches (best at
         # literal slugs / kind names / verbatim quotes). Each stream
@@ -1136,6 +1178,14 @@ class SkillHandler(Handler):
         lexical_hits = [] if mode_norm == "semantic" else self._lexical_hits(q)
         if mode_norm == "verbatim":
             lexical_hits = [h for h in lexical_hits if h[3]]
+        if conn_scope == "read":
+            semantic_hits, hidden_sem = _fence_semantic_hits(
+                semantic_hits, read_render=_read_render
+            )
+            lexical_hits, hidden_lex = _fence_lexical_hits(
+                q, lexical_hits, read_render=_read_render
+            )
+            hidden_slugs |= hidden_sem | hidden_lex
 
         # Count semantic chunk hits per slug BEFORE dedup so the
         # ``more`` column can reflect "this skill has N additional
@@ -1314,6 +1364,13 @@ class SkillHandler(Handler):
                             ),
                         ]
                     )
+                    + (
+                        f"\n\n({len(hidden_slugs)} write-scope "
+                        f"{'hit' if len(hidden_slugs) == 1 else 'hits'} "
+                        "hidden — read-only connection)"
+                        if hidden_slugs
+                        else ""
+                    )
                 )
             )
 
@@ -1337,6 +1394,18 @@ class SkillHandler(Handler):
         wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
         if wanted is not None:
             all_rows = [row for row in all_rows if row.slug in wanted]
+
+        # Title-pinned rows bypass the hit filters above (the pin loop
+        # writes straight into ``merged``) — a ``scope: write`` skill
+        # pinned by identity still drops here.
+        if conn_scope == "read":
+            kept_rows = []
+            for row in all_rows:
+                if _skill_is_write_only(row.slug):
+                    hidden_slugs.add(row.slug)
+                else:
+                    kept_rows.append(row)
+            all_rows = kept_rows
 
         # gr51206: unconfigured skills stay in the ranked rows, marked
         # ``[not configured: <why>]`` so the agent learns the capability
@@ -1437,7 +1506,16 @@ class SkillHandler(Handler):
         # search doubles as a peek at what else is nearby before the
         # agent commits to a full ``get()``.
         if visible:
-            related = _get_skill_graph().linked(visible[0].slug, cap=_FOOTER_LINK_CAP)
+            # Land review: filter the write-fence BEFORE capping —
+            # capping first can drop every readable neighbour behind a
+            # front-run of ``scope: write`` skills.
+            linked = _get_skill_graph().linked(visible[0].slug)
+            if conn_scope == "read":
+                related = tuple(s for s in linked if not _skill_is_write_only(s))[
+                    :_FOOTER_LINK_CAP
+                ]
+            else:
+                related = linked[:_FOOTER_LINK_CAP]
             if related:
                 body += "\n\nrelated: " + ", ".join(related)
 
@@ -1497,6 +1575,12 @@ class SkillHandler(Handler):
             )
         )
         body += render_next_section(nav)
+        if hidden_slugs:
+            body += (
+                f"\n\n({len(hidden_slugs)} write-scope "
+                f"{'hit' if len(hidden_slugs) == 1 else 'hits'} hidden "
+                "— read-only connection)"
+            )
         return Response(body=body)
 
     # ── search helpers ─────────────────────────────────────────────
@@ -1909,6 +1993,14 @@ class SkillHandler(Handler):
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
+        # gr512233 slice 3: a read connection can't run a ``scope:
+        # write`` recipe — omit those rows and count them for the
+        # footer. One scope verdict per call (round-1 review).
+        write_hidden = 0
+        if current_scope() == "read":
+            kept = [s for s in file_slugs if not _skill_is_write_only(s)]
+            write_hidden = len(file_slugs) - len(kept)
+            file_slugs = kept
         active: list[str] = list(synth)
         hidden_slugs: list[str] = []
         for slug in file_slugs:
@@ -2013,6 +2105,15 @@ class SkillHandler(Handler):
                 schema=["command", "purpose"],
             )
         )
+        if write_hidden:
+            lines.extend(
+                [
+                    "",
+                    f"{write_hidden} write-only "
+                    f"{'skill' if write_hidden == 1 else 'skills'} "
+                    "hidden (read-only connection)",
+                ]
+            )
         return Response(body="\n".join(lines))
 
     def _index_title_for(self, slug: str) -> str:
@@ -2072,6 +2173,14 @@ class SkillHandler(Handler):
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
+        # gr512233 slice 3: same write-fence omission as the index —
+        # a read connection gets no ``scope: write`` rows plus a
+        # footer saying how many went.
+        write_hidden = 0
+        if current_scope() == "read":
+            kept = [s for s in file_slugs if not _skill_is_write_only(s)]
+            write_hidden = len(file_slugs) - len(kept)
+            file_slugs = kept
         active: list[str] = list(synth)
         hidden: list[tuple[str, str]] = []
         for slug in file_slugs:
@@ -2269,6 +2378,15 @@ class SkillHandler(Handler):
                 schema=["command", "purpose"],
             )
         )
+        if write_hidden:
+            lines.extend(
+                [
+                    "",
+                    f"{write_hidden} write-only "
+                    f"{'skill' if write_hidden == 1 else 'skills'} "
+                    "hidden (read-only connection)",
+                ]
+            )
         return "\n".join(lines)
 
     def _render_help(self) -> str:
@@ -4003,6 +4121,98 @@ def _expand_wikilinks(text: str) -> str:
     which covers both conventions.
     """
     return WIKILINK_RE.sub(lambda m: f"`get(kind='skill', id='{m.group(1)}')`", text)
+
+
+def _dropped_section_headings(read_body: str) -> frozenset[str]:
+    """Headings of chunks the read render reduced to the pointer only
+    (gr512233 slice 3 — the "dropped chunks" search must not quote).
+
+    A ``{write}``-marked section keeps its heading lines under read
+    scope (``~N`` stability) but its body is one ``(write recipe
+    omitted …)`` line — a search hit on it leaks nothing but would
+    point at a slot holding no recipe, so it drops. An inline-fenced
+    section survives (heading + read lines + pointer) and is not in
+    this set.
+    """
+    out: set[str] = set()
+    for chunk in chunk_by_h2(read_body):
+        if not chunk.heading:
+            continue
+        rest = [
+            line
+            for line in chunk.text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if rest and all(line.startswith("(write recipe omitted") for line in rest):
+            out.add(chunk.heading)
+    return frozenset(out)
+
+
+def _fence_semantic_hits(
+    hits: list[SearchHit],
+    *,
+    read_render: Callable[[str], tuple[str, str, frozenset[str]]],
+) -> tuple[list[SearchHit], set[str]]:
+    """Drop semantic hits a read connection must not quote (gr512233).
+
+    A hit drops when its skill is ``scope: write`` or its section is a
+    fully dropped chunk (``_dropped_section_headings``). ``hit.heading``
+    covers structural, ``body_only`` and ``heading_only`` twins — they
+    share the dropped section's heading; ``question_only`` twins carry
+    ``""`` (front-matter questions are never fenceable) and stay.
+    Returns ``(kept, hidden_slugs)`` — slugs, not hit counts, so a
+    hit-heavy skill reports once.
+    """
+    kept: list[SearchHit] = []
+    hidden: set[str] = set()
+    for hit in hits:
+        if _skill_is_write_only(hit.slug):
+            hidden.add(hit.slug)
+            continue
+        heading = strip_heading_mark(hit.heading)
+        if heading and heading in read_render(hit.slug)[2]:
+            hidden.add(hit.slug)
+            continue
+        kept.append(hit)
+    return kept, hidden
+
+
+def _fence_lexical_hits(
+    q: str,
+    hits: list[tuple[str, int, str, bool, int]],
+    *,
+    read_render: Callable[[str], tuple[str, str, frozenset[str]]],
+) -> tuple[list[tuple[str, int, str, bool, int]], set[str]]:
+    """Drop lexical hits whose evidence lives behind the write fence.
+
+    The hits were scored on the write render; a read connection keeps
+    one only when its evidence survives the pointer-stripped read
+    render (``read_render`` memoises ``(search_body, norm, drops)`` —
+    the verbatim needle for phrase hits, the preview line for
+    word-overlap hits (a dropped-section line no longer exists). A
+    kept verbatim hit's preview is re-derived on the search body so
+    it never quotes a dropped or pointer line. Returns ``(kept,
+    hidden_slugs)`` — slugs, not hit counts.
+    """
+    needle = _norm_for_substr(q)
+    kept: list[tuple[str, int, str, bool, int]] = []
+    hidden: set[str] = set()
+    for slug, count, preview, verbatim, compounds in hits:
+        if _skill_is_write_only(slug):
+            hidden.add(slug)
+            continue
+        search_body, body_norm, _dropped = read_render(slug)
+        probe = needle if verbatim else _norm_for_substr(preview)
+        if probe not in body_norm:
+            hidden.add(slug)
+            continue
+        if verbatim:
+            for line in search_body.splitlines():
+                if needle in _norm_for_substr(line):
+                    preview = line.strip()
+                    break
+        kept.append((slug, count, preview, verbatim, compounds))
+    return kept, hidden
 
 
 def _skill_is_write_only(slug: str) -> bool:

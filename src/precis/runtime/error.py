@@ -42,11 +42,19 @@ class ErrorMixin(RuntimeShape):
             # ``next:`` line so the rendered envelope remains
             # backwards-compatible — a caller scanning for "next:"
             # finds every hint without needing to know the difference.
-            if isinstance(err.next, str):
-                parts.append(f"  next: {err.next}")
-            else:
-                for hint in err.next:
-                    parts.append(f"  next: {hint}")
+            nxt = [err.next] if isinstance(err.next, str) else list(err.next)
+            # gr512233 slice 2: on a read-scope connection a ``next=``
+            # pointing at a write recipe is unreachable — drop those
+            # entries; when every hint drops, one pointer line names
+            # why. One scope verdict per render (round-1 review); lazy
+            # imports keep this module out of the runtime init cycle.
+            from precis.runtime.scope import current_scope
+            from precis.utils.skill_scope import GENERIC_POINTER, is_write_call
+
+            if current_scope() == "read":
+                nxt = [h for h in nxt if not is_write_call(h)] or [GENERIC_POINTER]
+            for hint in nxt:
+                parts.append(f"  next: {hint}")
         return "\n".join(parts)
 
     # Backwards-compatible alias. Internal callers that pre-date the

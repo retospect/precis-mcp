@@ -12,6 +12,7 @@ answers:
 applies-to: delete (every kind that supports it)
 status: active
 tags: [verbs]
+scope: write
 ---
 
 # precis-delete-help — remove a ref or a selector region
