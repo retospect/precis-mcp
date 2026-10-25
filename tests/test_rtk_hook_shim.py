@@ -20,6 +20,16 @@ Third defect (2026-10-25, gr515812): Devin CLI hook payloads carry
 process's ``$PWD``. Without a fallback the worktree passthrough silently never
 fired for Devin payloads, so worktree ``git`` commands would have gone to rtk.
 
+Same gripe, Reto's "block rn" ruling (2026-10-25, extended same day to any
+cluster): in ripgrep ``-r`` is ``--replace <text>``, so any ``rg`` short-flag
+cluster containing ``r`` mangles — ``-rn`` rewrites every match to ``n`` and
+``-nr`` swallows the pattern as the replacement text. The shim answers a
+PreToolUse deny for any ``rg`` command word carrying such a cluster, before
+either passthrough or the rtk delegation can run (``rtk rg -rn`` included).
+Only a bare ``-r`` followed by a quoted argument (``rg -r 'x'``) and
+``--replace``/``--replace=`` stay allowed; ``rg -r x`` is the grep ``-r``
+idiom and is denied.
+
 The real ``rtk`` is replaced by a stub on PATH so the delegation path is
 observable and the test does not depend on rtk being installed.
 """
@@ -42,6 +52,9 @@ SHIM = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "rtk-hook.sh"
 WORKTREE_CWD = "/Users/x/work/precis-mcp/.claude/worktrees/some-tree"
 PRIMARY_CWD = "/Users/x/work/precis-mcp"
 STUB_MARK = "STUB-RTK-DELEGATED"
+RG_R_DENY_REASON = (
+    "rg -r is --replace <text>; -rn rewrites every match to 'n'. Use rg -n (gr515812)."
+)
 
 
 @pytest.fixture
@@ -148,6 +161,75 @@ def test_search_commands_pass_through(
     res = _run(stub_rtk, cwd, command)
     assert res.returncode == 0
     assert res.stdout == "", "an empty hook reply means: leave the command unrewritten"
+
+
+@pytest.mark.parametrize(
+    ("cwd", "command"),
+    [
+        (PRIMARY_CWD, "rg -rn foo"),
+        (PRIMARY_CWD, "rg -rln foo src/"),
+        (WORKTREE_CWD, "rg -rni foo src/"),
+        (PRIMARY_CWD, "rg -nr foo src/"),  # r at cluster end eats the pattern
+        (PRIMARY_CWD, "rg -lnr foo src/"),
+        (PRIMARY_CWD, "rg -r text foo"),  # unquoted value: the grep -r idiom
+        (PRIMARY_CWD, "rg -r'x' foo"),  # attached value: not a bare -r
+        (PRIMARY_CWD, "rg '-rn' foo"),  # quoting does not protect a flag
+        (PRIMARY_CWD, "rg -r 'x' -nr foo"),  # allowed -r, then a cluster
+        (PRIMARY_CWD, "rg -r"),  # bare -r with no value
+        (PRIMARY_CWD, "rtk rg -rn foo"),
+        (PRIMARY_CWD, "rtk proxy rg -nr foo"),
+        (PRIMARY_CWD, "env FOO=1 rg -rn foo"),
+        (PRIMARY_CWD, "cat log | rg -rn foo"),
+        (PRIMARY_CWD, "true && rg -rn foo"),
+        (PRIMARY_CWD, "false || rg -rn foo"),
+        (PRIMARY_CWD, "true; rg -rn foo"),
+        (PRIMARY_CWD, "echo hi > out;rg -rn foo"),
+    ],
+)
+def test_rg_replace_cluster_is_denied(
+    stub_rtk: dict[str, str], cwd: str, command: str
+) -> None:
+    res = _run(stub_rtk, cwd, command)
+    assert res.returncode == 0
+    out = json.loads(res.stdout)
+    hso = out["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert hso["permissionDecision"] == "deny"
+    assert hso["permissionDecisionReason"] == RG_R_DENY_REASON
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg -r 'text' foo src/",  # bare -r with a quoted replacement
+        'rg -r "text" foo src/',  # double-quoted replacement also allowed
+        "rg -r '' foo src/",  # quoted empty replacement
+        "rg --replace text foo src/",
+        "rg --replace=text foo src/",
+        "rg -n foo src/",
+        "rg -iln foo src/",  # no r in the cluster
+        "rg -- -rn",  # -rn is the pattern, after --
+        "grep -rn foo src/",  # grep, not rg
+        "echo rg -rn foo",  # rg is an argument, not the command word
+        "echo 'rg -rn foo'",  # quoted string of a different command
+        "grep -e '-rn' f",  # '-rn' inside another command's quoted arg
+        "xargs rg -rn",  # rg inside xargs args — out of the denied shapes
+    ],
+)
+def test_rg_non_cluster_forms_are_not_denied(
+    stub_rtk: dict[str, str], command: str
+) -> None:
+    res = _run(stub_rtk, PRIMARY_CWD, command)
+    assert res.returncode == 0
+    assert "permissionDecision" not in res.stdout
+
+
+def test_devin_payload_rg_cluster_is_denied(stub_rtk: dict[str, str]) -> None:
+    res = _run_devin(stub_rtk, "rtk rg -rn foo")
+    assert res.returncode == 0
+    out = json.loads(res.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert out["hookSpecificOutput"]["permissionDecisionReason"] == RG_R_DENY_REASON
 
 
 @pytest.mark.parametrize(
