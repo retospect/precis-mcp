@@ -98,6 +98,15 @@ def _refusal_cols(store: Store, provider: str) -> tuple[Any, ...] | None:
         return tuple(row) if row is not None else None
 
 
+@pytest.fixture(autouse=True)
+def _fresh_s1_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset ``_s1_columns``' process-global memo per test: a fake-conn
+    test whose probe raises pins it False for ``_S1_REPROBE_S``, and a
+    later real-DB test then skips the ``refused_today`` write (r100 CI)."""
+    monkeypatch.setattr(rate_limit, "_has_s1_cols", None)
+    monkeypatch.setattr(rate_limit, "_s1_cols_at", 0.0)
+
+
 @pytest.fixture
 def use_store_dsn(store: Store, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
     """Point ``rate_limit``'s own connection at the ``store`` fixture's DSN
