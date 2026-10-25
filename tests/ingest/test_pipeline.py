@@ -575,6 +575,28 @@ class TestExtractPaper:
         assert paper.pdf_pages_last is None
         assert paper.doi == "10.1038/s41567-024-1234-5"
 
+    def test_page_count_reused_from_metadata(self, tmp_path: Path) -> None:
+        """gr514343: the fitz doc ``extract_pdf_meta`` opened already
+        yielded the physical page count — ``extract_paper`` must not pay
+        a second ``fitz.open`` just for it."""
+        pdf = tmp_path / "p.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        meta = PdfMetadata(pdf_path=pdf, title="T", page_count=11)
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=meta,
+            ),
+            patch("precis.ingest.pipeline.extract_blocks_marker", return_value=[]),
+            patch(
+                "precis.ingest.pipeline._pdf_page_count",
+                side_effect=AssertionError("second fitz open"),
+            ) as counter,
+        ):
+            paper = extract_paper(pdf)
+        assert counter.call_count == 0
+        assert paper.pdf_page_count == 11
+
 
 # ---------------------------------------------------------------------------
 # gr236139 — Marker→fitz fallback signal threaded into PaperToWrite.meta

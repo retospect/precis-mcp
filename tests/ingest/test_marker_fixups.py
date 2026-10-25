@@ -12,16 +12,16 @@ import pytest
 from precis.ingest.marker import (
     _apply_surya_ocr_context,
     _figure_ocr_prompt,
-    _ocr_context,
     _restore_surya_prompts,
+    ocr_context,
 )
 
 
 def test_ocr_context_from_title_and_abstract() -> None:
-    ctx = _ocr_context("Adsorption of Atomic Oxygen on Pt(111)", "We fit a CE.")
+    ctx = ocr_context("Adsorption of Atomic Oxygen on Pt(111)", "We fit a CE.")
     assert ctx is not None
     assert "Pt(111)" in ctx and "We fit a CE." in ctx
-    assert _ocr_context("", "") is None
+    assert ocr_context("", "") is None
 
 
 def test_figure_ocr_prompt_carries_context() -> None:

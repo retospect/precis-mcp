@@ -123,6 +123,11 @@ class PdfMetadata:
     # Identification
     pdf_path: Path
     pdf_hash: str = ""
+    #: Physical page count read off the fitz doc
+    #: :func:`extract_pdf_meta` already opened — carried through so
+    #: ``extract_paper`` doesn't pay a second fitz parse just for
+    #: ``doc.page_count`` (gr514343).
+    page_count: int | None = None
 
     # Core bibliographic metadata
     title: str = ""
@@ -480,6 +485,7 @@ def extract_metadata_from_sources(
     metadata = PdfMetadata(
         pdf_path=pdf_path,
         pdf_hash=pdf_meta.get("pdf_hash", ""),
+        page_count=pdf_meta.get("page_count") or None,
     )
 
     # Collect DOI candidates from various sources

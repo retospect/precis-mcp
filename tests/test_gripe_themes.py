@@ -154,10 +154,26 @@ def test_match_with_open_keeper_merges_as_plus1_comment(gripe: GripeHandler) -> 
     out = gripe.put(text=TEST_SPEED_TEXT)
     assert _ids(gripe) == before, "merge must not mint a new ref"
     comments = _comments(gripe, keeper)
-    assert comments[-1].startswith("+1 (")
-    assert TEST_SPEED_TEXT.split("\n")[0] in comments[-1]
+    # Single-line filing: no ``(first line)`` parenthetical — it would
+    # repeat the whole text verbatim (gr515447).
+    assert comments[-1] == f"+1: {TEST_SPEED_TEXT}"
     assert f"merged into gr{keeper} (theme test-speed)" in out.body
     assert "args={'new': True}" in out.body
+
+
+def test_multi_line_merge_keeps_first_line_gist(gripe: GripeHandler) -> None:
+    """A multi-line filing still gets the ``+1 (<first line>):`` shape —
+    the parenthetical is the gist a skimming reader needs."""
+    keeper = _keeper(gripe)
+    text = (
+        "scripts/test named-file runs wait on Postgres bring-up\n"
+        "testing | scripts/test tests/test_no_db.py | actual: ~25s before collection"
+    )
+    assert match_themes(text) == ["test-speed"]
+    gripe.put(text=text)
+    comment = _comments(gripe, keeper)[-1]
+    assert comment.startswith("+1 (scripts/test named-file runs wait")
+    assert comment.endswith(text)
 
 
 def test_multi_match_files_separately_and_names_themes(gripe: GripeHandler) -> None:
@@ -195,7 +211,7 @@ def test_merge_does_not_require_dogfood_or_agent_filing(gripe: GripeHandler) -> 
     the same for everyone."""
     keeper = _keeper(gripe)
     gripe.put(text=TEST_SPEED_TEXT)
-    assert _comments(gripe, keeper)[-1].startswith("+1 (")
+    assert _comments(gripe, keeper)[-1].startswith("+1: ")
 
 
 def test_merge_refuses_prio_with_the_tag_door(gripe: GripeHandler) -> None:

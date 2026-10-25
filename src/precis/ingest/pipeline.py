@@ -42,7 +42,7 @@ from precis.identity import (
 from precis.ingest.article_spread import trim_to_article
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.lookup import lookup_doi
-from precis.ingest.marker import _ocr_context, extract_blocks_marker
+from precis.ingest.marker import extract_blocks_marker, ocr_context
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
 from precis.ingest.semantic_scholar import get_paper_by_id
 from precis.utils.authors import author_names as _shared_author_names
@@ -540,12 +540,18 @@ def extract_paper(
     if not online and not authors_dict and metadata.title:
         cite_key_prefix = _title_cite_key(metadata.title, metadata.year)
 
+    # Physical page total — read off the fitz doc ``extract_pdf_meta``
+    # already opened inside the metadata cascade (gr514343);
+    # ``_pdf_page_count`` is only the fallback for a metadata object
+    # that never saw the PDF.
+    pdf_pages = metadata.page_count or _pdf_page_count(pdf_bytes)
+
     if printable_only:
         blocks: list[dict[str, Any]] = []
         body_chunks: list[Any] = []
         cards: list[Any] = []
         pdf_pages_first = pdf_pages_last = None
-        page_count = _pdf_page_count(pdf_bytes) or 0
+        page_count = pdf_pages or 0
         content_hash: str | None = None
         body_meta: dict[str, Any] = {}
     else:
@@ -556,7 +562,7 @@ def extract_paper(
             pdf_bytes=pdf_bytes,
             target_title=target_title or metadata.title or "",
             target_doi=target_doi or doi,
-            ocr_context=_ocr_context(metadata.title or "", metadata.abstract or ""),
+            ocr_context=ocr_context(metadata.title or "", metadata.abstract or ""),
         )
         blocks = body.blocks
         if not metadata.title and not online:
@@ -614,7 +620,7 @@ def extract_paper(
         # on, which collapses to 1 whenever page assignment can't anchor
         # (unnumbered SI pages → everything on page 0; gr514187). Prefer
         # fitz's true count; the block-page count stays the fallback.
-        pdf_page_count=_pdf_page_count(pdf_bytes) or page_count or len(blocks) or 1,
+        pdf_page_count=pdf_pages or page_count or len(blocks) or 1,
         pdf_size_bytes=len(pdf_bytes),
         doi=doi,
         arxiv_id=arxiv_id,

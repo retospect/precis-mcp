@@ -77,6 +77,59 @@ def test_get_surfaces_triage_meta_inline(hub: Hub) -> None:
     assert "500 chars total" in body
 
 
+def test_get_shows_unknown_meta_keys_generically(hub: Hub) -> None:
+    """gr514912: a meta field not on the triage list must surface on a
+    bare get — the hand-picked key list hid new fields (model_actual,
+    models_used) until each was opted in by hand."""
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(
+        hub.live_store,
+        source="chat",
+        title="chat run",
+        meta_extra={
+            "queue_depth": 4,
+            "worker": {"host": "n1", "process": "w7", "boot_id": "b1"},
+            "prompt": "S" * 5000,
+            "checkpoint": {"stage": "apply"},
+        },
+    )
+    agentlog.finalize_log(hub.live_store, log_id=log_id, status="ok")
+    body = AgentLogHandler(hub=hub).get(id=log_id).body
+    assert "status: ok" in body
+    # Small unknown keys render generically (scalar + compact JSON).
+    assert "queue_depth: 4" in body
+    assert 'worker: {"boot_id": "b1", "host": "n1", "process": "w7"}' in body
+    # Bulky keys are never inlined — they land on the raw pointer line.
+    assert "S" * 200 not in body
+    pointer = next(ln for ln in body.splitlines() if ln.startswith("meta: +"))
+    assert "checkpoint" in pointer and "prompt" in pointer
+    assert "view='raw'" in pointer
+
+
+def test_get_meta_render_is_bounded(hub: Hub) -> None:
+    """The generic section stays a summary: values cut at
+    ``_META_VALUE_CHARS``, extra keys past ``_EXTRA_META_CAP`` fold into
+    the pointer line."""
+    from precis.handlers.agentlog import _EXTRA_META_CAP, AgentLogHandler
+
+    log_id = agentlog.open_log(
+        hub.live_store,
+        source="plan_tick",
+        title="t",
+        meta_extra={
+            "a_long_field": "x" * 500,
+            **{f"extra_{i:02d}": i for i in range(_EXTRA_META_CAP + 3)},
+        },
+    )
+    body = AgentLogHandler(hub=hub).get(id=log_id).body
+    long_line = next(ln for ln in body.splitlines() if ln.startswith("a_long_field: "))
+    assert long_line.endswith("…")
+    assert "x" * 500 not in body
+    pointer = next(ln for ln in body.splitlines() if ln.startswith("meta: +"))
+    assert "extra_10" in pointer  # _EXTRA_META_CAP + 3 extras → 3 overflow
+
+
 def test_get_omits_excerpt_for_non_string_result(hub: Hub) -> None:
     """A non-string ``meta.result`` (e.g. a dict/list salvaged verbatim)
     must never be sliced/rendered as an excerpt — only a truthy ``str``

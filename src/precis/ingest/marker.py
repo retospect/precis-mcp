@@ -601,7 +601,7 @@ def _patch_surya_config() -> None:
         pass
 
 
-def _ocr_context(title: str, abstract: str) -> str | None:
+def ocr_context(title: str, abstract: str) -> str | None:
     """Document-context clause for the surya OCR prompt override.
 
     ``None`` when neither field carries text (the prompt then stays
@@ -640,6 +640,13 @@ def _apply_surya_ocr_context(context: str | None) -> dict[str, str]:
     Returns the previous mapping entries for restore. ``None`` context or
     a missing surya leaves the stock prompts untouched. Layout/table_rec
     prompts are JSON-schema contracts — never extended.
+
+    The patch/restore mutates a *process-global* mapping, so it assumes
+    one document per process at a time. That holds today: the live path
+    spawns a child per PDF via :func:`_marker_extract_subprocess`
+    (``marker_timeout_s`` set); an in-process caller running two
+    ``extract_blocks_marker`` calls concurrently with the timeout unset
+    would race (gr514343).
     """
     saved: dict[str, str] = {}
     if not context:

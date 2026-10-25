@@ -26,10 +26,36 @@ surfaced by the ``/agentlogs`` web tab, direct queries, and chunk
 
 from __future__ import annotations
 
-from typing import ClassVar
+import json
+from typing import Any, ClassVar
 
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
+
+#: Meta keys a bare ``get`` surfaces first, in this order (the triage
+#: fields a failed run is read for). Every other small key renders
+#: generically after them — a new meta field no longer needs a manual
+#: opt-in here to show on a bare get (gr514912).
+_TRIAGE_KEYS: tuple[str, ...] = (
+    "status",
+    "model",
+    "model_actual",
+    "models_used",
+    "error",
+)
+#: Meta keys never inlined — too bulky for the summary; ``view='raw'``
+#: carries them verbatim.
+_BULKY_KEYS: frozenset[str] = frozenset({"prompt", "checkpoint", "result"})
+#: Caps on the generic section: lines shown and chars per value.
+_EXTRA_META_CAP = 8
+_META_VALUE_CHARS = 200
+
+
+def _meta_value(val: Any) -> str:
+    """One-line rendering of a meta value, hard-capped."""
+    s = val if isinstance(val, str) else json.dumps(val, default=str, sort_keys=True)
+    s = " ".join(str(s).split())
+    return s if len(s) <= _META_VALUE_CHARS else s[:_META_VALUE_CHARS].rstrip() + "…"
 
 
 class AgentLogHandler(NumericRefHandler):
@@ -78,21 +104,38 @@ class AgentLogHandler(NumericRefHandler):
         base render hid all of it — a failed quest_tick's agentlog read as
         just a title, which is exactly the "no queryable surface" wall the
         doctor hit for weeks on gr244061 while the offending-output excerpt
-        sat on the row. Surface the small fields inline and point at
-        ``view='raw'`` for the rest.
+        sat on the row. The named triage keys render first; every other
+        small key then renders generically (gr514912 — a new meta field
+        must not need a manual opt-in to show), bounded by
+        ``_EXTRA_META_CAP`` / ``_META_VALUE_CHARS``, with bulky keys and
+        any overflow named on a ``view='raw'`` pointer line.
         """
         body = super()._render_one(ref, tags)
         meta = ref.meta or {}
         lines: list[str] = []
-        for key in ("status", "model", "model_actual", "models_used", "error"):
+        shown: set[str] = set()
+        for key in _TRIAGE_KEYS:
             val = meta.get(key)
             if val:
-                lines.append(f"{key}: {val}")
+                lines.append(f"{key}: {_meta_value(val)}")
+                shown.add(key)
+        extras = sorted(
+            k for k in meta if k not in shown and k not in _BULKY_KEYS and meta[k]
+        )
+        for key in extras[:_EXTRA_META_CAP]:
+            lines.append(f"{key}: {_meta_value(meta[key])}")
+            shown.add(key)
         result = meta.get("result")
         if isinstance(result, str) and result:
             excerpt = result[:400]
             more = f" … ({len(result)} chars total, view='raw' for all)"
             lines.append(f"result: {excerpt}{'' if len(result) <= 400 else more}")
+            shown.add("result")
+        hidden = sorted(k for k in meta if k not in shown and meta[k])
+        if hidden:
+            lines.append(
+                f"meta: +{len(hidden)} keys ({', '.join(hidden)}) — view='raw'"
+            )
         if lines:
             body += "\n\n" + "\n".join(lines)
         return body

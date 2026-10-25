@@ -498,11 +498,18 @@ class GripeHandler(NumericRefHandler):
 
     @staticmethod
     def _merge_comment(text: str | None) -> str:
-        """``+1 (<first line>): <filed text>`` — the merge comment shape."""
+        """``+1 (<first line>): <filed text>`` — the merge comment shape.
+
+        The parenthetical is the gist for a multi-line filing; on a
+        single-line filing it would repeat the whole text verbatim, so
+        it is dropped (gr515447).
+        """
         from precis.handlers._gripe_title import first_line
 
         body = (text or "").strip()
         src = first_line(body)
+        if src == body:
+            return f"+1: {body}"
         if len(src) > 100:
             src = src[:99].rstrip() + "…"
         return f"+1 ({src}): {body}"
