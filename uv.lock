@@ -4102,6 +4102,7 @@ all = [
     { name = "markdown-it-py" },
     { name = "marker-pdf", marker = "sys_platform != 'win32'" },
     { name = "opencv-python-headless" },
+    { name = "pygments" },
     { name = "pymupdf" },
     { name = "python-multipart" },
     { name = "rapidfuzz" },
@@ -4170,6 +4171,7 @@ web = [
     { name = "fastapi" },
     { name = "jinja2" },
     { name = "markdown-it-py" },
+    { name = "pygments" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -4241,6 +4243,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "pygments", marker = "extra == 'web'", specifier = ">=2.18" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "pymatgen", marker = "extra == 'estimate'", specifier = ">=2026.5" },
     { name = "pymatgen", marker = "extra == 'pourbaix'", specifier = ">=2026.5" },

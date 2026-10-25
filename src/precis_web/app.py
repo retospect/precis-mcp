@@ -166,6 +166,7 @@ def create_app(
         cfp,
         claim,
         clusters,
+        code_view,
         console,
         datasheets,
         design,
@@ -250,6 +251,7 @@ def create_app(
     app.include_router(preview.router)
     app.include_router(eye.router)
     app.include_router(python.router)
+    app.include_router(code_view.router)
     app.include_router(console.router)
     app.include_router(status.router)
     app.include_router(budget.router)

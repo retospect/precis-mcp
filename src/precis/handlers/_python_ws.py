@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
@@ -41,6 +42,14 @@ log = logging.getLogger(__name__)
 
 _PREFIX = "ws-"
 _DEFAULT_STAGE = Path.home() / ".cache" / "precis" / "ws-roots"
+
+#: The workspace-slug grammar. ``meta.workspace.slug`` is agent-written
+#: folder meta and ``_stage`` joins it under the stage dir — without a
+#: charset check a slug like ``../../x`` escapes the root and unlinks /
+#: writes ``.py`` files at an arbitrary location (gr517172). The
+#: grammar forbids ``/``, ``.`` and leading ``-``, so no slug can name
+#: a path segment or an option-shaped dir.
+_SLUG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 
 #: One ``refs``/``ref_identifiers`` row → the workspace folder. Matches
 #: either convention: the folder's own cite_key slug is ``ws-<slug>``,
@@ -157,7 +166,10 @@ class WorkspaceRoots:
 
     @staticmethod
     def owns(alias: str) -> bool:
-        return alias.startswith(_PREFIX) and len(alias) > len(_PREFIX)
+        return (
+            alias.startswith(_PREFIX)
+            and _SLUG_RE.fullmatch(alias[len(_PREFIX) :]) is not None
+        )
 
     @staticmethod
     def slug_of(alias: str) -> str:
@@ -168,6 +180,12 @@ class WorkspaceRoots:
         if not slug or self._store is None:
             raise NotFound(
                 f"unknown workspace root {alias!r}",
+                next="get(kind='python') lists configured roots",
+            )
+        if _SLUG_RE.fullmatch(slug) is None:
+            raise NotFound(
+                f"invalid workspace root {alias!r} — a workspace slug "
+                "is [A-Za-z0-9_][A-Za-z0-9_-]* (no '/', '..' or leading '-')",
                 next="get(kind='python') lists configured roots",
             )
         folder = self._folder(slug)
@@ -246,8 +264,16 @@ class WorkspaceRoots:
         """Materialise the folder under ``stage_dir/<slug>`` and return
         it as an indexable root. A sha256 fingerprint of the file set
         skips the rewrite when nothing changed (the ``.py`` set only —
-        ``uv.lock`` churn doesn't reindex)."""
-        base = self._dir / slug
+        ``uv.lock`` churn doesn't reindex).
+
+        The slug passed :data:`_SLUG_RE` in ``resolve``; the resolved
+        containment check is the assert layer behind it (mirrors the
+        ``.resolve()`` + ``relative_to`` guard in
+        ``workers/job_types/draft_export``)."""
+        root = self._dir.resolve()
+        base = (root / slug).resolve()
+        if base != root and root not in base.parents:
+            raise ValueError(f"workspace slug {slug!r} escapes the stage root {root}")
         canon = "".join(
             f"{rel}\x00{hashlib.sha256(t.encode('utf-8')).hexdigest()}\n"
             for rel, t in sorted(files.items())

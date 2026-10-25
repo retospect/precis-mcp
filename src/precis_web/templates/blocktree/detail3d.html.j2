@@ -21,7 +21,8 @@
     read-only · revision <span data-role="rev">{{ rev }}</span> of <span data-role="current">{{ rev_current }}</span> ·
     <a class="underline" href="/{{ kind }}/{{ slug | urlencode }}">current</a>
   </span>
-  <a href="{{ detail_2d_url }}" class="text-xs text-info hover:underline ml-auto">Envelope projections →</a>
+  <a href="/{{ kind }}/{{ slug | urlencode }}/code" class="text-xs text-info hover:underline ml-auto">Code →</a>
+  <a href="{{ detail_2d_url }}" class="text-xs text-info hover:underline">Envelope projections →</a>
   {% if flow_url %}<a href="{{ flow_url }}" class="text-xs text-info hover:underline">Flow →</a>{% endif %}
 </div>
 

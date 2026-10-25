@@ -212,6 +212,51 @@ def test_trace_lines_carry_python_id(store: Store, built: PythonHandler) -> None
     assert body.count("· ws-hcol::") == 2
 
 
+def test_workspace_slug_traversal_refused(store: Store, tmp_path: Path) -> None:
+    """gr517172 — ``meta.workspace.slug`` is agent-written folder meta:
+    a traversal slug (``../../x``) must be refused before ``_stage``
+    joins it under the stage root, and the resolved-path guard refuses
+    even a direct call."""
+    store.insert_ref(
+        kind="se",
+        slug="hcol-array-1",
+        title="ws join",
+        meta={"workspaces": {"../../evil": {"run_job": 1, "script_sha": "deadbee5"}}},
+    )
+    folder = store.insert_ref(
+        kind="folder",
+        slug=None,
+        title="evil workspace",
+        meta={
+            "workspace": {
+                "slug": "../../evil",
+                "design": "hcol-array-1",
+                "created_by": "test",
+            }
+        },
+    )
+    child = store.insert_ref(
+        kind="plaintext",
+        slug="evil--main-py",
+        title="main.py",
+        parent_id=int(folder.id),
+        meta={"harvest_orig_path": "main.py"},
+    )
+    store.chunks.insert_chunks(int(child.id), [ChunkInsert(ord=0, text=MAIN_PY)])
+    ws = WorkspaceRoots(store, stage_dir=tmp_path / "wsroots")
+    assert ws.owns("ws-hcol")
+    assert not ws.owns("ws-../../evil")
+    assert not ws.owns("ws-a.b")
+    assert not ws.owns("ws-")
+    with pytest.raises(NotFound):
+        ws.resolve("ws-../../evil")
+    # the assert layer: even a direct _stage call never leaves the root
+    with pytest.raises(ValueError, match="escapes"):
+        ws._stage("../../evil", {"main.py": "x"})
+    assert not (tmp_path / "evil").exists()
+    assert not (tmp_path.parent / "evil").exists()
+
+
 def test_placed_refuses_on_module(store: Store, built: PythonHandler) -> None:
     with pytest.raises(BadInput, match="not module"):
         built.get(id="ws-hcol::main", view="placed")

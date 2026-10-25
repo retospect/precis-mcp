@@ -1,0 +1,76 @@
+{% extends "base.html.j2" %}
+{% block title %}Code · {{ title }}{% endblock %}
+{% block content %}
+
+{# Pygments token classes (cv-*) for the file bodies — generated
+   server-side, scoped to .cv-code, with a github-dark variant under
+   prefers-color-scheme: dark. #}
+<style>{{ cv_css | safe }}</style>
+
+<div class="flex items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">{{ title }}</h1>
+  <span class="text-xs text-fg-subtle">{{ kind }} · {{ slug }} · code</span>
+  <a href="/{{ kind }}/{{ slug | urlencode }}" class="text-xs text-info hover:underline ml-auto">design →</a>
+</div>
+
+{% if not workspaces %}
+<div class="rounded-lg border border-line bg-surface p-4 text-sm text-fg-subtle">
+  No code attached to this design. Workspaces are imported via
+  <code class="font-mono text-xs">precis_se.workspace_import.import_workspace_run</code>
+  after a workspace script run — until then there is nothing to show.
+</div>
+{% else %}
+{# ``tojson | forceescape`` — bare ``tojson`` emits raw ``"`` which
+   closes this double-quoted attribute early and Alpine never starts
+   (same pattern as drive/index.html.j2). #}
+<div x-data="{ tab: {{ selected | tojson | forceescape }} }">
+  {% for ws in workspaces %}
+  <section class="mb-2">
+    <h2 class="text-sm font-semibold text-fg-secondary mb-1">
+      workspace <span class="font-mono">{{ ws.slug }}</span>
+      {% if ws.run %}
+      <span class="font-normal text-xs text-fg-faint">
+        {% if ws.run.run_job %}· run job {{ ws.run.run_job }}{% endif %}
+        {% if ws.run.script_sha %}· script <span class="font-mono">{{ ws.run.script_sha }}</span>{% endif %}
+        {% if ws.run.lock_sha %}· lock <span class="font-mono">{{ ws.run.lock_sha }}</span>{% endif %}
+      </span>
+      {% endif %}
+      <a href="/python/{{ ws.root_alias | urlencode }}" class="text-xs text-info hover:underline ml-2">python eye →</a>
+    </h2>
+    <nav class="flex flex-wrap gap-0.5 text-xs" aria-label="files">
+      {% for f in ws.files %}
+      <button type="button" @click="tab = '{{ f.key }}'"
+              :class="tab === '{{ f.key }}' ? 'bg-solid-strong text-on-solid' : 'bg-surface-muted text-fg-secondary hover:bg-surface-emphasis'"
+              class="rounded-t px-2 py-0.5 font-mono">{{ f.path }}</button>
+      {% endfor %}
+    </nav>
+    {% if ws.extra > 0 %}
+    <p class="text-xs text-fg-faint mt-1">…and {{ ws.extra }} more file(s) not shown.</p>
+    {% endif %}
+    {% if ws.skipped %}
+    <p class="text-xs text-fg-faint mt-1">over the page byte budget — paths only, not rendered: {{ ws.skipped | join(", ") }}</p>
+    {% endif %}
+    {% if ws.files | length == 0 %}
+    <p class="text-xs text-fg-faint mt-1">(no files)</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+
+  {# Panels live in one flat block: every workspace's tab buttons drive
+     the same ``tab`` state, so a file id is unique across workspaces.
+     f.body is pygments-highlighted (or html.escape'd) file text plus
+     anchors the route emitted — same contract as python/focus.html.j2's
+     body; raw file text never reaches this template. #}
+  {% for ws in workspaces %}
+    {% for f in ws.files %}
+    <div x-show="tab === '{{ f.key }}'" x-cloak>
+      <pre class="cv-code cv-file whitespace-pre-wrap rounded-lg border border-line bg-surface text-fg p-4 text-sm leading-relaxed overflow-x-auto"><code>{{ f.body | safe }}</code></pre>
+      {% if f.truncated %}
+      <p class="text-xs text-warning mt-1">truncated: showing the first {{ max_kb }} KB of {{ (f.size / 1024) | round(1) }} KB.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

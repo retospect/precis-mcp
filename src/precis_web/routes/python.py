@@ -175,7 +175,27 @@ def linkify_python_refs(
     the focus is a bare alias or unparseable, which leaves ``L`` rows
     as text.
     """
-    out = html.escape(text, quote=False)
+    return _linkify_escaped(
+        html.escape(text, quote=False),
+        links=links,
+        focus_alias=focus_alias,
+        extent=extent,
+        line_map=line_map,
+    )
+
+
+def _linkify_escaped(
+    out: str,
+    *,
+    links: _EyeLinks,
+    focus_alias: str | None,
+    extent: str = DEFAULT_EXTENT,
+    line_map: dict[int, str] | None = None,
+) -> str:
+    """``linkify_python_refs`` minus the escape step — the passes run on
+    ALREADY-escaped text so a caller can interpose its own anchor pass
+    (the design code viewer's sibling-file tab links) between the escape
+    and these passes without double-escaping."""
 
     def _anchor(label: str, ref: str) -> str:
         return f'<a class="eye-handle" href="{_href(ref, extent=extent)}">{label}</a>'

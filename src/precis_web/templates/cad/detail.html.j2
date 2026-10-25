@@ -8,6 +8,7 @@
     {{ drive_back('cad', 'CAD') }}
     <h1 class="text-lg font-semibold">{{ title }}</h1>
     <span class="text-xs text-fg-faint">{{ slug }} · {{ n_parts }} part{{ '' if n_parts == 1 else 's' }} · {{ n_nodes }} feature{{ '' if n_nodes == 1 else 's' }}</span>
+    <a href="/cad/{{ slug | urlencode }}/code" class="text-xs text-info hover:underline ml-auto">Code →</a>
   </div>
 </div>
 

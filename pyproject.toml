@@ -403,6 +403,7 @@ web = [
     # weight — declared because a route importing it must not depend on
     # another package's dependency choices.
     "markdown-it-py>=3.0",
+    "pygments>=2.18",
 ]
 # CAD STEP interchange (ADR 0041 §10). The lightweight printable path
 # (``manifold3d`` CSG kernel → STL/3MF) is now core — see the "Deterministic,
@@ -1164,6 +1165,8 @@ module = [
     "OCP.*",
     "opentimestamps.*",
     "pdf2doi",
+    "pygments",  # [web] extra (precis_web code view); no py.typed marker
+    "pygments.*",
     "pylatexenc.*",
     "pymatgen",
     "pymatgen.*",
