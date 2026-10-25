@@ -76,6 +76,10 @@ an entry in `tests/data/paper_text_allowlist.json` (one reason per entry).
   fails at apply time, on prod. To redefine a constraint: `ALTER TABLE t
   DROP CONSTRAINT IF EXISTS c;` then `ALTER TABLE t ADD CONSTRAINT c ...`
   (migrations 0201, 0224). Pinned by `tests/test_migration_sql_idioms.py`.
+- **New public tables get no GRANT in the migration.** `agent_ro`'s
+  SELECT on a new `public` table is provisioned out of tree (ansible),
+  not by the migration file — precedent: 0237 (`llm_keyword_routes`).
+  Function EXECUTE grants do ship in migrations (0079, 0059, 0137).
 - **Workers never import handlers.** A worker that needs another kind's
   behaviour calls `Hub.sibling('<kind>')` (e.g. `Hub.sibling('conv')`), not
   `from precis.handlers…`.

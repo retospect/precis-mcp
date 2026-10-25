@@ -19,6 +19,13 @@ channel is a wheelhouse seeded by `scripts/deploy` (gr263082). General deploy:
    ahead of its tags, and a `branch = "main"` source would re-lock onto an
    untagged, energy-moving bump), then run `uv lock -P autocatpath` (it
    resolves the **remote** commit — push first). Ship via `/go`.
+
+   To find which commit last bumped the floor, pickaxe `pyproject.toml`,
+   not `uv.lock`: `git log -S 'autocatpath>=0.39.0' -- pyproject.toml`
+   (per version; the `catalyst-gpu` extra's needle is
+   `autocatpath[mace]>=0.N`). Lock regeneration rewrites the surrounding
+   context, so `-S` on `uv.lock` misses bumps; the floor line in
+   pyproject is the stable needle.
 4. **Deploy needs `PRECIS_CATPATH_DIR=<catpath checkout>`** — the default
    `~/catpath` does not exist on the controller. With the floor bumped, <!-- home-path: allow — where the checkout lives on the controller -->
    `scripts/deploy` preflight builds the new wheel from that checkout

@@ -217,7 +217,8 @@ _ann_state_cache: dict[tuple[str, int, str], tuple[float, _AnnState]] = {}
 #: predicate (``kind = '<k>'``), restricted to the canonical index names so a
 #: stale ``*_ccnew``/``*_ccold`` leftover of a failed CONCURRENTLY build
 #: cannot flip a kind's flag. ``indisready`` joins ``indisvalid``: a build
-#: still scanning sets valid-but-not-ready.
+#: still scanning sets valid-but-not-ready. How these three probes combine
+#: into the route's fill gate is defined once in :func:`_ann_kind_state`.
 _ANN_STATE_SQL = """
 SELECT
   coalesce((SELECT convalidated FROM pg_constraint
@@ -279,11 +280,27 @@ def _reset_ann_state_cache() -> None:
 def _ann_kind_state(conn: Connection) -> _AnnState:
     """The kind-scoped ANN gates for routing (migrations 0226 + 0242).
 
-    Cached per database for :data:`_ANN_STATE_TTL_S`. When the marker
-    table is absent (pre-0242 database) or the search role holds no SELECT
-    on it (grants are provisioned out of tree) ``marked`` is empty and the
-    validated CHECK is the only fill gate — the pre-0242 behaviour, never
-    an error.
+    Canonical fill-gate semantics — every consumer routes through this:
+
+    A kind may answer over its partial HNSW index iff that index exists,
+    is valid+ready (``indexed``), AND the kind's ref/kind fill is proven
+    complete. Fill has two proofs:
+
+    * ``marked`` — per kind: the backfill wrote the kind into
+      ``chunk_embeddings_kind_ready`` (0242), so a kind can route as
+      soon as its own fill finishes.
+    * ``filled`` — global: the ``chunk_embeddings_ref_kind_filled``
+      CHECK validated, proving every row carries its ref's kind — every
+      kind at once. ``filled`` in this module always means the
+      validated global CHECK, never a per-kind state.
+
+    :meth:`_AnnState.kind_ready` combines them:
+    ``indexed AND (filled OR marked)``. When the marker table is absent
+    (pre-0242 database) or the search role holds no SELECT on it (grants
+    are provisioned out of tree) ``marked`` is empty and the CHECK is
+    the only fill gate — the pre-0242 behaviour, never an error.
+
+    Cached per database for :data:`_ANN_STATE_TTL_S`.
     """
     info = conn.info
     key = (str(info.host), int(info.port or 0), str(info.dbname))
@@ -318,7 +335,8 @@ def ann_route_plan(
     (gr503028): the route, the resolved kind, the index name the planner
     can use (``None`` on the exact path) and a one-line reason, so an
     agent can tell a slow search (global fallback) from a wrong one
-    without running it.
+    without running it. The fill-gate vocabulary in ``reason`` is
+    :func:`_ann_kind_state`'s.
     """
     route, route_kind = _ann_route(conn, kind, kinds)
     index: str | None
@@ -368,11 +386,10 @@ def _ann_route(
     * ``"global"`` — the global HNSW index plus post-filter (the pre-0226
       path): no single kind, a kind in :data:`_ANN_GLOBAL_KINDS`, or a kind
       in :data:`_ANN_PARTIAL_KINDS` whose index is missing or invalid or
-      whose own fill is not marked complete yet.
+      whose fill gate (:func:`_ann_kind_state`) is unmet.
     * ``"partial"`` — the kind's own partial HNSW index (``ce.kind = <k>``):
-      the index exists, is valid+ready, and the kind's fill is done — the
-      0242 marker (per kind, as soon as the backfill finishes it) or the
-      validated NOT NULL CHECK (every kind at once).
+      the index exists, is valid+ready, and the kind meets the fill gate
+      :func:`_ann_kind_state` defines.
     * ``"exact"`` — any other kind is small (< 5,000 embedded chunks when
       0226 was cut): filter to its chunks, then exact distance. Query-only,
       so it needs neither the backfill nor an index.

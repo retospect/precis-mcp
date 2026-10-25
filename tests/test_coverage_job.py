@@ -231,9 +231,12 @@ JO482106_CONFIG: dict[str, Any] = {
     "poisons": ["CO"],
     "substrate": "NO",
 }
-#: ``coverage_anchor_key(with_defaults(JO482106_CONFIG))`` on
-#: autocatpath 0.39.0 — the key carries the engine version, so this pin is
-#: re-derived (not loosened) on any engine bump.
+#: ``coverage_anchor_key(with_defaults(JO482106_CONFIG))`` re-derived
+#: under autocatpath 0.39.0 at da994b808; the pin was first authored
+#: under 0.24.1 (the version locked at 01b36dba7). Convention for
+#: engine-versioned pins: the key folds in the engine version, so an
+#: engine bump re-derives the pin and re-labels it from the lock that
+#: produced it — never loosen it.
 JO482106_KEY = "dd5daae18f7145a823b65b064b1dbd5cbd91bfbbf4226bb30aaa3f0f8013eb13"
 
 

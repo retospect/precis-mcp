@@ -33,6 +33,14 @@ termination decisions behind them are margined at
 ``hexfold_spec._CAP_EPS_A`` (gr512667), so a borderline distance
 counts as under the bar on every platform and no ``<field>.alt``
 digests are needed.
+
+Regenerate **only inside the aarch64 Linux dev container** — i.e. via
+``scripts/test``, never on the dev Mac's host Python. The goldens were
+written there; macOS arm64's libm differs from Linux's at the same
+1-2 ulp, which can flip a value that sits on a 1e-6 rounding boundary
+and bake digests that red the gate everywhere else. One block is
+beyond even the grid's reach: ``se/rail/a`` drifts on x86 CI runners
+and is checked on aarch64 only until the drift is fixed (gr515872).
 """
 
 from __future__ import annotations
