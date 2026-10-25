@@ -41,6 +41,15 @@ def test_parse_angle_deg_enclave_bare_is_degrees() -> None:
     assert parse_angle_deg("45", arg_name="rot", bare="degrees") == 45.0
 
 
+def test_parse_angle_deg_rejects_nonfinite_bare_string() -> None:
+    """gr515473: BadInput is a ValueError — the finite check must sit
+    outside the ``float()`` probe's ``except ValueError: pass``, or
+    ``"inf"``/``"nan"`` silently fall through to the unit parser."""
+    for text in ("inf", "-inf", "nan"):
+        with pytest.raises(BadInput, match="must be finite"):
+            parse_angle_deg(text, arg_name="rot", bare="degrees")
+
+
 def test_parse_angle_deg_rejects_non_angle_unit() -> None:
     with pytest.raises(BadInput):
         parse_angle_deg("3 mm", arg_name="rot")

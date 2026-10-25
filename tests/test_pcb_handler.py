@@ -8,6 +8,7 @@ members), re-runnability, and soft-delete. Uses the shared ``store`` fixture.
 from __future__ import annotations
 
 import zipfile
+from types import SimpleNamespace as NS
 from typing import Any
 
 import pytest
@@ -1920,6 +1921,25 @@ def test_op_class_rules_refuses_a_layer_the_stackup_does_not_route_on(pcb, store
         args={"op": "class_rules", "name": "esc", "rules": {"layers": ["B.Cu"]}},
     )
     assert store.pcb_graph(ref.id)["net_classes"]["esc"] == {"layers": ["B.Cu"]}
+
+
+def test_class_rules_reraises_badinput_from_the_judged_mutation(pcb, monkeypatch):
+    """gr515473: BadInput is a ValueError — the ``except ValueError`` wrap
+    that reports a rules-table refusal must not swallow a judged-mutation
+    BadInput and drop its next=."""
+    bomb = BadInput("judged refusal", next="the way out")
+
+    def _boom(ref_id: int, fn: Any) -> Any:
+        raise bomb
+
+    monkeypatch.setattr(pcb, "_judged_mutation", _boom)
+    ref = NS(id=1)  # clearance_mm-only rules never reach the store
+    with pytest.raises(BadInput) as exc:
+        pcb._op_class_rules(
+            ref,
+            {"op": "class_rules", "name": "i2c", "rules": {"clearance_mm": 0.2}},
+        )
+    assert exc.value is bomb
 
 
 def test_op_plane_net_rejects_unknown_layer(pcb):

@@ -16,6 +16,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.finding import FindingHandler
 from precis.identity import make_finding_paper_id, make_pub_id
+from precis.taproot import hub as taproot_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 
@@ -2428,6 +2429,22 @@ class TestRetitleHub:
         with pytest.raises(BadInput, match="requires id"):
             h.edit(title="a new title")
 
+    def test_retitle_reraises_badinput_with_next(self, store, monkeypatch) -> None:
+        """gr515473: BadInput is a ValueError — the ``except ValueError``
+        wrap (a pub_id collision is reviewer-actionable) must not swallow
+        a refine_claim_sentence BadInput and drop its next=."""
+        hub = mint_hub(store, CanonicalClaim(sentence="Claim sentence.", scope={}))
+        bomb = BadInput("hub refused", next="the way out")
+
+        def _boom(*a: Any, **k: Any) -> Any:
+            raise bomb
+
+        monkeypatch.setattr(taproot_hub, "refine_claim_sentence", _boom)
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.edit(id=hub, title="Reworded claim sentence.")
+        assert exc.value is bomb
+
 
 # ── edit(meta={'scope': …}) — rescope a TAPROOT:claim hub ────────────
 
@@ -2512,6 +2529,22 @@ class TestRescopeHub:
         after = store.get_ref(kind="finding", id=hub)
         assert after.meta == before.meta and after.title == before.title
         assert self._pub_ids(store, hub) == before_pubs
+
+    def test_rescope_reraises_badinput_with_next(self, store, monkeypatch) -> None:
+        """gr515473: BadInput is a ValueError — the ``except ValueError``
+        wrap must not swallow a refine_claim_sentence BadInput and drop
+        its next=."""
+        hub = self._mint(store)
+        bomb = BadInput("hub refused", next="the way out")
+
+        def _boom(*a: Any, **k: Any) -> Any:
+            raise bomb
+
+        monkeypatch.setattr(taproot_hub, "refine_claim_sentence", _boom)
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.edit(id=hub, meta={"scope": {"material": "Pd/C"}})
+        assert exc.value is bomb
 
     def test_non_scope_meta_key_rejected(self, store) -> None:
         hub = self._mint(store)

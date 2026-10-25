@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from types import SimpleNamespace as NS
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -19,6 +19,7 @@ from precis.backfill import workspace as wsmod
 from precis.backfill.candidates import RecallCandidate, draft_cited_ref_ids
 from precis.backfill.workspace import _render_candidate_list, assemble
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.plan import PlanHandler
 from precis.utils import handle_registry
 from precis.workers.working_set import Provenance
@@ -673,3 +674,29 @@ def test_assemble_draft_notes_truncation_not_a_silent_drop(
     )
     assert truncated is True
     assert len(candidates) == 2
+
+
+def test_assemble_draft_reraises_badinput_and_skips_dead_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr515473: BadInput is a ValueError — the per-section ``except
+    ValueError: continue`` (a dead heading's skip) must not eat a
+    BadInput and drop its next=."""
+    from precis.backfill.workspace import assemble_draft
+
+    monkeypatch.setattr(wsmod, "_top_level_section_handles", lambda *a, **k: ["dc1"])
+    bomb = BadInput("section refused", next="the way out")
+
+    def _boom(*a: Any, **k: Any) -> Any:
+        raise bomb
+
+    monkeypatch.setattr(wsmod, "assemble", _boom)
+    with pytest.raises(BadInput) as exc:
+        assemble_draft(cast(Any, None), None, 1)
+    assert exc.value is bomb
+
+    def _dead(*a: Any, **k: Any) -> Any:
+        raise ValueError("no live chunk")
+
+    monkeypatch.setattr(wsmod, "assemble", _dead)
+    assert assemble_draft(cast(Any, None), None, 1) == ([], set(), ["dc1"], False)

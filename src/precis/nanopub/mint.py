@@ -205,6 +205,8 @@ def approve(
 
         try:
             refine_claim_sentence(store, hub_ref_id, requested, set_by="reviewer")
+        except BadInput:
+            raise
         except ValueError as exc:
             # pub_id collision with a different live hub (a dedup/merge
             # candidate) is reviewer-actionable feedback on a draft, not

@@ -229,6 +229,8 @@ def eye_response(
     handle = eye_handle(store, kind=kind, id=id, stores_cache=stores_cache)
     try:
         return Response(body=render_eye(store, handle, extent, q=q, ring=ring))
+    except BadInput:
+        raise
     except ValueError as e:
         raise BadInput(str(e), next=EYE_NEXT) from e
 
@@ -240,5 +242,7 @@ def eye_body(
     handler that already holds the handle (draft's ``¶`` anchors)."""
     try:
         return render_eye(store, handle, extent, q=q, ring=ring)
+    except BadInput:
+        raise
     except ValueError as e:
         raise BadInput(str(e), next=EYE_NEXT) from e

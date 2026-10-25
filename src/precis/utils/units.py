@@ -426,11 +426,12 @@ def parse_angle_deg(
     elif isinstance(value, str) and bare == "degrees":
         try:
             bare_val = float(value)  # a numeral string is the same bare number
+        except ValueError:
+            pass
+        else:
             if not math.isfinite(bare_val):
                 raise BadInput(f"{arg_name} must be finite, got {value!r}")
             return bare_val
-        except ValueError:
-            pass
     if not isinstance(value, (int, float, str)):
         raise BadInput(f"{arg_name} must be a number or angle string, got {value!r}")
     return math.degrees(parse_quantity(value, "angle", arg_name=arg_name))

@@ -2797,6 +2797,8 @@ class PcbHandler(Handler):
                     ref.id, name, rules, conn=conn
                 ),
             )
+        except BadInput:
+            raise
         except ValueError as exc:
             # A rules value the table cannot honour (e.g. working_voltage_v
             # past IPC-2221B's top band) is bad input, not a judge verdict.

@@ -14,6 +14,7 @@ from precis.errors import BadInput
 from precis.nanopub import evidence, gates, mint
 from precis.nanopub.keys import generate_keypair
 from precis.store.types import Tag
+from precis.taproot import hub as taproot_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from tests.test_taproot_hub import _seed_pathway
@@ -984,6 +985,33 @@ def test_approve_gates_the_reviewers_override_not_the_old_sentence(
     assert any("no-evidence-verb" in v.message for v in exc.value.violations)
     # Nothing froze: the row never left candidate (it was never created).
     assert store.nanopub_publish_row(hub) is None
+
+
+def test_approve_reword_reraises_badinput_with_next(
+    store: Any, monkeypatch: Any
+) -> None:
+    """gr515473: BadInput is a ValueError — the ``except ValueError`` wrap
+    (a pub_id collision is reviewer-actionable) must not swallow a
+    refine_claim_sentence BadInput and drop its next=."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows the pre-review sentence holds.", paper, chunk)
+    bomb = BadInput("hub refused", next="the way out")
+
+    def _boom(*a: Any, **k: Any) -> Any:
+        raise bomb
+
+    # approve's local ``from precis.taproot.hub import refine_claim_sentence``
+    # re-binds at call time, so patching the module attribute reaches it.
+    monkeypatch.setattr(taproot_hub, "refine_claim_sentence", _boom)
+    with pytest.raises(BadInput) as exc:
+        mint.approve(
+            store,
+            hub,
+            payload=_payload(chunk, sha),
+            title="DFT confirms the post-review sentence holds.",
+            interactive=True,
+        )
+    assert exc.value is bomb
 
 
 def test_approve_reword_cannot_launder_the_acquisition_marker(store: Any) -> None:

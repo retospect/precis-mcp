@@ -632,6 +632,8 @@ def _rescope_hub(
         result = hub.refine_claim_sentence(
             store, hub_ref_id, new_title, scope=scope, set_by="agent"
         )
+    except BadInput:
+        raise
     except ValueError as exc:
         raise BadInput(
             f"edit(kind='finding', id='fi{hub_ref_id}', meta={{'scope': …}}) "
@@ -708,6 +710,8 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
         )
     try:
         result = hub.refine_claim_sentence(store, hub_ref_id, title, set_by="agent")
+    except BadInput:
+        raise
     except ValueError as exc:
         raise BadInput(
             f"edit(kind='finding', id='fi{hub_ref_id}', title=…) failed: {exc}",

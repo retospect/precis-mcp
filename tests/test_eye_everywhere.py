@@ -8,12 +8,19 @@ todo and memory; the doc eye on a paper; the skill eye."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._eye import EYE_LADDER, eye_handle, is_eye_view
+from precis.handlers._eye import (
+    EYE_LADDER,
+    EYE_NEXT,
+    eye_body,
+    eye_handle,
+    eye_response,
+    is_eye_view,
+)
 from precis.store import Tag
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry, kind_facts
@@ -378,3 +385,36 @@ def test_missing_chunk_ord_names_the_record_get(store: Any, hub: Any) -> None:
         eye_handle(store, kind="memory", id=f"me{mid}~99")
     assert exc.value.next is not None
     assert f"get(kind='memory', id='me{mid}')" in str(exc.value.next)
+
+
+def test_eye_wraps_reraise_badinput_and_wrap_valueerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr515473: BadInput is a ValueError — the ``except ValueError`` wrap
+    in ``eye_response``/``eye_body`` must re-raise a renderer BadInput with
+    its next= intact, not re-wrap it under the generic ``EYE_NEXT``."""
+    import precis.handlers._eye as eye_mod
+
+    bomb = BadInput("renderer refused", next="the renderer's own way out")
+    no_store = cast(Any, None)  # render_eye/eye_handle are patched out
+
+    def _boom(*a: Any, **k: Any) -> str:
+        raise bomb
+
+    monkeypatch.setattr(eye_mod, "render_eye", _boom)
+    with pytest.raises(BadInput) as exc:
+        eye_body(no_store, "pa1", "fisheye")
+    assert exc.value is bomb
+
+    monkeypatch.setattr(eye_mod, "eye_handle", lambda *a, **k: "pa1")
+    with pytest.raises(BadInput) as exc:
+        eye_response(no_store, kind="paper", id=1, extent="fisheye")
+    assert exc.value is bomb
+
+    def _raw(*a: Any, **k: Any) -> str:
+        raise ValueError("raw renderer complaint")
+
+    monkeypatch.setattr(eye_mod, "render_eye", _raw)
+    with pytest.raises(BadInput) as exc:
+        eye_body(no_store, "pa1", "fisheye")
+    assert exc.value.next == EYE_NEXT

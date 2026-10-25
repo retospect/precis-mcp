@@ -24,6 +24,7 @@ from precis.backfill.candidates import (
 )
 from precis.backfill.dismissed import dismissed_ref_ids
 from precis.backfill.provenance import grade_tag
+from precis.errors import BadInput
 from precis.utils import handle_registry
 from precis.utils.working_set_render import render_working_set
 from precis.workers.working_set import Provenance, WorkingSet
@@ -351,6 +352,8 @@ def assemble_draft(
                 per_paper=per_paper,
                 max_candidates=section_pool,
             )
+        except BadInput:
+            raise
         except ValueError:
             continue  # a heading with no live chunk — skip, don't abort the roll-up
         per_section.append(cands)

@@ -565,9 +565,14 @@ def evaluate(
             record_frames=case.frames,
             profile=case.profile,
         )
+    except BadInput:
+        # _card / domain_from_solid refuse with the way out already named
+        # (gr515473 — BadInput is a ValueError; a plain except would
+        # swallow its next= into the generic wrap below)
+        raise
     except ValueError as exc:
         # a kernel or adapter refusal surfaced as a raw error — report it
-        # with the way out (BadInput, not a ValueError, is never caught here)
+        # with the way out
         raise BadInput(
             f"evaluate(['flow']): {exc}",
             next="the kernel message above names the failure — check the "

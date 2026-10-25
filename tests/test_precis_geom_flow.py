@@ -269,6 +269,20 @@ def test_regime_card_from_fluid(hex_shape: Any) -> None:
         evaluate(hex_shape, ["flow"], _spec(fluid={"mu": 1e-3, "rho": 1e3}), cells=NX)
 
 
+def test_knudsen_route_keeps_its_next(hex_shape: Any) -> None:
+    """gr515473: BadInput is a ValueError — evaluate's ``except ValueError``
+    wrap must not swallow ``_card``'s knudsen-route refusal and drop the
+    next= that names the way out (the nano propagator)."""
+    with pytest.raises(BadInput, match="free-molecular") as exc:
+        evaluate(
+            hex_shape,
+            ["flow"],
+            _spec(fluid={"mu": 1e-3, "rho": 1e3, "u0": 0.01, "mean_free_path": 1.0}),
+            cells=NX,
+        )
+    assert exc.value.next and "nano propagator" in exc.value.next
+
+
 def _box_chamber_tree() -> SeTree:
     tree = SeTree()
     apply_ops(
