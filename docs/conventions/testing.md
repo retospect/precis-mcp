@@ -5,7 +5,9 @@ pytest`/`scripts/dev pytest`.** It's the only invocation that reproduces the
 gate `scripts/ship` runs before a squash-merge, so it's the canonical inner
 loop. There is no host pytest (the host venv is torch-free): every
 test, including POSIX-only script tests, runs in the container via
-`scripts/test`.
+`scripts/test`. The one carve-out is the pure-script test cluster run on
+a macOS host to exercise the Darwin/bash-3.2 legs for real — see
+"macOS-only paths the container can't reach" below.
 
 ## Why not a bare invocation
 
@@ -140,6 +142,16 @@ every forward uses compose's explicit `-e NAME=value` form — never the bare
 `PRECIS_TEST_PASSENV=FOO,BAR`, gr514238, which inherits named secrets by value; an unforwarded
 `NANO_*`/`ESP32C3_*`/`PRECIS_PCB_*` var warns once on stderr). The full knob
 list lives in `scripts/test --help`'s Env block.
+
+The PASSENV exception relies on compose's bare-name form, pinned here
+(gr514428, verified against a real container): `run -e NAME` copies the
+host's current value for NAME into the container — the value never
+touches argv or a log — and a NAME the host never exported is absent
+inside the container (compose prints no warning). `scripts/test` warns
+itself for a named-but-unset var; `tests/test_scripts_test_passenv.py`
+asserts only the argv shape against a fake docker, so a compose change
+to bare-name semantics would slip that test silently — this paragraph is
+the contract.
 
 `--shard K/N` (tests/conftest.py) hashes every test id into one of N
 buckets (crc32, so every process agrees). The N shards partition the suite
@@ -291,6 +303,53 @@ full shape (nightly schedule, `workflow_dispatch full=true`) and local
 there. Items are auto-tagged `slow` (tests/conftest.py), so every
 `-m 'not slow'` lane skips them too — the marker lifts a test out of the
 CI gate only, never out of a full run.
+
+## macOS-only paths the container can't reach (gr514906)
+
+`scripts/test` runs everything in a Linux container: bash ≥4, GNU
+coreutils, `timeout(1)`/`flock(1)` present, `uname -s` = Linux. The same
+`scripts/*` also run on macOS hosts (ship, fleet, hooks, the cluster's
+launchd nodes) under stock `/bin/bash` 3.2 and the BSD userland — and the
+legs that only exist there never execute in the gate:
+
+- **bash 3.2 dialect itself.** A construct bash 3.2 mis-parses can't be
+  caught by executing it in the container; `tests/test_bash32_gotchas.py`
+  is a *static* ratchet (scans `scripts/` for banned bash≥4 syntax), not
+  an execution test.
+- **`scripts/lib/gate-slot.sh`.** `_gate_mtime`'s BSD `stat -f %m` leg —
+  GNU `stat -c` runs first because GNU `stat -f` dumps the filesystem
+  table before failing, so the order is load-bearing — and
+  `_gate_slot_capacity`'s Darwin fallback (`sysctl -n hw.memsize` /
+  `hw.ncpu`, reached only when `docker info` is absent).
+- **`scripts/lib/docker-disk.sh` `_docker_disk_bounded` and
+  `scripts/ship` `_locked_net`.** The perl-alarm deadline exists because
+  macOS ships no `timeout(1)`; perl happens to exist on Linux too, so the
+  same code runs both sides, but it is the *only* bound on macOS — a
+  Linux-only alternative (`timeout`, `flock`) would silently regress to
+  unbounded.
+- **Locks.** `scripts/ship`'s ship lock and `gate-slot.sh`'s counting
+  mutex are `mkdir` atomics precisely because macOS has no `flock(1)`.
+- **`uname` branches.** `scripts/cluster-ping` (`uname -s` = Darwin),
+  `scripts/ship`'s `GATE_SYNC_EXTRAS` (`uname -m` arm64 drops the
+  struct-search extra).
+
+How they're covered anyway: the staged-script tests shadow the platform
+probes as bash functions on PATH (`tests/test_gate_slot_fairness.py`
+stubs `uname`, `sysctl`, `docker info`, `nproc`), so both legs of a
+branch run on Linux — at the cost of a stub that can drift from real BSD
+behaviour. The only ground-truth coverage is the full shape's macOS leg
+(nightly, `workflow_dispatch full=true`), which surfaces a platform-only
+break the next morning.
+
+To exercise a path for real before shipping it, run the script tests on
+the macOS host: `uv run --frozen pytest tests/test_<file>.py` — the
+staged scripts exec under `/bin/bash` 3.2 with the real BSD userland, so
+a bash-4-ism or a GNU-only flag fails for real instead of passing under
+container bash. Keep it to the pure-script test files (staged `scripts/*`
+plus fake PATH bins — the `tests/test_scripts_test_*`,
+`test_gate_slot_*`, `test_docker_disk_*`, `test_cluster_ping`,
+`test_bash32_gotchas` cluster); the wider suite still needs the
+container (the host venv is torch-free and has no test DB).
 
 ## Long runs: `--bg` then `--await`, never a hand-rolled log poll
 
