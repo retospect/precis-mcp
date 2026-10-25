@@ -35,14 +35,15 @@ import math
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from datetime import UTC, datetime
 from itertools import islice
 from typing import Any
 
-from psycopg import Connection
-from psycopg.errors import UniqueViolation
+from psycopg import Connection, sql
+from psycopg.errors import DeadlockDetected, LockNotAvailable, UniqueViolation
 from psycopg.types.json import Jsonb
 
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Upstream
 from precis.pcb import (
     CAP_DIELECTRIC_RANK,
     DEFAULT_STACKUP,
@@ -52,6 +53,7 @@ from precis.pcb import (
     STACKUP_PRESETS,
     stackup_preset,
 )
+from precis.pcb import drc as pcb_drc
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
@@ -74,7 +76,8 @@ from precis.pcb.rows import (
 from precis.pcb.rows import (
     rot_deg as _rot_deg,
 )
-from precis.store.types import ActorSlug
+from precis.pcb.snapshot import ALIASES as _SNAPSHOT_ALIASES
+from precis.store.types import ActorSlug, Ref
 
 log = logging.getLogger(__name__)
 
@@ -294,6 +297,111 @@ _REVISION_PARTS: tuple[tuple[str, str, str, str], ...] = (
         "WHERE c.ref_id = %(ref)s AND c.retired_at IS NULL)",
     ),
 )
+
+#: How :meth:`PcbMixin.pcb_fork` scopes one table's rows to the source
+#: design. ``ref`` rows key the ref directly; ``components``/``nets`` are
+#: child tables reached through the ref's own parents; ``boards`` rows key
+#: the design's ``pcb_boards`` ids (a design can carry several boards —
+#: folds/panels — so ``pcb_instances``/``pcb_features``/``pcb_fixed_copper``
+#: stay ref-scoped while ``board_id`` remaps like any other FK column).
+_FORK_SCOPES = {
+    "ref": "ref_id = %s",
+    "components": (
+        "component_id IN (SELECT component_id FROM pcb_components WHERE ref_id = %s)"
+    ),
+    "nets": "net_id IN (SELECT net_id FROM pcb_nets WHERE ref_id = %s)",
+    "boards": ("board_id IN (SELECT board_id FROM pcb_boards WHERE ref_id = %s)"),
+}
+
+#: Every table a ``pcb`` design owns, in dependency order (a table's rows
+#: copy only after the rows its FK columns point at): ``(table, scope,
+#: key, map_name)`` — ``key`` is the surrogate column the copy re-issues
+#: (``None`` for natural-keyed rows like ``pcb_local_footprints``); when
+#: ``map_name`` is set the old→new ``key`` map is recorded under it so
+#: later tables' same-named FK columns re-point at the copy. The shared
+#: ``parts``/``part_footprints`` catalog is NOT design state and is never
+#: copied; ``chunks``/``links``/``tags`` are not tables here (the card
+#: chunk regenerates, ref-level links copy separately, tags don't
+#: propagate).
+_FORK_TABLES: tuple[tuple[str, str, str | None, str | None], ...] = (
+    ("pcb_boards", "ref", "board_id", "board_id"),
+    ("pcb_components", "ref", "component_id", "component_id"),
+    ("pcb_pins", "components", "pin_id", "pin_id"),
+    # pcb_features before pcb_instances: instances.room_id (0219) names a
+    # feature row; the map must exist first (same rule snapshot.py loads by).
+    ("pcb_features", "ref", "feature_id", "feature_id"),
+    ("pcb_instances", "ref", "instance_id", "instance_id"),
+    ("pcb_nets", "ref", "net_id", "net_id"),
+    ("pcb_netconns", "nets", "netconn_id", "netconn_id"),
+    ("pcb_net_classes", "ref", "class_id", "class_id"),
+    ("pcb_local_footprints", "ref", None, None),
+    ("pcb_generators", "ref", None, None),
+    ("pcb_measures", "ref", "measure_id", "measure_id"),
+    ("pcb_roles", "ref", "role_id", "role_id"),
+    ("pcb_notes", "ref", "id", None),
+    ("pcb_routes", "boards", "route_id", "route_id"),
+    ("pcb_planes", "boards", "plane_id", "plane_id"),
+    ("pcb_netlist_snapshots", "boards", "snapshot_id", "snapshot_id"),
+    ("pcb_fixed_copper", "ref", "fixed_id", "fixed_id"),
+    ("pcb_copper", "boards", "copper_id", "copper_id"),
+    ("pcb_drc_runs", "boards", None, None),
+    ("pcb_drc_findings", "boards", "finding_id", "finding_id"),
+    # ``design_*`` (branches/checkpoints/revisions/states…) deliberately
+    # NOT copied: a fork is a new independent design and carries no
+    # branch history (GRIPE_FIX ruling on the gr517199 review).
+)
+
+#: FK columns whose target's map lives under a different name — the
+#: snapshot ALIASES table (``room_id`` → ``feature_id``).
+_FORK_ALIASES = _SNAPSHOT_ALIASES
+
+#: jsonb columns that embed design-local surrogate ids the column-level
+#: remap never sees — each is a list of dicts whose keys equal to or
+#: ending in ``_<name>`` name a row of that map: ``pcb_measures.operands``
+#: carries ``{"feature_id": n}`` (``eyes.bind_feature_operands`` resolves
+#: it), ``pcb_drc_findings.objects`` carries ``fixed_id``/``via_fixed_id``
+#: (``drc.finding_identity`` hashes it into ``finding_key``).
+_FORK_JSON_REMAPS = {"operands": "feature_id", "objects": "fixed_id"}
+
+
+def _remap_json_id_list(value: Any, mapping: dict[int, int], key_suffix: str) -> Any:
+    """Re-point the surrogate ids embedded in one jsonb list column at
+    the copy. An id absent from ``mapping`` names a row outside this
+    design and passes through verbatim — the same tolerance the readers
+    (``bind_feature_operands``, ``_object_identity``) already have."""
+    if not isinstance(value, list) or not mapping:
+        return value
+    out = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            out.append(entry)
+            continue
+        entry = dict(entry)
+        for column in list(entry):
+            if column == key_suffix or column.endswith("_" + key_suffix):
+                try:
+                    entry[column] = mapping.get(int(entry[column]), entry[column])
+                except (TypeError, ValueError):
+                    pass
+        out.append(entry)
+    return out
+
+
+def _fork_finding_key(row: dict[str, Any]) -> str:
+    """Recompute ``pcb_drc_findings.finding_key`` over the remapped
+    ``objects`` — the key is a content hash (:func:`precis.pcb.drc.
+    finding_key`), so a copied finding's ``fixed_id`` ids must hash to
+    the key a fresh DRC run on the copy would produce, or the delta
+    reads every such finding as gone+new."""
+    finding = pcb_drc.DrcFinding(
+        rule=str(row["rule"]),
+        severity=str(row["severity"]),
+        where=str(row.get("location") or ""),
+        detail=str(row.get("detail") or ""),
+        objects=tuple(o for o in (row.get("objects") or []) if isinstance(o, dict)),
+    )
+    return pcb_drc.finding_key(finding)
+
 
 #: The design revision (gr492096): one md5 over every part above, each
 #: part COALESCEd so an empty table never shifts its neighbours.
@@ -1121,6 +1229,238 @@ class PcbMixin:
             f"{title} (PCB design). {n_parts} parts: {', '.join(labels)}. "
             f"Nets: {', '.join(nets)}."
         )
+
+    def pcb_fork_counts(self, conn: Connection, src_ref_id: int) -> dict[str, int]:
+        """Per-table row counts :meth:`pcb_fork` would copy — the dry-run
+        surface (the live copy counts rows as it writes them instead, so
+        its report is exact even if a row lands mid-copy)."""
+        counts: dict[str, int] = {}
+        for table, scope, _key, _map in _FORK_TABLES:
+            row = conn.execute(
+                f"SELECT count(*) FROM {table} WHERE {_FORK_SCOPES[scope]}",
+                (src_ref_id,),
+            ).fetchone()
+            counts[table] = int(row[0]) if row else 0
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND src_chunk_id IS NULL",
+            (src_ref_id,),
+        ).fetchone()
+        counts["links"] = int(row[0]) if row else 0
+        return counts
+
+    def pcb_fork(
+        self, conn: Connection, src: Ref, *, slug: str, title: str
+    ) -> tuple[Ref, dict[str, int]]:
+        """Clone every row a design owns onto a fresh slug (``op='fork'``,
+        gr517199 — Reto's lossless copy the ``.epro2`` round-trip never
+        was: epro export drops part/LCSC fields, routed copper, nets with
+        fewer than two pins, and the caller's title).
+
+        Every table in :data:`_FORK_TABLES` copies verbatim — retired rows
+        included — with surrogate keys re-issued and sibling FK columns
+        re-pointed at the copy (``room_id`` → the new feature, netconns →
+        the new net/instance/pin/component ids, copper → the new
+        net/route ids, ``operands``/``objects``'s embedded ids through
+        :data:`_FORK_JSON_REMAPS`). Single-pin nets, routes' ``topology``/
+        ``layer_assign``, vias, zones/planes, stackup, net-class rules,
+        DRC run history and the argue ledger (``pcb_notes``) all carry.
+        The shared ``parts``/``part_footprints`` catalog is not design
+        state and is not copied; ``design_*`` branch/checkpoint/revision
+        rows do not carry — a fork is a new independent design, not a
+        branch of its source; tags do not propagate (the caller tags
+        the copy it wants marked); the ``card_combined`` chunk
+        regenerates through the canonical door rather than copying a row
+        (body chunks are append-only).
+
+        The new ref inherits the source's provider/authors/year/prio/
+        parent/owner/auto_refresh and ``meta`` verbatim, restamping
+        ``meta.forked_from = {ref_id, slug, at}`` (identity fields —
+        ref_id, slug, timestamps — are fresh by construction), and gets a
+        ``derived-from`` link to the source plus a verbatim copy of every
+        outbound ref-level link the source holds (its ``contains`` → part
+        edges and any earlier provenance). The source is read-only here:
+        no UPDATE or INSERT touches its ref or design rows. Runs inside
+        the caller's transaction — a failure anywhere rolls the whole
+        copy back.
+
+        Consistency: READ COMMITTED plus FOR SHARE row locks, each
+        table's rows locked as they are read in :data:`_FORK_TABLES`
+        (dependency) order — the ``pcb_guarded_tx`` move-guard pattern,
+        one level weaker since the fork only reads. A row once read
+        cannot be updated or deleted for the rest of the copy, so a
+        concurrent write can only land as a brand-new row; a new child
+        naming a parent that never entered the id maps aborts below
+        ("points outside the design" → ``Upstream`` + retry). A shared
+        REPEATABLE READ snapshot would give the same guarantee but
+        ``SET TRANSACTION`` must be a transaction's first statement and
+        dispatch's ``revision_context`` ``set_config`` has already run
+        by the time this is called (gr517199 re-review R1).
+
+        The fork never waits: ``lock_timeout`` is 300ms for the whole
+        copy. The lock order here (refs → children) is opposite to the
+        pcb write-backs' (children → refs) and to ``pcb_apply``'s
+        (refs → children), so no single order avoids every cycle — a
+        bounded wait means the fork can never be the surviving half of
+        a deadlock and never kills a place/route write-back either
+        (gr517199 re-review). A ``LockNotAvailable``/``DeadlockDetected``
+        anywhere maps to ``Upstream`` with a retry hint.
+        """
+        conn.execute("SET LOCAL lock_timeout = '300ms'")
+        try:
+            row = conn.execute(
+                "SELECT provider, authors, year, auto_refresh_days, "
+                "parent_id, prio, owner_login, meta FROM refs "
+                "WHERE ref_id = %s FOR SHARE",
+                (src.id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"pcb {src.id}: no live ref to fork")
+            meta = dict(row[7] or {})
+            meta["forked_from"] = {
+                "ref_id": int(src.id),
+                "slug": src.slug,
+                "at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+            ref = self.insert_ref(
+                kind="pcb",
+                slug=slug,
+                title=title,
+                provider=row[0],
+                authors=row[1],
+                year=row[2],
+                auto_refresh_days=row[3],
+                parent_id=row[4],
+                prio=row[5],
+                owner_login=row[6],
+                meta=meta,
+                conn=conn,
+            )
+            if ref.slug != slug:
+                # ``insert_ref``'s cite_key insert no-opped: a LIVE ref —
+                # any kind, cite_key is a global namespace — already holds
+                # the slug and only a retired owner's slug is stolen. The
+                # handler's pre-check can race, so re-check what actually
+                # landed: without this the copy would report success on a
+                # board no slug resolves to (gr517405's orphan shape).
+                raise BadInput(
+                    f"op='fork' writes a NEW board; slug {slug!r} is taken",
+                    next=f"put(kind='pcb', id='{slug}-2', args={{'op':'fork', "
+                    f"'from':'{src.slug or src.id}'}})",
+                )
+            maps: dict[str, dict[int, int]] = {"ref_id": {int(src.id): int(ref.id)}}
+            counts: dict[str, int] = {}
+            try:
+                for table, scope, key, map_name in _FORK_TABLES:
+                    order = f" ORDER BY {key}" if key else ""
+                    rows = conn.execute(
+                        f"SELECT to_jsonb(t) FROM {table} t "
+                        f"WHERE {_FORK_SCOPES[scope]}{order} FOR SHARE",
+                        (src.id,),
+                    ).fetchall()
+                    counts[table] = len(rows)
+                    for (original,) in rows:
+                        row_d = dict(original)
+                        old_id = row_d.pop(key) if key else None
+                        objects_remapped = False
+                        for column in list(row_d):
+                            mapping = maps.get(_FORK_ALIASES.get(column, column))
+                            if mapping is not None and row_d[column] is not None:
+                                try:
+                                    row_d[column] = mapping[row_d[column]]
+                                except KeyError as exc:
+                                    raise ValueError(
+                                        f"fork: {table}.{column}={row_d[column]} "
+                                        "points outside the design"
+                                    ) from exc
+                            json_map = _FORK_JSON_REMAPS.get(column)
+                            if json_map is not None:
+                                remapped = _remap_json_id_list(
+                                    row_d[column], maps.get(json_map) or {}, json_map
+                                )
+                                # R3: ``finding_key`` re-hashes only when an
+                                # embedded id actually moved — an unchanged
+                                # ``objects`` keeps the source key, so the
+                                # first_seen_at chain still matches.
+                                objects_remapped = objects_remapped or (
+                                    column == "objects" and remapped != row_d[column]
+                                )
+                                row_d[column] = remapped
+                        if (
+                            table == "pcb_drc_findings"
+                            and objects_remapped
+                            and row_d.get("finding_key") is not None
+                        ):
+                            row_d["finding_key"] = _fork_finding_key(row_d)
+                        columns = list(row_d)
+                        statement = sql.SQL(
+                            "INSERT INTO {table} ({columns}) SELECT {columns} "
+                            "FROM jsonb_populate_record(NULL::{table}, %s)"
+                        ).format(
+                            table=sql.Identifier(table),
+                            columns=sql.SQL(",").join(map(sql.Identifier, columns)),
+                        )
+                        if map_name is not None:
+                            assert key is not None  # _FORK_TABLES invariant
+                            statement += sql.SQL(" RETURNING {}").format(
+                                sql.Identifier(key)
+                            )
+                        cursor = conn.execute(statement, (Jsonb(row_d),))
+                        if map_name is not None:
+                            inserted = cursor.fetchone()
+                            assert inserted is not None and old_id is not None
+                            maps.setdefault(map_name, {})[int(old_id)] = int(
+                                inserted[0]
+                            )
+            except ValueError as exc:
+                # A child row naming a parent that never entered the maps —
+                # a cross-design FK on the source, or a brand-new row that
+                # committed between the FOR SHARE reads (the locks freeze
+                # rows already read but cannot freeze rows that did not yet
+                # exist). The transaction rolls the whole copy back either
+                # way (gr517199 review).
+                raise Upstream(
+                    f"pcb fork of {src.slug or src.id} aborted: {exc}",
+                    next="retry the same call once; if it fails again the "
+                    "source has rows pointing outside the design — file a "
+                    "gripe naming it",
+                ) from exc
+            # The board's own outbound edges (the ``contains`` → part links
+            # _pcb_reconcile_part_edges maintains, any hand-authored relations)
+            # copy verbatim; chunk-level src anchors are dropped — the copy's
+            # card chunk did not exist when they were written. FOR SHARE
+            # freezes the edge set against a concurrent unlink mid-copy.
+            conn.execute(
+                "SELECT link_id FROM links WHERE src_ref_id = %s "
+                "AND src_chunk_id IS NULL ORDER BY link_id FOR SHARE",
+                (src.id,),
+            ).fetchall()
+            cursor = conn.execute(
+                "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, "
+                "dst_chunk_id, relation, set_by, meta, trust_origin, "
+                "trust_confidence, trust_write_version, created_at) "
+                "SELECT %s, src_chunk_id, dst_ref_id, dst_chunk_id, relation, "
+                "set_by, meta, trust_origin, trust_confidence, "
+                "trust_write_version, created_at FROM links "
+                "WHERE src_ref_id = %s AND src_chunk_id IS NULL",
+                (ref.id, src.id),
+            )
+            counts["links"] = cursor.rowcount
+            conn.execute(
+                "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by, "
+                "meta) VALUES (%s, %s, 'derived-from', 'system', %s)",
+                (ref.id, src.id, Jsonb({"op": "fork"})),
+            )
+            self.chunks._replace_card_combined(
+                conn, ref_id=ref.id, card_text=self._pcb_card_text(conn, ref.id, title)
+            )
+            return ref, counts
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            raise Upstream(
+                f"pcb fork of {src.slug or src.id} could not lock the "
+                f"design rows: {exc}",
+                next="retry the same call in a moment — the source board "
+                "is mid-write; the fork never waits on it",
+            ) from exc
 
     # -- write helpers --------------------------------------------------
     def _pcb_insert_component(

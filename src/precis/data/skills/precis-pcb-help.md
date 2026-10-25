@@ -65,6 +65,21 @@ the board left unclassed (a class set on the board is kept and reported). Use a 
 slug for a faithful routed copy. Pinout-preview is an unsaved pin proposal
 on an existing board, not a source-board importer; it never adds copper.
 
+## Copy a board — `op='fork'`
+
+`put(id='<new slug>', args={'op':'fork','from':'<slug or pb<id>>'},
+title=...)` is THE way to copy a board: a lossless clone of every pcb
+table row (parts with LCSC/footprint/poses, pins, nets — single-pin nets
+included — pad-net rows, routed copper with topology/layer assignments,
+vias, zones, stackup, rules, DRC history), one transaction, provenance
+stamped (`derived-from` link + `meta.forked_from`), source untouched.
+The copy is a new independent design — branch/checkpoint/revision
+history (`design_*` rows) does not carry.
+`args={'dry_run': true}` reports the per-table counts without writing.
+`op='import_epro'` is LOSSY by comparison — part/LCSC fields, routed
+copper and nets under two pins fall off the .epro2 round-trip — use it
+only for EasyEDA interop, never to copy a precis board.
+
 ## Author a design — `put(id=<slug>, args={…})`
 
 The batch `put` keys and the construction ops (`class_rules`, `stackup`, `plane_net`, `profile`, `pins`, `pin_rename`, `pin_remove`, `corner_nuts`) still work but are being retired when pcb workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the design), not new ops.

@@ -1568,6 +1568,26 @@ class RefsMixin:
             row = c.execute(sql, (kind, ref_id)).fetchone()
         return _row_to_ref(row) if row is not None else None
 
+    def live_slug_owner(
+        self, slug: str, *, conn: Connection | None = None
+    ) -> Ref | None:
+        """The live ref holding ``slug`` as its ``cite_key`` — ANY kind.
+        ``get_ref``'s kind filter cannot answer "is this slug taken?":
+        cite_key is a global namespace, so a slug held by a different
+        kind reads as free through a kind-scoped probe and the insert
+        then orphans the new ref (gr517405). Handlers minting a fresh
+        slug-addressed ref probe here first."""
+        with nullcontext(conn) if conn is not None else self.pool.connection() as c:
+            row = c.execute(
+                f"SELECT {_REFS_COLS} FROM refs "
+                "WHERE ref_id = ("
+                "  SELECT ref_id FROM ref_identifiers "
+                "  WHERE id_kind = 'cite_key' AND id_value = %s"
+                ") AND retired_at IS NULL",
+                (slug,),
+            ).fetchone()
+        return _row_to_ref(row) if row is not None else None
+
     def find_paper_slug_by_doi(self, doi: str) -> str | None:
         """Look up a paper's slug (cite_key) by its DOI — lets the paper
         ``get`` entry point address a paper by DOI in addition to its

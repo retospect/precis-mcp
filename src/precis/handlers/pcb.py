@@ -300,12 +300,17 @@ _ORDER_OPS = ("order",)
 #: export into a new preview slug, server-side. Addresses a slug that does
 #: not exist yet, so ``put`` routes it before the existing-design lookup.
 _IMPORT_OPS = ("import_epro",)
+#: gr517199 — the lossless board copy; like _IMPORT_OPS it addresses a
+#: slug that does not exist yet, so ``put`` routes it before the
+#: existing-design lookup.
+_FORK_OPS = ("fork",)
 _OPS = (
     *_JOB_OPS,
     *_INLINE_EDIT_OPS,
     *_FOOTPRINT_OPS,
     *_ORDER_OPS,
     *_IMPORT_OPS,
+    *_FORK_OPS,
     "datasheets",
     "review",
     "check",
@@ -1106,6 +1111,8 @@ class PcbHandler(Handler):
             # components/nets diff.
             if op in _IMPORT_OPS:
                 return self._op_import_epro(slug, args)
+            if op in _FORK_OPS:
+                return self._op_fork(slug, args, title=title, tags=tags, untags=untags)
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
             resp = self._dispatch_op(ref, str(op), args)
             if tags or untags:
@@ -4987,6 +4994,90 @@ class PcbHandler(Handler):
                 f"Next: get(kind='pcb', id='{slug}'). Locked parts stay locked; "
                 "op='route' re-places the unlocked ones first."
             )
+        return Response(body="\n".join(lines))
+
+    def _op_fork(
+        self,
+        slug: str,
+        args: dict[str, Any],
+        *,
+        title: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+    ) -> Response:
+        """``put(id=<new slug>, args={'op':'fork','from':<src>})`` — the
+        lossless board copy (gr517199): :meth:`Store.pcb_fork` clones
+        every table the design owns in one transaction (parts with
+        LCSC/footprint/poses, pins, nets — single-pin nets included —,
+        netconns, routed copper with ``topology``/``layer_assign``, vias,
+        planes, stackup, rules, netlist snapshots, DRC history, the argue
+        ledger), restamps ``meta.forked_from`` and adds a ``derived-from``
+        link. A fork is a new independent design — the ``design_*``
+        branch/checkpoint/revision history does NOT carry. The source is
+        never written. ``'dry_run': True`` reports the per-table counts
+        without writing. The ``import_epro`` round-trip is the LOSSY path
+        — parts/LCSC, copper and sub-2-pin nets fall off it; use it only
+        for EasyEDA interop."""
+        src = str(args.get("from") or "").strip()
+        example = (
+            f"put(kind='pcb', id='{slug}', args={{'op':'fork', "
+            "'from':'<existing board slug or pb<id>>'}})"
+        )
+        if not src:
+            raise BadInput(
+                "op='fork' needs from='<board slug>'",
+                next=example,
+            )
+        if src == slug:
+            raise BadInput(
+                f"op='fork' writes a NEW board; id={slug!r} is its source",
+                next=f"put(kind='pcb', id='{slug}-fork', args={{'op':'fork', "
+                f"'from':'{src}'}})",
+            )
+        src_ref = resolve_live_slug_ref(self.store, kind="pcb", id=src)
+        owner = self.store.live_slug_owner(slug)
+        if owner is not None:
+            # cite_key is a global namespace — a slug held by another
+            # kind is just as taken (gr517405).
+            raise BadInput(
+                f"op='fork' writes a NEW board; slug {slug!r} is taken "
+                f"by a live {owner.kind} ref",
+                next=f"put(kind='pcb', id='{slug}-2', args={{'op':'fork', "
+                f"'from':'{src}'}})",
+            )
+        ttl = (title or f"{src_ref.title} (fork)").strip() or slug
+        dry_run = bool(args.get("dry_run"))
+        if dry_run:
+            with self.store.tx() as conn:
+                counts = self.store.pcb_fork_counts(conn, src_ref.id)
+            lines = [
+                f"# fork {src_ref.slug or src} → {slug}: would copy "
+                f"{sum(counts.values())} row(s)",
+                *[f"{table}: {n}" for table, n in counts.items() if n],
+                "dry run — nothing was written. Next: the same put without "
+                "'dry_run' writes it.",
+            ]
+            return Response(body="\n".join(lines))
+        with self.store.tx() as conn:
+            ref, counts = self.store.pcb_fork(conn, src_ref, slug=slug, title=ttl)
+            if tags or untags:
+                apply_tag_ops(
+                    self.store,
+                    "pcb",
+                    ref.id,
+                    tags=tags,
+                    untags=untags,
+                    conn=conn,
+                )
+        handle = handle_registry.try_format("pcb", ref.id)
+        lines = [
+            f"# fork {src} → {slug} ({handle or ref.id}): copied "
+            f"{sum(counts.values())} row(s)",
+            *[f"{table}: {n}" for table, n in counts.items() if n],
+            f"title: {ttl}",
+            f"provenance: derived-from → {src}; meta.forked_from stamped",
+            f"Next: get(kind='pcb', id='{slug}').",
+        ]
         return Response(body="\n".join(lines))
 
     def _render_epro(self, ref_id: int, args: dict[str, Any]) -> Response:
