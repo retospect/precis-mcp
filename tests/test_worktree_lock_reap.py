@@ -1172,18 +1172,24 @@ def _reap_env(**overrides: str) -> dict[str, str]:
 
 
 def _subagent_event(
-    tree: Path, event: str, agent_id: str, cwd: Path | None = None
+    tree: Path,
+    event: str,
+    agent_id: str,
+    cwd: Path | None = None,
+    payload: dict[str, str] | None = None,
 ) -> None:
     """Fire the real SubagentStart/SubagentStop hook with its project dir set
     to <tree> — the PARENT session's tree, which is all the hook's command
     line can ever name. <cwd> is the payload's `cwd` field, what the harness
     reports as the agent's own tree for a worktree-isolated subagent
-    (gr513859). Run as a plain subprocess, so no `claude` ancestor exists
-    and the marker carries no pid (the no-pid path is exercised too)."""
+    (gr513859); <payload> overrides the whole stdin object when a test needs
+    the real wire shape. Run as a plain subprocess, so no `claude` ancestor
+    exists and the marker carries no pid (the no-pid path is exercised too)."""
     script = tree / "scripts" / "hooks" / "subagent-task-state.py"
-    payload: dict[str, str] = {"agent_id": agent_id}
-    if cwd is not None:
-        payload["cwd"] = str(cwd)
+    if payload is None:
+        payload = {"agent_id": agent_id}
+        if cwd is not None:
+            payload["cwd"] = str(cwd)
     result = subprocess.run(
         [str(script), event, str(tree)],
         cwd=str(tree),
@@ -1741,6 +1747,54 @@ def test_reap_worktrees_grace_period_still_reaps_when_nothing_changes(
     assert not b.exists()
     wt_list = _git(primary, "worktree", "list", "--porcelain").stdout
     assert str(b) not in wt_list
+
+
+# The real SubagentStart wire shape, captured from a live session's hook
+# run (gr514913): field set verbatim, values scrubbed. A worktree-isolated
+# task's payload `cwd` names its own `agent-<agent_id>` worktree; a
+# non-isolated task's carries the parent's cwd — both confirmed against
+# <git-common>/precis-agent-tasks/payloads.jsonl.
+_REAL_SUBAGENT_START_PAYLOAD = {
+    "session_id": "00000000-0000-4000-8000-000000000000",
+    "transcript_path": "/tmp/scrubbed-project/session.jsonl",
+    "prompt_id": "11111111-1111-4111-8111-111111111111",
+    "agent_id": "a1b2c3d4e5f6a7b8c",
+    "agent_type": "general-purpose",
+    "hook_event_name": "SubagentStart",
+}
+
+
+def test_subagent_hook_parses_the_real_payload_shape(
+    guard_repo: dict[str, Path],
+) -> None:
+    """gr514913: feed the hook the real SubagentStart payload (the field set
+    a live run emits, scrubbed — _REAL_SUBAGENT_START_PAYLOAD). The isolated
+    task's `cwd` names its own `agent-<agent_id>` tree, so the marker scopes
+    there, not to the hook's project dir (the parent's tree)."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    agent_id = _REAL_SUBAGENT_START_PAYLOAD["agent_id"]
+    agent = primary / ".claude" / "worktrees" / f"agent-{agent_id}"
+    payload = {**_REAL_SUBAGENT_START_PAYLOAD, "cwd": str(agent)}
+    _subagent_event(primary, "start", agent_id, payload=payload)
+    try:
+        marker = json.loads(
+            (_task_state_dir(primary) / f"{agent_id}.json").read_text(encoding="utf-8")
+        )
+        assert marker["agent_id"] == agent_id, marker
+        assert marker["cwd"] == str(agent.resolve()), marker
+        assert _check_task(primary, agent) == (0, agent_id)
+        assert _check_task(primary, primary) == (1, "")
+        assert _check_task(primary, b) == (1, "")
+
+        rec = json.loads(
+            (_task_state_dir(primary) / "payloads.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[-1]
+        )
+        assert rec["action"] == "start"
+        assert rec["payload"] == payload
+    finally:
+        _subagent_event(primary, "stop", agent_id)
 
 
 def test_subagent_hook_logs_raw_payload(guard_repo: dict[str, Path]) -> None:

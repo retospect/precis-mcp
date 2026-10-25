@@ -100,8 +100,21 @@ stale refetch, a `put(mode='import')` of the same query), the remaining
 pages come from the new body, or from a fresh paid call, not from the
 report you started reading.
 
-Two distinct queries whose first 60 characters match slug to the same
-row. That write is refused rather than overwriting:
+To read a cached answer **whole** in one call — no 4 KB fold, no
+`more()` drain — use `view='body'`:
+
+```python
+get(kind="perplexity-reasoning", id="<slug>", view="body")
+```
+
+It is read-only: `view='body'` implies `no_fetch` (a miss just reports
+"not cached yet"), and it refuses to combine with `refresh`.
+
+New refs mint `<60-char slug>-<sha8>` — the tail is a hash of the full
+`model:query` key, so two queries that share a long lead-in now get
+distinct slugs instead of colliding (rows minted before the change keep
+their old slug; both resolve). A refusal now means a *genuine* same-slug
+match — a different query already holds that exact slug:
 
 ```python
 # BadInput: perplexity-research: '<query B>' slugs to '<slug>', which
@@ -109,9 +122,9 @@ row. That write is refused rather than overwriting:
 ```
 
 Read the existing row with `get(kind=…, id="<slug>", args={"no_fetch":
-True})`, or rephrase so the first 60 characters differ (or import under a
-distinct explicit `id=`). Same-query refetches and re-imports still replace
-in place; only a *different* stored query is protected.
+True})`, or rephrase (or import under a distinct explicit `id=`).
+Same-query refetches and re-imports still replace in place; only a
+*different* stored query is protected.
 
 ## Pick the right kind
 ## Which model do I want — websearch, perplexity-reasoning, or perplexity-research?
@@ -219,7 +232,7 @@ queries without writing.
   like a misrouted ref-id; retrieve it as `get(id='<kind>:<n>')`, or
   pass `args={'literal': True}` to search the number for real.
 - `BadInput: <kind>: '<query>' slugs to '<slug>', which already holds a
-  different report …` — two queries share their first 60 characters;
+  different report …` — a different query genuinely owns that slug;
   read the existing row with `args={'no_fetch': True}` or rephrase.
 - `BadInput: <kind> only supports mode='import' for put` — `put` is
   scoped to imports.

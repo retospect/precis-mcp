@@ -1168,6 +1168,14 @@ class DispatchMixin(RuntimeShape):
                 # filter-ready bar. Best-effort: never fails a search.
                 if verb == "search":
                     response = _with_categorizer_filter_notes(self, args, response)
+                # ``Response.unfolded`` (a cache-backed ``view='body'``
+                # read, gr517274) opts this body out of the write-time
+                # fold regardless of the serving surface's fold policy —
+                # the caller asked for the stored body whole. Ordinary
+                # frame pagination (``PRECIS_MAX_BODY_BYTES``) still
+                # applies, and the flag rides cursor chains via
+                # ``_CachedTail.fold``.
+                fold = fold and not response.unfolded
                 # Chunk over-large bodies so they don't blow the
                 # MCP stdio frame. On a long-lived runtime (MCP
                 # server / `precis repl`) the pagination cache stashes
@@ -1612,7 +1620,10 @@ class DispatchMixin(RuntimeShape):
                 verb="get",
                 args=decoded.args,
                 body_hash=decoded.body_hash,
-                fold=fold,
+                # An ``unfolded`` replay (the cursor's args carry
+                # ``view='body'``) must not hand a folded chain to the
+                # draining caller.
+                fold=fold and not response.unfolded,
             )
         return page_body, False
 

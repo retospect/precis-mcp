@@ -379,6 +379,24 @@ class CacheBackedHandler(Handler):
                 ),
             )
 
+        # ``view='body'`` (gr517274): read one cached ref's body whole —
+        # the render is marked ``unfolded`` so dispatch skips the
+        # write-time context fold (a ~20 KB perplexity-reasoning answer
+        # used to arrive folded at 4 KB, needing 7–9 more() calls to
+        # drain). Read-only: it implies ``no_fetch`` below, so the view
+        # can never fire a provider call. Any other non-None view that
+        # reaches a cache-backed ``get`` is unknown — the dispatcher
+        # consumes the eye-ladder labels before this method runs.
+        if view is not None and view != "body":
+            raise BadInput(
+                f"unknown view={view!r} for kind={self.spec.kind!r}",
+                options=["body"],
+                next=(
+                    f"get(kind={self.spec.kind!r}, id=<slug>, view='body') "
+                    "reads a cached ref whole, without the context fold"
+                ),
+            )
+
         # Chunk selector: ``get(id='<slug>~<ord>')`` — the shape the
         # dispatcher rewrites a resolved chunk handle (``nc<id>``) into for
         # any kind declaring ``supports_chunk_selectors=True`` (gr311336).
@@ -389,7 +407,11 @@ class CacheBackedHandler(Handler):
             sel = _CHUNK_SELECTOR_RE.match(id.strip())
             if sel is not None:
                 return self._render_chunk_selector(
-                    sel.group(1), int(sel.group(2)), tags=tags, untags=untags
+                    sel.group(1),
+                    int(sel.group(2)),
+                    tags=tags,
+                    untags=untags,
+                    view=view,
                 )
 
         # ``mode=`` validation. Today only ``refresh`` is honoured —
@@ -409,6 +431,20 @@ class CacheBackedHandler(Handler):
                     ),
                 )
             force_refresh = True
+        # ``view='body'`` is a read of the stored row — never a re-fetch —
+        # so it implies ``no_fetch``; combining it with a refresh request
+        # is contradictory and refused rather than silently resolved.
+        if view == "body":
+            if force_refresh:
+                raise BadInput(
+                    f"view='body' is read-only for kind={self.spec.kind!r} "
+                    "— it never re-fetches",
+                    next=(
+                        "drop view='body' to refresh, or drop "
+                        "mode='refresh'/refresh=True to read the stored body"
+                    ),
+                )
+            no_fetch = True
         # Per-call ``ttl_days=`` override. Translates to seconds at the
         # cache-write site; None/0/negative collapses to "pin forever".
         ttl_seconds_override: int | None = None
@@ -469,7 +505,7 @@ class CacheBackedHandler(Handler):
                             # Read-only view (web detail page): serve the
                             # stored body — fresh or stale — never fetch.
                             self._apply_tag_ops_if_any(ref.id, tags, untags)
-                            return self._render(ref, cache, hit=True)
+                            return self._render_view(ref, cache, hit=True, view=view)
                         if force_refresh:
                             recovered = self._recover_key(ref, cache)
                             if recovered is None:
@@ -492,7 +528,7 @@ class CacheBackedHandler(Handler):
                             )
                         if self._is_fresh(cache):
                             self._apply_tag_ops_if_any(ref.id, tags, untags)
-                            return self._render(ref, cache, hit=True)
+                            return self._render_view(ref, cache, hit=True, view=view)
             raise canonical_err
 
         request_hash = self._hash(key)
@@ -503,7 +539,7 @@ class CacheBackedHandler(Handler):
         if cached is not None and self._is_fresh(cached[1]) and not force_refresh:
             ref, cache = cached
             self._apply_tag_ops_if_any(ref.id, tags, untags)
-            return self._render(ref, cache, hit=True)
+            return self._render_view(ref, cache, hit=True, view=view)
 
         # Read-only path — the web detail page renders an existing entry
         # and must NEVER trigger a paid fetch. A slug passed as id= (the
@@ -543,7 +579,7 @@ class CacheBackedHandler(Handler):
             if entry is not None:
                 ref, cache = entry
                 self._apply_tag_ops_if_any(ref.id, tags, untags)
-                return self._render(ref, cache, hit=True)
+                return self._render_view(ref, cache, hit=True, view=view)
             raise NotFound(
                 f"{self.spec.kind} {(id if isinstance(id, str) else q)!r} "
                 "is not cached yet",
@@ -601,7 +637,7 @@ class CacheBackedHandler(Handler):
         )
         self._apply_tag_ops_if_any(ref.id, tags, untags)
         self._attribute_touch(ref.id)
-        return self._render(ref, cache, hit=False)
+        return self._render_view(ref, cache, hit=False, view=view)
 
     # ── refresh / tag helpers ─────────────────────────────────────────
 
@@ -677,6 +713,7 @@ class CacheBackedHandler(Handler):
         *,
         tags: list[str] | None,
         untags: list[str] | None,
+        view: str | None = None,
     ) -> Response:
         """Render ONE stored chunk of a cached ref — the ``slug~ord``
         chunk-selector target (gr311336).
@@ -715,7 +752,7 @@ class CacheBackedHandler(Handler):
             "",
             f"- {self.attribution}",
         ]
-        return Response(body="\n".join(lines))
+        return Response(body="\n".join(lines), unfolded=view == "body")
 
     def _attribute_touch(self, ref_id: int) -> None:
         """Attribute a freshly-created cache ref's chunks to the current
@@ -949,6 +986,20 @@ class CacheBackedHandler(Handler):
 
         cost = self._cost_str(cache, hit=hit)
         return Response(body="\n".join(lines), cost=cost)
+
+    def _render_view(
+        self, ref: Ref, cache: CacheEntry, *, hit: bool, view: str | None
+    ) -> Response:
+        """``_render`` plus the ``view='body'`` marker (gr517274): the
+        response is flagged ``unfolded`` so dispatch serves the whole
+        body — no head+marker+tail context fold. Plain renders pass
+        through byte-identical. Calls the virtual ``_render`` so a
+        subclass's wrapper (perplexity's citations/escalation trailer)
+        still applies."""
+        resp = self._render(ref, cache, hit=hit)
+        if view == "body":
+            return replace(resp, unfolded=True)
+        return resp
 
     def _cost_str(self, cache: CacheEntry, *, hit: bool) -> str:
         """Format the cost trailer with a qualitative cost band.

@@ -53,6 +53,14 @@ class Response:
     #: must not set this (live licensed data may not be cached).
     fold_tail: str | None = None
 
+    #: ``True`` asks the dispatcher to skip the write-time context fold
+    #: (``PRECIS_TOOL_RESULT_FOLD_BYTES``) for this response — set by read
+    #: paths where the caller explicitly asked for the stored body whole,
+    #: e.g. ``view='body'`` on the cache-backed kinds (gr517274).
+    #: Ordinary frame pagination (``PRECIS_MAX_BODY_BYTES``) still
+    #: applies; only the head+marker+tail fold is suppressed.
+    unfolded: bool = False
+
     #: How many items the body enumerates when the response is a result
     #: set — search hits / list rows shown on this page, the batch size
     #: on a multi-id ``get``, ``1`` for a single-ref read, ``0`` for an

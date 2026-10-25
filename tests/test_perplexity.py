@@ -15,7 +15,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.embedder import EmbedderUnavailable, MockEmbedder
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers.perplexity import (
     ResearchHandler,
     ThinkHandler,
@@ -289,15 +289,21 @@ def test_literal_flag_allows_bare_number_search(
 def test_numeric_slug_ref_served_free_on_retrieval(
     websearch: WebsearchHandler,
 ) -> None:
-    """When a websearch ref's own slug *is* the number, base ``get``'s
-    slug fallback serves it from cache for free — no new paid call and
-    no rejection — so the guard never strands an existing ref."""
-    # Create a ref whose slug is "171" via an explicit literal search.
-    websearch.get(q="171", literal=True)
-    _StubClient.last_payload = None  # forget the creating call
-    # Non-literal retrieval by the numeric slug hits cache.
+    """A ref whose stored slug *is* the bare number — a shape only a row
+    minted before the ``-<sha8>`` suffix can carry — is still served by
+    base ``get``'s slug fallback for free: no new paid call and no
+    rejection, so the bare-number guard never strands an existing ref."""
+    websearch.store.put_cache_entry(
+        kind="websearch",
+        slug="171",
+        title="the number one seven one",
+        body_blocks=websearch._blocks_from_report("# n\n\nlegacy numeric body"),
+        provider="perplexity",
+        request_hash="legacy-numeric",
+        ttl_seconds=None,
+    )
     resp = websearch.get(id="171")
-    assert "Dario Amodei" in resp.body
+    assert "legacy numeric body" in resp.body
     assert _StubClient.last_payload is None  # served from cache, no fetch
 
 
@@ -331,11 +337,24 @@ def test_import_of_numeric_query_not_blocked(
     research_with_embedder: ResearchHandler,
 ) -> None:
     """The import path passes ``literal=True`` — a legitimately numeric
-    query can still be hydrated at $0 without tripping the guard."""
+    query can still be hydrated at $0 without tripping the guard. The
+    ack must advertise a read-back call that actually resolves:
+    ``id='171'`` would trip the bare-number guard, so the hint names
+    the stored slug with ``no_fetch=True``."""
     h = research_with_embedder
-    h.put(id="171", text="# n\n\nthe number one seven one", mode="import")
-    resp = h.get(id="171")  # served from the imported cache row, free
+    put_resp = h.put(id="171", text="# n\n\nthe number one seven one", mode="import")
+    assert "no_fetch=True" in put_resp.body
+    assert "id='171'" not in put_resp.body
+    cached = h.store.get_cache_entry(
+        provider="perplexity",
+        request_hash=h._hash(h._canonical_key("171", literal=True)),
+    )
+    assert cached is not None
+    slug = cached[0].slug
+    assert slug is not None and slug.startswith("171-")
+    resp = h.get(id=slug, no_fetch=True)  # served from the imported row, free
     assert "one seven one" in resp.body
+    assert _StubClient.last_payload is None
 
 
 # ── search block handle guard ────────────────────────────────────────
@@ -1308,9 +1327,12 @@ def test_search_supports_announced_in_kind_spec() -> None:
         assert cls.spec.supports_search_hits is True, cls.__name__
 
 
-# ── truncated-slug collision guard ──────────────────────────────────
+# ── slug scheme: 60-char prefix + 8-hex key hash (gr517283) ─────────
 
-# Both queries slug to the same 60-char prefix; only the tail differs.
+# Both queries share a >60-char prefix; only the tail differs. Under the
+# pre-suffix slug scheme they minted the same ref slug and the second was
+# refused as an overwrite (the design-tree pilot gripe); under the
+# hash-suffixed scheme each gets its own row.
 _LONG_PREFIX = "electrowetting on dielectric droplet actuation in silicone oil"
 _QUERY_A = f"{_LONG_PREFIX} review of contact angle saturation"
 _QUERY_B = f"{_LONG_PREFIX} chemical synthesis protocols"
@@ -1327,32 +1349,192 @@ def _import_a(h: ResearchHandler) -> str:
     return slug
 
 
-def test_truncated_slug_collision_fixture_collides(
+def _legacy_slug(query: str) -> str:
+    """The pre-gr517283 slug form: query slugified at 60 chars, no hash."""
+    from precis.utils.slug import slug_from_text
+
+    return slug_from_text(query, max_len=60) or "perplexity-query"
+
+
+def test_new_slug_is_readable_prefix_plus_hash_tail(
     research_with_embedder: ResearchHandler,
 ) -> None:
+    """New refs mint ``<60-char slug>-<8 hex>`` — readable, but keyed on a
+    hash of the full canonical key so shared prefixes can't collide."""
+    h = research_with_embedder
+    slug = h._slug_for(h._canonical_key(_QUERY_A))
+    prefix, _, tail = slug.rpartition("-")
+    assert prefix == _legacy_slug(_QUERY_A)
+    assert len(tail) == 8
+    assert all(c in "0123456789abcdef" for c in tail)
+
+
+def test_shared_prefix_queries_mint_distinct_slugs(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """The gripe's exact shape: same 60-char slug prefix, different query
+    tail → different slugs now (the readable part still collides — only
+    the hash separates them)."""
     h = research_with_embedder
     assert _QUERY_A != _QUERY_B
-    assert h._slug_for(h._canonical_key(_QUERY_A)) == h._slug_for(
-        h._canonical_key(_QUERY_B)
+    slug_a = h._slug_for(h._canonical_key(_QUERY_A))
+    slug_b = h._slug_for(h._canonical_key(_QUERY_B))
+    assert slug_a != slug_b
+    assert slug_a.rpartition("-")[0] == slug_b.rpartition("-")[0]
+
+
+def test_shared_prefix_get_fetches_second_query(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """A hash miss on a shared-prefix query no longer lands on (and is
+    refused over) the first query's row — it fetches its own."""
+    h = research_with_embedder
+    slug_a = _import_a(h)
+
+    resp = h.get(q=_QUERY_B)
+
+    assert _StubClient.call_count == 1
+    assert "Dario Amodei" in resp.body
+    assert "keep this report" in h.get(id=slug_a, no_fetch=True).body
+
+
+def test_shared_prefix_imports_both_land(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """Both templated queries import — no overwrite refusal, two rows."""
+    h = research_with_embedder
+    slug_a = _import_a(h)
+
+    resp = h.put(id=_QUERY_B, text="# B\n\nunrelated report", mode="import")
+
+    slug_b = h._slug_for(h._canonical_key(_QUERY_B))
+    assert slug_b != slug_a
+    assert slug_b in resp.body
+    assert "keep this report" in h.get(id=slug_a, no_fetch=True).body
+    assert "unrelated report" in h.get(id=slug_b, no_fetch=True).body
+
+
+def _plant(
+    h: ResearchHandler, *, slug: str, request_hash: str, query: str | None
+) -> str:
+    """Write a cache row directly, shaped like a row the importer or an
+    older code version would have left (caller picks the slug form and
+    whether meta.query was tracked)."""
+    h.store.put_cache_entry(
+        kind="perplexity-research",
+        slug=slug,
+        title="planted",
+        body_blocks=h._blocks_from_report("# planted\n\nkeep this report"),
+        provider="perplexity",
+        request_hash=request_hash,
+        ttl_seconds=None,
+        cache_meta={
+            "model": "sonar-deep-research",
+            **({"query": query} if query is not None else {}),
+        },
+    )
+    return slug
+
+
+def test_legacy_slug_resolves_unchanged(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """Rows minted before the hash suffix keep the un-suffixed slug:
+    verbatim slug reads and request_hash hits both still land on it."""
+    h = research_with_embedder
+    legacy = _legacy_slug(_QUERY_A)
+    _plant(
+        h,
+        slug=legacy,
+        request_hash=h._hash(h._canonical_key(_QUERY_A)),
+        query=_QUERY_A,
+    )
+
+    resp = h.get(id=legacy, no_fetch=True)
+    assert "keep this report" in resp.body
+    assert _StubClient.call_count == 0
+    # The original query still hits the same row by request_hash.
+    resp2 = h.get(q=_QUERY_A)
+    assert "keep this report" in resp2.body
+    assert _StubClient.call_count == 0
+
+
+def test_reimport_of_legacy_slugged_query_refreshes_in_place(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """Re-importing a query cached under a legacy slug must not mint a
+    second row — the UNIQUE (provider, request_hash) constraint would
+    500 on a fresh insert. The row refreshes in place, keeping the
+    legacy slug and ref id."""
+    h = research_with_embedder
+    legacy = _plant(
+        h,
+        slug=_legacy_slug(_QUERY_A),
+        request_hash=h._hash(h._canonical_key(_QUERY_A)),
+        query=_QUERY_A,
+    )
+    before = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=legacy)
+    assert before is not None
+    ref_id = before[0].id
+
+    resp = h.put(id=_QUERY_A, text="# A\n\nre-imported body", mode="import")
+
+    assert "re-imported" in resp.body
+    after = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=legacy)
+    assert after is not None
+    assert after[0].id == ref_id
+    assert "re-imported body" in h.get(id=legacy, no_fetch=True).body
+    # No second row under the new hash-suffixed slug.
+    new_slug = h._slug_for(h._canonical_key(_QUERY_A))
+    assert new_slug != legacy
+    assert (
+        h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=new_slug)
+        is None
     )
 
 
-@pytest.mark.parametrize("query_arg", ["id", "q"])
-def test_truncated_slug_collision_get_refuses_overwrite(
-    research_with_embedder: ResearchHandler, query_arg: str
+def test_reimport_under_new_slug_also_refreshes_in_place(
+    research_with_embedder: ResearchHandler,
 ) -> None:
+    """Same-query re-import under the hash-suffixed scheme refreshes the
+    row — ref id and any annotations survive (no delete+insert)."""
     h = research_with_embedder
     slug = _import_a(h)
+    entry = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
+    assert entry is not None
+    ref_id = entry[0].id
 
-    kwargs: dict[str, Any] = {query_arg: _QUERY_B}
+    h.put(id=_QUERY_A, text="# A\n\nre-imported body", mode="import")
+
+    after = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
+    assert after is not None
+    assert after[0].id == ref_id
+    assert "re-imported body" in h.get(id=slug, no_fetch=True).body
+
+
+def test_same_slug_different_query_still_refused(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """The collision guard still fires on a *genuine* same-slug match:
+    a live row sitting under the slug a different query now mints
+    (a legacy row that happens to equal the new form, or a hash-tail
+    clash)."""
+    h = research_with_embedder
+    key_b = h._canonical_key(_QUERY_B)
+    slug_b = h._slug_for(key_b)
+    _plant(
+        h,
+        slug=slug_b,
+        request_hash="some-other-hash",
+        query=_QUERY_A,
+    )
+
     with pytest.raises(BadInput, match="already holds") as err:
-        h.get(**kwargs)
-
-    msg = str(err.value)
-    assert slug in msg and _QUERY_A in msg
+        h.get(q=_QUERY_B)
     assert _StubClient.call_count == 0
-    assert "keep this report" in h.get(id=_QUERY_A).body
-    assert "keep this report" in h.get(id=slug, no_fetch=True).body
+    msg = str(err.value)
+    assert slug_b in msg and _QUERY_A in msg
+    assert "keep this report" in h.get(id=slug_b, no_fetch=True).body
 
     def replay_hint(verb: str, kwargs: dict[str, Any]) -> Any:
         extras = kwargs.pop("args", {})
@@ -1360,33 +1542,18 @@ def test_truncated_slug_collision_get_refuses_overwrite(
 
     hints = assert_hints_round_trip(str(err.value.next), replay_hint, whole_body=True)
     assert any("no_fetch" in hint for hint in hints)
-    assert "rephrase" in str(err.value.next)
-    assert _StubClient.call_count == 0
-
-
-def test_truncated_slug_collision_import_refuses_overwrite(
-    research_with_embedder: ResearchHandler,
-) -> None:
-    h = research_with_embedder
-    slug = _import_a(h)
 
     with pytest.raises(BadInput, match="already holds"):
         h.put(id=_QUERY_B, text="# B\n\nunrelated report", mode="import")
-
-    assert "keep this report" in h.get(id=slug, no_fetch=True).body
-    assert (
-        h.store.get_cache_entry(
-            provider="perplexity", request_hash=h._hash(h._canonical_key(_QUERY_B))
-        )
-        is None
-    )
+    assert _StubClient.call_count == 0
 
 
-def test_same_query_whitespace_variant_still_refreshes_in_place(
+def test_same_query_whitespace_variant_mints_sibling_row(
     research_with_embedder: ResearchHandler,
 ) -> None:
-    """Internal whitespace changes the hash but not the query; the slug
-    match refreshes the row in place as before, no refusal."""
+    """A whitespace variant is a different canonical key — different
+    request_hash AND a different hash tail — so it fetches and mints a
+    sibling row rather than refreshing the first query's in place."""
     h = research_with_embedder
     slug = _import_a(h)
     spaced = _QUERY_A.replace("droplet", "droplet  ")
@@ -1405,19 +1572,88 @@ def test_slug_match_without_stored_query_keeps_legacy_refresh(
     """A row written before ``query`` was tracked in meta cannot be
     compared; the pre-guard in-place refresh stays."""
     h = research_with_embedder
-    key = h._canonical_key(_QUERY_A)
-    h.store.put_cache_entry(
-        kind="perplexity-research",
+    key = h._canonical_key(_QUERY_B)
+    slug = _plant(
+        h,
         slug=h._slug_for(key),
-        title="legacy",
-        body_blocks=h._blocks_from_report("# legacy\n\nold body"),
-        provider="perplexity",
         request_hash="legacy-hash",
-        ttl_seconds=None,
-        cache_meta={"model": "sonar-deep-research"},
+        query=None,
     )
 
     resp = h.get(q=_QUERY_B)
 
     assert _StubClient.call_count == 1
     assert "Dario Amodei" in resp.body
+    after = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
+    assert after is not None
+    assert (after[1].meta or {}).get("query") == _QUERY_B
+
+
+# ── view='body' — the unfolded whole-body read (gr517274) ────────────
+#
+# The gripe: a ~20 KB perplexity-reasoning answer arrived folded at the
+# ~4 KB context budget (head + elision marker + tail), so reading one
+# cached answer whole took 7–9 sequential more() calls — with no MCP
+# path to the unfolded body at all. view='body' is that path: read-only
+# (implies no_fetch), and the response carries ``unfolded=True`` so the
+# dispatcher skips the write-time fold.
+
+
+def test_body_view_serves_whole_body_unfolded(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    h = research_with_embedder
+    h.put(id="catalyst survey", text=_SAMPLE_RESEARCH_REPORT, mode="import")
+    calls = _StubClient.call_count
+
+    resp = h.get(id="catalyst survey", view="body")
+
+    assert resp.unfolded is True
+    assert "Cobalt phthalocyanine" in resp.body
+    # view='body' implies no_fetch — a read never fires a paid call.
+    assert _StubClient.call_count == calls
+
+
+def test_body_view_by_slug_unfolded(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """The /recent-advertised slug round-trips through view='body' too
+    (the verbatim-slug branch of the no_fetch path)."""
+    h = research_with_embedder
+    slug = _import_a(h)
+
+    resp = h.get(id=slug, view="body")
+
+    assert resp.unfolded is True
+    assert "keep this report" in resp.body
+    assert _StubClient.call_count == 0
+
+
+def test_body_view_miss_is_notfound_without_fetch(
+    websearch: WebsearchHandler,
+) -> None:
+    """A view='body' read on an uncached query refuses rather than
+    spending — same contract as no_fetch."""
+    with pytest.raises(NotFound, match="not cached"):
+        websearch.get(id="a question nobody has cached", view="body")
+    assert _StubClient.call_count == 0
+
+
+def test_body_view_refuses_refresh_combo(websearch: WebsearchHandler) -> None:
+    """view='body' is a read — it never re-fetches, so ``refresh`` on the
+    same call is contradictory and refused rather than silently
+    resolved."""
+    with pytest.raises(BadInput, match="read-only"):
+        websearch.get(id="anything", view="body", refresh=True)
+    with pytest.raises(BadInput, match="read-only"):
+        websearch.get(id="anything", view="body", mode="refresh")
+    assert _StubClient.call_count == 0
+
+
+def test_unknown_view_rejected(websearch: WebsearchHandler) -> None:
+    """A mistyped view is refused with the accepted set, not silently
+    ignored (previously view= passed through unread)."""
+    with pytest.raises(BadInput, match="unknown view") as err:
+        websearch.get(id="anything", view="bogu")
+    assert err.value.options == ["body"]
+    assert _StubClient.call_count == 0

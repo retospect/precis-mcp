@@ -15,13 +15,18 @@ Search block handles are rejected as queries before a paid fetch: their
 truncated report prefix can collide with an existing report's slug.
 The literal escape and explicit imports remain available.
 
-The slug is the query cut at 60 chars, so distinct queries sharing a
-prefix collide. A hash miss that lands on a live slug whose stored
-``query`` differs is refused (``_guard_slug_collision``) on both the
-``get`` fetch path and ``put(mode='import')``, instead of replacing the
-existing report. The slug scheme is kept so every existing slug and
-cache lookup stays valid; the caller rephrases or reads the existing
-row by slug.
+New refs mint ``<slug>-<sha8>`` slugs: the query slugified at 60
+chars plus an 8-hex sha256 tail of the canonical ``<model>:<query>``
+key, so templated queries sharing a lead-in no longer collide
+(gr517283 — the design-tree pilot hit refusals on shared 60-char
+prefixes). Slugs minted before the suffix stay valid: reads resolve a
+stored slug verbatim (or by ``request_hash``), and re-importing a
+query cached under a legacy slug refreshes that row in place — its
+old slug survives. A slug lookup that lands on a live row whose
+stored ``query`` differs is still refused
+(``_guard_slug_collision``) on the ``get`` miss path and
+``put(mode='import')``; with the hash tail that refusal now means a
+genuine same-slug collision, not a shared prefix.
 
 Attribution policy (per Perplexity's Terms of Service): every public/
 shared output must disclose AI generation; Standard and Pro tiers are
@@ -36,6 +41,7 @@ than silently giving up.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -233,22 +239,37 @@ class _PerplexityBase(CacheBackedHandler):
         return super()._coerce_query(id, q)
 
     def _slug_for(self, key: str) -> str:
-        # Strip the "<model>:" prefix added by _canonical_key when
-        # deriving a human-readable slug — the model is recorded in
-        # cache_state.model already.
+        """``<slugified prefix>-<sha8>`` — readable slug plus a hash tail.
+
+        Strip the ``<model>:`` prefix added by ``_canonical_key`` (the
+        model is recorded in ``cache_state.model``), slugify the query
+        at 60 chars for readability, then append 8 hex of the sha256 of
+        the full canonical key so two queries sharing the prefix get
+        distinct slugs (gr517283). Deterministic — the same key always
+        re-derives the same slug, which is what the slug-lookup refresh
+        path in base ``get`` depends on. Rows minted before 2026-10-25
+        keep their un-suffixed slug; reads resolve the *stored* slug
+        verbatim, so nothing about them changes.
+        """
         _, _, q = key.partition(":")
-        return slug_from_text(q, max_len=60) or "perplexity-query"
+        prefix = slug_from_text(q, max_len=60) or "perplexity-query"
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+        return f"{prefix}-{digest}"
 
     def _guard_slug_collision(self, key, ref, cache):
         """Refuse to overwrite a row whose stored query is a different query.
 
-        The slug is the query cut at 60 chars, so two distinct queries
-        that share a prefix land on one slug; the hash misses and base
-        ``get`` would refresh the existing row in place with the new
-        query's body (a ~$0.50 report was lost this way, 2026-09-13).
-        Compare the stored full query, whitespace-collapsed, and refuse
-        when it differs. Rows written before ``query`` was tracked in
-        meta cannot be compared and keep the in-place refresh.
+        New slugs carry an 8-hex sha256 tail of the canonical key
+        (``_slug_for``), so a slug match on a different query is a
+        genuine collision — a legacy row whose pre-suffix slug happens
+        to equal the new form, or a hash-tail match — not the routine
+        60-char prefix collision the bare slug produced (gr517283). The
+        hash misses and base ``get`` would still refresh the existing
+        row in place with the new query's body (a ~$0.50 report was
+        lost this way, 2026-09-13). Compare the stored full query,
+        whitespace-collapsed, and refuse when it differs. Rows written
+        before ``query`` was tracked in meta cannot be compared and
+        keep the in-place refresh.
         """
         stored = (cache.meta or {}).get("query")
         if not stored:
@@ -259,14 +280,13 @@ class _PerplexityBase(CacheBackedHandler):
         raise BadInput(
             f"{self.spec.kind}: {incoming!r} slugs to {ref.slug!r}, which "
             f"already holds a different report: {str(stored)!r} (ref "
-            f"{ref.id}). Refusing to overwrite it — the slug is the query "
-            "cut at 60 characters, so the two queries collide.",
+            f"{ref.id}). Refusing to overwrite it.",
             next=(
                 f"get(kind={self.spec.kind!r}, id={ref.slug!r}, "
                 "args={'no_fetch': True}) to read the existing report",
-                "rephrase so the first 60 characters differ from the "
-                "existing query, or pass a distinct explicit id= for the "
-                "new row",
+                "rephrase the query — the slug carries a hash of the full "
+                "query text, so a same-slug match on different text is a "
+                "real collision",
             ),
         )
 
@@ -631,14 +651,53 @@ class _PerplexityBase(CacheBackedHandler):
         key = self._canonical_key(query, literal=True)
         request_hash = self._hash(key)
         slug = self._slug_for(key)
+        body_blocks = self._blocks_from_report(body)
+
+        # The same canonical query may already be cached under a legacy
+        # un-suffixed slug (pre-hash-tail rows, gr517283): the slug lookup
+        # below can't see it, and the UNIQUE(provider, request_hash)
+        # constraint would turn a second insert into an IntegrityError.
+        # Refresh that row in place instead — its old slug keeps
+        # resolving and any tags/links survive (delete+insert would
+        # destroy them).
+        same_query = self.store.get_cache_entry(
+            provider=self.provider, request_hash=request_hash
+        )
+        if same_query is not None:
+            ref, _cache = same_query
+            self.store.stamp_ref_meta(ref.id, {"source": "imported"})
+            ref, _cache = self.store.update_cache_entry(
+                ref_id=ref.id,
+                title=_title_for_query(query),
+                body_blocks=body_blocks,
+                ttl_seconds=None,  # imports are pinned — never expire
+                model=self.TIER.model,
+                cost_usd=0.0,
+                cache_meta={
+                    "model": self.TIER.model,
+                    "query": query,
+                    "source": "imported",
+                    "block_count": len(body_blocks),
+                },
+            )
+            n = len(body_blocks)
+            plural = "" if n == 1 else "s"
+            return Response(
+                body=(
+                    f"re-imported {self.spec.kind} ref {ref.slug!r} "
+                    f"({n} block{plural}) — refreshed the existing row in "
+                    f"place; its slug still resolves. future "
+                    f"{_readback_hint(self.spec.kind, query, ref.slug or slug)} "
+                    f"will return the imported body for $0."
+                )
+            )
+
         # ``put_cache_entry`` replaces the live row under this slug; refuse
         # when that row holds a different query's report (same guard as
-        # the ``get`` miss path). Re-importing the same query still replaces.
+        # the ``get`` miss path).
         existing = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
         if existing is not None:
             self._guard_slug_collision(key, *existing)
-
-        body_blocks = self._blocks_from_report(body)
 
         ref, _cache = self.store.put_cache_entry(
             kind=self.spec.kind,
@@ -664,7 +723,7 @@ class _PerplexityBase(CacheBackedHandler):
         msg = (
             f"imported {self.spec.kind} ref {ref.slug!r} "
             f"({n} block{plural}). future "
-            f"get(kind={self.spec.kind!r}, id={query!r}) "
+            f"{_readback_hint(self.spec.kind, query, ref.slug or slug)} "
             f"will return the imported body for $0."
         )
         return Response(body=msg)
@@ -705,6 +764,7 @@ class WebsearchHandler(_PerplexityBase):
         is_numeric=False,
         id_required=False,
         modes=("import",),
+        views=("body",),
     )
 
     TIER: ClassVar[_SonarTier] = _SonarTier(
@@ -738,6 +798,7 @@ class ThinkHandler(_PerplexityBase):
         is_numeric=False,
         id_required=False,
         modes=("import",),
+        views=("body",),
     )
 
     # Cache forever by default. The pollution failure mode (a wrong
@@ -780,6 +841,7 @@ class ResearchHandler(_PerplexityBase):
         is_numeric=False,
         id_required=False,
         modes=("import",),
+        views=("body",),
     )
 
     TIER: ClassVar[_SonarTier] = _SonarTier(
@@ -870,6 +932,20 @@ def _title_for_query(query: str) -> str:
     caps at 80 chars — never a storage one.
     """
     return " ".join(query.split())
+
+
+def _readback_hint(kind: str, query: str, slug: str) -> str:
+    """The ``get`` call an import ack advertises for reading the row back.
+
+    ``id=<query>`` is the natural form — the request-hash lookup hits
+    the imported row for $0. But a query the input guards refuse (a bare
+    number reads as a misrouted ref-id, ``x~…-deadbeef`` reads as a
+    search block handle) never reaches that lookup, so for those the ack
+    names the slug + ``no_fetch=True`` form, which always resolves.
+    """
+    if _BARE_REFID_RE.match(query) or _BLOCK_HANDLE_RE.search(query):
+        return f"get(kind={kind!r}, id={slug!r}, no_fetch=True)"
+    return f"get(kind={kind!r}, id={query!r})"
 
 
 _REASONING_TAG_RE = re.compile(

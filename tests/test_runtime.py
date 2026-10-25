@@ -1004,6 +1004,29 @@ def test_dispatch_fold_opt_in_folds_and_names_the_lever(
     assert "PRECIS_MAX_BODY_BYTES" not in out
 
 
+def test_unfolded_response_skips_write_time_fold(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    """gr517274: a response flagged ``unfolded`` (the cache-backed
+    ``view='body'`` read) is served whole even under an explicit
+    ``fold=True`` — the caller asked for the body verbatim, so the
+    context fold must not cut it."""
+    from precis.response import Response
+
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "1500")
+    monkeypatch.setattr(
+        runtime,
+        "_dispatch_inner",
+        lambda *a: Response(body="x" * 5000, unfolded=True),
+    )
+    runtime.long_lived = True
+    out, is_error = runtime.dispatch_with_status(
+        "get", {"kind": "calc", "id": "2+3"}, fold=True
+    )
+    assert is_error is False
+    assert out == "x" * 5000  # whole body — no marker, no cursor
+
+
 def test_transient_live_response_never_caches_tail(runtime, monkeypatch):
     from precis.response import Response
 
