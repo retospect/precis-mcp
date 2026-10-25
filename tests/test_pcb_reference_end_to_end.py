@@ -1,11 +1,18 @@
-"""ESP32-C3 acceptance vehicle — end-to-end place+route ratchet.
+"""ESP32-C3 acceptance vehicle — end-to-end place + stored-DRC ratchet.
 
 ``docs/backlog/pcb-guided-place-route.md``'s acceptance vehicle
 (``tests/fixtures/pcb/esp32c3_reference.json``, structurally pinned
 DB-free by ``tests/test_pcb_reference_design.py``) driven for real here:
 author the design, ``put(op='place')`` -> drain the enqueued ``pcb_place``
-job, ``put(op='route')`` -> drain the enqueued ``pcb_route`` job, then read
-back route status + DRC.
+job, then read back the (retired) route state and ``view='drc'``'s answer.
+
+**Routing is retired** (gr515107, Reto 2026-10-25: the vector router was
+deleted, tag ``vroute-final``; the topological router is the only router
+and its realiser is not landed yet). The ``put(op='route')`` leg and the
+routed-count assertion died with it — every fanout>=2 net now reads
+``unrouted`` and that is the expected state, not a failure. What remains
+gates placement and stored DRC exactly as before; the measurements below
+are the dated record of how the board got here.
 
 2026-08-28 first-run measurement (commit ``4ff7add4`` plus the — at the
 time of that run — still-uncommitted ``core.put`` ``args=`` fix that made
@@ -21,7 +28,8 @@ FAILED to route, despite neither being plane-promoted.
 Zero DRC errors, all 11 fanout>=2 nets realized. (Dated record: the silk
 rules did not exist yet. Copper still holds at zero; silk carries its own
 ratchet, ``BASELINE_SILK_ERRORS_BY_SEED``.) Three changes got it there, in this
-order of contribution:
+order of contribution (the routed half is the dated record — see the
+retirement note above):
 
 1. Per-pin pad geometry (``ir.pin_dx``/``pin_dy``). Every pin used to
    resolve to its instance's centroid, so a 14-pin part emitted 14 tracks
@@ -37,25 +45,23 @@ order of contribution:
    Copper is claimed on a shared occupancy grid before it is drawn, so
    inter-net overlap is structurally impossible. 234 -> 0.
 
-**Zero DRC is trivially achievable by routing nothing, so this test
-asserts BOTH numbers and neither alone is the result.** An early revision
-of the maze router scored a perfect zero while leaving 58 of 61
+**Zero DRC is trivially achievable by routing nothing, so this test used
+to assert BOTH numbers and neither alone was the result.** An early
+revision of the maze router scored a perfect zero while leaving 58 of 61
 connections unrouted, and read as a triumph until the routed count was
-put beside it.
-
-The DRC ceiling is a hard 0 rather than a ratchet because it is now a
-property of the algorithm, not a tuning outcome: a nonzero here means
-something can put copper on the board without claiming it first, which is
-a defect in the guarantee and not a regression in quality. Since
-2026-08-31 that claim is ASSERTED across seeds 1-5 (``SEEDS``), not
-merely measured once: every baseline below is a worst-case-over-seeds
-bound, so it describes the engine rather than one draw of the anneal.
+put beside it. The copper-DRC ceiling was a hard 0 rather than a ratchet
+because it was a property of the occupancy-grid algorithm, not a tuning
+outcome — the entire guarantee died with the router, and on this
+all-synthesized board ``view='drc'`` now answers the retirement body
+instead of a findings table (there is no real pad geometry to check).
+The seed discipline stays: every seed still runs the place leg, and the
+unrouted/retirement assertions hold per seed (``SEEDS``), so a bound
+here describes the engine rather than one draw of the anneal.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -74,55 +80,6 @@ pytestmark = pytest.mark.slow
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "esp32c3_reference.json"
 
-#: The acceptance criterion, asserted (module docstring). All 11 nets with
-#: fanout >= 2 realized, zero COPPER-class DRC errors (silk is counted
-#: separately against its own ratchet — see ``BASELINE_SILK_ERRORS_BY_SEED``).
-#:
-#: A DRC count is only meaningful WITH its config — the same fixture at the
-#: same commit measured 630 under this test's seeded config and 1063 under
-#: an unseeded CLI run, a factor of 1.7 apart — so both figures below are
-#: measured under every seed in ``SEEDS`` and the handler-default iters,
-#: and re-measuring is required if either changes.
-BASELINE_ROUTED_FANOUT2 = 11  # of 11 nets with fanout >= 2, realized
-#: Not a ratchet. Inter-net clearance is enforced by the occupancy grid in
-#: :mod:`precis.pcb.vroute` — copper is an obstacle before it is drawn — so a
-#: nonzero value here is not "worse placement", it is a hole in the
-#: guarantee: some path reached the board without claiming its corridor.
-#: Do not raise this to accommodate a measurement. Find the leak.
-#:
-#: **Copper-class rules only** — see ``BASELINE_SILK_ERRORS_BY_SEED``. The zero
-#: above earns its strictness from the occupancy-grid argument, which is a
-#: statement about copper and says nothing about silkscreen; folding silk
-#: into this count would trade a hard guarantee for a soft one.
-BASELINE_DRC_ERRORS = 0
-
-#: Silk IS a ratchet, and unlike the copper count above it is knowingly
-#: nonzero. ``silk_missing`` fires when a part's courtyard outline could not
-#: be drawn without landing on a pad, and every one of these is a real
-#: defect the fab would print as ink on copper — they are recorded, not
-#: forgiven.
-#:
-#: 27 -> 9 -> 0 on 2026-08-30. Four mechanisms, each a different defect
-#: that happened to share this one rule (the full ledger is in
-#: ``tests/test_pcb_fab_render_all_layers.py``'s ``KNOWN_OPEN_DRC_ERRORS``
-#: docstring): a courtyard derived from the hull of the part's OWN pads,
-#: outlines that break around an obstacle instead of dropping whole, a
-#: refdes ring sweep replacing six fixed candidate spots, and a dot beside
-#: pin 1 when a fan-out via has taken the courtyard corner its tick marks.
-#:
-#: **Each seed's number may only go DOWN.** Raising one to accept a
-#: measurement is the failure mode; so is lowering one by making the
-#: checker quieter, which is why the routed-nets assertion below must be
-#: read alongside it. Per-seed since 2026-08-31 (the same ledger shape as
-#: the 40mm fixture's ``KNOWN_OPEN_DRC_ERRORS``). Re-measured 2026-09-01
-#: after the alignment cost term + fiducial per-courtyard filter + pour/
-#: drop-via changes redrew every seed: seed 3's earlier C8 entry
-#: RESOLVED, and seed 1's new draw parks a via on D1's courtyard ring
-#: (2.92 of 6.40mm drawable), so its courtyard+pin1 silk honestly drop —
-#: 2 findings, on that seed alone. A seed absent from this dict is held
-#: at zero.
-BASELINE_SILK_ERRORS_BY_SEED: dict[int, int] = {1: 2}
-
 #: The seeds this fixture asserts over — EVERY seed must hold every bound
 #: below (worst-case-over-seeds, not a median), so the baselines measure
 #: the ENGINE rather than one lottery draw of the anneal. A single pinned
@@ -137,11 +94,6 @@ BASELINE_SILK_ERRORS_BY_SEED: dict[int, int] = {1: 2}
 #: test (~16s, xdist-parallel), so a failing seed names itself.
 SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5)
 
-#: The pcb_route failure reason that means "partial route" (and nothing else).
-_NOT_REALIZED_RE = re.compile(r"\d+ of \d+ net\(s\) not realized")
-
-_DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
-
 
 def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -150,9 +102,7 @@ def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _drain_one_job(
-    store: Store, parent_id: int, *, allow_partial_route: bool = False
-) -> None:
+def _drain_one_job(store: Store, parent_id: int) -> None:
     """Drain the queued job most recently enqueued under ``parent_id``.
 
     Not just "whatever's next in the queue" (gr295496): the shared
@@ -195,16 +145,7 @@ def _drain_one_job(
             (path / f"reference-{job_type}-seed{seed}.json").write_text(
                 json.dumps(evidence, indent=2, default=str), encoding="utf-8"
             )
-            # Reto 2026-10-20 cutover: routing counts are reported, not gated.
-            # A pcb_route that failed ONLY because some nets were not realized
-            # is a partial route, not a failure; any other reason still fails.
-            partial_route = (
-                allow_partial_route
-                and status == "failed"
-                and job_type == "pcb_route"
-                and _NOT_REALIZED_RE.search(str(job_meta.get("error")))
-            )
-            assert status == "succeeded" or partial_route, (
+            assert status == "succeeded", (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}; "
                 f"error={job_meta.get('error')}"
             )
@@ -216,7 +157,7 @@ def _drain_one_job(
 
 @pytest.mark.parametrize("seed", SEEDS)
 @pytest.mark.timeout(600)  # CI junit worst 136s x4 for CI variance (gr503084)
-def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
+def test_esp32c3_reference_place_reads_back_retired_route_state(
     store: Store, seed: int, record_property: Any
 ) -> None:
     with FIXTURE.open(encoding="utf-8") as fh:
@@ -229,94 +170,44 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     assert ref is not None
 
     # --- place ------------------------------------------------------
-    # No `iters=` override: the default schedule (2000 place / 3000 route
-    # — pcb_place.py / pcb_route.py's `_DEFAULT_ITERS`) already completes
-    # this whole test (author + place + drain + route + drain + DRC) in
-    # ~12s measured locally — well inside the `slow` budget — so there is
-    # no runtime/fidelity tradeoff to make here: cutting iters further
-    # would only make the measurement less representative of what
-    # put(op='place'/'route') actually does for an agent, for no speed
-    # win worth taking.
+    # No `iters=` override: the default schedule completes this whole
+    # test (author + place + drain + readback) well inside the `slow`
+    # budget, so there is no runtime/fidelity tradeoff to make here:
+    # cutting iters further would only make the measurement less
+    # representative of what put(op='place') actually does for an agent,
+    # for no speed win worth taking.
     place_resp = pcb.put(id="esp32c3-ref", args={"op": "place", "seed": seed})
     assert "enqueued" in place_resp.body
     _drain_one_job(store, ref.id)
 
-    # --- route ------------------------------------------------------
-    route_resp = pcb.put(id="esp32c3-ref", args={"op": "route", "seed": seed})
-    assert "enqueued" in route_resp.body
-    _drain_one_job(store, ref.id, allow_partial_route=True)
-
-    # --- read back: routed count, honestly denominated ---------------
-    # view='route-status' / store.pcb_route_status report per-net status
-    # for ALL 20 nets, including 9 single-pin ("dangling") nets that carry
-    # only one connection each (test points, NC nets, mounting holes —
-    # see tests/workers/test_pcb_route.py's dangling-net-exemption case).
-    # Those "route" trivially (nothing to connect) and inflate a naive
-    # numerator/denominator to 18/20 = 90%. The honest population is nets
-    # with fanout >= 2 (11 of the 20, per this fixture) — computed here
-    # from the fixture's own connections so a future edit to the fixture
-    # can't silently drift the two out of sync.
+    # --- the unrouted state is the expected one ----------------------
+    # Routing is retired: every fanout>=2 net stays stored 'unrouted'.
+    # (Was the routed-count assertion — the honest population stays
+    # fanout >= 2, 11 of the 20 nets here, computed off the fixture so a
+    # fixture edit can't drift the two apart.)
     fanout = _fanout(design["connections"])
     fanout2_nets = {name for name, n in fanout.items() if n >= 2}
     assert len(fanout2_nets) == 11
 
+    # --- read back: unrouted status + the retired-DRC answer -----------
     status_rows = store.pcb_route_status(ref.id)
-    routed_count = sum(
-        1
+    non_unrouted = [
+        (row["name"], row["status"])
         for row in status_rows
-        if row["name"] in fanout2_nets and row["status"] == "realized"
+        if row["name"] in fanout2_nets and row["status"] != "unrouted"
+    ]
+    assert not non_unrouted, (
+        f"expected every fanout>=2 net 'unrouted' (routing is retired), "
+        f"got {non_unrouted}"
     )
+    unrouted_fanout2 = sum(1 for row in status_rows if row["name"] in fanout2_nets)
 
-    # --- read back: DRC error count -----------------------------------
+    # view='drc' on this all-synthesized, no-copper board answers the
+    # retirement body — the intended contract (module docstring), asserted
+    # rather than a findings table there is no real geometry to check.
     drc = pcb.get(id="esp32c3-ref", view="drc")
-    match = _DRC_HEAD_RE.search(drc.body)
-    assert match is not None, f"DRC view head didn't match expected shape: {drc.body!r}"
-    drc_error_count = int(match.group(1))
+    assert "no realized copper yet" in drc.body
+    assert "routing is retired" in drc.body
 
-    # --- both numbers, together -----------------------------------------
-    # Neither assertion means anything alone: routing nothing satisfies the
-    # DRC one, and shorting everything satisfies the routed one.
-    import collections
-
-    # view='drc' is read-only (gr491591): record the run so the findings below
-    # are this board's, not an empty "no run yet" list.
-    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
-    _run_id, findings = store.pcb_drc_findings_latest(ref.id)
-    breakdown = collections.Counter(
-        f"{f['rule']}" for f in findings if f["severity"] == "error"
-    )
-    # Name the findings, don't just count them. A bare rule tally sends the
-    # reader back to reproduce the board before they can even start; the
-    # detail line is what the fix is actually made from.
-    detail = " | ".join(
-        str(f["detail"])[:160] for f in findings if f["severity"] == "error"
-    )[:900]
-    # Split by class before asserting: the two counts are held to different
-    # standards (hard zero vs. a downward-only ratchet), so summing them
-    # would let a silk drop mask a copper short.
-    silk_errors = sum(n for rule, n in breakdown.items() if rule.startswith("silk"))
-    # Reto 2026-10-20 cutover: routing counts are reported, not gated. The
-    # `unrouted` rule is the routed-net count restated as a DRC finding, so it
-    # is reported with the routed count below instead of counted as copper.
-    unrouted_errors = breakdown.get("unrouted", 0)
-    copper_errors = drc_error_count - silk_errors - unrouted_errors
-    assert copper_errors <= BASELINE_DRC_ERRORS, (
-        f"{copper_errors} copper-class DRC errors (expected "
-        f"{BASELINE_DRC_ERRORS}): {dict(breakdown)} -- inter-net clearance is "
-        "enforced by the occupancy grid, so a clearance finding here means "
-        f"copper reached the board without claiming its corridor first\n{detail}"
-    )
-    silk_baseline = BASELINE_SILK_ERRORS_BY_SEED.get(seed, 0)
-    assert silk_errors <= silk_baseline, (
-        f"{silk_errors} silk DRC errors, above seed {seed}'s {silk_baseline} "
-        f"baseline: {dict(breakdown)} -- this ratchet only goes down; see "
-        f"the silk ratchet note above\n{detail}"
-    )
-    # Reto 2026-10-20 cutover: routing counts are reported, not gated. The
-    # zero-copper-DRC assertion above still holds over whatever IS routed.
-    print(
-        f"REPORT seed={seed} routed_fanout2={routed_count}/{len(fanout2_nets)} "
-        f"(reference {BASELINE_ROUTED_FANOUT2}) copper_drc={copper_errors} "
-        f"silk_drc={silk_errors} unrouted_drc={unrouted_errors}"
-    )
-    record_property("routed_fanout2", routed_count)
+    print(f"REPORT seed={seed} unrouted_fanout2={unrouted_fanout2}/{len(fanout2_nets)}")
+    record_property("unrouted_fanout2", unrouted_fanout2)

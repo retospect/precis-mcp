@@ -2047,9 +2047,10 @@ def run(
     ``argv`` (defaults to ``sys.argv[1:]``) add the kernel outputs
     (``netlist.net``, ``schematic.svg``, ``ratsnest.svg``, and for route
     ``placement.json``/``copper.json``/``drc.txt``/``gerbers.zip``/
-    ``board.svg``/``bom.csv``/``cpl.csv``) via :func:`local`. A missing
-    kernel refuses the flagged run and writes the base set for a plain
-    one."""
+    ``board.svg``/``bom.csv``/``cpl.csv``) via :func:`local`. ``--route``
+    no longer routes — routing is retired, so the run places and reports
+    "no router yet". A missing kernel refuses the flagged run and writes
+    the base set for a plain one."""
     import sys
 
     out = Path(out_dir)

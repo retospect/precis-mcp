@@ -1,7 +1,6 @@
 """USB-C PD Nano test board r2 (slice-2 netlist review). The original
-board's test (``test_pcb_nano_usb_pd_testboard.py``) stays the router
-regression fixture, untouched; this is the reviewed design with its own
-one-way floors.
+board's test (``test_pcb_nano_usb_pd_testboard.py``) carries the same
+shape; this is the reviewed design.
 
 Baseline measurement the anneal item
 (``docs/backlog/pcb-anneal-closes-router-loop.md``, acceptance board per
@@ -13,16 +12,14 @@ with the doc's corrections applied — fixed PDO set 5/9/15/20 V, one
 level shifters and gate clamps, per-net ``current``/``working_voltage_v``
 so widths and pairwise clearances resolve per net.
 
-**This test floors the honest current state — it does not assert clean.**
-``BASELINE_*`` below are the measured counts of the first seeded run,
-recorded as one-way floors so the anneal work can show improvement off a
-fixed reference (the two-tier discipline of
-``test_pcb_reference_end_to_end.py``: errors are below-fab-floor
-violations, warnings are class/house shortfalls — both are floored, and
-the per-rule breakdowns are kept as evidence so a
-regression names the rule, not just the count). Neither number is a
-verdict that the board is manufacturable; synthesized bounds and
-provisional topology are documented in the fixture.
+**This test reports the honest current state — it does not assert clean.**
+The routed half retired with the router (gr515107: vroute deleted
+2026-10-25, tag ``vroute-final``; topo is the only router and unshipped),
+so the baseline is place + stored DRC — the per-rule breakdowns are
+printed as evidence so a regression names the rule, not just the count.
+Neither number is a verdict that the board is manufacturable;
+synthesized bounds and provisional topology are documented in the
+fixture.
 """
 
 from __future__ import annotations
@@ -45,19 +42,10 @@ SEED = 1
 
 #: This r2 netlist (sink switch, P-FET + level-shifter channels, gate
 #: clamps; default 4-layer stackup, F.Cu/B.Cu routable) is MEASURED, not
-#: gated on counts: Reto 2026-10-19 dropped the grid router's floors ("Drop
-#: the grid router's floors? yes"); the target stays absolute — every net
-#: routed, 0 DRC. Routed over nets with fanout >= 2 (the honest
-#: denominator) and the per-rule DRC counts are printed below as evidence.
+#: gated on counts. The per-rule DRC counts are printed below as
+#: evidence.
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
-
-
-def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for conn in connections:
-        counts[conn["net"]] = counts.get(conn["net"], 0) + 1
-    return counts
 
 
 def _pin_names_for(comp: dict[str, Any], design: dict[str, Any]) -> set[str]:
@@ -281,13 +269,11 @@ def test_nano_headers_are_one_rigid_group_at_15_24mm() -> None:
 # ── the baseline run (slow) ───────────────────────────────────────────────────
 
 
-def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
+def _drain_one_job(store: Store, parent_id: int) -> None:
     """Drain the queued job most recently enqueued under ``parent_id`` —
     the same discipline ``test_pcb_second_reference_end_to_end.py`` uses:
     not "whatever's next in the queue" (a shared per-worker test DB can
-    carry an orphan). ``unrouted_ok`` accepts exactly the
-    ``non-convergence`` failure class a route job ends with when nets are
-    left unrealized — this test MEASURES that partial result."""
+    carry an orphan)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
@@ -301,19 +287,6 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
         with store.pool.connection() as conn:
             status = current_status(conn, job_ref_id)
         if status in TERMINAL:
-            if unrouted_ok and status == "failed":
-                with store.pool.connection() as conn:
-                    meta_row = conn.execute(
-                        "SELECT meta->>'failure_class', meta->>'error' "
-                        "FROM refs WHERE ref_id = %s",
-                        (job_ref_id,),
-                    ).fetchone()
-                assert meta_row is not None
-                assert meta_row[0] == "non-convergence", (
-                    f"job {job_ref_id} failed for another reason: "
-                    f"{meta_row[0]!r} error={meta_row[1]!r}"
-                )
-                return
             assert status == "succeeded", (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}"
             )
@@ -324,12 +297,12 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
 
 
 @pytest.mark.nightly(
-    reason="rt-s3 ruling (Reto 2026-10-24): the 439 s place/route/DRC "
-    "baseline can't split under the gate's 240 s bar — nightly only"
+    reason="rt-s3 ruling (Reto 2026-10-24): the place/DRC baseline can't "
+    "split under the gate's 240 s bar — nightly only"
 )
 @pytest.mark.slow
 @pytest.mark.timeout(1740)  # CI worst 678s x2.5 for runner variance (gr503084)
-def test_nano_board_place_route_drc_baseline(store: Store) -> None:
+def test_nano_board_place_drc_baseline(store: Store) -> None:
     # The catalog footprints are the fixture's cache — seeded into the
     # test DB before the put so the catalog parts resolve to real pad
     # geometry. Read-only lookups at apply; no JLC/LCSC calls.
@@ -344,28 +317,9 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
 
     place_resp = pcb.put(id=SLUG, args={"op": "place", "seed": SEED})
     assert "enqueued" in place_resp.body
-    _drain_one_job(store, ref.id, unrouted_ok=False)
+    _drain_one_job(store, ref.id)
 
-    route_resp = pcb.put(id=SLUG, args={"op": "route", "seed": SEED})
-    assert "enqueued" in route_resp.body
-    _drain_one_job(store, ref.id, unrouted_ok=True)
-
-    # --- route status, honestly denominated --------------------------------
-    fanout = _fanout(fx.DESIGN["connections"])
-    fanout2_nets = {name for name, n in fanout.items() if n >= 2}
-    status_rows = store.pcb_route_status(ref.id)
-    routed = sum(
-        1
-        for row in status_rows
-        if row["name"] in fanout2_nets and row["status"] == "realized"
-    )
-    failed = sum(
-        1
-        for row in status_rows
-        if row["name"] in fanout2_nets and row["status"] == "failed"
-    )
-
-    # --- DRC, both tiers ----------------------------------------------------
+    # --- DRC ------------------------------------------------------------
     # Record first, then read the view: view='drc' reuses a recorded run
     # whose design-revision stamp matches (gr496242), so the board pays
     # ONE DRC pass — the old order ran it twice (the view is read-only).
@@ -384,12 +338,11 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
     )
 
     # Per-rule evidence kept: the print shows exactly what the baseline is
-    # made of, so an anneal change can name what moved.
+    # made of, so an anneal change can name what moved. With routing
+    # retired every fanout>=2 net is a standing `unrouted` finding —
+    # expected, not a defect; the copper/pad rules are the signal.
     print("\n\n# nano_usb_pd_testboard_r2 — baseline\n")
-    print(
-        f"drc head: {n_errors} error(s), {n_warns} warn(s); "
-        f"routed {routed}/{len(fanout2_nets)}, failed {failed}"
-    )
+    print(f"drc head: {n_errors} error(s), {n_warns} warn(s)")
     print(f"errors by rule: {dict(errors_by_rule)}")
     print(f"warns by rule: {dict(warns_by_rule)}")
     for f in findings:

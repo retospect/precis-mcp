@@ -20,7 +20,6 @@ from precis.pcb import drc as pcb_drc
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
-from precis.workers.job_types.pcb_route import _fixed_copper_collisions
 
 _ROT = 45.0
 _W, _H = 4.0, 1.0
@@ -72,8 +71,10 @@ def _via(x: float, y: float) -> dict[str, Any]:
     }
 
 
-def _collisions(ir: Any, footprints: dict[str, Any], via: dict[str, Any]) -> list[str]:
-    return _fixed_copper_collisions(ir, footprints, [via], capability_for("4layer"))
+def _collisions(ir: Any, footprints: dict[str, Any], via: dict[str, Any]) -> list[Any]:
+    return pcb_session.fixed_copper_findings(
+        ir, footprints, [via], capability_for("4layer")
+    )
 
 
 def test_oblique_rect_pad_is_the_rotated_corners():

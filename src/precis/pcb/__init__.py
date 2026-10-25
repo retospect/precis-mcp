@@ -5,27 +5,22 @@ The keystone-kind philosophy (shared with cad and structure): own a
 legible IR the LLM reads as structure — a circuit is already a graph, a
 board already placed rectangles — and keep every stage a pure function
 over it so each is unit-testable in isolation. Export is the one place a
-design leaves the relational graph. The in-house realizer + vector router
-produce the copper the gerbers are cut from.
+design leaves the relational graph.
 
-Route warm starts use Hungarian Manhattan-distance assignment from connected
-fixed-copper via terminals to admissible channel pads. Replay with In2.Cu/B.Cu
-routed 51/55 versus the radial start's 42/55 (mx456/mx457, td472840): fewer
-crossings alone did not predict routing yield. `warm_start="radial"` retains
-that alternative; incomplete terminal geometry falls back per group. A shorter
-Euclidean assignment is accepted only at the same Manhattan optimum (four-ULP
-sum tolerance): this preserves the older EWOD routing floor without losing
-the replay gain. Coordinate row ordering was refused after it fell to49/55. The
-anneal's crossing move and authored-baseline swap persistence stay unchanged;
-`last_route.warm_start` records each group's method and distance in mm —
-matched roles also carry `cost_mm`/`prior_cost_mm`, which
-`format_warm_start` renders into the job summary and `view='route-status'`.
+**Routing is retired** (Reto 2026-10-25): the vector router
+(:mod:`~precis.pcb.vroute`) was deleted — main keeps tag ``vroute-final``
+for its last build. Topological routing (topo slice 2,
+:mod:`~precis.pcb.topo`) is the only router and its realiser is not
+landed yet, so new boards get no routed copper: :func:`pcb.local.route`
+and ``put(kind='pcb', args={'op':'route'})`` refuse with
+:data:`ROUTE_RETIRED`, and :mod:`~precis.pcb.realize` keeps only the pad
+geometry + stored-copper model + gerber-model slice that placement, DRC,
+fab render/export and stored runs still need.
 
-The grid-router knobs (``negotiate``, ``corridor``, ``escape``,
-``layer_cost``, ``off_axis``, ``cleanup``), the ``router`` selector and
-``loop`` are accepted-and-ignored for one release — vector is the only
-router and there is no outer route loop (Reto 2026-10-25). A stale
-caller's knobs land in the job's ``ignored`` list, never a refusal.
+Stored ``meta.last_route.warm_start`` records each group's method and
+distance in mm for boards routed before the cut — matched roles also
+carry `cost_mm`/`prior_cost_mm`, which `format_warm_start` renders into
+`view='route-status'` (stored runs only).
 
 Footprint-owned geometry (pads, polygon vertices, holes, courtyard) is
 stored footprint-local and only mapped to world through :mod:`~precis.pcb.pose`
@@ -54,18 +49,18 @@ Map, in pipeline order (design doc:
   required externals / conditional-table block on the part ref —
   ``get(kind='part', view='facts')`` reads it, the ``datasheet_facts``
   job writes it).
-* **Place + route** — :mod:`~precis.pcb.place` (force-directed seed),
-  :mod:`~precis.pcb.optimize` (the joint place+route annealer, the
+* **Place** — :mod:`~precis.pcb.place` (force-directed seed),
+  :mod:`~precis.pcb.optimize` (the placement annealer, the
   package's largest engine), :mod:`~precis.pcb.cost` (its one cost
   function), :mod:`~precis.pcb.pinswap`, :mod:`~precis.pcb.generators`
   (computed components such as EWOD arrays), :mod:`~precis.pcb.session`
-  (IR↔DB glue for the ``pcb_place``/``pcb_route`` jobs).
+  (IR↔DB glue for the ``pcb_place`` job).
   A fully placed, legal input stays the incumbent: when the placed
   result's T1+D14 wirelength lands >2% worse than the input's,
   ``optimize`` restores the input poses (gr504889).
-* **Copper** — :mod:`~precis.pcb.realize` (sketch → copper geometry),
-  :mod:`~precis.pcb.vroute` (the one router: gridless, octilinear,
-  kernel-exact clearance),
+* **Copper** — :mod:`~precis.pcb.realize` (pad geometry, the
+  stored-copper model, the gerber-model assembly — the router that drew
+  new copper is deleted),
   :mod:`~precis.pcb.planes` (pours), :mod:`~precis.pcb.tiling` (a net
   owns a region on a layer), :mod:`~precis.pcb.silk` +
   :mod:`~precis.pcb.stroke_font` (silkscreen), :mod:`~precis.pcb.geom`
@@ -183,6 +178,20 @@ from typing import Any
 #: status``) use it, so they cannot drift.
 DANGLING_NET_NOTE_PREFIX = "dangling net"
 DANGLING_NET_NOTE = f"{DANGLING_NET_NOTE_PREFIX} (<2 members) — nothing to route"
+
+#: Reto 2026-10-25: the vector router (vroute) is deleted (tag
+#: ``vroute-final``); topological routing (topo slice 2) is the only
+#: router and its realiser is not landed yet. ``op='route'`` and
+#: ``pcb.local.route`` refuse with this pair — stored copper and stored
+#: route statuses for boards routed before the cut stay legible.
+ROUTE_RETIRED = (
+    "pcb: routing is retired — the vector router (vroute) was deleted "
+    "(tag vroute-final); the topological router is the only router and "
+    "its realiser is not landed yet"
+)
+ROUTE_RETIRED_NEXT = (
+    "put(args={'op':'place'}) for placement; routed copper is not available yet"
+)
 
 #: The closed §1i electrical-role vocabulary a pin may declare (Slice 5 of
 #: docs/backlog/pcb-lazy-netlist-and-checks.md): ``power_in``/``power_out``

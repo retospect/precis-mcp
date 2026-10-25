@@ -5,6 +5,10 @@ failing many nets on the same blocked corridor read as the same crossing
 repeated 183 times with no run-level summary. ``route_digest`` aggregates
 ``fail.problems`` into binding constraints; the job stamps it onto
 ``refs.meta.last_route.digest`` and ``view='route-status'`` renders it.
+
+Routing is retired (gr515107): nothing produces a NEW digest. These tests
+pin the read half — ``digest_lines`` over a stored digest dict — for
+boards routed before the cut.
 """
 
 from __future__ import annotations
@@ -15,70 +19,32 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
-from precis.pcb.route_digest import conflict_digest, dedupe_details, digest_lines
+from precis.pcb.route_digest import digest_lines
 
-
-def _cross(net: str, layer: int) -> dict[str, Any]:
-    return {
-        "kind": "same-layer-crossing",
-        "reason": "same-layer-crossing",
-        "layer": layer,
-        "with": net,
-    }
-
-
-def _unrouted(reason: str, message: str = "") -> dict[str, Any]:
-    return {
-        "kind": "unrouted",
-        "reason": reason,
-        "segment": "U1.1-J1.2",
-        "message": message or f"unrouted ({reason})",
-    }
-
-
-def _rows() -> dict[str, dict[str, Any]]:
-    problems = [_cross("CC1", 0) for _ in range(183)]
-    problems += [_unrouted("no_path")]
-    return {
-        "GND": {"status": "failed", "fail": {"problems": problems}},
-        "OUT3": {
-            "status": "failed",
-            "fail": {"problems": [_unrouted("search_budget") for _ in range(6)]},
+#: A digest in the shape the pcb_route job stamped onto
+#: ``refs.meta.last_route.digest`` — kept literal so the renderer test
+#: can't drift with a producer that no longer exists.
+_DIGEST: dict[str, Any] = {
+    "failed": ["GND", "OUT3"],
+    "constraints": [
+        {
+            "reason": "same-layer-crossing",
+            "target": "CC1 on F.Cu",
+            "count": 183,
+            "nets": ["GND"],
         },
-        "V5": {"status": "realized"},
-    }
-
-
-def test_dedupe_details_collapses_repeats_first_seen_order() -> None:
-    assert dedupe_details(["a", "a", "b", "a", "c"]) == ["a ×3", "b", "c"]
-    assert dedupe_details([]) == []
-
-
-def test_conflict_digest_aggregates_binding_constraints() -> None:
-    digest = conflict_digest(_rows(), ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"])
-    assert digest["failed"] == ["GND", "OUT3"]
-    top = digest["constraints"][0]
-    # 183 identical crossing problems roll up into ONE constraint naming
-    # the peer net and the layer — the row the gripe could not see.
-    assert top["reason"] == "same-layer-crossing"
-    assert top["target"] == "CC1 on F.Cu"
-    assert top["count"] == 183
-    assert top["nets"] == ["GND"]
-    budget = next(c for c in digest["constraints"] if c["reason"] == "search_budget")
-    assert budget["count"] == 6 and budget["nets"] == ["OUT3"]
-    # OUT3's complaint: which budget to raise is now named on the digest.
-    assert "max_expansions" in budget["hint"]
-
-
-def test_conflict_digest_groups_no_path_separately_from_crossings() -> None:
-    digest = conflict_digest(_rows(), ["F.Cu"])
-    reasons = {(c["reason"], c["target"]) for c in digest["constraints"]}
-    assert ("same-layer-crossing", "CC1 on F.Cu") in reasons
-    assert ("no_path", None) in reasons
+        {
+            "reason": "search_budget",
+            "count": 6,
+            "nets": ["OUT3"],
+            "hint": "raise max_expansions",
+        },
+    ],
+}
 
 
 def test_digest_lines_render_header_constraints_and_hint() -> None:
-    lines = digest_lines(conflict_digest(_rows(), ["F.Cu"]))
+    lines = digest_lines(_DIGEST)
     assert lines[0] == "route digest — 2 failed net(s): GND, OUT3"
     assert any(
         "same-layer-crossing" in line and "CC1 on F.Cu" in line for line in lines
@@ -87,7 +53,7 @@ def test_digest_lines_render_header_constraints_and_hint() -> None:
 
 
 def test_digest_lines_empty_when_nothing_failed() -> None:
-    assert digest_lines(conflict_digest({"V5": {"status": "realized"}})) == []
+    assert digest_lines({"failed": [], "constraints": []}) == []
     assert digest_lines(None) == []
     assert digest_lines({}) == []
 
@@ -132,7 +98,7 @@ def test_route_status_renders_last_run_digest(pcb, store) -> None:
         {},
         meta={
             "last_route": {
-                "digest": conflict_digest(_rows(), ["F.Cu"]),
+                "digest": _DIGEST,
                 "realized": 1,
                 "failed": 2,
             }

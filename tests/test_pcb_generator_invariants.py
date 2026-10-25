@@ -7,7 +7,7 @@ always-valid gate while ``hard`` keeps steering."""
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -18,7 +18,6 @@ from precis.pcb import eyes as pcb_eyes
 from precis.pcb import generators
 from precis.pcb.optimize import resolve_measures
 from precis.store import Store
-from precis.workers.job_types import pcb_route
 from tests._pcb_outline import closed_outline
 
 _6X6 = {"grid": [6, 6]}
@@ -394,45 +393,14 @@ def test_pad_covers_plaza_evaluator() -> None:
     assert bad is not None and not bad["ok"] and bad["value"] == 1
 
 
-def test_route_refuses_on_a_violated_invariant(pcb: PcbHandler, store: Store) -> None:
-    """'invariant' gates route too (the route job's pre-route gate): the
-    job fails 'input' naming the measure, and nothing is written."""
+def test_route_op_refuses_on_a_violated_invariant_board(
+    pcb: PcbHandler, store: Store
+) -> None:
+    """Routing is retired, so ``op='route'`` refuses before any gate runs —
+    even where the board's violated invariant would have failed the old
+    pre-route gate (gr515107)."""
     ref, board_id = _seed(pcb, store)
     _retire_via(store, _fixed_vias(store, board_id)[0])
 
-    ctx = _RouteCtx(store, params={"pcb_ref_id": ref.id, "iters": 10, "seed": 1})
-    pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
-
-    assert ctx.failures, "a violated invariant must refuse the route"
-    reason, failure_class = ctx.failures[0]
-    assert failure_class == "input"
-    assert "refusing to route" in reason
-    assert "invariant:via_per_electrode" in reason
-
-
-class _RouteCtx:
-    """The job ctx shape pcb_route._dispatch reads (mirrors
-    tests/test_pcb_route_placement_gate_epro.py's own stub)."""
-
-    def __init__(self, store: Store, *, params: dict[str, Any]) -> None:
-        self.store = store
-        self.ref_id = 0
-        self.title = "invariant route test"
-        self.meta = {"params": params}
-        self.failures: list[tuple[str, str | None]] = []
-        self.summaries: list[tuple[str, str]] = []
-
-    def record_failure(self, reason: str, *, failure_class: str | None = None) -> None:
-        self.failures.append((reason, failure_class))
-
-    def append_chunk(self, kind: str, text: str) -> None:
-        self.summaries.append((kind, text))
-
-    def set_status(self, value: str) -> None:
-        pass
-
-    def set_meta(self, **_kw: Any) -> None:
-        pass
-
-    def is_cancel_requested(self) -> bool:
-        return False
+    with pytest.raises(BadInput, match="routing is retired"):
+        pcb.put(id=ref.slug, args={"op": "route"})

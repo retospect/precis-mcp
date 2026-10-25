@@ -169,7 +169,7 @@ is refused by name — the vet is the contract, and the key set is:
 
 | entry | keys |
 |---|---|
-| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `mode`, `measures`, `loads`, `template`, `findings`, `frame`, `sha` |
+| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `mode`, `measures`, `loads`, `template`, `findings`, `census`, `frame`, `sha` |
 | port (inside `ports`) | `name`, `atom` (atomic only), `roles`, `direction`, `expected_element`, `expected_hybridization`, `pose`, `annotations`, `frame` |
 | instance | `name`, `template`, `parent`, `pose`, `rot`, `pose_unit`, `rot_unit`, `linear`, `polar`, `frame` |
 | connect | `a`, `b`, `kind`, `joint`, `objectives`, `frame` |
@@ -187,7 +187,7 @@ measures and load declarations — replayed on import as the
 `set_mode`/`add_measure`/`set_load` ops; `template` (`true`) marks a
 library part that is never itself placed (gr514241). A block's
 `findings` is a list of strings — the Geom findings `out.block` stamps
-(`chirality.flipped` and the like); import echoes each as
+(`chirality.flipped` and the like); `census` is an object — a hexfold Net's junction/seam/valence summary `out.block` stamps (gr514059), run-record only, never imported; import echoes each as
 `block '<name>': <finding>` so a mirrored hand shows in the run record
 (gr514205). `sha` is the writer's sha256 of the geometry file —
 `out.block` stamps it automatically and import stores it on the bound

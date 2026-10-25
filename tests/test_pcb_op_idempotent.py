@@ -84,7 +84,7 @@ def _state(store: Any, ref_id: int) -> dict[str, Any]:
     return out
 
 
-@pytest.mark.parametrize("op", ["place", "route"])
+@pytest.mark.parametrize("op", ["place"])
 def test_enqueued_op_twice_is_one_job(pcb, store, op):
     slug = f"idem2-{op}"
     pcb.put(id=slug, args=_DESIGN)

@@ -269,7 +269,8 @@ class EstimateHandler(CacheBackedHandler):
                 next="get(kind='estimate', id='st123', view='compare', "
                 "args={'against': 'st456'})",
             )
-        return super().get(id=id, q=q, view=view, **kw)
+        # panel/compare were consumed above; the cache base only knows view='body'
+        return super().get(id=id, q=q, view=None, **kw)
 
     # -- structure-tier request assembly ------------------------------------
 
@@ -330,7 +331,8 @@ class EstimateHandler(CacheBackedHandler):
         key = _STRUCT_KEY_PREFIX + json.dumps(
             payload, sort_keys=True, separators=(",", ":")
         )
-        return super().get(id=key, view=view, **kw)
+        # the view is already encoded in the key; the cache base only knows view='body'
+        return super().get(id=key, view=None, **kw)
 
     # -- cache-base hooks ----------------------------------------------
 

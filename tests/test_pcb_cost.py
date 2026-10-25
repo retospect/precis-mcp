@@ -15,7 +15,6 @@ import random
 import pytest
 
 from precis.pcb import DEFAULT_STACKUP
-from precis.pcb.capabilities import capability_for
 from precis.pcb.cost import (
     _BY_NAME,
     _CRITICALITY_WEIGHT,
@@ -51,7 +50,6 @@ from precis.pcb.optimize import (
     OptimizeEngine,
     seed_placement,
 )
-from precis.pcb.realize import RealizeConfig, realize
 from precis.pcb.rules import ipc2221_capacity_a
 
 _CLASSES = ["signal", "power", "ground", "rf", "clock"]
@@ -1061,34 +1059,6 @@ def test_via_count_zero_below_l1():
     (t,) = _via_count(ir, Level.L0, CostConfig())
     assert t.raw == 0.0
     assert t.is_bound
-
-
-def test_via_count_matches_realized_vias_exactly():
-    """The anti-drift pin, and the whole point of this fix: for the SAME
-    IR, the USD ``cost.py`` charges for vias must correspond EXACTLY to
-    the number of vias ``realize.realize()`` actually emits -- this is the
-    test that would have caught the original defect, where ``via_count``
-    silently charged 0 while ``realize.py`` emitted real geometry onto the
-    gerbers."""
-    ir = from_graph(_current_net_graph(5.0, "power"), stackup=DEFAULT_STACKUP)
-    ir.move_instance(0, x=0.0, y=0.0, rot=0.0)
-    ir.move_instance(1, x=10.0, y=0.0, rot=0.0)
-    ir.set_layer(0, 1)  # a real layer transition, with a current annotation
-    # …and the vector router is pointed at it by a class lock (seg_layer
-    # is a soft preference the router may ignore).
-    fab_caps = capability_for("4layer")
-    cost_config = CostConfig(fab_caps=fab_caps, via_usd=0.02)
-    realize_config = RealizeConfig(
-        fab_caps=fab_caps,
-        router="vector",
-        class_rules={"power": {"layers": ["In1.Cu"]}},
-    )
-
-    (t,) = _via_count(ir, Level.L4, cost_config)
-    result = realize(ir, config=realize_config)
-
-    assert result.vias  # sanity: the production path really emits vias here
-    assert t.raw == pytest.approx(len(result.vias) * cost_config.via_usd)
 
 
 def test_via_count_registered_term_direction_is_lower():

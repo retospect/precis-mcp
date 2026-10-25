@@ -1,6 +1,6 @@
 ---
 status: draft
-title: "pcb topo-place: fast placer with a pairwise part map and solver-side pin assignment, then topological route, anneal, corridor shove and a vroute hand-off"
+title: "pcb topo-place: fast placer with a pairwise part map and solver-side pin assignment, then topological route, anneal, corridor shove and its own realiser"
 pillar: 3d-design
 prio: high
 model: opus
@@ -21,9 +21,10 @@ DOI).
 held unmerged commits on 2026-10-24. The gate is that tree landing, not
 the item's later slices (1, 2, 2t, 3, 5).
 
-**Dogfood target (Reto 2026-10-25).** Once place, topo and vroute work
-end to end, every slice runs on the standing real board and its numbers
-are posted ("yes dogfood all the time when it starts kinda working").
+**Dogfood target (Reto 2026-10-25).** Once place, topo and the realiser
+work end to end, every slice runs on the standing real board and its
+numbers are posted ("yes dogfood all the time when it starts kinda
+working").
 No pcb exists on prod under the literal name `epro2`; the standing
 .epro2-imported boards are `heater-base-test` (pb460559, from
 `heaterBaseTest.epro2`) and `taz15` (pb482131 "copper stripped, routing
@@ -47,7 +48,7 @@ What exists, and where it falls short:
 | `place.py::route_feasibility` splits airwires H/V and calls residual crossings `vias_estimate` | not a rule: 2-layer routability with fixed topology is list-2-colouring of the crossing graph (R6, R15.1); the certificate is an odd cycle |
 | `optimize` ~880 moves/s; nano place+route ~2.5 min per seed (pcb-workspace-code §Q2) | too slow for an LLM outer loop of 3–10 rounds |
 | `matching.py::solve` assigns supply/client roles by Euclidean min-cost; `pinswap.py` warm-starts radial/distance swaps | the netlist fixes every MCU pin; no "any of these pins" declaration, no crossing-aware swap, no firmware write-back |
-| `topo.py` builds a free-space CDT with portal capacities for the vector router | per-net centreline domains for geometry; no per-layer wire order, no crossing graph, no via sites |
+| `topo.py` builds a free-space CDT with portal capacities (kept for `build_region_graph`; its `vroute` consumer is deleted) | per-net centreline domains for geometry; no per-layer wire order, no crossing graph, no via sites |
 
 The research turns the missing verdicts into exact, cheap tests: boundary
 interleaving (R4, Hsu 10.1109/TCAD.1983.1270041), inversions between
@@ -60,10 +61,12 @@ the objective shares and constraints this consumes;
 [pcb-unified-place-route](pcb-unified-place-route.md) (`field.py`) and
 [pcb-place-route-datamodel](pcb-place-route-datamodel.md) (`precis.pcb.pr`)
 were the smooth-energy engines (both deleted, Reto 2026-10-25; git
-history); [pcb-vector-router](pcb-vector-router.md)
-(`topo.py`, `vroute.py`) is the geometry engine. topo-place is the fast
-topological layer in front of it: poses, pin assignments, a layer per
-wire piece and via sites. v1 hands geometry to `vroute` (phase 4).
+history); pcb-vector-router (deleted; tag vroute-final) was the geometry
+engine — `vroute.py` was deleted on 2026-10-25 (tag `vroute-final`), so
+the topological router is the only router and until slice 5 lands there
+is no routed-copper output. topo-place is that router's front end:
+poses, pin assignments, a layer per wire piece and via sites; slice 5
+turns them into copper in a topoplace realiser.
 
 ## Rulings (Reto 2026-10-24)
 
@@ -286,7 +289,7 @@ From the brief unless marked *spec call*.
 | 2 | **phase 1**: CDT mesh, wires as edge sequences, crossing graph, list-2-colouring, via points, certificates, via bracket; ladder rung 2 | no | yes (mesh arrays, wire order invariant) | none |
 | 3 | **phase 2**: topology anneal (re-thread, move via, flip piece, move net layer, re-solve swap group); grouping, unidirectionality, corridor terms; exact cyclic pin order | yes, after 2's seam review | no | none |
 | 4 | **phase 3**: corridor demand/capacity per edge per layer; rigid-body shove LP with no triangle inversion; results feed the archive | no | yes (LP formulation, topology-preserving invariant) | none |
-| 5 | **phase 4**: `vroute` hand-off — per-net layer rules and fixed vias | yes | no | none |
+| 5 | **phase 4**: topo's own realiser — per-net layer rules and fixed vias become copper | yes | no | none |
 
 Sizes: 0 S–M, 1 L (three builds), 2 L (two builds), 3 M, 4 M–L, 5 S.
 "Devin alone" means a fresh builder can finish it from this text; "Opus
@@ -361,6 +364,15 @@ radius + 0.5 mm — the same translate-domain cap
 `optimize._derive_placement_bounds` applies. `TopoDesign` still carries
 no footprint extent, so pads/board-edge clearance beyond the pin radius
 stays a later-slice concern.
+
+2026-10-25 — `vroute` retired and deleted (tag `vroute-final`; Reto:
+"This is the only router to use. Retire and delete vroute if it
+confuses. Even if we have none."). `op='route'`/`local.route` refuse
+with `next=` naming the topo path; `pcb_route` is gone from the job
+surface and stored routes still render. Slice 5 rescoped: it is no
+longer a hand-off — topo grows its own realiser (§5). Until it lands a
+placed board reports every fanout `unrouted` and routed copper is not
+available.
 
 ### 0. Prerequisites (folded gripes)
 
@@ -700,25 +712,26 @@ no triangle has signed area ≤ 0 after any round; every wire's edge
 sequence is unchanged; total displacement ≤ 1.05 × the LP optimum of the
 first round; outline containment holds.
 
-### 5. Phase 4 — vroute hand-off
+### 5. Phase 4 — the topo realiser
 
-Geometry hands off to `vroute` (`src/precis/pcb/vroute.py`) — the vector
-router and the only production router since the grid router was removed
-(`d42369679`); Freerouting's remnants were deleted on 2026-10-25. Entry point:
-`vroute.route(space, request)` — one `vroute.Space` (obstacles plus the
-per-net clearance) built once, one `vroute.Request` per connection,
-driven the way `realize.py` drives it today.
+`vroute` (`src/precis/pcb/vroute.py`) is deleted (2026-10-25, tag
+`vroute-final`); topo is the only router, so this slice grows topo's own
+realiser: it turns the topo route's wires (edge sequences on one layer)
+and via sites into copper tracks and vias written through the normal
+realise/store path. There is no routed-copper output until this lands.
 
-- The topo route's per-wire layer assignment becomes each request's
-  `layers` (a surface pad's mount side stays a `term_only` layer); the
-  topo route's via sites become FIXED vias that request must honour —
-  the forcing mechanism (a required-waypoint `Request` field vs. via
-  obstacles pre-stamped in the `Space`) is a slice-5 seam call.
+- The topo route's per-wire layer assignment fixes each wire's layer (a
+  surface pad's mount side stays the terminal layer); the topo route's
+  via sites become fixed vias at their `(edge_id, t)` positions.
+- Track width and clearance come from the net's rules (the
+  `topo.build_region_graph` path already resolves per-net
+  width/clearance).
 - Layer names via `layer_name` (R-d).
 
 Tests: the sanity board's topo route hands every wire a layer and every
-via a site, `vroute` routes it 100 % with 0 DRC errors (hard), and its
-routed count and via count are printed beside the bracket.
+via a site, the realiser emits copper that passes DRC 100 % with 0
+errors (hard), and its routed count and via count are printed beside the
+bracket.
 
 ## In scope
 
@@ -733,8 +746,9 @@ Slices 0–5 above; skills: `precis-pcb-workspace-help` gains the pin forms,
 - A peripheral DSL (I2C instances, timer sharing, alt-function
   exclusivity); the LLM fixes those pins (Decision 11).
 - Promoting pin function tables into the component library (Decision 16).
-- Native taut geometry; v1 geometry is `vroute` (Freerouting's remnants
-  were deleted 2026-10-25).
+- Native taut geometry — no routed-copper output exists until the
+  slice-5 realiser lands (`vroute` deleted 2026-10-25, tag
+  `vroute-final`).
 - Rotation during shove.
 - Blind and buried vias.
 - Exact k-layer via minimisation beyond the 2-layer relaxation (NP-complete
@@ -761,7 +775,7 @@ Slices 0–5 above; skills: `precis-pcb-workspace-help` gains the pin forms,
 7. §B5 example A gives 4 / 1 / 4 vias with the K3 certificate.
 8. Shove never inverts a triangle and never changes a wire's edge
    sequence.
-9. Sanity routes 100 % with 0 DRC errors through the `vroute` hand-off.
+9. Sanity routes 100 % with 0 DRC errors through the slice-5 realiser.
 10. No hostnames or IPs in code, fixtures or docs.
 
 ## Questions

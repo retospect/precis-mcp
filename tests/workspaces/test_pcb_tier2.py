@@ -1,14 +1,19 @@
 """pcb-workspace-code slice 4, tier-2 CI goldens
 (docs/backlog/pcb-workspace-code.md, Slices row 4 + §Goldens):
 
-- ``sanity`` is HARD: ``pcb.local.place`` + ``pcb.local.route`` must
-  reach 100 % routed with 0 DRC errors on every run.
-- ``nano_usb_pd`` and ``esp32c3`` are MEASURED: routed/failed/errors/
-  vias are compared against ``data/pcb_tier2_goldens.json`` and any
-  drift is printed naming the board — the same "golden drift —
-  regenerate" escape as tier-1, never a silent floor. A ``vroute`` or
-  ``optimize`` change that moves nano's routed count trips this test
-  with the delta in the message.
+- ``sanity`` is HARD: ``pcb.local.place`` + ``pcb.local.drc`` must reach
+  0 DRC errors on every run.
+- ``nano_usb_pd`` and ``esp32c3`` are MEASURED: the placement metrics
+  (crossings, pads-only DRC error count) are compared against
+  ``data/pcb_tier2_goldens.json`` and any drift is printed naming the
+  board — the same "golden drift — regenerate" escape as tier-1, never
+  a silent floor. An ``optimize`` change that moves a board's anneal
+  trips this test with the delta in the message.
+
+**Routing is retired** (gr515107, Reto 2026-10-25: the vector router was
+deleted, tag ``vroute-final``; ``pcb.local.route`` now refuses). The
+routed/failed/vias golden rows died with it — what remains measures the
+anneal and the pads-only DRC readback over the placed board.
 
 Regenerate the measured rows after an intended engine change (then read
 the diff)::
@@ -51,37 +56,35 @@ def _example(name: str) -> pcb.Board:
     return _load(BOARDS / name / "main.py", f"example_{name}").build()
 
 
-def _route(name: str) -> Any:
+def _place(name: str) -> Any:
     board = _example(name)
-    placement = pcb.local.place(board)
-    return pcb.local.route(board, placement=placement)
+    return pcb.local.place(board)
 
 
 def _measure(name: str) -> dict[str, Any]:
-    routing = _route(name)
+    placement = _place(name)
+    findings = pcb.local.drc(placement)
     return {
-        "routed": routing.routed,
-        "nets": routing.nets,
-        "failed": routing.failed,
-        "errors": routing.errors,
-        "vias": routing.vias,
+        "crossings": placement.crossings,
+        "errors": sum(1 for f in findings if f.severity == "error"),
     }
 
 
 # --- hard gate ---------------------------------------------------------------
 
 
-def test_sanity_routes_100_percent_with_zero_drc() -> None:
-    routing = _route("sanity")
-    assert routing.routed == routing.nets == 20, routing.summary()
-    assert routing.errors == 0, pcb.local.findings_text(routing.findings)
+def test_sanity_places_with_zero_drc() -> None:
+    placement = _place("sanity")
+    findings = pcb.local.drc(placement)
+    errors = [f for f in findings if f.severity == "error"]
+    assert not errors, pcb.local.findings_text(findings)
 
 
 # --- measured ----------------------------------------------------------------
 
 
 @pytest.mark.slow
-@pytest.mark.timeout(1200)  # nano routes ~170 s locally, >300 s on CI runners
+@pytest.mark.timeout(1200)  # a full place anneal per board; CI runners run long
 @pytest.mark.parametrize("name", MEASURED)
 def test_tier2_measured_board(name: str) -> None:
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))

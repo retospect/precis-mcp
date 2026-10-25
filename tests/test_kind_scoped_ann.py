@@ -330,6 +330,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 #: The one audited re-kind site — fills the ref's unfilled
 #: ``chunk_embeddings`` rows in the re-kind transaction (gr515083).
 _KNOWN_REKIND = "scripts/_conventions_findings_to_memory.py"
+#: The audited convert-op re-kind: it re-homes the ref's
+#: ``chunk_embeddings.kind`` in the same transaction (kind_convert.py).
+_KNOWN_REKIND_CONVERT = "src/precis/ingest/kind_convert.py"
 
 
 _UPDATE_REFS = re.compile(r"UPDATE\s+(?:public\.)?\"?refs\"?\b", re.IGNORECASE)
@@ -381,7 +384,7 @@ def test_no_runtime_code_rekinds_refs_beyond_the_audited_site() -> None:
                     )[0]
                     if _set_clause_assigns_kind(set_clause):
                         offenders.add(str(path.relative_to(_ROOT)))
-    assert sorted(offenders) == [_KNOWN_REKIND]
+    assert sorted(offenders) == sorted([_KNOWN_REKIND, _KNOWN_REKIND_CONVERT])
 
 
 def test_reindex_global_drops_an_invalid_ccnew_leftover(store: Store) -> None:

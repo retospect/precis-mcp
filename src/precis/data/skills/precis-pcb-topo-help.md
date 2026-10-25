@@ -20,9 +20,12 @@ kinds: [pcb, job]
 topological placer (`precis.pcb.topoplace`) — an anneal over the
 incremental straight-airwire proxy (crossings + length) with side flips
 among the moves, plus solver-side pin assignment for `any_of` slots.
-The default joint place+route engine is [[precis-pcb-route-help]]; this
-skill is only the topo opt-in and its readback view. Opt-in until a
-bench shows it beats the default.
+Topological routing is the only router: the old vector router was
+deleted 2026-10-25 (tag `vroute-final`) and topo's own realiser
+(topo-place slice 5) has not landed — `op='route'` refuses and there is
+no routed-copper output until then. This skill covers the topo placer
+opt-in and its readback view; the placer stays opt-in until a bench
+shows it beats the default.
 
 ## Enqueue a topo-place run
 
@@ -33,10 +36,10 @@ put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo", "iters"
 
 - `iters` is the topo placer's eval budget (default 20000, vs the
   anneal's step count); `seed` is the RNG seed, as on the anneal.
-- The result lands through the SAME pre-route DRC gate and rip-up as the
+- The result lands through the SAME placement-DRC gate and rip-up as the
   anneal — a worse placement refuses the write, `force=True` overrides.
   Locks (`fixed`, `max_travel_mm`) and the fixed-copper rip-up rules of
-  `op='place'` apply unchanged — [[precis-pcb-route-help]] for both.
+  `op='place'` apply unchanged — [[precis-pcb-help]] for both.
 
 ## Read back a topo-place run — `view='topo'`
 
@@ -64,21 +67,21 @@ worktree's dev DB — no prod, no MCP, no deploy:
 
 ```bash
 scripts/pcb-loop                          # board.epro2 → /tmp/pcb-topo/loop/<n>/
-scripts/pcb-loop --skip-route --seed 3 --board path/to/board.epro2 --out DIR
-scripts/pcb-loop --force --anneal-route   # topo pose committed despite the
-                                          # placement-DRC gate, then legalized
-                                          # by the joint anneal before routing
+scripts/pcb-loop --seed 3 --board path/to/board.epro2 --out DIR
+scripts/pcb-loop --force                  # topo pose committed despite the
+                                          # placement-DRC gate
 ```
 
-One run: import → `placer='topo'` place job → route-only
-(`place=False`) job → DRC → `placement.svg`/`sketch.svg`/`board.svg` +
-`summary.md` + `metrics.json` (per-stage wall times). The bench side
-(`scripts/pcb-topo-bench`) measures topo vs the anneal against the
-default-switch bar on the standing boards.
+One run: import → `placer='topo'` place → DRC →
+`placement.svg`/`topo-placement.svg`/`sketch.svg`/`board.svg` +
+`summary.md` + `metrics.json` (per-stage wall times). There is no route
+stage — routing is retired and topo's realiser (topo-place slice 5) is
+unshipped, so the loop reports the place stage's crossings and the via
+bracket. The bench side (`scripts/pcb-topo-bench`) measures topo vs the
+anneal against the default-switch bar on the standing boards.
 
 ## See also
 
-- [[precis-pcb-route-help]] — the default anneal's `op='place'`/
-  `op='route'` surface, the shared pre-route DRC gate and the rip-up
-  loop.
-- [[precis-pcb-help]] — author the netlist a topo-place run acts on.
+- [[precis-pcb-help]] — author the netlist a topo-place run acts on; the
+  `op='place'` surface, the shared placement-DRC gate and the rip-up
+  rules.

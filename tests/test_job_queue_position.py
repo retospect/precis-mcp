@@ -21,7 +21,7 @@ def _job(
     store: Store,
     status: str,
     *,
-    job_type: str = "pcb_route",
+    job_type: str = "pcb_place",
     executor: str = "job_inproc",
     prio: int | None = None,
     params: dict[str, str] | None = None,
@@ -94,9 +94,9 @@ def test_node_pin_is_a_reason(store: Store) -> None:
 def test_suspended_type_is_held_not_ranked(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PRECIS_SUSPENDED_JOB_TYPES", "pcb_route")
+    monkeypatch.setenv("PRECIS_SUSPENDED_JOB_TYPES", "pcb_place")
     body = _body(store, _job(store, "queued"))
-    assert "queue: held — job_type 'pcb_route'" in body
+    assert "queue: held — job_type 'pcb_place'" in body
     assert "queue: position" not in body
 
 

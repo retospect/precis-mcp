@@ -3,9 +3,11 @@
 Three layers:
 
 - verdict/render unit tests — fabricated rows, no DB, no network;
-- ``test_topo_handoff_routes_a_tiny_board`` — the pose hand-off end to
-  end on a four-part board (``placer='topo'`` job then a route-only
-  ``place=False`` job): the cheapest proof the (b) pipeline exists;
+- ``test_topo_handoff_routes_a_tiny_board`` — the pose hand-off's live
+  half on a four-part board: the ``placer='topo'`` job completes and
+  stamps its stage metrics, then the route-only ``place=False`` leg
+  refuses with the retirement contract (routing is retired — the (b)
+  pipeline's route half is gone until topo grows its own realiser);
 - ``test_topo_bench_table`` — opt-in (``PRECIS_PCB_TOPO_BENCH_OUT``,
   set by ``scripts/pcb-topo-bench``): the standing boards plus the
   route-bench set, the markdown table + JSON written to that path.
@@ -283,18 +285,20 @@ def test_power_split_renders_and_drives_the_verdict() -> None:
 
 
 def test_topo_handoff_routes_a_tiny_board(store: Store) -> None:
-    """The (b) pipeline end to end: placer='topo' writes poses, a
-    route-only job realizes them, the side reports real numbers."""
+    """The (b) pipeline's live half: placer='topo' writes poses and the
+    stage reports real numbers; the route-only job that used to realize
+    them refuses — routing is retired (gr515107), so the refusal IS the
+    contract this smoke now pins."""
     pcb = PcbHandler(hub=Hub(store=store))
     assert "created" in pcb.put(id="tiny-topo", args=_TINY).body
-    # force=True rides the place + route gates' escape hatches: the
-    # proxy placer prices crossings + length only, so its pose can carry
-    # a placement error both never-worse/legality gates would refuse.
+    # force=True rides the place gate's escape hatch: the proxy placer
+    # prices crossings + length only, so its pose can carry a placement
+    # error the never-worse gate would refuse.
     side, stage = tb._topo_side(store, pcb, "tiny-topo", seed=1, effort=200, force=True)
     assert stage.crossings is not None and stage.evals is not None, side.note
-    assert side.nets == 2 and side.routed is not None, side.note
-    assert side.drc_errors is not None
-    assert side.wall_s is not None and side.vias is not None
+    assert side.routed is None and side.nets is None
+    assert "topo route refused" in side.note
+    assert "routing is retired" in side.note
 
 
 # Opt-in only (scripts/pcb-topo-bench): the whole set runs two real

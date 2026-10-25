@@ -492,9 +492,9 @@ def erc_findings(
 
 
 def unsupplied_client_findings(graph: dict[str, Any]) -> list[pcb_drc.DrcFinding]:
-    from precis.workers.job_types import pcb_route as pcb_route_job
+    from precis.pcb import matching as pcb_matching
 
-    clients, supplies, roles = pcb_route_job._matching_model(graph, [])
+    clients, supplies, roles = pcb_matching._matching_model(graph, [])
     return pcb_drc.check_unsupplied_client(clients, supplies, roles)
 
 

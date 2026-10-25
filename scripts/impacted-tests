@@ -292,7 +292,7 @@ PATH_MAP: list[tuple[str, list[str]]] = [
     ("src/precis_web/**/*.py", ["tests/precis_web/test_colour_ratchet.py"]),
     # pcb-workspace-code slice 4 (the offline kernel + tier-2 goldens):
     # the geometric engine's behavioural contract lives in tests/workspaces —
-    # a vroute/optimize/realize change that alters a board's routed count is
+    # an optimize/realize change that alters a board's placement metrics is
     # selected here, and the tier-2 test prints the delta naming the board.
     (
         "src/precis/pcb/**",

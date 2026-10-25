@@ -8,17 +8,13 @@ from __future__ import annotations
 
 import math
 import random
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from shapely.geometry import Point
 
-from precis.pcb import DEFAULT_STACKUP, drc
 from precis.pcb import clearance as k
-from precis.pcb.capabilities import capability_for
-from precis.pcb.realize import RealizeConfig, _net_layer_clearances
-from precis.pcb.rules import resolve_net_rules
+from precis.pcb import drc
 
 _LAYERS = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
 
@@ -287,25 +283,3 @@ def test_kernel_agrees_with_the_oracle_on_random_arc_and_pad_layouts(
         assert set(naive) == set(kernel), (chunk, trial, set(naive) ^ set(kernel))
         for key, g in naive.items():
             assert g == pytest.approx(kernel[key], abs=1e-6), (chunk, trial, key)
-
-
-@pytest.mark.parametrize(
-    ("coated", "outer_mm"), [(True, 0.4), (False, 1.25)], ids=["coated", "uncoated"]
-)
-def test_router_grid_reads_the_same_ipc_column_as_drc(
-    coated: bool, outer_mm: float
-) -> None:
-    """The router's per-layer reservation for a 250 V class is the DRC's
-    floor on every layer: B1 inside, B4/B2 outside by the electrode-pad
-    coat (Reto 2026-10-18, "Yes, IPC column per layer")."""
-    cap = capability_for("4layer")
-    hv = resolve_net_rules(
-        "hv", layer_is_outer=True, fab_caps=cap, overrides={"working_voltage_v": 250}
-    )
-    plain = resolve_net_rules("", layer_is_outer=True, fab_caps=cap)
-    pads = [SimpleNamespace(raw={"role": "electrode"})] if coated else []
-    ir: Any = SimpleNamespace(stackup=list(DEFAULT_STACKUP), footprint_pads=pads)
-    got = _net_layer_clearances(ir, {1: hv, 2: plain}, RealizeConfig())
-    assert got == pytest.approx(
-        {(1, 0): outer_mm, (1, 1): 0.2, (1, 2): 0.2, (1, 3): outer_mm}
-    )

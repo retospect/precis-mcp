@@ -231,8 +231,8 @@ def test_one_board_replaces_frontier(client, runtime, board_quest) -> None:
     )
     assert "1 done" in html and "1 open" in html
     # Every action form confirms before posting.
-    assert html.count('action="/pcb/taz15/op"') == 3
-    assert html.count("return confirm(") == 3
+    assert html.count('action="/pcb/taz15/op"') == 2
+    assert html.count("return confirm(") == 2
 
 
 def test_not_checkable_verdict_counts_distinctly_and_stays_open(
@@ -324,7 +324,9 @@ def test_no_pcb_quest_layout_unchanged(client, runtime, board_quest) -> None:
 # ── actions ──────────────────────────────────────────────────────────
 
 
-def test_route_action_queues_put_with_opt_ins(client, runtime) -> None:
+def test_route_action_is_retired(client, runtime) -> None:
+    """Routing is retired: ``route`` is not a panel op any more and the
+    refused post queues nothing (gr515107)."""
     resp = client.post(
         "/pcb/taz15/op",
         data={
@@ -335,16 +337,9 @@ def test_route_action_queues_put_with_opt_ins(client, runtime) -> None:
         },
         follow_redirects=False,
     )
-    assert resp.status_code == 303
-    assert resp.headers["location"] == "/refs/quest/97#board"
-    assert runtime.calls[-1] == (
-        "put",
-        {
-            "kind": "pcb",
-            "id": "taz15",
-            "__extras__": {"op": "route", "corridor": 1.5, "escape": "plaza"},
-        },
-    )
+    assert resp.status_code == 400
+    assert "place, review" in resp.text
+    assert runtime.calls == []
 
 
 def test_place_action_with_groups(client, runtime) -> None:
@@ -374,7 +369,7 @@ def test_action_refusals_queue_nothing(client, runtime) -> None:
         assert resp.status_code == 400
     assert runtime.calls == []
     runtime.error_verbs.add("put")
-    resp = client.post("/pcb/taz15/op", data={"op": "route"})
+    resp = client.post("/pcb/taz15/op", data={"op": "place"})
     assert resp.status_code == 400
     assert "rejected by handler" in resp.text
 
@@ -395,8 +390,8 @@ def test_action_extras_pass_the_pcb_args_gate() -> None:
     """The panel's put args must survive dispatch's ``ARGS_KEYS`` check —
     the same gate an agent's ``put(args=…)`` meets."""
     for op, kw in (
-        ("route", {"corridor": "2", "escape": "plaza", "groups": None}),
-        ("place", {"corridor": None, "escape": None, "groups": "1"}),
+        ("place", {"groups": "1"}),
+        ("review", {"groups": None}),
     ):
         verb, args = pcb_routes._op_call("s", op, **kw)
         assert verb == "put"

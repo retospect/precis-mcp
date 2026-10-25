@@ -134,9 +134,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     ie.add_argument(
         "--freeze",
         action="store_true",
-        help="Import EVERY part locked (fixed='both'), so op='route' routes "
+        help="Import EVERY part locked (fixed='both'), so op='place' keeps "
         "the board as placed. By default only the parts the source locked "
-        "are locked; op='route' re-places the rest first.",
+        "are locked; op='place' re-places the rest first.",
     )
     ie.add_argument(
         "--database-url",

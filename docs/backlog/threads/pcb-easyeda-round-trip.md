@@ -11,7 +11,7 @@ design-review: yes
 - **Next:** Reto opened the regenerated taz15 `.epro2` in EasyEDA Pro on 2026-10-14: clean import, banner lifted. Pours from an already-poured source now open filled via `POURED` passthrough; precis-authored pours stay unfilled until rebuild copper. Catalog identity, local-first footprints and pin semantics landed (a7863eda3); pcb-datasheet-review slice 1 shipped. Still open inside 2f: rule AREAS, mask openings, teardrops (no record shapes). Router work stays with ewod-pcb. Full 2026-10-14 log: [Thread context](#thread-context).
 - **Blocked by:** Nothing for 2d/2e. Reopened 2026-10-07 by the coordinator (Reto's order: route/place first, then EasyEDA). Reto's 2026-10-14 open verified the file (banner lifted); the pour-fill gap it surfaced is now carried via `POURED` passthrough. Shared router/realizer files belong to [ewod-pcb](ewod-pcb.md#resume); sequence, do not merge.
 - **Unblocks:** A corrected board that routes and round-trips.
-- **Acceptance:** Use [pcb-vector-router](../pcb-vector-router.md) slice 3b and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
+- **Acceptance:** Use pcb-vector-router (deleted; tag vroute-final) slice 3b and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
 - **Worktree:** `pcb-easyeda-round-trip`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).

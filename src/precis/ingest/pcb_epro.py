@@ -61,10 +61,10 @@ from precis.store._pcb_ops import (
     _normalize_local_footprint as normalize_local_footprint,
 )
 
-#: What ``op='place'``/``op='route'`` accept (``_enqueue_op``) and what
+#: What ``op='place'`` accepts (``_enqueue_op``) and what
 #: ``_FIXED_COPPER_FAB_PROCESS`` is pinned to. Refusing HERE, naming the
 #: board's actual count, beats letting it surface as a confusing refusal
-#: at the user's first route — which is the step the import exists for.
+#: at the user's first place run — which is the step the import exists for.
 _SUPPORTED_LAYER_COUNTS = (4,)
 
 log = logging.getLogger(__name__)
@@ -823,17 +823,17 @@ def import_epro(
             )
         elif newly:
             warnings.append(
-                f"{newly} part(s) imported LOCKED (fixed='both') so op='route' "
+                f"{newly} part(s) imported LOCKED (fixed='both') so op='place' "
                 f"cannot re-place them; unlock one with op='move' fixed=None"
             )
 
     if len(stackup) not in _SUPPORTED_LAYER_COUNTS:
         raise EproImportError(
             f"this board has {len(stackup)} copper layers "
-            f"({', '.join(s['name'] for s in stackup)}); precis' placer and "
-            f"router accept only "
+            f"({', '.join(s['name'] for s in stackup)}); precis' placer "
+            f"accepts only "
             f"{' or '.join(str(n) for n in _SUPPORTED_LAYER_COUNTS)} today, so "
-            f"importing it would produce a board that refuses to route "
+            f"importing it would produce a board that refuses to place "
             f"(docs/backlog/pcb-engine-plan.md §5 is the n-layer work)"
         )
     # validate_stackup is the authored-input contract; run it on a derived

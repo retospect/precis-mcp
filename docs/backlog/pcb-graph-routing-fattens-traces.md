@@ -19,6 +19,11 @@ preset, an import's rows). This item is the second half: the copper a
 flood pour used to supply now has to come from traces sized by net
 property inside the (vector) router.
 
+> 2026-10-25: `vroute` is deleted (tag `vroute-final`, gr515107) — the
+> `vroute.Request.width_mm` mentions below describe the deleted engine;
+> the same fattening inputs apply to the topo realiser's per-wire width
+> (pcb-topo-place slice 5) once it lands.
+
 Filed survey-only per the g4-pours-off brief — do NOT build under this
 item without a further ruling.
 

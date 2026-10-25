@@ -26,6 +26,7 @@ import zipfile
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
 from precis.ingest import pcb_epro
 from precis.pcb import epro, padplace, session
@@ -918,10 +919,13 @@ def test_svg_renders_the_imported_board(pcb, imported) -> None:
 
 
 def test_route_enqueues_without_refusing(pcb, imported) -> None:
-    """``_enqueue_op`` hard-refuses any stackup that is not exactly 4
-    layers. The import derives a 4-layer stackup from the file, so this
-    is the check that the two agree."""
-    res = pcb.put(id=imported.slug, args={"op": "route"})
+    """Routing is retired, so ``op='route'`` refuses with the retired
+    message before any job work (gr515107). ``op='place'`` — the op that
+    still exists — accepts the imported board's derived 4-layer stackup,
+    which is the check that the import and the job ops agree."""
+    with pytest.raises(BadInput, match="routing is retired"):
+        pcb.put(id=imported.slug, args={"op": "route"})
+    res = pcb.put(id=imported.slug, args={"op": "place"})
     assert "refus" not in res.body.lower()
 
 

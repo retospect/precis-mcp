@@ -677,6 +677,8 @@ class PaperHandler(Handler):
                 raise BadInput(
                     "args['restore'] and args['restore_abort'] are two "
                     "different doors — send them as separate calls",
+                    next="put(kind='paper', id='<pa-or-slug>', args="
+                    "{'restore': <one dump slice>, 'reason': '<why>'})",
                 )
             # The restore door writes a body, so it shares nothing with
             # the stub-mint fields — a combined call is a caller error.

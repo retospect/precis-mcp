@@ -283,6 +283,7 @@ Corpus-pipeline services documenting against this skill:
 | `tag_embeddings` | embeds tags for `kind='tag'` discovery |
 | `gp_fetch` | fall-back patent fetch (`fetch_google_patents` in logs) |
 | `openalex_enrich` | backfills abstracts + OpenAlex metadata |
+| `openalex_snapshot` | ~30-day diff of the public OpenAlex works dump into `openalex_cite_edges` (citation edges touching held papers); runs on the data node only |
 | `paper_meta_enrich` | re-resolves authors/journal/idents/retraction from Crossref |
 | `paper_reconcile` | folds duplicate paper refs + hygiene heals |
 | `corpus_reconcile` | per-host `pdf_locations` ledger |

@@ -9,6 +9,11 @@ blocked-by: pcb-workspace-code
 
 # pcb intent API for workspace code
 
+> 2026-10-25: `vroute` is deleted (tag `vroute-final`, gr515107) — rows
+> below that name `vroute` budgets/costs/filters describe a deleted
+> engine; the intent surface now targets the topological router only
+> ([pcb-topo-place](pcb-topo-place.md), realiser = slice 5).
+
 Reto 2026-10-24: what preferences should code (ultimately the LLM) give
 the placer and router? His examples: a placement objective "minimize
 ratsnest 80% / shortest wires 20%"; a router rule "<area> L3: horizontal

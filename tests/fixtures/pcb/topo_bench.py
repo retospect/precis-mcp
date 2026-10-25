@@ -44,10 +44,12 @@ import collections
 import copy
 import dataclasses
 import json
+import math
 import os
 import re
 import statistics
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -55,14 +57,24 @@ from typing import Any
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import drc
 from precis.pcb.snapshot import load_snapshot, read_snapshot
 from precis.store import Store
 from precis.workers.executors._common import SUCCEEDED, TERMINAL, current_status
 from precis.workers.executors.job_inproc import run_job_inproc_pass
 from tests.fixtures.pcb import nano_usb_pd_testboard as nano_fx
-from tests.fixtures.pcb import route_bench as rb
 
 FIXTURES = Path(__file__).parent
+ESP32C3_FIXTURE = FIXTURES / "esp32c3_reference.json"
+EWOD_REPLAY_FIXTURE = FIXTURES / "ewod-dogfood-6-replay-v1.json.gz"
+ESP32C3_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5)
+_ESP32C3_BOARD_MM = 40.0
+_ESP32C3_STACKUP: list[dict[str, Any]] = [
+    {"name": "F.Cu", "role": "signal", "routable": True, "pourable": True},
+    {"name": "In1.Cu", "role": "signal", "routable": True, "pourable": False},
+    {"name": "In2.Cu", "role": "signal", "routable": True, "pourable": False},
+    {"name": "B.Cu", "role": "signal", "routable": True, "pourable": True},
+]
 REPO = FIXTURES.parent.parent.parent
 #: Gitignored prod exports, captured read-only by
 #: ``scripts/pcb-snapshot export-prod <slug> .scratch/pcb-snapshot/<slug>.json``.
@@ -367,6 +379,53 @@ def bench_json(rows: list[TopoBenchRow], *, generated_utc: str) -> dict[str, Any
 # ── job-path measurement ────────────────────────────────────────────────
 
 
+def _track_length(segments: Iterable[dict[str, Any]]) -> float:
+    """Centreline length of line and arc segments."""
+    total = 0.0
+    for seg in segments:
+        if seg.get("shape") == "line":
+            (x0, y0), (x1, y1) = seg["start"], seg["end"]
+            total += math.hypot(x1 - x0, y1 - y0)
+        elif seg.get("shape") == "arc":
+            (x0, y0), (x1, y1) = seg["start"], seg["end"]
+            cx, cy = seg["center"]
+            a0 = math.atan2(y0 - cy, x0 - cx)
+            a1 = math.atan2(y1 - cy, x1 - cx)
+            sweep = (a0 - a1 if seg.get("cw") else a1 - a0) % math.tau
+            total += math.hypot(x0 - cx, y0 - cy) * sweep
+    return total
+
+
+def _split_findings(
+    findings: Iterable[Any],
+) -> tuple[dict[str, int], dict[str, int], tuple[str, ...]]:
+    """Errors and warns by rule, plus the sorted finding keys. A persisted
+    row carries its ``finding_key``; an in-memory finding is keyed here."""
+    errors: collections.Counter[str] = collections.Counter()
+    warns: collections.Counter[str] = collections.Counter()
+    keys: list[str] = []
+    for f in findings:
+        if isinstance(f, dict):
+            rule, severity, key = f["rule"], f["severity"], f.get("finding_key")
+        else:
+            rule, severity, key = f.rule, f.severity, drc.finding_key(f)
+        (errors if severity == "error" else warns)[str(rule)] += 1
+        keys.append(f"{rule}:{severity}:{key}")
+    return dict(errors), dict(warns), tuple(sorted(keys))
+
+
+def job_summary_text(store: Store, job_id: int) -> str:
+    """A finished job's result text — stored as a ``job_summary`` chunk on
+    the job ref, not a refs column (gr513874)."""
+    texts = [
+        b.text
+        for b in store.chunks.list_chunks_for_ref(job_id)
+        if b.chunk_kind == "job_summary"
+    ]
+    assert texts, f"no job_summary chunk on job {job_id}"
+    return "\n".join(texts)
+
+
 def _drain(store: Store, parent_id: int) -> tuple[int, str, float]:
     """Drain this design's newest job; returns ``(job_id, status,
     wall_s)`` — a failed job is a measurement, not an exception."""
@@ -447,7 +506,7 @@ def _fail_side(store: Store, job_id: int, what: str) -> PipeSide:
     reason = str(meta.get("error") or "")
     if not reason:
         try:
-            reason = rb.job_summary_text(store, job_id).splitlines()[0]
+            reason = job_summary_text(store, job_id).splitlines()[0]
         except (AssertionError, IndexError):
             pass
     return PipeSide(note=f"{what}: {reason.splitlines()[0]}".strip(": "))
@@ -478,10 +537,10 @@ def _measure(store: Store, pcb: PcbHandler, slug: str, wall: float) -> PipeSide:
             vias += 1
             via_per_net[str(item["net"])] += 1
         elif item["ctype"] == "track":
-            per_net[str(item["net"])] += rb._track_length(item.get("segments") or ())
+            per_net[str(item["net"])] += _track_length(item.get("segments") or ())
     pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     _run, findings = store.pcb_drc_findings_latest(ref.id)
-    errors, _warns, _keys = rb._split_findings(findings)
+    errors, _warns, _keys = _split_findings(findings)
     lengths = [v for v in per_net.values() if v > 0]
     sig_lengths = [v for k, v in per_net.items() if v > 0 and k not in power]
     pow_lengths = [v for k, v in per_net.items() if v > 0 and k in power]
@@ -695,7 +754,7 @@ def _esp32c3_setup(store: Store, pcb: PcbHandler, slug: str) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE pcb_boards SET stackup = %s WHERE board_id = %s",
-            (json.dumps(rb._ESP32C3_STACKUP), board_id),
+            (json.dumps(_ESP32C3_STACKUP), board_id),
         )
     pcb.put(id=slug, args={"op": "plane_net", "layer": "F.Cu", "net": "GND"})
     pcb.put(id=slug, args={"op": "plane_net", "layer": "B.Cu", "net": "VCC3V3"})
@@ -704,9 +763,9 @@ def _esp32c3_setup(store: Store, pcb: PcbHandler, slug: str) -> None:
 def bench_esp32c3(
     store: Store, seed: int, *, effort: int = TOPO_EFFORT
 ) -> TopoBenchRow:
-    with rb.ESP32C3_FIXTURE.open(encoding="utf-8") as fh:
+    with ESP32C3_FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = copy.deepcopy(json.load(fh))
-    m = rb._ESP32C3_BOARD_MM
+    m = _ESP32C3_BOARD_MM
     design["features"] = [
         {
             "ftype": "outline",
@@ -732,7 +791,7 @@ def bench_ewod(
     leave the frozen placement alone and equal the anneal side."""
     pcb = PcbHandler(hub=Hub(store=store))
     return _snapshot_board(
-        store, pcb, "ewod-replay", rb.EWOD_REPLAY_FIXTURE, seed=seed, effort=effort
+        store, pcb, "ewod-replay", EWOD_REPLAY_FIXTURE, seed=seed, effort=effort
     )
 
 
@@ -762,7 +821,7 @@ def run_bench(store: Store, *, effort: int = TOPO_EFFORT) -> list[TopoBenchRow]:
         if snapshot_fixture(board) is not None:
             rows.append(bench_snapshot(store, board, effort=effort))
     rows.append(bench_nano(store, effort=effort))
-    rows += [bench_esp32c3(store, seed, effort=effort) for seed in rb.ESP32C3_SEEDS]
+    rows += [bench_esp32c3(store, seed, effort=effort) for seed in ESP32C3_SEEDS]
     rows.append(bench_ewod(store, effort=effort))
     return rows
 
