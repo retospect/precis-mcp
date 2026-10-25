@@ -3,13 +3,17 @@ recoverability.
 
 - An unknown ``view=`` refuses with a family-grouped roster plus the
   closest real view name — not the old ~50-view single-line wall
-  (gr514236). ``connects``/``joints`` get a pointed answer naming where
-  connects actually render, since no whole-design table exists yet.
+  (gr514236). ``connect``/``joint``/``joints`` get a pointed answer
+  naming ``view='connects'`` — the whole-design table the same gripe
+  asked for, one row per connect with joint/kind/objectives.
 - ``view='ops'`` takes ``args={'offset', 'limit'}`` slices that
   concatenate back into :func:`design_ops` — the fold's elision cannot
   strand the middle of a replayable export (gr514235).
 - The bare-design eye names ``view='tree'`` so a caller landing there
   can find the blocks (the discoverability sliver of gr514234).
+- ``view='tree'`` nests children whose ``parent`` names an *instance*
+  under that instance — they used to vanish entirely when the walk
+  expanded only the template's key (gr514243).
 """
 
 from __future__ import annotations
@@ -32,26 +36,66 @@ def handler(hub: Hub, store: Store) -> SeHandler:
     return SeHandler(hub=hub)
 
 
-def test_connects_points_at_ports_and_block_under_600_chars(
-    handler: SeHandler,
-) -> None:
-    """The gripe: ``view='connects'`` used to answer with a ~1.5k-token
-    wall of every view, and the two that show connects were unfindable.
-    The reply is now a pointed sentence under the gripe's own bar."""
+def test_connects_view_is_the_whole_design_table(handler: SeHandler) -> None:
+    """gr514236's missing half: one row per connect, ``a.port`` ↔
+    ``b.port`` with its joint/kind/objectives — the columns
+    ``view='block'`` shows per block."""
+    handler.put(
+        id="cn1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "a"},
+                    {"op": "add_block", "name": "b"},
+                    {"op": "add_block", "name": "c"},
+                    {"op": "add_port", "block": "a", "name": "p"},
+                    {
+                        "op": "add_port",
+                        "block": "a",
+                        "name": "r",
+                        "roles": ["covalent"],
+                    },
+                    {"op": "add_port", "block": "b", "name": "q"},
+                    {
+                        "op": "add_port",
+                        "block": "c",
+                        "name": "s",
+                        "roles": ["covalent"],
+                    },
+                    {
+                        "op": "connect",
+                        "a": "a.p",
+                        "b": "b.q",
+                        "joint": {"class": "rigid"},
+                    },
+                    {"op": "connect", "a": "a.r", "b": "c.s", "kind": "bond"},
+                ]
+            }
+        ),
+    )
+    body = handler.get(id="cn1", view="connects").body
+    assert "2 connect(s)" in body
+    assert "a.p" in body and "b.q" in body and "a.r" in body and "c.s" in body
+    assert "rigid" in body  # the joint column
+    assert "bond" in body  # the atomic-mode kind column, shown on demand
+
+
+def test_connects_view_reads_honest_when_empty(handler: SeHandler) -> None:
+    handler.put(id="cn0", text="{}")
+    body = handler.get(id="cn0", view="connects").body
+    assert "(no connects declared yet)" in body
+
+
+def test_connect_like_spellings_point_at_the_view(handler: SeHandler) -> None:
+    """Near-miss spellings refuse short and pointed — the gripe's bar
+    was a one-line answer under 600 chars, not the ~50-view wall."""
     handler.put(id="c1", text="{}")
-    with pytest.raises(BadInput) as exc:
-        handler.get(id="c1", view="connects")
-    message = f"{exc.value} {exc.value.next or ''}"
-    assert len(message) < 600
-    assert "view='ports'" in message
-    assert "view='block'" in message
-
-
-def test_joints_gets_the_same_pointed_answer(handler: SeHandler) -> None:
-    handler.put(id="c2", text="{}")
-    with pytest.raises(BadInput) as exc:
-        handler.get(id="c2", view="joints")
-    assert "view='ports'" in str(exc.value.next)
+    for v in ("connect", "joint", "joints"):
+        with pytest.raises(BadInput) as exc:
+            handler.get(id="c1", view=v)
+        next_ = str(exc.value.next)
+        assert "view='connects'" in next_
+        assert len(next_) < 600
 
 
 def test_an_unknown_view_suggests_the_nearest_real_view(
@@ -107,3 +151,48 @@ def test_the_bare_design_eye_names_view_tree(handler: SeHandler) -> None:
     )
     body = handler.eye(id="eye1", extent="fisheye+1hop").body
     assert "view='tree'" in body
+
+
+def _indent_of(body: str, name: str) -> int:
+    """The leading-space depth of the tree line naming block ``name``."""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- ") and stripped[2:].split("  ")[0] == name:
+            return len(line) - len(line.lstrip())
+    raise AssertionError(f"block {name!r} not found in:\n{body}")
+
+
+def test_tree_nests_children_parented_to_an_instance(handler: SeHandler) -> None:
+    """gr514243: ``parent`` may name an *instance* (unicycle-c1's bolts
+    hang off crown/crank instances) — the walk used to expand only the
+    template's key, so such children vanished from the tree entirely.
+    Both keys now render: the template's subtree and this node's own."""
+    handler.put(
+        id="uni",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "t_crank"},
+                    {"op": "add_block", "name": "t_axle", "parent": "t_crank"},
+                    {
+                        "op": "instance_block",
+                        "name": "crank_left",
+                        "template": "t_crank",
+                    },
+                    {
+                        "op": "add_block",
+                        "name": "crank_bolt_left",
+                        "parent": "crank_left",
+                    },
+                ]
+            }
+        ),
+    )
+    body = handler.get(id="uni", view="tree").body
+    crank_depth = _indent_of(body, "crank_left")
+    assert _indent_of(body, "crank_bolt_left") > crank_depth
+    # The template's own subtree expands under the template row AND
+    # under the instance — t_axle appears twice, both indented.
+    assert body.count("- t_axle") == 2
+    assert _indent_of(body, "t_axle") > crank_depth
+    assert _indent_of(body, "t_axle") > _indent_of(body, "t_crank")

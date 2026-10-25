@@ -47,6 +47,9 @@ _instances: list[dict[str, Any]] = []
 _connects: list[dict[str, Any]] = []
 _rays: list[dict[str, Any]] = []
 _notes: str | None = None
+#: The design's governing production scenario id once :func:`scenario`
+#: declares it — lands as the manifest's top-level ``scenario`` (gr514245).
+_scenario: str | None = None
 _payloads: dict[str, tuple[bytes, str]] = {}  # file name → (bytes, encoding)
 #: Once :func:`board` declares the run's product a pcb Board, ``finish``
 #: writes its ``kind='pcb'`` manifest — the se rows refuse to mix.
@@ -127,12 +130,17 @@ def block(
     relax: dict[str, Any] | None = None,
     desc: str | None = None,
     bonds: Any = None,
+    mode: str | None = None,
+    measures: list[dict[str, Any]] | None = None,
+    loads: dict[str, Any] | None = None,
     frame: int | None = None,
 ) -> None:
     """Register one output block; the file is written at :func:`finish`.
 
     ``ports``/``relax`` are manifest rows verbatim (the importer vets
-    them); ``bonds`` may be a JSON-able structure written to
+    them), as are ``mode``/``measures``/``loads`` — the block's
+    manufacturing mode, named measures and load declarations (gr514245).
+    ``bonds`` may be a JSON-able structure written to
     ``blocks/<name>.bonds.json`` or an already-staged relative path.
     ``frame`` defaults to the calling trace frame. A
     :class:`precis_geom.assembly.Geom` flattens to geometry here and
@@ -161,6 +169,12 @@ def block(
         entry["relax"] = relax
     if desc is not None:
         entry["desc"] = desc
+    if mode is not None:
+        entry["mode"] = mode
+    if measures is not None:
+        entry["measures"] = list(measures)
+    if loads is not None:
+        entry["loads"] = loads
     fid = _frame_id(frame)
     if fid is not None:
         entry["frame"] = fid
@@ -319,6 +333,16 @@ def note(text: str) -> None:
     _notes = text if _notes is None else f"{_notes}\n{text}"
 
 
+@traced
+def scenario(scenario_id: str) -> None:
+    """Declare the design's governing production scenario id — the
+    manifest's top-level ``scenario``, applied to the design at import
+    (gr514245)."""
+    global _scenario
+    _vet_not_board("scenario")
+    _scenario = str(scenario_id)
+
+
 def finish() -> Path:
     """Write ``manifest.json`` + ``trace.json`` under the out dir. Idempotent."""
     global _finished
@@ -347,6 +371,8 @@ def finish() -> Path:
         }
         if _rays:
             manifest["rays"] = _rays
+        if _scenario is not None:
+            manifest["scenario"] = _scenario
     if _notes:
         manifest["notes"] = _notes
     (out_dir / "manifest.json").write_text(
@@ -374,10 +400,11 @@ atexit.register(_finish_quiet)
 
 def _reset() -> None:
     """Test hook: a second logical run in one process."""
-    global _finished, _notes, _board
+    global _finished, _notes, _board, _scenario
     _finished = False
     _notes = None
     _board = None
+    _scenario = None
     _board_requests.clear()
     _blocks.clear()
     _instances.clear()
@@ -386,4 +413,13 @@ def _reset() -> None:
     _payloads.clear()
 
 
-__all__ = ["block", "board", "connect", "finish", "instance", "note", "ray"]
+__all__ = [
+    "block",
+    "board",
+    "connect",
+    "finish",
+    "instance",
+    "note",
+    "ray",
+    "scenario",
+]

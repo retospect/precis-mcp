@@ -285,7 +285,7 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 
 ## Views (`get(kind='se', id=…, view=…)`)
 
-`tree · block · report · ports · topology · chain · measures · revisions · branches · diff · provenance · contracts · datums · validate · clearance · sweep ·
+`tree · block · report · ports · connects · topology · chain · measures · revisions · branches · diff · provenance · contracts · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links · export · cut · ops · assembly_check · trace`. No `mass` view — mass
 goes via `bom`. `interview` elicits what's missing. `assembly_check` is

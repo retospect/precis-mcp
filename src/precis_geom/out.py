@@ -321,6 +321,10 @@ class Run:
         self._check_opt: bool | dict[str, Any] = True
         self._check_done = False
         self._fit_rules: dict[str, Any] = {}
+        #: The design's governing production scenario id, once
+        #: :meth:`scenario` declares it — lands as the manifest's
+        #: top-level ``scenario`` (gr514245).
+        self._scenario: str | None = None
 
     # -- manifest calls ---------------------------------------------------
 
@@ -334,6 +338,9 @@ class Run:
         ports: list[dict[str, Any]] | None = None,
         relax: dict[str, Any] | None = None,
         desc: str | None = None,
+        mode: str | None = None,
+        measures: list[dict[str, Any]] | None = None,
+        loads: dict[str, Any] | None = None,
         frame: int | None = None,
     ) -> dict[str, Any]:
         """Declare one manifest block and write its geometry file.
@@ -343,7 +350,9 @@ class Run:
         :class:`~precis.cad.scene.SceneSpec` (macro → ``.cad.json``), or
         DSL source text (macro → ``.cad``). ``ports``/``relax``/``desc``
         pass through to the manifest entry verbatim (the importer's
-        vet is the contract). ``frame`` defaults to this call's own
+        vet is the contract), as do ``mode``/``measures``/``loads`` —
+        the block's manufacturing mode, named measures and load
+        declarations (gr514245). ``frame`` defaults to this call's own
         trace-frame id."""
         n = _vet_name(name)
         if n in self._names:
@@ -372,6 +381,12 @@ class Run:
             entry["relax"] = dict(relax)
         if desc is not None:
             entry["desc"] = str(desc)
+        if mode is not None:
+            entry["mode"] = str(mode)
+        if measures is not None:
+            entry["measures"] = [dict(m) for m in measures]
+        if loads is not None:
+            entry["loads"] = dict(loads)
         fr = frame if frame is not None else _trace.leaf_id()
         if fr is not None:
             entry["frame"] = int(fr)
@@ -531,6 +546,14 @@ class Run:
         self._rays.append(entry)
         return entry
 
+    @_trace.traced(kind="core", name="out.scenario")
+    def scenario(self, scenario_id: str) -> None:
+        """Declare the design's governing production scenario — lands as
+        the manifest's top-level ``scenario`` and is applied to the design
+        at import (``design_scenarios.set_design_scenario``; gr514245)."""
+        self._vet_not_board("scenario")
+        self._scenario = str(scenario_id)
+
     # -- serialisation ------------------------------------------------------
 
     def manifest(self) -> dict[str, Any]:
@@ -546,6 +569,8 @@ class Run:
             doc["rays"] = list(self._rays)
         if self._fit_rules:
             doc["fit_rules"] = dict(self._fit_rules)
+        if self._scenario is not None:
+            doc["scenario"] = self._scenario
         return doc
 
     def finish(

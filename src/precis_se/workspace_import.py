@@ -19,7 +19,11 @@ run's failure, refused naming the key)::
                  "ports"?: [{"name", "atom"?, "roles"?, "direction"?,
                              "expected_element"?, "expected_hybridization"?,
                              "frame"?}],
-                 "relax"?, "desc"?, "frame"?, "bonds"?}],
+                 "relax"?, "desc"?, "frame"?, "bonds"?, "mode"?,
+                 "measures"?: [{"name", "value"?|"min"?/"max"?, "unit"?,
+                                "strength"?, "reason"?, "relation"?,
+                                "datum"?, "origin"?}],
+                 "loads"?}],
      "instances"?: [{"name", "template", "parent"?, "pose"?, "rot"?,
                      "pose_unit"?, "rot_unit"?, "frame"?}],
      "connects"?: [{"a": "blk.port", "b": "blk.port", "kind"?, "joint"?,
@@ -27,7 +31,7 @@ run's failure, refused naming the key)::
      "rays"?: [{"name", "block", "length", "origin"?, "direction"?,
                 "kind"?, "fields"?, "step"?, "reach"?, "in"?, "anchor"?,
                 "frame"?}],
-     "notes"?,
+     "scenario"?, "notes"?,
      "status"?="failed", "error"?}   ← a failed run's record; refused
 
 * ``rays`` (``out.ray``, structure-workspaces 2r): observation rays as
@@ -35,6 +39,14 @@ run's failure, refused naming the key)::
   frame (the ray's ``made-by:``), ``in`` its reference frame. They
   replace this workspace's previous rays; one the run stops writing
   retires.
+* ``mode``/``measures``/``loads`` on a block (gr514245): replayed as the
+  ``set_mode``/``add_measure``/``set_load`` ops — the block's
+  manufacturing mode, its named measures and its load declarations. Like
+  ports/rays they are replace semantics: a facet the new manifest drops
+  is cleared on the block it was declared on.
+* ``scenario`` (gr514245): the design's governing production scenario id
+  (:func:`precis.design.scenarios.set_design_scenario`), existence-vetted
+  before any write.
 
 * atomic ``file``: ``blocks/<name>.extxyz``
   (:func:`precis.structure.importers.extxyz.extxyz_to_scene`); bonds ride
@@ -75,6 +87,7 @@ from precis.cad.scene import (
     coerce_pattern,
     parse_source,
 )
+from precis.design import scenarios as design_scenarios
 from precis.errors import BadInput, NotFound
 from precis.store.types import ChunkInsert
 from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
@@ -104,7 +117,17 @@ MAX_WS_BLOCK_ATOMS = 100_000
 #: legal top-level shape so the vet reaches the run-failed refusal
 #: instead of reporting them as unknown keys (gr514210).
 _TOP_KEYS = frozenset(
-    {"schema", "blocks", "instances", "connects", "rays", "notes", "status", "error"}
+    {
+        "schema",
+        "blocks",
+        "instances",
+        "connects",
+        "rays",
+        "notes",
+        "scenario",
+        "status",
+        "error",
+    }
 )
 #: An ``out.ray`` entry (structure-workspaces 2r): ``frame`` is the
 #: maker's trace frame id, as on every manifest entry; ``in`` is the
@@ -128,7 +151,19 @@ _RAY_KEYS = frozenset(
     }
 )
 _BLOCK_KEYS = frozenset(
-    {"name", "file", "scale", "ports", "relax", "desc", "frame", "bonds"}
+    {
+        "name",
+        "file",
+        "scale",
+        "ports",
+        "relax",
+        "desc",
+        "frame",
+        "bonds",
+        "mode",
+        "measures",
+        "loads",
+    }
 )
 _PORT_KEYS = frozenset(
     {
@@ -158,6 +193,27 @@ _INSTANCE_KEYS = frozenset(
     }
 )
 _CONNECT_KEYS = frozenset({"a", "b", "kind", "joint", "objectives", "frame"})
+#: A ``measures`` entry's keys — the ``add_measure`` op vocabulary. Vetted
+#: here because the op picks known fields and never sees a stray (the
+#: swallowed-facet rule — an op that can't tell typo from key must be
+#: told the whole accepted set by its caller).
+_MEASURE_KEYS = frozenset(
+    {
+        "name",
+        "value",
+        "min",
+        "max",
+        "unit",
+        "origin",
+        "relation",
+        "strength",
+        "reason",
+        "provenance",
+        "datum",
+        "datum_pin",
+        "measurand",
+    }
+)
 _CAD_NODE_KEYS = frozenset(
     {"name", "op", "config", "component", "loc", "rot", "pattern", "blend", "frame"}
 )
@@ -224,6 +280,9 @@ class BlockEntry:
     desc: str | None
     frame: int | None
     bonds: str | None
+    mode: str | None
+    measures: list[dict[str, Any]]
+    loads: dict[str, Any] | None
 
 
 def _vet_manifest(
@@ -304,6 +363,29 @@ def _vet_manifest(
         relax = raw.get("relax")
         if relax is not None and not isinstance(relax, dict):
             raise BadInput(f"manifest {where}: 'relax' must be an object")
+        mode = raw.get("mode")
+        if mode is not None and not str(mode).strip():
+            raise BadInput(
+                f"manifest {where}: 'mode' must be a non-empty mode key "
+                f"('fdm/asa', 'purchase', 'stock-cut/steel-1045', …)"
+            )
+        measures = raw.get("measures")
+        if measures is not None:
+            if not isinstance(measures, list):
+                raise BadInput(f"manifest {where}: 'measures' must be a list")
+            for j, mm in enumerate(measures):
+                mw = f"{where}.measures[{j}]"
+                if not isinstance(mm, dict):
+                    raise BadInput(f"manifest {mw}: must be an object")
+                _unknown_keys(mm, _MEASURE_KEYS, mw)
+                if not str(mm.get("name") or "").strip():
+                    raise BadInput(f"manifest {mw}: needs 'name'")
+        loads = raw.get("loads")
+        if loads is not None and not isinstance(loads, dict):
+            raise BadInput(
+                f"manifest {where}: 'loads' must be an object — the "
+                "set_load vocabulary (force, torque, fixed, duty, cycles, …)"
+            )
         frame = raw.get("frame")
         bonds_path = raw.get("bonds")
         blocks.append(
@@ -316,6 +398,9 @@ def _vet_manifest(
                 desc=str(raw["desc"]).strip() if raw.get("desc") is not None else None,
                 frame=int(frame) if frame is not None else None,
                 bonds=str(bonds_path).strip() if bonds_path is not None else None,
+                mode=str(mode).strip() if mode is not None else None,
+                measures=[dict(m) for m in measures or []],
+                loads=dict(loads) if loads is not None else None,
             )
         )
     for field_name, allowed in (
@@ -379,12 +464,21 @@ def _vet_manifest(
         if rname in ray_names:
             raise BadInput(f"manifest {where}: duplicate ray name {rname!r}")
         ray_names.add(rname)
+    scenario = data.get("scenario")
+    if scenario is not None and not str(scenario).strip():
+        raise BadInput(
+            "manifest.json: 'scenario' must be a non-empty scenario id",
+            next="a design's production scenario id — "
+            "design_scenarios lists them (view='validate' names the "
+            "governing one)",
+        )
     return {
         "blocks": blocks,
         "instances": [dict(x) for x in data.get("instances") or []],
         "connects": [dict(x) for x in data.get("connects") or []],
         "rays": [dict(x) for x in rays_raw],
         "notes": data.get("notes"),
+        "scenario": str(scenario).strip() if scenario is not None else None,
     }
 
 
@@ -481,6 +575,43 @@ def _block_envelope(scene: Any) -> str:
     # Å-suffixed text through the one m-boundary, not a local factor
     # (tests/test_se_atomic_angstrom_seam.py).
     return ingest_envelope(f"sphere:r{fmt_length_A(r)}")
+
+
+def _macro_envelope(name: str, spec: SceneSpec) -> str:
+    """A macro block's render envelope: a sphere about the block origin
+    containing the design's analytic AABB
+    (:func:`precis.cad.tessellate.design_aabb` — kernel bounds, no mesh),
+    canonical bare metres via the one m-boundary
+    (:func:`precis_se.atomic.generate.ingest_envelope`). A ``box`` cannot
+    hold an AABB that does not straddle the origin (centred x/y, base at
+    z=0, no offset) and with se-fit-check-and-probe ruling A no check
+    reads the envelope, so a sphere is enough. A spec that will not build
+    or bound is a named refusal — a macro block silently going
+    envelope-less is what broke clearance/drc/validate (gr514242)."""
+    import numpy as np
+
+    from precis.cad.tessellate import design_aabb
+    from precis_se.atomic.generate import ingest_envelope
+
+    try:
+        lo, hi = design_aabb(spec)
+    except Exception as exc:
+        raise BadInput(
+            f"block {name!r}: cad geometry will not build: {exc}",
+            next="the render envelope comes from the design's AABB — fix "
+            "the block's cad, or give it at least one finite solid node",
+        ) from exc
+    r = float(np.linalg.norm(np.maximum(np.abs(lo), np.abs(hi))))
+    if not np.isfinite(r) or r <= 0.0:
+        raise BadInput(
+            f"block {name!r}: cad geometry has no finite AABB ({list(lo)}..{list(hi)})",
+            next="the render envelope comes from the design's AABB — give "
+            "the block at least one finite solid node",
+        )
+    try:
+        return ingest_envelope(f"sphere:r{r}m")
+    except OpError as exc:
+        raise BadInput(f"block {name!r}: {exc}") from exc
 
 
 def _generated_ctx(
@@ -753,6 +884,21 @@ def import_workspace_run(
     # entries' script sites too; everything still refuses before a write.
     manifest = _vet_manifest(manifest_raw, site=_site)
 
+    # gr514245: a declared scenario is vetted here (before any write) —
+    # the same unknown-id refusal ``put``'s scenario key gives.
+    scenario_id = manifest["scenario"]
+    if scenario_id is not None and (
+        design_scenarios.get_scenario(store, scenario_id) is None
+    ):
+        known = (
+            ", ".join(s.scenario_id for s in design_scenarios.list_scenarios(store))
+            or "(none)"
+        )
+        raise BadInput(
+            f"manifest.json: unknown scenario {scenario_id!r} — known: {known}",
+            next="declare the scenario first, or drop the key",
+        )
+
     # Parse every geometry file BEFORE the write transaction — caps and
     # refusals happen here so nothing half-imports.
     parsed: dict[str, tuple[Any, Any]] = {}
@@ -895,6 +1041,10 @@ def import_workspace_run(
                 for c in tree.connects
                 if c.a_block not in subtree and c.b_block not in subtree
             ]
+            # Measures ride the block that owns them — the same vacancy
+            # rule _op_remove_block applies (this retire pops blocks
+            # directly, so the cascade is spelled out here).
+            tree.measures = [m for m in tree.measures if m.block not in subtree]
             for n in subtree:
                 gone = tree.blocks.pop(n)
                 if gone.bound and gone.bound_kind in ("structure", "cad"):
@@ -1005,6 +1155,48 @@ def import_workspace_run(
                 ops.append(po)
             if kind == "atomic":
                 ops.append({"op": "set_mode", "block": entry.name, "mode": "atomic"})
+            else:
+                # gr514242: a macro block's envelope is derived from the
+                # bound cad geometry's AABB — without it clearance/drc/
+                # validate could not answer a fit or size question.
+                try:
+                    envelope = _macro_envelope(entry.name, payload)
+                except BadInput as exc:
+                    _with_site(exc, bsite)
+                    raise
+                ops.append(
+                    {
+                        "op": "set_envelope",
+                        "block": entry.name,
+                        "envelope": envelope,
+                        "origin": "generated",
+                    }
+                )
+            # gr514245 — the manifest's declared facets replay as ops
+            # after the scale defaults, so an explicit ``mode`` wins over
+            # the atomic one and ``loads`` gets clear+set (replace, not
+            # merge) semantics on a re-import.
+            if entry.mode is not None:
+                ops.append({"op": "set_mode", "block": entry.name, "mode": entry.mode})
+            if entry.loads is not None:
+                ops.append({"op": "set_load", "block": entry.name, "clear": True})
+                ops.append({"op": "set_load", "block": entry.name, **entry.loads})
+            for m in entry.measures:
+                mname = str(m["name"])
+                existing_measure = any(
+                    x.block == entry.name and x.name == mname for x in tree.measures
+                )
+                if existing_measure:
+                    ops.append(
+                        {
+                            "op": "remove_measure",
+                            "block": entry.name,
+                            "name": mname,
+                        }
+                    )
+                ops.append(
+                    {"op": "add_measure", "block": entry.name, **m, "name": mname}
+                )
             _apply(tree, ops, what=f"block {entry.name!r}", at=bsite)
             node = tree.blocks[entry.name]
             if kind == "atomic":
@@ -1098,6 +1290,40 @@ def import_workspace_run(
                 )
                 node.bound_kind = "cad"
                 node.bound = cad_slug
+
+        # ── declared facets the manifest dropped (gr514245): the
+        # manifest is the workspace's whole state, so a mode/loads/
+        # measure this run no longer declares is cleared on the block it
+        # was declared on — when that block still exists ──
+        new_loads = {e.name for e in manifest["blocks"] if e.loads is not None}
+        new_modes = {e.name for e in manifest["blocks"] if e.mode is not None}
+        new_measures = {
+            f"{e.name}.{m['name']}" for e in manifest["blocks"] for m in e.measures
+        }
+        drop_ops: list[dict[str, Any]] = []
+        for blk in sorted(set(prev.get("loads") or []) - new_loads):
+            if blk in tree.blocks:
+                drop_ops.append({"op": "set_load", "block": blk, "clear": True})
+        # Atomic blocks keep mode='atomic' — the import's own default,
+        # not a manifest declaration (the block loop re-stamps it every
+        # run, so clearing here would only strip the default back off).
+        atomic_names = {e.name for e in manifest["blocks"] if e.scale == "atomic"}
+        for blk in sorted(set(prev.get("modes") or []) - new_modes - atomic_names):
+            prev_node = tree.blocks.get(blk)
+            if (
+                prev_node is not None
+                and prev_node.template is None
+                and prev_node.mode is not None
+            ):
+                drop_ops.append({"op": "set_mode", "block": blk, "mode": None})
+        for key in sorted(set(prev.get("measures") or []) - new_measures):
+            blk, _sep, mname = key.partition(".")
+            if blk in tree.blocks and any(
+                m.block == blk and m.name == mname for m in tree.measures
+            ):
+                drop_ops.append({"op": "remove_measure", "block": blk, "name": mname})
+        if drop_ops:
+            _apply(tree, drop_ops, what="dropped manifest facets")
 
         # ── instances + connects ──
         for inst in manifest["instances"]:
@@ -1245,6 +1471,16 @@ def import_workspace_run(
             store.cad_save(slug=slug, title=title, spec=spec, card_text=card, conn=conn)
             result.imported.append(slug.rsplit("-", 1)[-1])
 
+        # gr514245: a declared scenario governs the design (vet ran
+        # pre-write, above); absent → the existing link stands.
+        if scenario_id is not None:
+            design_scenarios.set_design_scenario(
+                store,
+                int(ref.id),
+                scenario_id,
+                set_by="workspace_import",
+                conn=conn,
+            )
         persist.save_tree(
             store,
             ref_id=ref.id,
@@ -1268,6 +1504,9 @@ def import_workspace_run(
                                     for c in manifest["connects"]
                                 ],
                                 "rays": sorted(manifest_rays),
+                                "measures": sorted(new_measures),
+                                "loads": sorted(new_loads),
+                                "modes": sorted(new_modes),
                                 "run_job": run_job,
                                 "script_sha": script_sha,
                             }

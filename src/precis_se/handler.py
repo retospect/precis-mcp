@@ -405,7 +405,7 @@ class SeHandler(Handler):
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|'report'|'catalogue'|'surface_deviation'|"
-            "'ports'|'topology'|'chain'|'measures'|'revisions'|'datums'|'pockets'|'validate'|"
+            "'ports'|'connects'|'topology'|'chain'|'measures'|'revisions'|'datums'|'pockets'|'validate'|"
             "'clearance'|'sweep'|'stations'|'pick'|'surface'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
@@ -1953,6 +1953,8 @@ class SeHandler(Handler):
             return Response(body=_render_catalogue(self.store, tree, args))
         if v == "ports":
             return Response(body=_render_ports(tree))
+        if v == "connects":
+            return Response(body=_render_connects(tree))
         if v == "topology":
             return Response(body=_render_topology(tree))
         if v == "chain":
@@ -4417,21 +4419,26 @@ def _render_tree(
                 )
                 block_line += " · " + " · ".join(segments)
         lines.append(f"{'  ' * depth}- {block_line}")
-        # An instance's (or array's) subtree is the template's, resolved
-        # here at read time — never copied onto the instance row. ``path``
-        # carries every expansion source already on the walk — defense in
-        # depth against a cyclic instance chain that reached storage
-        # despite ops._find_instance_cycle (hand-corrupted data): render
-        # must never infinite-recurse regardless of what's stored.
-        source = node.template or name
-        if source in path:
-            lines.append(
-                f"{'  ' * (depth + 1)}⚠ instance cycle: "
-                f"{' → '.join((*path, source))} — not expanding further"
-            )
-            return
-        for child in children.get(source, []):
-            _walk(child, depth + 1, (*path, source))
+        # A node's subtree comes from up to two keys: blocks parented to
+        # THIS node (``children`` under its own name — gr514243: a bolt
+        # parented to an *instance* vanished when only the template key
+        # was walked) and — for an instance/array — its template's name
+        # (the template's subtree resolved here at read time, never
+        # copied onto the instance row). ``path`` carries every expansion
+        # source already on the walk — defense in depth against a cyclic
+        # parent/instance chain that reached storage despite
+        # ops._find_instance_cycle (hand-corrupted data): render must
+        # never infinite-recurse regardless of what's stored.
+        sources = (node.template, name) if node.template else (name,)
+        for source in sources:
+            if source in path:
+                lines.append(
+                    f"{'  ' * (depth + 1)}⚠ instance cycle: "
+                    f"{' → '.join((*path, source))} — not expanding further"
+                )
+                continue
+            for child in children.get(source, []):
+                _walk(child, depth + 1, (*path, source))
 
     lines.append("")
     for root in children.get(None, []):
@@ -5295,6 +5302,35 @@ def _render_ports(tree: SeTree) -> str:
     return f"# {len(rows)} port(s)\n" + render_agent_table(
         rows,
         schema=["block", "port", "peer", "roles", "direction", "annotations", *extra],
+    )
+
+
+def _render_connects(tree: SeTree) -> str:
+    """``view='connects'`` — the whole-design connects/joints table
+    (gr514236): every connect, one row, ``a.port`` ↔ ``b.port`` with its
+    ``joint``/``kind``/``objectives`` — the columns ``view='block'``
+    shows per block, in a stable order (``tree.connects`` is an
+    unordered list)."""
+    if not tree.connects:
+        return "# se connects\n\n(no connects declared yet)"
+    # The atomic ``kind`` column appears only when an edge carries one —
+    # the same mode-scoped rule as view='block''s table.
+    kind_schema = ["kind"] if any(c.kind for c in tree.connects) else []
+    rows = [
+        {
+            "a": f"{c.a_block}.{c.a_port}",
+            "b": f"{c.b_block}.{c.b_port}",
+            "joint": json.dumps(c.joint) if c.joint else "—",
+            "objectives": json.dumps(c.objectives) if c.objectives else "—",
+            **({"kind": c.kind or "—"} if kind_schema else {}),
+        }
+        for c in sorted(
+            tree.connects,
+            key=lambda c: (c.a_block, c.a_port, c.b_block, c.b_port),
+        )
+    ]
+    return f"# {len(rows)} connect(s)\n" + render_agent_table(
+        rows, schema=["a", "b", "joint", *kind_schema, "objectives"]
     )
 
 
@@ -7694,6 +7730,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "catalogue": frozenset({"block"}),
     "surface_deviation": frozenset({"block", "name", "target", "z_offset_A"}),
     "ports": frozenset(),
+    "connects": frozenset(),
     "topology": frozenset(),
     "chain": frozenset({"state"}),
     "export": frozenset({"format"}),
@@ -8976,7 +9013,10 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
 #: families keep the ~45 names scannable (gr514236: the old one-line
 #: ~50-view wall named everything and was findable in nothing).
 _VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
-    ("shape", "tree block ports topology chain datums pockets surface_deviation"),
+    (
+        "shape",
+        "tree block ports connects topology chain datums pockets surface_deviation",
+    ),
     (
         "records",
         "report catalogue measures contracts provenance revisions "
@@ -8994,24 +9034,24 @@ _VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
 #: for the nearest-match suggestion.
 _VIEWS_ALL = sorted({v for _fam, names in _VIEW_FAMILIES for v in names.split()})
 
-#: Words a caller reaches for when they want the connects/joints table.
-#: There is no whole-design one (a small spec of its own), so these get a
-#: pointed answer instead of the roster.
-_CONNECT_LIKE_VIEWS = frozenset({"connect", "connects", "joint", "joints"})
+#: Words a caller reaches for when they want the connects/joints table
+#: under a near-miss spelling — these get a pointed answer naming the
+#: real view instead of the roster.
+_CONNECT_LIKE_VIEWS = frozenset({"connect", "joint", "joints"})
 
 
 def _unknown_view_next(v: str) -> str:
     """The ``next=`` for an unrecognized ``view=`` (gr514236). Connects
-    and joints get a pointed answer — no whole-design table exists yet;
-    the reply names where they actually render. Anything else gets the
-    closest real view name plus :data:`_VIEW_FAMILIES` — every view, one
-    line per family, instead of the old ~50-view single-line wall."""
+    and joints get a pointed answer naming where they actually render.
+    Anything else gets the closest real view name plus
+    :data:`_VIEW_FAMILIES` — every view, one line per family, instead of
+    the old ~50-view single-line wall."""
     if v in _CONNECT_LIKE_VIEWS:
         return (
-            "no whole-design connects/joints view — connects show "
-            "per-port in view='ports' (the 'peer' column) and per-block "
-            "in view='block' args={'block': ...}; view='clearance' with "
-            "no args is the all-pairs CONNECTS digest"
+            "view='connects' is the whole-design connects/joints table; "
+            "per-port peers also show in view='ports' (the 'peer' column) "
+            "and per-block in view='block' args={'block': ...}; "
+            "view='clearance' with no args is the all-pairs CONNECTS digest"
         )
     nearest = get_close_matches(v, _VIEWS_ALL, n=1, cutoff=0.0)
     roster = "\n".join(

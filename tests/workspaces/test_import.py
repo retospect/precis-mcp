@@ -596,3 +596,190 @@ def test_golden(store: Store) -> None:
     }
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert got == golden
+
+
+def test_macro_block_envelope_derived_from_cad_aabb(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514242: a macro block gets a render envelope at import — a
+    sphere about the block origin containing the design's analytic AABB
+    (metres), so clearance/drc/validate stop skipping it."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [{"name": "plate", "file": "blocks/plate.cad", "scale": "macro"}],
+        },
+        files={"blocks/plate.cad": "p add box:w40mmd20mmh10mm @30mm,0mm,0mm\n"},
+    )
+    _import(store, out)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    env = tree.blocks["plate"].envelope
+    assert env is not None and env.startswith("sphere:r")
+    # AABB x∈[10,50] y∈[-10,10] z∈[0,10] mm → far corner at 50/10/10 mm.
+    assert float(env.removeprefix("sphere:r")) == pytest.approx(
+        float(np.linalg.norm([0.05, 0.01, 0.01]))
+    )
+    assert tree.blocks["plate"].origins.get("envelope") == "generated"
+
+
+def test_macro_block_envelope_refused_when_unboundable(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514242: a macro block whose cad has no finite AABB (no finite
+    solid node) is a named refusal — it never lands envelope-less."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    "name": "ghost",
+                    "file": "blocks/ghost.cad.json",
+                    "scale": "macro",
+                    "frame": 1,
+                }
+            ],
+        },
+        files={
+            "blocks/ghost.cad.json": json.dumps(
+                {"schema": 1, "nodes": [], "meta": {"units": "mm"}}
+            )
+        },
+        trace=_trace_doc({1: ("main.py", 4)}),
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    assert "block 'ghost'" in str(exc.value)
+    assert "at main.py:4 (frame 1)" in str(exc.value)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
+def _facet_manifest(**kw: Any) -> dict[str, Any]:
+    """One macro block declaring mode/measures/loads + a design
+    scenario — gr514245's manifest keys."""
+    manifest: dict[str, Any] = {
+        "schema": 1,
+        "blocks": [
+            {
+                "name": "axle",
+                "file": "blocks/axle.cad",
+                "scale": "macro",
+                "mode": "stock-cut/steel-1045",
+                "measures": [
+                    {"name": "bore", "value": 0.02, "strength": "hard"},
+                    {"name": "weight", "max": 0.5},
+                ],
+                "loads": {"force": [0.0, 0.0, -800.0], "fixed": True},
+            }
+        ],
+        "scenario": "prototype",
+    }
+    manifest.update(kw)
+    return manifest
+
+
+def test_block_facets_and_scenario_import(store: Store, tmp_path: Path) -> None:
+    """gr514245: mode/measures/loads on a block + top-level scenario
+    replay as ops — the block lands with its manufacturing mode, named
+    measures and objectives, and the design's scenario link is set."""
+    from precis.design import scenarios
+
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest=_facet_manifest(),
+        files={"blocks/axle.cad": "a add cyl:r10mmh100mm\n"},
+    )
+    _import(store, out)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    node = tree.blocks["axle"]
+    assert node.mode == "stock-cut/steel-1045"
+    assert node.objectives["force"] == [0.0, 0.0, -800.0]
+    assert node.objectives["fixed"] == ["x", "y", "z"]
+    got = {(m.block, m.name) for m in tree.measures}
+    assert got == {("axle", "bore"), ("axle", "weight")}
+    bore = next(m for m in tree.measures if m.name == "bore")
+    assert bore.value == pytest.approx(0.02) and bore.strength == "hard"
+    sc = scenarios.design_scenario(store, se_ref.id)
+    assert sc is not None and sc.scenario_id == "prototype"
+
+
+def test_block_facets_dropped_on_reimport(store: Store, tmp_path: Path) -> None:
+    """gr514245: the manifest is the workspace's state — a mode/loads/
+    measure the re-run no longer declares is cleared, not left stale."""
+    from precis.design import scenarios
+
+    _design(store)
+    files = {"blocks/axle.cad": "a add cyl:r10mmh100mm\n"}
+    _import(store, _write_out(tmp_path, manifest=_facet_manifest(), files=files))
+    out = _write_out(
+        tmp_path,
+        manifest=_facet_manifest(
+            blocks=[
+                {
+                    "name": "axle",
+                    "file": "blocks/axle.cad",
+                    "scale": "macro",
+                    "measures": [{"name": "bore", "value": 0.021}],
+                }
+            ],
+            scenario=None,
+        ),
+        files=files,
+    )
+    _import(store, out)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    node = tree.blocks["axle"]
+    assert node.mode is None
+    assert node.objectives == {}
+    assert [(m.block, m.name) for m in tree.measures] == [("axle", "bore")]
+    assert next(m for m in tree.measures).value == pytest.approx(0.021)
+    # scenario=None is simply absent: the previous link stands (the
+    # manifest records what the RUN declared, and this run said nothing).
+    sc = scenarios.design_scenario(store, se_ref.id)
+    assert sc is not None and sc.scenario_id == "prototype"
+
+
+def test_manifest_facet_vet_errors(store: Store, tmp_path: Path) -> None:
+    """gr514245 vet shape: stray measure keys and a bad scenario id
+    refuse before any write."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest=_facet_manifest(
+            blocks=[
+                {
+                    "name": "axle",
+                    "file": "blocks/axle.cad",
+                    "scale": "macro",
+                    "measures": [{"name": "bore", "valu": 0.02}],
+                }
+            ],
+            scenario="no_such_scenario",
+        ),
+        files={"blocks/axle.cad": "a add cyl:r10mmh100mm\n"},
+    )
+    with pytest.raises(BadInput, match="unknown key 'valu'"):
+        _import(store, out)
+    out = _write_out(
+        tmp_path,
+        manifest=_facet_manifest(scenario="no_such_scenario"),
+        files={"blocks/axle.cad": "a add cyl:r10mmh100mm\n"},
+    )
+    with pytest.raises(BadInput, match="unknown scenario") as exc:
+        _import(store, out)
+    assert "prototype" in str(exc.value)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
