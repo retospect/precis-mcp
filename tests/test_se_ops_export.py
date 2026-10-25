@@ -322,7 +322,7 @@ def test_the_rendered_body_states_every_gap_and_fences_a_put_payload() -> None:
     """A partial copy that does not say so is the failure mode worth
     guarding: the header prints the caveats, and the fenced block is
     exactly ``put``'s ``text=`` shape so it can be pasted unreshaped."""
-    body = render_ops(_tree(_CART), "cart")
+    body = render_ops(_tree(_CART), "cart", slug="cart")
     for gap in NOT_CARRIED:
         assert gap in body
     payload = json.loads(body.split("```json")[1].split("```")[0])
@@ -352,7 +352,7 @@ def test_the_header_names_every_ref_the_copy_will_need_to_resolve() -> None:
         ]
     )
     assert external_refs(tree) == ["component:iso-4762-m4x20"]
-    body = render_ops(tree, "bolted")
+    body = render_ops(tree, "bolted", slug="bolted")
     assert "REQUIRED IN THE TARGET DATABASE" in body
     assert "component:iso-4762-m4x20" in body
 
@@ -369,7 +369,7 @@ def test_a_local_uid_template_is_not_mistaken_for_a_cross_design_ref() -> None:
 def test_a_design_with_no_bindings_prints_no_prerequisite_section() -> None:
     assert external_refs(_tree([{"op": "add_block", "name": "solo"}])) == []
     assert "REQUIRED IN THE TARGET DATABASE" not in render_ops(
-        _tree([{"op": "add_block", "name": "solo"}]), "solo"
+        _tree([{"op": "add_block", "name": "solo"}]), "solo", slug="solo"
     )
 
 
@@ -379,7 +379,7 @@ def test_the_payload_stays_one_op_per_line_and_compact() -> None:
     and a one-shot ``precis tools`` call has no cursor to redeem the tail
     with. One op per line keeps it diffable without the bulk.
     """
-    body = render_ops(_tree(_CART), "cart")
+    body = render_ops(_tree(_CART), "cart", slug="cart")
     fenced = body.split("```json")[1].split("```")[0].strip()
     ops = json.loads(fenced)["ops"]
     # one line for '{"ops": [', one per op, one for ']}'
@@ -391,7 +391,7 @@ def test_the_payload_stays_one_op_per_line_and_compact() -> None:
 
 def test_an_empty_design_exports_a_replayable_empty_list() -> None:
     assert design_ops(SeTree()) == []
-    assert "0 op(s)" in render_ops(SeTree(), "empty")
+    assert "0 op(s)" in render_ops(SeTree(), "empty", slug="empty")
 
 
 # ── the stated gap, asserted rather than only documented ────────────────
@@ -555,6 +555,20 @@ def test_a_slice_names_its_window_and_hands_the_next_call(
     assert len(_fenced_ops(body)) == 40
 
 
+def test_the_next_slice_hint_names_the_design(handler: SeHandler) -> None:
+    """gr514470: the continuation hint is the whole ``get`` call — a bare
+    ``args={...}`` named the window but not the design it windows, so a
+    caller pasting it had to guess the id."""
+    handler.put(id="big-ops-slug", text=json.dumps({"ops": _BIG_OPS}))
+    body = handler.get(
+        id="big-ops-slug", view="ops", args={"offset": 0, "limit": 40}
+    ).body
+    assert (
+        "next slice: get(kind='se', id='big-ops-slug', view='ops', "
+        "args={'offset': 40, 'limit': 40})" in body
+    )
+
+
 def test_limit_zero_means_everything_from_offset(handler: SeHandler) -> None:
     handler.put(id="big-ops3", text=json.dumps({"ops": _BIG_OPS}))
     body = handler.get(id="big-ops3", view="ops", args={"offset": 100}).body
@@ -643,6 +657,9 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "provenance": "op",
         "rot": "derived",
         "template": "op",
+        # load-time surfacing of the workspace manifest's 'template: true'
+        # (_BLOCK_TRANSIENT — never stored on the block row)
+        "template_only": "derived",
         "uid": "gap",
         "use": "op",
     },

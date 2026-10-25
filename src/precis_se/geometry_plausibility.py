@@ -77,7 +77,8 @@ scope here; nothing in this module changes tier based on binding state.
   the same honesty pattern ``envelope_overlaps`` uses for its own O(n²)
   block-pair scan (gr337045) — sized down here because this pass is
   O(connects), not O(blocks²), but the underlying ``clearance()`` call
-  costs the same ~2.3 s either way, and a design with many declared
+  costs the same either way — ~2.3 s for simple primitives, 13–18 s
+  measured on leaf-heavy pairs (gr514449) — and a design with many declared
   connects must not turn a routine ``view='drc'`` read into a multi-minute
   call. Connects the budget doesn't reach are reported UNCHECKED, never
   silently skipped.

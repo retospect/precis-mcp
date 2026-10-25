@@ -557,13 +557,17 @@ def _slice_args(args: dict[str, Any] | None) -> tuple[int, int]:
     return offset, limit
 
 
-def render_ops(tree: SeTree, title: str, args: dict[str, Any] | None = None) -> str:
+def render_ops(
+    tree: SeTree, title: str, args: dict[str, Any] | None = None, *, slug: str
+) -> str:
     """The view body: the caveats first, then one fenced JSON object in
     exactly the shape ``put(kind='se', text=...)`` accepts, so the block
     can be copied straight into a call without reshaping. ``args`` may
     carry ``offset``/``limit`` (:func:`_slice_args`) to window the ops
     list — a slice still fences ``{"ops": [...]}``, so concatenating
-    every slice's array reproduces the full payload."""
+    every slice's array reproduces the full payload. ``slug`` is the
+    design's own id, so the "next slice" hint is the whole ``get`` call
+    to continue with, not a bare args dict (gr514470)."""
     ops = design_ops(tree)
     offset, limit = _slice_args(args)
     window = ops[offset : offset + limit] if limit else ops[offset:]
@@ -610,7 +614,8 @@ def render_ops(tree: SeTree, title: str, args: dict[str, Any] | None = None) -> 
     if len(window) < len(ops) - offset:
         lines += [
             "",
-            f"next slice: args={{'offset': {offset + len(window)}, 'limit': {limit}}}",
+            f"next slice: get(kind='se', id={slug!r}, view='ops', "
+            f"args={{'offset': {offset + len(window)}, 'limit': {limit}}})",
         ]
     return "\n".join(lines)
 

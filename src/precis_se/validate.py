@@ -245,15 +245,18 @@ def _posed_component(
 
 
 #: Wall-clock budget for the O(n²) pair scan below, in seconds (gr337045).
-#: Measured cost of the narrow-phase SDF minimisation is a flat ~2.3s/pair
-#: regardless of overlap (``clearance`` → ``_min_max_sdf``'s 2744 grid seeds
-#: + 4×80-iteration descents, none of it bounded) — an unfiltered 29-block
-#: design (~400 pairs) projects to ~15 minutes inside one synchronous MCP
-#: call. The AABB broad phase below (:func:`_aabb_clear`) removes every
-#: pair that cannot possibly interpenetrate before it ever reaches
-#: ``clearance``, so in practice this budget only throttles genuinely close
-#: pairs; ~13 of those (30s / 2.3s) is generous for the size of assembly
-#: se-kind targets. Exceeding it does not truncate silently — the
+#: The narrow-phase SDF minimisation is NOT a flat per-pair cost:
+#: ``clearance`` → ``_min_max_sdf`` spends 2744 grid seeds plus
+#: 4×80-iteration descents, and every point evaluation folds over both
+#: exprs' CSG trees — so a pair's cost scales with its leaf count. ~2.3 s
+#: for simple primitives, 13–18 s measured on the wheel's carved-rim
+#: pairs (gr514449). An unfiltered 29-block design (~400 pairs) therefore
+#: projects anywhere from ~15 minutes to hours inside one synchronous
+#: MCP call. The AABB broad phase below (:func:`_aabb_clear`) removes
+#: every pair that cannot possibly interpenetrate before it ever reaches
+#: ``clearance``, so in practice this budget only throttles genuinely
+#: close pairs; at the cheap end that is ~13 pairs in 30 s, at the wheel
+#: end ~2. Exceeding it does not truncate silently — the
 #: remaining pairs are reported as unchecked (validate()'s
 #: ``overlap_budget_exceeded`` finding), mirroring the existing
 #: ``cross_scale_unverifiable`` honesty pattern below.
@@ -270,7 +273,9 @@ def _aabb_clear(
     posed envelope is a subset of its own AABB, so an axis-separated pair
     of boxes can never yield an overlapping pair of bodies — this proves
     "not overlapping" without ever running the SDF minimisation that costs
-    ~2.3s/pair. ``margin`` should be the pair's own contact resolution
+    ~2.3 s/pair on simple primitives and up to ~18 s measured on
+    leaf-heavy pairs (gr514449). ``margin`` should be the pair's own
+    contact resolution
     (:data:`~precis.cad.relate.CONTACT_TOL_REL` × governing length) so a
     pair close enough to matter still falls through to the real check."""
     lo_a, hi_a = box_a

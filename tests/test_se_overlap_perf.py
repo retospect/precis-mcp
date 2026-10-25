@@ -4,8 +4,11 @@
 Root cause: the undeclared-interpenetration check
 (:func:`precis_se.validate.envelope_overlaps`) ran a full numeric SDF
 clearance minimisation (:func:`precis.cad.relate.clearance`) over *every*
-unordered block pair, unbounded — a flat ~2.3s/pair regardless of overlap,
-so a 29-block design (~400 pairs) projected to ~15 minutes inside one
+unordered block pair, unbounded — measured then at ~2.3s/pair on those
+simple unit boxes, regardless of overlap (the cost scales with the pair's
+CSG leaf count, not with overlap; leaf-heavy pairs run 13–18 s,
+gr514449) — so a 29-block design (~400 pairs) projected to ~15 minutes
+inside one
 synchronous ``view='validate'`` MCP call, and hung the server
 uncancellably. The fix adds a cheap AABB broad phase (skips pairs whose
 posed envelopes cannot possibly overlap without ever running the SDF

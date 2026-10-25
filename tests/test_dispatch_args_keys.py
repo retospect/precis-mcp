@@ -149,6 +149,59 @@ def test_se_get_keys_are_union_of_view_args() -> None:
     assert SeHandler.ARGS_KEYS["get"] == union
 
 
+def _se_dispatched_views() -> set[str]:
+    """The view names ``SeHandler.get`` actually dispatches, read off the
+    AST — every ``v == '…'`` / ``v in (…)`` / ``completion_view`` compare
+    in ``_get_impl`` (``get`` is a display-preference shell that forwards
+    to it). Static, so a new dispatch branch that forgets the tables
+    fails the agreement test below instead of silently dropping its args
+    (gr514467)."""
+    from precis_se.handler import SeHandler
+
+    node = _fn_node(SeHandler._get_impl)
+    assert node is not None
+    out: set[str] = set()
+    for child in ast.walk(node):
+        if not (
+            isinstance(child, ast.Compare)
+            and isinstance(child.left, ast.Name)
+            and child.left.id in ("v", "completion_view")
+        ):
+            continue
+        for op, comp in zip(child.ops, child.comparators, strict=True):
+            if (
+                isinstance(op, ast.Eq)
+                and isinstance(comp, ast.Constant)
+                and isinstance(comp.value, str)
+            ):
+                out.add(comp.value)
+            elif isinstance(op, ast.In) and isinstance(comp, ast.Tuple | ast.List):
+                out.update(
+                    e.value
+                    for e in comp.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                )
+    return out
+
+
+def test_se_view_tables_agree_with_dispatch() -> None:
+    """gr514467 (+ merged gr514468): the three places that describe the
+    ``get(kind='se')`` view vocabulary — the dispatch itself,
+    :data:`_VIEW_ARGS` (the args-vetting table) and
+    ``SeHandler.spec.views`` (the advertised list) — had drifted:
+    ``view='order'`` was dispatched but unlisted, so its ``args`` were
+    silently dropped, and ~8 dispatched views were missing from
+    ``spec.views``. ``_VIEWS_ALL`` (the unknown-view hint's roster) is
+    held to the same set."""
+    from precis_se.handler import _VIEW_ARGS, _VIEWS_ALL, SeHandler
+
+    dispatched = _se_dispatched_views()
+    assert dispatched == set(_VIEW_ARGS)
+    advertised = dispatched - {""}
+    assert advertised == set(SeHandler.spec.views)
+    assert advertised == set(_VIEWS_ALL)
+
+
 def test_acquire_kwargs_in_args_reach_paper_put(
     runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

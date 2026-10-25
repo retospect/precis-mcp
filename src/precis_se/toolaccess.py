@@ -14,8 +14,9 @@ ISO 2936 for the keys, nominal bench geometry for the bit tools, marked as
 such there.
 
 **Method.** Three phases, narrowing hard, because
-:func:`precis.cad.relate.clearance` costs ~2.3 s a pair and this runs
-inside a synchronous read. First the **drive-face cull**: a driver lives
+:func:`precis.cad.relate.clearance` costs ~2.3–18 s a pair (scaling with
+the CSG leaf count it folds over; gr514449) and this runs inside a
+synchronous read. First the **drive-face cull**: a driver lives
 on one side of the head and the members it clamps live on the other, so
 every block whose AABB is wholly behind the drive plane is gone without
 arithmetic — in an ordinary stack that is all of them. Then the AABB
@@ -81,8 +82,10 @@ _FILE = "driver_envelopes.json"
 _TOUCH_M = 1e-4
 
 #: Hardest cap on narrow-phase work per screw. `clearance` costs ~2.3 s a
-#: pair, and this runs inside a synchronous MCP read, so a pathological
-#: design must degrade to "not checked" rather than to a two-minute view.
+#: pair on simple primitives and 13–18 s measured on leaf-heavy pairs
+#: (gr514449), and this runs inside a synchronous MCP read — a
+#: pathological design must degrade to "not checked" rather than to a
+#: two-minute view.
 #: Reached only after the drive-face cull and the AABB filter have both
 #: failed to remove a pair, which in an ordinary stack never happens.
 _MAX_NARROW_PHASE = 12
@@ -304,7 +307,7 @@ def _behind_the_drive_face(
     one side of the head; the members it clamps live on the other, and in
     an ordinary stack that is *every other block in the design*. An AABB
     contains its solid, so a box wholly behind the plane proves the solid
-    is — no SDF, no 2.3-second narrow phase, for the pairs that could
+    is — no SDF, no multi-second narrow phase, for the pairs that could
     never have interfered.
     """
     lo, hi = box

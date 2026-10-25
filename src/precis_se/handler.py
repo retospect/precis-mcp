@@ -623,11 +623,15 @@ class SeHandler(Handler):
             "completion_digest",
             "tree",
             "block",
+            "surface_deviation",
             "report",
             "catalogue",
             "ports",
+            "connects",
             "topology",
             "chain",
+            "export",
+            "cut",
             "measures",
             "revisions",
             "branches",
@@ -645,8 +649,11 @@ class SeHandler(Handler):
             "stations",
             "pick",
             "surface",
+            "flow",
             "drc",
+            "kinematics",
             "bom",
+            "order",
             "fasten",
             "interview",
             "freedom",
@@ -658,6 +665,8 @@ class SeHandler(Handler):
             "fab",
             "assembly_check",
             "trace",
+            "ops",
+            "links",
         ),
     )
 
@@ -2104,7 +2113,11 @@ class SeHandler(Handler):
         if v == "ops":
             from precis_se.ops_export import render_ops
 
-            return Response(body=render_ops(tree, ref.title or str(ref.slug), args))
+            return Response(
+                body=render_ops(
+                    tree, ref.title or str(ref.slug), args, slug=str(ref.slug)
+                )
+            )
         if v == "links":
             from precis.handlers._links_render import render_links_view
 
@@ -7856,6 +7869,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "trace": frozenset({"atom", "atoms", "frame", "touched", "against", "block"}),
     "kinematics": frozenset(),
     "bom": frozenset(),
+    "order": frozenset(),
     "fasten": frozenset(),
     "interview": frozenset(),
     "freedom": frozenset(),
@@ -9109,8 +9123,9 @@ _VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
     ),
     (
         "records",
-        "report catalogue measures contracts provenance revisions "
-        "branches diff interview freedom ops links export cut trace",
+        "completion completion_digest report catalogue measures contracts "
+        "provenance revisions branches diff interview freedom ops links "
+        "export cut trace",
     ),
     (
         "checks",
