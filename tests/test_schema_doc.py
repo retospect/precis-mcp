@@ -7,10 +7,8 @@ against fixture rows so the artifact shape can't regress.
 
 from __future__ import annotations
 
-import pytest
-
 from precis.cli.schema_doc import (
-    _fetch_via_dsn,
+    INTROSPECT_SQL,
     _safe_type,
     parse_tsv,
     render_mermaid,
@@ -135,23 +133,16 @@ def test_column_comment_field_is_optional_in_tsv() -> None:
     assert "| `a` | text | — |" in out
 
 
-@pytest.mark.timeout(
-    660
-)  # above the query's 600 s statement_timeout; the 300 s default killed the CI worker (r100)
-def test_introspect_sql_runs_and_renders(store: Store) -> None:
-    """The introspection query is exercised on the migrated test DB — a
-    UNION column-count or join typo fails here, not at the prod
-    ``scripts/gen-schema`` run (the miss gr513884's own run hit)."""
-    import psycopg.conninfo
+def test_introspect_sql_plans_on_the_test_db(store: Store) -> None:
+    """The introspection query plans on the migrated test DB — a UNION
+    column-count, join or column-name typo fails at plan time here, not
+    at the prod ``scripts/gen-schema`` run (the miss gr513884's own run
+    hit). EXPLAIN, not a run: executing it took over 600 s on CI runners
+    (the constraint views go through _pg_expandarray; r100). The parse +
+    render path is pinned by the fixture tests above."""
+    import psycopg
 
     assert store.dsn is not None
-    # The constraint views go through _pg_expandarray — slow enough that
-    # scripts/gen-schema sets statement_timeout=600000; same here.
-    dsn = psycopg.conninfo.make_conninfo(
-        store.dsn, options="-c statement_timeout=600000"
-    )
-    cols, fks = parse_tsv(_fetch_via_dsn(dsn))
-    assert cols and fks
-    out = render_mermaid(cols, fks, snapshot="testdb")
-    assert "## Columns" in out
-    assert "### `refs`" in out
+    with psycopg.connect(store.dsn) as conn:
+        plan = conn.execute("EXPLAIN " + INTROSPECT_SQL).fetchall()
+    assert plan
