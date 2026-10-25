@@ -15,11 +15,15 @@ harness locked for its agent id ("claude agent <id> (pid <N>)"), then the
 payload's `cwd`, then the project dir (right for a non-isolated task,
 which shares the parent's tree).
 
-Payload-cwd semantics are NOT yet verified against a real isolated run
-(gr513893): every SubagentStart/Stop payload is appended raw to
+Payload `cwd` verified against real isolated runs (gr513893): a
+worktree-isolated task's SubagentStart payload names the agent's own
+`agent-<id>` worktree (coder/cmd-runner events logged 2026-10-24/25), a
+non-isolated task's names the parent's cwd — correct both ways, so the
+payload is a sound fallback after the lock-name lookup. Every
+SubagentStart/Stop payload is appended raw to
 <git-common-dir>/precis-agent-tasks/payloads.jsonl (one line per event,
-self-trimming). Compare a logged payload's `cwd` against the agent's
-locked tree to confirm or fix the fallback order above.
+self-trimming) — re-check there if a marker ever records the parent's
+tree for an isolated task.
 """
 
 from __future__ import annotations

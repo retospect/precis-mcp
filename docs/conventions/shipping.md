@@ -57,6 +57,13 @@ gr515092; `scratch/` is the other gitignored scratch dir). A plain
 literal `-m "subject"` plus a second `-m` for the body stays fine when
 the text carries no shell-active characters.
 
+`git commit` records the **index**, not the worktree: after a
+`git reset --soft` — and any regenerate-then-commit flow — the index can
+still hold stale pre-regen blobs, and the commit silently ships them
+instead of the current files (gr515222). Re-stage after regenerating
+(`git add -A`) and verify what actually landed with
+`git show HEAD:<path>` before pushing on.
+
 ## Red main, and "did it land"
 
 `check.yml` runs the slim lane (lint + the docs lane for docs-only diffs;
@@ -136,6 +143,20 @@ resolution itself belongs to a coder sub-agent or the builder's own tree —
 never a desk or coordinator main loop (the `gripe-fleet` skill's standing
 rules). The in-lock forward merge
 above stays a merge; the squash and the branch reset absorb it.
+
+A hand `git rebase origin/main` with uncommitted edits refuses outright
+("You have unstaged changes"), and the obvious stash/rebase/pop round-trip
+is worse than refused: the stash stack is shared across the primary
+checkout and every worktree, so `guard-git-stash.py` denies a bare
+`git stash` and any `git stash pop` — a pop can apply a *sibling*
+session's entry (gr513770). The cheap path is **commit the slice first,
+then rebase** — ship squashes the branch to one commit anyway, so a WIP
+commit costs nothing. Two narrower options: `git rebase --autostash
+origin/main` works only with a clean index — `guard-autostash-staged.py`
+refuses it staged because the pop restores the staged changes unstaged
+and the next `git commit` silently takes part of the diff (gr514868) — or
+a tagged `git stash push -u -m "<tag>"` restored with `git stash apply`,
+never `pop`.
 
 `scripts/ship` and `scripts/rebase` are quiet by default (gr497896): the
 full transcript goes to a `/tmp` log whose path is printed, and the terminal
