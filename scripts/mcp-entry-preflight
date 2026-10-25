@@ -26,7 +26,9 @@
 #
 # Test seams: PRECIS_MCP_ENSURE (ensure-script path, as scripts/fleet),
 # PRECIS_MCP_CLAUDE (the registry command, default `claude`), and PATH (a
-# fake `claude` ahead of the real one).
+# fake `claude` ahead of the real one). PATH can shadow but never remove:
+# the dev image's real `claude` sits in /usr/bin, which a runnable test
+# PATH must keep — taking the command away needs PRECIS_MCP_CLAUDE.
 set -euo pipefail
 
 CLAUDE="${PRECIS_MCP_CLAUDE:-claude}"

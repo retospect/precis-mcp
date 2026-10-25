@@ -143,8 +143,14 @@ def test_falls_back_to_the_repo_ensure_script(
 
 
 def test_no_claude_cli_refuses(rig: dict[str, str], tmp_path: Path) -> None:
-    # The dev image ships a real `claude`, so the PRECIS_MCP_CLAUDE seam —
-    # not PATH — takes the registry command away.
+    # Why PRECIS_MCP_CLAUDE and not a PATH override (gr515182): the dev
+    # image's real `claude` is an `npm install -g` binary in /usr/bin
+    # (NodeSource's global prefix is /usr), and bookworm's merged-/usr
+    # makes /bin the same directory. The rig's PATH must keep /usr/bin —
+    # the script under test resolves `bash`, `sed` and friends there —
+    # so no PATH that can still run the script also hides `claude`.
+    # PRECIS_MCP_CLAUDE naming a nonexistent binary is the supported way
+    # to take the registry command away.
     rig["PRECIS_MCP_CLAUDE"] = str(tmp_path / "no-such-claude")
     result = _run(rig)
     assert result.returncode == 2

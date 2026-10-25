@@ -166,6 +166,14 @@
               title="join hard-wrapped lines within each paragraph into one line; drops line-break hyphens between lowercase letters">
         ⤒ Unwrap
       </button>
+      {# One-click strip of OCR'd citation superscripts (gr515240 —
+         "surfaces1±3", "forces 8,9"): static/abstract-cite.js, same
+         client-side edit-in-place as Unwrap — review, then Save. #}
+      <button type="button" onclick="__paperStripCitations(this)"
+              class="strip-citations-btn ml-1 rounded border border-line-strong bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-muted hover:bg-surface-muted"
+              title="remove OCR'd citation superscripts — digit runs, a±b/a–b ranges and comma lists glued to a word or before punctuation; leaves measurements (30±130 mm) and other real numbers alone">
+        ✂ Strip citations
+      </button>
       <textarea name="abstract" rows="4"
                 class="w-full rounded border border-line-strong px-2 py-1">{{ prefill.abstract if prefill else (abstract or '') }}</textarea>
     </label>
@@ -257,6 +265,23 @@ if (!window.__paperUnwrapAbstract) {
       return out;
     };
     ta.value = ta.value.split(/\n[ \t]*\n/).map(joinPara).join('\n\n');
+  };
+}
+</script>
+
+{# "✂ Strip citations" handler (gr515240) — same shape as
+   ``__paperUnwrapAbstract``: a pure textarea massage, never a server
+   round-trip; the operator reviews and Saves through the edit POST.
+   The regexes live in n/abstract-cite.js (an ES module, not inline) so
+   scripts/abstract_cite_smoke.mjs can exercise them under node —
+   including the gripe's gecko abstract fixture. #}
+<script type="module">
+import { stripCitationMarks } from '/n/abstract-cite.js';
+if (!window.__paperStripCitations) {
+  window.__paperStripCitations = function (btn) {
+    const form = btn.closest('form');
+    const ta = form ? form.querySelector('[name="abstract"]') : null;
+    if (ta) ta.value = stripCitationMarks(ta.value);
   };
 }
 </script>
