@@ -15,6 +15,11 @@ text being searched. Per Reto's ruling the shim never rewrites a command
 invoking ``rg`` or ``*grep`` (which also covers ``git grep``) — in any
 session, worktree or not.
 
+Third defect (2026-10-25, gr515812): Devin CLI hook payloads carry
+``tool_name: "exec"`` and no top-level ``cwd`` — the session dir is the hook
+process's ``$PWD``. Without a fallback the worktree passthrough silently never
+fired for Devin payloads, so worktree ``git`` commands would have gone to rtk.
+
 The real ``rtk`` is replaced by a stub on PATH so the delegation path is
 observable and the test does not depend on rtk being installed.
 """
@@ -69,6 +74,43 @@ def _run(
     )
 
 
+def _devin_payload(command: str, workdir: str | None = None) -> str:
+    """Devin CLI PreToolUse shape (verified against devin 3000.11.205,
+    gr515812): tool_name ``exec``, no top-level ``cwd``, plus correlation
+    ids. ``workdir`` appears under tool_input only when the call sets it."""
+    tool_input: dict[str, str] = {"command": command}
+    if workdir is not None:
+        tool_input["workdir"] = workdir
+    return json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "exec",
+            "tool_input": tool_input,
+            "tool_use_id": "exec:0#c7685368ed1b40b2b658ad635f8a6c23",
+            "session_id": "test-session",
+            "prompt_id": "test-prompt",
+        }
+    )
+
+
+def _run_devin(
+    env: dict[str, str],
+    command: str,
+    workdir: str | None = None,
+    hook_pwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["sh", str(SHIM)],
+        input=_devin_payload(command, workdir),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        cwd=hook_pwd,
+        check=False,
+    )
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -106,6 +148,52 @@ def test_search_commands_pass_through(
     res = _run(stub_rtk, cwd, command)
     assert res.returncode == 0
     assert res.stdout == "", "an empty hook reply means: leave the command unrewritten"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg connect_timeout src/ scripts/",
+        "grep -rn safe_fetch src/",
+        "git grep -n pattern",
+    ],
+)
+def test_devin_payload_search_commands_pass_through(
+    stub_rtk: dict[str, str], command: str
+) -> None:
+    res = _run_devin(stub_rtk, command)
+    assert res.returncode == 0
+    assert res.stdout == "", "an empty hook reply means: leave the command unrewritten"
+
+
+def test_devin_payload_workdir_worktree_git_passes_through(
+    stub_rtk: dict[str, str],
+) -> None:
+    res = _run_devin(stub_rtk, "git status --short", workdir=WORKTREE_CWD)
+    assert res.returncode == 0
+    assert res.stdout == ""
+
+
+def test_devin_payload_pwd_fallback_worktree_git_passes_through(
+    stub_rtk: dict[str, str], tmp_path: Path
+) -> None:
+    hook_pwd = tmp_path / ".claude" / "worktrees" / "some-tree"
+    hook_pwd.mkdir(parents=True)
+    env = dict(stub_rtk)
+    env.pop("PWD", None)  # sh re-mints PWD from its real cwd
+    res = _run_devin(env, "git status --short", hook_pwd=hook_pwd)
+    assert res.returncode == 0
+    assert res.stdout == ""
+
+
+def test_devin_payload_nonworktree_git_delegates(
+    stub_rtk: dict[str, str], tmp_path: Path
+) -> None:
+    env = dict(stub_rtk)
+    env.pop("PWD", None)
+    res = _run_devin(env, "git status --short", hook_pwd=tmp_path)
+    assert res.returncode == 0
+    assert res.stdout.startswith(STUB_MARK)
 
 
 @pytest.mark.parametrize(

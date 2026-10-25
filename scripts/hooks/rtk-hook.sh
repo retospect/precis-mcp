@@ -20,12 +20,19 @@
 #     mentions `git` as a word: the isolation guard still vets the plain
 #     command; only rtk's digest is lost.
 # Everything else goes to rtk as before.
+#
+# Payload shapes: Claude Code sends {"cwd": …, "tool_input": {"command": …}};
+# Devin CLI sends a PreToolUse payload with tool_name "exec", no top-level
+# "cwd" — the session dir is the hook process's own $PWD (DEVIN_PROJECT_DIR is
+# also exported to hook commands). Fall back to tool_input.workdir, then $PWD,
+# so the worktree passthrough still fires when Devin runs this script.
 input=$(cat)
 fields=$(printf '%s' "$input" | python3 -c '
-import json, sys
+import json, os, sys
 d = json.load(sys.stdin)
-print(d.get("cwd", ""))
-print(d.get("tool_input", {}).get("command", ""))
+ti = d.get("tool_input", {})
+print(d.get("cwd") or ti.get("workdir") or os.environ.get("PWD", ""))
+print(ti.get("command", ""))
 ' 2>/dev/null)
 cwd=$(printf '%s\n' "$fields" | sed -n 1p)
 cmd=$(printf '%s\n' "$fields" | sed -n '2,$p')

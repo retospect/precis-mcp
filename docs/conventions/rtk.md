@@ -130,6 +130,19 @@ rtk summary -- <cmd>   # condensed summary
   for commands rtk already decided to run, not the pre-execution
   rewrite-vs-passthrough decision.)
 
+- **Devin CLI sessions have no rtk at all.** Devin's hook matcher is a
+  literal regex on its own tool names, so the user-level hook's `Bash`
+  matcher never fires on the `exec` tool, and the project
+  `.claude/settings.json` hooks are rejected wholesale on events the
+  importer doesn't know (`SubagentStart`). Nothing rewrites or digests
+  commands there (verified against devin 3000.11.205). If `rg` output
+  looks mangled in a Devin shell anyway — `psycopg.connect` → `n`,
+  `watchdog:` → `ln` (gr515812) — the cause is the agent's own flags,
+  not rtk: `rg -rn`/`rg -rln` parse as `-r n`/`-r ln`, i.e.
+  `--replace`, rewriting every match. If a Devin payload does reach
+  this shim, it carries no `cwd` — the shim falls back to
+  `tool_input.workdir` then `$PWD`.
+
 - **Worktree-isolated sessions refuse rtk-wrapped `git`.** Claude Code's
   built-in isolation guard (`claude -w`, since 2.1.222; still present in
   2.1.267) refuses any command it cannot prove stays inside the worktree,
