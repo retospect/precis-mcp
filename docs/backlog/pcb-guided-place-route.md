@@ -59,8 +59,5 @@ add a layer themselves.
   `route_complete`), with back-edges route→placement and any→netlist.
   Some evaluators exist in `workers/auto_check_evaluators/`; the phase
   machine does not.
-- **Deploy binaries:** `deploy/roles/precis_eda` is in-repo and
-  unapplied. `src/precis/pcb/route.py` is deleted (Freerouting drop,
-  Reto 2026-10-25); the pinned Freerouting 1.9.0 jar's sha256 pin is blank;
-  the DSN emits a via referencing an undefined padstack, so check that on
-  the first real-jar run.
+- **Deploy binaries:** none. `src/precis/pcb/route.py` and the
+  `precis_eda` deploy role are deleted (Freerouting drop, Reto 2026-10-25).

@@ -60,7 +60,6 @@
   #
   # No ``pcb`` extra: it was deleted from pyproject (2026-08-27; Flow B
   # parses EasyEDA JSON itself), and uv silently ignores an unknown extra.
-  # The Freerouting jar is installed separately by the precis_eda role.
   #
   # Paper acquire, stub enrich and the provenance kind need the
   # semanticscholar + habanero clients; those are core deps since

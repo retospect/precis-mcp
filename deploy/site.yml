@@ -159,9 +159,6 @@
 # docs/design/duplicate-paper-handling.md (Phase 3). Its LaunchDaemon
 # (com.precis.reconcile) is booted out by retire-thin-timers.yml.
 
-- name: "41 — precis EDA toolchain (Freerouting, gateway — ADR 0042)"
-  ansible.builtin.import_playbook: playbooks/41-precis-eda.yml
-
 # Playbook 42 (nightly gentle reboot of the inference hosts) retired
 # 2026-10-16, gr491172: inference hosts now take hardening's weekly guarded
 # os-update-weekly (stops the serving engine, reboots only when idle).
