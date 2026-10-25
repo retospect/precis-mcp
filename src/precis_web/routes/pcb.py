@@ -50,9 +50,8 @@ same data:
   drc off ``get(kind='pcb', view=…)``, and ``tapeout`` — the
   ``pcb-tapeout`` checklist status for this board.
 * ``POST /pcb/{slug}/op`` — the quest board panel's action buttons:
-  ``route`` (``corridor=``/``escape=`` opt-ins) and ``place``
-  (``groups=``) queue the job through ``put(args={'op': …})``, the same
-  dispatch an agent calls; ``review`` is ``put(args={'op':'review'})``
+  ``place`` (``groups=``) queues the job through ``put(args={'op': …})``,
+  the same dispatch an agent calls; ``review`` is ``put(args={'op':'review'})``
   — the ``pcb_review`` job over the not-checked/stale ``pcb-tapeout``
   items, which runs its own fresh check (DRC + ERC, recorded) first. The page
   confirms before posting; the route redirects back to ``back`` (a
@@ -831,34 +830,22 @@ async def pcb_view(request: Request, slug: str, name: str) -> Any:
 
 
 #: The board panel's actions (gr488206).
-_PANEL_OPS = ("route", "place", "review")
+_PANEL_OPS = ("place", "review")
 
 
 def _op_call(
     slug: str,
     op: str,
     *,
-    corridor: str | None,
-    escape: str | None,
     groups: str | None,
 ) -> tuple[str, dict[str, Any]]:
-    """(verb, dispatch args) for one panel action. ``route``/``place`` go
-    through ``put`` in the MCP's ``args=`` shape (``__extras__``, so the
+    """(verb, dispatch args) for one panel action. ``place`` goes through
+    ``put`` in the MCP's ``args=`` shape (``__extras__``, so the
     handler's ``ARGS_KEYS`` gate applies exactly as for an agent);
     ``review`` is ``put(args={'op':'review'})`` — the ``pcb_review`` job
-    (which runs its own fresh check first). Raises ``BadInput`` on a malformed corridor."""
+    (which runs its own fresh check first)."""
     extras: dict[str, Any] = {"op": op}
-    if op == "route":
-        if corridor is not None and corridor.strip():
-            try:
-                extras["corridor"] = float(corridor)
-            except ValueError as exc:
-                raise BadInput(
-                    f"corridor must be a number of mm, got {corridor!r}"
-                ) from exc
-        if escape:
-            extras["escape"] = escape
-    elif op == "place" and groups:
+    if op == "place" and groups:
         extras["groups"] = True
     return "put", {"kind": "pcb", "id": slug, "__extras__": extras}
 
@@ -876,15 +863,13 @@ async def pcb_op(
     request: Request,
     slug: str,
     op: str = Form(...),
-    corridor: str | None = Form(None),
-    escape: str | None = Form(None),
     groups: str | None = Form(None),
     back: str | None = Form(None),
 ) -> Any:
     try:
         if op not in _PANEL_OPS:
             raise BadInput(f"op must be one of {', '.join(_PANEL_OPS)}, got {op!r}")
-        verb, args = _op_call(slug, op, corridor=corridor, escape=escape, groups=groups)
+        verb, args = _op_call(slug, op, groups=groups)
     except BadInput as exc:
         return templates.TemplateResponse(
             request,

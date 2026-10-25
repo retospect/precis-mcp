@@ -1,21 +1,29 @@
-"""Offline place/route/DRC/gerbers — the laptop half of
+"""Offline place/DRC/gerbers — the laptop half of
 ``docs/backlog/pcb-workspace-code.md`` §Q3 (slice 4, the
 ``precis-geom[pcb-kernel]`` extra).
 
 The script-side surface is ``precis_geom.pcb.local`` (a lazy alias for
-this module): ``pcb.local.place`` / ``pcb.local.route`` /
-``pcb.local.drc`` / ``pcb.local.gerbers`` drive the SAME engines the
-``pcb_place``/``pcb_route`` job types run — :mod:`precis.pcb.optimize`,
-:mod:`precis.pcb.realize`, :mod:`precis.pcb.session`, :mod:`precis.pcb.drc`,
-:mod:`precis.pcb.gerber` — in-process, with the batch dict the builder
-emits standing in for the store rows. Nothing here reimplements an
-engine; what the store path gets from ``pcb_graph``/``pcb_planes``/
-``pcb_footprints`` this module derives from ``board.to_batch()``.
+this module): ``pcb.local.place`` / ``pcb.local.drc`` /
+``pcb.local.gerbers`` drive the SAME engines the ``pcb_place`` job type
+runs — :mod:`precis.pcb.optimize`, :mod:`precis.pcb.realize` (pad
+geometry and the stored-copper model), :mod:`precis.pcb.session`,
+:mod:`precis.pcb.drc`, :mod:`precis.pcb.gerber` — in-process, with the
+batch dict the builder emits standing in for the store rows. Nothing
+here reimplements an engine; what the store path gets from
+``pcb_graph``/``pcb_planes``/``pcb_footprints`` this module derives from
+``board.to_batch()``.
+
+**Routing is retired** (Reto 2026-10-25): the vector router was deleted
+(tag ``vroute-final``); the topological router is the only router and
+its realiser is not landed yet. ``pcb.local.route`` raises
+:class:`LocalError` (:data:`precis.pcb.ROUTE_RETIRED`); the DRC/render
+functions take a :class:`LocalPlacement` and honestly emit a placed
+board — pads and authored fixed copper, no tracks.
 
 **Preview, not board state.** A laptop run writes ``out/*.json`` /
-``gerbers.zip`` files only — the never-worse guard, judged mutation,
-``last_route`` and recorded DRC runs are all server-side. Only a cluster
-``pcb.place``/``pcb.route`` result is board state (§Risks: two placers of
+``gerbers.zip`` files only — judged mutation, ``last_route`` and
+recorded DRC runs are all server-side. Only a cluster ``pcb.place``
+result is board state (§Risks: two placers of
 record — the wheel version may differ from the server's).
 
 Footprints: a laptop has no ``part_footprints`` cache, so a part with
@@ -23,27 +31,28 @@ Footprints: a laptop has no ``part_footprints`` cache, so a part with
 synthesized bound exactly as the fixtures flag it. Two ways to supply
 real pads offline: ``meta.catalog_footprints[lcsc]`` may carry the cache
 row verbatim (``{pads, pin_map, courtyard, centroid, holes}`` — the shape
-a design export embeds), and every ``place``/``route`` call takes
+a design export embeds), and every ``place`` call takes
 ``catalog={lcsc: row}`` for the rows a caller already holds.
 """
 
 from __future__ import annotations
 
 import copy
-import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.pcb import DANGLING_NET_NOTE, DEFAULT_STACKUP, STACKUP_PRESETS
+from precis.pcb import (
+    DEFAULT_STACKUP,
+    ROUTE_RETIRED,
+    ROUTE_RETIRED_NEXT,
+    STACKUP_PRESETS,
+)
 from precis.pcb import drc as pcb_drc
-from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
-from precis.pcb import route_digest as pcb_route_digest
 from precis.pcb import rows as pcb_rows
 from precis.pcb import session as pcb_session
-from precis.pcb.geom import segments_cross
-from precis.pcb.ir import PcbIR, net_member_counts, segment_points
+from precis.pcb.ir import PcbIR
 from precis.pcb.optimize import (
     PLACE_ITERS,
     PLACE_ONLY_SCHEDULE,
@@ -436,7 +445,7 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
         raise LocalError(f"{exc}") from exc
     notes: list[str] = []
     if not graph.get("instances"):
-        raise LocalError("the board has no components — nothing to place or route")
+        raise LocalError("the board has no components — nothing to place")
     for inst in graph["instances"]:
         for key in ("supplies", "pin_swap_groups"):
             if inst.get(key):
@@ -444,8 +453,7 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
                     f"{inst['refdes']} declares {key} — supply/client "
                     "matching and pin-swap warm starts are server-side "
                     "only (the rebind lives on the resolved snapshot the "
-                    "laptop does not have); run the board through "
-                    "put(op='route') instead"
+                    "laptop does not have)"
                 )
     for pin in graph.get("unconnected") or []:
         if (pin.get("meta") or {}).get("client_of"):
@@ -518,97 +526,11 @@ def _prepare(design: _Design) -> tuple[PcbIR, dict[str, dict[str, Any]], Any]:
     if collisions:
         shown = "\n".join(f"  {f.where}: {f.detail}" for f in collisions[:10])
         raise LocalError(
-            f"refusing to route — {len(collisions)} fixed-copper clearance "
+            f"refusing — {len(collisions)} fixed-copper clearance "
             "error(s) against another net's copper, which no routing can "
             f"remove:\n{shown}"
         )
     return ir, footprints, (applied, measures)
-
-
-def _placement_errors(
-    design: _Design, ir: PcbIR, footprints: dict[str, dict[str, Any]]
-) -> tuple[int, str | None]:
-    """The job's pre-route placement-DRC gate, fail-open the same way."""
-    try:
-        findings = pcb_session.placement_drc_findings(
-            ir,
-            capability=design.fab_caps,
-            footprints=footprints,
-            fixed_copper=design.fixed_copper,
-            outline=design.outline,
-        )
-        return pcb_session.placement_drc_report(
-            findings,
-            fixed_refdes=[
-                str(ir.instance_refdes[i])
-                for i in range(ir.n_instances)
-                if bool(ir.inst_fixed_xy[i])
-            ],
-        )
-    except Exception:
-        return 0, None
-
-
-def _realize_config(design: _Design) -> pcb_realize.RealizeConfig:
-    rules = pcb_profiles.profile_rules(design.profile)
-    config = pcb_realize.RealizeConfig(
-        fab_caps=design.fab_caps,
-        class_rules=design.graph.get("net_classes"),
-        thermal=pcb_planes.thermal_spec(rules),
-    )
-    if rules.via_body_cost_mm is not None:
-        config = dataclasses.replace(config, via_body_cost_mm=rules.via_body_cost_mm)
-    return config
-
-
-def _derive_regions(design: _Design, ir: PcbIR, locked: frozenset[str]) -> None:
-    """Re-derive the power regions for the settled placement — the job's
-    ``_apply_derived_regions``: unlocked poured nets demote first, so a
-    net whose region no longer fits routes as traces."""
-    stale = {
-        net
-        for (net, _layer), (region, _prio) in ir.plane_regions.items()
-        if region is not None and net not in locked
-    }
-    for n in sorted(stale):
-        ir.demote_plane(n)
-    regions, notes = pcb_realize.derive_power_regions(ir, _realize_config(design))
-    design.notes.extend(notes)
-    for n, layer, region in regions:
-        ir.promote_plane(n, layer, region=region.region, priority=region.priority)
-
-
-def _crossing_fail(ir: PcbIR, plane_net_ids: set[int]) -> dict[str, list[str]]:
-    """Residual same-layer chord crossings by net name — the job's
-    ``_residual_crossings`` sweep, per-net ``with`` preserved."""
-    failing: dict[str, list[str]] = {}
-    for layer in pcb_session.signal_layers(ir):
-        segs = [
-            s
-            for s in range(ir.n_segments)
-            if int(ir.seg_layer[s]) == layer and int(ir.seg_net[s]) not in plane_net_ids
-        ]
-        pts: dict[int, tuple[tuple[float, float], tuple[float, float]]] = {}
-        for s in segs:
-            p = segment_points(ir, s)
-            if p is not None:
-                pts[s] = p
-        segs = [s for s in segs if s in pts]
-        for i in range(len(segs)):
-            for j in range(i + 1, len(segs)):
-                sa, sb = segs[i], segs[j]
-                na, nb = int(ir.seg_net[sa]), int(ir.seg_net[sb])
-                if na == nb:
-                    continue
-                (a1, a2), (b1, b2) = pts[sa], pts[sb]
-                if segments_cross(a1, a2, b1, b2):
-                    failing.setdefault(str(ir.net_name[na]), []).append(
-                        str(ir.net_name[nb])
-                    )
-                    failing.setdefault(str(ir.net_name[nb]), []).append(
-                        str(ir.net_name[na])
-                    )
-    return failing
 
 
 # ── place ──────────────────────────────────────────────────────────────
@@ -686,206 +608,7 @@ def place(
     )
 
 
-# ── route ──────────────────────────────────────────────────────────────
-
-
-@dataclass
-class LocalRouting:
-    """What ``pcb.local.route`` returns — per-net statuses in the job's
-    vocabulary (``realized``/``failed``/``sketched``/dangling), the
-    post-strip realized result, and the DRC findings the gate measured."""
-
-    slug: str
-    poses: dict[str, tuple[float, float, float]]
-    rows: dict[str, dict[str, Any]]
-    routed: int
-    failed: int
-    dangling: int
-    unrouted_segments: int
-    vias: int
-    tracks: int
-    findings: list[Any]
-    unrouted_reasons: dict[str, str]
-    notes: list[str]
-    design: _Design = field(repr=False)
-    ir: PcbIR = field(repr=False)
-    rres: Any = field(repr=False)
-    footprints: dict[str, dict[str, Any]] = field(repr=False)
-    #: The run-level conflict roll-up (gr513871) — the same object the
-    #: job stamps onto ``refs.meta.last_route.digest``.
-    digest: dict[str, Any] = field(default_factory=dict)
-    committed_round: int = 0
-    ready: bool = True
-
-    @property
-    def nets(self) -> int:
-        return len(self.rows)
-
-    @property
-    def errors(self) -> int:
-        return sum(1 for f in self.findings if f.severity == "error")
-
-    def failed_nets(self) -> list[str]:
-        return sorted(n for n, r in self.rows.items() if r["status"] == "failed")
-
-    def summary(self) -> str:
-        failed = self.failed_nets()
-        tail = f" — failed: {', '.join(failed[:8])}" if failed else ""
-        return (
-            f"{self.routed}/{self.nets} routed, {self.errors} DRC error(s), "
-            f"{self.vias} via(s){tail}"
-        )
-
-
-def _status_rows(
-    design: _Design,
-    ir: PcbIR,
-    rres: Any,
-    drc_fail: dict[str, list[dict[str, Any]]],
-    split: dict[str, Any],
-) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    """The job's per-net status ladder, minus the store write — same
-    precedence: problems → ``failed``, copper or plane → ``realized``,
-    sketch only → ``sketched``, <2 members → dangling."""
-    reason_by_seg = {r.seg_id: r for r in rres.unrouted_reasons}
-    unrouted_fail: dict[str, list[dict[str, Any]]] = {}
-    unrouted_reasons: dict[str, str] = {}
-    for seg_id in rres.unrouted:
-        net_name = str(ir.net_name[int(ir.seg_net[seg_id])])
-        reason = reason_by_seg.get(seg_id)
-        key = pcb_session.segment_key(ir, seg_id)
-        unrouted_reasons[key] = reason.kind if reason else "unknown"
-        unrouted_fail.setdefault(net_name, []).append(
-            {
-                "kind": "unrouted",
-                "reason": reason.kind if reason else "unknown",
-                "message": (
-                    reason.message if reason else f"no route found for segment {key}"
-                ),
-            }
-        )
-    congestion_fail: dict[str, list[dict[str, Any]]] = {}
-    for w in rres.warnings:
-        for net_name in w.nets:
-            congestion_fail.setdefault(net_name, []).append(
-                {"kind": "gap-capacity", "reason": "congestion", "message": w.message()}
-            )
-    unstitched_fail: dict[str, list[dict[str, Any]]] = {}
-    for u in rres.unstitched:
-        if u.fragments - u.bare_fragments > 1:
-            unstitched_fail.setdefault(u.net, []).append(
-                {
-                    "kind": "unstitched-plane",
-                    "reason": "unstitched-plane",
-                    "message": u.message,
-                }
-            )
-    plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}
-    crossing_fail = {
-        net: [
-            {
-                "kind": "same-layer-crossing",
-                "reason": "same-layer-crossing",
-                "message": f"crosses {', '.join(sorted(set(others)))}",
-            }
-        ]
-        for net, others in _crossing_fail(ir, plane_net_ids).items()
-    }
-    fixed_realized = {int(ir.seg_net[s]) for s in rres.fixed_realized}
-    routed_ids = {int(t.net_id) for t in rres.tracks} | fixed_realized
-    member_counts = net_member_counts(ir)
-    sketch = pcb_session.extract_sketch(ir)
-    rows: dict[str, dict[str, Any]] = {}
-    for net_id in range(ir.n_nets):
-        net_name = str(ir.net_name[net_id])
-        entry = sketch.get(net_name)
-        if entry is None:
-            if member_counts.get(net_id, 0) < 2:
-                rows[net_name] = {"status": "realized", "note": DANGLING_NET_NOTE}
-            continue
-        problems = (
-            ([] if net_id in routed_ids else crossing_fail.get(net_name, []))
-            + ([] if net_id in routed_ids else congestion_fail.get(net_name, []))
-            + unrouted_fail.get(net_name, [])
-            + unstitched_fail.get(net_name, [])
-            + drc_fail.get(net_name, [])
-        )
-        island = split.get(net_name)
-        if (
-            not problems
-            and island is not None
-            and (net_id in routed_ids or int(ir.net_plane_layers[net_id]) != 0)
-        ):
-            problems = [
-                {
-                    "kind": "disconnected",
-                    "reason": "disconnected",
-                    "message": f"copper is in {island.components} disconnected pieces",
-                }
-            ]
-        if problems:
-            kinds = sorted({str(p["reason"]) for p in problems if p.get("reason")})
-            details = [str(p["message"])[:220] for p in problems if p.get("message")]
-            note = f"failed: {', '.join(kinds)}"
-            if details:
-                # Same dedupe as the job's note builder — the first 3
-                # shown are three DISTINCT blockers (gr513871).
-                details = pcb_route_digest.dedupe_details(details)
-                note += f" — {'; '.join(details[:3])}"
-                if len(details) > 3:
-                    note += f" (+{len(details) - 3} more)"
-            rows[net_name] = {
-                **entry,
-                "status": "failed",
-                "fail": {"problems": problems},
-                "note": note,
-            }
-        elif net_id in routed_ids or int(ir.net_plane_layers[net_id]) != 0:
-            rows[net_name] = {**entry, "status": "realized", "note": None}
-        else:
-            rows[net_name] = {**entry, "status": "sketched", "note": None}
-    return rows, unrouted_reasons
-
-
-def _route_on(
-    design: _Design,
-    ir: PcbIR,
-    footprints: dict[str, dict[str, Any]],
-    locked: frozenset[str],
-    *,
-    force: bool,
-) -> tuple[Any, list[Any], dict[str, list[dict[str, Any]]], dict[str, Any]]:
-    """realize + the post-route legality gates — the shared tail of the
-    single-anneal and loop paths. Returns ``(stripped_rres, findings,
-    drc_fail, split)``."""
-    _derive_regions(design, ir, locked)
-    n_errors, report = _placement_errors(design, ir, footprints)
-    if n_errors and not force:
-        raise LocalError(
-            f"refusing to route — {n_errors} pre-route placement DRC "
-            f"error(s):\n{report}"
-        )
-    rres = pcb_realize.realize(
-        ir,
-        config=_realize_config(design),
-        footprints=footprints,
-        fixed_copper=design.fixed_copper,
-    )
-    findings = pcb_session.routed_drc_findings(
-        ir,
-        rres,
-        capability=design.fab_caps,
-        footprints=footprints,
-        fixed_copper=design.fixed_copper,
-        outline=design.outline,
-        net_rules=pcb_session.clearance_net_rules(design.graph, design.fab_caps),
-        net_voltages=_net_voltages(design.graph),
-    )
-    rres, drc_fail = pcb_session.strip_drc_violating_nets(ir, rres, findings)
-    split = pcb_session.split_nets(
-        ir, rres, footprints=footprints, fixed_copper=design.fixed_copper
-    )
-    return rres, findings, drc_fail, split
+# ── route (retired) ────────────────────────────────────────────────────
 
 
 def route(
@@ -899,77 +622,13 @@ def route(
     force: bool = False,
     place: bool | None = None,
     catalog: dict[str, dict[str, Any]] | None = None,
-) -> LocalRouting:
-    """The ``pcb_route`` job's pipeline, in-process: joint place+sketch
-    anneal → ``realize`` → post-route strip and the per-net status
-    ladder. ``placement=`` continues a ``place()`` result's IR and
-    defaults ``place=False`` — the job's route-only mode (``hold_poses``,
-    ``iters=0``): the settled sketch and poses reach the realizer
-    untouched. A bare board defaults ``place=True``, the joint anneal."""
-    if router != "vector":
-        raise LocalError(
-            f"router={router!r} — the grid maze router was removed; "
-            "only 'vector' exists"
-        )
-    route_only = (placement is not None) if place is None else (not place)
-    if placement is not None:
-        design = placement.design
-        ir = placement.ir
-        footprints = placement.footprints
-        applied_locked = placement.locked_plane_nets
-        measures = placement.measures
-    else:
-        design = _design(board, catalog)
-        ir, footprints, (applied, measures) = _prepare(design)
-        applied_locked = applied.locked
-    locked_names = frozenset(str(ir.net_name[n]) for n in applied_locked)
-    config = OptimizeConfig(
-        iters=0 if route_only else (iters or 3000),
-        hold_poses=route_only,
-        seed=seed,
-        locked_plane_nets=applied_locked,
-        measures=measures,
-        support_groups=groups,
-    )
-    optimize(ir, config)
-    collisions = pcb_session.fixed_copper_findings(
-        ir, footprints, design.fixed_copper, design.fab_caps
-    )
-    if collisions:
-        raise LocalError(
-            f"the anneal placed pads on fixed copper — {len(collisions)} collision(s)"
-        )
-    rres, findings, drc_fail, split = _route_on(
-        design, ir, footprints, locked_names, force=force
-    )
-    rows, unrouted_reasons = _status_rows(design, ir, rres, drc_fail, split)
-    counts = {"realized": 0, "failed": 0, "dangling": 0}
-    for row in rows.values():
-        if row["status"] == "realized":
-            counts["realized"] += 1 if row.get("note") != DANGLING_NET_NOTE else 0
-            counts["dangling"] += 1 if row.get("note") == DANGLING_NET_NOTE else 0
-        elif row["status"] == "failed":
-            counts["failed"] += 1
-    slug = str(design.batch.get("meta", {}).get("slug") or "")
-    return LocalRouting(
-        slug=slug,
-        poses=pcb_session.positions(ir),
-        rows=rows,
-        routed=counts["realized"],
-        failed=counts["failed"],
-        dangling=counts["dangling"],
-        unrouted_segments=len(rres.unrouted),
-        vias=len(rres.vias),
-        tracks=len(rres.tracks),
-        findings=findings,
-        unrouted_reasons=unrouted_reasons,
-        notes=design.notes,
-        digest=pcb_route_digest.conflict_digest(rows, design.layer_names),
-        design=design,
-        ir=ir,
-        rres=rres,
-        footprints=footprints,
-    )
+) -> None:
+    """Retired — the vector router (vroute) was deleted 2026-10-25 (tag
+    ``vroute-final``); the topological router is the only router and its
+    realiser is not landed yet. Always raises :class:`LocalError`;
+    :func:`place` plus the ``drc``/render exports below still work on the
+    placed board."""
+    raise LocalError(f"{ROUTE_RETIRED} Next: {ROUTE_RETIRED_NEXT}")
 
 
 # ── topo_place (topo-place spec §1c) ───────────────────────────────────
@@ -1114,19 +773,21 @@ def topo_place(
 # ── model, DRC, exports ────────────────────────────────────────────────
 
 
-def _model(routing: LocalRouting) -> dict[str, Any]:
+def _model(placement: LocalPlacement) -> dict[str, Any]:
     """The gerber/svg-shaped board model — ``to_gerber_model`` plus the
     extras ``export_fab``/``run_geometric_drc`` read (drills, silk,
-    mask opens, instances, net names, plane fills)."""
-    design = routing.design
-    ir = routing.ir
+    mask opens, instances, net names, plane fills). The placed board's
+    ``RealizeResult`` is empty — routing is retired, so pads and authored
+    fixed copper are all there is to model."""
+    design = placement.design
+    ir = placement.ir
     layers = design.layer_names
     model: dict[str, Any] = pcb_realize.to_gerber_model(
-        routing.rres,
+        pcb_realize.RealizeResult(tracks=(), vias=(), warnings=()),
         ir,
         layers=layers,
         outline=design.outline or [],
-        footprints=routing.footprints,
+        footprints=placement.footprints,
     )
     pads = model.get("pads") or []
     drills = [
@@ -1171,7 +832,7 @@ def _model(routing: LocalRouting) -> dict[str, Any]:
         if str(f_.get("ftype") or "") == "mask_open"
     ]
     instances = []
-    poses = routing.poses
+    poses = placement.poses
     for inst in design.graph.get("instances") or []:
         refdes = str(inst["refdes"])
         x, y, rot = poses.get(refdes, (inst.get("x"), inst.get("y"), inst.get("rot")))
@@ -1197,12 +858,12 @@ def _model(routing: LocalRouting) -> dict[str, Any]:
     return model
 
 
-def drc(routing: LocalRouting) -> list[Any]:
-    """``run_geometric_drc`` over the routed model at the board's profile
+def drc(placement: LocalPlacement) -> list[Any]:
+    """``run_geometric_drc`` over the placed model at the board's profile
     capability row — the geometric rule set ``view='drc'`` runs, on the
     laptop's model rather than the store's."""
-    design = routing.design
-    model = _model(routing)
+    design = placement.design
+    model = _model(placement)
     return pcb_drc.run_geometric_drc(
         model,
         capability=design.fab_caps,
@@ -1210,7 +871,7 @@ def drc(routing: LocalRouting) -> list[Any]:
         net_rules=pcb_session.clearance_net_rules(design.graph, design.fab_caps),
         net_voltages=_net_voltages(design.graph),
         unconnected=design.graph.get("unconnected"),
-        phase="routed",
+        phase="placed",
         profile_rules=pcb_profiles.profile_rules(design.profile),
     )
 
@@ -1236,25 +897,26 @@ def findings_text(findings: list[Any], *, header: str = "") -> str:
 
 
 def gerbers(
-    routing: LocalRouting, *, name: str = "board", allow_synthesized: bool = True
+    placement: LocalPlacement, *, name: str = "board", allow_synthesized: bool = True
 ) -> dict[str, str]:
     """The fab bundle — :func:`precis.pcb.gerber.export_fab` over the
-    routed model. ``allow_synthesized`` defaults True offline (a laptop
+    placed model (pads + fixed copper — no routed copper exists).
+    ``allow_synthesized`` defaults True offline (a laptop
     has no ``part_footprints`` cache, so synthesized bounds are the rule,
     not the exception); the preview files are marked by the notes file
     when synthesized pads are present."""
     from precis.pcb import gerber as pcb_gerber
 
-    model = _model(routing)
+    model = _model(placement)
     model.pop("_silk_census", None)
     return pcb_gerber.export_fab(model, name=name, allow_synthesized=allow_synthesized)
 
 
-def gerbers_zip(routing: LocalRouting, *, name: str = "board") -> bytes:
+def gerbers_zip(placement: LocalPlacement, *, name: str = "board") -> bytes:
     """``gerbers()`` zipped — the ``out/gerbers.zip`` payload."""
     from precis.pcb import gerber as pcb_gerber
 
-    return pcb_gerber.zip_fab(gerbers(routing, name=name))
+    return pcb_gerber.zip_fab(gerbers(placement, name=name))
 
 
 def netlist_net(design: _Design, *, name: str = "design") -> str:
@@ -1277,13 +939,13 @@ def schematic_svg(design: _Design) -> str:
     )
 
 
-def board_svg(routing: LocalRouting) -> str:
-    """``out/board.svg`` — the routed model rendered."""
+def board_svg(placement: LocalPlacement) -> str:
+    """``out/board.svg`` — the placed model rendered."""
     from precis.pcb import svg as pcb_svg
 
-    model = _model(routing)
+    model = _model(placement)
     model.pop("_silk_census", None)
-    return pcb_svg.render_board(model, title=routing.slug or "board")
+    return pcb_svg.render_board(model, title=placement.slug or "board")
 
 
 def ratsnest_svg(design: _Design, ir: PcbIR | None = None) -> str:
@@ -1334,32 +996,30 @@ def placement_json(placement: LocalPlacement) -> dict[str, Any]:
     }
 
 
-def copper_json(routing: LocalRouting) -> dict[str, Any]:
-    """``out/copper.json`` — the realized copper rows + per-net statuses
-    (the ``pcb_copper``/``pcb_routes`` pair a server run persists, as the
-    preview file §Q3 names it)."""
-    design = routing.design
+def copper_json(placement: LocalPlacement) -> dict[str, Any]:
+    """``out/copper.json`` — the copper rows + per-net statuses (the
+    ``pcb_copper``/``pcb_routes`` pair a server run persists, as the
+    preview file §Q3 names it). Empty: routing is retired, so a placed
+    board carries no router copper."""
     return {
-        "copper": pcb_realize.result_copper_rows(
-            routing.rres, routing.ir, design.layer_names
-        ),
-        "routes": routing.rows,
-        "unrouted_reasons": routing.unrouted_reasons,
-        "digest": routing.digest,
-        "committed_round": routing.committed_round,
+        "copper": [],
+        "routes": {},
+        "unrouted_reasons": {},
+        "digest": {},
+        "committed_round": 0,
     }
 
 
-def bom_csv(routing: LocalRouting) -> str:
+def bom_csv(placement: LocalPlacement) -> str:
     from precis.pcb import export as pcb_export
 
-    return pcb_export.bom_csv(_model(routing))
+    return pcb_export.bom_csv(_model(placement))
 
 
-def cpl_csv(routing: LocalRouting) -> str:
+def cpl_csv(placement: LocalPlacement) -> str:
     from precis.pcb import export as pcb_export
 
-    return pcb_export.cpl_csv(_model(routing))
+    return pcb_export.cpl_csv(_model(placement))
 
 
 # ── the main.py entry ──────────────────────────────────────────────────
@@ -1379,16 +1039,19 @@ def run(
     """Write every §Q3 output ``precis_geom.pcb.run`` can't (it owns
     ``manifest.json``/``trace.json``/``check.txt``): ``netlist.net``,
     ``schematic.svg`` and ``ratsnest.svg`` always; ``placement.json``
-    for ``do_place``/``do_route``; the route run's
+    for ``do_place``/``do_route``; the placed board's
     ``copper.json``/``drc.txt``/``gerbers.zip``/``board.svg``/``bom.csv``/
-    ``cpl.csv`` for ``do_route``. Returns the written filenames."""
+    ``cpl.csv`` for ``do_route`` (no router yet — routing is retired, so
+    the "route" outputs honestly describe the placed board). Returns the
+    written filenames."""
     import json
     from pathlib import Path
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     batch = _batch_of(board)
-    slug = name or str((batch.get("meta") or {}).get("slug") or "board")
+    slug = name or (batch.get("meta") or {}).get("slug") or "board"
+    slug = str(slug)
     design = _design(batch, catalog)
     written: list[str] = []
 
@@ -1401,39 +1064,28 @@ def run(
     w("ratsnest.svg", ratsnest_svg(design))
     if not (do_place or do_route):
         return written
-    if do_route:
-        placement = place(batch, seed=seed, iters=iters, catalog=catalog)
-        routing = route(batch, placement=placement, seed=seed, catalog=catalog)
-        placement_doc = {
-            "poses": {
-                r: {"x": p[0], "y": p[1], "rot": p[2]}
-                for r, p in sorted(routing.poses.items())
-            },
-            "notes": routing.notes,
-            "committed_round": routing.committed_round,
-        }
-        w("placement.json", json.dumps(placement_doc, indent=1) + "\n")
-        w("copper.json", json.dumps(copper_json(routing), indent=1) + "\n")
-        findings = list(routing.findings) + drc(routing)
-        w(
-            "drc.txt",
-            findings_text(
-                findings,
-                header=f"{slug}: {routing.summary()}",
-            ),
-        )
-        gerber_files = gerbers(routing, name=slug)
-        (out / "gerbers.zip").write_bytes(pcb_gerber_zip(gerber_files))
-        written.append("gerbers.zip")
-        w("board.svg", board_svg(routing))
-        w("bom.csv", bom_csv(routing))
-        w("cpl.csv", cpl_csv(routing))
-    else:
-        placement = place(batch, seed=seed, iters=iters, catalog=catalog)
-        w(
-            "placement.json",
-            json.dumps(placement_json(placement), indent=1) + "\n",
-        )
+    placement = place(batch, seed=seed, iters=iters, catalog=catalog)
+    w(
+        "placement.json",
+        json.dumps(placement_json(placement), indent=1) + "\n",
+    )
+    if not do_route:
+        return written
+    print("no router yet — routing is retired; writing the placed board")
+    w("copper.json", json.dumps(copper_json(placement), indent=1) + "\n")
+    w(
+        "drc.txt",
+        findings_text(
+            drc(placement),
+            header=f"{slug}: {placement.summary()} (unrouted — no router yet)",
+        ),
+    )
+    gerber_files = gerbers(placement, name=slug)
+    (out / "gerbers.zip").write_bytes(pcb_gerber_zip(gerber_files))
+    written.append("gerbers.zip")
+    w("board.svg", board_svg(placement))
+    w("bom.csv", bom_csv(placement))
+    w("cpl.csv", cpl_csv(placement))
     return written
 
 
@@ -1452,7 +1104,6 @@ __all__ = [
     "PLACE_ONLY_SCHEDULE",
     "LocalError",
     "LocalPlacement",
-    "LocalRouting",
     "TopoRun",
     "batch_to_graph",
     "board_svg",

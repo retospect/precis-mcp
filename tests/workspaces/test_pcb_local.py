@@ -1,9 +1,10 @@
 """pcb-workspace-code slice 4, offline program end-to-end
 (docs/backlog/pcb-workspace-code.md, Slices row 4): ``main.py --place
 --route`` on a laptop with no network writes the full §Q3 output set for
-the §Q1 board (``examples/boards/usbc_attiny``), and ``pcb.local`` wraps
-the same engines the ``pcb_place``/``pcb_route`` workers run — no DB, no
-network, no store.
+the §Q1 board (``examples/boards/usbc_attiny``) — with routing retired
+(gr515107) the "route" outputs honestly describe the placed board — and
+``pcb.local`` wraps the same engines the ``pcb_place`` worker runs — no
+DB, no network, no store.
 """
 
 from __future__ import annotations
@@ -60,25 +61,22 @@ def test_usbc_attiny_end_to_end_writes_every_q3_output(tmp_path: Path) -> None:
     placement = json.loads((out / "placement.json").read_text(encoding="utf-8"))
     assert len(placement["poses"]) == 11
     copper = json.loads((out / "copper.json").read_text(encoding="utf-8"))
-    assert copper["copper"]
+    # Routing is retired: the placed board carries no router copper, so
+    # copper.json is the honest empty set (gr515107).
+    assert copper["copper"] == [] and copper["routes"] == {}
     zf = zipfile.ZipFile(out / "gerbers.zip")
     assert {n for n in zf.namelist() if n.endswith((".gbr", ".drl"))}
     assert (out / "drc.txt").read_text(encoding="utf-8").startswith("usbc-attiny")
 
 
-def test_local_route_sanity_board_is_100_percent_routed() -> None:
+def test_local_route_raises_the_retired_refusal() -> None:
+    """``local.route`` is kept as a refusing stub so the call names the
+    retirement instead of an AttributeError (gr515107)."""
     placement = pcb.local.place(_example("sanity"))
-    routing = pcb.local.route(_example("sanity"), placement=placement)
-    assert routing.failed == 0, routing.summary()
-    assert routing.errors == 0, pcb.local.findings_text(routing.findings)
-    assert routing.routed == routing.nets
-
-
-def test_local_place_then_route_reuses_the_placed_ir() -> None:
-    placement = pcb.local.place(_example("sanity"), iters=800)
-    assert placement.poses and placement.ready
-    routing = pcb.local.route(placement, placement=placement)
-    assert routing.nets > 0
+    with pytest.raises(pcb.local.LocalError, match="routing is retired"):
+        pcb.local.route(_example("sanity"), placement=placement)
+    with pytest.raises(pcb.local.LocalError, match="routing is retired"):
+        pcb.local.route(placement, placement=placement)
 
 
 def test_board_default_stackup_is_four_routable_layers() -> None:

@@ -12,11 +12,13 @@ Source: Reto with witty (gripe-fleet coordinator), 2026-10-20 ~13:00–15:00Z,
 during the place/route HALT (memory me500154). A first draft was reviewed by
 Fable (~12:45Z); this version folds in that review and Reto's rulings since.
 Agreed by Reto 2026-10-20. It replaces the method of [pcb-unified-place-route](pcb-unified-place-route.md)
-and builds on [pcb-vector-router](pcb-vector-router.md) where §Conflicts says;
+and builds on pcb-vector-router (deleted; tag vroute-final) where §Conflicts says;
 where they disagree, this file wins.
 
 **Superseded (Reto 2026-10-25).** `precis.pcb.pr` is deleted: its
-slice 2 results beat vroute on no bench.
+slice 2 results beat vroute on no bench. `vroute` itself was deleted
+the same day (tag `vroute-final`) — the bench numbers below are
+historical, and "vroute stays the production router" no longer holds.
 [pcb-topo-place](pcb-topo-place.md) is the router path forward; this
 file stays as the record of the smooth-energy design.
 

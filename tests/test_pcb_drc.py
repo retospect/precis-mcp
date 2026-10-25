@@ -21,7 +21,12 @@ from precis.pcb import DEFAULT_STACKUP, drc
 from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
 from precis.pcb.profiles import profile_rules
-from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
+from precis.pcb.realize import (
+    RealizedTrack,
+    RealizedVia,
+    RealizeResult,
+    to_gerber_model,
+)
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.pcb.silk import SilkPlacement
 
@@ -497,9 +502,11 @@ def test_check_annular_ring_fires_and_stays_quiet():
 
 def test_check_annular_ring_fires_on_a_real_realized_via():
     """The exact gap this task closes: check_annular_ring was correct but
-    had ZERO production input before realize.py emitted via geometry (the
-    master backlog's own documented gap). Run it against REAL realize.py
-    output — not the synthetic ``_via`` dict fixture above.
+    had ZERO production input before via geometry existed (the master
+    backlog's own documented gap). Run it against the real stored-copper
+    model — a :class:`RealizeResult` carried through the production
+    ``to_gerber_model`` hand-off — not the synthetic ``_via`` dict
+    fixture above.
 
     **2026-08-28 update**: this used to assert the finding FIRED, because
     the fab-floor via_diameter_mm/drill_mm pairing (0.4/0.25mm, house
@@ -510,7 +517,11 @@ def test_check_annular_ring_fires_on_a_real_realized_via():
     of derived from drill+ring) -- now that via_diameter_mm is DERIVED
     (:func:`precis.pcb.capabilities._derive_via_diameter_mm`), a
     default-sized via's ring matches house_default's own annular_ring_mm
-    exactly, and this must stay QUIET."""
+    exactly, and this must stay QUIET.
+
+    Routing is retired (gr515107): the vias below are the stored-copper
+    shape a route run WOULD have persisted — a through-span pair at the
+    house-default 0.75/0.25 mm — instead of engine output."""
     graph = {
         "instances": [
             {"refdes": "U0", "x": 0.0, "y": 0.0},
@@ -526,16 +537,34 @@ def test_check_annular_ring_fires_on_a_real_realized_via():
         ],
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    # In1.Cu -- a class lock forces the layer transition (and the vias)
-    result = realize(
-        ir,
-        config=RealizeConfig(
-            fab_caps=_CAP4,
-            router="vector",
-            class_rules={"signal": {"layers": ["In1.Cu"]}},
+    result = RealizeResult(
+        tracks=(),
+        vias=(
+            RealizedVia(
+                seg_id=0,
+                net_id=0,
+                x=0.0,
+                y=0.0,
+                dia_mm=0.75,
+                drill_mm=0.25,
+                layer_lo=0,
+                layer_hi=3,
+                endpoint="a",
+            ),
+            RealizedVia(
+                seg_id=0,
+                net_id=0,
+                x=10.0,
+                y=0.0,
+                dia_mm=0.75,
+                drill_mm=0.25,
+                layer_lo=0,
+                layer_hi=3,
+                endpoint="b",
+            ),
         ),
+        warnings=(),
     )
-    assert result.vias  # sanity: this task's realize.py change actually produced vias
     layers = [layer["name"] for layer in DEFAULT_STACKUP]
     model = to_gerber_model(
         result, ir, layers=layers, outline=[[0, -5], [20, -5], [20, 5], [0, 5]]
@@ -1561,13 +1590,14 @@ def test_check_via_via_keepout_none_field_never_crashes():
 
 
 def test_check_via_via_keepout_fires_on_a_real_realized_via():
-    """Reachability against REAL realize.py output, not just synthetic
-    geometry (mirrors test_check_via_pad_keepout_fires_on_a_real_realized_
-    via's own discipline). Two instances 0.2mm apart on ONE net, forced to
-    change layer, so realize.py drops a via at each pad -- 0.2mm apart is
-    close enough that both the copper barrel AND the drilled hole (JLC
-    default dia 0.75mm/drill 0.25mm) collide, entirely invisible to
-    check_clearance because it is the SAME net at both ends."""
+    """Reachability against the real stored-copper shape, not just
+    synthetic geometry (mirrors test_check_via_pad_keepout_fires_on_a_real_realized_
+    via's own discipline). Two instances 0.2mm apart on ONE net, a via at
+    each pad -- 0.2mm apart is close enough that both the copper barrel
+    AND the drilled hole (JLC default dia 0.75mm/drill 0.25mm) collide,
+    entirely invisible to check_clearance because it is the SAME net at
+    both ends. (Was REAL realize.py output — routing is retired,
+    gr515107, so the :class:`RealizeResult` is built directly.)"""
     graph = {
         "instances": [
             {"refdes": "U0", "x": 0.0, "y": 0.0},
@@ -1583,14 +1613,33 @@ def test_check_via_via_keepout_fires_on_a_real_realized_via():
         ],
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    # In1.Cu lock forces a via at each end (pads are F.Cu-only)
-    result = realize(
-        ir,
-        config=RealizeConfig(
-            fab_caps=_CAP4,
-            router="vector",
-            class_rules={"signal": {"layers": ["In1.Cu"]}},
+    result = RealizeResult(
+        tracks=(),
+        vias=(
+            RealizedVia(
+                seg_id=0,
+                net_id=0,
+                x=0.0,
+                y=0.0,
+                dia_mm=0.75,
+                drill_mm=0.25,
+                layer_lo=0,
+                layer_hi=3,
+                endpoint="a",
+            ),
+            RealizedVia(
+                seg_id=0,
+                net_id=0,
+                x=0.2,
+                y=0.0,
+                dia_mm=0.75,
+                drill_mm=0.25,
+                layer_lo=0,
+                layer_hi=3,
+                endpoint="b",
+            ),
         ),
+        warnings=(),
     )
     assert len(result.vias) == 2  # sanity: both endpoints got a via
     layers = [layer["name"] for layer in DEFAULT_STACKUP]
@@ -2356,13 +2405,15 @@ def test_clearance_oracle_matches_strtree_engine_over_random_layouts():
 def _random_real_board_model(
     rng: random.Random, *, n_nets: int, span: float
 ) -> dict[str, Any]:
-    """A REAL board run through realize.py — instances, nets, some segments
-    forced onto a non-pad layer so realize.py emits real
-    :class:`~precis.pcb.realize.RealizedVia` objects, converted through the
-    production :func:`~precis.pcb.realize.to_gerber_model` hand-off — NOT
-    the synthetic ``_via`` dict helper the rest of this file uses. The
+    """A board's stored-copper model — instances, nets, a track on a
+    random layer with a real :class:`~precis.pcb.realize.RealizedVia` at
+    each endpoint, converted through the production
+    :func:`~precis.pcb.realize.to_gerber_model` hand-off — NOT the
+    synthetic ``_via`` dict helper the rest of this file uses. The
     randomized oracle-agreement property must exercise real vias, per this
-    task's own requirement (the master backlog's via-geometry gap)."""
+    task's own requirement (the master backlog's via-geometry gap). (Was
+    ``realize()`` engine output — routing is retired, gr515107, so the
+    stored-copper shape is built directly.)"""
     instances: list[dict[str, Any]] = []
     nets: list[dict[str, Any]] = []
     for i in range(n_nets):
@@ -2385,11 +2436,44 @@ def _random_real_board_model(
             }
         )
     ir = from_graph({"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP)
+    tracks: list[RealizedTrack] = []
+    vias: list[RealizedVia] = []
     for seg_id in range(ir.n_segments):
-        ir.set_layer(seg_id, rng.choice([0, 1, 2, 3]))
-    result = realize(
-        ir, config=RealizeConfig(clearance_mm=0.15, fab_caps=_CAP4, router="vector")
-    )
+        net_id = int(ir.seg_net[seg_id])
+        a_inst, b_inst = instances[2 * seg_id], instances[2 * seg_id + 1]
+        seg = {
+            "shape": "line",
+            "start": [a_inst["x"], a_inst["y"]],
+            "end": [b_inst["x"], b_inst["y"]],
+        }
+        tracks.append(
+            RealizedTrack(
+                seg_id=seg_id,
+                net_id=net_id,
+                layer=rng.choice([0, 1, 2, 3]),
+                segments=(seg,),
+                length_mm=math.hypot(
+                    b_inst["x"] - a_inst["x"], b_inst["y"] - a_inst["y"]
+                ),
+                blocked_by=None,
+                width_mm=0.2,
+            )
+        )
+        for endpoint, inst in (("a", a_inst), ("b", b_inst)):
+            vias.append(
+                RealizedVia(
+                    seg_id=seg_id,
+                    net_id=net_id,
+                    x=inst["x"],
+                    y=inst["y"],
+                    dia_mm=0.75,
+                    drill_mm=0.25,
+                    layer_lo=0,
+                    layer_hi=3,
+                    endpoint=endpoint,
+                )
+            )
+    result = RealizeResult(tracks=tuple(tracks), vias=tuple(vias), warnings=())
     layers = [layer["name"] for layer in DEFAULT_STACKUP]
     outline = [[0.0, 0.0], [span, 0.0], [span, span], [0.0, span]]
     return to_gerber_model(result, ir, layers=layers, outline=outline)

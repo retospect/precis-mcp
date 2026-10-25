@@ -1,31 +1,28 @@
-"""Motor/power-board second reference vehicle — place+route measured for
-real, seeds 1-5, mirroring ``tests/test_pcb_reference_end_to_end.py``'s
-structure and discipline exactly (DRC errors and routed count are always
-reported TOGETHER; zero DRC is trivially achievable by routing nothing).
+"""Motor/power-board second reference vehicle — place measured for real,
+seeds 1-5, mirroring ``tests/test_pcb_reference_end_to_end.py``'s
+structure.
 
-This is the measurement docs/backlog/pcb-engine-plan.md's §"Obligations to
-the paper" item 3 asks for: a SECOND, structurally different reference
-design, run for the first time, to separate two explanations for the
-first board's defect density -- "a fast LLM-built system produces silent
-defects" (A) vs. "the first run against THE BENCHMARK is what drives it"
-(B, the user's). Full per-seed numbers and the classified defect list this
-run produced are reported back to the caller, not pinned here as
-brittle exact-value assertions -- see the module docstring's sibling,
-``test_pcb_second_reference_design.py``, for the structural pins.
+**Routing is retired** (gr515107, Reto 2026-10-25: the vector router was
+deleted, tag ``vroute-final``; the topological router is the only router
+and its realiser is not landed yet). The ``put(op='route')`` leg this
+file used to drive — and the paired DRC/routed-count measurement it
+existed to report (docs/backlog/pcb-engine-plan.md's §"Obligations to
+the paper" item 3) — died with it. Every fanout>=2 net now reads
+``unrouted`` and that is the expected state, not a failure; and on this
+no-copper board ``view='drc'`` answers a pads-only pass whose only
+errors are the per-net ``unrouted`` rows — the retired router's expected
+signature, asserted as such below.
 
-What this file DOES assert: the run completes (no exception), and the
-paired DRC/routed-count discipline board one's test enforces. It does
-NOT assert BASELINE_DRC_ERRORS == 0 the way board one's does, because
-that would misrepresent a first-run measurement as an established
-ratchet -- the whole point of this exercise is to report what the first
-run actually produced, not to have already fixed it.
+What remains: the place job must still drain cleanly across seeds 1-5 —
+per-seed parametrization rather than one 5-seed loop for the same reason
+the nano sweep does it (a single test pinned whole to one shard can't be
+balanced away, gr495187). The structural pins live in the sibling,
+``test_pcb_second_reference_design.py``.
 """
 
 from __future__ import annotations
 
-import collections
 import json
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -44,8 +41,6 @@ FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "motor_power_reference.js
 
 _SEEDS = (1, 2, 3, 4, 5)
 
-_DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
-
 
 def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -54,7 +49,7 @@ def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool = False) -> None:
+def _drain_one_job(store: Store, parent_id: int) -> None:
     """Drain the queued job most recently enqueued under ``parent_id``.
 
     Not just "whatever's next in the queue" (gr295496): the shared
@@ -64,12 +59,6 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool = False) -
     job — gets claimed first and its failure misreads as OUR drain
     failing. Loop passes, tolerating whatever unrelated row lands along
     the way, until THIS design's own job reaches a terminal status.
-
-    ``unrouted_ok``: a route job that leaves any net unrealized ends
-    ``failed`` with ``failure_class='non-convergence'`` (Reto, 2026-10-01:
-    "it's no good if the wires are not there"), after writing its partial
-    copper. This test MEASURES that partial result, so it accepts exactly
-    that failure and no other.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -84,17 +73,6 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool = False) -
         with store.pool.connection() as conn:
             status = current_status(conn, job_ref_id)
         if status in TERMINAL:
-            if unrouted_ok and status == "failed":
-                with store.pool.connection() as conn:
-                    meta_row = conn.execute(
-                        "SELECT meta->>'failure_class' FROM refs WHERE ref_id = %s",
-                        (job_ref_id,),
-                    ).fetchone()
-                assert meta_row is not None
-                assert meta_row[0] == "non-convergence", (
-                    f"job {job_ref_id} failed for another reason: {meta_row[0]!r}"
-                )
-                return
             assert status == "succeeded", (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}"
             )
@@ -106,7 +84,7 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool = False) -
 
 @pytest.mark.timeout(300)  # CI worst ~120s x2.5 for runner variance (gr503084)
 @pytest.mark.parametrize("seed", _SEEDS)
-def test_motor_power_board_place_and_route_seed(store: Store, seed: int) -> None:
+def test_motor_power_board_place_seed(store: Store, seed: int) -> None:
     """One test per seed, not one 5-seed loop — the same discipline the
     nano sweep uses (per-seed ids spread over the shards; a single test
     pinned whole to one shard can't be balanced away, gr495187)."""
@@ -128,58 +106,39 @@ def test_motor_power_board_place_and_route_seed(store: Store, seed: int) -> None
     place_resp = pcb.put(id=slug, args={"op": "place", "seed": seed})
     assert "enqueued" in place_resp.body
     _drain_one_job(store, ref.id)
-
-    route_resp = pcb.put(id=slug, args={"op": "route", "seed": seed})
-    assert "enqueued" in route_resp.body
-    _drain_one_job(store, ref.id, unrouted_ok=True)
     runtime_s = time.perf_counter() - t0
 
+    # Routing is retired (gr515107): every fanout>=2 net stays 'unrouted'
+    # — the expected state, not a failure. Was the routed-count
+    # measurement; the honest population stays fanout >= 2, computed off
+    # the fixture so a fixture edit can't drift the two apart.
     status_rows = store.pcb_route_status(ref.id)
-    routed_count = sum(
-        1
+    non_unrouted = [
+        (row["name"], row["status"])
         for row in status_rows
-        if row["name"] in fanout2_nets and row["status"] == "realized"
+        if row["name"] in fanout2_nets and row["status"] != "unrouted"
+    ]
+    assert not non_unrouted, (
+        f"expected every fanout>=2 net 'unrouted' (routing is retired), "
+        f"got {non_unrouted}"
     )
 
+    # view='drc' on this no-copper board runs a pads-only pass whose
+    # only errors are the per-net `unrouted` rows — the retired router's
+    # expected signature (a board with real cached pads gets a real
+    # findings table, not the "no realized copper yet" bail).
     drc = pcb.get(id=slug, view="drc")
-    match = _DRC_HEAD_RE.search(drc.body)
-    assert match is not None, f"DRC view head didn't match: {drc.body!r}"
-    drc_error_count = int(match.group(1))
-
-    _run_id, findings = store.pcb_drc_findings_latest(ref.id)
-    error_findings = [f for f in findings if f["severity"] == "error"]
-    breakdown = collections.Counter(f["rule"] for f in error_findings)
-    disconnected = breakdown.get("connectivity", 0)
-    unrouted_rule = breakdown.get("unrouted", 0)
-
-    unrouted_nets = sorted(
-        row["name"]
-        for row in status_rows
-        if row["name"] in fanout2_nets and row["status"] != "realized"
-    )
+    assert "(pads-only DRC — no routed copper yet)" in drc.body
+    error_rules = {
+        cols[2]
+        for line in drc.body.splitlines()
+        if len(cols := line.split("\t")) > 2 and cols[1] == "error"
+    }
+    assert error_rules == {"unrouted"}, f"unexpected error rules: {error_rules}"
 
     # ---- report: printed for the human, not hidden behind -q ----------
     print(
         f"\n\n# motor_power_reference — seed {seed}\n"
-        f"seed={seed}  drc_errors={drc_error_count:4d}  "
-        f"routed={routed_count}/{len(fanout2_nets)}  "
-        f"disconnected={disconnected}  unrouted_rule={unrouted_rule}  "
-        f"runtime={round(runtime_s, 2)}s  breakdown={dict(breakdown)}  "
-        f"unrouted_nets={unrouted_nets}"
+        f"seed={seed}  unrouted_fanout2={len(fanout2_nets)}  "
+        f"runtime={round(runtime_s, 2)}s"
     )
-
-    # ---- the one thing this test DOES assert: the paired discipline ---
-    # Neither number alone means anything (routing nothing satisfies DRC;
-    # shorting everything satisfies routed-count) -- so the assertion is
-    # that BOTH were measured and are internally consistent, not that
-    # either hit a specific target. A regression-catching baseline can be
-    # set once these numbers are known and stable; setting one now would
-    # just be encoding today's first-run number as if it were a decision.
-    assert drc_error_count >= 0
-    assert routed_count >= 0
-    # A net this test's own DRC "unrouted" rule (if wired -- see the
-    # report for whether it fired) reports as a finding must not also
-    # silently read "routed" -- that would be the exact "DRC clean
-    # over a board with holes" trap the plan file names.
-    if unrouted_nets:
-        assert routed_count < len(fanout2_nets)

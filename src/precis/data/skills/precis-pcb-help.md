@@ -2,11 +2,11 @@
 id: precis-pcb-help
 family: pcb
 title: precis — the PCB kind (electronics design you read as a graph)
-summary: design a circuit board the LLM authors in batch and reads as a traversable netlist graph — components/pins/nets/placement, never pixels; pick JLCPCB-assemblable parts, place+route via enqueued worker jobs, then export BOM/CPL/DSN. Covers schematic capture, netlist, footprints, ratsnest, place/route, gerbers, EDA/CAD for circuits.
+summary: design a circuit board the LLM authors in batch and reads as a traversable netlist graph — components/pins/nets/placement, never pixels; pick JLCPCB-assemblable parts, place via an enqueued worker job, then export BOM/CPL/DSN. Covers schematic capture, netlist, footprints, ratsnest, placement, gerbers, EDA/CAD for circuits.
 answers:
   - how do I author a PCB design from a netlist and placement graph?
-  - how do I place and route a board (op='place'/op='route')?
-  - how do I export a BOM/CPL/DSN or route the board?
+  - how do I place a board (op='place')?
+  - how do I export a BOM/CPL/DSN?
   - how do I read a PCB design as a graph — pins, nets, neighbours?
 applies-to: get/search/put/delete (kind='pcb'); see also kind='part', kind='datasheet'
 status: active
@@ -35,8 +35,9 @@ one instance / one net / an analysis / an export), `search` (by intent),
 `precis-relations`, e.g. `rel='serves'` toward the quest that owns the
 board; `view='links'` reads them back).
 
-Related skills: [[precis-pcb-route-help]] (place/route as enqueued jobs — the
-`op=` surface, once the netlist exists), [[precis-pcb-check-help]] (the
+Related skills: [[precis-pcb-topo-help]] (`placer='topo'` and
+`view='topo'` — topological routing is the only router; its realiser is
+unshipped, so no routed copper yet), [[precis-pcb-check-help]] (the
 check surface — view='check', phases, finding delta, ERC, missing
 footprints and pin repair),
 [[precis-pcb-fab-help]] (export views, the JLCPCB fab package/order, the
@@ -230,12 +231,13 @@ Field notes:
 - Every design gets a default **board** (`pcb_boards`, name `'main'`, the
   4-layer rigid FR-4 stackup `F.Cu`/`In1.Cu`/`In2.Cu`/`B.Cu`) on first
   `put` — the netlist≠board hedge for future multi-board work; v1 is one
-  board per design. All FOUR layers route and none pours — the 2026-10-23
-  ruling is no flood fill: copper area comes from routed traces. A board
+  board per design. The 2026-10-23
+  ruling is no flood fill by default: copper area comes from routed traces
+  or authored pours. A board
   that wants a pour authors one with `put(args={'op':'plane_net', ...})`,
   `put(args={'op':'stackup', ...})`, or
   `args={'op':'stackup','preset':'4l-two-sided'}` for the hybrid that pours
-  every layer — see [[precis-pcb-route-help]]. On a board whose front is spoken for,
+  every layer. On a board whose front is spoken for,
   opening an inner signal layer is usually the difference between routing
   and not.
 - **`nets[].domain`** — only `'electrical'` (the default) is accepted
@@ -348,10 +350,12 @@ get(
 )  # THE check surface — every rule one list; drc is its preset (below)
 get(
     kind="pcb", id="s", view="route-status"
-)  # per-net route status: unrouted|sketched|realized|failed
+)  # per-net route status over stored runs: unrouted|sketched|realized|failed
+   # (routing retired — a fresh board reads all-unrouted)
 get(
     kind="pcb", id="s", view="congestion"
-)  # the last op='route' run's over-capacity-gap warnings (see precis-pcb-route-help)
+)  # the last stored route run's warnings (if any) + the topo
+   # portal-capacity map
 get(
     kind="pcb", id="s", view="planes"
 )  # authored plane assignments (op='plane_net', or an import's pour-carried
@@ -359,7 +363,7 @@ get(
 #  plane-served
 get(
     kind="pcb", id="s", view="stackup"
-)  # every layer in order: role, plane net, routable, the nets the router skips
+)  # every layer in order: role, plane net, routable, the unroutable nets
 get(
     kind="pcb", id="s", view="proximity", args={"a": "U1", "b": "C1"}
 )  # centroid gap (mm)
@@ -382,8 +386,8 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
   datasheet ([[precis-datasheet-help]]).
 - **Peeking at a rendered board** (`tests/test_pcb_render_fixture.py` → SVG →
   `qlmanage`) is an occasional human confirmation, not the iteration loop —
-  the numeric views above are cheaper and are what place/route actually
-  score against. Default to a 600px peek in-loop; reserve full 1800px
+  the numeric views above are cheaper and are what the placer scores
+  against. Default to a 600px peek in-loop; reserve full 1800px
   (`PRECIS_PCB_PEEK_SIZE`) for milestone/acceptance renders.
 
 ## Check the design — `view='check'`
@@ -404,8 +408,7 @@ set but no check reads it yet. `prototype` also adds four DRC rules
 (`via_density`, `via_under_part`, `fine_pitch_pad`, `starved_thermal`;
 [[precis-pcb-check-help]]) and a 1.2mm silk refdes (prod 1.0mm). Pour pads
 on `prototype` get a thermal relief (spokes, not solid-tied) unless the
-pad's class forces `thermal: 'solid'`. Every route job summary prints
-`vias_under_part: N`.
+pad's class forces `thermal: 'solid'`.
 
 ## Argue with the design — the board page's text box, `view='notes'`
 
@@ -419,10 +422,10 @@ every handle it names in `about`, the model answers once with the resolved
 context (pins, nets, neighbours per handle) and that lands as an `answer`
 note re the question; a clicked handle that no longer resolves is refused
 at submit with the valid roster, while a handle retired *after* the
-argument reads as a dangling anchor, never an error. There is no place or
-route button on that page — actions stay here, in `put(args={'op':…})`.
+argument reads as a dangling anchor, never an error. There is no place
+button on that page — actions stay here, in `put(args={'op':…})`.
 `get(kind="pcb", id="s", view="notes")` is the ledger, oldest first: read
-it before a place/route to see what the human already argued, and answer
+it before a place run to see what the human already argued, and answer
 open questions the machinery can settle.
 
 **Act on the arguments — the `pcb_argue` job.** `put(kind="job",
@@ -442,7 +445,14 @@ fix), pads vs pins, fix a wrong pin name (`op='pin_rename'`/`'pin_remove'`)
 and annotate pin semantics (`op='pins'`):
 `get(kind='skill', id='precis-pcb-check-help')`.
 
-## Place and route it — `put(args={'op':'place'|'route', …})`
+## Place it — `put(args={'op':'place', …})`
+
+**Routing is retired.** `op='route'` refuses with `next=`: the vector
+router was deleted 2026-10-25 (tag `vroute-final`) and the topological
+router's realiser has not landed, so a newly placed board reports every
+fanout `unrouted` — routed copper is not available yet. Stored routes on
+boards routed before the cut still render, and `view='route-status'` /
+`view='congestion'` still read them.
 
 ### The judged-mutation gate
 
@@ -455,11 +465,11 @@ a synthesized (guessed) footprint are not.
 - **Refused:** a new or worse error between pads and authored copper stores
   nothing. On a first put any overlap among the authored poses refuses; omit
   x/y and run `op='place'`, or give clear poses.
-- **Router copper yields:** any new or worse finding that names routed copper
-  rips that net (it becomes unrouted), at any severity, including a class
-  requirement tighter than the fab minimum. The design's own rules outrank
-  existing routes. The reply lists `<net> ripped: <rule> … re-route`; re-run
-  `op='route'`.
+- **Stored routed copper yields:** any new or worse finding that names
+  routed copper rips that net (it becomes unrouted), at any severity,
+  including a class requirement tighter than the fab minimum. The design's
+  own rules outrank stored routes. The reply lists `<net> ripped: <rule>`;
+  there is no re-route until the topo realiser lands.
 - **`op='class_rules'`** never refuses over pads: a shortfall between pads
   against the new requirement is listed as `now visible (class requirement,
   not refused)`.
@@ -471,17 +481,15 @@ a synthesized (guessed) footprint are not.
   refused; it is listed as standing until `op='place'` snaps it.
 - **Standing** findings (present before, not made worse) are only counted.
 
-Placement and routing run as **enqueued worker jobs** — never inline in this
+Placement runs as an **enqueued worker job** — never inline in this
 call (a real board is minutes of compute, not milliseconds). `put` returns a
-job id immediately; see **[[precis-pcb-route-help]]** for the full `op=` surface
-(`place`/`route`, plus the inline edits `move`/`rip`/`pin_side`/`plane_net`/
-`class_rules`/`stackup`), the congestion/planes read views, and what's still inert
-(including its inert move classes `SIDE_FLIP`).
+job id immediately. The rest of the `op=` surface is the inline edits
+`move`/`rip`/`pin_side`/`plane_net`/`class_rules`/`stackup` (plus `check`,
+`review`, `footprint`, `phase`, `order`, `import_epro`).
 
 ```python
 put(kind="pcb", id="s", args={"op": "place", "iters": 2000, "seed": 0})
 # ... poll get(kind='job', id='<id>') or re-check view='crossings' ...
-put(kind="pcb", id="s", args={"op": "route"})
 ```
 
 `"op": "place"` also takes `"snap": true` (default off) — a deterministic
@@ -503,7 +511,7 @@ enqueue, same params) — kept for one release, then removed.
 
 Export is the only place the design leaves the graph; all of it lives in
 the sibling skill: the export views (`bom`/`cpl`/`netlist`/`dsn`/
-`mechanical`/`route`/`gerber`), `view='fab'` (the JLCPCB order package),
+`mechanical`/`gerber`), `view='fab'` (the JLCPCB order package),
 `op='order'` (dry-run/place), `view='availability'` (the EOL/stock sweep)
 and the `features` array + `view='mechanical'` CAD-enclosure bridge.
 
@@ -542,10 +550,12 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
    bypass cap *at* the pin) ([[precis-measures-help]]).
 4. **Check connectivity** — `get(id=slug)`, `#REFDES` hops, `view='drc'`.
 5. **Place** — `op='place'` (enqueued), then `view='crossings'`; pin fixed
-   parts; repeat. See [[precis-pcb-route-help]].
-6. **Route** — `op='route'` (enqueued); check `view='route-status'` and
-   `view='congestion'`; rip + re-pin + re-route on a failure
-   ([[precis-pcb-route-help]]'s rip-up loop).
+   parts; repeat. `placer='topo'` opts into the topological placer
+   ([[precis-pcb-topo-help]]).
+6. **Route** — not available: routing is retired (the vector router was
+   deleted 2026-10-25; the topo realiser is unshipped), so `op='route'`
+   refuses with `next=`. `view='route-status'`/`view='congestion'` still
+   read stored runs.
 7. **Export & order** — `view='fab'` writes the JLC package (gerber+drill
    zip + BOM + CPL) in one dir; `op='order'` dry-runs/places the JLCPCB
    order; `view='mechanical'` for the enclosure; `view='dsn'` feeds an

@@ -369,13 +369,12 @@ def test_workers_read_hashed_surfaces_through_load_snapshot() -> None:
     from pathlib import Path
 
     import precis.workers.job_types.pcb_place as place_mod
-    import precis.workers.job_types.pcb_route as route_mod
 
     direct = re.compile(
         r"store\.(pcb_(?:graph|features_list|routes_get|planes_list"
         r"|measures_list|fixed_copper_list))\("
     )
-    for mod in (route_mod, place_mod):
+    for mod in (place_mod,):
         path = Path(mod.__file__ or "")
         src = path.read_text(encoding="utf-8")
         assert "load_snapshot(" in src, f"{path.name} must call load_snapshot("

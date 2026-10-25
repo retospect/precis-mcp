@@ -19,8 +19,8 @@ kinds: [pcb]
 
 # precis-pcb-fab-help — get the board fabricated
 
-Downstream of authoring ([[precis-pcb-help]]) and place/route
-([[precis-pcb-route-help]]): export is the only place the design leaves
+Downstream of authoring and placement
+([[precis-pcb-help]]): export is the only place the design leaves
 the graph. Artifacts land under `<PRECIS_CORPUS_DIR>/pcb/<slug>/`, or
 the server's temp dir when that is unset (override with
 `args={'dir':'…'}` — must resolve under that export root or the system
@@ -208,8 +208,8 @@ put(
             # bare screw hole (unplated; copper must clear it — DRC npth rule)
             {"ftype": "mounting_hole", "x": 2, "y": 2, "geom": {"diameter": 3.2}},
             # solder-on nut: plated hole + copper ring on every layer
-            # (rendered, gerber'd, and cleared like a pad; router+pours
-            # avoid both kinds automatically)
+            # (rendered, gerber'd, and cleared like a pad; pours and DRC
+            # clear both kinds automatically)
             {"ftype": "mounting_hole", "x": 28, "y": 18,
              "geom": {"diameter": 5.6, "ring_dia_mm": 8.0, "plated": True,
                       "style": "solder_nut_m4"}},
@@ -239,8 +239,8 @@ gets none.
   the nut keep-out anyway, so routing room is almost unchanged.
 - Con: a rounded outline is routed, not V-scored, and panels need slightly
   more spacing. On a small board that is routed anyway this costs nothing.
-- The nut is a plated hole with a copper land on every layer: the router,
-  pours and DRC clear it like a pad.
+- The nut is a plated hole with a copper land on every layer: pours and
+  DRC clear it like a pad.
 
 `view='mechanical'` emits a JSON profile (outline + holes + component
 height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
@@ -248,8 +248,8 @@ height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
 ## See also
 
 - [[precis-pcb-help]] — author the netlist + placement this exports.
-- [[precis-pcb-route-help]] — the enqueued place/route ops a fab-ready
-  board has already passed.
+- [[precis-pcb-topo-help]] — the topo placer opt-in; routing is retired,
+  so a fab export today carries pads, authored pours and stored copper.
 - [[precis-pcb-check-help]] — the check surface behind `view='gerber'`'s
   DRC verdict.
 - [[precis-cad-help]] — the enclosure side of `view='mechanical'`.

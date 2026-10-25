@@ -133,16 +133,17 @@ get(kind="pcb", id="s", view="footprints")  # confirm U1's C-number is cached
 `error` in that part's own row instead of raising, so one bad C-number
 doesn't lose the rest. `force=True` re-pulls even when already cached.
 
-The real footprint always wins and is stored. Router copper it now collides
-with is ripped (`<net> ripped: … — re-route`); pad or placement collisions
+The real footprint always wins and is stored. Stored routed copper it now
+collides with is ripped (`<net> ripped: <rule>` — there is no re-route
+until the topo realiser lands); pad or placement collisions
 are listed as `now visible (real footprint)` and stand until a re-place. The
 cache is shared, so the reply also names other designs using the part.
 
 **Pads are not pins.** A pin is an electrical name the netlist declares and
 wires (`pins`/`connections`, pin swaps, `pin_to_net` by name); a pad is
 copper the footprint owns, keyed by pad number. Once a real footprint is
-cached, every one of its pads is on the board — rendered, gerber'd, claimed
-on the router's grid and clearance-checked — whether or not a pin names
+cached, every one of its pads is on the board — rendered, gerber'd and
+clearance-checked — whether or not a pin names
 it: an NC lead, an unused corner land, a second tab the footprint numbers
 like the first. A pad whose name matches a declared pin carries that pin's
 net (two pads sharing one name are two lands of one pin, bonded inside the
@@ -183,7 +184,7 @@ A footprint dict takes `name`, `pads`, `pin_map`, `courtyard`, `centroid`,
 `note` and `holes`; any other key is refused. `holes` is a list of
 non-plated standoff/peg holes `{x, y, dia_mm}` in footprint-local mm (same
 frame as the pads): they move, rotate and flip with their part, and reach
-the drill file, DRC and the router at the part's current pose. A
+the drill file and DRC at the part's current pose. A
 `put footprints` entry replaces the whole footprint: omit `holes` (or the
 courtyard) and the stored ones are cleared, so re-send them with every edit.
 

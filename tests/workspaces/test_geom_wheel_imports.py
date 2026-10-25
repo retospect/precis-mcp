@@ -98,7 +98,6 @@ _EXCLUDED = {_SRC / "precis" / "structure" / "importers"} | {
     for name in (
         "_http.py",
         "argue.py",
-        "bench.py",
         "catalog.py",
         "check_run.py",
         "datasheet_facts.py",
@@ -109,9 +108,6 @@ _EXCLUDED = {_SRC / "precis" / "structure" / "importers"} | {
         "jlc_library.py",
         "jlc_order.py",
         "review.py",
-        "sanity_board.py",
-        "sanity_power.py",
-        "sanity_upload.py",
         "session_store.py",
         "snapshot.py",
     )

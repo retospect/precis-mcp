@@ -15,6 +15,7 @@ import itertools
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -67,6 +68,98 @@ MatchModel = tuple[list[Client], list[Supply], dict[str, Role]]
 
 def _client_pins(c: Client) -> tuple[str, ...]:
     return c.members if c.members is not None else (c.pin,)
+
+
+def _client_of_member(m: dict[str, Any]) -> Client | None:
+    """The matcher client a graph member's ``client_of`` declares, or
+    ``None``; a ``members`` list makes it a tuple client headed by the pin."""
+    co = (m.get("meta") or {}).get("client_of")
+    if not co:
+        return None
+    members = co.get("members")
+    return Client(
+        instance=str(m["refdes"]),
+        pin=str(m["pin"]),
+        role=str(co["role"]),
+        min_voltage_v=co.get("min_voltage_v"),
+        members=tuple(str(x) for x in members) if members else None,
+    )
+
+
+def _matching_model(graph: dict[str, Any], warnings: list[str]) -> MatchModel:
+    """The matcher's inputs from the stored graph: declared ``supplies``,
+    ``client_of`` members (a ``members`` list = a tuple client) and ``roles``, plus the deprecated
+    ``pin_swap_groups`` alias — each declared pin becomes a one-pin block
+    of a per-group role (``pin_swap:<refdes>:<k>``) whose clients are the
+    far ends of the 2-member nets on those pins. A pin whose net has any
+    other member count is left out of the alias, with a warning."""
+    roles = {
+        str(name): Role(
+            name=str(name),
+            voltage_v=spec.get("voltage_v"),
+            fanout=spec.get("fanout", 1),
+        )
+        for name, spec in (graph.get("roles") or {}).items()
+    }
+    supplies: list[Supply] = []
+    clients: list[Client] = []
+    net_of: dict[tuple[str, str], dict[str, Any]] = {}
+    for net in graph.get("nets") or []:
+        for m in net.get("members") or []:
+            net_of[(str(m["refdes"]), str(m["pin"]))] = net
+            if client := _client_of_member(m):
+                clients.append(client)
+    # A client with no net yet (graph["unconnected"]) still demands a supplier.
+    for m in graph.get("unconnected") or []:
+        if client := _client_of_member(m):
+            clients.append(client)
+    client_keys = {(c.instance, c.pin) for c in clients}
+    for inst in graph.get("instances") or []:
+        refdes = str(inst["refdes"])
+        for sup in inst.get("supplies") or []:
+            supplies.append(
+                Supply(
+                    instance=refdes,
+                    role=str(sup["role"]),
+                    blocks=tuple(tuple(str(p) for p in b) for b in sup["blocks"]),
+                    voltage_v=sup.get("voltage_v"),
+                    within_block_swappable=bool(sup.get("within_block_swappable")),
+                )
+            )
+        declared = inst.get("pin_swap_groups") or []
+        if not declared:
+            continue
+        warnings.append(
+            f"pin_swap_groups on {refdes} is deprecated; declare supplies/client_of"
+        )
+        for k, names in enumerate(declared):
+            role = f"pin_swap:{refdes}:{k}"
+            blocks: list[tuple[str, ...]] = []
+            for name in names:
+                net = net_of.get((refdes, str(name)))
+                if net is None:
+                    continue  # unwired: no IR pin, nothing to swap
+                members = net.get("members") or []
+                if len(members) != 2:
+                    warnings.append(
+                        f"pin_swap: {refdes}.{name} left out of its group "
+                        f"(net {net.get('name')} has {len(members)} members, not 2)"
+                    )
+                    continue
+                other = next(
+                    m
+                    for m in members
+                    if (str(m["refdes"]), str(m["pin"])) != (refdes, str(name))
+                )
+                okey = (str(other["refdes"]), str(other["pin"]))
+                if okey in client_keys or okey[0] == refdes:
+                    continue
+                client_keys.add(okey)
+                blocks.append((str(name),))
+                clients.append(Client(okey[0], okey[1], role))
+            if blocks:
+                supplies.append(Supply(refdes, role, tuple(blocks)))
+    return clients, supplies, roles
 
 
 def solve(

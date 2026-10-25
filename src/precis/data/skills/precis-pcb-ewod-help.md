@@ -191,13 +191,14 @@ With `drive_voltage_v` set and a top-plate net (a sink's `top_plate_pin`
 or `top_plate_channel`, or `tape_land`), that net joins an
 `ewod_{name}_hv` class carrying `working_voltage_v` = the drive voltage. Its clearance derives from
 IPC-2221B (coated column) and is an **ERROR** floor, not a warning; add
-other HV nets via `op='class_rules'`. Class keys: [[precis-pcb-route-help]].
+other HV nets via `op='class_rules'`. Class keys: [[precis-pcb-help]] (the
+`net_classes` `{name: rules}` dict).
 
 ## See also
 
 ```python
-get(kind="skill", id="precis-pcb-help")  # netlist/placement/route surface the array's pins plug into
-get(kind="skill", id="precis-pcb-route-help")  # op='route' -- escapes route like any other net once placed
+get(kind="skill", id="precis-pcb-help")  # netlist/placement surface the array's pins plug into
+get(kind="skill", id="precis-net-class-help")  # classes — an ewod HV net's class keys ride net_classes
 ```
 
 ## Parylene coater size

@@ -25,9 +25,11 @@ pixels. The verbs map onto the seven-verb surface:
   Slice 1 — one 4-layer FR-4 board, ``pcb_boards``) on first write; nets are
   electrical-only in v1 (``domain`` != ``'electrical'`` is rejected).
   ``args={'op': ...}`` is the pcb-guided-place-route Slice 10 tool surface:
-  ``op='place'``/``op='route'`` **enqueue** a ``pcb_place``/``pcb_route``
-  worker job (never compute inline — the optimizer measures ~880 moves/s,
-  minutes per board) idempotent per (design, op, content-hash); ``op='move'``/
+  ``op='place'`` **enqueues** a ``pcb_place`` worker job (never compute
+  inline — the optimizer measures ~880 moves/s, minutes per board)
+  idempotent per (design, op, content-hash); ``op='route'`` is retired
+  (:data:`precis.pcb.ROUTE_RETIRED` — vroute deleted, topo is the only
+  router and unshipped); ``op='move'``/
   ``'rip'``/``'pin_side'``/``'plane_net'``/``'class_rules'`` are cheap inline
   edits. ``op='footprint'`` (gr341532 fix 3) pulls a catalog part's real pad
   geometry into the ``part_footprints`` cache (``part='C639448'`` or
@@ -38,7 +40,7 @@ pixels. The verbs map onto the seven-verb surface:
   ``op='order'`` (pcb-jlc-order) dry-runs or places the JLCPCB order
   (``dry_run`` default True; the live path needs ``confirm='add-to-cart'``
   and creates an unpaid order — the API's cart equivalent, never a
-  payment). See ``precis-pcb-route-help``.
+  payment). See ``precis-pcb-help``.
 - ``get``    — list designs (no id); a design's netlist TOC (``id=slug``,
   now with the board/stackup + net_classes + route-status summary); one
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
@@ -63,11 +65,14 @@ pixels. The verbs map onto the seven-verb surface:
 - ``link``  — edges to other refs (``rel=`` per ``precis-relations``;
   ``view='links'`` reads them back).
 
-The in-house topological place+route engine (:mod:`precis.pcb.optimize` /
-:mod:`precis.pcb.realize`, run via the ``pcb_place``/``pcb_route`` jobs) is
-the primary path. Export is the one place the design leaves the
+The in-house place engine (:mod:`precis.pcb.optimize`, run via the
+``pcb_place`` job) is the primary path. Routing is retired — the vector
+router (vroute) was deleted 2026-10-25 (tag ``vroute-final``); the
+topological router is the only router and its realiser is not landed
+yet, so routed copper is not available for new boards (stored runs stay
+legible). Export is the one place the design leaves the
 relational graph.
-See ``precis-pcb-help`` and ``precis-pcb-route-help``.
+See ``precis-pcb-help``.
 """
 
 from __future__ import annotations
@@ -102,6 +107,8 @@ from precis.pcb import (
     PIN_ETYPES,
     PRESET_GROUND_NET,
     PRESET_SIDES,
+    ROUTE_RETIRED,
+    ROUTE_RETIRED_NEXT,
     STACKUP_PRESETS,
     argue,
     check_run,
@@ -269,10 +276,11 @@ _VIEW_NEAR_MISSES = {
     ),
 }
 
-#: pcb-guided-place-route Slice 10 tool surface — the two heavy ops that
-#: enqueue a worker job (never compute inline) and the inline edits that
-#: are cheap enough to run in the request path.
-_JOB_OPS = ("place", "route")
+#: pcb-guided-place-route Slice 10 tool surface — the heavy op that
+#: enqueues a worker job (never compute inline) and the inline edits that
+#: are cheap enough to run in the request path. ``route`` is retired
+#: (:data:`precis.pcb.ROUTE_RETIRED`) and refuses before this dispatch.
+_JOB_OPS = ("place",)
 _INLINE_EDIT_OPS = (
     "move",
     "rip",
@@ -762,7 +770,8 @@ class JudgeReport:
     def lines(self) -> str:
         """Response lines for the report, each ending in a newline."""
         out = [
-            f"{net} ripped: {rule} after this change — re-route\n"
+            f"{net} ripped: {rule} after this change — its stored copper "
+            "stays cleared (routing is retired)\n"
             for net, rule in sorted(self.ripped.items())
         ]
         out.extend(
@@ -1011,8 +1020,9 @@ class PcbHandler(Handler):
             "board; put(id=<new slug>, args={'op':'import_epro','source':"
             "'export:<slug>'}) re-imports it, dry run by default)), all "
             "with args={...}; "
-            "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
-            "job (never inline; idempotent per design+op+content-hash) — "
+            "put(args={'op':'place'}) ENQUEUES a worker "
+            "job (never inline; idempotent per design+op+content-hash; "
+            "op='route' is retired — no router) — "
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
             "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'|"
             "'phase'|'profile'|'pins'}) "
@@ -1035,7 +1045,7 @@ class PcbHandler(Handler):
             "edges to other refs (rel= per precis-relations — e.g. a "
             "board 'serves' the quest it feeds). "
             "Postgres-canonical; routing/gerbers are downstream export. "
-            "See precis-pcb-help and precis-pcb-route-help."
+            "See precis-pcb-help."
         ),
         supports_get=True,
         supports_put=True,
@@ -1232,7 +1242,7 @@ class PcbHandler(Handler):
             # Slice 10) — enqueues the SAME `pcb_place` job `op='place'`
             # does; kept as a one-release alias so an existing caller's
             # `args={'autoplace':{...}}` still works, just asynchronously
-            # now. See precis-pcb-route-help for the replacement.
+            # now. See precis-pcb-help for the replacement.
             opts = autoplace if isinstance(autoplace, dict) else {}
             body = self._enqueue_op(ref, "place", opts)
             return Response(
@@ -1240,8 +1250,7 @@ class PcbHandler(Handler):
                     "⚠️  DEPRECATED: args={'autoplace':...} now ENQUEUES a "
                     "worker job instead of computing inline — use "
                     "args={'op':'place', ...} directly (same params, same "
-                    "job); this alias will be removed. See precis-pcb-route-help.\n\n"
-                    + body
+                    "job); this alias will be removed. See precis-pcb-help.\n\n" + body
                 )
             )
 
@@ -1622,7 +1631,9 @@ class PcbHandler(Handler):
     def _dispatch_op(self, ref: Any, op: str, args: dict[str, Any]) -> Response:
         """``put(args={'op': ..., ...})`` — the enqueued heavy ops
         (``place``/``route``, never computed inline) and the cheap inline
-        edits. See precis-pcb-route-help for the full surface."""
+        edits. See precis-pcb-help for the full surface."""
+        if op == "route":
+            raise BadInput(ROUTE_RETIRED, next=ROUTE_RETIRED_NEXT)
         if op in _JOB_OPS:
             return Response(body=self._enqueue_op(ref, op, args))
         if op == "move":
@@ -1669,14 +1680,14 @@ class PcbHandler(Handler):
             f"unknown op {op!r}",
             options=list(_OPS),
             next=(
-                "put(kind='pcb', id='slug', args={'op':'place'}) or "
-                "args={'op':'route'} (enqueued jobs); or one of "
-                f"{_INLINE_EDIT_OPS} for an inline edit — see precis-pcb-route-help"
+                "put(kind='pcb', id='slug', args={'op':'place'}) (enqueued "
+                f"job); or one of {_INLINE_EDIT_OPS} for an inline edit — "
+                "see precis-pcb-help"
             ),
         )
 
     def _enqueue_op(self, ref: Any, op: str, opts: dict[str, Any]) -> str:
-        """Enqueue a ``pcb_place``/``pcb_route`` worker job — NEVER
+        """Enqueue a ``pcb_place`` worker job — NEVER
         computes inline (the serve thread-pool starvation lesson; the
         optimizer measures ~880 moves/s, so minutes per board, not
         milliseconds). Idempotent per (design, op, content-hash): a
@@ -1692,41 +1703,6 @@ class PcbHandler(Handler):
                 next="a non-4-layer stackup is out of v1 scope (2-layer "
                 "boards route power like signals, a different problem)",
             )
-        if op == "route":
-            # Reto 2026-10-20: a board must have a closed outline,
-            # otherwise nothing goes.
-            defect = pcb_session.outline_defect(self._outline_from_features(ref.id))
-            if defect is not None:
-                raise BadInput(
-                    f"pcb: refusing to route {ref.slug!r} — {defect}",
-                    next=pcb_session.OUTLINE_FIX_HINT.replace("<slug>", ref.slug),
-                )
-            # gr480010: a stale expansion used to ride along with only the
-            # warning below — job 479998 routed ewod-dogfood-6 over ARR1
-            # copper stored at v3 while the code emitted v4, and committed
-            # the degraded result (10→76 DRC errors, 4→38 failed nets).
-            # Routing a board whose expansion is behind the code is now
-            # refused outright; re-putting the entry re-expands it at the
-            # current version.
-            stale_rows = pcb_generators.stale_generators(
-                self.store.pcb_generators_for(ref.id)
-            )
-            if stale_rows:
-                raise BadInput(
-                    f"pcb: refusing to route {ref.slug!r} — generator "
-                    "expansion(s) are stale; the board carries copper an "
-                    "older build emitted:\n"
-                    + "\n".join(
-                        f"- {name} ({gen}): stored version {stored}, code "
-                        f"version {current}"
-                        for name, gen, stored, current in stale_rows
-                    ),
-                    next=(
-                        "put the same generators entry again — the version "
-                        "mismatch re-expands it at the current code (its "
-                        "placement and routing are redone) — then re-route"
-                    ),
-                )
         params: dict[str, Any] = {"pcb_ref_id": ref.id}
         if opts.get("iters") is not None:
             params["iters"] = int(opts["iters"])
@@ -1749,59 +1725,22 @@ class PcbHandler(Handler):
         # Opt-in support-passive organisation (optimize.OptimizeConfig.
         # support_groups): pull-up banks, per-IC decoupling rows and
         # series pairs re-laid as organised rows post-anneal.
-        if op in ("place", "route") and opts.get("groups") is not None:
+        if opts.get("groups") is not None:
             params["groups"] = bool(opts["groups"])
         # DEPRECATED, accepted-and-ignored (the field polish engine
         # removed, Reto 2026-10-25): still forwarded for one release so a
         # stale caller lands in the job's `ignored` list, not a refusal.
-        if op in ("place", "route") and opts.get("field_polish") is not None:
+        if opts.get("field_polish") is not None:
             params["field_polish"] = bool(opts["field_polish"])
-        if op == "route" and opts.get("warm_start") is not None:
-            warm_start = opts["warm_start"]
-            if warm_start not in ("distance", "radial"):
-                raise BadInput(
-                    "pcb: warm_start must be distance or radial",
-                    options=["distance", "radial"],
-                    next="put(args={'op':'route','warm_start':'distance'})",
-                )
-            params["warm_start"] = warm_start
-        # Removed grid-router knobs + the router selector (vector is the
-        # only router, Reto 2026-10-25): DEPRECATED, still forwarded for
-        # one release — the job collects them into the run's `ignored`
-        # list rather than refusing a stale caller. `loop` (the
-        # route-feedback outer loop) joined them the same day.
-        if op == "route":
-            for knob in (
-                "router",
-                "negotiate",
-                "corridor",
-                "escape",
-                "layer_cost",
-                "off_axis",
-                "cleanup",
-                "loop",
-            ):
-                if opts.get(knob) is not None:
-                    params[knob] = opts[knob]
-        # Override for the pre-route placement DRC gate; absent unless True.
-        if op in ("place", "route") and opts.get("force") is not None:
+        # Override for the placement DRC gate; absent unless True.
+        if opts.get("force") is not None:
             if not isinstance(opts["force"], bool):
                 raise BadInput(
                     "pcb: force must be a boolean (True or False)",
-                    next="put(args={'op':'route','force':True})",
+                    next="put(args={'op':'place','force':True})",
                 )
             if opts["force"]:
                 params["force"] = True
-        # Route-only run (gr495397): `place=False` keeps every pose and the
-        # stored sketch and only routes; absent/True = the joint place+route.
-        if op == "route" and opts.get("place") is not None:
-            if not isinstance(opts["place"], bool):
-                raise BadInput(
-                    "pcb: place must be a boolean (True or False)",
-                    next="put(args={'op':'route','place':False})",
-                )
-            if not opts["place"]:
-                params["place"] = False
         # Raw store rows, verbatim -- `content_hash` itself does the
         # narrowing (job-written-field exclusion, authored-vs-derived
         # filtering) so there is exactly one place that can get it wrong.
@@ -1813,12 +1752,6 @@ class PcbHandler(Handler):
             graph, params, session_state=snap.session_state()
         )
         idem_key = f"pcb_{op}:{ref.id}:{digest}"
-        if op == "route":
-            # Route code changes alter the result for an unchanged board;
-            # the version keeps an old pending/complete job from deduping it.
-            from precis.workers.job_types import pcb_route as pcb_route_job
-
-            idem_key = f"pcb_route:{ref.id}:v{pcb_route_job.CODE_VERSION}:{digest}"
         job_resp = self.hub.sibling("job").put(
             job_type=f"pcb_{op}",
             executor="job_inproc",
@@ -1826,7 +1759,6 @@ class PcbHandler(Handler):
             params=params,
             idem_key=idem_key,
         )
-        status_view = "route-status" if op == "route" else "crossings"
         from precis.handlers.skill import code_stamp
 
         stale = self._stale_note(ref.id)
@@ -1857,7 +1789,7 @@ class PcbHandler(Handler):
             f"# {op} {ref.slug} — enqueued\n{job_line}\n\n"
             + (stale + "\n\n" if stale else "")
             + drain_note
-            + f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
+            + f"Next: get(kind='pcb', id='{ref.slug}', view='crossings') "
             "to check progress once the job lands."
         )
 
@@ -2583,7 +2515,7 @@ class PcbHandler(Handler):
             body += (
                 f"\nripped {len(ripped)} net(s): "
                 + "; ".join(f"{n} ({rip[n]})" for n in ripped)
-                + "; re-route with op='route'"
+                + "; their stored copper stays cleared — routing is retired"
             )
         if standing:
             body += (
@@ -2686,8 +2618,8 @@ class PcbHandler(Handler):
             return Response(body=f"net {net!r} has no route to rip (already unrouted)")
         return Response(
             body=f"# ripped {net} — sketch cleared, back to unrouted\n"
-            "Next: put(args={'op':'route'}) to re-decide its topology, or "
-            "args={'op':'pin_side'} to steer it first."
+            "Routing is retired — the cleared state stands; "
+            "args={'op':'pin_side'} still edits the stored topology."
         )
 
     def _op_pin_side(self, ref: Any, args: dict[str, Any]) -> Response:
@@ -2709,7 +2641,8 @@ class PcbHandler(Handler):
             )
         return Response(
             body=f"# pinned {a} ↔ {b} on {net} to side={side}\n"
-            "Takes effect on the next put(args={'op':'route'})."
+            "Stored — takes effect when a router exists again (op='route' "
+            "is retired)."
         )
 
     def _op_plane_net(self, ref: Any, args: dict[str, Any]) -> Response:
@@ -2770,8 +2703,8 @@ class PcbHandler(Handler):
             )
         return Response(
             body=f"# {net} assigned to plane layer {layer}\n"
-            "Takes effect on the next put(args={'op':'route'}) — its pins "
-            "fan out (dog-bone) instead of routing."
+            "Stored — takes effect when a router exists again (op='route' "
+            "is retired): its pins fan out (dog-bone) instead of routing."
         )
 
     def _refuse_bad_clearance_rules(
@@ -3247,8 +3180,8 @@ class PcbHandler(Handler):
                 )
                 for e in stackup
             )
-            + f"\n\nRoutable: {routable}. Takes effect on the next "
-            "put(args={'op':'route'}).",
+            + f"\n\nRoutable: {routable}. Stored — takes effect when a "
+            "router exists again (op='route' is retired).",
         )
 
     # ── footprint cache (gr341532 fix 3) ────────────────────────────────
@@ -3395,7 +3328,8 @@ class PcbHandler(Handler):
         (first 8), and the other designs sharing the catalogue-wide cache
         rows just written."""
         out = [
-            f"{net} ripped: {rule} after this footprint change — re-route\n"
+            f"{net} ripped: {rule} after this footprint change — its stored "
+            "copper stays cleared (routing is retired)\n"
             for net, rule in sorted(judged.ripped.items())
         ]
         shown = [*judged.margins, *judged.visible]
@@ -4423,8 +4357,8 @@ class PcbHandler(Handler):
             )
         if not copper:
             warnings.append(
-                "no realized copper yet — run put(args={'op':'route'}) first, "
-                "or the gerbers will carry pads/outline/drills only"
+                "no realized copper — routing is retired, so the gerbers "
+                "will carry pads/outline/drills only"
             )
 
         footprints = self.store.pcb_footprints_for(ref_id)
@@ -4992,7 +4926,7 @@ class PcbHandler(Handler):
         else:
             lines.append(
                 f"Next: get(kind='pcb', id='{slug}'). Locked parts stay locked; "
-                "op='route' re-places the unlocked ones first."
+                "op='place' re-places the unlocked ones first."
             )
         return Response(body="\n".join(lines))
 
@@ -5113,7 +5047,7 @@ class PcbHandler(Handler):
         else:
             copper_line = (
                 "copper: none — the file carries the outline, parts, pads and "
-                "nets only (run put(args={'op':'route'}) first for routing)."
+                "nets only (routing is retired; no routed copper exists)."
             )
         head = (
             f"# exported {slug} → EPRO2 (EasyEDA Pro)\n{path}  "
@@ -5200,7 +5134,9 @@ class PcbHandler(Handler):
         if lengths:
             schema.append("len_ratio")
         body = f"# route status — {format_route_summary(counts)}\n" + (
-            render_agent_table(table_rows, schema=schema)
+            "stored statuses only — routing is retired (vroute deleted; "
+            "topo is the only router and unshipped), these are the last "
+            "stored runs\n" + render_agent_table(table_rows, schema=schema)
         )
         if lengths:
             body += (
@@ -5290,9 +5226,8 @@ class PcbHandler(Handler):
         last_route = (ref.meta or {}).get("last_route")
         if not last_route:
             return Response(
-                body="no route run yet\n\nNext: put(kind='pcb', id='slug', "
-                "args={'op':'route'}) then re-check this view."
-                + self._capacity_map_text(ref_id)
+                body="no route run yet\n\nRouting is retired — this view "
+                "reads stored runs only." + self._capacity_map_text(ref_id)
             )
         warnings = last_route.get("warnings") or []
         head = (
@@ -5406,17 +5341,33 @@ class PcbHandler(Handler):
             config = pcb_realize.RealizeConfig(
                 fab_caps=capability, class_rules=graph.get("net_classes")
             )
-            ctx = pcb_realize._route_context(
-                ir, list(range(ir.n_segments)), config, footprints, fixed
-            )
-            if ctx is None or not ctx.route_ids:
+            # What the retired _route_context carried for this view:
+            # routable layers, per-net resolved rules, and the non-plane
+            # (point-to-point) segment set.
+            signal_layers = pcb_realize._signal_layers(ir)
+            if not ir.n_pins:
+                return ""
+            rules_by_net = {
+                n: pcb_realize._resolve_track_rules(
+                    ir, n, pcb_realize.PAD_LAYER, config
+                )
+                for n in range(ir.n_nets)
+            }
+            if not rules_by_net:
+                return ""
+            route_ids = [
+                s
+                for s in range(ir.n_segments)
+                if int(ir.net_plane_layers[int(ir.seg_net[s])]) == 0
+            ]
+            if not route_ids:
                 return ""
             (track_mm, clearance_mm), _n = collections.Counter(
                 (
-                    ctx.rules_by_net[int(ir.seg_net[s])].track_width_mm,
-                    ctx.rules_by_net[int(ir.seg_net[s])].clearance_mm,
+                    rules_by_net[int(ir.seg_net[s])].track_width_mm,
+                    rules_by_net[int(ir.seg_net[s])].clearance_mm,
                 )
-                for s in ctx.route_ids
+                for s in route_ids
             ).most_common(1)[0]
             outline = pcb_session.outline_from_features(features)
             if not outline:
@@ -5447,7 +5398,7 @@ class PcbHandler(Handler):
                     [bbox[0], bbox[3]],
                 ]
             text = self._portal_map_text(
-                [str(ir.stackup[li].get("name")) for li in ctx.signal_layers],
+                [str(ir.stackup[li].get("name")) for li in signal_layers],
                 pcb_session._copper_model(
                     ir,
                     [{**row, "net": row.get("net") or ""} for row in fixed],
@@ -5507,8 +5458,8 @@ class PcbHandler(Handler):
 
     def _render_planes(self, ref_id: int) -> Response:
         """Plane assignments (``pcb_planes``) — which nets are
-        plane-served on which layer, so the LLM can see the
-        fanout-vs-route split before running ``op='route'``. Shows
+        plane-served on which layer. Stored state only: routing is
+        retired, so nothing new fans out. Shows
         ``source`` so a reader can tell a human's explicit
         ``op='plane_net'`` instruction (``authored``) apart from the
         anneal's own settled decision (``derived``, written back by the
@@ -5592,7 +5543,10 @@ class PcbHandler(Handler):
                 schema=["net", "layer", "pieces", "largest", "neck_mm", "area_mm2"],
             )
         else:
-            body += "\n\nno pours stored yet — run op='route' to pour the planes"
+            body += (
+                "\n\nno pours stored yet — pours came from the retired "
+                "router; no new pours land"
+            )
         return Response(body=body)
 
     @staticmethod
@@ -5615,10 +5569,8 @@ class PcbHandler(Handler):
         ``client_of`` pins under the current assignment; rows are empty when
         it declares no clients. Shared by ``channel-map`` and
         ``route-status``."""
-        from precis.workers.job_types import pcb_route as pcb_route_job
-
         graph = self.store.pcb_graph(ref_id)
-        model = pcb_route_job._matching_model(graph, [])
+        model = pcb_matching._matching_model(graph, [])
         clients, supplies, _roles = model
         if not clients:
             return model, []
@@ -6111,9 +6063,9 @@ class PcbHandler(Handler):
         ran = self._drc_run(ref_id, design, reuse=not args.get("fresh"))
         if ran is None:
             return Response(
-                body="no realized copper yet\n\nNext: put(kind='pcb', "
-                "id='slug', args={'op':'route'}) to realize copper, then "
-                "re-check this view."
+                body="no realized copper yet\n\nRouted copper is not "
+                "available yet — routing is retired (op='route' deleted); "
+                "pads/fixed copper alone carry no checkable geometry."
             )
         run_id, findings, pads_only, delta, baseline, reused = ran
         n_error = sum(1 for f in findings if f.severity == "error")

@@ -13,11 +13,14 @@ field polish engine this spec built never earned its keep
 (`silk_missing` on the film and esp32c3 seeds, opt-in since
 2026-10-22). [pcb-topo-place](pcb-topo-place.md) is the placer/router
 path; this file stays as the record of the smooth-energy design.
+`vroute` and the `pcb_route` job were deleted the same day (tag
+`vroute-final`), so the vector-router pipeline described below is gone
+too.
 
 Source: Reto, 2026-10-18 (quoted below), on top of the vector-router
 rulings of 2026-10-16/18. Review inputs: `perplexity-research:496658`
 (read with `args={'no_fetch': True}`), the placer and router modules named
-in §Current state, [pcb-vector-router](pcb-vector-router.md),
+in §Current state, pcb-vector-router (deleted; tag vroute-final),
 the deleted grid-era probe spec `pcb-global-plan-probe.md` (git history). This file proposes; it
 does not edit the vector-router spec (§Composition names the slot).
 
@@ -244,7 +247,7 @@ corridors: a price rises while demand exceeds capacity, and each net routes
 against the prices. A multicommodity-flow LP relaxation optionally gives a
 lower bound, reported as "how close to achievable". The definition and its
 gradient with respect to via and part positions are
-[pcb-vector-router](pcb-vector-router.md) §Decisions 15–16 in the vector
+pcb-vector-router (deleted; tag vroute-final) §Decisions 15–16 in the vector
 slices, V-overflow; that output supplies T7's force on the parts and vias
 that bound a choke. The chord term above is the fallback before the CDT
 exists.
@@ -558,7 +561,7 @@ Ground and pour survey source: `perplexity-reasoning:496879`.
 
 ## Related
 
-- [pcb-vector-router](pcb-vector-router.md) — kernel, `vroute`, `topo`; the slot above. Only its slice 7 SCP/HiGHS QP spacing cleanup is superseded, by this spec's ERBS pass + descent.
+- pcb-vector-router (deleted; tag vroute-final) — kernel, `vroute`, `topo`; the slot above. Only its slice 7 SCP/HiGHS QP spacing cleanup is superseded, by this spec's ERBS pass + descent.
 - `pcb-global-plan-probe.md` (deleted with the grid router; git history) — why hard corridors lose.
 - `optimize.anneal_route_loop` (the shipped pcb-anneal-closes-router-loop item) — the loop this replaces.
 - `docs/backlog/threads/pcb-platform.md` Horizon.

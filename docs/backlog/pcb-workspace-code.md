@@ -10,6 +10,12 @@ blocked-by: structure-workspaces
 
 # PCB workspaces — the workspace model applied to boards
 
+> 2026-10-25: `vroute` and the `pcb_route` job are deleted (tag
+> `vroute-final`, gr515107). `pcb.local.route`, `main.py --route` and
+> `op='route'` refuse until the topo realiser lands (pcb-topo-place
+> slice 5); `pcb_place` is the only compute job left. Rows below that
+> prescribe the route leg are historical.
+
 Applies [structure-workspaces](structure-workspaces.md) (sandboxed Python,
 import boundary, construction traces, `pga` assembly API, relax as a
 service, slice 1b git objects in Postgres) to the `pcb` kind. Same

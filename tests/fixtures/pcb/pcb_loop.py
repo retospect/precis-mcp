@@ -45,7 +45,6 @@ from precis.pcb.drc import process_for_stackup
 from precis.pcb.rules import resolve_net_rules
 from precis.store import Store
 from precis.workers.executors._common import SUCCEEDED
-from tests.fixtures.pcb import route_bench as rb
 from tests.fixtures.pcb import topo_bench as tb
 
 #: TopoStage fields mirrored into metrics["place"].
@@ -227,7 +226,7 @@ def _widen_power_copper(store: Store, pcb: PcbHandler, ref: Any) -> dict[str, An
         w_outer, w_inner, w_via = want.get(name, (0.0, 0.0, 0.0))
         if ctype == "track" and name in power:
             want_w = w_outer if str(layer) in outer else w_inner
-            per_net[name]["mm"] += float(rb._track_length(g.get("segments") or ()))
+            per_net[name]["mm"] += float(tb._track_length(g.get("segments") or ()))
             if float(g.get("width_mm") or 0.0) < want_w:
                 g["width_mm"] = want_w
                 per_net[name]["tracks"] += 1
@@ -262,7 +261,7 @@ def _drc_errors(store: Store, pcb: PcbHandler, ref: Any) -> int:
     bracket."""
     pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     _run, findings = store.pcb_drc_findings_latest(ref.id)
-    errors, _warns, _keys = rb._split_findings(findings)
+    errors, _warns, _keys = tb._split_findings(findings)
     return sum(errors.values())
 
 
@@ -470,7 +469,7 @@ def run(args: argparse.Namespace) -> int:
     if "drc_post" not in metrics["widen"]:
         pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     _run, findings = store.pcb_drc_findings_latest(ref.id)
-    errors, warns, _keys = rb._split_findings(findings)
+    errors, warns, _keys = tb._split_findings(findings)
     stages["drc"] = round(time.monotonic() - t, 1)
     # Footprint/courtyard overlap counts as a DRC violation and is
     # reported separately from the copper DRC (Reto) — on an illegal

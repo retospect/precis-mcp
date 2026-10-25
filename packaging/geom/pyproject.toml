@@ -55,8 +55,8 @@ pcb-kernel = [
 # and checks every allowed import resolves into the shipped set.)
 # ``precis/pcb`` ships minus its store/network/server-side modules —
 # catalog (jlcparts/store), the datasheet/JLC network clients, easyeda,
-# argue/review (llm router), check_run and the sanity workers (workers
-# layer), snapshot (psycopg replay), and session_store (the load_snapshot
+# argue/review (llm router), check_run (the workers layer), snapshot
+# (psycopg replay), and session_store (the load_snapshot
 # half of the session split — everything else in session.py is pure).
 [tool.hatch.build.targets.wheel.force-include]
 "../../src/precis_geom" = "precis_geom"
@@ -92,7 +92,6 @@ exclude = [
     "precis/structure/importers",
     "precis/pcb/_http.py",
     "precis/pcb/argue.py",
-    "precis/pcb/bench.py",
     "precis/pcb/catalog.py",
     "precis/pcb/check_run.py",
     "precis/pcb/datasheet_facts.py",
@@ -103,9 +102,6 @@ exclude = [
     "precis/pcb/jlc_library.py",
     "precis/pcb/jlc_order.py",
     "precis/pcb/review.py",
-    "precis/pcb/sanity_board.py",
-    "precis/pcb/sanity_power.py",
-    "precis/pcb/sanity_upload.py",
     "precis/pcb/session_store.py",
     "precis/pcb/snapshot.py",
 ]

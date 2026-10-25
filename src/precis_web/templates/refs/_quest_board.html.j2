@@ -118,16 +118,6 @@
       {# Actions — each queues the existing op through POST /pcb/{slug}/op #}
       <div class="mt-3 space-y-2 border-t border-line-subtle pt-2">
         <form method="post" action="{{ b.op_url }}" class="flex flex-wrap items-center gap-2 text-xs"
-              onsubmit="return confirm('Queue a route job for {{ b.slug }} on production?');">
-          <input type="hidden" name="op" value="route">
-          <input type="hidden" name="back" value="/refs/quest/{{ ref.id }}#board">
-          <label class="flex items-center gap-1" title="corridor= (mm, >= 0): router corridor width opt-in">corridor
-            <input name="corridor" inputmode="decimal" placeholder="mm" class="w-14 rounded border border-line-strong px-1 py-0.5">
-          </label>
-          <label class="flex items-center gap-1" title="escape='plaza': escape-plaza opt-in"><input type="checkbox" name="escape" value="plaza"> escape=plaza</label>
-          <button class="rounded-md bg-info-solid text-on-solid px-2 py-1 hover:bg-info-solid-strong">Route</button>
-        </form>
-        <form method="post" action="{{ b.op_url }}" class="flex flex-wrap items-center gap-2 text-xs"
               onsubmit="return confirm('Queue a place job for {{ b.slug }} on production? It moves parts.');">
           <input type="hidden" name="op" value="place">
           <input type="hidden" name="back" value="/refs/quest/{{ ref.id }}#board">

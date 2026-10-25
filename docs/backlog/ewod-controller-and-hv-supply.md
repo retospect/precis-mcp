@@ -911,13 +911,15 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
   columns and jsonb).
 - Engine: `drc.py` (`undeclared_pad`, error-tier class floor),
   `rules.py::resolve_net_rules` (`min_clearance_mm`, `working_voltage_v`),
-  `realize.py`'s `_realize_vector` + `vroute.Space` (per-net clearance —
-  the widest blast radius: every routed board), `generators.py`
+  `realize.py`'s per-net clearance resolution (the `_realize_vector` +
+  `vroute.Space` pair named here was deleted with the router on
+  2026-10-25 — the same rules resolve via `topo.build_region_graph`
+  now), `generators.py`
   (`_SinkGrid`, `tape_land`, HV class), `capabilities.py` (reader reuse).
 - Handlers: `handlers/pcb.py` put schema (`sink_grid` keys, `tape_land`,
   class-rule keys).
-- Skills: `precis-pcb-ewod-help`, `precis-pcb-route-help` (class keys),
-  `precis-pcb-help`.
+- Skills: `precis-pcb-ewod-help`, `precis-pcb-help` (class keys —
+  `precis-pcb-route-help` was deleted with the router).
 - Tests: `test_pcb_ewod_generator*.py`, `test_pcb_ewod_dogfood.py`,
   `test_pcb_island_terminal_polygon.py`, reference-fixture pins.
 

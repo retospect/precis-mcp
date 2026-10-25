@@ -29,10 +29,10 @@ below so it stays closed):
    invisible to the router; island terminals from fixed copper made it
    a terminal, and then the maze's enclosing-DISC pad claims (wider
    than the pitch) still walled every F.Cu cell off until true-shape
-   claims replaced them. ``test_dogfood_route_op_routes_real_geometry_
-   and_reports_the_escape_gap`` asserts escapes now route through the
-   fabric and that any remaining failure (the congestion race, gripe
-   347037) keeps a recorded reason.
+   claims replaced them. (The route-side measurements lived in
+   ``test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_
+   gap`` and the In2.Cu variant — both retired with the router,
+   gr515107: vroute deleted 2026-10-25, tag ``vroute-final``.)
 
 2. **gr341516, closed:** the sink sits directly under the array by design
 (the whole point of ``sink_grid``) and used to be checked as if it were
@@ -746,17 +746,10 @@ def test_dogfood_capability_map_svg_renders(pcb):
     assert "R0C2" in resp.body or "RESV" in resp.body  # some pin label present
 
 
-def _drain_one_job(store, parent_id: int, *, unrouted_ok: bool = False) -> None:
+def _drain_one_job(store, parent_id: int) -> None:
     """Drain the job most recently enqueued under ``parent_id`` — same
     helper (and same "tolerate an unrelated stray row" reasoning, gr295496)
-    as ``tests/test_pcb_reference_end_to_end.py``'s own.
-
-    ``unrouted_ok``: a route job that leaves any net unrealized ends
-    ``failed`` with ``failure_class='non-convergence'`` (Reto, 2026-10-01:
-    "it's no good if the wires are not there"), after writing its partial
-    copper. These boards leave escape nets unrouted by design today, so a
-    caller measuring that partial result accepts exactly that failure and
-    no other."""
+    as ``tests/test_pcb_reference_end_to_end.py``'s own."""
     from precis.workers.executors._common import TERMINAL, current_status
     from precis.workers.executors.job_inproc import run_job_inproc_pass
 
@@ -772,17 +765,6 @@ def _drain_one_job(store, parent_id: int, *, unrouted_ok: bool = False) -> None:
         with store.pool.connection() as conn:
             status = current_status(conn, job_ref_id)
         if status in TERMINAL:
-            if unrouted_ok and status == "failed":
-                with store.pool.connection() as conn:
-                    meta_row = conn.execute(
-                        "SELECT meta->>'failure_class' FROM refs WHERE ref_id = %s",
-                        (job_ref_id,),
-                    ).fetchone()
-                assert meta_row is not None
-                assert meta_row[0] == "non-convergence", (
-                    f"job {job_ref_id} failed for another reason: {meta_row[0]!r}"
-                )
-                return
             assert status == "succeeded", (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}"
             )
@@ -793,40 +775,15 @@ def _drain_one_job(store, parent_id: int, *, unrouted_ok: bool = False) -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.slow
-@pytest.mark.timeout(720)  # CI worst 269s x2.5 for runner variance (gr503084)
-def test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap(pcb, store):
-    """**The escape gap was a STACKUP problem, not a router problem.**
-
-    Same board, same seed, same router as
-    ``test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_
-    gap`` above — the only difference is two lines of DESIGN data:
-    In2.Cu declared ``signal`` via ``op='stackup'``, and ``escape_layers``
-    widened to match. Measured 2026-09-27:
-
-    | | B.Cu only | + In2.Cu |
-    | --- | --- | --- |
-    | escapes realized | 28 / 54 | **50 / 54** |
-    | DRC clearance errors | 0 | **0** |
-    | nets whose copper is in >1 island | 26 | **4** |
-
-    That beats the 46/54 the backlog had recorded as the measured
-    ceiling, and unlike that arm this one is LEGAL: it opens an inner
-    layer, not F.Cu, so the electrode field is never crossed (asserted
-    below). Every number before this was measured on a board that had
-    exactly one routing layer because ``DEFAULT_STACKUP`` said so and
-    nothing could say otherwise — see
-    docs/backlog/pcb-escape-and-driver-chain.md, "Blocked on".
-
-    This is the acceptance test for ``put(args={'op':'stackup'})``: the
-    engine's job is to let an LLM fulfil an arbitrary text request for a
-    board, and "give me two routing layers and keep the ground plane" was
-    a request it could not express.
-    """
-    slug = _seed(pcb, escape_layers=["B.Cu", "In2.Cu"])
-    ref = store.get_ref(kind="pcb", id=slug)
-    assert ref is not None
-    pcb.put(
+def test_dogfood_stackup_op_accepts_an_inner_signal_layer(pcb, store):
+    """The acceptance remnant of the In2.Cu escape-gap test (the route
+    measurement itself retired with the router, gr515107):
+    ``put(args={'op':'stackup'})`` accepts an inner layer declared
+    ``signal`` — "give me two routing layers and keep the ground plane"
+    is a request the op can still express for when a router exists
+    again."""
+    slug = _seed(pcb)
+    resp = pcb.put(
         id=slug,
         args={
             "op": "stackup",
@@ -838,74 +795,7 @@ def test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap(pcb, store):
             ],
         },
     )
-    pcb.put(id=slug, args={"op": "route", "seed": 1})
-    _drain_one_job(store, ref.id, unrouted_ok=True)
-
-    design = store.pcb_load(ref.id)
-    copper = store.pcb_copper_list(int(design["board"]["board_id"]))
-    status_by_net = {
-        str(r["name"]): str(r["status"]) for r in store.pcb_route_status(ref.id)
-    }
-    # `ARR1_R<row>C<col>` — the electrode nets only, the same set the
-    # route test above counts. A bare `ARR1_` prefix also catches the top
-    # plate and the power rails, which route on F.Cu by design and would
-    # make the electrode-layer assertion below vacuous.
-    escape_nets = [n for n in status_by_net if n.startswith("ARR1_R")]
-    realized = [n for n in escape_nets if status_by_net[n] == "realized"]
-    diag = f"{len(realized)}/{len(escape_nets)} escapes realized"
-
-    # A REAL number, re-baselined on the behaviour change (this item's own
-    # acceptance criterion). Measured 50/54; floored at 46 rather than
-    # pinned at 50, because the router is seeded but its rip-up ORDERING is
-    # not a contract. The thing worth catching is a collapse back toward
-    # the one-routing-layer 28, not a one- or two-escape tuning wobble.
-    # FLOOR DROPPED 2026-10-19 (Reto): printed, not gated. The shorts check
-    # below still gates.
-    print(f"\newod In2.Cu escapes realized: {diag}")
-
-    # Still zero shorts. Yield alone could not tell "routed" from "routed
-    # through a land" — that is how 35/54 stood for a week with 24 shorts
-    # under it (backlog item 2). A layer that buys yield by drawing over
-    # copper is not a win.
-    from precis.pcb import drc as pcb_drc
-    from precis.pcb.capabilities import capability_for
-
-    layer_names = [str(layer["name"]) for layer in design["board"]["stackup"]]
-    model = {
-        "layers": layer_names,
-        "copper": [dict(c) for c in copper],
-        "pads": pcb._drc_pads(ref.id, layer_names),
-    }
-    errors = [
-        f
-        for f in pcb_drc.check_clearance(
-            model,
-            capability_for(pcb_drc.process_for_stackup(design["board"]["stackup"])),
-        )
-        if f.severity == "error"
-    ]
-    assert not errors, (
-        f"{len(errors)} clearance ERROR(s) with In2.Cu open: "
-        f"{[f.where for f in errors[:6]]} — {diag}"
-    )
-
-    # F.Cu stays closed however many layers open up. The electrode field
-    # owns it; a trace across it disturbs the field the board exists to
-    # control.
-    escape_layers_used = {
-        str(t["layer"])
-        for t in copper
-        if t.get("ctype") == "track"
-        and not t.get("fixed")
-        and str(t.get("net")) in set(realized)
-    }
-    assert "F.Cu" not in escape_layers_used, (
-        f"an escape routed on the electrode layer: {escape_layers_used}"
-    )
-    assert "In2.Cu" in escape_layers_used, (
-        "no escape actually used the newly-opened layer, so this test is "
-        f"not measuring what it claims: {escape_layers_used}"
-    )
+    assert "stackup" in resp.body
 
 
 def test_dogfood_gerber_export_zip_loads(pcb, tmp_path):

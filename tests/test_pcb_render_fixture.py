@@ -28,7 +28,9 @@ the same way ``test_pcb_fab_render_all_layers.py`` does inline. Planes
 are DECLARED, not discovered (see that file's docstring), so a fixture
 authored without one renders with no fill at all. This key is popped
 before the design is created (it isn't part of the create-op schema) and
-each entry is applied via ``op='plane_net'`` before place/route.
+each entry is applied via ``op='plane_net'`` before place. (Routing is
+retired — the render shows the placed board: pads + authored copper,
+no tracks.)
 
 The DRC tally is PRINTED (run with ``-s``), never asserted: a peek
 utility that fails on an imperfect board can't show you the imperfection.
@@ -90,11 +92,6 @@ def test_render_the_named_fixture_to_svg(store: Store) -> None:
     if os.environ.get("PRECIS_PCB_RENDER_ITERS"):
         place_args["iters"] = int(os.environ["PRECIS_PCB_RENDER_ITERS"])
     assert "enqueued" in pcb.put(id="renderfixture", args=place_args).body
-    _drain_one_job(store)
-    assert (
-        "enqueued"
-        in pcb.put(id="renderfixture", args={"op": "route", "seed": seed}).body
-    )
     _drain_one_job(store)
 
     svg = pcb.get(id="renderfixture", view="svg", args={"level": "fab"}).body

@@ -10,11 +10,12 @@ pairwise clearances resolve per net.
 
 **This test MEASURES; it no longer gates on counts.** Reto 2026-10-19:
 the grid router's per-seed floors are dropped ("Drop the grid router's
-floors? yes"); the target stays absolute — every net routed, 0 DRC. The
-routed counts and the per-rule DRC breakdowns below are printed as
-evidence so a regression stays visible, and the runs still have to drain
-cleanly. Synthesized bounds and provisional topology are documented in the
-fixture.
+floors? yes"). Routing is retired (gr515107, Reto 2026-10-25: vroute
+deleted, tag ``vroute-final``; topo is the only router and unshipped), so
+what remains is the place + stored-DRC half of the old baseline — the
+runs still have to drain cleanly and the per-rule DRC breakdown is
+printed as evidence so a regression stays visible. Synthesized bounds
+and provisional topology are documented in the fixture.
 """
 
 from __future__ import annotations
@@ -35,23 +36,11 @@ from tests.fixtures.pcb import nano_usb_pd_testboard as fx
 SLUG = "nano-usb-pd-test"
 SEED = 1
 
-#: Last measured routed count at ``SEED`` over nets with fanout >= 2 (39 of
-#: 64, 2026-10-19, vector router slice 3a). Not asserted here any more;
-#: ``test_pcb_route_loop.py`` still reads it as its reference.
-BASELINE_ROUTED = 39
-
-#: Seeds the cross-placement sweep runs (gr489909); the routed count of each
-#: and the mean are printed, not floored.
+#: Seeds the cross-placement sweep runs (gr489909); each seed's place
+#: must drain cleanly.
 NANO_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8)
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
-
-
-def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for conn in connections:
-        counts[conn["net"]] = counts.get(conn["net"], 0) + 1
-    return counts
 
 
 def _pin_names_for(comp: dict[str, Any], design: dict[str, Any]) -> set[str]:
@@ -170,13 +159,11 @@ def test_nano_headers_are_one_rigid_group_at_15_24mm() -> None:
 # ── the baseline run (slow) ───────────────────────────────────────────────────
 
 
-def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
+def _drain_one_job(store: Store, parent_id: int) -> None:
     """Drain the queued job most recently enqueued under ``parent_id`` —
     the same discipline ``test_pcb_second_reference_end_to_end.py`` uses:
     not "whatever's next in the queue" (a shared per-worker test DB can
-    carry an orphan). ``unrouted_ok`` accepts exactly the
-    ``non-convergence`` failure class a route job ends with when nets are
-    left unrealized — this test MEASURES that partial result."""
+    carry an orphan)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
@@ -190,19 +177,6 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
         with store.pool.connection() as conn:
             status = current_status(conn, job_ref_id)
         if status in TERMINAL:
-            if unrouted_ok and status == "failed":
-                with store.pool.connection() as conn:
-                    meta_row = conn.execute(
-                        "SELECT meta->>'failure_class', meta->>'error' "
-                        "FROM refs WHERE ref_id = %s",
-                        (job_ref_id,),
-                    ).fetchone()
-                assert meta_row is not None
-                assert meta_row[0] == "non-convergence", (
-                    f"job {job_ref_id} failed for another reason: "
-                    f"{meta_row[0]!r} error={meta_row[1]!r}"
-                )
-                return
             assert status == "succeeded", (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}"
             )
@@ -212,12 +186,10 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
     raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
-def _place_and_route(
-    store: Store, seed: int, slug: str = SLUG
-) -> tuple[PcbHandler, int, int, int]:
-    """Create the board as ``slug``, place and route it at ``seed``; return
-    the handler, the board's ref id, and routed/failed over fanout >= 2
-    nets."""
+def _place(store: Store, seed: int, slug: str = SLUG) -> tuple[PcbHandler, int]:
+    """Create the board as ``slug`` and place it at ``seed``; return the
+    handler and the board's ref id. (Was ``_place_and_route`` — routing
+    is retired, gr515107.)"""
     # The catalog footprints are the fixture's cache — seeded into the
     # test DB before the put so the catalog parts resolve to real pad
     # geometry. Read-only lookups at apply; no JLC/LCSC calls.
@@ -232,27 +204,8 @@ def _place_and_route(
 
     place_resp = pcb.put(id=slug, args={"op": "place", "seed": seed})
     assert "enqueued" in place_resp.body
-    _drain_one_job(store, ref.id, unrouted_ok=False)
-
-    route_resp = pcb.put(id=slug, args={"op": "route", "seed": seed})
-    assert "enqueued" in route_resp.body
-    _drain_one_job(store, ref.id, unrouted_ok=True)
-
-    # --- route status, honestly denominated --------------------------------
-    fanout = _fanout(fx.DESIGN["connections"])
-    fanout2_nets = {name for name, n in fanout.items() if n >= 2}
-    status_rows = store.pcb_route_status(ref.id)
-    routed = sum(
-        1
-        for row in status_rows
-        if row["name"] in fanout2_nets and row["status"] == "realized"
-    )
-    failed = sum(
-        1
-        for row in status_rows
-        if row["name"] in fanout2_nets and row["status"] == "failed"
-    )
-    return pcb, ref.id, routed, failed
+    _drain_one_job(store, ref.id)
+    return pcb, ref.id
 
 
 def _seeded_nano_ir(store: Store, seed: int):
@@ -335,34 +288,33 @@ def test_nano_seed_covers_the_board(store: Store, seed: int) -> None:
 
 
 @pytest.mark.nightly(
-    reason="rt-s3 ruling (Reto 2026-10-24): the 8 x 249-382 s seed sweep "
-    "can't shrink under the gate's 240 s bar — nightly only"
+    reason="rt-s3 ruling (Reto 2026-10-24): the 8-seed place sweep can't "
+    "shrink under the gate's 240 s bar — nightly only"
 )
 @pytest.mark.slow
 # CI worst 463s x2.5 for runner variance (gr503084)
 @pytest.mark.timeout(1200)
 @pytest.mark.parametrize("seed", NANO_SEEDS)
-def test_nano_board_routes_cleanly_per_seed(store: Store, seed: int) -> None:
-    """Not a floor (Reto 2026-10-19): every seed's place and route job must
-    drain cleanly (``_place_and_route`` asserts that); the routed count is
-    printed as evidence. One test per seed, not one 8-seed loop: the loop
-    took 20-30 min on a CI runner and, pinned to a single shard, sat at the
-    40 min job cap (gr495187); per-seed ids spread over the shards."""
-    routed = _place_and_route(store, seed, slug=f"{SLUG}-s{seed}")[2]
-    print(f"\nnano seed {seed} routed: {routed}")
+def test_nano_board_places_cleanly_per_seed(store: Store, seed: int) -> None:
+    """Every seed's place job must drain cleanly (``_place`` asserts
+    that). Was the routed-count sweep — routing is retired (gr515107), so
+    the placement drain is what remains. One test per seed, not one
+    8-seed loop: the loop took 20-30 min on a CI runner and, pinned to a
+    single shard, sat at the 40 min job cap (gr495187); per-seed ids
+    spread over the shards."""
+    _place(store, seed, slug=f"{SLUG}-s{seed}")
 
 
 @pytest.mark.nightly(
-    reason="rt-s3 ruling (Reto 2026-10-24): the 408 s place/route/DRC "
-    "baseline can't split under the gate's 240 s bar — nightly only"
+    reason="rt-s3 ruling (Reto 2026-10-24): the place/DRC baseline can't "
+    "split under the gate's 240 s bar — nightly only"
 )
 @pytest.mark.slow
 @pytest.mark.timeout(1380)  # CI worst 550s x2.5 for runner variance (gr503084)
-def test_nano_board_place_route_drc_baseline(store: Store) -> None:
-    pcb, ref_id, routed, failed = _place_and_route(store, SEED)
-    fanout2_nets = {n for n, k in _fanout(fx.DESIGN["connections"]).items() if k >= 2}
+def test_nano_board_place_drc_baseline(store: Store) -> None:
+    pcb, ref_id = _place(store, SEED)
 
-    # --- DRC, both tiers ----------------------------------------------------
+    # --- DRC ------------------------------------------------------------
     # Record first, then read the view: view='drc' reuses a recorded run
     # whose design-revision stamp matches (gr496242), so the board pays
     # ONE DRC pass — the old order ran it twice (the view is read-only).
@@ -381,12 +333,11 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
     )
 
     # Per-rule evidence kept: the print shows exactly what the baseline is
-    # made of, so an anneal change can name what moved.
+    # made of, so an anneal change can name what moved. With routing
+    # retired every fanout>=2 net is a standing `unrouted` finding —
+    # expected, not a defect; the copper/pad rules are the signal.
     print("\n\n# nano_usb_pd_testboard — baseline\n")
-    print(
-        f"drc head: {n_errors} error(s), {n_warns} warn(s); "
-        f"routed {routed}/{len(fanout2_nets)}, failed {failed}"
-    )
+    print(f"drc head: {n_errors} error(s), {n_warns} warn(s)")
     print(f"errors by rule: {dict(errors_by_rule)}")
     print(f"warns by rule: {dict(warns_by_rule)}")
     for f in findings:
@@ -394,3 +345,19 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
             f"  {f['severity']:5s} {f['rule']:28s} {f.get('where') or ''} "
             f"{str(f.get('detail'))[:120]}"
         )
+    copper_errors = {
+        rule: n
+        for rule, n in errors_by_rule.items()
+        if rule != "unrouted" and not rule.startswith("silk")
+    }
+    assert not copper_errors, f"non-unrouted DRC errors: {copper_errors}"
+    # Silk carries its own ratchet (the esp32c3 discipline): pads-only DRC
+    # drops 5 refdes labels on this dense board — a downward-only bound,
+    # not forgiveness.
+    silk_errors = sum(
+        n for rule, n in errors_by_rule.items() if rule.startswith("silk")
+    )
+    assert silk_errors <= 5, (
+        f"{silk_errors} silk DRC errors, above the 5 baseline: "
+        f"{dict(errors_by_rule)} -- this ratchet only goes down"
+    )

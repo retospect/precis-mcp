@@ -222,18 +222,80 @@ _KNOWN_UNWIRED: dict[str, str] = {
     # ir.py::layer_name left this list 2026-10-25: topoplace/design.py's
     # ``_net_layer_force`` resolves class ``layers`` rules through it —
     # a real in-src caller (topo-place slice 2a).
-    "src/precis/pcb/realize.py::rip_net": (
-        "rip-up hook for the not-yet-wired route-edit loop (routeclean, "
-        "its last production caller, was deleted with the grid router "
-        "2026-10-20); pin_topology/re_realize_segments below share the gap"
+    # ---- vroute retirement (2026-10-25, gr515107): symbols whose only ----
+    # production caller was the vector router / pcb_route job. Kept for the
+    # topological realiser (docs/backlog/pcb-topo-place.md slice 5) — each
+    # entry names what consumes it again; delete any the realiser skips.
+    "src/precis/pcb/connectivity.py::connected_pin_pairs": (
+        "stored-copper connectivity reader; its only consumer was the "
+        "deleted routed-copper DRC path (session.stored_copper_drc_findings) "
+        "— the topo realiser's copper DRC is the intended consumer"
     ),
-    "src/precis/pcb/realize.py::pin_topology": (
-        "own docstring: a thin delegate for the same not-yet-wired "
-        "rip-up/re-realize loop as rip_net"
+    "src/precis/pcb/geom.py::fillet_polyline": (
+        "track-arc filleting; its only caller (_track_from_run) went with "
+        "the deleted router — kept with the sagitta cross-check pair in "
+        "tests/test_pcb_geom.py (see max_inward_deviation above)"
     ),
-    "src/precis/pcb/realize.py::re_realize_segments": (
-        "incremental re-realize for edited segments; same unwired "
-        "route-edit gap as rip_net"
+    "src/precis/pcb/geom.py::max_radius_for_deviation": (
+        "cap for the same track-arc filleting; same lost caller as "
+        "fillet_polyline — the test cross-checks it against the already-"
+        "allow-listed inverse max_inward_deviation"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.swap_pins": (
+        "pin-swap IR mutator; its only caller was the pcb_route job's "
+        "supply-matching pass — same Slice-7 gap as pinswap.propose_* below"
+    ),
+    "src/precis/pcb/local.py::route": (
+        "kept as a refusing stub so local.route names the retirement "
+        "(ROUTE_RETIRED) instead of an AttributeError; its only caller was "
+        "the deleted route bench"
+    ),
+    "src/precis/pcb/pinswap.py::offsets_from_ir": (
+        "pin-swap offset derivation; its only caller was the pcb_route "
+        "job's supply-matching pass — Slice-7 swap write-back consumes it again"
+    ),
+    "src/precis/pcb/pinswap.py::propose_distance_assignment": (
+        "same lost caller as offsets_from_ir"
+    ),
+    "src/precis/pcb/pinswap.py::propose_radial_assignment": (
+        "same lost caller as offsets_from_ir"
+    ),
+    "src/precis/pcb/planes.py::derive_regions": (
+        "power-net derived pour regions; its only caller was the deleted "
+        "realize pour path — the topo realiser's pour step is the intended "
+        "consumer"
+    ),
+    "src/precis/pcb/planes.py::pour_notes": (
+        "stored-pour note formatter; its only caller was the route run's "
+        "report — kept with the planes surface that renders stored pours"
+    ),
+    "src/precis/pcb/realize.py::through_span": (
+        "through-hole pad layer span; its only caller was the realize "
+        "route path — kept with the pad-geometry slice (PAD_LAYER)"
+    ),
+    "src/precis/pcb/resolved.py::snapshot_pins": (
+        "the resolved pin->net snapshot for stored write-back; its only "
+        "caller was the pcb_route job — the topo realiser's matching pass "
+        "is the consumer"
+    ),
+    "src/precis/pcb/resolved.py::prior_assignment": (
+        "warm-start prior for matching.solve; its only caller was the "
+        "pcb_route job — the topo realiser's matching pass is the consumer"
+    ),
+    "src/precis/pcb/resolved.py::encode_prior": (
+        "same lost caller as prior_assignment"
+    ),
+    "src/precis/pcb/rules.py::pin_current_a_or_none": (
+        "per-pin net-current rule; its only caller was the route path's "
+        "width resolution — the topo realiser's track rules need it"
+    ),
+    "src/precis/pcb/session.py::extract_sketch": (
+        "IR->pcb_routes sketch write-back; its only caller was the "
+        "pcb_route job — the topo realiser writes stored routes through it"
+    ),
+    "src/precis/pcb/silk.py::outline_via_keepouts": (
+        "via silk keep-out rings; its only consumer was the deleted "
+        "router's ink field — no via producer until the topo realiser"
     ),
     "src/precis/pcb/snapshot.py::export_snapshot": (
         "internal manual SELECT-only capture of raw routing inputs; "
@@ -311,8 +373,7 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "reported to the caller as a real gap"
     ),
     # ---- PcbIR fields: L2 explicit-embedding tier ----------------------
-    # set_rotation/rotation_darts are the L2 tier (rotation_index gained a
-    # production reader in workers/job_types/pcb_route.py, a25a3a00)
+    # set_rotation/rotation_darts/rotation_index are the L2 tier
     # (module docstring: "L2: explicit combinatorial embedding"); ir.py's
     # own seg_side field (the OTHER L2 field, right next to these) is
     # documented in-line as "reserved obstacle-side annotation
@@ -334,6 +395,14 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "L2 tier -- same 'slice 7' future-work note as set_rotation, see "
         "that entry's reason; re-entered 2026-10-25 when the anneal loop's "
         "state snapshot (its last carrier) was deleted"
+    ),
+    # rotation_index re-entered this mapping 2026-10-25: the pcb_route
+    # job's anneal LAYER_ADD reader (a25a3a00) was deleted with the route
+    # job -- back to the L2 'slice 7' tier status.
+    "src/precis/pcb/ir.py::PcbIR.rotation_index": (
+        "L2 tier -- same 'slice 7' future-work note as set_rotation, see "
+        "that entry's reason; re-entered 2026-10-25 when the pcb_route "
+        "job (its last production reader) was deleted"
     ),
     # ---- PcbIR fields: via_* real gap ------------------------------------
     # add_via/via_net/via_layer_span are the ONLY way to populate a via in

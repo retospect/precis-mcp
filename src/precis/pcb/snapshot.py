@@ -160,9 +160,6 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
     )
     optimize_defaults = _json_config(asdict(optimize))
     realize_summary = _json_config(asdict(realize))
-    for flag in ("reserve_power_region_tracks",):
-        if not getattr(realize, flag):
-            realize_summary.pop(flag, None)
     return {
         "realize": realize_summary,
         "optimize_defaults": optimize_defaults,

@@ -23,20 +23,18 @@ prod ``ewod-dogfood-2``.
    the fixture actually bites by monkeypatching ``_pad_poly`` back to
    always-``None`` (the OLD behaviour) and checking the touch is then
    missed.
-2. :func:`test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch`
+2. :func:`test_ring_sink_island_terminals_offered_under_both_worlds`
    — the real :func:`precis.pcb.generators.expand` ``ewod_pad_array``
-   generator, run end-to-end through ``op='route'``, against a
-   NON-grid ring sink footprint (HVOUT1..HVOUT64/DIOA/DIOB/VPP/VDD/GND —
-   the real prod board's own pin naming) instead of
-   ``tests/test_pcb_ewod_dogfood.py``'s grid-laid-out stand-in, so the
-   sink's OWN pad positions cannot accidentally make every net trivial.
-   Same before/after comparison via the ``_pad_poly`` monkeypatch,
-   through the actual router this time.
+   generator against a NON-grid ring sink footprint
+   (HVOUT1..HVOUT64/DIOA/DIOB/VPP/VDD/GND — the real prod board's own pin
+   naming), checking the terminal OFFER count under both worlds without
+   routing. The route-level arm died with the router (gr515107): the
+   island-terminal offer — the thing this fix changed — is what's
+   pinned here.
 """
 
 from __future__ import annotations
 
-import collections
 import math
 from typing import Any
 
@@ -45,7 +43,6 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import connectivity as pcb_connectivity
-from tests.test_pcb_ewod_dogfood import _drain_one_job
 from tests.test_pcb_ewod_generator_drc import _ewod_model
 
 pytestmark = pytest.mark.db
@@ -332,17 +329,6 @@ def pcb(store):
     return PcbHandler(hub=Hub(store=store))
 
 
-def _route_and_count(pcb, store, slug: str) -> tuple[dict[str, str], int, int]:
-    ref = store.get_ref(kind="pcb", id=slug)
-    assert ref is not None
-    resp = pcb.put(id=slug, args={"op": "route", "seed": 1})
-    assert "enqueued" in resp.body
-    _drain_one_job(store, ref.id, unrouted_ok=True)
-    status = {str(r["name"]): str(r["status"]) for r in store.pcb_route_status(ref.id)}
-    escape_pins, offered = _island_terminals_offered(pcb, store, ref.id)
-    return status, escape_pins, offered
-
-
 def _island_terminals_offered(pcb, store, ref_id: int) -> tuple[int, int]:
     """(electrode pins with authored fixed copper on their own net, how
     many of those appear in :func:`~precis.pcb.connectivity.
@@ -403,17 +389,6 @@ def _old_world_patches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pcb_connectivity, "_pad_poly", lambda pad: None)
 
 
-#: Escape nets the OLD circle-only touch world realized on this fixture
-#: (rt-s3, recorded from the documented measurement — both arms realized
-#: 13 at a legal placement): the before/after route pair ran ~491 s on
-#: CI, so the before arm's live route left this item — the terminal-count
-#: comparison the fix's claim rests on is checked live (and cheaply) in
-#: ``test_ring_sink_island_terminals_offered_under_both_worlds`` and the
-#: router floor is pinned here. Reto 2026-10-01's "NO FEWER" ruling is
-#: kept as a floor at the recorded count.
-_OLD_WORLD_ESCAPE_REALIZED = 13
-
-
 def test_ring_sink_island_terminals_offered_under_both_worlds(
     pcb, store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -460,45 +435,4 @@ def test_ring_sink_island_terminals_offered_under_both_worlds(
     print(
         f"gr339236 terminals offered: {before_offered}/{before_pins} before, "
         f"{after_offered}/{after_pins} after"
-    )
-
-
-@pytest.mark.slow
-@pytest.mark.timeout(600)  # CI worst ~245s x2.5 for runner variance (gr503084)
-def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
-    pcb, store
-) -> None:
-    """The same board routed under the real fix — ``op='route'`` with the
-    polygon-aware pad touch — must realize no fewer escape nets than the
-    OLD world did (``_OLD_WORLD_ESCAPE_REALIZED``, recorded). The
-    before/after terminal-count proof this fix's claim rests on lives in
-    ``test_ring_sink_island_terminals_offered_under_both_worlds`` (rt-s3
-    split: two route passes on this fixture ran ~491 s CI, over the
-    240 s shard-share bar)."""
-    _ring_seed(pcb, "ewod-ring-poly")
-    pcb.store.part_footprint_put(
-        _RING_LCSC,
-        _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5),
-    )
-    after, after_pins, after_offered = _route_and_count(pcb, store, "ewod-ring-poly")
-    assert after_offered == after_pins
-
-    escape_nets = sorted(n for n in after if n.startswith("ARR1_R"))
-    assert len(escape_nets) >= 50, f"too few escape nets seeded: {escape_nets[:20]}"
-
-    after_realized = {n for n in escape_nets if after[n] == "realized"}
-    # A COUNT floor, not a strict-superset one — the module docstring is
-    # explicit that congestion outcomes are order/claim-dependent, not
-    # monotonic in any one input (a bottom-mounted sink shifts the whole
-    # board's occupancy). The recorded old-world count is the floor;
-    # dropping below it means the polygon test made routing WORSE.
-    assert len(after_realized) >= _OLD_WORLD_ESCAPE_REALIZED, (
-        f"the polygon-aware route realized fewer escape nets than the "
-        f"recorded old-world floor {_OLD_WORLD_ESCAPE_REALIZED} — "
-        f"{dict(collections.Counter(after.values()))}"
-    )
-    print(
-        f"gr339236: {len(after_realized)}/{len(escape_nets)} realized "
-        f"(old-world floor {_OLD_WORLD_ESCAPE_REALIZED}); island terminals "
-        f"offered {after_offered}/{after_pins}"
     )

@@ -579,16 +579,6 @@ def _load_pcb_place() -> JobTypeSpec:
     return pcb_place.SPEC
 
 
-def _load_pcb_route() -> JobTypeSpec:
-    # Joint place+sketch anneal + realize checkpoint (pcb-guided-place-
-    # route Slice 10 tool surface) — the enqueued half of
-    # put(kind='pcb', args={'op': 'route'}). Runs via plugin dispatch under
-    # the job_inproc executor.
-    from precis.workers.job_types import pcb_route
-
-    return pcb_route.SPEC
-
-
 def _load_datasheet_pull() -> JobTypeSpec:
     # Fetch + ingest + link one LCSC part's datasheet — the enqueued half of
     # the pcb datasheet auto-pull (minted by put(kind='pcb')). Runs via
@@ -883,9 +873,6 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "pcb_place":
         _REGISTRY["pcb_place"] = _load_pcb_place()
         return _REGISTRY["pcb_place"]
-    if name == "pcb_route":
-        _REGISTRY["pcb_route"] = _load_pcb_route()
-        return _REGISTRY["pcb_route"]
     if name == "datasheet_pull":
         _REGISTRY["datasheet_pull"] = _load_datasheet_pull()
         return _REGISTRY["datasheet_pull"]
@@ -974,7 +961,6 @@ def known_job_types() -> list[str]:
         "embed_batch",
         "derived_drain",
         "pcb_place",
-        "pcb_route",
         "datasheet_pull",
         "datasheet_facts",
         "pcb_argue",

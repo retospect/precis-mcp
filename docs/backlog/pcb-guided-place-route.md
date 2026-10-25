@@ -7,6 +7,14 @@ pillar: 3d-design
 
 # pcb place+route — remaining open items
 
+**RETIRED (2026-10-25, gr515107).** The route half this spec covers is
+gone — `vroute` and the `pcb_route` job were deleted (tag `vroute-final`);
+`op='route'`/`pcb.local.route` refuse and the topological router
+([pcb-topo-place](pcb-topo-place.md)) is the only router, its realiser
+unshipped. The place half, the judged-mutation gate and the stored-route
+readers below still describe main. The file stays because ~20 docstrings
+cite it; delete in a follow-up.
+
 The sketch-as-canonical place+route engine, the JLCPCB order op, the
 route-state consolidation and `op=` idempotency all shipped; truth lives in
 the `src/precis/pcb/__init__.py` docstring, `src/precis/pcb/route_state.py`,
@@ -33,7 +41,7 @@ exists.
 
 The multi-iteration place-route loop and batch shove
 ([pcb-unified-place-route](pcb-unified-place-route.md),
-[pcb-vector-router](pcb-vector-router.md) §Decisions 15–16 in the vector slices)
+pcb-vector-router (deleted; tag vroute-final) §Decisions 15–16 in the vector slices)
 take the layer count as given: when they find the stackup is the limit,
 they report it the way this item refuses a pick below the floor, and never
 add a layer themselves.

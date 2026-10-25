@@ -4357,7 +4357,7 @@ class PcbMixin:
         """The rip-up primitive: reset one net's sketch back to
         ``'unrouted'`` and drop its realized copper — the LLM's lever when
         the realizer reports an over-capacity gap (backlog's rip-up loop).
-        A subsequent ``op='route'`` re-decides that net's topology fresh —
+        A future router re-decides that net's topology fresh —
         a rip clears the whole persisted sketch, not just the realized
         geometry, since a pinned choice that caused the squeeze shouldn't
         survive the rip that was meant to escape it. Returns whether a
@@ -4406,7 +4406,7 @@ class PcbMixin:
         persisted ``pcb_routes.topology`` (replacing at most the one entry
         keyed by ``(a, b)``, never the wholesale replace
         :meth:`pcb_routes_write`'s checkpoint does), so the pin survives
-        until the next ``op='route'`` run reads it back via
+        until a future route run reads it back via
         :func:`precis.pcb.session.apply_route_overrides`. Creates the
         net's ``pcb_routes`` row (status ``'unrouted'``) if none exists yet
         — pinning a side is a legitimate first edit to an as-yet-unrouted

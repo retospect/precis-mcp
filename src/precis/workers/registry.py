@@ -772,18 +772,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.JOB,
         one_line="Placement-only anneal over a pcb design's graph — "
         "minted by put(kind='pcb', args={'op':'place'}).",
-        doc_skill="precis-pcb-route-help",
-    ),
-    ServiceSpec(
-        # Same tool-surface slice; the joint place+sketch anneal +
-        # realize checkpoint behind put(kind='pcb', args={'op':'route'}).
-        name="pcb_route",
-        label="PCB route (job)",
-        category="jobs",
-        kind=ServiceKind.JOB,
-        one_line="Joint place+sketch anneal + realize checkpoint over a "
-        "pcb design's graph — minted by put(kind='pcb', args={'op':'route'}).",
-        doc_skill="precis-pcb-route-help",
+        doc_skill="precis-pcb-help",
     ),
     ServiceSpec(
         # Fetch + ingest + link one LCSC part's datasheet; minted by
@@ -795,7 +784,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.JOB,
         one_line="Fetch, ingest and link the datasheet of a part a pcb "
         "design uses — minted by put(kind='pcb').",
-        doc_skill="precis-pcb-route-help",
+        doc_skill="precis-pcb-help",
     ),
     ServiceSpec(
         # docs/backlog/pcb-argue-with-design.md slice 2: answer a pcb
@@ -814,7 +803,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         cost_sources=("pcb-argue",),
         one_line="Answer a pcb design's open argument notes in place — "
         "minted by put(kind='job', job_type='pcb_argue', parent_id=<pcb>).",
-        doc_skill="precis-pcb-route-help",
+        doc_skill="precis-pcb-help",
     ),
     ServiceSpec(
         # Extract a part's datasheet facts (pin table, required externals,

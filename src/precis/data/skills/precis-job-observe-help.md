@@ -46,7 +46,7 @@ way (`put(kind='job', parent_id=…, job_type=…, params=…)`).
 
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
-| `pcb_place` / `pcb_route` | `job_inproc` | The enqueued halves of `put(kind='pcb', args={'op':'place'|'route'})` — placement-only anneal, resp. joint place+sketch anneal + realize checkpoint (see `precis-pcb-route-help`) |
+| `pcb_place` | `job_inproc` | The enqueued `put(kind='pcb', args={'op':'place'})` — the placement anneal; `pcb_route` is gone (`op='route'` refuses — routing retired 2026-10-25; see `precis-pcb-help`) |
 | `retrosynth`      | `ssh_node`      | Plan a retrosynthesis route to a target molecule on the compute lane (see `precis-rxn-help`) |
 | `autocatpath_seed` | `ssh_node`     | One `(model, seed)` unit of an autocatpath pathway exploration; stashes the JSON partial for the sibling aggregate (see `precis-pathway-help`) |
 | `autocatpath_aggregate` | `ssh_node` | Fold the seed fan-out's partials into the pathway's graph + pooled-uncertainty result on the pathway ref |
@@ -220,7 +220,7 @@ cadence is due, not broken (any live worker may claim it).
 
 - [[precis-job-help]] — submit, poll, cancel; the parent-todo contract
 - [[precis-pathway-help]] — the coverage-scan recipe and pathway lane
-- [[precis-pcb-route-help]] — the pcb place/route lane
+- [[precis-pcb-help]] — the pcb place lane
 - [[precis-rxn-help]] — the retrosynthesis lane
 - [[precis-status-help]] — the build serving *your own* process
 - [[precis-nursery-help]] — alerts

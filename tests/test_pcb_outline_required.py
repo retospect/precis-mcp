@@ -1,7 +1,8 @@
 """A board must have a closed outline, otherwise nothing goes (Reto
 2026-10-20: "this fails DRC. Board must have closed outline, otherwise
-nothing goes."). Pins the DRC rule ``outline_missing`` and the up-front
-route refusal in the ``op='route'`` handler path."""
+nothing goes."). Pins the DRC rule ``outline_missing``. The up-front
+route refusal died with routing (gr515107): ``op='route'`` now refuses
+unconditionally before any outline check."""
 
 from __future__ import annotations
 
@@ -91,29 +92,26 @@ _DESIGN: dict[str, Any] = {
 
 
 @pytest.mark.db
-def test_op_route_refuses_an_outline_less_board_and_enqueues_nothing(store) -> None:
+def test_op_route_refuses_before_any_outline_check(store) -> None:
+    """Routing is retired (gr515107): ``op='route'`` raises the retired
+    refusal — not the outline refusal — and enqueues nothing, on an
+    outline-less board and on a closed one alike."""
     pcb = PcbHandler(hub=Hub(store=store))
     pcb.put(id="no-outline", args=_DESIGN)
     ref = store.get_ref(kind="pcb", id="no-outline")
     assert ref is not None
 
-    with pytest.raises(BadInput, match="no outline") as exc:
+    with pytest.raises(BadInput, match="routing is retired") as exc:
         pcb.put(id="no-outline", args={"op": "route"})
-    assert "'ftype':'outline'" in str(exc.value.next)
-    assert "no-outline" in str(exc.value.next)
+    assert "op':'place'" in str(exc.value.next)
+
+    # A closed outline changes nothing: the op is gone, not gated.
+    pcb.put(id="no-outline", args={"features": [closed_outline()]})
+    with pytest.raises(BadInput, match="routing is retired"):
+        pcb.put(id="no-outline", args={"op": "route"})
     with store.pool.connection() as conn:
         n = conn.execute(
             "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
             (ref.id,),
         ).fetchone()[0]
     assert n == 0
-
-    # With a closed outline the same call enqueues.
-    pcb.put(id="no-outline", args={"features": [closed_outline()]})
-    pcb.put(id="no-outline", args={"op": "route"})
-    with store.pool.connection() as conn:
-        n = conn.execute(
-            "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
-            (ref.id,),
-        ).fetchone()[0]
-    assert n == 1

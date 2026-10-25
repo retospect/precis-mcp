@@ -567,9 +567,9 @@ def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
 
 
 def test_drc_view_reports_a_clearance_violation_on_realized_copper(pcb):
-    # Seed pcb_copper directly (the pcb_route job's own write path,
-    # precis.pcb.session/workers.job_types.pcb_route) rather than running
-    # the full optimizer — this test is only exercising the store->drc.py
+    # Seed pcb_copper directly (stored copper is pre-deletion board
+    # state — no router writes it any more) rather than running a job —
+    # this test is only exercising the store->drc.py
     # ->handler wiring, not the router itself (see test_pcb_drc.py for the
     # engine's own rule/oracle coverage).
     pcb.put(id="sensor-node", args=_DESIGN)
@@ -1067,34 +1067,6 @@ def test_op_place_enqueues_and_is_idempotent_per_content_hash(pcb, store):
     assert n == 1
 
 
-def test_op_route_dedup_key_carries_the_route_code_version(pcb, store, monkeypatch):
-    """Re-putting op='route' on an unchanged board dedupes to the same job;
-    a route-code version bump enqueues a NEW one (the old job's result was
-    produced by older code)."""
-    from precis.workers.job_types import pcb_route as pcb_route_job
-
-    pcb.put(id="idem-route", args=_CROSSED_OUTLINED)
-    ref = store.get_ref(kind="pcb", id="idem-route")
-    assert ref is not None
-
-    def _n_jobs() -> int:
-        with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
-                (ref.id,),
-            ).fetchone()
-        assert row is not None
-        return int(row[0])
-
-    pcb.put(id="idem-route", args={"op": "route"})
-    pcb.put(id="idem-route", args={"op": "route"})
-    assert _n_jobs() == 1
-
-    monkeypatch.setattr(pcb_route_job, "CODE_VERSION", pcb_route_job.CODE_VERSION + 1)
-    pcb.put(id="idem-route", args={"op": "route"})
-    assert _n_jobs() == 2
-
-
 def test_op_place_never_computes_inline(pcb, store, monkeypatch):
     """The serve thread-pool starvation lesson (backlog, verbatim): heavy
     compute must never run in the MCP request path. Patches the optimizer
@@ -1192,105 +1164,35 @@ def test_enqueue_note_keeps_cluster_caveat_when_a_worker_is_live(pcb, store):
             conn.commit()
 
 
-def test_op_route_warm_start_flag(store, monkeypatch):
-    """``warm_start`` reaches the job params and its idem key; an invalid
-    value is refused at enqueue and, if it reaches the job, fails it."""
-    from types import SimpleNamespace
-    from unittest.mock import Mock
-
-    from precis.workers.job_types import pcb_route
-
-    hub = Hub(store=store)
-    PcbHandler(hub=hub).put(id="route-warm-start", args=_CROSSED_OUTLINED)
-    ref = store.get_ref(kind="pcb", id="route-warm-start")
+def test_op_route_refuses_before_any_enqueue(pcb, store):
+    """gr515107 — routing is retired (vroute deleted 2026-10-25, tag
+    ``vroute-final``; the topological router is the only router and its
+    realiser is not landed yet). ``op='route'`` refuses with the retired
+    message and ``next=``, minting no job — workers/test_pcb_route.py
+    pins the same refusal one level down."""
+    pcb.put(id="retired-route", args=_CROSSED_OUTLINED)
+    ref = store.get_ref(kind="pcb", id="retired-route")
     assert ref is not None
-    job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
-    monkeypatch.setattr(hub, "sibling", lambda kind: job)
-    handler = PcbHandler(hub=hub)
-    handler._enqueue_op(ref, "route", {"warm_start": "radial"})
-    assert job.put.call_args.kwargs["params"]["warm_start"] == "radial"
-    radial_key = job.put.call_args.kwargs["idem_key"]
-    handler._enqueue_op(ref, "route", {})
-    assert "warm_start" not in job.put.call_args.kwargs["params"]
-    assert job.put.call_args.kwargs["idem_key"] != radial_key
-    with pytest.raises(BadInput, match="warm_start"):
-        handler._enqueue_op(ref, "route", {"warm_start": "invalid"})
-    ctx: Any = SimpleNamespace(
-        meta={"params": {"warm_start": "invalid"}}, record_failure=Mock()
-    )
-    pcb_route._dispatch(ctx, pcb_route.SPEC)
-    ctx.record_failure.assert_called_once()
-
-
-def test_op_route_corridor_and_escape_flags(store, monkeypatch):
-    """``corridor``/``escape`` reach the job params and its idem key;
-    an invalid ``escape`` is refused at enqueue. Absent, neither key is
-    in params — the digest is the plain router's."""
-    from types import SimpleNamespace
-    from unittest.mock import Mock
-
-    hub = Hub(store=store)
-    PcbHandler(hub=hub).put(id="route-opt-ins", args=_CROSSED_OUTLINED)
-    ref = store.get_ref(kind="pcb", id="route-opt-ins")
-    assert ref is not None
-    job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
-    monkeypatch.setattr(hub, "sibling", lambda kind: job)
-    handler = PcbHandler(hub=hub)
-    handler._enqueue_op(ref, "route", {"corridor": 5, "escape": "plaza"})
-    params = job.put.call_args.kwargs["params"]
-    assert params["corridor"] == 5.0 and params["escape"] == "plaza"
-    opt_key = job.put.call_args.kwargs["idem_key"]
-    handler._enqueue_op(ref, "route", {})
-    params = job.put.call_args.kwargs["params"]
-    assert "corridor" not in params and "escape" not in params
-    assert job.put.call_args.kwargs["idem_key"] != opt_key
-
-
-def test_op_route_accepts_corridor_and_escape_opts(pcb, store):
-    """``corridor``/``escape`` must be in ``ARGS_KEYS['put']`` — the job
-    schema took them but dispatch refused the ``put()`` args outright,
-    a bug the ``_enqueue_op`` tests could not see because they enter
-    below the dispatch validation."""
-    pcb.put(id="route-opts", args=_CROSSED_OUTLINED)
-    resp = pcb.put(
-        id="route-opts", args={"op": "route", "corridor": 5, "escape": "plaza"}
-    )
-    assert "enqueued" in resp.body
-    ref = store.get_ref(kind="pcb", id="route-opts")
-    assert ref is not None
+    with pytest.raises(BadInput, match="routing is retired") as exc:
+        pcb.put(id="retired-route", args={"op": "route", "seed": 0})
+    assert "op':'place'" in str(exc.value.next)
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT meta->'params'->>'corridor', meta->'params'->>'escape' "
-            "FROM refs WHERE kind = 'job' AND parent_id = %s "
-            "ORDER BY ref_id DESC LIMIT 1",
+            "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
             (ref.id,),
         ).fetchone()
-    assert row is not None
-    assert float(row[0]) == 5.0 and row[1] == "plaza"
+    assert row is not None and row[0] == 0
 
 
-def test_op_route_enqueues_a_pcb_route_job(pcb, store):
-    pcb.put(id="route-enqueue", args=_CROSSED_OUTLINED)
-    resp = pcb.put(id="route-enqueue", args={"op": "route"})
-    assert "enqueued" in resp.body
-    ref = store.get_ref(kind="pcb", id="route-enqueue")
-    assert ref is not None
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT meta->>'job_type' FROM refs WHERE kind = 'job' AND parent_id = %s",
-            (ref.id,),
-        ).fetchone()
-    assert row == ("pcb_route",)
-
-
-def test_op_route_refuses_a_stale_generator_expansion(pcb, store, monkeypatch):
+def test_op_place_warns_but_enqueues_a_stale_generator_expansion(
+    pcb, store, monkeypatch
+):
     """gr480010 — job 479998 routed ewod-dogfood-6 over an ARR1 expansion
     stored at v3 while the code emitted v4: warned, routed anyway,
-    committed the degraded result. A route over a stale expansion is now
-    REFUSED at enqueue, with the refresh named (re-put the generators
-    entry); ``op='place'`` still warns-and-enqueues."""
+    committed the degraded result. The route arm died with the op
+    (routing is retired, gr515107) — ``op='route'`` now refuses retired
+    before the stale check is ever reached; ``op='place'`` keeps the
+    warn-and-enqueue behavior and names the refresh."""
     from precis.pcb import generators as pcb_generators
     from precis.pcb.generators import GeneratorExpansion
 
@@ -1323,9 +1225,8 @@ def test_op_route_refuses_a_stale_generator_expansion(pcb, store, monkeypatch):
     assert ref is not None
     assert pcb_generators.stale_generators(store.pcb_generators_for(ref.id))
 
-    with pytest.raises(BadInput, match="stale") as exc:
+    with pytest.raises(BadInput, match="routing is retired"):
         pcb.put(id="stale-gen-route", args={"op": "route"})
-    assert "put the same generators entry again" in str(exc.value.next)
     # Nothing was enqueued.
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -1334,8 +1235,8 @@ def test_op_route_refuses_a_stale_generator_expansion(pcb, store, monkeypatch):
         ).fetchone()
     assert row is not None and row[0] == 0
 
-    # op='place' keeps the warn-and-enqueue behavior (the gripe scoped the
-    # refusal to route); the note still names the refresh.
+    # op='place' keeps the warn-and-enqueue behavior; the note still names
+    # the refresh.
     resp = pcb.put(id="stale-gen-route", args={"op": "place"})
     assert "enqueued" in resp.body
     assert "stale" in resp.body
@@ -1367,97 +1268,18 @@ def test_op_place_rejects_non_4_layer_stackup(pcb, store):
         pcb.put(id="op-2layer", args={"op": "place"})
 
 
-@pytest.mark.parametrize("negotiate", [0, 10, 100])
-def test_op_route_negotiate_enqueues_and_dedupes_exact_params(pcb, store, negotiate):
-    pcb.put(id="op-negotiate-valid", args=_CROSSED_OUTLINED)
-    ref = store.get_ref(kind="pcb", id="op-negotiate-valid")
-    assert ref is not None
-    args = {"op": "route", "seed": 0, "iters": 3000, "negotiate": negotiate}
-    first = pcb.put(id="op-negotiate-valid", args=args)
-    assert "enqueued" in first.body
-    pcb.put(id="op-negotiate-valid", args=args)
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT meta->'params' FROM refs WHERE kind='job' AND parent_id=%s",
-            (ref.id,),
-        ).fetchall()
-    assert len(rows) == 1
-    assert rows[0][0] == {
-        "pcb_ref_id": ref.id,
-        "seed": 0,
-        "iters": 3000,
-        "negotiate": negotiate,
-    }
-    # An omitted knob remains the existing off-by-default contract, and
-    # must not dedupe to an enabled negotiation job.
-    pcb.put(id="op-negotiate-valid", args={"op": "route", "seed": 0, "iters": 3000})
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT meta->'params' FROM refs WHERE kind='job' AND parent_id=%s",
-            (ref.id,),
-        ).fetchall()
-    assert len(rows) == 2
-    assert any("negotiate" not in r[0] for r in rows)
-
-
-def test_op_route_loop_is_deprecated_accepted_and_ignored(store, monkeypatch):
-    """``loop`` (the route -> penalise -> anneal outer loop) was removed
-    with the priced-expansion machinery (Reto 2026-10-25): DEPRECATED for
-    one release — the handler forwards it verbatim so the job can report
-    it in the run's ``ignored`` list rather than refuse a stale caller.
-    The design's authored ``meta.expansion_caps`` is no longer read at
-    all."""
-    from types import SimpleNamespace
-    from unittest.mock import Mock
-
-    hub = Hub(store=store)
-    PcbHandler(hub=hub).put(id="op-loop", args=_CROSSED_OUTLINED)
-    ref = store.get_ref(kind="pcb", id="op-loop")
-    assert ref is not None
-    job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
-    monkeypatch.setattr(hub, "sibling", lambda kind: job)
-    handler = PcbHandler(hub=hub)
-    handler._enqueue_op(ref, "route", {"loop": 2})
-    assert job.put.call_args.kwargs["params"]["loop"] == 2
-    handler._enqueue_op(ref, "route", {})
-    assert "loop" not in job.put.call_args.kwargs["params"]
-
-
-def test_op_route_cleanup_is_deprecated_accepted_and_ignored(store, monkeypatch):
-    """``cleanup`` was removed with the grid router (Reto 2026-10-25):
-    DEPRECATED for one release — the handler forwards it verbatim so the
-    job can report it in the run's ``ignored`` list rather than refuse a
-    stale caller."""
-    from types import SimpleNamespace
-    from unittest.mock import Mock
-
-    hub = Hub(store=store)
-    PcbHandler(hub=hub).put(id="op-cleanup", args=_CROSSED_OUTLINED)
-    ref = store.get_ref(kind="pcb", id="op-cleanup")
-    assert ref is not None
-    job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
-    monkeypatch.setattr(hub, "sibling", lambda kind: job)
-    handler = PcbHandler(hub=hub)
-    handler._enqueue_op(ref, "route", {"cleanup": False})
-    assert job.put.call_args.kwargs["params"]["cleanup"] is False
-    handler._enqueue_op(ref, "route", {"cleanup": True})
-    assert job.put.call_args.kwargs["params"]["cleanup"] is True
-
-
-def test_op_route_force_must_be_boolean(pcb):
+def test_op_place_force_must_be_boolean(pcb):
     pcb.put(id="op-force-bad", args=_CROSSED_OUTLINED)
     with pytest.raises(BadInput, match="force"):
-        pcb.put(id="op-force-bad", args={"op": "route", "force": "yes"})
+        pcb.put(id="op-force-bad", args={"op": "place", "force": "yes"})
 
 
-def test_op_route_force_true_lands_in_job_params(pcb, store):
+def test_op_place_force_true_lands_in_job_params(pcb, store):
     pcb.put(id="op-force-ok", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="op-force-ok")
     assert ref is not None
-    pcb.put(id="op-force-ok", args={"op": "route", "seed": 0, "force": True})
-    pcb.put(id="op-force-ok", args={"op": "route", "seed": 0, "force": False})
+    pcb.put(id="op-force-ok", args={"op": "place", "seed": 0, "force": True})
+    pcb.put(id="op-force-ok", args={"op": "place", "seed": 0, "force": False})
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT meta->'params' FROM refs WHERE kind='job' AND parent_id=%s",
@@ -3027,7 +2849,7 @@ def test_op_move_rips_the_nets_on_a_moved_pad_and_keeps_routed_copper_elsewhere(
     )
 
     assert f"ripped 1 net(s): {arr_net}" in resp.body
-    assert "re-route with op='route'" in resp.body
+    assert "routing is retired" in resp.body
     assert store.pcb_nets_with_router_copper(board_id) == {"NX"}
     status = {r["name"]: r["status"] for r in store.pcb_route_status(ref.id)}
     assert status[arr_net] == "unrouted"
@@ -3482,7 +3304,10 @@ def test_footprint_bigger_pads_rip_router_copper_and_store_the_footprint(pcb, st
         _FP_P2,
         {"pads": [{"pin": "1", "shape": "rect", "x": 0, "y": 0, "w": 3.0, "h": 1.0}]},
     )
-    assert "A ripped: clearance after this footprint change — re-route" in resp.body
+    assert (
+        "A ripped: clearance after this footprint change — its stored copper "
+        "stays cleared" in resp.body
+    )
     assert store.pcb_nets_with_router_copper(board_id) == set()
     row = store.part_footprint_get(_FP_P2)
     assert row is not None and row["pads"][0]["w"] == 3.0
@@ -4138,7 +3963,6 @@ def test_tuple_client_of_reaches_the_matching_model(pcb, store):
     ``_matching_model`` builds ``Client.members`` and the solve binds the
     pair to a same-size block member-for-member."""
     from precis.pcb import matching
-    from precis.workers.job_types import pcb_route
 
     pcb.put(
         id="tuple-rt",
@@ -4181,7 +4005,7 @@ def test_tuple_client_of_reaches_the_matching_model(pcb, store):
     }
     assert metas[("J1", "DP")]["client_of"] == {"role": "usb", "members": ["DP", "DM"]}
     assert "client_of" not in metas[("J1", "DM")]
-    clients, supplies, roles = pcb_route._matching_model(g, [])
+    clients, supplies, roles = matching._matching_model(g, [])
     by_head = {(c.instance, c.pin): c for c in clients}
     assert set(by_head) == {("J1", "DP"), ("J1", "SOLO")}
     assert by_head[("J1", "DP")].members == ("DP", "DM")
