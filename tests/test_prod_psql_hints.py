@@ -10,6 +10,7 @@ coordinates.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +62,32 @@ def test_help_prints_usage_and_the_schema_cheat_sheet(tmp_path: Path) -> None:
         assert "docs/reference/schema.md" in r.stdout
         assert "ref_id" in r.stdout and "\\d <table>" in r.stdout
         assert "chunk_embeddings" in r.stdout
+
+
+_SCHEMA_MD = Path(__file__).resolve().parents[1] / "docs" / "reference" / "schema.md"
+
+
+def test_help_cheat_sheet_names_only_tables_in_the_generated_schema(
+    tmp_path: Path,
+) -> None:
+    """gr514901: the "Names that bite" block is hand-maintained while
+    docs/reference/schema.md is regenerated from prod. The sync pin is that
+    every table the cheat sheet names is still a table in the generated doc —
+    a regen that drops or renames one fails here."""
+    r = _run(tmp_path, "--help")
+    assert r.returncode == 0
+    cheat = r.stdout.split("Names that bite:", 1)[-1]
+    named = re.findall(r"^  ([a-z_][a-z0-9_]*)\s", cheat, re.M)
+    assert named, "the --help cheat sheet block was not found"
+    schema_tables = set(
+        re.findall(
+            r"^    ([a-z_][a-z0-9_]*) \{$",
+            _SCHEMA_MD.read_text(encoding="utf-8"),
+            re.M,
+        )
+    )
+    assert schema_tables
+    assert set(named) <= schema_tables, set(named) - schema_tables
 
 
 def test_unknown_column_gets_the_schema_pointer(tmp_path: Path) -> None:

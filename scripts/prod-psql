@@ -84,6 +84,10 @@
 #   PRECIS_PROD_WRITE_MAX_ROWS=500    # row cap for UPDATE/DELETE (default 100)
 set -euo pipefail
 
+# The "Names that bite" cheat sheet below is hand-maintained: every table it
+# names is pinned to docs/reference/schema.md by
+# tests/test_prod_psql_hints.py, so a regenerated schema that drops or renames
+# one fails the gate until this block is updated.
 usage() {
     cat <<'EOF'
 usage: scripts/prod-psql [--ro] "SQL"     # one-shot query (or SQL on stdin)

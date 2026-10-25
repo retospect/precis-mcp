@@ -29,8 +29,7 @@ re-generates, the rest of the board is untouched.
 measures ~880 moves/s on a real board — minutes, not milliseconds — so
 `put(args={'op':'place'|'route'})` always returns a **job id** immediately;
 poll `get(kind='job', id='<id>')` or just re-check the design's views a
-little later. This is the same thread-pool-starvation lesson every other
-heavy-compute kind in this server follows (structure relax, cad discuss).
+little later.
 
 ## Enqueue a place or route job
 
@@ -48,9 +47,7 @@ executor lane (see `precis-job-help`).
 - `op='route'` — the JOINT engine: placement **and** sketch move together,
   followed by a realize checkpoint that writes `pcb_routes` (the sketch)
   and `pcb_copper` (derived geometry). Also re-places, so running `route`
-  alone is a complete place+route pass — you don't need to run `place`
-  first, though pinning placement early with `fixed=` still helps the
-  anneal converge faster.
+  alone is a complete place+route pass — no need to run `place` first.
 - Both accept `iters` (anneal step budget) and `seed` (RNG seed, for
   reproducibility). `fixed='xy'|'rot'|'both'` on a component (set at
   authoring time, or via `op='move'` below) is respected by both — a
@@ -231,6 +228,10 @@ get(kind="pcb", id="sensor-node", view="route-status")  # per-net: unrouted|sket
 get(kind="pcb", id="sensor-node", view="congestion")     # the run's over-capacity-gap warnings
 ```
 
+local job result: `chunks WHERE ref_id=<job> AND chunk_kind='job_summary'`
+(what `get(kind='job')` prints as `## summary`; tests read it with
+`job_summary_text(store, job_id)`).
+
 A net only ever reads `'realized'` when it is **actually clean** — no
 residual same-layer crossing, no over-capacity gap, and its pads plus
 fixed and routed copper form **one connected piece** (the same check
@@ -248,6 +249,8 @@ stays inspectable — unless the result is worse than the board it would
 replace (see "A worse result is never committed" below), in which case
 nothing is written. The job's reason lists the failed nets. A failed route
 job is not a crash: read `view='route-status'`, fix, and re-route.
+
+## Route refusals and the congestion view
 
 **Fixed copper on another net's pad refuses the route.** If a fixed via or
 track has a clearance error against a pad of a different net, the job
