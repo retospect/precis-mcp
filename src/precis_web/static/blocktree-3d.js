@@ -1672,7 +1672,12 @@ export async function blocktreeViewer3D({
   //: gr508637 — the viewer's dark theme flag, kept at page scope so the
   //: per-render overlay rebuild below inherits it (the vendored theme
   //: itself is display-level and survives re-renders on its own).
-  let nightOn = false;
+  //: gr515635 — seeded from the system scheme: the vendored chrome rides
+  //: theme:"browser" and darkens itself, so a dark desktop without this
+  //: seed got dark chrome under a day-palette molecule render.
+  const _schemeDark =
+    window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  let nightOn = !!(_schemeDark && _schemeDark.matches);
   let atomicReady = Promise.resolve(null);
 
   // An atom click opens the pick panel. A click, not a drag: the press
@@ -2258,18 +2263,31 @@ export async function blocktreeViewer3D({
   // background); the atoms take their own night palette through the
   // overlay (H grayer, C whiter). Best-effort: a vendored theme that
   // can't switch leaves the button inert, never the viewer broken.
+  function applyNight(on) {
+    nightOn = on;
+    try {
+      viewer.setTheme(on ? "dark" : "light");
+    } catch (err) {
+      console.error("blocktree-3d: theme switch failed", err);
+    }
+    if (atomicOverlay && atomicOverlay.setNight) atomicOverlay.setNight(on);
+    if (nightButton) {
+      nightButton.textContent = on ? "day" : "night";
+      nightButton.setAttribute("aria-pressed", String(on));
+    }
+  }
   if (nightButton) {
-    nightButton.addEventListener("click", () => {
-      nightOn = !nightOn;
-      try {
-        viewer.setTheme(nightOn ? "dark" : "light");
-      } catch (err) {
-        console.error("blocktree-3d: theme switch failed", err);
-      }
-      if (atomicOverlay && atomicOverlay.setNight) atomicOverlay.setNight(nightOn);
-      nightButton.textContent = nightOn ? "day" : "night";
-      nightButton.setAttribute("aria-pressed", String(nightOn));
-    });
+    // The vendored chrome is already on the system scheme (theme:
+    // "browser"); the button and the atom palette start on it too.
+    nightButton.textContent = nightOn ? "day" : "night";
+    nightButton.setAttribute("aria-pressed", String(nightOn));
+    nightButton.addEventListener("click", () => applyNight(!nightOn));
+  }
+  // Follow the system scheme live the way the vendored chrome does: a
+  // manual toggle holds until the next system flip, same as the chrome
+  // (whose own media listener also re-fires then).
+  if (_schemeDark && _schemeDark.addEventListener) {
+    _schemeDark.addEventListener("change", (e) => applyNight(e.matches));
   }
   // Full window: the shell itself goes fullscreen (tree + canvas + our
   // own scale bar all come along); Esc exits by UA convention, and the

@@ -39,17 +39,37 @@ _ALLOWED = {
 #: ``insert_ref`` sites whose ``kind`` the scanner cannot prove is not
 #: ``'job'`` (a parameter passthrough, or an attribute of a generic
 #: base/other object), individually verified to be non-job paths.
-#: ``(relpath, lineno) -> why it is safe``.
-_ALLOWED_UNRESOLVED: dict[tuple[str, int], str] = {
-    ("precis/diagram/handler.py", 296): "lang.kind — a diagram language's own ref kind",
-    ("precis/handlers/_finding_acquire.py", 249): "kind param — finding mint",
-    ("precis/handlers/_numeric_ref.py", 2805): (
-        "self.kind on the generic numeric base — JobHandler stamps "
-        "origin in its own put(), not here"
+#: ``(relpath, enclosing qualname) -> (why it is safe, how many calls)`` —
+#: anchored on the enclosing function, never a line number: code above
+#: the call moving never shifts a qualname (gr515708). A second
+#: unresolvable call in the same function trips the count, and a pin
+#: naming a function that no longer has one is flagged stale.
+_ALLOWED_UNRESOLVED: dict[tuple[str, str], tuple[str, int]] = {
+    ("precis/diagram/handler.py", "DiagramHandler.put"): (
+        "lang.kind — a diagram language's own ref kind",
+        1,
     ),
-    ("precis/store/_cache_ops.py", 450): "kind param — cached-copy writes",
-    ("precis/store/_draft_ops.py", 2076): "kind param — draft ops",
-    ("precis/store/_value_entity_ops.py", 33): "kind param — value-entity kinds",
+    ("precis/handlers/_finding_acquire.py", "put_acquiring"): (
+        "kind param — finding mint",
+        1,
+    ),
+    ("precis/handlers/_numeric_ref.py", "NumericRefHandler._create"): (
+        "self.kind on the generic numeric base — JobHandler stamps "
+        "origin in its own put(), not here",
+        1,
+    ),
+    ("precis/store/_cache_ops.py", "CacheMixin.put_cache_entry"): (
+        "kind param — cached-copy writes",
+        1,
+    ),
+    ("precis/store/_draft_ops.py", "DraftStore.create_draft"): (
+        "kind param — draft ops",
+        1,
+    ),
+    ("precis/store/_value_entity_ops.py", "entity_upsert"): (
+        "kind param — value-entity kinds",
+        1,
+    ),
 }
 
 _INSERT_RE = re.compile(r"INSERT\s+INTO\s+refs\b", re.IGNORECASE)
@@ -141,6 +161,19 @@ def _insert_ref_calls(tree: ast.Module) -> list[ast.Call]:
     ]
 
 
+def _enclosing_qualname(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> str:
+    """The dotted ``Class.func`` path enclosing the call — the anchor
+    ``_ALLOWED_UNRESOLVED`` pins, stable to edits anywhere above the
+    call site (gr515708)."""
+    parts: list[str] = []
+    cur: ast.AST | None = call
+    while cur is not None:
+        if isinstance(cur, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            parts.append(cur.name)
+        cur = parents.get(cur)
+    return ".".join(reversed(parts)) or "<module>"
+
+
 def _sql_strings(tree: ast.Module) -> list[tuple[int, str]]:
     """``(lineno, text)`` of every string constant, joined-str parts
     concatenated — where a raw ``INSERT INTO refs`` could hide."""
@@ -168,6 +201,7 @@ def _bare_job_inserts() -> list[str]:
     not a job and is not allowlisted, or a raw ``INSERT INTO refs``
     carrying a ``'job'`` literal."""
     bad: list[str] = []
+    unresolved: dict[tuple[str, str], list[int]] = {}
     for path in sorted(_SRC.rglob("*.py")):
         rel = path.relative_to(_SRC).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
@@ -182,11 +216,28 @@ def _bare_job_inserts() -> list[str]:
                 resolved = _resolve_kind(kind_arg, consts, parents, call)
                 if resolved == "job":
                     bad.append(f"{rel}:{call.lineno} (literal kind='job')")
-                elif resolved is None and (rel, call.lineno) not in _ALLOWED_UNRESOLVED:
-                    bad.append(f"{rel}:{call.lineno} (unresolvable kind)")
+                elif resolved is None:
+                    key = (rel, _enclosing_qualname(call, parents))
+                    unresolved.setdefault(key, []).append(call.lineno)
         for lineno, text in _sql_strings(tree):
             if _INSERT_RE.search(text) and _JOB_LIT_RE.search(text):
                 bad.append(f"{rel}:{lineno} (raw INSERT INTO refs with 'job')")
+    for (rel, qualname), linenos in sorted(unresolved.items()):
+        pinned = _ALLOWED_UNRESOLVED.get((rel, qualname))
+        if pinned is None:
+            for ln in linenos:
+                bad.append(f"{rel}:{ln} (unresolvable kind, in {qualname})")
+        elif len(linenos) != pinned[1]:
+            bad.append(
+                f"{rel}:{qualname} has {len(linenos)} unresolvable "
+                f"insert_ref calls, _ALLOWED_UNRESOLVED pins {pinned[1]}"
+            )
+    for (rel, qualname), (_why, count) in sorted(_ALLOWED_UNRESOLVED.items()):
+        if len(unresolved.get((rel, qualname), [])) < count:
+            bad.append(
+                f"{rel}:{qualname} — _ALLOWED_UNRESOLVED pins {count} "
+                f"unresolvable call(s) that are no longer there (stale pin)"
+            )
     return bad
 
 

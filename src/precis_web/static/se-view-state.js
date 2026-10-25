@@ -42,21 +42,31 @@ export function createObjectVisibility() {
       const st = states.get(path);
       return !st || st[1] !== HIDDEN;
     },
-    //: Entries worth re-applying after a fresh render: a plain 0/1 pair
-    //: with something hidden. Mixed (2) groups follow from their children;
-    //: shown-by-default entries need nothing.
-    hiddenStates() {
+    //: Entries worth re-applying after a fresh render: EVERY plain 0/1
+    //: pair, hidden or shown. Mixed (2) groups follow from their children.
+    //: Hidden entries are the obvious case; shown entries matter too once
+    //: a leaf can ship hidden-by-default (gr515634: solid leaves go
+    //: edges-off when the design has atoms) — re-applying only hides
+    //: would silently drop a user's outline-back-on on the next render.
+    trackedStates() {
       const out = {};
       for (const [path, st] of states) {
-        const plain = st.every((v) => v === HIDDEN || v === SHOWN);
-        if (plain && st.some((v) => v === HIDDEN)) out[path] = [st[0], st[1]];
+        if (st.every((v) => v === HIDDEN || v === SHOWN)) out[path] = [st[0], st[1]];
+      }
+      return out;
+    },
+    //: The tracked entries with something hidden — the historical read.
+    hiddenStates() {
+      const out = {};
+      for (const [path, st] of Object.entries(this.trackedStates())) {
+        if (st.some((v) => v === HIDDEN)) out[path] = st;
       }
       return out;
     },
     //: Re-apply onto a freshly rendered viewer (`viewer.setStates`).
     restore(viewer) {
-      const hidden = this.hiddenStates();
-      if (Object.keys(hidden).length) viewer.setStates(hidden);
+      const tracked = this.trackedStates();
+      if (Object.keys(tracked).length) viewer.setStates(tracked);
     },
     onChange(fn) {
       listeners.add(fn);

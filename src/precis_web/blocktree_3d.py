@@ -1319,6 +1319,15 @@ def build_scene(
         "bb": None,
         "parts": parts,
     }
+    # gr515634 — a design with structure-bound (atomic) blocks renders its
+    # atoms INSIDE the abstract envelope outlines; the wireframe edges
+    # over them are clutter there, so every solid leaf ships edges-off
+    # (the tree's own edge eyeball brings a block's outline back).
+    if any(
+        getattr(node, "bound_kind", None) == "structure"
+        for node in tree.blocks.values()
+    ):
+        _edges_default_off(shapes)
     offsets = explode_offsets(tree, lines, assembly.primary_path, magnitude=0.3 * diag)
     nodes = topology_nodes(tree, plan, uid_by_name, kids, assembly.primary_path)
     return Scene3D(
@@ -1329,6 +1338,23 @@ def build_scene(
         nodes=nodes,
         container_paths=list(assembly.container_paths),
     )
+
+
+def _edges_default_off(node: dict[str, Any]) -> None:
+    """Flip every ``"shapes"`` leaf's edge state to hidden — in place, on
+    the tree :func:`build_scene` emitted (gr515634). The leaf keeps its
+    ``[shape, 0]`` pair, so the vendored tree's edge eyeball shows the
+    outline off — the honest "off by default" — and can still turn it
+    back on. Edges-only leaves (the drawn connections) are untouched:
+    their shape slot is the empty state already."""
+    parts = node.get("parts")
+    if parts:
+        for part in parts:
+            _edges_default_off(part)
+        return
+    state = node.get("state")
+    if node.get("type") == "shapes" and isinstance(state, list) and len(state) == 2:
+        node["state"] = [state[0], 0]
 
 
 # ── swept tool/hand volumes of a failing finding (se-mechanical-drc ruling 5) ──

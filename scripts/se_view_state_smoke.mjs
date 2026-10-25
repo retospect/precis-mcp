@@ -24,7 +24,9 @@ assert.equal(vis.edgesShown('d/bud96'), true);
 assert.equal(vis.edgesShown('d/bud96 (grid)'), false, 'grid lines eye is its own flag');
 assert.equal(vis.shapeShown('d/other'), true, 'mixed group is not hidden');
 
-// Survives a revision step: restore() re-applies only plain hidden entries.
+// Survives a revision step: restore() re-applies every plain entry —
+// hidden AND shown, since a leaf can ship hidden-by-default (gr515634:
+// edges off with atoms) and a user's shown-over-default must not drop.
 assert.deepEqual(vis.hiddenStates(), {
   'd/bud96': [0, 1],
   'd/bud96 (grid)': [1, 0],
@@ -34,8 +36,17 @@ vis.restore({ setStates: (s) => applied.push(s) });
 assert.equal(applied.length, 1);
 assert.deepEqual(Object.keys(applied[0]).sort(), ['d/bud96', 'd/bud96 (grid)']);
 
-// A path missing from a later notification keeps its eye; showing it again clears it.
+// A path missing from a later notification keeps its eye; a shown entry
+// rides the same restore.
 vis.update({ 'd/x': [1, 1] });
+assert.equal(vis.shapeShown('d/bud96'), false);
+const appliedShown = [];
+vis.restore({ setStates: (s) => appliedShown.push(s) });
+assert.deepEqual(
+  Object.keys(appliedShown[0]).sort(),
+  ['d/bud96', 'd/bud96 (grid)', 'd/x'],
+  'shown entries re-apply too — a hidden-by-default leaf keeps its eye'
+);
 assert.equal(vis.shapeShown('d/bud96'), false);
 vis.update({ 'd/bud96': [1, 1] });
 assert.equal(vis.shapeShown('d/bud96'), true);

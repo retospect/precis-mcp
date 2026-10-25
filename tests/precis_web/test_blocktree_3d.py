@@ -7,6 +7,7 @@ fixtures, no DB."""
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -939,6 +940,61 @@ def test_build_scene_bundles_shapes_connections_explode_and_nodes() -> None:
     # hub/rim is a flat design — no block doubles its path, so nothing is
     # a "container" leaf (viewer fix).
     assert scene.container_paths == []
+
+
+def test_build_scene_edges_default_off_when_a_block_is_structure_bound() -> None:
+    """gr515634 — with atoms in the design the abstract envelope
+    outlines are off by default (the tree's edge eyeball still brings
+    one back): every solid leaf ships ``state: [1, 0]`` while the drawn
+    connections keep their own edges-only pair. A design with nothing
+    bound keeps the historical ``[1, 1]``."""
+    bound = _connected_tree()
+    # se sets bound_kind dynamically on its nodes — the route reads it
+    # with getattr for exactly that reason — so the write goes through
+    # Any, the honest spelling of a field the dataclass doesn't declare.
+    hub: Any = bound.blocks["hub"]
+    hub.bound_kind = "structure"
+    kids = children_map(bound)
+    plan = plan_visibility(bound, kids, level="refined", isolate=None)
+    scene = build_scene(
+        bound,
+        _effective_envelope,
+        kids,
+        plan,
+        _UIDS,
+        root_name="x",
+        label_fn=lambda c: "tie",
+        colour_fn=lambda c: "#16a34a",
+    )
+
+    def leaves(node: dict) -> list[dict]:
+        out = []
+        if "parts" in node:
+            for p in node["parts"]:
+                out.extend(leaves(p))
+            return out
+        return [node]
+
+    solids = [n for n in leaves(scene.shapes) if n.get("type") == "shapes"]
+    assert solids and all(n["state"] == [1, 0] for n in solids)
+    edges_only = [n for n in leaves(scene.shapes) if n.get("type") == "edges"]
+    assert edges_only and all(n["state"] == [3, 1] for n in edges_only)
+
+    plain_tree = _connected_tree()
+    plain_kids = children_map(plain_tree)
+    plain_plan = plan_visibility(plain_tree, plain_kids, level="refined", isolate=None)
+    plain = build_scene(
+        plain_tree,
+        _effective_envelope,
+        plain_kids,
+        plain_plan,
+        _UIDS,
+        root_name="x",
+        label_fn=lambda c: "tie",
+        colour_fn=lambda c: "#16a34a",
+    )
+    solids = [n for n in leaves(plain.shapes) if n.get("type") == "shapes"]
+    assert solids and all(n["state"] == [1, 1] for n in solids)
 
 
 def test_build_scene_container_paths_flags_a_block_with_its_own_envelope_and_kids() -> (

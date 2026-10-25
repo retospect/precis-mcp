@@ -166,10 +166,22 @@ def test_main_silent_when_clean(monkeypatch, tmp_path, capsys):
 
 
 def test_scripts_test_runs_the_guard_before_pytest():
-    text = (REPO / "scripts" / "test").read_text(encoding="utf-8")
-    assert "scripts/lib/check-lock-pins.py" in text
-    assert text.index("check-core-deps.py &&") < text.index("check-lock-pins.py &&")
-    assert "PRECIS_STRICT_LOCK_CHECK" in text
+    # The guard must run before pytest wherever the chain physically
+    # lives — scripts/test today, a helper it delegates to tomorrow
+    # (gr515703: a move of the literal && chain to pytest-inner.sh
+    # turned this pin red on a harmless reformat). Check the content of
+    # every candidate runner, not one file's exact string.
+    runners = [REPO / "scripts" / "test", REPO / "scripts" / "pytest-inner.sh"]
+    texts = [p.read_text(encoding="utf-8") for p in runners if p.exists()]
+    carriers = [t for t in texts if "check-lock-pins.py" in t]
+    assert carriers, (
+        "check-lock-pins.py runs in neither scripts/test nor pytest-inner.sh"
+    )
+    for text in carriers:
+        assert "check-core-deps.py" in text
+        assert text.index("check-core-deps.py") < text.index("check-lock-pins.py")
+        assert "pytest" in text[text.index("check-lock-pins.py") :]
+    assert any("PRECIS_STRICT_LOCK_CHECK" in t for t in texts)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX script")

@@ -267,7 +267,7 @@ def test_night_mode_and_full_window_buttons_are_wired() -> None:
         assert f'id="{bid}"' in tpl
     assert 'nightButton: document.getElementById("bt3d-night")' in tpl
     assert 'fullButton: document.getElementById("bt3d-full")' in tpl
-    assert 'viewer.setTheme(nightOn ? "dark" : "light")' in js
+    assert 'viewer.setTheme(on ? "dark" : "light")' in js
     assert "atomicOverlay.setNight" in js
     assert "viewerEl.requestFullscreen()" in js
     assert 'addEventListener("fullscreenchange"' in js
@@ -304,3 +304,30 @@ def test_night_and_fullscreen_css_exist() -> None:
     assert "#bt3d-viewer:fullscreen" in css
     assert '#bt3d-viewer[data-theme="dark"] .bt3d-scale-bar' in css
     assert '#bt3d-viewer[data-theme="dark"] .bt3d-scale-bar-label' in css
+
+
+# ── gr515634 / gr515635 ─────────────────────────────────────────────────
+
+
+def test_viewer_colour_scheme_follows_the_system() -> None:
+    """gr515635: the vendored chrome already rides ``theme: "browser"``
+    (its own prefers-color-scheme listener); the atom palette and the
+    night button now start on the same media query and keep tracking it —
+    a dark desktop no longer gets dark chrome under a day-palette render."""
+    js = _read(_STATIC / "blocktree-3d.js")
+    assert 'theme: "browser"' in js
+    assert 'matchMedia("(prefers-color-scheme: dark)")' in js
+    assert "let nightOn = !!(_schemeDark && _schemeDark.matches);" in js
+    assert '_schemeDark.addEventListener("change", (e) => applyNight(e.matches))' in js
+    # The button opens labelled for the inherited scheme, not always day.
+    assert 'nightButton.textContent = nightOn ? "day" : "night";' in js
+
+
+def test_eye_restore_reapplies_shown_states_too() -> None:
+    """gr515634: solid leaves can now ship edges-off by default (emitted
+    server-side, tested in test_blocktree_3d.py), so the restore seam
+    re-applies every plain pair — a user's outline-back-on survives the
+    next render instead of silently reverting to off."""
+    state = _read(_STATIC / "se-view-state.js")
+    assert "trackedStates()" in state
+    assert "viewer.setStates(tracked)" in state
