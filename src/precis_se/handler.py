@@ -2113,10 +2113,19 @@ class SeHandler(Handler):
         if v == "ops":
             from precis_se.ops_export import render_ops
 
+            slug = str(ref.slug)
             return Response(
-                body=render_ops(
-                    tree, ref.title or str(ref.slug), args, slug=str(ref.slug)
-                )
+                body=render_ops(tree, ref.title or slug, args, slug=slug),
+                # gr514235: an unsliced export that exceeds the fold is
+                # served with its middle elided, and ``more()`` re-folds —
+                # the footer's alt_hint names the slice call that recovers
+                # the elided ops.
+                pagination_alt_hint=(
+                    f"get(kind='se', id={slug!r}, view='ops', "
+                    "args={'offset': <0-based op index>, 'limit': <count>}) "
+                    "fetches one slice of the ops list — the concatenated "
+                    "slices' `ops` arrays are the whole replayable export"
+                ),
             )
         if v == "links":
             from precis.handlers._links_render import render_links_view

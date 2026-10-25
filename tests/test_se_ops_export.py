@@ -26,6 +26,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis_se import persist
 from precis_se.atomic.vocab import ThreadingSpec
@@ -583,6 +584,28 @@ def test_an_offset_past_the_end_is_an_honest_empty_slice(
     body = handler.get(id="big-ops4", view="ops", args={"offset": 999}).body
     assert "past the end" in body
     assert _fenced_ops(body) == []
+
+
+def test_a_folded_unsliced_view_names_the_slice_call(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr514235's read side: the unsliced export still exceeds the fold
+    and is served with its middle elided — the folded page's footer now
+    names the ``offset``/``limit`` call that recovers the elided ops,
+    not only the re-folding ``more()`` cursor."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "4096")
+    runtime_with_store.dispatch(
+        "put",
+        {"kind": "se", "id": "big-ops6", "text": json.dumps({"ops": _BIG_OPS})},
+    )
+    body = runtime_with_store.dispatch(
+        "get",
+        {"kind": "se", "id": "big-ops6", "view": "ops"},
+        fold=True,
+    )
+    assert "elided here" in body  # fixture guard: the export really folded
+    assert "If you only need part of this document: " in body
+    assert "view='ops', args={'offset': <0-based op index>, 'limit': <count>}" in body
 
 
 def test_slice_args_are_vetted_not_dropped(handler: SeHandler) -> None:
