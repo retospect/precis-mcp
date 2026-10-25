@@ -519,8 +519,8 @@ def test_out_writes_manifest_and_trace(tmp_path: Path, monkeypatch) -> None:
 def test_out_board_writes_pcb_manifest(tmp_path: Path, monkeypatch) -> None:
     """gr513754 — the sandbox lane's ``out.board(b)`` writes the
     ``kind='pcb'`` manifest at ``finish``; a Board handed to
-    ``out.block`` refuses naming it, and se rows refuse once a board
-    is declared."""
+    ``out.block`` routes to ``out.board``, and se rows refuse once a
+    board is declared."""
     import precis_geom.pcb as pcb
 
     monkeypatch.setenv("PRECIS_WS_OUT_DIR", str(tmp_path / "out"))
@@ -529,9 +529,7 @@ def test_out_board_writes_pcb_manifest(tmp_path: Path, monkeypatch) -> None:
     gnd = b.net("GND")
     gnd.tie(b.part("J1")["1"])
     with trace.run(work_root=_WORK_ROOT):
-        with pytest.raises(ValueError, match="out.board"):
-            out.block("board", b)
-        out.board(b)
+        out.block("board", b)  # a Board routes to out.board
         with pytest.raises(ValueError, match="kind='pcb'"):
             out.block("p", "box:w1")
         od = out.finish()

@@ -147,15 +147,18 @@ def block(
     ``blocks/<name>.bonds.json`` or an already-staged relative path.
     ``frame`` defaults to the calling trace frame. A
     :class:`precis_geom.assembly.Geom` flattens to geometry here and
-    carries its declared ports into the manifest entry."""
+    carries its declared ports into the manifest entry. A
+    :class:`precis_geom.pcb.Board` routes to :func:`board` — the run's
+    whole ``kind='pcb'`` manifest, not a block file (gr513754)."""
     from precis_geom import pcb as _pcb
     from precis_geom.out import _geom_parts
 
     if isinstance(obj, _pcb.Board):
-        raise ValueError(
-            f"out.block {name!r}: a pcb Board is a whole run's manifest "
-            "(kind='pcb'), not a block — use out.board(b)"
-        )
+        # gr513754 — a Board is the whole run's manifest, not a block;
+        # route to board(), which vets and declares it (``name`` and
+        # the block kwargs are unused on that path).
+        board(obj)
+        return
     _vet_not_board("block")
     obj, gports = _geom_parts(obj)
     if ports is None:

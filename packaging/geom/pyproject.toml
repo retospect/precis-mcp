@@ -45,6 +45,14 @@ pcb-kernel = [
 # The real ``precis_se/__init__.py`` imports ``SeHandler`` (the DB stack),
 # so a stub ships in its place — packaging/geom/precis_se/__init__.py,
 # which must never be installed next to the server wheel.
+# Triage lesson (gr514166): the include set is decided by following
+# LAZY in-function imports along the call path being shipped, not only
+# module-level imports — build_hexfold_scene and hexfold_spec import
+# ``precis_se.atomic.surface_target`` inside function bodies but
+# unconditionally, so a wheel without that file raises
+# ModuleNotFoundError at call time. (tests/workspaces/
+# test_geom_wheel_imports.py walks the whole AST, not just top level,
+# and checks every allowed import resolves into the shipped set.)
 # ``precis/pcb`` ships minus its store/network/server-side modules —
 # catalog (jlcparts/store), the datasheet/JLC network clients, easyeda,
 # argue/review (llm router), check_run and the sanity workers (workers

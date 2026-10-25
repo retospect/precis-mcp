@@ -177,11 +177,18 @@ def _block_kind(scene_like: Any, name: str, scale: str | None) -> str:
     (``.atoms`` + ``.cell``) — written as ``blocks/<name>.extxyz``.
     Macro blocks are a :class:`precis.cad.scene.SceneSpec` (``.nodes``)
     — ``blocks/<name>.cad.json`` — or DSL source text — written verbatim
-    to ``blocks/<name>.cad`` (the importer parses both).
+    to ``blocks/<name>.cad`` (the importer parses both). A
+    :class:`precis_geom.pcb.Board` returns ``"pcb"`` — the caller routes
+    it to :meth:`Run.board` (the run's whole ``kind='pcb'`` manifest),
+    never a ``blocks/`` file (gr513754).
     """
     if scale is not None and scale not in ("atomic", "macro"):
         raise ValueError(f"out.block {name!r}: scale must be 'atomic' or 'macro'")
-    if isinstance(scene_like, str):
+    from precis_geom import pcb as _pcb
+
+    if isinstance(scene_like, _pcb.Board):
+        kind = "pcb"
+    elif isinstance(scene_like, str):
         kind = "macro"
     elif hasattr(scene_like, "atoms") and hasattr(scene_like, "cell"):
         kind = "atomic"
@@ -349,7 +356,11 @@ class Run:
         ``geom`` is a structure :class:`~precis.structure.scene.Scene`
         (atomic → ``blocks/<name>.extxyz`` + ``.bonds.json``), a cad
         :class:`~precis.cad.scene.SceneSpec` (macro → ``.cad.json``), or
-        DSL source text (macro → ``.cad``). ``ports``/``relax``/``desc``
+        DSL source text (macro → ``.cad``). A
+        :class:`precis_geom.pcb.Board` routes to :meth:`board` — it is
+        the run's whole ``kind='pcb'`` manifest, not a ``blocks/`` file;
+        ``name`` and the block kwargs are unused on that path
+        (gr513754). ``ports``/``relax``/``desc``
         pass through to the manifest entry verbatim (the importer's
         vet is the contract), as do ``mode``/``measures``/``loads`` —
         the block's manufacturing mode, named measures and load
@@ -360,18 +371,13 @@ class Run:
         n = _vet_name(name)
         if n in self._names:
             raise ValueError(f"out.block: duplicate block name {n!r}")
-        from precis_geom import pcb as _pcb
-
-        if isinstance(geom, _pcb.Board):
-            raise ValueError(
-                f"out.block {n!r}: a pcb Board is a whole run's manifest "
-                "(kind='pcb'), not a block — use o.board(b)"
-            )
         self._vet_not_board("block")
         geom, gports = _geom_parts(geom)
         if ports is None:
             ports = gports
         kind = _block_kind(geom, n, scale)
+        if kind == "pcb":
+            return self.board(geom)
         (self.root / "blocks").mkdir(parents=True, exist_ok=True)
         if kind == "atomic":
             file_rel = _write_atomic(self.root, n, geom)

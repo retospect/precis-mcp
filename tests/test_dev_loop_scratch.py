@@ -297,8 +297,8 @@ def test_out_finish_is_idempotent_guarded(tmp_path: Path) -> None:
 def test_out_run_emits_a_pcb_manifest(tmp_path: Path) -> None:
     """gr513754 — a pcb Board is a whole run's product: ``o.board(b)``
     has ``finish()`` write the ``kind='pcb'`` manifest (board +
-    requests); a Board handed to ``block`` refuses naming ``o.board``,
-    and the se rows refuse to mix with a declared board either way."""
+    requests); a Board handed to ``block`` routes to ``o.board``, and
+    the se rows refuse to mix with a declared board either way."""
     import precis_geom.pcb as pcb
 
     b = pcb.Board("t")
@@ -307,9 +307,7 @@ def test_out_run_emits_a_pcb_manifest(tmp_path: Path) -> None:
     gnd.tie(j1["1"])
     out_dir = tmp_path / "out" / "b1"
     with out.run(out_dir, work_root=tmp_path) as o:
-        with pytest.raises(ValueError, match="o.board"):
-            o.block("board", b)
-        o.board(b, requests=[{"op": "place", "key": "k"}])
+        o.block("board", b)  # a Board routes to o.board
         with pytest.raises(ValueError, match="kind='pcb'"):
             o.block("p", _strip_scene())
         with pytest.raises(ValueError, match="kind='pcb'"):
@@ -321,9 +319,16 @@ def test_out_run_emits_a_pcb_manifest(tmp_path: Path) -> None:
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["kind"] == "pcb"
     assert manifest["board"]["components"][0]["refdes"] == "J1"
-    assert manifest["requests"] == [{"op": "place", "key": "k"}]
+    assert manifest["requests"] == []
+    assert not (out_dir / "blocks").exists()  # routed, no block file
     doc = trace_schema.loads((out_dir / "trace.json").read_text(encoding="utf-8"))
     assert any(f["qual"] == "out.board" for f in doc["frames"])
+
+    out_dir_req = tmp_path / "out" / "b1r"
+    with out.run(out_dir_req, work_root=tmp_path) as o:
+        o.board(b, requests=[{"op": "place", "key": "k"}])
+    manifest = json.loads((out_dir_req / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["requests"] == [{"op": "place", "key": "k"}]
 
     out_dir2 = tmp_path / "out" / "b2"
     with out.run(out_dir2, work_root=tmp_path) as o:
