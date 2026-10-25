@@ -737,8 +737,9 @@ def instance_row(
     ``part_lcsc`` canonicalised via :func:`lcsc_id`, the i.meta
     placement-constraint keys (``group``/``group_offset``/``pattern``/
     ``pattern_instance``/``edge_mate``/``local_fp_lcsc``/``local_fp_diff``)
-    and the c.meta component facts (``pin_swap_groups``/``supplies`` —
-    normalised — /``part_meta`` -> ``part``) hoisted when present, the
+    and the c.meta component facts (``pin_swap_groups``/``pin_decls``/
+    ``supplies`` — normalised — /``part_meta`` -> ``part``) hoisted when
+    present, the
     0219 lock columns hoisted when set. ``polarized``/``value``/``note``
     are deliberately NOT emitted — ``pcb_graph`` never carries them (the
     label regex is the only working polarity path).
@@ -797,6 +798,8 @@ def instance_row(
             inst[k] = copy.deepcopy(c[k])
     if c.get("pin_swap_groups") is not None:
         inst["pin_swap_groups"] = copy.deepcopy(c["pin_swap_groups"])
+    if c.get("pin_decls") is not None:
+        inst["pin_decls"] = copy.deepcopy(c["pin_decls"])
     if c.get("supplies") is not None:
         inst["supplies"] = normalize_supplies(c["supplies"], refdes, declared)
     if c.get("part_meta") is not None:

@@ -786,7 +786,7 @@ def board_batch(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any]]:
         # blob), NOT the lcsc.
         if isinstance(gi.get("part"), dict):
             c["part_meta"] = dict(gi["part"])
-        for key in ("supplies", "pin_swap_groups"):
+        for key in ("supplies", "pin_swap_groups", "pin_decls"):
             if gi.get(key) is not None:
                 c[key] = gi[key]
         for key in (

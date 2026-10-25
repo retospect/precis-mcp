@@ -85,11 +85,17 @@ def synth_design(
     freedoms = np.full(n_parts, 3, dtype=np.uint8)  # ROTATE | BACK_SIDE
     outline = np.asarray([[0, 0], [side, 0], [side, side], [0, side]])
 
+    pin_net = np.full(n_parts * 2, -1, dtype=np.int32)
+    for ni, pins in enumerate(net_pins):
+        pin_net[pins] = ni
+
     design = TopoDesign(
         parts=parts,
         pin_xy=pin_xy,
         pin_part=pin_part,
         pin_side=pin_side,
+        pin_label=np.asarray([str(i) for i in range(n_parts * 2)], dtype=object),
+        pin_net=pin_net,
         net_pins=tuple(net_pins),
         flex=(),
         swap_groups=(),

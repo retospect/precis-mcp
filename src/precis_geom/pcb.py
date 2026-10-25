@@ -75,6 +75,114 @@ class PcbBuilderError(ValueError):
     footprint name."""
 
 
+class PinConflict(PcbBuilderError):
+    """A pin claim that cannot stand (pcb-topo-place Decision 12): a
+    fixed pin claimed under two different names, or a flexible slot left
+    with no feasible pin at solve time. The message names the signals,
+    the pins and the claim sites."""
+
+
+_AMPS_PER_UNIT = {"a": 1.0, "ma": 1e-3, "ua": 1e-6, "µa": 1e-6, "na": 1e-9}
+
+
+def _parse_amps(text: str | float | int) -> float:
+    """``"20mA"``/``"1.5A"``/``"500uA"`` → amperes; a bare number is
+    already amperes."""
+    if isinstance(text, int | float):
+        return float(text)
+    m = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([a-zµA-Z]+)\s*", str(text))
+    if not m:
+        raise PcbBuilderError(f"current bound {text!r} — expected e.g. '20mA'")
+    unit = m.group(2).lower()
+    if unit not in _AMPS_PER_UNIT:
+        raise PcbBuilderError(
+            f"current bound {text!r}: unknown unit {m.group(2)!r} — use A, mA, uA or nA"
+        )
+    return float(m.group(1)) * _AMPS_PER_UNIT[unit]
+
+
+@dataclass(frozen=True, slots=True)
+class Bound:
+    """A checkable electrical requirement on a tie (Decision 15): ``Max``
+    is "this path must carry at most this much", ``Min`` "at least".
+    Carries the authoring ``text`` verbatim for the manifest."""
+
+    kind: str  # "max" | "min"
+    amps: float
+    text: str
+
+
+def Max(text: str | float | int) -> Bound:
+    """Upper current bound: ``net.tie(…, current=pcb.Max("20mA"))``."""
+    return Bound("max", _parse_amps(text), str(text))
+
+
+def Min(text: str | float | int) -> Bound:
+    """Lower current bound."""
+    return Bound("min", _parse_amps(text), str(text))
+
+
+def _caller_site(depth: int = 2) -> str:
+    """``file:line`` of the board-script line that called the API —
+    recorded on pin claims so a PinConflict can name both sites."""
+    import inspect
+
+    f = inspect.currentframe()
+    try:
+        for _ in range(depth):
+            if f is None or f.f_back is None:
+                return "?:0"
+            f = f.f_back
+        if f is None:
+            return "?:0"
+        return f"{f.f_code.co_filename}:{f.f_lineno}"
+    finally:
+        del f
+
+
+class FlexPin:
+    """A solver-assigned pin — what ``part.pin(any_of=[...], name=...)``
+    returns. Not a concrete :class:`Pin`: the solver picks one of
+    ``pins`` and the write-back records the choice (Decisions 11, 14,
+    24). :meth:`Net.tie` binds the net the slot's wire belongs to."""
+
+    def __init__(
+        self,
+        *,
+        part: Part,
+        pins: tuple[str, ...],
+        name: str | None,
+        site: str,
+    ) -> None:
+        self.part = part
+        self.pins = pins
+        self.name = name
+        self.site = site
+        #: Filled by :meth:`Net.tie`.
+        self.net: str | None = None
+        self.requirement: Bound | None = None
+        self.source: str | None = None
+
+    @property
+    def handle(self) -> str:
+        return f"{self.part.refdes}.<{self.name or '|'.join(self.pins)}>"
+
+    def to_decl(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "name": self.name,
+            "pins": list(self.pins),
+            "net": self.net,
+            "site": self.site,
+        }
+        if self.requirement is not None:
+            d["requirement_a"] = self.requirement.amps
+            d["requirement_kind"] = self.requirement.kind
+            d["requirement"] = self.requirement.text
+        if self.source is not None:
+            d["source"] = self.source
+        return d
+
+
 #: Layer counts of the named stackup presets, for index→name resolution
 #: in ``plane()``/``keepout()``. Mirrors the authority,
 #: ``precis.pcb.STACKUP_PRESETS`` — this module is stdlib-only and
@@ -212,6 +320,15 @@ class Part:
         self._pins: dict[str, Pin] = {}
         self._pin_order: list[str] = []
         self._declared_pins: set[str] = set()
+        #: topo-place 1b declarations (Decisions 11–13): named fixed-pin
+        #: claims keyed by pin name, the flex slots, swap groups and the
+        #: per-design pin function table — emitted as the component's
+        #: ``pin_decls`` batch key.
+        self._pin_claims: dict[str, dict[str, Any]] = {}
+        self._flex_slots: list[FlexPin] = []
+        self._swap_groups: list[dict[str, Any]] = []
+        self._pin_functions: dict[str, dict[str, Any]] = {}
+        self._pin_functions_source: str | None = None
         self.x: float | None = None
         self.y: float | None = None
         self.rot: float = 0.0
@@ -233,6 +350,117 @@ class Part:
 
     def pins(self, *names: str | int) -> list[Pin]:
         return [self[n] for n in names]
+
+    def pin(
+        self,
+        number: str | int | None = None,
+        *,
+        name: str | None = None,
+        any_of: Iterable[str | int] | None = None,
+    ) -> Pin | FlexPin:
+        """Declare how this part's pin is chosen (pcb-topo-place
+        Decision 11). ``part.pin(5)`` fixes pin 5 — the plain
+        :class:`Pin`. ``part.pin(any_of=[1, 4, 9], name="BTN")`` is a
+        flexible slot the solver fills; ``name`` feeds the firmware pin
+        map. A fixed pin claimed twice under different names raises
+        :class:`PinConflict` naming both claim sites; the same name
+        again is a no-op."""
+        site = _caller_site()
+        if any_of is not None:
+            if number is not None:
+                raise PcbBuilderError(
+                    f"{self.refdes}.pin() takes a pin number OR any_of=, not both"
+                )
+            pins = tuple(str(p) for p in any_of)
+            if not pins:
+                raise PcbBuilderError(f"{self.refdes}.pin(any_of=…) needs ≥1 pin")
+            if len(set(pins)) != len(pins):
+                raise PcbBuilderError(f"{self.refdes}.pin(any_of={pins}) repeats a pin")
+            # Candidates are live pins: the solver picks one, so each
+            # must reach the IR (a declared pin with no wire lands in
+            # `unconnected` with a real pad position).
+            for cand in pins:
+                self._declared_pins.add(self[cand].name)
+            fp = FlexPin(part=self, pins=pins, name=name, site=site)
+            self._flex_slots.append(fp)
+            return fp
+        if number is None:
+            raise PcbBuilderError(f"{self.refdes}.pin() needs a pin number or any_of=")
+        p = self[number]
+        self._declared_pins.add(p.name)
+        if name is not None:
+            prev = self._pin_claims.get(p.name)
+            if prev is not None and prev["name"] != name:
+                raise PinConflict(
+                    f"{self.refdes} pin {p.name}: claimed as "
+                    f"{prev['name']!r} ({prev['site']}) and as {name!r} ({site})"
+                )
+            self._pin_claims.setdefault(p.name, {"name": name, "site": site})
+        return p
+
+    def pin_functions(
+        self,
+        table: Mapping[str, Any],
+        *,
+        source: str | None = None,
+    ) -> Part:
+        """The per-design pin function table the LLM writes from the
+        datasheet (Decision 16): ``{"PA1": ["GPIO", "INT1"], …}`` — a
+        value may instead be ``{"functions": [...], "max_current_a": …}``
+        when the datasheet also rates the pin's drive. ``source`` is the
+        datasheet chunk id (``"ds:<id>~<chunk>"``) and is checkable
+        provenance, not a comment."""
+        for pin, entry in table.items():
+            if isinstance(entry, Mapping):
+                funcs = [str(f) for f in (entry.get("functions") or ())]
+                extra = {k: v for k, v in entry.items() if k != "functions"}
+            else:
+                funcs = [str(f) for f in entry]
+                extra = {}
+            rec = self._pin_functions.setdefault(str(pin), {"functions": []})
+            for f_ in funcs:
+                if f_ not in rec["functions"]:
+                    rec["functions"].append(f_)
+            rec.update(extra)
+        if source is not None:
+            self._pin_functions_source = source
+        return self
+
+    def pins_with(self, func: str) -> list[str]:
+        """Pin labels whose :meth:`pin_functions` entry lists ``func`` —
+        feeds ``pin(any_of=u1.pins_with("GPIO"))``."""
+        return [p for p, rec in self._pin_functions.items() if func in rec["functions"]]
+
+    def swap_group(
+        self,
+        members: Iterable[Any],
+        *,
+        tuple: bool = False,
+    ) -> Part:
+        """Declare pins the solver may permute (Decision 13). A flat pin
+        list (``rn1.swap_group([1, 2, 3, 4])``) lets those pins permute
+        freely; ``tuple=True`` takes a list of pin tuples moved as units
+        (``[(1, 8), (2, 7), …]`` — a buffer channel's ``in_i``/``out_i``
+        always move together)."""
+        units = [[m] if isinstance(m, str | int) else list(m) for m in members]
+        for u in units:
+            for m in u:
+                self._declared_pins.add(self[m].name)
+        if len(units) < 2:
+            raise PcbBuilderError(f"{self.refdes}.swap_group needs ≥2 members")
+        widths = {len(u) for u in units}
+        if tuple and len(widths) != 1:
+            raise PcbBuilderError(
+                f"{self.refdes}.swap_group(tuple=True): members must be "
+                "equal-length tuples"
+            )
+        self._swap_groups.append(
+            {
+                "members": [[str(p) for p in u] for u in units],
+                "tuple": bool(tuple),
+            }
+        )
+        return self
 
     def declare(self, *names: str | int) -> Part:
         """Declare pins that must appear in the batch even if nothing
@@ -313,7 +541,33 @@ class Part:
             d["pattern"] = self.pattern
         if self.pattern_instance is not None:
             d["pattern_instance"] = self.pattern_instance
+        decls = self._pin_decls()
+        if decls:
+            d["pin_decls"] = decls
         return d
+
+    def _pin_decls(self) -> dict[str, Any]:
+        """The component's ``pin_decls`` batch section — the topo-place
+        1b declarations in serialized form. Rides the component row the
+        same way ``pin_swap_groups`` does: ``instance_row`` hoists it
+        onto the pcb_graph instance, the store carries it in component
+        meta, and ``design_from_ir`` turns it into ``TopoDesign.flex`` /
+        ``swap_groups``."""
+        decls: dict[str, Any] = {}
+        if self._pin_claims:
+            decls["claims"] = [
+                {"pin": p, "name": c["name"], "site": c["site"]}
+                for p, c in self._pin_claims.items()
+            ]
+        if self._flex_slots:
+            decls["slots"] = [fp.to_decl() for fp in self._flex_slots]
+        if self._swap_groups:
+            decls["swap_groups"] = copy.deepcopy(self._swap_groups)
+        if self._pin_functions:
+            decls["pin_functions"] = copy.deepcopy(self._pin_functions)
+            if self._pin_functions_source is not None:
+                decls["pin_functions_source"] = self._pin_functions_source
+        return decls
 
 
 # --------------------------------------------------------------------------
@@ -349,9 +603,34 @@ class Net:
         self.note = note
         self.domain = domain
 
-    def tie(self, *pins: Pin, note: str | None = None) -> Net:
+    def tie(
+        self,
+        *pins: Pin | FlexPin,
+        note: str | None = None,
+        current: Bound | None = None,
+        source: str | None = None,
+    ) -> Net:
+        """Wire pins onto this net. A :class:`FlexPin` ties the SLOT —
+        its net is recorded for the solver, no concrete connection is
+        emitted (the solver picks the pin). ``current=pcb.Max("20mA")``
+        plus ``source="ds:…~chunk…"`` attach a checkable requirement
+        with provenance to the connection (Decision 15)."""
+        if current is not None and not isinstance(current, Bound):
+            raise PcbBuilderError(
+                f"net {self.name!r}: current= takes pcb.Max/pcb.Min, got {current!r}"
+            )
         for p in pins:
-            self.board._connect(self, p, note)
+            if isinstance(p, FlexPin):
+                if p.net is not None and p.net != self.name:
+                    raise PinConflict(
+                        f"slot {p.handle}: tied to net {p.net!r} "
+                        f"({p.site}) and again to {self.name!r}"
+                    )
+                p.net = self.name
+                p.requirement = current or p.requirement
+                p.source = source or p.source
+                continue
+            self.board._connect(self, p, note, current=current, source=source)
         return self
 
     def pins(self) -> list[tuple[str, str]]:
@@ -953,7 +1232,14 @@ class Board:
             frame.allowed_net_names.add(qualified)
         return n
 
-    def _connect(self, net: Net, pin: Pin, note: str | None = None) -> None:
+    def _connect(
+        self,
+        net: Net,
+        pin: Pin,
+        note: str | None = None,
+        current: Bound | None = None,
+        source: str | None = None,
+    ) -> None:
         frame = self._frame
         if frame is not None and net.name not in frame.allowed_net_names:
             raise PcbBuilderError(
@@ -967,6 +1253,12 @@ class Board:
         }
         if note:
             entry["note"] = note
+        if current is not None:
+            key = "current_max_a" if current.kind == "max" else "current_min_a"
+            entry[key] = current.amps
+            entry["current"] = current.text
+        if source is not None:
+            entry["source"] = source
         self._connections.append(entry)
 
     @traced
@@ -1322,11 +1614,145 @@ class Board:
             for c in self._connections
             if c["net"] not in self._nets
         ]
+        findings += self._pin_requirement_findings()
         return CheckResult(
             findings=findings,
             not_checked=not_checked,
             not_checked_groups=groups,
         )
+
+    def _pin_requirement_findings(self) -> list[CheckFinding]:
+        """The topo-place electrical check (Decision 15): a ``current=``
+        requirement is checkable, not a comment. A wired or candidate
+        pin whose declared ``max_current_a`` (pin meta or the part's
+        ``pin_functions`` entry) sits under the requirement is
+        ``over_current`` — the same rule name the server ERC uses; a
+        requirement that reaches an LED pin with no current-limit part
+        in series is ``led_without_limit``.
+
+        Detection (spec-call, recorded in the topo-place progress note):
+        an LED pin is one whose part's ``pin_functions`` entry lists a
+        function starting ``LED``; a current-limit part is a part with
+        exactly two wired pins, one declaring ``current_role("series")``
+        — a bridge that carries the through current."""
+        reqs = [
+            c
+            for c in self._connections
+            if c.get("current_max_a") is not None or c.get("current_min_a") is not None
+        ]
+        slot_reqs = [
+            fp
+            for r in self._part_order
+            for fp in self._parts[r]._flex_slots
+            if fp.requirement is not None and fp.net is not None
+        ]
+        if not reqs and not slot_reqs:
+            return []
+        out: list[CheckFinding] = []
+
+        def pin_rating(refdes: str, pin: str) -> float | None:
+            part = self._parts.get(refdes)
+            if part is None:
+                return None
+            rating = (part._pin_functions.get(pin) or {}).get("max_current_a")
+            p = part._pins.get(pin)
+            if rating is None and p is not None:
+                rating = p.meta.get("max_current_a")
+            return float(rating) if rating is not None else None
+
+        for c in reqs:
+            bound = c.get("current_max_a")
+            if bound is None:
+                continue
+            for r, p in self.pins_on(c["net"]):
+                rating = pin_rating(r, p)
+                if rating is not None and rating < float(bound):
+                    out.append(
+                        CheckFinding(
+                            code="over_current",
+                            refdes=r,
+                            net=c["net"],
+                            message=(
+                                f"net {c['net']} requires ≤ {float(bound):g} A "
+                                f"but {r}.{p} is rated {rating:g} A"
+                            ),
+                        )
+                    )
+        for fp in slot_reqs:
+            if fp.requirement is None or fp.requirement.kind != "max":
+                continue
+            bound = fp.requirement.amps
+            ratings = [(p, pin_rating(fp.part.refdes, p)) for p in fp.pins]
+            # Unrated pins are usable — Decision 15 filters only "where the
+            # library has it". Every RATED candidate under the bound leaves
+            # the slot no legal pin.
+            if ratings and all(r_ is not None and r_ < bound for _, r_ in ratings):
+                out.append(
+                    CheckFinding(
+                        code="over_current",
+                        refdes=fp.part.refdes,
+                        net=fp.net,
+                        message=(
+                            f"slot {fp.name or fp.handle}: every candidate pin "
+                            f"is rated under {bound:g} A"
+                        ),
+                    )
+                )
+
+        req_nets = {c["net"] for c in reqs} | {
+            fp.net for fp in slot_reqs if fp.net is not None
+        }
+        pin_nets_map: dict[str, dict[str, str]] = {}
+        for c in self._connections:
+            pin_nets_map.setdefault(c["refdes"], {})[c["pin"]] = c["net"]
+        led_pins = [
+            (r, p, pin_nets_map[r][p])
+            for r in self._part_order
+            for p, rec in self._parts[r]._pin_functions.items()
+            if any(str(f_).upper().startswith("LED") for f_ in rec.get("functions", ()))
+            and p in pin_nets_map.get(r, {})
+        ]
+        if led_pins:
+
+            def is_limiter(refdes: str) -> bool:
+                part = self._parts[refdes]
+                return any(
+                    (part._pins.get(p) is not None)
+                    and part._pins[p].meta.get("current_role") == "series"
+                    for p in pin_nets_map[refdes]
+                )
+
+            net_to_parts: dict[str, set[str]] = {}
+            for c in self._connections:
+                net_to_parts.setdefault(c["net"], set()).add(c["refdes"])
+            # Nets reachable from a requirement net through non-limiting
+            # 2-pin bridges. A limiter on the path breaks the reach — a
+            # series resistor is exactly the fix the check asks for.
+            reached = set(req_nets)
+            frontier = list(req_nets)
+            while frontier:
+                n = frontier.pop()
+                for r in net_to_parts.get(n, ()):
+                    if len(pin_nets_map.get(r, {})) != 2 or is_limiter(r):
+                        continue
+                    for n2 in pin_nets_map[r].values():
+                        if n2 not in reached:
+                            reached.add(n2)
+                            frontier.append(n2)
+            for r, p, net in led_pins:
+                if net in reached:
+                    out.append(
+                        CheckFinding(
+                            code="led_without_limit",
+                            refdes=r,
+                            net=net,
+                            message=(
+                                f"{r}.{p} (LED) sits on a current path with "
+                                "no series current-limit part"
+                            ),
+                        )
+                    )
+        return out
 
     # -- the 3-D shape (slice 0b) -------------------------------------------
 
@@ -1604,15 +2030,20 @@ __all__ = [
     "MANIFEST_SCHEMA",
     "Board",
     "BoardShape",
+    "Bound",
     "CatalogPart",
     "CheckFinding",
     "CheckResult",
     "FitResult",
+    "FlexPin",
     "Footprint",
+    "Max",
+    "Min",
     "Net",
     "Part",
     "PcbBuilderError",
     "Pin",
+    "PinConflict",
     "Role",
     "box",
     "canonical_json",

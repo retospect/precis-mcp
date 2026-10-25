@@ -20,6 +20,8 @@ def _design(
         pin_xy=np.asarray(pin_xy, dtype=np.float64),
         pin_part=np.asarray(pin_part, dtype=np.int64),
         pin_side=np.zeros(len(pin_xy), dtype=np.int8),
+        pin_label=np.asarray([str(i) for i in range(len(pin_xy))], dtype=object),
+        pin_net=np.full(len(pin_xy), -1, dtype=np.int32),
         net_pins=tuple(np.asarray(n, dtype=np.int64) for n in net_pins),
         flex=(),
         swap_groups=(),

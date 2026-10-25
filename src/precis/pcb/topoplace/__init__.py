@@ -42,6 +42,7 @@ from precis.pcb.topoplace.design import (
     design_from_ir,
 )
 from precis.pcb.topoplace.pairmap import PairMap, PairStat, PairSummary, pair_map
+from precis.pcb.topoplace.pins import PinAssignment, assign_pins, check_slots
 from precis.pcb.topoplace.placer import Ladder, TopoPlaceResult, topo_place
 from precis.pcb.topoplace.proxy import ProxyState, evaluate, pin_world
 
@@ -56,10 +57,13 @@ __all__ = [
     "PairMap",
     "PairStat",
     "PairSummary",
+    "PinAssignment",
     "ProxyState",
     "SwapGroup",
     "TopoDesign",
     "TopoPlaceResult",
+    "assign_pins",
+    "check_slots",
     "design_from_ir",
     "evaluate",
     "pair_map",

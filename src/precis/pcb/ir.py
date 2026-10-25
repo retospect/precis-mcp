@@ -501,6 +501,16 @@ class PcbIR:
     #: without :func:`from_graph`) means no instance has one.
     inst_edge_mate: np.ndarray | None = None
 
+    #: object[n_inst] -> dict | None — the instance's ``pin_decls``
+    #: component blob (pcb-topo-place 1b, Decisions 11–13): named
+    #: fixed-pin ``claims``, ``any_of`` ``slots``, ``swap_groups`` and
+    #: the per-design ``pin_functions`` table. Rides ``c.meta`` exactly
+    #: like ``pin_swap_groups`` (hoisted by :meth:`Store.pcb_graph` and
+    #: :func:`precis.pcb.rows.instance_row`), read by
+    #: :func:`precis.pcb.topoplace.design.design_from_ir`. ``None`` (the
+    #: default) means an IR built without :func:`from_graph`.
+    inst_pin_decls: np.ndarray | None = None
+
     #: float64[n_inst] — the authored SOFT pin (``max_travel_mm``, carried
     #: on ``pcb_instances.meta`` and hoisted by :meth:`Store.pcb_graph`
     #: like ``group``/``edge_mate``): the farthest, mm, the instance's
@@ -1522,6 +1532,7 @@ def from_graph(
         inst_edge_mate=_obj_array(
             [parse_edge_mate(inst.get("edge_mate")) for inst in instances]
         ),
+        inst_pin_decls=_obj_array([inst.get("pin_decls") for inst in instances]),
         instance_part_lcsc=_obj_array([inst.get("part_lcsc") for inst in instances]),
         pin_instance=np.array(pin_instance, dtype=np.int32),
         pin_label=_obj_array(pin_label),

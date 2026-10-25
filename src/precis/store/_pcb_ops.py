@@ -1166,7 +1166,9 @@ class PcbMixin:
         # `supplies` (pcb-lazy-netlist-and-checks.md §1b) is the successor
         # and rides the same way (already normalised by `_pcb_apply`).
         component_meta = {
-            k: c[k] for k in ("pin_swap_groups", "supplies") if c.get(k) is not None
+            k: c[k]
+            for k in ("pin_swap_groups", "pin_decls", "supplies")
+            if c.get(k) is not None
         }
         if c.get("part_meta"):
             component_meta["part"] = dict(c["part_meta"])
@@ -2693,10 +2695,17 @@ class PcbMixin:
                     # from `c.meta` (a component-TYPE fact, unlike the
                     # `i.meta` block above) the same way — `pcb_route`
                     # reads it straight off the instance dict, never the
-                    # raw meta blob.
+                    # raw meta blob. `pin_decls` (pcb-topo-place 1b,
+                    # Decisions 11-13) rides the identical c.meta path —
+                    # `design_from_ir` turns it into TopoDesign slots.
                     **(
                         {"pin_swap_groups": (r[14] or {})["pin_swap_groups"]}
                         if "pin_swap_groups" in (r[14] or {})
+                        else {}
+                    ),
+                    **(
+                        {"pin_decls": (r[14] or {})["pin_decls"]}
+                        if "pin_decls" in (r[14] or {})
                         else {}
                     ),
                     # `supplies` (§1b): list of {role, blocks, ...}.
