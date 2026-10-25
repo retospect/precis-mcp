@@ -191,8 +191,11 @@ def test_tree_nests_children_parented_to_an_instance(handler: SeHandler) -> None
     body = handler.get(id="uni", view="tree").body
     crank_depth = _indent_of(body, "crank_left")
     assert _indent_of(body, "crank_bolt_left") > crank_depth
-    # The template's own subtree expands under the template row AND
-    # under the instance — t_axle appears twice, both indented.
+    # The template's own subtree expands under the instance AND under the
+    # template's own row in the "templates" section — t_axle appears
+    # twice, both indented. t_crank itself is a template (instance-named,
+    # gr514241): it leaves the part walk and is listed under "templates".
     assert body.count("- t_axle") == 2
     assert _indent_of(body, "t_axle") > crank_depth
-    assert _indent_of(body, "t_axle") > _indent_of(body, "t_crank")
+    assert "templates (library parts" in body
+    assert "instanced by: crank_left" in body

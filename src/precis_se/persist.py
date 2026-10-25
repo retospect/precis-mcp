@@ -379,6 +379,15 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                 (ref_id,),
             )
             optics_row = cur.fetchone()
+            # The workspaces records (``refs.meta['workspaces'][<slug>]``,
+            # :mod:`precis_se.workspace_import`) carry the one block fact
+            # no ``se_*`` table stores: which blocks a manifest flagged
+            # ``template: true`` (gr514241).
+            cur.execute(
+                "SELECT meta->'workspaces' AS ws FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            )
+            ws_row = cur.fetchone()
         foreign_labels = _foreign_template_labels(conn, rows)
     by_id = {r["id"]: r for r in rows}
     #: uid → the block's current label, the read half of the cutover.
@@ -571,6 +580,18 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                 ),
             )
         )
+    # ``template: true`` declarations from every workspace record on this
+    # design — unioned because a block is the last importing workspace's
+    # to describe, but a library flag it carried is design data, not one
+    # run's scratch (gr514241). A name the record lists but the tree no
+    # longer has is dropped state, not a marker to resurrect.
+    for ws in ((ws_row or {}).get("ws") or {}).values():
+        if not isinstance(ws, dict):
+            continue
+        for tname in ws.get("templates") or []:
+            tnode = tree.blocks.get(str(tname))
+            if tnode is not None:
+                tnode.template_only = True
     if optics_row is not None:
         tree.optics = {
             "medium_index": optics_row["medium_index"],
@@ -630,8 +651,10 @@ TREE_JSON_FORMAT = "se-tree/1"
 #: ``derived`` is recomputed from the catalog on every load
 #: (:func:`attach_catalog`); the ``pending_*`` quartet is one call's
 #: not-yet-written state-op payload (the class docstring — cleared by
-#: discarding the tree); and ``posed_by_state`` is a read-time label for
-#: whose pose a block is currently carrying. Grep the dataclass when
+#: discarding the tree); ``posed_by_state`` is a read-time label for
+#: whose pose a block is currently carrying; and ``template_only`` is
+#: surfaced from the workspaces record at load time, not stored on the
+#: block row (gr514241). Grep the dataclass when
 #: adding a field here — the count in this comment has drifted before
 #: (gr458297).
 _BLOCK_TRANSIENT = frozenset(
@@ -642,6 +665,7 @@ _BLOCK_TRANSIENT = frozenset(
         "pending_current_state",
         "pending_state_poses",
         "posed_by_state",
+        "template_only",
     }
 )
 

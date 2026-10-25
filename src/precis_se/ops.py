@@ -346,7 +346,14 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from precis.blocktree import ops as blocktree
-from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
+from precis.blocktree.types import (
+    BlockNode,
+    Connect,
+    OpError,
+    Port,
+    Tree,
+    parse_template_ref,
+)
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import pose as cad_pose
@@ -759,6 +766,16 @@ class SeBlock(BlockNode):
     #: for the current ``get`` — so a renderer can label the value as the
     #: state's, not the authored one (gr458145).
     posed_by_state: str | None = None
+    #: TRANSIENT read-time marker (never persisted to ``se_blocks`` — the
+    #: declaration lives in the workspaces record under ``refs.meta``,
+    #: and :func:`precis_se.persist.load_tree` stamps it back on): this
+    #: block was flagged ``template: true`` by a workspace manifest
+    #: (``out.block(..., template=True)``, gr514241) — a library part,
+    #: not an assembly part. Instance-named template-ness is NOT here:
+    #: a block instanced by name counts as a template whether or not the
+    #: flag was declared — :func:`template_names` is the union every
+    #: consumer reads.
+    template_only: bool = False
 
     def __post_init__(self) -> None:
         """:attr:`local_pose`/``local_rot``'s empty-list sentinel →
@@ -1191,6 +1208,27 @@ def effective_dof(tree: SeTree, node: SeBlock) -> dict[str, Any] | None:
         template_node = resolve_template(tree, node.template)
         return getattr(template_node, "dof", None)
     return node.dof
+
+
+def template_names(tree: SeTree) -> frozenset[str]:
+    """The design's library parts (gr514241, docs/backlog/
+    se-fit-check-and-probe.md slice 5): every LOCAL block some instance's
+    ``template`` names, plus a block a workspace manifest flagged
+    ``template: true`` (:attr:`SeBlock.template_only`, surfaced by
+    :func:`precis_se.persist.load_tree`). A template is not an assembly
+    part — never placed, never overlap-checked, absent from the tree
+    view's part walk — but its envelope/ports/mode/measures are the
+    facets its instances resolve through, so facet-owning checks keep
+    reading it. Cross-design refs (``'<slug>#<name>'``) never land here:
+    the name they mark belongs to another design's tree."""
+    named: set[str] = set()
+    for n in tree.blocks.values():
+        if n.template is None:
+            continue
+        design, block = parse_template_ref(n.template)
+        if design is None and block in tree.blocks:
+            named.add(block)
+    return frozenset(named | {n.name for n in tree.blocks.values() if n.template_only})
 
 
 #: se's catalog-aware :func:`effective_ports` in the shape the core's

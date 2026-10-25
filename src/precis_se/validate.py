@@ -64,7 +64,13 @@ from precis_se import bom as se_bom
 from precis_se import contracts as se_contracts
 from precis_se import stability as se_stability
 from precis_se.chain.vocab import SEGMENT_ROLE, chain_role
-from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
+from precis_se.ops import (
+    SeBlock,
+    SeTree,
+    effective_envelope,
+    effective_ports,
+    template_names,
+)
 
 
 @dataclass
@@ -304,8 +310,16 @@ def envelope_overlaps(
     (:mod:`precis_se.kinematics_drc`) passes "one side moves, the other
     does not, no connect between them", so static pairs it re-poses
     nothing for never reach the SDF narrow phase on every sample."""
+    # Library parts (gr514241, :func:`precis_se.ops.template_names`) are
+    # never placed — a template's stored pose is not a part position, so
+    # it pairs with nothing here. Its instances enter posed under their
+    # own names, carrying the template's envelope through
+    # ``effective_envelope``.
+    templates = template_names(tree)
     posed: list[tuple[str, SeBlock, str]] = []
     for name in sorted(tree.blocks):
+        if name in templates:
+            continue
         node = tree.blocks[name]
         env = effective_envelope(tree, node)
         if env:
@@ -483,21 +497,53 @@ def validate(
             )
 
     # 3. block_without_envelope (warn) — ports declared but no envelope: a
-    # port needs geometry eventually to mean anything at L1.
+    # port needs geometry eventually to mean anything at L1. A template
+    # (gr514241) is not a scaffold awaiting placement — but an
+    # envelope-less one still matters, under its own rule name: every
+    # instance of it inherits nothing, so the warn counts the places the
+    # missing geometry lands.
+    templates = template_names(tree)
+    n_instanced = {
+        n.template: 0 for n in tree.blocks.values() if n.template is not None
+    }
+    for n in tree.blocks.values():
+        if n.template is not None and n.template in n_instanced:
+            n_instanced[n.template] += 1
     for node in tree.blocks.values():
-        if node.ports and not node.envelope:
+        if not node.ports or node.envelope:
+            continue
+        if node.name in templates:
+            n_inst = n_instanced.get(node.name, 0)
             findings.append(
                 ValidationIssue(
-                    rule="block_without_envelope",
+                    rule="template_without_envelope",
                     subject=node.name,
                     detail=(
-                        f"block {node.name!r} declares {len(node.ports)} "
-                        "port(s) but has no envelope — set one "
-                        "(set_envelope) before this scaffold can be placed"
+                        f"template {node.name!r} declares {len(node.ports)} "
+                        "port(s) but has no envelope — "
+                        + (
+                            f"its {n_inst} instance(s) inherit nothing; "
+                            if n_inst
+                            else "nothing instances it yet; "
+                        )
+                        + "set one (set_envelope) on the template"
                     ),
                     severity="warn",
                 )
             )
+            continue
+        findings.append(
+            ValidationIssue(
+                rule="block_without_envelope",
+                subject=node.name,
+                detail=(
+                    f"block {node.name!r} declares {len(node.ports)} "
+                    "port(s) but has no envelope — set one "
+                    "(set_envelope) before this scaffold can be placed"
+                ),
+                severity="warn",
+            )
+        )
 
     # 4. undeclared_interpenetration (warn) — posed envelope overlap no
     # connect sanctions (module docstring). A connect between the two

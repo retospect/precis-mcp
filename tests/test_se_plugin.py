@@ -1319,7 +1319,9 @@ def test_validate_counts_envelopes_on_ordinary_blocks_only(
         id="cart1", ops=[{"op": "instance_block", "name": "hub2", "template": "hub"}]
     )
     resp = handler.get(id="cart1", view="validate")
-    assert "2/2 block(s) have envelopes" in resp.body
+    # hub is now instance-named — a library part, out of the part count
+    # (gr514241); hub2 is an instance and was never counted.
+    assert "1/1 block(s) have envelopes" in resp.body
 
 
 def test_validate_flags_unconnected_port_as_warn(handler: SeHandler) -> None:
@@ -1566,6 +1568,8 @@ def test_search_requires_q(handler: SeHandler) -> None:
 def test_render_survives_hand_corrupted_instance_cycle() -> None:
     # Bypass apply_ops to fabricate the cycle ops.py would reject — the
     # walk must terminate with a visible marker, never recurse forever.
+    # gr514241: A and B are instance-named library parts, so the cycle is
+    # only reachable through a *placed* instance — ``a_root`` below.
     tree = SeTree()
     apply_ops(
         tree,
@@ -1578,6 +1582,7 @@ def test_render_survives_hand_corrupted_instance_cycle() -> None:
                 "template": "B",
                 "parent": "A",
             },
+            {"op": "instance_block", "name": "a_root", "template": "A"},
         ],
     )
     corrupt = SeTree()

@@ -41,9 +41,9 @@ def _tree(ops: list[Any]) -> SeTree:
     return apply_ops(SeTree(), ops)
 
 
-#: A wheel template placed once, plus a 4-up array of it — so the wheel's
-#: *design* is realized five times (see the module docstring of
-#: ``precis_se.bom``: a template is itself a placed block).
+#: A wheel template plus a 4-up array of it — so the wheel's *design* is
+#: realized four times (gr514241: a template is a library part, never
+#: itself placed — see the module docstring of ``precis_se.bom``).
 _WHEELS = [
     {"op": "add_block", "name": "cart"},
     {
@@ -86,14 +86,16 @@ def test_bom_on_an_array_node_multiplies_by_its_count() -> None:
 def test_a_templates_realizations_include_its_instances() -> None:
     tree = _tree(_WHEELS)
     occ = se_bom.design_occurrences(tree)
-    # the template's own placement (1) + the array's members (4)
-    assert occ["wheel"] == 5
+    # the array's members (4) — the template node itself is never placed
+    # (gr514241: instance-named blocks are library parts, not parts)
+    assert occ["wheel"] == 4
     assert occ["wheels"] == 4
     assert occ["cart"] == 1
 
 
 def test_nested_arrays_multiply_through() -> None:
-    """6 holes per panel × (1 template panel + 3 arrayed) = 24 rivets."""
+    """6 holes per panel × 3 arrayed panels = 18 rivets (gr514241: the
+    template panel/hole are library parts, themselves never placed)."""
     tree = _tree(
         [
             {"op": "add_block", "name": "panel", "envelope": "box:w0.3d0.2h0.003"},
@@ -120,7 +122,7 @@ def test_nested_arrays_multiply_through() -> None:
         ]
     )
     (total,) = se_bom.rollup(tree)
-    assert total.total == pytest.approx(24.0)
+    assert total.total == pytest.approx(18.0)
 
 
 def test_connect_line_takes_the_larger_endpoint_count() -> None:
@@ -902,7 +904,7 @@ def test_block_view_shows_mode_binding_and_realization_count(
     body = handler.get(id="cart", view="block", args={"name": "wheel"}).body
     assert "mode: purchase" in body
     assert "realization: component:caster-wheel-100" in body
-    assert "realized: ×5" in body
+    assert "realized: ×4" in body
 
 
 def test_unknown_view_lists_bom(handler: SeHandler) -> None:

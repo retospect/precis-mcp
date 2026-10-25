@@ -341,6 +341,7 @@ class Run:
         mode: str | None = None,
         measures: list[dict[str, Any]] | None = None,
         loads: dict[str, Any] | None = None,
+        template: bool | None = None,
         frame: int | None = None,
     ) -> dict[str, Any]:
         """Declare one manifest block and write its geometry file.
@@ -352,7 +353,9 @@ class Run:
         pass through to the manifest entry verbatim (the importer's
         vet is the contract), as do ``mode``/``measures``/``loads`` —
         the block's manufacturing mode, named measures and load
-        declarations (gr514245). ``frame`` defaults to this call's own
+        declarations (gr514245). ``template=True`` marks a library part:
+        instanced by :meth:`instance`, never itself placed in the
+        assembly (gr514241). ``frame`` defaults to this call's own
         trace-frame id."""
         n = _vet_name(name)
         if n in self._names:
@@ -387,6 +390,8 @@ class Run:
             entry["measures"] = [dict(m) for m in measures]
         if loads is not None:
             entry["loads"] = dict(loads)
+        if template is not None:
+            entry["template"] = bool(template)
         fr = frame if frame is not None else _trace.leaf_id()
         if fr is not None:
             entry["frame"] = int(fr)

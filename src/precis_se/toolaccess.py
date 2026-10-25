@@ -62,7 +62,7 @@ from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
-from precis_se.ops import SeTree, effective_envelope
+from precis_se.ops import SeTree, effective_envelope, template_names
 from precis_se.validate import (
     ValidationIssue,
     _aabb_clear,
@@ -253,8 +253,11 @@ def access(
             return None
         box_driver = cad_bulk.expr_aabb(design, driver)
         blocker: str | None = None
+        # A template (gr514241) is never placed — its stored pose is not
+        # an obstacle position.
+        templates = template_names(tree)
         for name, node in sorted(tree.blocks.items()):
-            if name == fastener:
+            if name == fastener or name in templates:
                 continue
             # Same rule as validate.envelope_overlaps: a block that is an
             # ancestor of the fastener is containment, not an obstacle — a
@@ -467,8 +470,11 @@ def _insertion_obstacles(
         if cutter is not None:
             cutters.setdefault(hole.block, []).append(cutter)
     found: list[tuple[str, tuple[Any, Any], bool]] = []
+    # A template (gr514241) is never placed — its stored pose is not an
+    # obstacle position.
+    templates = template_names(tree)
     for name, node in sorted(tree.blocks.items()):
-        if name == fastener:
+        if name == fastener or name in templates:
             continue
         ancestor = _is_ancestor(tree, name, fastener)
         if ancestor and not is_realized(node):

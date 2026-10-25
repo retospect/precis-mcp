@@ -23,7 +23,7 @@ run's failure, refused naming the key)::
                  "measures"?: [{"name", "value"?|"min"?/"max"?, "unit"?,
                                 "strength"?, "reason"?, "relation"?,
                                 "datum"?, "origin"?}],
-                 "loads"?}],
+                 "loads"?, "template"?}],
      "instances"?: [{"name", "template", "parent"?, "pose"?, "rot"?,
                      "pose_unit"?, "rot_unit"?, "frame"?}],
      "connects"?: [{"a": "blk.port", "b": "blk.port", "kind"?, "joint"?,
@@ -47,6 +47,15 @@ run's failure, refused naming the key)::
 * ``scenario`` (gr514245): the design's governing production scenario id
   (:func:`precis.design.scenarios.set_design_scenario`), existence-vetted
   before any write.
+* ``template`` on a block (gr514241): ``true`` marks a library part —
+  instanced by ``out.instance`` entries, never itself placed in the
+  assembly (excluded from the tree view's part walk, the fill fraction,
+  the envelope checks and the clearance surface; listed under
+  "templates"). The declared set persists in this workspace's record
+  under ``refs.meta`` and :func:`precis_se.persist.load_tree` stamps it
+  back onto the block as ``template_only`` — instance-named
+  template-ness needs no flag at all (:func:`precis_se.ops.
+  template_names` is the union).
 
 * atomic ``file``: ``blocks/<name>.extxyz``
   (:func:`precis.structure.importers.extxyz.extxyz_to_scene`); bonds ride
@@ -163,6 +172,7 @@ _BLOCK_KEYS = frozenset(
         "mode",
         "measures",
         "loads",
+        "template",
     }
 )
 _PORT_KEYS = frozenset(
@@ -283,6 +293,7 @@ class BlockEntry:
     mode: str | None
     measures: list[dict[str, Any]]
     loads: dict[str, Any] | None
+    template: bool
 
 
 def _vet_manifest(
@@ -386,6 +397,13 @@ def _vet_manifest(
                 f"manifest {where}: 'loads' must be an object — the "
                 "set_load vocabulary (force, torque, fixed, duty, cycles, …)"
             )
+        template = raw.get("template")
+        if template is not None and not isinstance(template, bool):
+            raise BadInput(
+                f"manifest {where}: 'template' must be true or false — "
+                "true marks a library part instanced by out.instance, "
+                "never itself placed in the assembly (gr514241)"
+            )
         frame = raw.get("frame")
         bonds_path = raw.get("bonds")
         blocks.append(
@@ -401,6 +419,7 @@ def _vet_manifest(
                 mode=str(mode).strip() if mode is not None else None,
                 measures=[dict(m) for m in measures or []],
                 loads=dict(loads) if loads is not None else None,
+                template=bool(template),
             )
         )
     for field_name, allowed in (
@@ -1507,6 +1526,9 @@ def import_workspace_run(
                                 "measures": sorted(new_measures),
                                 "loads": sorted(new_loads),
                                 "modes": sorted(new_modes),
+                                "templates": sorted(
+                                    e.name for e in manifest["blocks"] if e.template
+                                ),
                                 "run_job": run_job,
                                 "script_sha": script_sha,
                             }

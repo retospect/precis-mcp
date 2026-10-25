@@ -24,12 +24,13 @@ disagreed with the tree would be a second truth):
 - Every block is placed once by its own row; an **array node stands for
   its ``count`` members**, so its occurrence count is that count, and
   everything below it multiplies through.
-- A **template is itself a placed block** (``instance_block`` requires an
-  ordinary block to instance, and the tree renders that block where it
-  sits) — so a template's design is realized once for the template *plus*
-  once per referencing instance, or ``count`` times per referencing
-  array. A line on the template is therefore counted for all of them; a
-  line on the array node is counted for its members only.
+- A **template is a library part, never placed** (gr514241 —
+  :func:`precis_se.ops.template_names`, the same exclusion the tree
+  view's part walk makes) — so a template's design is realized once per
+  referencing instance, or ``count`` times per referencing array, and
+  never for the template node itself. A line on the template is counted
+  for all of them; a line on the array node is counted for its members
+  only.
 - A line on a **connect** takes the larger of its two endpoints'
   realization counts — the arrayed side drives it (four wheels on one
   axle need four sets of bearings, not one). When the two differ the
@@ -164,6 +165,11 @@ def node_occurrences(tree: Any) -> dict[str, int]:
     Defensive against a stored instance cycle (hand-corrupted data) the
     same way the renderer is — the path set stops the walk instead of
     recursing forever."""
+    # Imported locally: ``precis_se.ops`` imports this module for
+    # ``BomLine`` — a module-level edge back would cycle.
+    from precis_se.ops import template_names
+
+    templates = template_names(tree)
     counts: dict[str, int] = {name: 0 for name in tree.blocks}
     children: dict[str | None, list[str]] = {}
     for name, node in tree.blocks.items():
@@ -182,10 +188,12 @@ def node_occurrences(tree: Any) -> dict[str, int]:
         if source in path:
             return
         for child in sorted(children.get(source, [])):
-            _walk(child, own, (*path, source))
+            if child not in templates:
+                _walk(child, own, (*path, source))
 
     for root in sorted(children.get(None, [])):
-        _walk(root, 1, ())
+        if root not in templates:
+            _walk(root, 1, ())
     return counts
 
 

@@ -207,6 +207,7 @@ from precis_se.ops import (
     effective_envelope,
     effective_ports,
     resolve_template,
+    template_names,
 )
 from precis_se.pockets import region_measures as se_region_measures
 from precis_se.properties import COMPUTERS, is_checked
@@ -4399,6 +4400,13 @@ def _render_tree(
             "(siblings listed in connect order — see view='ports' for each peer)"
         )
 
+    # gr514241: a template (instance-named, or ``template: true`` on a
+    # workspace block) is a library part — never a placed part, so it
+    # leaves the part walk and is listed once, below. Its own
+    # ``children`` entries stay keyed under its name: an instance still
+    # expands the template's subtree under itself.
+    templates = template_names(tree)
+
     def _walk(name: str, depth: int, path: tuple[str, ...]) -> None:
         node = tree.blocks[name]
         block_line = _block_line(tree, node, relax_states)
@@ -4438,11 +4446,53 @@ def _render_tree(
                 )
                 continue
             for child in children.get(source, []):
-                _walk(child, depth + 1, (*path, source))
+                if child not in templates:
+                    _walk(child, depth + 1, (*path, source))
 
     lines.append("")
     for root in children.get(None, []):
-        _walk(root, 0, ())
+        if root not in templates:
+            _walk(root, 0, ())
+    if templates:
+        instanced_by: dict[str, list[str]] = {t: [] for t in templates}
+        for n in tree.blocks.values():
+            if n.template is not None and n.template in instanced_by:
+                instanced_by[n.template].append(n.name)
+        lines.append("")
+        lines.append("templates (library parts — instanced, never placed themselves):")
+
+        def _walk_template_kids(parent: str, depth: int, path: tuple[str, ...]) -> None:
+            # The template's own subtree is the library part's internal
+            # shape — render it nested here too, so a template nothing
+            # instances yet still shows what it is made of. Templates
+            # inside it (instanced subtrees) get their own row.
+            if parent in path:
+                return
+            for child in children.get(parent, []):
+                if child in templates:
+                    continue
+                cnode = tree.blocks[child]
+                lines.append(
+                    f"{'  ' * depth}- {_block_line(tree, cnode, relax_states)}"
+                )
+                _walk_template_kids(child, depth + 1, (*path, parent))
+
+        for tname in sorted(templates):
+            tnode = tree.blocks[tname]
+            tparts = [tname]
+            tenv = effective_envelope(tree, tnode)
+            if tenv:
+                tparts.append(f"env={_fmt_envelope(tenv)}")
+            tn_ports = len(effective_ports(tree, tnode))
+            if tn_ports:
+                tparts.append(f"[{tn_ports} port{'s' if tn_ports != 1 else ''}]")
+            users = sorted(instanced_by[tname])
+            if users:
+                tparts.append("instanced by: " + ", ".join(users))
+            if tnode.descr:
+                tparts.append(f"— {_desc_with_relax(tnode.descr, None)}")
+            lines.append(f"- {'  '.join(tparts)}")
+            _walk_template_kids(tname, 1, ())
     return "\n".join(lines)
 
 
@@ -4955,6 +5005,20 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
         lines.append(f"array of: {node.template}  ({_array_label(node.array)})")
     elif node.template:
         lines.append(f"instance of: {node.template}")
+    # gr514241: a template reads as the library part it is — its pose is
+    # not a placement, and the facet writes (mode, envelope, ports,
+    # measures) are what instances resolve through.
+    if node.name in template_names(tree):
+        users = sorted(
+            n.name
+            for n in tree.blocks.values()
+            if n.template is not None and n.template == node.name
+        )
+        lines.append(
+            "template (library part — not placed in the assembly"
+            + (f"; instanced by: {', '.join(users)}" if users else "")
+            + ")"
+        )
     lines.append(f"parent: {node.parent or '(root)'}")
     # AUTHORED (parent-frame) value — the byte-exact argument set_pose
     # round-trips (precis_se.ops.SeBlock.local_pose/local_rot docstring).
@@ -7687,9 +7751,23 @@ def _fill_fraction_line(tree: SeTree) -> str:
     lesson, nm's ``_fill_fraction_line`` transferred): at this round a
     block is "filled" when it declares an envelope (L1) — the L3 binding
     notion arrives with realization. Ordinary blocks only: an instance/
-    array fills exactly when its template does."""
-    ordinary = [n for n in tree.blocks.values() if n.template is None]
+    array fills exactly when its template does, and a template
+    (gr514241, :func:`precis_se.ops.template_names`) is a library part —
+    its envelope is what the instances inherit, so it is nobody's
+    "filled" here."""
+    templates = template_names(tree)
+    ordinary = [
+        n
+        for n in tree.blocks.values()
+        if n.template is None and n.name not in templates
+    ]
     if not ordinary:
+        if tree.blocks:
+            return (
+                "0/0 block(s) filled — every block is an instance or a "
+                "library template (templates carry the envelope their "
+                "instances inherit; view='tree' lists them)"
+            )
         return "0/0 block(s) filled — no blocks declared yet (unfilled)"
     filled = [n for n in ordinary if n.envelope]
     line = f"{len(filled)}/{len(ordinary)} block(s) have envelopes (L1 filled)"
@@ -8122,6 +8200,18 @@ def _pair_clearance(
     b_node = tree.blocks.get(b_name)
     if b_node is None:
         raise NotFound(_block_not_found(tree, b_name))
+
+    # gr514241: a template is a library part, never placed — its stored
+    # pose (usually the origin) would measure a phantom part. Its
+    # instances carry the real geometry.
+    tmpl = template_names(tree)
+    for name in (a_name, b_name):
+        if name in tmpl:
+            raise _ClearanceUnavailable(
+                f"block {name!r} is a template (library part), not a "
+                "placed part — query one of its instances instead "
+                "(view='tree' lists the design's templates)"
+            )
 
     if se_atomic_clearance.is_atomic_pair(a_node, b_node):
         hit = se_atomic_clearance.pair_gap_m(a_node, b_node, bound_full_scenes or {})

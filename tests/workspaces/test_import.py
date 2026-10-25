@@ -783,3 +783,162 @@ def test_manifest_facet_vet_errors(store: Store, tmp_path: Path) -> None:
     se_ref = store.get_ref(kind="se", id="ws-test")
     assert se_ref is not None
     assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
+def _library_manifest(**kw: Any) -> dict[str, Any]:
+    """A flagged template (never instanced), an instance-named template
+    and one ordinary block — gr514241's manifest surface."""
+    manifest: dict[str, Any] = {
+        "schema": 1,
+        "blocks": [
+            {
+                "name": "t_wheel",
+                "file": "blocks/t_wheel.cad",
+                "scale": "macro",
+                "template": True,
+            },
+            {
+                "name": "t_axle",
+                "file": "blocks/t_axle.cad",
+                "scale": "macro",
+            },
+            {
+                "name": "frame",
+                "file": "blocks/frame.cad",
+                "scale": "macro",
+            },
+        ],
+        "instances": [
+            {
+                "name": "wheel",
+                "template": "t_wheel",
+                "pose": [0.4, 0, 0.1],
+                "pose_unit": "m",
+            },
+            {
+                "name": "axle",
+                "template": "t_axle",
+                "pose": [0, 0, 0.1],
+                "pose_unit": "m",
+            },
+        ],
+    }
+    manifest.update(kw)
+    return manifest
+
+
+def _library_files() -> dict[str, str]:
+    return {
+        "blocks/t_wheel.cad": "w add cyl:r30mmh20mm\n",
+        "blocks/t_axle.cad": "a add cyl:r10mmh100mm\n",
+        "blocks/frame.cad": "f add box:w200mmd100mmh300mm\n",
+    }
+
+
+def test_template_flag_marks_library_parts(store: Store, tmp_path: Path) -> None:
+    """gr514241: a ``template: true`` block and every instance-named
+    block are library parts — out of the part walk, the fill fraction
+    and the envelope pair scan, listed under "templates"."""
+    from precis_se import validate as se_validate
+    from precis_se.handler import _fill_fraction_line, _render_tree
+    from precis_se.ops import template_names
+
+    _design(store)
+    _import(
+        store,
+        _write_out(tmp_path, manifest=_library_manifest(), files=_library_files()),
+    )
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    # The flag is surfaced from the workspaces record (flag-carrier);
+    # t_axle needs no flag — an instance names it.
+    assert tree.blocks["t_wheel"].template_only is True
+    assert tree.blocks["t_axle"].template_only is False
+    assert template_names(tree) == {"t_wheel", "t_axle"}
+
+    body = _render_tree(tree, "ws-test", "")
+    part_walk = body.split("templates (library parts")[0]
+    assert "- t_wheel" not in part_walk and "- t_axle" not in part_walk
+    assert "- wheel" in part_walk and "- frame" in part_walk
+    assert "- t_wheel" in body and "instanced by: wheel" in body
+
+    # No template is a finding subject, and no template pairs in the
+    # overlap scan.
+    findings = se_validate.validate(tree)
+    assert not [f for f in findings if "t_" in f.subject]
+
+    assert "1/1 block(s) have envelopes" in _fill_fraction_line(tree)
+
+
+def test_template_flag_reimport_drop_and_vet(store: Store, tmp_path: Path) -> None:
+    """gr514241: the record is replace semantics — a re-import that no
+    longer flags the block un-marks it; a non-boolean refuses."""
+    from precis_se.ops import template_names
+
+    _design(store)
+    _import(
+        store,
+        _write_out(tmp_path, manifest=_library_manifest(), files=_library_files()),
+    )
+    # Re-import with t_wheel still instanced but no longer flagged: the
+    # instance keeps it a template anyway (instance-named needs no flag).
+    # Flag an extra block instead, and check a plain block returns to
+    # part status when its instance is dropped.
+    _import(
+        store,
+        _write_out(
+            tmp_path,
+            manifest=_library_manifest(
+                blocks=[
+                    {
+                        "name": "t_axle",
+                        "file": "blocks/t_axle.cad",
+                        "scale": "macro",
+                    },
+                    {
+                        "name": "frame",
+                        "file": "blocks/frame.cad",
+                        "scale": "macro",
+                        "template": True,
+                    },
+                ],
+                instances=[
+                    {
+                        "name": "axle",
+                        "template": "t_axle",
+                        "pose": [0, 0, 0.1],
+                        "pose_unit": "m",
+                    },
+                ],
+            ),
+            files={
+                "blocks/t_axle.cad": "a add cyl:r10mmh100mm\n",
+                "blocks/frame.cad": "f add box:w200mmd100mmh300mm\n",
+            },
+        ),
+    )
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    assert tree.blocks["frame"].template_only is True
+    assert tree.blocks["t_axle"].template_only is False
+    assert template_names(tree) == {"frame", "t_axle"}
+
+    out = _write_out(
+        tmp_path,
+        manifest=_library_manifest(
+            blocks=[
+                {
+                    "name": "t_wheel",
+                    "file": "blocks/t_wheel.cad",
+                    "scale": "macro",
+                    "template": "yes",
+                }
+            ],
+            instances=[],
+        ),
+        files={"blocks/t_wheel.cad": "w add cyl:r30mmh20mm\n"},
+    )
+    with pytest.raises(BadInput, match="'template' must be true or false"):
+        _import(store, out)

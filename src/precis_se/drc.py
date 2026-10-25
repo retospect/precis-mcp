@@ -86,7 +86,12 @@ from precis_se.measures import (
     measurand_name,
     stackup,
 )
-from precis_se.ops import SeBlock, SeTree, effective_envelope
+from precis_se.ops import (
+    SeBlock,
+    SeTree,
+    effective_envelope,
+    template_names,
+)
 from precis_se.properties import COMPUTERS, is_checked
 from precis_se.validate import (
     _KERNEL_BAND,
@@ -202,13 +207,18 @@ def _design_extent(tree: SeTree) -> float:
     design = CadDesign()
     lo: list[float] | None = None
     hi: list[float] | None = None
+    # Library parts (gr514241, :func:`precis_se.ops.template_names`) are
+    # never placed — a template's stored pose is not a part position and
+    # would size the assembly from a phantom.
+    templates = template_names(tree)
     # AABBs are exact (no SDF optimizer), so a design-wide normalization
     # needs no cross-scale cap here — key off the smallest block so a
     # nano design's primitives survive construction, divide back below.
     sizes = [
         s
         for node in tree.blocks.values()
-        if (e := effective_envelope(tree, node))
+        if node.name not in templates
+        and (e := effective_envelope(tree, node))
         and (s := _characteristic_length(e)) > 0.0
     ]
     smallest = min(sizes) if sizes else 0.0
@@ -217,6 +227,8 @@ def _design_extent(tree: SeTree) -> float:
     else:
         extent_scale = _KERNEL_TARGET / smallest
     for name, node in sorted(tree.blocks.items()):
+        if name in templates:
+            continue
         env = effective_envelope(tree, node)
         if not env:
             continue

@@ -133,6 +133,7 @@ def block(
     mode: str | None = None,
     measures: list[dict[str, Any]] | None = None,
     loads: dict[str, Any] | None = None,
+    template: bool | None = None,
     frame: int | None = None,
 ) -> None:
     """Register one output block; the file is written at :func:`finish`.
@@ -140,6 +141,8 @@ def block(
     ``ports``/``relax`` are manifest rows verbatim (the importer vets
     them), as are ``mode``/``measures``/``loads`` — the block's
     manufacturing mode, named measures and load declarations (gr514245).
+    ``template=True`` marks a library part: instanced by
+    :func:`instance`, never itself placed in the assembly (gr514241).
     ``bonds`` may be a JSON-able structure written to
     ``blocks/<name>.bonds.json`` or an already-staged relative path.
     ``frame`` defaults to the calling trace frame. A
@@ -175,6 +178,8 @@ def block(
         entry["measures"] = list(measures)
     if loads is not None:
         entry["loads"] = loads
+    if template is not None:
+        entry["template"] = bool(template)
     fid = _frame_id(frame)
     if fid is not None:
         entry["frame"] = fid
@@ -250,8 +255,9 @@ def instance(
     exists only to be instanced is named ``t_<part>`` (``t_spoke``) and
     placements take the plain names (``spoke``, ``spoke2``) — the
     ``precis-workspace-help`` skill's "``t_`` rule" is the long form;
-    ``template=True`` on :func:`block` (gr514241) is the planned typed
-    marker."""
+    ``template=True`` on :func:`block` (gr514241) is the typed marker —
+    a flagged template reads as a library part, not an assembly part,
+    even before any instance names it."""
     from precis_geom import assembly as _pga
     from precis_geom.out import _symbolic_fields
 
