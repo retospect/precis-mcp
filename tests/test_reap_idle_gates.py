@@ -13,8 +13,6 @@ contacted.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import json
 import os
 import shutil
@@ -24,6 +22,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from tests._script import load_script
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -507,17 +507,11 @@ def test_unreachable_daemon_is_silent(env: Env) -> None:
 
 
 @pytest.mark.parametrize("name", ["idle-tree", "Foo.Bar baz", "agent-a1b2"])
-def test_project_name_matches_the_bash_helper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
-) -> None:
-    loader = importlib.machinery.SourceFileLoader(
-        "reap_idle_gates", str(REPO / "scripts" / "reap-idle-gates")
+def test_project_name_matches_the_bash_helper(tmp_path: Path, name: str) -> None:
+    # dataclasses need the module in sys.modules while it execs.
+    mod = load_script(
+        "reap_idle_gates", REPO / "scripts" / "reap-idle-gates", register=True
     )
-    spec = importlib.util.spec_from_loader("reap_idle_gates", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "reap_idle_gates", mod)  # dataclasses need it
-    loader.exec_module(mod)
     path = tmp_path / name
     path.mkdir()
     bash = subprocess.run(

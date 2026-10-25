@@ -8,8 +8,6 @@ that tmux only ever gets an argument list.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import json
 import os
 import shutil
@@ -19,6 +17,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tests._script import load_script
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: execs scripts with fake bins"
@@ -63,12 +63,7 @@ with open(os.environ["FAKE_CLAUDE_LOG"], "w", encoding="utf-8") as fh:
 
 
 def _module() -> ModuleType:
-    loader = importlib.machinery.SourceFileLoader("fleet_wave", str(SCRIPT))
-    spec = importlib.util.spec_from_loader("fleet_wave", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script("fleet_wave", SCRIPT)
 
 
 @pytest.fixture

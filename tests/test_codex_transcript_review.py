@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import json
 import subprocess
 import sys
@@ -11,6 +9,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+
+from tests._script import load_script
 
 if sys.platform == "win32":
     pytest.skip(
@@ -24,13 +24,7 @@ import codex_source
 import extract
 import stats as mine_stats
 
-loader = importlib.machinery.SourceFileLoader(
-    "fleet_review", str(ROOT / "scripts/fleet-review")
-)
-spec = importlib.util.spec_from_loader(loader.name, loader)
-assert spec is not None
-review = importlib.util.module_from_spec(spec)
-loader.exec_module(review)
+review = load_script("fleet_review", ROOT / "scripts" / "fleet-review")
 
 START = datetime(2026, 10, 4, 12, tzinfo=UTC)
 WORKER_ID = "00000000-0000-4000-8000-000000000001"

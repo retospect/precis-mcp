@@ -6,6 +6,7 @@ import pytest
 
 from precis.store import Tag
 from precis_web.routes.gripes import _rows
+from tests._refs import insert_gripe
 
 
 @pytest.mark.parametrize(
@@ -17,11 +18,7 @@ def test_status_count_navigation(
     from precis_web.routes import gripes
 
     for state in ["open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"]:
-        with store.tx() as conn:
-            ref = store.insert_ref(
-                kind="gripe", slug=None, title=f"fixture-count-{state}", conn=conn
-            )
-            store.add_tag(ref.id, Tag.closed("STATUS", state), conn=conn)
+        insert_gripe(store, f"fixture-count-{state}", status=state)
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
     live = client.get("/gripes")
     assert live.status_code == 200
@@ -98,10 +95,7 @@ def test_list_preview_survives_sql_title_truncation(store: Any) -> None:
     }
     ids = {}
     for name, title in titles.items():
-        with store.tx() as conn:
-            ref = store.insert_ref(kind="gripe", slug=None, title=title, conn=conn)
-            store.add_tag(ref.id, Tag.closed("STATUS", "open"), conn=conn)
-        ids[name] = ref.id
+        ids[name] = insert_gripe(store, title).id
     by_id = {r["ref_id"]: r for r in _rows(store, status_filter="live")}
     assert by_id[ids["blank"]]["title_preview"] == "first line preview"
     assert by_id[ids["long"]]["title_preview"] == "y" * 99 + "…"

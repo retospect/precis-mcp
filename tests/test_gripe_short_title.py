@@ -24,7 +24,7 @@ from precis.handlers.gripe import GripeHandler
 from precis.runtime import PrecisRuntime
 from precis.store.revision_context import revision_context
 from precis.tools import core as tools_core
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 LONG = (
     "pcb router: copper pours vanish after a reroute when the board has "

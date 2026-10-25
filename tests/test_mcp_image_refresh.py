@@ -9,11 +9,12 @@ from __future__ import annotations
 import hashlib
 import subprocess
 import sys
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tests._script import load_script
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: loads a shebang'd script"
@@ -35,9 +36,7 @@ def _h(text: str) -> str:
 
 @pytest.fixture()
 def mod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    m = SourceFileLoader(
-        "mcp_image_refresh", str(REPO_ROOT / "scripts" / "mcp-image-refresh")
-    ).load_module()
+    m = load_script("mcp_image_refresh", REPO_ROOT / "scripts" / "mcp-image-refresh")
     (tmp_path / "uv.lock").write_text(LOCK, encoding="utf-8")
     repo = tmp_path / "repo-ensure.sh"
     repo.write_text("new\n", encoding="utf-8")
@@ -87,9 +86,7 @@ def test_locked_sha_reads_autocatpath_stanza(mod: ModuleType) -> None:
 
 
 def test_real_lock_has_a_pin() -> None:
-    m = SourceFileLoader(
-        "mir2", str(REPO_ROOT / "scripts" / "mcp-image-refresh")
-    ).load_module()
+    m = load_script("mir2", REPO_ROOT / "scripts" / "mcp-image-refresh")
     assert len(m.locked_sha(REPO_ROOT / "uv.lock")) >= 7
 
 
@@ -133,9 +130,7 @@ def test_history_hashes_reads_every_revision_via_git(
             return subprocess.CompletedProcess(cmd, 0, stdout=blobs[rev], stderr=b"")
         return subprocess.CompletedProcess(cmd, 128, stdout=b"", stderr=b"gone")
 
-    m = SourceFileLoader(
-        "mir3", str(REPO_ROOT / "scripts" / "mcp-image-refresh")
-    ).load_module()
+    m = load_script("mir3", REPO_ROOT / "scripts" / "mcp-image-refresh")
     monkeypatch.setattr(m.subprocess, "run", fake)
     assert m.history_hashes() == {_h("one\n"), _h("two\n")}
 

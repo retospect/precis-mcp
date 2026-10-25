@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
 import time
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tests._script import load_script
 
 if sys.platform != "win32":
     import fcntl
@@ -96,11 +96,7 @@ def _load_round(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
         (script.parent / "lib/round_state.py").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    loader = SourceFileLoader("round_script", str(copy))
-    spec = importlib.util.spec_from_loader("round_script", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    mod = load_script("round_script", copy)
     monkeypatch.chdir(rig.root)
     for key, val in rig.env.items():
         monkeypatch.setenv(key, val)

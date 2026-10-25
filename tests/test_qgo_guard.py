@@ -12,15 +12,14 @@ not, because a guard that creeps rebuilds the gate `/qgo` exists to skip.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tests._script import load_script
 
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "qgo-guard"
 
@@ -30,18 +29,9 @@ def _load() -> ModuleType:
     # path crashes its get_file (gr450298).
     copy = Path(tempfile.mkdtemp(prefix="qgo_guard_")) / "qgo_guard.py"
     shutil.copyfile(_SCRIPT, copy)
-    spec = importlib.util.spec_from_loader(
-        "qgo_guard",
-        importlib.machinery.SourceFileLoader("qgo_guard", str(copy)),
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
     # Registered before exec: ``@dataclass`` resolves ``cls.__module__`` through
     # ``sys.modules`` while decorating, and fails on a module that isn't there.
-    sys.modules["qgo_guard"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script("qgo_guard", copy, register=True)
 
 
 @pytest.fixture(scope="module")

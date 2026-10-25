@@ -14,8 +14,6 @@ everything else that can print on the common path is pinned here.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import os
 import re
 import shutil
@@ -24,6 +22,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from tests._script import load_script
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="the SessionStart scripts are POSIX-only"
@@ -143,14 +143,10 @@ def test_reap_stale_serves_for_hook_is_silent_on_success(tmp_path: Path) -> None
 def test_reap_idle_gates_for_hook_is_silent_on_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    loader = importlib.machinery.SourceFileLoader(
-        "reap_idle_gates", str(REPO / "scripts" / "reap-idle-gates")
+    # @dataclass introspects sys.modules[__module__] while it execs.
+    mod = load_script(
+        "reap_idle_gates", REPO / "scripts" / "reap-idle-gates", register=True
     )
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod  # @dataclass introspects sys.modules[__module__]
-    spec.loader.exec_module(mod)
 
     monkeypatch.setattr(mod, "_docker", lambda *a: "")
     monkeypatch.setattr(mod, "_worktrees", lambda: (["primary"], "primary"))

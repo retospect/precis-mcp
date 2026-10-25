@@ -8,8 +8,6 @@ tests/test_fleet_wave.py).
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import json
 import os
 import subprocess
@@ -19,6 +17,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tests._script import load_script
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: execs scripts with fake bins"
@@ -63,14 +63,8 @@ elif cmd == "send-keys":
 
 
 def _lib() -> ModuleType:
-    loader = importlib.machinery.SourceFileLoader("fleet_panes", str(LIB))
-    spec = importlib.util.spec_from_loader("fleet_panes", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
     # @dataclass resolves cls.__module__ through sys.modules.
-    sys.modules["fleet_panes"] = mod
-    loader.exec_module(mod)
-    return mod
+    return load_script("fleet_panes", LIB, register=True)
 
 
 @pytest.fixture

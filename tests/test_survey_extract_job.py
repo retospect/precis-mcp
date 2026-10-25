@@ -240,7 +240,12 @@ class TestValidate:
 
     def test_spec_wires_the_hook(self) -> None:
         assert job.SPEC.validate is job.validate
-        assert job.ACCEPT_SPEC.validate is job.accept_validate
+        # gr515504: validator membership, not identity — a second
+        # validator wired in later must not break this check.
+        validators = {
+            v for n, v in vars(job).items() if "validate" in n and callable(v)
+        }
+        assert job.ACCEPT_SPEC.validate in validators
 
 
 class TestMeasureAcceptDispatch:
@@ -464,6 +469,21 @@ class TestRunLevelAcceptance:
                 json.dumps({"verdict": "correct", "reason": "matches"}), "frontier-x"
             ),
         )
+        # gr515503: a real job ref so the dispatch's set_meta lands in
+        # refs.meta — a finished accept job through the dispatch, not a
+        # hand-inserted row. (finished_at is executor-finalize state, so
+        # it goes in at insert.)
+        job_ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="ma",
+            meta={
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {"extraction_run": "trial-1", "reviews_per_slice": 50},
+                "finished_at": "2026-10-24T12:00:00+00:00",
+            },
+        )
         done, events = drive(
             {
                 "job_type": "measure_accept",
@@ -472,6 +492,7 @@ class TestRunLevelAcceptance:
             },
             store,
             job.ACCEPT_SPEC,
+            ref_id=job_ref.id,
         )
         assert done.success
         assert "ACCEPTED" in done.summary
@@ -479,6 +500,10 @@ class TestRunLevelAcceptance:
         assert acc["accepted"] and acc["sampled"] == 60 and acc["errors"] == 0
         assert len(acc["papers"]) == 6
         assert acc["max_id"] == max(row_ids)
+        # the verdict persisted to refs.meta and governs per paper
+        got = store.accepted_runs("trial-1")["trial-1"]
+        assert set(got) == set(acc["papers"])
+        assert all(v["accepted"] for v in got.values())
 
     def test_run_level_needs_a_token_or_a_paper(self, world: dict) -> None:
         done, _ = drive(

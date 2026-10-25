@@ -21,7 +21,7 @@ from precis.handlers.oracle import OracleHandler
 from precis.handlers.presentation import PresentationHandler
 from precis.store import Store, Tag
 from precis.store.types import ChunkInsert
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 from tests.conftest import chunk_handle, record_handle
 
 # ── GripeHandler — first-class bug tracker ──────────────────────────

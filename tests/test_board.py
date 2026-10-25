@@ -11,8 +11,6 @@ checkout's board.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import os
 import re
 import subprocess
@@ -21,14 +19,12 @@ from pathlib import Path
 
 import pytest
 
+from tests._script import load_script
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "board"
 
-_loader = importlib.machinery.SourceFileLoader("board_script", str(SCRIPT))
-_spec = importlib.util.spec_from_loader("board_script", _loader)
-assert _spec is not None and _spec.loader is not None
-board_script = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(board_script)
+board_script = load_script("board_script", SCRIPT)
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: flock + git worktrees"

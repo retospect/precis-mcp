@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from precis.runtime import PrecisRuntime
 from precis.store import Store
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 
 def _rows(out: str) -> set[str]:

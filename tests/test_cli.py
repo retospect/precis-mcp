@@ -572,7 +572,7 @@ def test_ingest_md_deprecation_alias_still_works(
 
 def _insert_gripe(store, text: str) -> int:
     """Seed a gripe ref bypassing the handler (no agent-facing read)."""
-    from tests._gripe import insert_gripe
+    from tests._refs import insert_gripe
 
     return int(insert_gripe(store, text, meta={}).id)
 

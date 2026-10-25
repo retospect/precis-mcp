@@ -10,8 +10,6 @@ stub on PATH; the inflight scan is fed directly.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import json
 import os
 import shutil
@@ -23,6 +21,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tests._script import load_script
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "main-ci-status"
 
@@ -61,12 +61,7 @@ def _load() -> ModuleType:
     # convention as tests/test_coderef_structural.py.
     tmp_copy = Path(tempfile.mkdtemp(prefix="main_ci_status_py_")) / "main_ci_status.py"
     shutil.copyfile(SCRIPT, tmp_copy)
-    loader = importlib.machinery.SourceFileLoader("main_ci_status", str(tmp_copy))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script("main_ci_status", tmp_copy)
 
 
 def _tree(tmp_path: Path, name: str, purpose: str | None) -> dict:

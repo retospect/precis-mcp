@@ -14,7 +14,7 @@ import pytest
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.diagnose_scan import _CAP, run_diagnose_scan_pass
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 pytestmark = pytest.mark.db
 

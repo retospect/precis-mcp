@@ -17,7 +17,6 @@ window and ``--start`` behaviour against a real temp repo.
 
 from __future__ import annotations
 
-import importlib.machinery
 import importlib.util
 import json
 import os
@@ -33,6 +32,8 @@ from typing import Any
 
 import pytest
 import yaml
+
+from tests._script import load_script
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "last-gated-main-sha"
@@ -435,12 +436,7 @@ def _load() -> ModuleType:
         Path(tempfile.mkdtemp(prefix="last_gated_py_")) / "last_gated_main_sha.py"
     )
     shutil.copyfile(SCRIPT, tmp_copy)
-    loader = importlib.machinery.SourceFileLoader("last_gated_main_sha", str(tmp_copy))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script("last_gated_main_sha", tmp_copy)
 
 
 def _iso(hours_ago: float) -> str:

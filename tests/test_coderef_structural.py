@@ -6,14 +6,14 @@ executable, not a package module), so it's loaded by path — same convention as
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests._script import load_script
 
 _CODEREF = Path(__file__).resolve().parents[1] / "scripts" / "coderef"
 # extension-less executable — spec_from_file_location can't infer a loader from
@@ -24,11 +24,7 @@ _CODEREF = Path(__file__).resolve().parents[1] / "scripts" / "coderef"
 # touches this test. The module name stays "coderef" either way.
 _coderef_copy = Path(tempfile.mkdtemp(prefix="coderef_py_")) / "coderef.py"
 shutil.copyfile(_CODEREF, _coderef_copy)
-_loader = importlib.machinery.SourceFileLoader("coderef", str(_coderef_copy))
-_spec = importlib.util.spec_from_loader("coderef", _loader)
-assert _spec and _spec.loader
-coderef = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(coderef)
+coderef = load_script("coderef", _coderef_copy)
 
 
 def _run(capsys: pytest.CaptureFixture[str], fn, root: Path, *args: str) -> str:

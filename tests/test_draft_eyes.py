@@ -11,6 +11,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.utils import handle_registry
 from precis_web import draft_eyes
+from tests._refs import insert_draft
 
 
 def _dc(chunk_id: int) -> str:
@@ -59,7 +60,7 @@ def test_to_working_set_meta_shape() -> None:
 
 def test_marks_round_trip_on_ref_meta(hub: Hub) -> None:
     store = hub.live_store
-    ref = store.insert_ref(kind="draft", slug="d1", title="D")
+    ref = insert_draft(store, "d1", "D")
     marks = {"pens": ["dc1"], "eyes": {"dc1": "fisheye+1hop"}}
     draft_eyes.save_marks(store, ref.id, marks)
     loaded = draft_eyes.load_marks(store, ref.id)
@@ -74,7 +75,7 @@ def test_eye_all_over_the_cap_stores_at_most_cap_plus_note(hub: Hub) -> None:
     stores at most the cap, plus a visible "+N more not eyed" note that
     threads through to the change-request payload."""
     store = hub.live_store
-    ref = store.insert_ref(kind="draft", slug="d-bulk", title="D")
+    ref = insert_draft(store, "d-bulk", "D")
     n = draft_eyes._EYE_CAP + 137
     marks: dict[str, Any] = {"pens": [], "eyes": {}}
     for i in range(n):
@@ -97,7 +98,7 @@ def test_eye_all_under_the_cap_carries_no_note(hub: Hub) -> None:
     """Under the cap, storage + payload stay byte-identical to before —
     no ``capped`` key, no ``note``."""
     store = hub.live_store
-    ref = store.insert_ref(kind="draft", slug="d-small", title="D")
+    ref = insert_draft(store, "d-small", "D")
     marks: dict[str, Any] = {"pens": [], "eyes": {}}
     for i in range(5):
         draft_eyes.toggle_eye(marks, _dc(i))
@@ -115,7 +116,7 @@ def test_eye_all_cap_keeps_penned_eyes_first(hub: Hub) -> None:
     """Penned chunks are explicit edit targets — the cap must never drop
     their eye even when the bulk eye-all overflows."""
     store = hub.live_store
-    ref = store.insert_ref(kind="draft", slug="d-pen", title="D")
+    ref = insert_draft(store, "d-pen", "D")
     marks: dict[str, Any] = {"pens": [], "eyes": {}}
     pen_dc = _dc(999999)
     draft_eyes.toggle_pen(marks, pen_dc)
@@ -128,7 +129,7 @@ def test_eye_all_cap_keeps_penned_eyes_first(hub: Hub) -> None:
 
 def test_marks_expire_past_ttl(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
     store = hub.live_store
-    ref = store.insert_ref(kind="draft", slug="d2", title="D")
+    ref = insert_draft(store, "d2", "D")
     draft_eyes.save_marks(store, ref.id, {"pens": ["dc1"], "eyes": {"dc1": "verbatim"}})
     # TTL of 0 hours → any stored set reads back empty (never-sticky).
     monkeypatch.setenv("PRECIS_DRAFT_EYES_TTL_HOURS", "0")

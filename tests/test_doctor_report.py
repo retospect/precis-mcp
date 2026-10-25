@@ -12,7 +12,7 @@ from precis import alerts
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import doctor_report
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 pytestmark = pytest.mark.db
 

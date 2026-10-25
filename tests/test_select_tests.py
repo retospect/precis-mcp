@@ -15,8 +15,6 @@ contains the tests a diff can red. This file is the ratchet (gr485791):
 from __future__ import annotations
 
 import ast
-import importlib.machinery
-import importlib.util
 import os
 import shutil
 import sys
@@ -25,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests._script import load_script
 
 _POSIX_MODULE_KEYS = pytest.mark.skipif(
     sys.platform == "win32",
@@ -40,12 +40,8 @@ SEL_PATH = REPO / "scripts" / "impacted-tests"
 # tests/test_coderef_structural.py).
 _sel_copy = Path(tempfile.mkdtemp(prefix="select_tests_py_")) / "impacted_tests.py"
 shutil.copyfile(SEL_PATH, _sel_copy)
-_loader = importlib.machinery.SourceFileLoader("impacted_tests", str(_sel_copy))
-_spec = importlib.util.spec_from_loader("impacted_tests", _loader)
-assert _spec and _spec.loader
-sel: Any = importlib.util.module_from_spec(_spec)
-sys.modules["impacted_tests"] = sel  # slots=True dataclasses look up __module__
-_spec.loader.exec_module(sel)
+# slots=True dataclasses look up __module__ in sys.modules.
+sel: Any = load_script("impacted_tests", _sel_copy, register=True)
 
 
 def _test_functions(path: Path) -> set[str]:

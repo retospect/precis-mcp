@@ -18,7 +18,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
 from precis.runtime import PrecisRuntime
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 from tests.conftest import id_of
 
 

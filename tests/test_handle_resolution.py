@@ -16,7 +16,7 @@ import pytest
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils import handle_registry
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 # The full-hub fixture (runtime_with_store) boots every handler, which needs
 # the [paper] extra (pysbd). Absent on host; present in the container gate.

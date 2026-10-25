@@ -33,7 +33,7 @@ from precis.workers.job_types.fix_gripe import (
     _restricted_env,
     load_config_from_env,
 )
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 _POSIX_CLONE_CLEANUP = pytest.mark.skipif(
     sys.platform == "win32",

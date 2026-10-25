@@ -62,7 +62,7 @@ from precis.workers.health_digest import (
 from precis.workers.registry import ServiceKind, ServiceSpec
 from precis.workers.scheduler import Cadence
 from precis.workers.service_config import set_service_prio
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 from tests.workers._helpers import make_mock_bge_m3, seed_chunks, seed_ref
 
 # ── (c) zero-LLM, pure template ──────────────────────────────────────────

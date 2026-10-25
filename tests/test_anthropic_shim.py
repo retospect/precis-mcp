@@ -10,24 +10,19 @@ is contacted.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import json
 from pathlib import Path
 
 import pytest
+
+from tests._script import load_script
 
 SHIM_PATH = Path(__file__).resolve().parents[1] / "scripts" / "anthropic-shim.py"
 
 
 @pytest.fixture(scope="module")
 def shim():
-    loader = importlib.machinery.SourceFileLoader("anthropic_shim", str(SHIM_PATH))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+    return load_script("anthropic_shim", SHIM_PATH)
 
 
 # --- request side: Anthropic Messages -> chat/completions ---------------------

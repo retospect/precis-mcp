@@ -34,7 +34,7 @@ from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.seniority import derive_evidence
 from precis.workers.chase import FindingRow, advance_finding, run_finding_chase_pass
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 from tests.workers._helpers import make_mock_bge_m3
 
 _VERIFY_PATH = "precis.workers.chase._verify_support_with_caveats"

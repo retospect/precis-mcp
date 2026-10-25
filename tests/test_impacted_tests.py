@@ -11,8 +11,6 @@ triggers (harness files) decline to pick a subset at all.
 from __future__ import annotations
 
 import hashlib
-import importlib.machinery
-import importlib.util
 import json
 import os
 import shutil
@@ -25,6 +23,8 @@ from types import ModuleType
 
 import pytest
 
+from tests._script import load_script
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "impacted-tests"
 
@@ -35,13 +35,7 @@ def _load() -> ModuleType:
     # — same convention as tests/test_last_gated_main_sha.py.
     tmp_copy = Path(tempfile.mkdtemp(prefix="impacted_tests_")) / "impacted_tests.py"
     shutil.copyfile(SCRIPT, tmp_copy)
-    loader = importlib.machinery.SourceFileLoader("impacted_tests", str(tmp_copy))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["impacted_tests"] = mod
-    loader.exec_module(mod)
-    return mod
+    return load_script("impacted_tests", tmp_copy, register=True)
 
 
 @pytest.fixture(scope="module")

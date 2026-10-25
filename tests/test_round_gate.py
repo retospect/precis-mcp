@@ -27,18 +27,18 @@ check-run rows from `GH_STUB_DIR/<sha>`.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests._script import load_script
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -244,11 +244,7 @@ def test_docs_only_regex_is_the_one_check_yml_uses(tmp_path: Path) -> None:
     # path crashes its get_file (gr450298).
     copy = tmp_path / "round_script.py"
     copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
-    loader = SourceFileLoader("round_script", str(copy))
-    spec = importlib.util.spec_from_loader("round_script", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    mod = load_script("round_script", copy)
     workflow = (REPO_ROOT / ".github" / "workflows" / "check.yml").read_text(
         encoding="utf-8"
     )

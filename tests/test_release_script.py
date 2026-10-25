@@ -7,16 +7,15 @@ sub-second via flags.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
+from tests._script import load_script
 from tests.test_round_gate import (
     REPO_ROOT,
     Rig,
@@ -408,11 +407,7 @@ def test_red_names_job_and_run_of_the_current_run(rig: Rig) -> None:
 def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     copy = tmp_path / "release_script.py"
     copy.write_text(RELEASE.read_text(encoding="utf-8"), encoding="utf-8")
-    loader = SourceFileLoader("release_script", str(copy))
-    spec = importlib.util.spec_from_loader("release_script", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    mod = load_script("release_script", copy)
     monkeypatch.setattr(mod, "marker_path", lambda: tmp_path / ".release-owner")
     return mod
 

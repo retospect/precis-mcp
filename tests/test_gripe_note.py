@@ -14,7 +14,6 @@ import os
 import subprocess
 import sys
 import time
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
 
@@ -22,7 +21,8 @@ import pytest
 
 from precis.cli.gripe import note_gripes
 from precis.store import Store
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
+from tests._script import load_script
 from tests.test_ship_narrow_lock import Rig, _finish, _tree_files
 
 REPO = Path(__file__).resolve().parents[1]
@@ -37,7 +37,7 @@ def _load(path: Path, name: str, tmp_path: Path) -> ModuleType:
     # A .py copy: a dotless script path does not load as a module.
     copy = tmp_path / f"{name}.py"
     copy.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-    return SourceFileLoader(name, str(copy)).load_module()
+    return load_script(name, copy)
 
 
 @pytest.mark.parametrize(

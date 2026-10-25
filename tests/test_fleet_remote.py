@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 from pathlib import Path
 
 import pytest
+
+from tests._script import load_script
 
 _PATH = Path(__file__).resolve().parent.parent / "scripts" / "fleet-remote"
 
 
 def _load():
-    loader = importlib.machinery.SourceFileLoader("fleet_remote", str(_PATH))
-    spec = importlib.util.spec_from_loader("fleet_remote", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script("fleet_remote", _PATH)
 
 
 fr = _load()

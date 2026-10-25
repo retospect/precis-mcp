@@ -1,20 +1,15 @@
 """scripts/fleet-cleanup: squash-merge detection and never-touch list."""
 
-import importlib.machinery
-import importlib.util
 import subprocess
 from pathlib import Path
+
+from tests._script import load_script
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "fleet-cleanup"
 
 
 def _load():
-    loader = importlib.machinery.SourceFileLoader("fleet_cleanup", str(SCRIPT))
-    spec = importlib.util.spec_from_loader("fleet_cleanup", loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script("fleet_cleanup", SCRIPT)
 
 
 fc = _load()

@@ -14,7 +14,7 @@ from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
 from precis.workers import gripe_triage
 from precis.workers.gripe_triage import StaleGripe, Thread, ThreadIndex
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 
 def _cand(

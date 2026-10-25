@@ -84,14 +84,14 @@ from __future__ import annotations
 
 import ast
 import functools
-import importlib.machinery
-import importlib.util
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests._script import load_script
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PCB_DIR = _REPO_ROOT / "src" / "precis" / "pcb"
@@ -102,11 +102,7 @@ _PCB_DIR = _REPO_ROOT / "src" / "precis" / "pcb"
 # files by extension and INTERNALERRORs on one that has none).
 _coderef_copy = Path(tempfile.mkdtemp(prefix="coderef_dead_export_")) / "coderef.py"
 shutil.copyfile(_REPO_ROOT / "scripts" / "coderef", _coderef_copy)
-_loader = importlib.machinery.SourceFileLoader("coderef", str(_coderef_copy))
-_spec = importlib.util.spec_from_loader("coderef", _loader)
-assert _spec and _spec.loader
-coderef = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(coderef)
+coderef = load_script("coderef", _coderef_copy)
 
 
 #: Known-unwired public functions: correct, tested, structurally

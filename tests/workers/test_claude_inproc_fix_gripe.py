@@ -15,7 +15,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import claude_inproc as ci
 from precis.workers.job_types.fix_gripe import RunOutcome
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 pytestmark = pytest.mark.db
 

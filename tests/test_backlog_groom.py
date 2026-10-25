@@ -26,7 +26,7 @@ from precis.workers.backlog_groom import (
     run_backlog_groom_pass,
 )
 from precis.workers.dispatch import run_dispatch_pass
-from tests._gripe import insert_gripe
+from tests._refs import insert_gripe
 
 
 def _open_gripe(

@@ -378,6 +378,26 @@ Two lazy seams behave the same way:
   `assert store is not None` and no second `store` fixture needed
   alongside `runtime_with_store` (gr515820).
 
+## Per-kind `insert_ref` invariants — `tests/_refs.py`
+
+Two invariants surface only as insert-time failures when a test hand-rolls
+`insert_ref` (gr515818, gr515819):
+
+- `kind='gripe'` needs a valid `STATUS:` tag in the **same transaction** —
+  migration 0176's deferred `gripe_status_check` fires at COMMIT. Use
+  `insert_gripe(store, title, status='open')`.
+- Slug-addressed kinds (`kinds.is_numeric = false`, checked by
+  `Store._validate_slug_for_kind`) refuse `slug=None` — draft, paper,
+  skill, plan, figure, mermaid, make, structure, rxn, meeting, pres,
+  book, edgar, patent, email, material, part, code, decision, design,
+  markdown, plaintext, tex, tool, repo, project, conv, checklist,
+  component, datasheet, math, news, oracle, orcid, cfp, issue, cad, chem,
+  pcb, web, websearch, wikipedia, youtube, perplexity-reasoning,
+  perplexity-research, research_report (`SELECT slug FROM kinds WHERE NOT
+  is_numeric` for the live list). `insert_draft(store, slug, title)`
+  covers the common one. Numeric kinds — gripe, todo, finding, job, … —
+  take `slug=None`.
+
 ## Adding a kind (or changing its `placement`): the ratchet checklist
 
 The pinning tests live in files the change never touches, so `--impacted`

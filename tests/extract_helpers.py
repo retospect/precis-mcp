@@ -2,6 +2,11 @@
 (``test_extract_survey.py`` library tests, ``test_survey_extract_job.py``
 dispatch tests). Plain functions + a ``world`` builder — the two files
 import what they need; nothing here runs as a test itself.
+
+Note for measure seeding (gr515816): ``insert_measure`` refuses an
+anchorless ``tier='measured'`` row — the anchorless path is
+``tier='asserted'`` (the refusal's ``next:`` names it), which is also
+what gate tests like ``test_anchorless_token_rows_fail_the_gate`` use.
 """
 
 from __future__ import annotations
@@ -96,17 +101,26 @@ def fake_ctx(
     store: Store,
     meta: dict[str, Any],
     events: list | None = None,
-    ref_id: int = 1,
+    ref_id: int | None = None,
 ) -> DispatchContext:
     out = events if events is not None else []
+
+    def _set_meta(**kw: Any) -> None:
+        out.append(("meta", kw))
+        # The real set_meta merges into refs.meta (gr515503): pass
+        # ref_id=<a real job ref> so a finished job's verdict is visible
+        # to queries like store.accepted_runs, not just the events list.
+        if ref_id is not None:
+            store.stamp_ref_meta(ref_id, kw)
+
     return DispatchContext(
         store=store,
-        ref_id=ref_id,
+        ref_id=ref_id if ref_id is not None else 1,
         title="survey_extract",
         meta=meta,
         set_status=lambda s: out.append(("status", s)),
         append_chunk=lambda k, t: out.append((k, t)),
-        set_meta=lambda **kw: out.append(("meta", kw)),
+        set_meta=_set_meta,
         record_failure=lambda r, **kw: out.append(("fail", {"reason": r, **kw})),
         is_cancel_requested=lambda: False,
     )
@@ -125,8 +139,19 @@ def llm_result(
     )
 
 
-def drive(ctx_meta: dict[str, Any], store: Store, spec: Any) -> tuple[Done, list]:
-    """Run a coordinator dispatch through its yields until Done."""
+def drive(
+    ctx_meta: dict[str, Any],
+    store: Store,
+    spec: Any,
+    *,
+    ref_id: int | None = None,
+) -> tuple[Done, list]:
+    """Run a coordinator dispatch through its yields until Done.
+
+    ``ref_id`` names a real job ref so the dispatch's ``set_meta``
+    writes land in ``refs.meta`` (gr515503) — without it the verdict is
+    only in the returned events list.
+    """
     state: dict[str, Any] = {}
     events: list = []
     dispatch = spec.dispatch
@@ -135,7 +160,7 @@ def drive(ctx_meta: dict[str, Any], store: Store, spec: Any) -> tuple[Done, list
         meta = dict(ctx_meta)
         if state:
             meta["coordinator_state"] = state
-        out = dispatch(fake_ctx(store, meta, events), spec)
+        out = dispatch(fake_ctx(store, meta, events, ref_id=ref_id), spec)
         if isinstance(out, Done):
             return out, events
         assert isinstance(out, Yield)

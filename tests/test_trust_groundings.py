@@ -278,7 +278,7 @@ def test_admit_on_missing_ref(store: Store) -> None:
 
 
 def test_comment_does_not_stale_consider_body_edit_does(store: Store) -> None:
-    from tests._gripe import insert_gripe
+    from tests._refs import insert_gripe
 
     with revision_context("t", trust_origin="generated", trust_actor_type="agent"):
         rid = int(insert_gripe(store, "a gripe").id)
