@@ -43,6 +43,18 @@ approval quote for the tier, with its UTC time).
    name the allowed functions — "_TOP_KEYS only" is ambiguous about
    whether a related refusal may live in a neighbouring helper
    (gr514946).
+   State what a length cap is measured on — the board's 120 counts the
+   note text only, not the timestamp/window `post` prepends (gr515485).
+   Cite only commits on origin/main and say "base on origin/main" —
+   launch warns on a cited sha that is not an ancestor (gr515489); never
+   stack on a squash-landed branch either, its commits are not ancestors
+   (gr515506). The lint step is `scripts/test --typecheck` (mypy on
+   src+tests), never "mypy on touched files" — qland's gate checks
+   tests, so test-file errors bounce the landing (gr515507). When a
+   brief says where a hook is wired, check
+   `docs/reference/hooks.md` — `~/.claude/settings.json` wiring
+   (compact-state-note.sh) is user-level, not the project file
+   (gr515488).
    The footer is appended at launch; do not restate its rules. When the tier grants precis writes
    (W), include one line in the brief: the write verbs are deferred
    tools — before the first `mcp__precis__put`/`edit`/`tag`/`link`, load

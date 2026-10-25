@@ -806,6 +806,46 @@ def test_launch_dry_run_claims_nothing(env: dict[str, str], tmp_path: Path) -> N
     assert _claims(env) == ""
 
 
+def test_launch_warns_on_brief_sha_off_main(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _fills(env)
+    _windows(env, {})
+    repo = Path(env["CWD"])
+    subprocess.run(["git", "checkout", "-q", "-b", "side"], cwd=repo, check=True)
+    side = _commit(env, "side work")
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+    brief = tmp_path / "s.brief"
+    brief.write_text(f"Inspect {side[:9]} on the side branch.\n", encoding="utf-8")
+    proc = _run(env, "launch", "s1", "--brief", str(brief), "--tier", "qland")
+    assert proc.returncode == 0, proc.stderr
+    assert side[:9] in proc.stderr and "not on origin/main" in proc.stderr
+
+
+def test_launch_quiet_for_landed_or_unknown_sha(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _fills(env)
+    _windows(env, {})
+    repo = Path(env["CWD"])
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    brief = tmp_path / "m.brief"
+    brief.write_text(
+        f"See {head[:9]} and the unresolvable deadbeef0 token.\n",
+        encoding="utf-8",
+    )
+    proc = _run(env, "launch", "m1", "--brief", str(brief), "--tier", "qland")
+    assert proc.returncode == 0, proc.stderr
+    assert "origin/main" not in proc.stderr
+
+
 def test_close_releases_claimed_spec(env: dict[str, str], tmp_path: Path) -> None:
     env = _fills(env)
     _bare_origin(env)

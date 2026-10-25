@@ -66,6 +66,11 @@ SessionStart commands wired outside `scripts/hooks/` (same `hooks:` block):
   read-only commands and counts tool-response bytes per session. Reads
   `cwd`, `session_id`, `hook_event_name`, `tool_input.command`/`cmd`,
   `tool_input.sandbox_permissions`, `tool_response`.
+- `compact-state-note.sh` — the compaction state-note hook, user-level:
+  a wrapper in `~/.claude/settings.json` (SessionStart `compact` and
+  PreCompact) runs `~/.claude/hooks/compact-state-note.sh` when the
+  project copy differs or is absent. The project file's only PreCompact
+  entry is `precompact-persist.sh`.
 - `_symbol_heuristic.py` — not a hook: the shared bare-identifier heuristic
   imported by `coderef-nudge.py` and `bash-reflex-nudge.py`.
 

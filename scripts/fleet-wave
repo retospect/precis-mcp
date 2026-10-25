@@ -41,6 +41,9 @@ claim history is an append-only TSV at ``$FLEET_STATE/claims.tsv``.
 abandoned/reaped-unmerged path). A spec that is dirty in the primary,
 not ``ready``, or claimed by another tree is left alone; a flip that
 can't be pushed is rolled back rather than left diverging local main.
+``launch`` also warns (never blocks) when the brief cites a commit that
+is not an ancestor of ``origin/main`` — a cite of unlanded or
+squash-landed work (gr515489, gr515506).
 
 Launch tiers are authority v2's R and W (.claude/fleet/authority.md);
 ``readonly`` and ``qland`` are aliases for R and W. Launch creates the
@@ -500,6 +503,11 @@ def _apply_authority(tier: str, tree: Path) -> str:
 #: ``docs/backlog/<slug>.md`` mentions in a brief — direct children only:
 #: ``threads/`` files sequence work, they are never a builder's spec.
 _SPEC_REF_RE = re.compile(r"docs/backlog/([A-Za-z0-9][A-Za-z0-9._-]*)\.md")
+#: Sha-shaped tokens in a brief (7–40 hex chars, at least one digit). One
+#: that resolves to a commit but is not an ancestor of origin/main cites
+#: unlanded or squash-landed work (gr515489, gr515506); launch warns.
+_BRIEF_SHA_RE = re.compile(r"\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b")
+_BRIEF_SHA_MAX = 20
 _NON_SPEC_STEMS = frozenset({"readme", "template", "index"})
 #: Leading ``--- … ---`` front-matter block (same shape as the fixer's
 #: intake parser — kept local, fleet-wave is a standalone script).
@@ -526,6 +534,31 @@ def _spec_slugs(brief: str) -> list[str]:
         if slug.lower() not in _NON_SPEC_STEMS and slug not in out:
             out.append(slug)
     return out
+
+
+def _warn_brief_shas(f: Fleet, brief: str) -> None:
+    """Warn (never block) on brief-cited commits not on origin/main."""
+    if not git("rev-parse", "--verify", "-q", "origin/main", cwd=f.main).strip():
+        return
+    seen: set[str] = set()
+    for tok in _BRIEF_SHA_RE.findall(brief):
+        if tok in seen:
+            continue
+        seen.add(tok)
+        if len(seen) > _BRIEF_SHA_MAX:
+            break
+        rev = git(
+            "rev-parse", "--verify", "-q", f"{tok}^{{commit}}", cwd=f.main
+        ).strip()
+        if not rev:
+            continue
+        if _git_rc("merge-base", "--is-ancestor", rev, "origin/main", cwd=f.main):
+            print(
+                f"fleet-wave: brief cites {tok} — not on origin/main "
+                "(unlanded or squash-landed); cite landed commits and "
+                "base the builder on origin/main",
+                file=sys.stderr,
+            )
 
 
 def _claimed_by(text: str) -> str | None:
@@ -784,6 +817,7 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     }
     footer = _fill_footer(_footer_template(f, tier), fills)
     brief = Path(a.brief).read_text(encoding="utf-8").rstrip("\n")
+    _warn_brief_shas(f, brief)
     text = f"{brief}\n{footer}"
     f.state.mkdir(parents=True, exist_ok=True)
     prompt_file = f.state / f"{win}.prompt"
