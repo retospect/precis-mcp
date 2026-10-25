@@ -1480,36 +1480,38 @@ def test_semantic_row_question_only_has_no_chunk_address() -> None:
     assert not row.section.startswith("~")
 
 
-def test_search_table_chunk_id_round_trips_through_get(tmp_path) -> None:
+def test_search_table_chunk_id_round_trips_through_get(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr259666: the search table's section column must render a
     copy-pasteable ``~N`` chunk id, and that id must actually resolve
     via ``get(kind='skill', id='<slug>~<N>')`` — the failure mode was
     an agent pasting the heading text into ``id='slug~Heading'`` and
     getting a ``BadInput`` (``_SKILL_ID_RE`` requires ``~\\d+``).
     """
-    import os
     import re
 
     from precis.dispatch import Hub
     from precis.embedder import MockEmbedder
+    from precis.skill_index import index as skill_index_mod
 
-    os.environ["PRECIS_CACHE_DIR"] = str(tmp_path)
-    try:
-        hub = Hub(embedder=MockEmbedder(dim=64))
-        handler = SkillHandler(hub=hub)
-        handler.hub = hub
-        out = handler.search(q="precis-overview")
-        m = re.search(r"~(\d+) — ", out.body)
-        assert m is not None, f"expected a ~N chunk id in the table; got:\n{out.body}"
-        n = int(m.group(1))
-        # The row line containing the match must start with a real slug.
-        line = next(ln for ln in out.body.splitlines() if f"~{n} — " in ln)
-        slug = line.split("\t", 1)[0].strip()
-        # Round-trip: the address get() accepts and returns real content.
-        chunk = handler.get(id=f"{slug}~{n}")
-        assert chunk.body.strip()
-    finally:
-        del os.environ["PRECIS_CACHE_DIR"]
+    monkeypatch.setenv("PRECIS_CACHE_DIR", str(tmp_path))
+    # The fresh cache makes the index build cold; on a loaded CI runner it
+    # outlasts the 5 s interactive wait and the semantic ~N rows vanish.
+    monkeypatch.setattr(skill_index_mod, "_BUILD_WAIT_S", 120.0)
+    hub = Hub(embedder=MockEmbedder(dim=64))
+    handler = SkillHandler(hub=hub)
+    handler.hub = hub
+    out = handler.search(q="precis-overview")
+    m = re.search(r"~(\d+) — ", out.body)
+    assert m is not None, f"expected a ~N chunk id in the table; got:\n{out.body}"
+    n = int(m.group(1))
+    # The row line containing the match must start with a real slug.
+    line = next(ln for ln in out.body.splitlines() if f"~{n} — " in ln)
+    slug = line.split("\t", 1)[0].strip()
+    # Round-trip: the address get() accepts and returns real content.
+    chunk = handler.get(id=f"{slug}~{n}")
+    assert chunk.body.strip()
 
 
 def test_semantic_search_distinct_section_count_skips_twin_variants(
