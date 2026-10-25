@@ -578,16 +578,17 @@ class GripeHandler(NumericRefHandler):
                 what=f"{self._sense()} comment",
             )
             return interpreted(resp, readings)
-        # Envelope-denied create (write:none — the dispatch carve-out is
-        # what let this put reach the handler): the channel is text-only.
-        # Refuse — don't strip — every write-shaping arg: the run should
-        # learn the one call shape it can make, and "filed" must never
-        # mean "filed with different tags than you asked" (gr516603
-        # review; the probe-only ro path below still strips with a
-        # reading per the spec).
-        from precis.runtime.dispatch import _put_denied
-
-        if _put_denied():
+        # Read-scoped create (write:none, --read-only, agent_ro — the
+        # dispatch carve-out is what let this put reach the handler): the
+        # channel is text-only. Refuse — don't strip — every
+        # write-shaping arg: the run should learn the one call shape it
+        # can make, and "filed" must never mean "filed with different
+        # tags than you asked" (gr516603 review; since gr512233 every
+        # read scope gets this channel, not only the env deny — and
+        # ``_is_ro`` adds the per-call grants probe, so an
+        # ``agent_ro`` run that never recorded a boot verdict is refused
+        # here too instead of failing downstream).
+        if self._is_ro():
             non_text = [
                 name
                 for name, val in (
@@ -604,7 +605,7 @@ class GripeHandler(NumericRefHandler):
             ]
             if non_text:
                 raise Denied(
-                    "a write:none run's gripe channel takes text= only — "
+                    "a read-only run's gripe channel takes text= only — "
                     f"{', '.join(non_text)} needs a write-capable run",
                     next=f"put(kind={self.kind!r}, text='your friction report')",
                 )
@@ -1128,24 +1129,35 @@ class GripeHandler(NumericRefHandler):
 
     def _is_ro(self) -> bool:
         """Whether this filing must take the read-only channel —
-        envelope-denied (``PRECIS_MCP_DENY_VERBS`` names ``put``; the
-        dispatch carve-out is what let the call reach here) OR the store
-        connection itself is read-only (``agent_ro``, via
-        :func:`precis.dispatch._probe_read_only`).
+        ``runtime.scope.current_scope() == 'read'`` (gr512233): the
+        envelope deny naming ``put`` (``PRECIS_MCP_DENY_VERBS``; the
+        dispatch carve-out is what let the call reach here), ``serve
+        --read-only``, ``PRECIS_MCP_READ_ONLY``, or the boot probe's
+        ``agent_ro``/read-only-DSN verdict.
 
         The env half matters because tier-2 is dark by default
         (``pool._db_role_enforced``): a ``write:none`` run usually holds
         an *rw* connection, so the grants probe alone would take the
         uncapped writer path — the deny env is the signal, not the
-        grants (gr516603 review). Probed per call.
+        grants (gr516603 review).
+
+        The per-call grants probe is the second check for the scope's
+        holes (gr512233 round-2 review): a process that never ran
+        ``dispatch.boot``, booted ``boot_writes=False``, or whose boot
+        probe wobbled would scope ``write`` on a genuinely read-only
+        store and take the uncapped writer path. One cheap query per
+        filing recovers the per-call probe the boot cache replaced;
+        detection still fails *open* (scope says write when unknown —
+        the DB grants are the enforcement), this just catches the case
+        where we know better.
         """
-        from precis.runtime.dispatch import _put_denied
-
-        if _put_denied():
-            return True
         from precis.dispatch import _probe_read_only
+        from precis.runtime.scope import current_scope
 
-        return _probe_read_only(self.store)
+        if current_scope() == "read":
+            return True
+        store = getattr(self, "store", None)
+        return store is not None and _probe_read_only(store)
 
     def _create(
         self,
@@ -1228,19 +1240,13 @@ class GripeHandler(NumericRefHandler):
                     "text='resolved: …', tags=['STATUS:done'])"
                 ),
             )
-        # Read-only path (gr516603): the definer stamps the filing
-        # ``source:agent_ro`` + ``friction`` + ``agent:<run>`` itself —
-        # ``agent_ro`` holds no ``ref_tags``/``links``/UPDATE grant, so
-        # caller ``tags=``/``link=``/``prio=`` are dropped with a reading,
-        # not applied and not an error (mcp-authoring rule 9).
+        # Read-only filing (gr516603/gr512233): ``put``'s text-only gate
+        # refused every write-shaping arg under ``_is_ro`` already, so
+        # ``ro`` here means a bare ``text=`` create — the definer stamps
+        # it ``source:agent_ro`` + ``friction`` + ``agent:<run>`` and the
+        # reading says so. (Caller ``tags=``/``link=``/``prio=`` can no
+        # longer reach this point under ro; they get Denied upstream.)
         ro = self._is_ro()
-        dropped: list[str] = []
-        if ro:
-            if link is not None:
-                dropped.append("link=")
-                link = None
-            if rel is not None:
-                dropped.append("rel=")
         if link is not None:
             mint_lazy_link_target(link, store=self.store, hub=self.hub)
         target = parse_link_target(link, store=self.store) if link is not None else None
@@ -1260,23 +1266,11 @@ class GripeHandler(NumericRefHandler):
         if (put_prio := _PUT_PRIO.get()) is not None:
             prio_from_tag = put_prio
         if ro:
-            if tags:
-                dropped.append("tags=")
-            if prio_from_tag is not None:
-                dropped.append("prio=")
-            parsed_extra_tags: list[Tag] = []
             readings.append(
-                "read-only run: " + ", ".join(dropped) + " ignored — the "
-                "gripe is stamped source:agent_ro + friction + agent:<run> "
-                "by file_gripe_readonly; tag/link it from a write-capable run"
-                if dropped
-                else "read-only run: stamped source:agent_ro + friction + "
+                "read-only run: stamped source:agent_ro + friction + "
                 "agent:<run> by file_gripe_readonly"
             )
-        else:
-            parsed_extra_tags = [
-                Tag.parse_strict(t, kind=self.kind) for t in (tags or [])
-            ]
+        parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
 
         with self.store.tx() as conn:
             try:

@@ -1611,12 +1611,23 @@ def _restrict_to_read_verbs(fastmcp: FastMCP) -> None:
     ``precis(command)`` tool dispatches to every verb. The remaining set
     is re-read and checked, so a tool registered by some other path
     fails the startup instead of being served.
+
+    Records the read-only serve through ``runtime.scope``'s module flag
+    AFTER the command-profile check — a refused startup must not leave
+    the process scoped ``read`` (the earlier env-var stamp did exactly
+    that, and also leaked read scope across a pytest process's later
+    tests; gr512233 round-2 review). ``current_scope()`` reads the flag
+    so recipe surfaces (skill bodies, later ``Next:``/``next=``) hide
+    write material on this connection.
     """
     if _mcp_profile() == "command":
         raise ValueError(
             "precis serve: --read-only needs the typed profile (the command "
             f"profile's single tool dispatches write verbs); unset {_MCP_PROFILE_ENV}"
         )
+    from precis.runtime.scope import note_serve_read_only
+
+    note_serve_read_only()
     for tool in fastmcp._tool_manager.list_tools():
         if tool.name not in READ_ONLY_VERBS:
             fastmcp.remove_tool(tool.name)

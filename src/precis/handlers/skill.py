@@ -57,6 +57,7 @@ from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
+from precis.runtime.scope import current_scope
 from precis.skill_index import (
     FileCorpusIndex,
     SearchHit,
@@ -73,6 +74,8 @@ from precis.utils.skill_common import (
     parse_frontmatter,
     skill_family,
 )
+from precis.utils.skill_scope import render as scope_render
+from precis.utils.skill_scope import strip_heading_mark
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -450,8 +453,14 @@ def _addressable_chunk_idx(hit: SearchHit) -> int | None:
     text = _load_skill(hit.slug)
     if text is None:
         return None
+    # The index is built over the write-scope render (gr512233), so a
+    # twin hit's heading is already marker-stripped — resolve it
+    # against the same render or a ``{write}``-marked section would
+    # never match. Chunk indices are render-invariant either way.
+    text = scope_render(text, "write")[0]
+    heading = strip_heading_mark(hit.heading)
     for i, chunk in enumerate(chunk_by_h2(text)):
-        if chunk.heading == hit.heading:
+        if chunk.heading == heading:
             return i
     return None
 
@@ -472,7 +481,9 @@ def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
     ``~N`` so the column doubles as a copy-pasteable
     ``get(kind='skill', id='slug~N')`` address (gr259666).
     """
-    section = hit.heading or ""
+    # ``{write}`` is authoring markup, never output: strip it from the
+    # row heading even if a stale raw-text index built it (gr512233).
+    section = strip_heading_mark(hit.heading or "")
     if hit.variant == "question_only":
         section = _skill_title(hit.slug) or hit.slug
     idx = _addressable_chunk_idx(hit)
@@ -649,7 +660,10 @@ class SkillHandler(Handler):
         # (F20, the discovery layer's successor) but the skill handler still
         # uses the on-demand path; caching avoids the worst-case
         # cost without a schema change for skills.
-        self._toc_cache: dict[tuple[str, tuple[int, int] | None], str] = {}
+        # gr512233: the cache key gained the connection scope —
+        # ``(slug, chunk_scope, 'read'|'write')``. Without it a toc
+        # rendered under one scope would serve under the other.
+        self._toc_cache: dict[tuple[str, tuple[int, int] | None, str], str] = {}
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -715,6 +729,14 @@ class SkillHandler(Handler):
                     ),
                 ],
             )
+        # Same filter the whole-skill serve applies (gr512233): a
+        # read-scope find must not quote a fenced write recipe, and
+        # markers strip under write scope too.
+        conn_scope = current_scope()
+        if conn_scope == "read" and parse_frontmatter(text).scope == "write":
+            text = _write_only_stub(slug)
+        else:
+            text, _ = scope_render(text, conn_scope)
         body = SimpleNamespace(
             id=None, ord=0, slug=slug, text=text, meta={}, chunk_kind="body"
         )
@@ -806,6 +828,14 @@ class SkillHandler(Handler):
                         f"omit view= for the markdown body"
                     ),
                 )
+        # gr512233 (read-scope-skill-fencing.md slice 1): the connection
+        # scope filters what recipes a skill may show. A ``scope: write``
+        # front-matter skill is write-only end to end — a read-scope
+        # connection gets a stub (title + summary + pointer), on every
+        # path (body, ``~N``, ``/toc``, find-in-ref covered below).
+        conn_scope = current_scope()
+        if conn_scope == "read" and _skill_is_write_only(slug):
+            return Response(body=_write_only_stub(slug))
         if effective_view == "toc":
             return self._render_skill_toc(slug, scope=chunk_spec)
         if chunk_spec is not None:
@@ -893,11 +923,16 @@ class SkillHandler(Handler):
         # Client-held rev tag (gr477798): every whole-skill serve ends
         # with ``skill rev <sha8>``; the stub is returned only when the
         # caller echoes the current sha8 via ``have=``. The sha is over
-        # the raw (include-expanded, pre-banner/footer) body so a
-        # serve-time-only addition below never itself counts as a
-        # content change. No server-side session state: subagents share
-        # the parent's MCP session, so a session ledger would stub a
+        # the scope-filtered (include-expanded, pre-banner/footer) body
+        # — gr512233: a rev minted under ``read`` never stubs a ``write``
+        # serve or vice versa, because the two scopes hash different
+        # text. No server-side session state: subagents share the
+        # parent's MCP session, so a session ledger would stub a
         # reader that never saw the body.
+        # ``scope_render`` runs in BOTH scopes: read drops fenced
+        # sections, write strips the markers so the serve is
+        # byte-identical to the unmarked file.
+        text, _dropped = scope_render(text, conn_scope)
         body_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
         rev = body_sha[:8]
         have_s = have.strip() if isinstance(have, str) else ""
@@ -940,7 +975,14 @@ class SkillHandler(Handler):
         # sessionless callers always see it).
         from precis.utils.hint_ledger import was_shown
 
-        misled = _MISLED_LINE.format(slug=slug)
+        # The misled promo's ``link=``/``rel=`` are refused by the
+        # text-only gripe channel — a read scope gets the channel-legal
+        # ``text=``-only variant (gr512233).
+        misled = (
+            _MISLED_LINE.format(slug=slug)
+            if conn_scope == "write"
+            else _MISLED_LINE_READ.format(slug=slug)
+        )
         if not was_shown(misled):
             text = text.rstrip() + "\n\n" + misled
         text += f"\n\nskill rev {rev}"
@@ -1521,6 +1563,11 @@ class SkillHandler(Handler):
             text = _load_skill(slug)
             if text is None:
                 continue
+            # gr512233: match and preview the write-scope render so
+            # ``{write}`` suffixes and ``<!-- write -->`` marker lines
+            # never surface in a search row (authoring markup, not
+            # content).
+            text = scope_render(text, "write")[0]
             body_norm = _norm_for_substr(text)
             verbatim = body_norm.count(needle)
             matched: set[str] = set()
@@ -1568,7 +1615,10 @@ class SkillHandler(Handler):
         for slug in _list_skills():
             text = _load_skill(slug)
             if text is not None:
-                files[slug] = text
+                # gr512233: the index embeds the write-scope render —
+                # the body minus authoring markers — so hit headings
+                # and snippets never carry ``{write}``/``<!-- write -->``.
+                files[slug] = scope_render(text, "write")[0]
         self._index = FileCorpusIndex(
             files=files,
             embedder=embedder,
@@ -1665,7 +1715,13 @@ class SkillHandler(Handler):
         self, slug: str, *, scope: tuple[int, int] | None
     ) -> Response:
         """Render the smart-TOC for a skill, optionally scoped."""
-        cache_key = (slug, scope)
+        # The connection scope is part of the key — read scope renders
+        # over the write-fence-filtered body (gr512233), so a toc cached
+        # under one scope must not serve under the other. It rides into
+        # render_for_ref's own LRU too: that cache is module-level and
+        # keyed without it would return this scope's sibling rendering.
+        conn_scope = current_scope()
+        cache_key = (slug, scope, conn_scope)
         cached = self._toc_cache.get(cache_key)
         if cached is not None:
             return Response(body=cached)
@@ -1679,6 +1735,7 @@ class SkillHandler(Handler):
             kind="skill",
             adapter=adapter,
             scope=scope,
+            conn_scope=conn_scope,
         )
         # ``~0`` was hardcoded and claimed "from above" even when the
         # scoped listing doesn't include chunk 0 — anchor on the
@@ -1716,6 +1773,11 @@ class SkillHandler(Handler):
                 f"skill {slug!r} not found",
                 next="get(kind='skill') for the catalogue",
             )
+        # gr512233: chunks run on the scope-filtered body — read keeps
+        # a fenced section's heading and replaces its body with the
+        # pointer, so ``~N`` addresses the same section in both scopes;
+        # write just strips markers.
+        text, _dropped = scope_render(text, current_scope())
         chunks = chunk_by_h2(text)
         lo, hi = chunk_spec
         if hi >= len(chunks) or lo < 0 or lo > hi:
@@ -1776,6 +1838,12 @@ class SkillHandler(Handler):
                 f"skill {slug!r} not found",
                 next="get(kind='skill', id='toc') lists every skill slug",
             )
+        # gr512233: the toc lists the scope-filtered body. Under read
+        # the embedding alignment below then mismatches (the index is
+        # over the write-scope body) and falls back to H2 boundaries —
+        # the per-chunk write flag that lets it keep embeddings is a
+        # later slice.
+        text, _dropped = scope_render(text, current_scope())
 
         chunks = chunk_by_h2(text)
         chunks_text = tuple(c.text for c in chunks)
@@ -3902,6 +3970,15 @@ _MISLED_LINE = (
     "rel='raises-concern-about')"
 )
 
+#: The read-scope variant (gr512233): ``link=``/``rel=`` are refused by
+#: the write:none channel's text-only gripe path, so the read line
+#: drops them and carries the slug inside ``text=`` instead — the
+#: per-skill dedupe (``was_shown``) and the filed gripe both need it.
+_MISLED_LINE_READ = (
+    "misled by this skill? put(kind='gripe', text='skill {slug}: <what "
+    "misled you, what is actually true, where you checked>')"
+)
+
 
 def _age_label(last: Any, now: datetime) -> str:
     """Compact "last read" age for the toc: ``never`` / ``<1h`` / ``5h`` / ``12d``."""
@@ -3926,6 +4003,47 @@ def _expand_wikilinks(text: str) -> str:
     which covers both conventions.
     """
     return WIKILINK_RE.sub(lambda m: f"`get(kind='skill', id='{m.group(1)}')`", text)
+
+
+def _skill_is_write_only(slug: str) -> bool:
+    """Whether ``slug``'s front matter declares ``scope: write``
+    (gr512233 — the whole-skill write fence).
+
+    Mirrors the whole-skill path's alias fallback so ``get(id='put')``
+    resolves to a ``scope: write`` ``precis-put-help`` the same way the
+    body serve would. ``False`` for an unknown slug — the NotFound path
+    handles those downstream.
+    """
+    text = _load_skill(slug)
+    if text is None:
+        alias_target = f"precis-{slug}-help"
+        if skill_exists(alias_target):
+            text = _load_skill(alias_target)
+    if text is None:
+        return False
+    return parse_frontmatter(text).scope == "write"
+
+
+def _write_only_stub(slug: str) -> str:
+    """The read-scope stub for a ``scope: write`` skill — title +
+    ``summary:`` + the omitted-recipes pointer, never a NotFound
+    (the skill exists; this connection just can't use it)."""
+    text = _load_skill(slug)
+    if text is None:
+        alias_target = f"precis-{slug}-help"
+        if skill_exists(alias_target):
+            slug = alias_target
+            text = _load_skill(slug)
+    fm = parse_frontmatter(text or "")
+    lines = [f"# {fm.title or slug}", ""]
+    if fm.summary:
+        lines += [f"summary: {fm.summary}", ""]
+    lines.append(
+        "(write recipes omitted: this connection is read-only. "
+        f'"{slug}" is a write-only skill; to report a problem: '
+        "put(kind='gripe', text='...'))"
+    )
+    return "\n".join(lines)
 
 
 def _tree_siblings(slug: str) -> list[str]:

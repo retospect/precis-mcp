@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.store import Store
 
 pytestmark = pytest.mark.db
@@ -286,3 +287,30 @@ def test_run_cap_holds_under_concurrent_filings(store: Store) -> None:
     for t in threads:
         t.join()
     assert sorted(outcomes) == ["filed", "filed", "filed", "run cap", "run cap"]
+
+
+def test_probe_detected_ro_gets_the_text_only_channel(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr512233 round-2 review: when nothing set the scope — no env
+    signal, no ``dispatch.boot`` verdict (or a probe that wobbled at
+    boot) — ``current_scope()`` says ``write``, but the handler's
+    per-call grants probe is the second check. ``tags=`` is Denied
+    and a bare ``text=`` still files through ``file_gripe_readonly``
+    stamped ``source:agent_ro``."""
+    import re
+
+    import precis.dispatch as _dispatch
+    from precis.errors import Denied
+    from precis.handlers.gripe import GripeHandler
+
+    monkeypatch.setattr(_dispatch, "_probe_read_only", lambda _store: True)
+    h = GripeHandler(hub=hub)
+    with pytest.raises(Denied):
+        h.put(text="x", tags=["friction"])
+    resp = h.put(text="agent_ro filing with no boot verdict")
+    assert "read-only run" in resp.body
+    m = re.search(r"id=(\d+)", resp.body)
+    assert m is not None
+    assert hub.store is not None
+    assert "source:agent_ro" in _tag_strings(hub.store, int(m.group(1)))

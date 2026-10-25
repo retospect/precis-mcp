@@ -651,16 +651,24 @@ def _denied_verbs_env() -> frozenset[str]:
 
 
 def _put_denied() -> bool:
-    """Whether this run's envelope denies ``put`` — i.e. tier-1 says the
-    run may not write at all.
+    """Whether this run is read-scoped — i.e. it may not write at all.
 
     The gripe handler treats this as the read-only signal *independent of
     the connection's actual grants*: tier-2 (``SET ROLE agent_ro``,
     ``envelope.db_role``) is dark by default
     (``pool._db_role_enforced``), so an envelope-denied run usually holds
     an *rw* connection — keying the ro path off the grants probe alone
-    would take the uncapped writer path (gr516603 review)."""
-    return "put" in _denied_verbs_env()
+    would take the uncapped writer path (gr516603 review).
+
+    Since gr512233 the signal is ``runtime.scope.current_scope()`` —
+    the envelope deny naming ``put``, ``serve --read-only``,
+    ``PRECIS_MCP_READ_ONLY`` and the boot probe verdict all land the
+    same read scope (the spec's option-B ruling: a read token/run gets
+    the same capped gripe channel a ``write:none`` run gets).
+    """
+    from precis.runtime.scope import current_scope
+
+    return current_scope() == "read"
 
 
 def _exempt_ref_ids(verb: str, args: dict[str, Any]) -> list[tuple[str, Any]]:

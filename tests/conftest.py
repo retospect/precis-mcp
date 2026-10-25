@@ -610,6 +610,26 @@ MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "precis" / "migrations"
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _reset_connection_scope() -> Iterator[None]:
+    """Undo any read-scope signal a test leaves behind (gr512233 review).
+
+    ``current_scope()`` reads process-global state: the
+    ``PRECIS_MCP_SERVE_READ_ONLY`` env var, the ``_serve_read_only``
+    flag ``server._restrict_to_read_verbs`` sets, and the boot probe's
+    ``_boot_read_only`` verdict. Tests exercise all three in-process
+    with no serve/boot teardown, so a leak would scope every later
+    test on the same xdist worker ``read`` — gripe puts get Denied and
+    skill serves come out fenced, red only under some orderings.
+    """
+    yield
+    import precis.runtime.scope as _scope
+
+    os.environ.pop(_scope.SERVE_READ_ONLY_ENV, None)
+    _scope._serve_read_only = False
+    _scope._boot_read_only = False
+
+
 @pytest.fixture
 def hints() -> HintBus:
     """Standalone HintBus for tests that exercise it directly."""

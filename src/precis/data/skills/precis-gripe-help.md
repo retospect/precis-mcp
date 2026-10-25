@@ -45,14 +45,19 @@ A longer filing can split the way `todo` does: `text=` is the title /
 first line and `body=` the details — they join as `text` + blank line +
 `body`. `body=` alone is the whole prose, same as `text=` alone.
 
+<!-- write -->
 If you know which thread owns it, add `tags=['thread:<slug>']` with the
 thread's slug. An unknown slug is refused and the refusal lists every
 valid one. The thread's open gripes are listed from that tag, so tagging
 is how a gripe gets onto its thread.
+<!-- /write -->
 
 Make the first line `Area: what's wrong`, under 60 chars. A longer first
 line is shortened for the title (the ack shows it; the body keeps the
-full text); `edit(kind='gripe', id=N, args={'title': '…'})` changes it.
+full text).
+<!-- write -->
+`edit(kind='gripe', id=N, args={'title': '…'})` changes it.
+<!-- /write -->
 
 The cost of a wrong gripe is one `delete` call. File freely. (Quests file
 their own too — a tick's `needs` lands as a `quest:<id>` +
@@ -60,35 +65,43 @@ their own too — a tick's `needs` lands as a `quest:<id>` +
 sighting becomes a comment, so comment on the existing one rather than
 re-filing.)
 
+<!-- write -->
 Misled by a skill? Every skill ends with a ready-made line: add
 `link='skill:<id>', rel='raises-concern-about'` to the gripe and say what
 misled you, what is actually true, and where you checked. The skill then shows
 an open-concern banner at the top until the gripe closes, and the fixer
 is briefed with the skill file (`src/precis/data/skills/<id>.md`) and your notes.
+<!-- /write -->
 
 **Recurring themes merge automatically** — filing stays exactly as
 above; the tool does the matching. The text is checked against a
 registry of recurring-friction themes. Exactly one match with a live
 `theme:<slug>`-tagged gripe (the *keeper*) folds your filing into it as
-a `+1 (<first line>): <text>` comment; the ack says so and names
-`args={'new': True}` as the bypass if you meant a standalone gripe.
-One match with no live keeper tags the new gripe `theme:<slug>`,
+a `+1 (<first line>): <text>` comment; the ack says so.
+<!-- write -->
+It names `args={'new': True}` as the bypass if you meant a standalone
+gripe. One match with no live keeper tags the new gripe `theme:<slug>`,
 making it the keeper. Several matches file normally — the ack lists
 them (add the one you meant as `theme:<slug>` yourself if you want it
 on a keeper). Comments (`put(id=N, …)`) never match.
+<!-- /write -->
 
 ```python
 put(kind="gripe", text="scripts/test <file> -q waits ~25s on container bring-up")
+<!-- write -->
 # → merged into gr514478 (theme test-speed); to file separately anyway
 #   pass args={'new': True}
+<!-- /write -->
 ```
 
+<!-- write -->
 **Observations** — friction worth recording with nothing to fix (a
 one-off, already resolved): `args={'observation': True}` files it
 already closed — `STATUS:done` + an `observation` tag, with its own
 `resolved: observation, auto-closed at filing` comment. Browse them
 with `search(kind='gripe', tags=['observation'], status='*')`; reopen
 with `tag(kind='gripe', id=N, add=['STATUS:open'], remove=['STATUS:done'])`.
+<!-- /write -->
 
 ## Has anyone griped about this before?
 ## Find an existing complaint about X
@@ -229,8 +242,10 @@ rest verbatim — `next: get(kind='gripe', id=[<unread ids>], view='full')`
 — so re-issuing that call continues without a `more()` cursor.
 `view='index'` is accepted and equals the default listing; use `view='count'` /
 `'meta'` for aggregates.
+<!-- write -->
 `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of them in
 a single transaction.
+<!-- /write -->
 
 A gripe's text routinely quotes the rows it is about by their
 universal handles — `pa509706` a paper, `pc5155615` one paper *chunk*,
@@ -246,7 +261,7 @@ named as the fix. Chunk handles of the numeric kinds (`gc<N>`,
 
 ## Add context to an existing gripe
 ## Comment on a gripe
-## Reply to a gripe thread
+## Reply to a gripe thread {write}
 
 ```python
 put(kind="gripe", id=42, text="only triggers when the slug has a hyphen")
@@ -274,7 +289,7 @@ also announced.
 A numeric `PRIO:3` is refused (no single scale); use `prio=3` on `tag()`.
 
 ## Correct or refine an earlier comment
-## Take back a comment I made
+## Take back a comment I made {write}
 
 Comments are append-only. Don't try to edit; append a follow-up:
 
@@ -286,7 +301,7 @@ put(
 )
 ```
 
-## Triage a gripe — I've reviewed it and it's real
+## Triage a gripe — I've reviewed it and it's real {write}
 
 ```python
 tag(kind="gripe", id=42, add=["STATUS:triaged"])
@@ -296,7 +311,7 @@ Use when the gripe is confirmed but not yet ready to act on
 (needs more discussion, blocked on something, etc.). `STATUS:`
 is closed-prefix and replaces atomically.
 
-## Mark a gripe ready for someone to fix
+## Mark a gripe ready for someone to fix {write}
 
 ```python
 tag(kind="gripe", id=42, add=["STATUS:ready_for_fix"])
@@ -306,7 +321,7 @@ The signal that flips it from "thinking about it" to "ready for the
 owning thread's session to fix". Nothing auto-mints a `fix_gripe` job
 from it (lane OFF since 2026-10-02).
 
-## Say a tree is working the gripe
+## Say a tree is working the gripe {write}
 
 When a session starts work on a gripe it comments the tree doing the
 work, and the comment states the tree's coverage:
@@ -321,7 +336,7 @@ which asks it covers. A bare `in progress <tree>` makes the next reader
 diff the branch to learn the coverage (gr514899).
 
 ## Who fixes a gripe?
-## Can I hand a gripe off to an LLM to fix?
+## Can I hand a gripe off to an LLM to fix? {write}
 
 The repo session that owns the gripe's work thread fixes it in
 its own worktree;
@@ -352,7 +367,7 @@ search(kind="job", link="gripe:42")
 ```
 
 ## Mark a gripe as won't-fix
-## Decided not to fix this bug
+## Decided not to fix this bug {write}
 
 ```python
 put(
@@ -369,7 +384,7 @@ state — it doesn't imply deletion. Use `delete` separately when
 you want the gripe gone from search.
 
 ## Defer a gripe without fixing or closing it
-## Park a gripe
+## Park a gripe {write}
 
 Leave it at `STATUS:open` (or `STATUS:triaged`) and append a
 comment with the reason:
@@ -379,7 +394,7 @@ put(kind="gripe", id=42, text="parking until after the F20 freeze")
 ```
 
 ## Close a gripe after the fix is merged
-## Retire a gripe that's been resolved
+## Retire a gripe that's been resolved {write}
 
 ```python
 put(
@@ -409,7 +424,7 @@ the home in a comment ("home is <spec name>"). Separate homed from
 not-yet-homed:
 `search(kind='gripe', status='triaged', q='home is')`.
 
-## Soft-delete a duplicate I filed by mistake
+## Soft-delete a duplicate I filed by mistake {write}
 
 ```python
 put(kind="gripe", id=42, text="duplicate of gripe:38")
@@ -454,7 +469,7 @@ comment + `meta.dup_suggested`), "not a bug" stays open as
 `disagreement`, and `fix:reto` gripes land in a review-queue digest.
 It never closes, links `supersedes`, or edits the gripe body.
 
-## Link a gripe to a related paper or chunk
+## Link a gripe to a related paper or chunk {write}
 
 ```python
 link(kind="gripe", id=42, target="pa5", rel="related-to")
@@ -469,7 +484,7 @@ planner and search can't traverse it.
 
 ## Split a big gripe into focused children
 ## Break one broad complaint into several actionable ones
-## Supersede a vague gripe with sharper ones
+## Supersede a vague gripe with sharper ones {write}
 
 A sprawling gripe ("embedders keep dying") is hard to fix as one
 unit. Split it into focused children and record the relationship as a
@@ -505,7 +520,7 @@ Use `rel='supersedes'` when the child *replaces* the parent's scope,
 otherwise you lose the trail.
 
 ## Tag the repo a gripe is about
-## Which project is this bug in?
+## Which project is this bug in? {write}
 
 If you've got more than one project under the same precis
 instance, tag the gripe with the repo name so `fix_gripe` knows

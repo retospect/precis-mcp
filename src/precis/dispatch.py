@@ -468,7 +468,7 @@ def _probe_read_only(store: Store) -> bool:
             ).fetchone()
         return priv is not None and priv[0] is False
     except Exception:
-        log.debug(
+        log.warning(
             "precis dispatch boot: read-only probe failed; assuming writable",
             exc_info=True,
         )
@@ -934,7 +934,16 @@ def boot(
     # ``boot_writes=False`` skips them outright (and skips the probe —
     # with no writes to gate it answers nothing).
     writes_store = store if boot_writes else None
-    if writes_store is not None and _boot_is_read_only(writes_store):
+    # Record the verdict for runtime.scope.current_scope() — the probe is
+    # the expensive half of "read", so the scope caches its boot verdict
+    # rather than re-probing per recipe serve (gr512233,
+    # read-scope-skill-fencing.md slice 1). Recorded unconditionally so a
+    # re-boot on a writable store clears a stale mark.
+    from precis.runtime.scope import note_boot_read_only
+
+    detected_ro = writes_store is not None and _boot_is_read_only(writes_store)
+    note_boot_read_only(detected_ro)
+    if detected_ro:
         log.info("precis dispatch boot: read-only DSN — skipping boot writes")
         writes_store = None
 

@@ -191,6 +191,7 @@ def _cache_key(
     chunker_version: str,
     embedder_name: str,
     scope: tuple[int, int] | None,
+    conn_scope: str | None = None,
 ) -> tuple[Any, ...]:
     return (
         ref_id,
@@ -199,6 +200,7 @@ def _cache_key(
         embedder_name,
         SEGMENTATION_VERSION,
         scope,
+        conn_scope,
     )
 
 
@@ -711,6 +713,7 @@ def render_for_ref(
     kind: str,
     adapter: ChunksForToc,
     scope: tuple[int, int] | None = None,
+    conn_scope: str | None = None,
 ) -> str:
     """Cached handler-facing entry — call this from handlers.
 
@@ -720,6 +723,11 @@ def render_for_ref(
     paper TOC after a search hit returns from cache; an agent
     re-drilling into the same sub-range gets the sub-TOC from
     cache too) return in microseconds.
+
+    ``conn_scope`` is the connection's read/write scope (gr512233):
+    handlers serving write-fence-filtered bodies pass it so a TOC
+    rendered under ``read`` never serves a ``write`` connection.
+    ``None`` (the default) keeps the pre-fencing key shape.
 
     The handler-side adapter (``Handler.chunks_for_toc``) is what
     produces the :class:`ChunksForToc`; this function only handles
@@ -731,6 +739,7 @@ def render_for_ref(
         chunker_version=adapter.chunker_version,
         embedder_name=adapter.embedder_name,
         scope=scope,
+        conn_scope=conn_scope,
     )
     cached = _cache_get(key)
     if cached is not None:

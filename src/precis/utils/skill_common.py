@@ -182,6 +182,14 @@ class SkillFrontmatter:
     #: default rule.
     parent: str | None = None
 
+    #: Whole-skill write fence (``docs/backlog/read-scope-skill-fencing.md``,
+    #: gr512233): ``write`` marks a skill that only teaches mutation — a
+    #: read-scope connection is served a stub instead of the body.
+    #: ``None``/``read`` is the default: every existing skill serves as
+    #: today. Section/line fences live in the body
+    #: (``utils/skill_scope.render``), not here.
+    scope: str | None = None
+
     #: Any frontmatter keys we don't model explicitly. Preserved so a
     #: skill can carry experimental metadata without the parser
     #: rejecting it; the ingest pipeline can decide what to do with
@@ -220,6 +228,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "kinds",
         "family",
         "parent",
+        "scope",
     }
 )
 
@@ -388,6 +397,12 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     flavor_val = fields_in.get("flavor")
     if flavor_val is not None and flavor_val not in VALID_FLAVORS:
         raise FrontmatterError(f"flavor={flavor_val!r} is not one of {VALID_FLAVORS}")
+
+    # scope: the gr512233 write fence — closed vocabulary, hard-fail like
+    # flavor so a typo can't silently un-fence a write-only skill.
+    scope_val = fields_in.get("scope")
+    if scope_val is not None and scope_val not in ("read", "write"):
+        raise FrontmatterError(f"scope={scope_val!r} is not 'read' or 'write'")
 
     # invokes_personas: always tuple[str, ...] regardless of input shape.
     ip = fields_in.get("invokes_personas")
