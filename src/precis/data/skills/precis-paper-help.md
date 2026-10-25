@@ -340,7 +340,8 @@ web reader's Semantic/Keyword sidebar reads the same data); fall back to
 the keyword column where a gloss hasn't been written yet.
 
 Views: `abstract`, `toc`, `summaries`, `bibtex` (`cite/bib`), `ris`
-(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`. The
+(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
+`chat` (paste-ready chat-note scaffold — [[precis-paper-chat-note-help]]). The
 `view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
 above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
 `get(id='pc512', view='abstract')` is refused; use the paper handle

@@ -44,6 +44,7 @@ from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._eye import is_eye_view
 from precis.handlers._paper_format import (
     ENTRY_TYPE_VOCAB,
+    _author_names,
     _clean_inline_text,
     _format_authors,
     _render_citation,
@@ -188,6 +189,7 @@ _SUPPORTED_VIEWS = (
     "claims",
     "authors",
     "chunks",
+    "chat",
 )
 
 
@@ -4337,6 +4339,9 @@ class PaperHandler(Handler):
         if view == "chunks":
             return self._render_chunk_stats(ref)
 
+        if view == "chat":
+            return self._render_chat(ref)
+
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
             # had no links view at all — ``related-to`` / ``cites`` /
@@ -4674,6 +4679,70 @@ class PaperHandler(Handler):
                     "authors=['Family, Given M. [0000-0002-1825-0097]', ...])",
                     "correct the byline (human edits always win over a later "
                     "tier's re-resolution)",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def _render_chat(self, ref: Ref) -> Response:
+        """``view='chat'`` — scaffold for a paste-ready chat note
+        (Discord, Slack): three lines the agent copies verbatim except
+        line 1, which is a marked placeholder for the one-line
+        key-novelty summary it writes from the abstract rendered below
+        a separator. Deterministic — stored metadata only, no LLM call.
+
+        Byline (stored order, natural "Given Family" display): one
+        author renders the bare name, two render ``A & B``, more render
+        ``First … Last``; a missing byline reads ``no authors on file``.
+        Locator: DOI → ``https://doi.org/<doi>``, else the arXiv abs
+        URL, else ``meta.url``, else ``no DOI``.
+        """
+        slug = ref.slug or "???"
+        names = [
+            n for n in (_clean_inline_text(a) for a in _author_names(ref.authors)) if n
+        ]
+        if not names:
+            byline = "no authors on file"
+        elif len(names) == 1:
+            byline = names[0]
+        elif len(names) == 2:
+            byline = f"{names[0]} & {names[1]}"
+        else:
+            byline = f"{names[0]} … {names[-1]}"
+
+        doi: str | None = None
+        arxiv: str | None = None
+        try:
+            for scheme, value, _src in self.store.list_ref_identifiers(ref.id):
+                if scheme == "doi" and value and doi is None:
+                    doi = value
+                elif scheme == "arxiv" and value and arxiv is None:
+                    arxiv = value
+        except Exception:
+            doi = arxiv = None
+        meta = ref.meta or {}
+        if doi:
+            locator = f"https://doi.org/{doi}"
+        elif arxiv:
+            locator = f"https://arxiv.org/abs/{arxiv}"
+        else:
+            locator = _clean_inline_text(str(meta.get("url") or "")) or "no DOI"
+
+        abstract = _clean_inline_text(_strip_jats(str(meta.get("abstract") or "")))
+        body = (
+            f"# {slug} — chat note\n"
+            f"_{title_plain(ref.title)}_\n\n"
+            "<one-line key-novelty summary — write it from the abstract below>\n"
+            f"{byline}\n"
+            f"{locator}\n\n"
+            "---\n\n"
+            f"{abstract or 'no abstract on file'}"
+        )
+        body += render_next_section(
+            [
+                (
+                    "get(kind='skill', id='precis-paper-chat-note-help')",
+                    "the note format and worked examples",
                 ),
             ]
         )
@@ -5275,6 +5344,7 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("abstract",): "abstract",
     ("toc",): "toc",
     ("summaries",): "summaries",
+    ("chat",): "chat",
     ("bibtex",): "bibtex",
     ("ris",): "ris",
     ("endnote",): "endnote",
@@ -5984,6 +6054,7 @@ _VIEW_KWARG_ALIASES: dict[str, str] = {
     "abstract": "abstract",
     "toc": "toc",
     "summaries": "summaries",
+    "chat": "chat",
     "cite/bib": "bibtex",
     "cite/bibtex": "bibtex",
     "cite/ris": "ris",
