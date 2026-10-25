@@ -48,6 +48,7 @@ from precis.utils.llm.router import (
     PLANNER_MODEL_ALIASES,
     Tier,
     Transport,
+    _apply_placement,
     resolve_backend,
     resolve_chain,
     select_transport,
@@ -344,7 +345,7 @@ def run(
         except Exception:
             log.warning("plan_tick: failed to finalize agentlog", exc_info=True)
 
-    transport = _tick_transport(model)
+    transport = _tick_transport(model, placement=_select_knobs(sel)[0])
     if transport is Transport.CLAUDE_AGENT:
         outcome = _run_claude_tick(
             store=store,
@@ -959,7 +960,7 @@ def _load_parent_workspace(store: Store, parent_ref_id: int):
     return Workspace.from_meta(row[0])
 
 
-def _tick_transport(model: str) -> Transport:
+def _tick_transport(model: str, placement: str | None = None) -> Transport:
     """Which harness runs this tick: the Claude Code agent, or the OSS tools loop.
 
     This used to be ``select_transport(tier, tools_needed=True, backend)``, which
@@ -970,12 +971,24 @@ def _tick_transport(model: str) -> Transport:
     unsteerable: an ``llm.op.plan_tick`` tier override reached ``dispatch()`` but
     not this branch, so the tick still took the claude harness.
 
-    Now the branch is read off rung 0 of the *resolved placement chain* for the
-    effective tier (the operations-registry tier, i.e. the same rung
-    ``dispatch()`` applies). ``llm.chain.big``'s first rung is ``openai_tools``
-    (local qwen3-235b → OSS cloud), so a BIG-tier tick selects
-    :func:`_run_oss_tick`, and reverting is one ``app_settings`` row rather than
-    a deploy.
+    Now the branch is read off rung 0 of the *resolved placement chain* — the
+    same ladder ``route()`` walks for ``source='plan_tick'``: the op row's own
+    ``chain`` when ``llm.op.plan_tick`` carries one
+    (:func:`~precis.utils.llm.operations.resolve_op_chain`), else the effective
+    tier's chain (:func:`resolve_chain`, on the operations-registry tier — the
+    same tier ``dispatch()`` applies). Resolving only the tier chain left this
+    branch blind to the op row's local rung, so a ``placement='local'`` tick —
+    or any tick while the op chain leads on local — could be handed to
+    :func:`_run_claude_tick`, the "claude subprocess with an OSS model id"
+    mismatch (al514787). The request's ``placement`` pin then filters the
+    ladder exactly as ``route()`` does
+    (:func:`~precis.utils.llm.router._apply_placement`), so a local rung lands
+    on :func:`_run_oss_tick` and a cloud rung on :func:`_run_claude_tick`.
+
+    A ``placement`` filter that empties the ladder is the refusal ``route()``
+    reports downstream ("has no local rung") before dispatching anything — the
+    harness pick is moot on a refused tick, so rung 0 of the *unfiltered*
+    ladder answers.
 
     Deriving the branch from the same chain ``dispatch()`` walks is what keeps
     the two in agreement. Choosing the harness from ``select_transport`` while
@@ -983,9 +996,10 @@ def _tick_transport(model: str) -> Transport:
     whose rung 0 is ``openai_tools`` — a claude subprocess handed an OSS model
     id, the ``dream`` ``api_error`` class.
 
-    With no ``llm.chain.<tier>`` override configured, :func:`resolve_chain`
-    returns the default single rung built from :func:`select_transport`, so an
-    unconfigured fleet routes byte-for-byte as it did before.
+    With no ``llm.op.plan_tick`` ``chain`` and no ``llm.chain.<tier>``
+    override configured, :func:`resolve_chain` returns the default single rung
+    built from :func:`select_transport`, so an unconfigured fleet routes
+    byte-for-byte as it did before.
     """
     from precis.utils.llm import operations
 
@@ -994,10 +1008,13 @@ def _tick_transport(model: str) -> Transport:
     if op is not None:
         tier = op[0]
     backend = resolve_backend()
-    ladder = resolve_chain(tier, tools_needed=True, backend=backend)
-    if not ladder:  # pragma: no cover — resolve_chain never returns empty
+    ladder = operations.resolve_op_chain(
+        "plan_tick", tools_needed=True, backend=backend
+    ) or resolve_chain(tier, tools_needed=True, backend=backend)
+    placed = _apply_placement(ladder, placement) or ladder
+    if not placed:  # pragma: no cover — resolve_chain never returns empty
         return select_transport(tier, tools_needed=True, backend=backend)
-    return ladder[0].transport
+    return placed[0].transport
 
 
 def _resolve_oss_tier(model: str) -> Tier:

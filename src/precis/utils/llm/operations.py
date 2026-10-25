@@ -377,6 +377,14 @@ EXCLUDED_OPERATIONS: dict[str, ExcludedOp] = {
     ),
 }
 
+# LLM call sites observed but still **unregistered** — an `llm.op.<source>`
+# row is inert for these until a vetted `LLM_OPERATIONS` entry lands: the
+# quest_tick family (`quest_review`, `quest_weave`, `quest_roadmap`),
+# `doctor_tick`, `diagnose_gripe`, `draft_refresh` and `hub_tagline`. Unlike
+# `EXCLUDED_OPERATIONS` (deliberately never steerable) these are simply
+# un-vetted — registering one means adding an entry whose default mirrors the
+# call site, not just writing the row.
+
 
 def is_steerable(source: str | None) -> bool:
     """``True`` iff ``source`` is a registered, override-able operation."""
