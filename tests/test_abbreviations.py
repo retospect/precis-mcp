@@ -253,6 +253,16 @@ def test_find_acronyms_skips_ordinary_words_in_caps() -> None:
     assert found == set()
 
 
+def test_find_acronyms_skips_well_known_model_names() -> None:
+    """gr514340: an edit touching "GPT-4" warned 'undefined abbreviation
+    GPT, GPT-4' — the hyphenated compound surfaces the whole token and
+    its base, so the allowlist names both. Mixed-case tails (GPT-4o)
+    surface the base alone."""
+    found = find_acronyms("We ran GPT-4 and GPT-4o against the GPT-5 baseline.")
+
+    assert found == set()
+
+
 def test_find_acronyms_still_flags_a_domain_term_next_to_noise() -> None:
     found = find_acronyms("AUDIT of the UTC run found PEI residue.")
 

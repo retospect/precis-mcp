@@ -318,6 +318,14 @@ WELL_KNOWN_ACRONYMS: frozenset[str] = frozenset(
         "NLP",
         "OCR",
         "RAG",
+        # model + product names — corpus vocabulary, not field terms
+        # (gr514340: "GPT-4" flagged both GPT and GPT-4). A hyphenated
+        # variant surfaces the whole token AND its base, so both are
+        # listed; mixed-case tails (GPT-4o) surface the base only.
+        "GPT",
+        "GPT-3",
+        "GPT-4",
+        "GPT-5",
         # misc
         "OK",
         "USD",
