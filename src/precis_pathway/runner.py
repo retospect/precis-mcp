@@ -2071,10 +2071,20 @@ def run_kinetics_tpd_subprocess(
     slice 9).
 
     Mutates ``results_json``: ``kinetics_tpd`` (the engine's
-    ``kinetics.tpd_check`` payload — per-adsorbate comparisons, applied
-    offsets, the corrections stamp) on success, ``kinetics_tpd_error``
+    ``kinetics.tpd_check`` payload) on success, ``kinetics_tpd_error``
     otherwise; never raises.  Same child machinery as
     :func:`run_kinetics_sweep_subprocess`.
+
+    Payload shape (both keys are per-adsorbate maps, at *different*
+    levels): ``kinetics_tpd["tpd"]`` is ``{adsorbate: record}`` — the
+    comparisons, each record carrying ``status`` / ``applied`` /
+    ``offset_eV`` — while ``kinetics_tpd["offsets"]`` is a *top-level*
+    ``{adsorbate: {offset_eV, …}}`` of the corrections actually applied.
+    The gates read the top-level ``offsets`` map, not a per-record
+    ``offsets`` key (gr515808): :func:`fold_tpd` folds only when it is
+    empty/absent; ``kinetics_job._tpd_leg`` and
+    ``revalidate_job.load`` re-solve when it is non-empty and pass the
+    whole ``kinetics_tpd`` dict as ``tpd=``.
     """
     budget = _kinetics_timeout_s() if timeout is None else max(0, timeout)
     if budget == 0:
@@ -2205,7 +2215,12 @@ def fold_tpd(results_json: dict[str, Any]) -> None:
     stays the aggregate's (the provider did not change).  A check that
     applied offsets is not folded — the kinetics solve re-runs on the
     corrected states instead (:func:`run_kinetics_subprocess` with
-    ``tpd=``)."""
+    ``tpd=``). "Applied offsets" means a non-empty top-level
+    ``kinetics_tpd["offsets"]`` map (``{adsorbate: {offset_eV, …}}``) —
+    the per-adsorbate ``offsets`` a fake payload might nest inside
+    ``tpd[<ads>]`` records is not the key this gate reads
+    (:func:`run_kinetics_tpd_subprocess` for the full payload shape,
+    gr515808)."""
     tpd = results_json.get("kinetics_tpd")
     v2 = results_json.get("kinetics_v2")
     if isinstance(tpd, dict) and not tpd.get("offsets") and isinstance(v2, dict):

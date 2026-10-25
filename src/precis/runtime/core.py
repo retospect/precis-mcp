@@ -155,6 +155,18 @@ class PrecisRuntime(
         return self.hub.store
 
     @property
+    def live_store(self) -> Store:
+        """The store, narrowed to non-``None`` — delegates to
+        :attr:`precis.dispatch.Hub.live_store`.
+
+        For call sites whose existence already implies a store-backed
+        build — handlers, and tests on the ``runtime_with_store``
+        fixture, which can take ``rt.live_store`` instead of a second
+        ``store`` fixture or an ``assert store is not None`` (gr515820).
+        """
+        return self.hub.live_store
+
+    @property
     def registry(self) -> Hub:
         """Backwards-compat alias for ``self.hub``.
 

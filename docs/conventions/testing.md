@@ -295,6 +295,76 @@ afterwards (`tests/workers/test_fetch_oa.py::_shared_limiter_grants`
 documents the shape, gr514128). To drop only one stub, scope it on a
 local `pytest.MonkeyPatch()` context instead of the shared fixture.
 
+## Monkeypatch the call site, not the definition
+
+`monkeypatch.setattr` replaces a **name binding**, so patch the module the
+call site looks the name up in — which is not always the module that
+defines it (gr515711). `precis.store._pcb_ops` used to define
+`_validate_pin_declarations`; after the move it calls
+`pcb_rows.validate_pin_declarations(...)`, so patching
+`precis.store._pcb_ops._validate_pin_declarations` silently does nothing —
+the module attribute gets set and nobody reads it. The rule: find the
+actual call expression, patch the object *it* names
+(`precis.pcb.rows.validate_pin_declarations` here). A stale patch is
+silent: the test only surfaces it when the fake was expected to be called
+and asserts so — a test that doesn't observe the patched effect can't tell
+the patch never bit.
+
+Two lazy seams behave the same way:
+
+- **Plugin modules reached via `importlib.import_module`** (the
+  `precis.quest` → `precis_pathway` boundary, e.g.
+  `window_objectives._staircase_routes`): `import_module` reads
+  `sys.modules` first, so `monkeypatch.setitem(sys.modules,
+  "precis_pathway.staircase_routes", fake)` (or `None` for absent) is the
+  supported seam — see `tests/test_window_objectives.py::_fake_routes`.
+  Patching `window_objectives.staircase_routes` does nothing: the module
+  never binds that name.
+- **PEP 562 module `__getattr__` lazy names** (`precis.cli._parse_interval`,
+  `precis_geom.pcb.local`, the `hexfold` verb modules): `__getattr__` fires
+  on *attribute access* (`mod.name`, `getattr(mod, name)`, `from mod
+  import name`) but **not** on a bare global read inside the module's own
+  functions — `LOAD_GLOBAL` consults the module dict then builtins and
+  never calls `__getattr__` (gr515806). So code inside the lazily
+  exporting module that must stay patchable resolves the lazy name through
+  `getattr(sys.modules[__name__], "name")`: the module dict is consulted
+  first (a `monkeypatch.setattr(mod, "name", fake)` write wins), and the
+  miss still falls through to `__getattr__` for the real lazy resolution.
+  A function-local `from pkg import name` also takes a snapshot the
+  tester's later `setattr(pkg, "name", …)` won't rewrite for code that
+  already bound it — prefer the `sys.modules` lookup when the binding has
+  to stay live.
+
+## Lint/type traps in test and shim code
+
+- **Intentional re-export: `# noqa: F401` + a reason** (gr515471). A
+  private-name re-export for tests or a deliberate alias lints F401 unless
+  marked: `from precis.pcb.rows import normalize_pad as
+  _normalize_local_footprint_pad  # noqa: F401  re-exported for tests`
+  (`src/precis/store/_pcb_ops.py`). Always carry the trailing reason —
+  `(re-export)`, `(fixture)`, `re-exported for tests` — so the next reader
+  doesn't "fix" the unused import.
+- **Fake module objects need `Any`, not `# type: ignore`** (gr515807).
+  `ModuleType` has no attribute for your injected callable, so
+  `mod.call = f` is `attr-defined` — and the ratchet
+  (`tests/test_type_ignore_ratchet.py`) counts every ignore. `setattr`
+  dodges mypy but trips ruff B010. The working pattern annotates the fake
+  itself: `mod: Any = ModuleType("fake_mod")` (or `cast(Any,
+  ModuleType(...))`, `tests/test_pcb_rows.py::_fake_client`), then
+  attribute assignment is unchecked. Injecting the fake into
+  `sys.modules` via `monkeypatch.setitem` keeps the
+  `import`-machinery-resolution honest for the code under test.
+- **`ruff format` detaches a trailing `# type: ignore` on a wrapped
+  lambda** (gr515508). `client.call = lambda *a, **k: f(...)  # type:
+  ignore` reflows to multiple lines with the ignore stranded on the `)`
+  line — mypy then reports both `attr-defined` (the now-unignored
+  assignment) and `unused-ignore` (the stranded comment). Use a named
+  `def` for the fake; it reflows cleanly and reads better anyway.
+- **Narrowing `Store | None` in tests:** `hub.live_store` /
+  `rt.live_store` return `Store` and raise on a stateless build — no
+  `assert store is not None` and no second `store` fixture needed
+  alongside `runtime_with_store` (gr515820).
+
 ## Adding a kind (or changing its `placement`): the ratchet checklist
 
 The pinning tests live in files the change never touches, so `--impacted`

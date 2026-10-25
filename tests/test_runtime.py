@@ -319,6 +319,19 @@ def test_build_runtime_no_database() -> None:
             os.environ["PRECIS_DATABASE_URL"] = original
 
 
+def test_live_store_narrows_the_delegated_store(
+    runtime_with_store: PrecisRuntime, runtime: PrecisRuntime
+) -> None:
+    """gr515820: ``rt.live_store`` hands back ``Store`` (not
+    ``Store | None``), so a test on ``runtime_with_store`` needs no
+    second ``store`` fixture and no ``assert store is not None``. On a
+    stateless runtime it raises — the same contract
+    :attr:`precis.dispatch.Hub.live_store` carries."""
+    assert runtime_with_store.live_store is runtime_with_store.hub.store
+    with pytest.raises(RuntimeError, match="no store"):
+        _ = runtime.live_store
+
+
 def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
     """`PRECIS_EMBEDDER` selects the active embedder; mock is the default."""
     import os
