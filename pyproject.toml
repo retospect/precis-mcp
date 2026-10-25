@@ -1004,6 +1004,7 @@ extend-exclude = [
     "scripts/take-agent",
     "scripts/test",
     "scripts/title-body-sweep",
+    "scripts/v_refs_dup_identifiers.sql",
     "scripts/token-review",
     "scripts/wheel-smoke",
     "scripts/ws-promote",

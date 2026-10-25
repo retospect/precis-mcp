@@ -103,21 +103,25 @@ def test_read_mints_and_section_and_toc_reads_stamp_parent(
 
 
 def test_footer_and_open_concern_banner(runtime: PrecisRuntime, store: Store) -> None:
-    out = runtime.dispatch("get", {"kind": "skill", "id": SKILL, "full": True})
+    # A short skill: a body past PRECIS_MAX_BODY_BYTES is truncated by the
+    # pagination layer, which cuts the trailing skill footer and appends its
+    # own, so the footer ordering is only observable on a body that fits.
+    small = "precis-random-help"
+    out = runtime.dispatch("get", {"kind": "skill", "id": small, "full": True})
     lines = out.rstrip().splitlines()
     assert lines[-1].startswith("skill rev ")
     assert lines[-3].startswith("misled by this skill? put(")
-    assert f"link='skill:{SKILL}', rel='raises-concern-about')" in out
+    assert f"link='skill:{small}', rel='raises-concern-about')" in out
     assert not any(ln.startswith("⚠") for ln in out.splitlines())
 
     for i in range(4):
         _gripe(
             runtime,
             f"concern number {i}\nmore",
-            link=f"skill:{SKILL}",
+            link=f"skill:{small}",
             rel="raises-concern-about",
         )
-    out = runtime.dispatch("get", {"kind": "skill", "id": SKILL, "full": True})
+    out = runtime.dispatch("get", {"kind": "skill", "id": small, "full": True})
     banner = next(ln for ln in out.splitlines() if ln.startswith("⚠"))
     assert "4 open concern(s)" in banner and "(+1 more)" in banner
     assert banner.count(" — concern number") == 3
@@ -135,7 +139,7 @@ def test_footer_and_open_concern_banner(runtime: PrecisRuntime, store: Store) ->
     runtime.dispatch(
         "tag", {"kind": "gripe", "id": int(gid[0]), "add": ["STATUS:wontfix"]}
     )
-    out = runtime.dispatch("get", {"kind": "skill", "id": SKILL, "full": True})
+    out = runtime.dispatch("get", {"kind": "skill", "id": small, "full": True})
     assert "3 open concern(s)" in out
 
 
