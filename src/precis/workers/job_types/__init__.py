@@ -486,6 +486,14 @@ def _load_struct_search() -> JobTypeSpec:
     return struct_search.SPEC
 
 
+def _load_struct_neb() -> JobTypeSpec:
+    # One CI-NEB edge between two structure endpoints, in-process on the
+    # GPU node via ssh_node (gr512126, slice 3). Runs via plugin dispatch.
+    from precis.workers.job_types import struct_neb
+
+    return struct_neb.SPEC
+
+
 def _load_structure_propose() -> JobTypeSpec:
     # LLM turns an instruction into proposed structure ops (tool-less claude,
     # propose-only) under claude_inproc. Runs via plugin dispatch.
@@ -825,6 +833,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "struct_search":
         _REGISTRY["struct_search"] = _load_struct_search()
         return _REGISTRY["struct_search"]
+    if name == "struct_neb":
+        _REGISTRY["struct_neb"] = _load_struct_neb()
+        return _REGISTRY["struct_neb"]
     if name == "structure_propose":
         _REGISTRY["structure_propose"] = _load_structure_propose()
         return _REGISTRY["structure_propose"]
@@ -947,6 +958,7 @@ def known_job_types() -> list[str]:
         "card_forge",
         "struct_relax",
         "struct_search",
+        "struct_neb",
         "structure_propose",
         "cad_propose",
         "diagram_propose",

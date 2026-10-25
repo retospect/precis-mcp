@@ -1043,6 +1043,295 @@ class StructureMixin:
             "source": blob.get("source"),
         }
 
+    # -- NEB edge runs (gr512126, slice 3) -------------------------------
+    #
+    # `struct_neb_runs` / `struct_neb_images` (migration 0250) are the
+    # compute record for one CI-NEB edge between two agent-authored
+    # endpoints — deliberately NOT `struct_runs`, whose readers treat
+    # `energy` as a relaxed minimum. See docs/backlog/neb-structure-builder.md
+    # §Data model.
+
+    def struct_neb_record_run(
+        self,
+        *,
+        is_ref_id: int,
+        fs_ref_id: int,
+        fidelity: str,
+        model: str | None,
+        params: dict[str, Any] | None,
+        cache_key: str,
+        job_ref_id: int | None,
+        status: str = "queued",
+        is_run_id: int | None = None,
+        fs_run_id: int | None = None,
+        is_version: int | None = None,
+        fs_version: int | None = None,
+        engine: str | None = None,
+        conn: Connection | None = None,
+    ) -> int:
+        """Open a ``struct_neb_runs`` row at mint time (status ``queued``,
+        scalars NULL) and return its id. The job flips it through
+        ``running`` → ``succeeded``/``failed`` via
+        :meth:`struct_neb_update_run`. Rows are written at mint — not at
+        job start — so ``view='neb'`` shows the queued edge and
+        :meth:`struct_neb_inflight` can serve the one-in-flight cap.
+        ``is_version``/``fs_version`` pin the design versions the band was
+        computed on (the view loads those, not the live geometries);
+        ``engine`` is the precis-side engine token folded into
+        ``cache_key`` — a run stamped with another token renders "stale,
+        rerun on current"."""
+        with self.tx() if conn is None else nullcontext(conn) as c:
+            row = c.execute(
+                "INSERT INTO struct_neb_runs "
+                "(is_ref_id, fs_ref_id, is_run_id, fs_run_id, is_version, "
+                " fs_version, fidelity, model, params, status, cache_key, "
+                " engine, job_ref_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (
+                    is_ref_id,
+                    fs_ref_id,
+                    is_run_id,
+                    fs_run_id,
+                    is_version,
+                    fs_version,
+                    fidelity,
+                    model,
+                    Jsonb(params or {}),
+                    status,
+                    cache_key,
+                    engine,
+                    job_ref_id,
+                ),
+            ).fetchone()
+        assert row is not None  # INSERT … RETURNING always yields a row
+        return int(row[0])
+
+    def struct_neb_update_run(
+        self,
+        run_id: int,
+        *,
+        status: str | None = None,
+        converged: bool | None = None,
+        barrier_fwd_ev: float | None = None,
+        barrier_rev_ev: float | None = None,
+        delta_e_ev: float | None = None,
+        ts_index: int | None = None,
+        ts_fmax: float | None = None,
+        trust: list[dict[str, Any]] | None = None,
+        trusted: bool | None = None,
+        multistart: dict[str, Any] | None = None,
+        wall_s: float | None = None,
+        ts_ref_id: int | None = None,
+        job_ref_id: int | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """The job-side result write: flip status and stamp the priced
+        scalars, trust records and TS design in one update. ``None`` leaves
+        a column untouched — except the priced-scalar columns, which the
+        caller either always fills (priced run) or always leaves NULL
+        (unpriced/collapsed), so ``None``-means-untouched is safe here."""
+        sets: list[str] = []
+        vals: list[Any] = []
+        for col, val in (
+            ("status", status),
+            ("converged", converged),
+            ("barrier_fwd_ev", barrier_fwd_ev),
+            ("barrier_rev_ev", barrier_rev_ev),
+            ("delta_e_ev", delta_e_ev),
+            ("ts_index", ts_index),
+            ("ts_fmax", ts_fmax),
+            ("trusted", trusted),
+            ("wall_s", wall_s),
+            ("ts_ref_id", ts_ref_id),
+            ("job_ref_id", job_ref_id),
+        ):
+            if val is not None:
+                sets.append(f"{col} = %s")
+                vals.append(val)
+        if trust is not None:
+            sets.append("trust = %s")
+            vals.append(Jsonb(trust))
+        if multistart is not None:
+            sets.append("multistart = %s")
+            vals.append(Jsonb(multistart))
+        if not sets:
+            return
+        vals.append(run_id)
+        with self.tx() if conn is None else nullcontext(conn) as c:
+            c.execute(
+                f"UPDATE struct_neb_runs SET {', '.join(sets)} WHERE id = %s",
+                tuple(vals),
+            )
+
+    def struct_neb_record_images(
+        self,
+        run_id: int,
+        images: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Store the relaxed band: one ``struct_neb_images`` row per image,
+        ``idx`` 0 = IS … n+1 = FS, ``positions`` canonical-rank-indexed like
+        ``struct_runs.final_geometry``. Re-writes replace (the job may
+        retry); returns the row count."""
+        with self.tx() if conn is None else nullcontext(conn) as c:
+            c.execute("DELETE FROM struct_neb_images WHERE run_id = %s", (run_id,))
+            for img in images:
+                c.execute(
+                    "INSERT INTO struct_neb_images "
+                    "(run_id, idx, energy_ev, max_force, positions) "
+                    "VALUES (%s,%s,%s,%s,%s)",
+                    (
+                        run_id,
+                        int(img["idx"]),
+                        img.get("energy_ev"),
+                        img.get("max_force"),
+                        Jsonb(img["positions"])
+                        if img.get("positions") is not None
+                        else None,
+                    ),
+                )
+        return len(images)
+
+    def struct_neb_images(self, run_id: int) -> list[dict[str, Any]]:
+        """One run's band, ordered by image index."""
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT idx, energy_ev, max_force, positions "
+                    "FROM struct_neb_images WHERE run_id = %s ORDER BY idx",
+                    (run_id,),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
+    def struct_neb_get(self, run_id: int) -> dict[str, Any] | None:
+        """One ``struct_neb_runs`` row by id, or ``None``."""
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT * FROM struct_neb_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def struct_neb_runs_for(
+        self, ref_id: int, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Every NEB run touching a design — as IS, FS or minted TS —
+        newest first (``view='neb'``'s list read)."""
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT * FROM struct_neb_runs "
+                    "WHERE is_ref_id = %s OR fs_ref_id = %s OR ts_ref_id = %s "
+                    "ORDER BY id DESC LIMIT %s",
+                    (ref_id, ref_id, ref_id, limit),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
+    def struct_neb_cached(
+        self, cache_key: str, *, conn: Connection | None = None
+    ) -> dict[str, Any] | None:
+        """The newest ``succeeded`` run for a content address — the
+        zero-compute hit an identical ``mode='neb'`` serves (the partial
+        unique index ``struct_neb_runs_key_succeeded`` makes this a probe).
+        ``conn`` runs the probe inside the caller's transaction (the mint
+        lock's re-check)."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            with c.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT * FROM struct_neb_runs "
+                    "WHERE cache_key = %s AND status = 'succeeded' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (cache_key,),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def struct_neb_inflight(
+        self, cache_key: str, *, conn: Connection | None = None
+    ) -> dict[str, Any] | None:
+        """The newest live row for a content address — the one-in-flight
+        cap on top of the job's own ``idem_key`` dedupe.
+
+        A row counts as in flight only while its job is active: the row
+        status alone is written by the job itself, so a worker kill, OOM
+        or lease expiry would otherwise leave a ``running`` row blocking
+        the edge forever. ``job_ref_id IS NULL`` (mint crash before the
+        backfill) is in flight — the mint transaction owns it."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            with c.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT r.* FROM struct_neb_runs r "
+                    "WHERE r.cache_key = %s AND r.status IN ('queued','running') "
+                    "AND (r.job_ref_id IS NULL OR NOT EXISTS ("
+                    "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                    "  WHERE rt.ref_id = r.job_ref_id "
+                    "    AND t.namespace = 'STATUS' "
+                    "    AND t.value = ANY(%s) "
+                    "    AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+                    ")) "
+                    "ORDER BY r.id DESC LIMIT 1",
+                    (cache_key, ["succeeded", "failed", "cancelled"]),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def struct_neb_reap_dead(
+        self, cache_key: str, *, conn: Connection | None = None
+    ) -> list[int]:
+        """Fail ``queued``/``running`` rows for ``cache_key`` whose job went
+        terminal — the crash path :meth:`struct_neb_inflight`'s join
+        exposes: the row's own status is job-written, so a dead job leaves
+        it lying ``running`` forever. Called under the mint lock before a
+        fresh mint so ``view='neb'`` never lists a zombie; returns the
+        reaped run ids."""
+        with self.tx() if conn is None else nullcontext(conn) as c:
+            rows = c.execute(
+                "UPDATE struct_neb_runs r SET status = 'failed' "
+                "WHERE r.cache_key = %s AND r.status IN ('queued','running') "
+                "AND r.job_ref_id IS NOT NULL AND EXISTS ("
+                "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "  WHERE rt.ref_id = r.job_ref_id "
+                "    AND t.namespace = 'STATUS' "
+                "    AND t.value = ANY(%s) "
+                "    AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+                ") RETURNING r.id",
+                (cache_key, ["succeeded", "failed", "cancelled"]),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def struct_neb_quest_mints_24h(
+        self, quest_ref_id: int, *, conn: Connection | None = None
+    ) -> int:
+        """``struct_neb`` mints stamped to ``quest_ref_id`` in the rolling
+        24 h — the ``PRECIS_STRUCT_NEB_QUEST_DAILY`` cap's count. Any status
+        counts (a minted-then-failed run still spent the cap). ``conn``
+        runs the count inside the caller's mint-lock transaction so the
+        check and the insert serialize."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            row = c.execute(
+                "SELECT count(*) FROM struct_neb_runs "
+                "WHERE params->>'quest_ref_id' = %s "
+                "AND created_at > now() - interval '24 hours'",
+                (str(quest_ref_id),),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def struct_neb_nonquest_mints_today(self, *, conn: Connection | None = None) -> int:
+        """``struct_neb`` mints no quest can be charged for, since UTC
+        midnight — the ``PRECIS_STRUCT_NEB_GLOBAL_DAILY`` cap's count for
+        calls without ``requested_by=`` (or whose todo serves no quest).
+        ``conn`` runs the count inside the caller's mint-lock
+        transaction."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            row = c.execute(
+                "SELECT count(*) FROM struct_neb_runs "
+                "WHERE params->>'quest_ref_id' IS NULL "
+                "AND created_at >= "
+                "  date_trunc('day', now() AT TIME ZONE 'UTC') "
+                "  AT TIME ZONE 'UTC'",
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     # -- delete ----------------------------------------------------------
     def structure_delete(self, ref_id: int) -> int:
         """Soft-delete a design: ref deleted, atoms/bonds retired, card dropped."""

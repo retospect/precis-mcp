@@ -45,9 +45,10 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -79,8 +80,8 @@ from precis.structure import (
 from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
 from precis.structure.canonical import normalize_scene
+from precis.structure.card import card_text
 from precis.structure.cell import Cell
-from precis.structure.fragment_names import fragment_names
 from precis.structure.importers import (
     bundle_index,
     catalysis_hub,
@@ -162,6 +163,7 @@ _VIEWS = (
     "atoms",
     "runs",
     "pair",
+    "neb",
     "generator",
     "completion",
     "completion_digest",
@@ -421,6 +423,60 @@ def _preflight_relax(
     except RelaxUnsupported as exc:
         note = f"preflight='emt' failed ({exc}) — fell back to 'clean'"
         return run_relax(scene, fidelity="clean", steps=steps), note
+
+
+def _is_conv_ml_on_version(run: Mapping[str, Any], version: int) -> bool:
+    """A ``struct_runs`` row is the endpoint relax a NEB band starts from
+    only when it's a converged ``ml`` run on the design's *current*
+    version — the ``relaxed`` pair gate's unit, singled out so the mint
+    can cite the run row (``is_run_id``/``fs_run_id``)."""
+    return (
+        run.get("fidelity") == "ml"
+        and bool(run.get("converged"))
+        and run.get("status") == "succeeded"
+        and int(run.get("on_version") or 0) == version
+    )
+
+
+def _neb_conv_run(
+    runs: Iterable[Mapping[str, Any]], version: int, model: str | None
+) -> Mapping[str, Any] | None:
+    """The newest converged ``ml`` run on ``version`` at ``model``
+    (``structure_runs`` is newest-first)."""
+    for r in runs:
+        if _is_conv_ml_on_version(r, version) and str(r.get("model")) == model:
+            return r
+    return None
+
+
+#: Env pin + default for the rolling-24h ``struct_neb`` mint cap per quest
+#: (spec §Compute — the count covers jobs whose parent todo ``serves`` the
+#: quest).
+_NEB_QUEST_DAILY_ENV = "PRECIS_STRUCT_NEB_QUEST_DAILY"
+_NEB_QUEST_DAILY_DEFAULT = 4
+
+#: Env pin + default for the UTC-day ``struct_neb`` mint cap a quest can't
+#: be charged for — calls without ``requested_by=`` (or whose todo serves
+#: no quest). The cache key dedupes identical edges but nothing stops a
+#: knob-varying loop without this bound (gr512126 review #5).
+_NEB_GLOBAL_DAILY_ENV = "PRECIS_STRUCT_NEB_GLOBAL_DAILY"
+_NEB_GLOBAL_DAILY_DEFAULT = 20
+
+
+def _neb_quest_daily() -> int:
+    raw = os.environ.get(_NEB_QUEST_DAILY_ENV)
+    try:
+        return max(1, int(raw)) if raw else _NEB_QUEST_DAILY_DEFAULT
+    except ValueError:
+        return _NEB_QUEST_DAILY_DEFAULT
+
+
+def _neb_global_daily() -> int:
+    raw = os.environ.get(_NEB_GLOBAL_DAILY_ENV)
+    try:
+        return max(1, int(raw)) if raw else _NEB_GLOBAL_DAILY_DEFAULT
+    except ValueError:
+        return _NEB_GLOBAL_DAILY_DEFAULT
 
 
 def _as_int_or_none(v: Any) -> int | None:
@@ -756,28 +812,6 @@ def paper_provenance_rows(store: LinksStore, ref_id: int) -> list[dict[str, str]
     return rows
 
 
-def card_text(title: str, scene: Scene, description: str = "") -> str:
-    """The one embeddable summary per design — title + composition + the
-    LLM's own description, so search(kind='structure') lands on intent.
-
-    Module-level (not just :meth:`StructureHandler._card_text`, which
-    delegates here) so a write-back path with no live handler instance —
-    e.g. ``struct_search``'s candidate write-back — builds the same card
-    text the handler's own ``put``/edit paths do, rather than growing a
-    second, driftable definition."""
-    t = probe.toc(scene)
-    pbc = "".join("T" if p else "F" for p in scene.cell.pbc)
-    elements = ", ".join(sorted(scene.composition()))
-    intent = f" {description}" if description else ""
-    names = fragment_names(scene)
-    groups = f" Groups: {'; '.join(names)}." if names else ""
-    return (
-        f"{title} (atomistic structure).{intent} Composition: {t['formula']} "
-        f"({elements}); {t['natoms']} atoms, {t['nbonds']} bonds; pbc[{pbc}]."
-        f"{groups}"
-    )
-
-
 def _kv_brief(d: Mapping[str, Any]) -> str:
     """``k=v`` pairs of a record section's scalar entries, in order."""
     return " ".join(
@@ -842,11 +876,31 @@ class StructureHandler(Handler):
                 "extxyz",
                 "source",
                 "config_id",
+                # args={'derive_from': '<parent>', 'ops': [...]} — the
+                # label-matched endpoint door (gr512126 slice 1). Left
+                # undeclared at ship, it bounced off the dispatch args-key
+                # gate — the pair gates' nexts point at it.
+                "derive_from",
                 # mode='rerun' only: ladder-rung override (default: the
                 # candidate's highest completed rung), and the dispatch-time
                 # seed list (default: the reaction config's pinned seeds).
                 "tier",
                 "seeds",
+                # mode='neb' (gr512126 slice 3): the FS endpoint, the
+                # engine knob set (structure.neb.NEB_DEFAULTS) and the
+                # request context.
+                "final",
+                "fs",
+                "model",
+                "requested_by",
+                "parent_id",
+                "images",
+                "path_seeds",
+                "fmax",
+                "max_steps",
+                "retries",
+                "tether",
+                "optimizer",
             }
         ),
         "edit": ArgsSpec({"ops"}),
@@ -938,7 +992,9 @@ class StructureHandler(Handler):
         # door onto the quest compute lane (gr499904): re-dispatches the
         # candidate's autocatpath sim unchanged under a fresh nonce, linked
         # to the earlier result. See precis-quest-help / request_rerun.
-        modes=("rerun",),
+        # mode='neb' queues one CI-NEB edge between two gated endpoints
+        # (gr512126 slice 3) — _put_neb.
+        modes=("rerun", "neb"),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -983,6 +1039,8 @@ class StructureHandler(Handler):
         (gr512126; :meth:`_put_derive` → :meth:`derive`)."""
         if mode == "rerun":
             return self._rerun(id=id, args=args)
+        if mode == "neb":
+            return self._put_neb(id=id, args=args)
         a = args or {}
         if a.get("derive_from") is not None:
             return self._put_derive(id=id, title=title, args=a)
@@ -1591,6 +1649,514 @@ class StructureHandler(Handler):
             f"{parent_handle}"
         )
 
+    # ── mode='neb' ───────────────────────────────────────────────────
+    def _put_neb(
+        self, *, id: str | int | None, args: dict[str, Any] | None
+    ) -> Response:
+        """``put(id=<is-slug>, mode='neb', args={'final': '<fs-slug>',
+        'images': 7, 'path_seeds': 2, 'model': 'mace_mp', 'fmax': 0.05})`` —
+        queue one CI-NEB edge between two agent-authored endpoints
+        (gr512126, slice 3; ``docs/backlog/neb-structure-builder.md``).
+
+        The pair gates — the same :meth:`_render_pair` table — run first
+        and zero-compute: a failed gate refuses with that row's ``next=``
+        and nothing is minted; a warn rides the ack. On pass the request
+        is content-addressed (``neb.neb_cache_key``): an identical earlier
+        success is a cache hit, an in-flight one collapses onto it, and
+        only a genuinely new edge mints a ``struct_neb_runs`` row plus the
+        ``struct_neb`` job. The rung is ``ml`` only (spec §Compute).
+        ``requested_by=<todo>`` arms the wait exactly like a relax and
+        counts against the serving quest's daily cap
+        (:data:`_NEB_QUEST_DAILY_ENV`, default 4 per rolling 24 h)."""
+        from precis.structure import pair_check
+        from precis.structure.neb import (
+            NEB_DEFAULTS,
+            neb_cache_key,
+            normalize_neb_params,
+        )
+
+        call = (
+            "put(kind='structure', id='<is-slug>', mode='neb', "
+            "args={'final': '<fs-slug>'})"
+        )
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure', mode='neb') requires id= (the "
+                "initial-state design slug or st<N> handle)",
+                next=call,
+            )
+        a = args or {}
+        fs_arg = str(a.get("final") or a.get("fs") or "").strip()
+        if not fs_arg:
+            raise BadInput(
+                "mode='neb' needs args final= (the final-state design slug)",
+                next=call,
+            )
+        request_keys = {"final", "fs", "model", "requested_by", "parent_id"}
+        unknown = sorted(set(a) - set(NEB_DEFAULTS) - request_keys)
+        if unknown:
+            raise BadInput(
+                f"mode='neb' args: unknown key(s) {unknown}",
+                next=f"the engine knobs are {sorted(NEB_DEFAULTS)} plus "
+                f"{sorted(request_keys)}",
+            )
+        try:
+            engine_params = normalize_neb_params(
+                {k: a[k] for k in NEB_DEFAULTS if k in a}
+            )
+        except ValueError as exc:
+            raise BadInput(
+                str(exc),
+                next="the engine knobs are " + ", ".join(sorted(NEB_DEFAULTS)),
+            ) from exc
+
+        is_ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        fs_ref = resolve_live_slug_ref(self.store, kind="structure", id=fs_arg)
+        if fs_ref.id == is_ref.id:
+            raise BadInput(
+                "mode='neb': the IS and FS are the same design — an edge "
+                "needs two distinct endpoints",
+                next="derive a distinct FS — "
+                f"put(kind='structure', id='<new-slug>', "
+                f"args={{'derive_from': {is_ref.slug!r}, 'ops': [...]}})",
+            )
+        is_scene, _ = self.store.structure_load(is_ref.id)
+        fs_scene, _ = self.store.structure_load(fs_ref.id)
+        is_version = int((is_ref.meta or {}).get("version", 0))
+        fs_version = int((fs_ref.meta or {}).get("version", 0))
+        is_runs = self.store.structure_runs(is_ref.id)
+        fs_runs = self.store.structure_runs(fs_ref.id)
+        is_slug = str(is_ref.slug or is_ref.id)
+        fs_slug = str(fs_ref.slug or fs_arg)
+        verdict = pair_check.evaluate_pair(
+            is_scene,
+            fs_scene,
+            is_version=is_version,
+            fs_version=fs_version,
+            is_runs=is_runs,
+            fs_runs=fs_runs,
+            is_slug=is_slug,
+            fs_slug=fs_slug,
+        )
+        if not verdict.ok:
+            fails = verdict.failed
+            detail = " · ".join(f"{g.gate} ({g.detail})" for g in fails)
+            raise BadInput(
+                f"neb pair {is_slug} ↔ {fs_slug} blocked — {detail}",
+                next=fails[0].next
+                or (
+                    f"get(kind='structure', id={is_slug!r}, view='pair', "
+                    f"args={{'other': {fs_slug!r}}}) for the gate table"
+                ),
+            )
+        warns = [g for g in verdict.gates if g.verdict == pair_check.WARN]
+
+        # The band's calculator must be a model BOTH endpoints converged
+        # at on their current versions — the 'relaxed' gate's shared set —
+        # else it would price a differently-relaxed geometry than the one
+        # the gate checked.
+        caller_model = str(a.get("model") or "").strip() or None
+        is_models = pair_check._ml_models(is_runs, is_version)
+        fs_models = pair_check._ml_models(fs_runs, fs_version)
+        shared = is_models & fs_models
+        if caller_model is not None:
+            missing = [
+                slug
+                for slug, models in ((is_slug, is_models), (fs_slug, fs_models))
+                if caller_model not in models
+            ]
+            if missing:
+                raise BadInput(
+                    f"model {caller_model!r} has no converged ml run on "
+                    f"{' and '.join(missing)}'s current version — the band "
+                    "would price a differently-relaxed geometry",
+                    next=" then ".join(
+                        pair_check._relax_edit(s, model=caller_model) for s in missing
+                    ),
+                )
+            model: str | None = caller_model
+        else:
+            # The IS's freshest shared-model relax names the calculator.
+            model = next(
+                (
+                    str(r["model"])
+                    for r in is_runs
+                    if str(r.get("model")) in shared
+                    and _is_conv_ml_on_version(r, is_version)
+                ),
+                sorted(shared)[0] if shared else None,
+            )
+        is_run = _neb_conv_run(is_runs, is_version, model)
+        fs_run = _neb_conv_run(fs_runs, fs_version, model)
+        cache_key = neb_cache_key(
+            is_scene, fs_scene, fidelity="ml", model=model, params=engine_params
+        )
+
+        # Content-addressed dedupe before any cap or mint: an identical
+        # earlier success is the stored run; an in-flight twin collapses.
+        # Both probes repeat inside the mint lock in _dispatch_neb — this
+        # is only the fast path that avoids the lock for the common case.
+        hit = self.store.struct_neb_cached(cache_key)
+        if hit is not None:
+            return self._neb_cached_response(hit, is_slug, fs_slug)
+        inflight = self.store.struct_neb_inflight(cache_key)
+        if inflight is not None:
+            return self._neb_inflight_response(inflight, is_slug, fs_slug)
+
+        requester_id = _as_int_or_none(a.get("requested_by", a.get("parent_id")))
+        quest_ref_id: int | None = None
+        if requester_id is not None:
+            # A named requester must be a live todo (fail fast, before the
+            # mint) — same contract as _dispatch_relax.
+            from precis.todo import guards as todo_guards
+
+            todo_guards.check_parent_exists(self.store, requester_id)
+            for link in self.store.links_for(
+                requester_id, direction="out", relation="serves"
+            ):
+                quest_ref_id = int(link.dst_ref_id)
+                break
+        return self._dispatch_neb(
+            is_ref,
+            fs_ref,
+            is_version=is_version,
+            fs_version=fs_version,
+            is_run=is_run,
+            fs_run=fs_run,
+            model=model,
+            engine_params=engine_params,
+            cache_key=cache_key,
+            requester_id=requester_id,
+            quest_ref_id=quest_ref_id,
+            warns=warns,
+            is_slug=is_slug,
+            fs_slug=fs_slug,
+        )
+
+    def _dispatch_neb(
+        self,
+        is_ref: Any,
+        fs_ref: Any,
+        *,
+        is_version: int,
+        fs_version: int,
+        is_run: Any,
+        fs_run: Any,
+        model: str | None,
+        engine_params: dict[str, Any],
+        cache_key: str,
+        requester_id: int | None,
+        quest_ref_id: int | None,
+        warns: list[Any],
+        is_slug: str,
+        fs_slug: str,
+    ) -> Response:
+        """Mint the ``struct_neb_runs`` row + ``struct_neb`` job for one
+        gated edge — the in-process GPU-node rung (spec §Compute).
+
+        The whole mint runs in one transaction under a per-edge advisory
+        lock (``struct_neb_mint:<cache_key>`` — deliberately NOT the job's
+        own ``struct_neb:<cache_key>`` idem string, which job.put takes on
+        a second connection and would self-deadlock): lock → cached/
+        inflight re-check → the daily-cap count under its own lock → run
+        row → job.put → ``job_ref_id`` backfill. A concurrent identical
+        request blocks on the lock, then sees the committed row and
+        collapses — no orphan ``queued`` row can wedge the edge. When
+        job.put still reports ``reused`` (a live job whose run row this
+        request can't see), the fresh row fails with a dedupe note and
+        the ack names the run the existing job carries."""
+        from precis.handlers.job import _idem_lock_key
+        from precis.structure.neb import neb_engine_token
+        from precis.workers.job_types import struct_neb
+        from precis.workers.job_types.struct_relax import target_node_for
+
+        # In-process ml rung → the compute group, deterministic on the
+        # cache key (a re-dispatch lands back on the same host's warm
+        # model cache). No node-literal fallback — same rule as relax.
+        target = target_node_for("ml", key=cache_key)
+        if not target:
+            raise Internal(
+                "no compute node configured: neither PRECIS_MLIP_NODES, "
+                "PRECIS_AUTOCATPATH_ROUTE_NODE nor PRECIS_DFT_NODE is set "
+                "on this host, so a struct_neb job would have nowhere to "
+                "run — deploy renders them from topology "
+                "(precis_capabilities.autocatpath / .dft)",
+                next="the node lists are deploy env this host lacks",
+            )
+        timeout_s = struct_neb._timeout_s()
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        run_params = dict(engine_params)
+        if quest_ref_id is not None:
+            # The daily cap's attribution — request context, not an
+            # engine knob, so it stamps the stored row only and never
+            # reaches the cache key or the job's engine params.
+            run_params["quest_ref_id"] = str(quest_ref_id)
+        engine = neb_engine_token()
+        job_resp: Response | None = None
+        existing_run_id: int | None = None
+        with self.store.tx() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (_idem_lock_key(f"struct_neb_mint:{cache_key}"),),
+            )
+            # The authoritative re-check under the lock — the fast-path
+            # probes in _put_neb raced a concurrent mint's commit.
+            hit = self.store.struct_neb_cached(cache_key, conn=conn)
+            if hit is not None:
+                return self._neb_cached_response(hit, is_slug, fs_slug)
+            inflight = self.store.struct_neb_inflight(cache_key, conn=conn)
+            if inflight is not None:
+                return self._neb_inflight_response(inflight, is_slug, fs_slug)
+            # Dead rows: a queued/running row whose job went terminal
+            # (worker kill, OOM, lease expiry — the row's own status is
+            # job-written, so it lies) is failed here so view='neb' never
+            # shows a zombie.
+            self.store.struct_neb_reap_dead(cache_key, conn=conn)
+            if quest_ref_id is not None:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (_idem_lock_key(f"struct_neb_quest:{quest_ref_id}"),),
+                )
+                cap = _neb_quest_daily()
+                minted = self.store.struct_neb_quest_mints_24h(quest_ref_id, conn=conn)
+                if minted >= cap:
+                    raise BadInput(
+                        f"quest daily NEB cap reached — {minted} struct_neb "
+                        f"mints for this quest in the last 24 h "
+                        f"({_NEB_QUEST_DAILY_ENV}={cap})",
+                        next="the rolling window reopens "
+                        + self._neb_quest_reopens(quest_ref_id)
+                        + " — or run without requested_by= (that lane "
+                        f"counts against {_NEB_GLOBAL_DAILY_ENV})",
+                    )
+            else:
+                # No quest to charge: the global UTC-day cap meters it —
+                # the mint lock is per-edge, so non-quest mints serialize
+                # on this fixed key for the count + insert.
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (_idem_lock_key("struct_neb_quest:global"),),
+                )
+                cap = _neb_global_daily()
+                minted = self.store.struct_neb_nonquest_mints_today(conn=conn)
+                if minted >= cap:
+                    raise BadInput(
+                        f"daily struct_neb cap reached — {minted} mints "
+                        f"today without a quest stamp "
+                        f"({_NEB_GLOBAL_DAILY_ENV}={cap})",
+                        next="stamp requested_by=<a todo serving a quest> — "
+                        f"that lane has its own {_NEB_QUEST_DAILY_ENV} cap — "
+                        "or wait for the UTC-day rollover",
+                    )
+            run_id = self.store.struct_neb_record_run(
+                is_ref_id=is_ref.id,
+                fs_ref_id=fs_ref.id,
+                fidelity="ml",
+                model=model,
+                params=run_params,
+                cache_key=cache_key,
+                job_ref_id=None,
+                is_run_id=is_run["id"] if is_run else None,
+                fs_run_id=fs_run["id"] if fs_run else None,
+                is_version=is_version,
+                fs_version=fs_version,
+                engine=engine,
+                conn=conn,
+            )
+            job_resp = hub.sibling("job").put(
+                job_type="struct_neb",
+                executor="ssh_node",
+                # The IS design owns the job (compute lane, like the relax).
+                parent_id=is_ref.id,
+                params={
+                    "neb_run_id": run_id,
+                    "is_ref_id": is_ref.id,
+                    "fs_ref_id": fs_ref.id,
+                    "is_version": is_version,
+                    "fs_version": fs_version,
+                    "is_run_id": is_run["id"] if is_run else None,
+                    "fs_run_id": fs_run["id"] if fs_run else None,
+                    "is_slug": is_slug,
+                    "fidelity": "ml",
+                    "model": model,
+                    "params": engine_params,
+                    "cache_key": cache_key,
+                    "target_node": target,
+                    "timeout_s": timeout_s,
+                    # ssh_node sizes the lease max(7200, wall + 1 h margin)
+                    # off params.resources.wall_seconds (spec §Compute).
+                    "resources": {"wall_seconds": int(timeout_s)},
+                },
+                idem_key=f"struct_neb:{cache_key}",
+            )
+            if job_resp.reused:
+                # A live job already owns this edge while no run row reads
+                # in flight (its own row went terminal — e.g. failed while
+                # the job was still finishing). Fail the fresh row with a
+                # dedupe note and point the ack at the job's run.
+                jref = (
+                    self.store.get_ref(kind="job", id=int(job_resp.ref_id))
+                    if job_resp.ref_id is not None
+                    else None
+                )
+                jparams = ((jref.meta if jref is not None else None) or {}).get(
+                    "params"
+                ) or {}
+                existing_run_id = (
+                    int(jparams["neb_run_id"])
+                    if jparams.get("neb_run_id") is not None
+                    else None
+                )
+                self.store.struct_neb_update_run(
+                    run_id,
+                    status="failed",
+                    trust=[
+                        {
+                            "id": "precis-dedupe",
+                            "check": "dedupe",
+                            "verdict": "not-run",
+                            "severity": "info",
+                            "seed": 0,
+                            "step": None,
+                            "evidence": {
+                                "reason": "collapsed onto in-flight job "
+                                f"jo{job_resp.ref_id}"
+                                + (
+                                    f" (run {existing_run_id})"
+                                    if existing_run_id is not None
+                                    else ""
+                                ),
+                            },
+                        }
+                    ],
+                    conn=conn,
+                )
+            elif job_resp.ref_id is not None:
+                self.store.struct_neb_update_run(
+                    run_id, job_ref_id=job_resp.ref_id, conn=conn
+                )
+        assert job_resp is not None  # put() raised → tx rolled back, exited
+        note = ""
+        if requester_id is not None:
+            if job_resp.ref_id is None:  # defensive — put always reports the id
+                log.warning(
+                    "structure._dispatch_neb: job put() returned no ref_id "
+                    "for requester #%s; skipping requester wiring",
+                    requester_id,
+                )
+            else:
+                self._wire_requester(requester_id, job_resp.ref_id)
+            note = f" (todo #{requester_id} will block on it)"
+        warn_lines = "".join(
+            f"# warn {g.gate}: {g.detail}" + (f" — {g.next}" if g.next else "") + "\n"
+            for g in warns
+        )
+        if job_resp.reused:
+            existing = (
+                self.store.struct_neb_get(existing_run_id)
+                if existing_run_id is not None
+                else None
+            )
+            if existing is not None and existing["status"] == "succeeded":
+                return self._neb_cached_response(existing, is_slug, fs_slug)
+            run_txt = (
+                f"run {existing_run_id}" if existing_run_id is not None else "its run"
+            )
+            status_txt = f" ({existing['status']})" if existing is not None else ""
+            return Response(
+                body=(
+                    f"# struct_neb {run_txt} already owned by jo"
+                    f"{job_resp.ref_id}{status_txt} — st{is_ref.id} → "
+                    f"st{fs_ref.id} ({is_slug} → {fs_slug}){note}\n\n"
+                    "An identical request is owned by that job — this call "
+                    "collapsed onto it instead of minting a duplicate.\n\n"
+                    f"Poll: get(kind='structure', id={is_slug!r}, view='neb')."
+                )
+            )
+        return Response(
+            body=(
+                f"queued struct_neb jo{job_resp.ref_id} run {run_id}{note}\n"
+                f"st{is_ref.id} → st{fs_ref.id} ({is_slug} → {fs_slug}) · "
+                f"ml/{model} · {engine_params['images']} images × "
+                f"{engine_params['path_seeds']} seeds · wall cap "
+                f"{timeout_s / 3600.0:g} h\n"
+                f"{warn_lines}"
+                f"\nPoll: get(kind='structure', id={is_slug!r}, view='neb')."
+            )
+        )
+
+    @staticmethod
+    def _neb_inflight_response(
+        inflight: Mapping[str, Any], is_slug: str, fs_slug: str
+    ) -> Response:
+        """The collapse ack for an identical in-flight request — shared
+        by the fast path in ``_put_neb`` and the locked re-check in
+        ``_dispatch_neb``."""
+        return Response(
+            body=(
+                f"# struct_neb run {inflight['id']} already "
+                f"{inflight['status']} — st{inflight['is_ref_id']} → "
+                f"st{inflight['fs_ref_id']} ({is_slug} → {fs_slug})\n\n"
+                "An identical request is in flight — it collapses onto "
+                "that run instead of minting a duplicate.\n\n"
+                f"Poll: get(kind='structure', id={is_slug!r}, view='neb')."
+            )
+        )
+
+    def _neb_quest_reopens(self, quest_ref_id: int) -> str:
+        """When the rolling-24h quest cap window reopens — the oldest mint
+        still inside it plus 24 h, rendered UTC."""
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT min(created_at) FROM struct_neb_runs "
+                "WHERE params->>'quest_ref_id' = %s "
+                "AND created_at > now() - interval '24 hours'",
+                (str(quest_ref_id),),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return "now"
+        from datetime import UTC, timedelta
+
+        reopen = row[0] + timedelta(hours=24)
+        if reopen.tzinfo is None:
+            reopen = reopen.replace(tzinfo=UTC)
+        return reopen.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+    @staticmethod
+    def _neb_scalars(run: Mapping[str, Any]) -> str:
+        """The priced line shared by the cache-hit ack and ``view='neb'``:
+        E_a fwd/rev, ΔE, trusted — ``not priced`` when the band never
+        produced a TS (the NULL-barrier contract)."""
+        ea, rev, de = (
+            run.get("barrier_fwd_ev"),
+            run.get("barrier_rev_ev"),
+            run.get("delta_e_ev"),
+        )
+        parts = [f"E_a fwd {ea:.3f} eV" if ea is not None else "not priced"]
+        if rev is not None:
+            parts.append(f"rev {rev:.3f} eV")
+        if de is not None:
+            parts.append(f"ΔE {de:.3f} eV")
+        parts.append("trusted" if run.get("trusted") else "untrusted")
+        return " · ".join(parts)
+
+    def _neb_cached_response(
+        self, hit: Mapping[str, Any], is_slug: str, fs_slug: str
+    ) -> Response:
+        """The zero-compute ack for an identical re-request: report the
+        stored run, mint nothing."""
+        return Response(
+            body=(
+                f"# cached struct_neb run {hit['id']} — st{hit['is_ref_id']} → "
+                f"st{hit['fs_ref_id']} ({is_slug} → {fs_slug})\n\n"
+                f"{self._neb_scalars(hit)}\n\n"
+                "An identical request (same endpoint geometry, params and "
+                "code version) already priced this edge — no job minted.\n\n"
+                f"Band + trust: get(kind='structure', id={is_slug!r}, "
+                f"view='neb', args={{'run': {hit['id']}}})."
+            )
+        )
+
     # ── get ──────────────────────────────────────────────────────────
     def get(
         self,
@@ -1682,6 +2248,8 @@ class StructureHandler(Handler):
             return self._render_literature(scene, ref)
         if view == "pair":
             return self._render_pair(ref, scene, a)
+        if view == "neb":
+            return self._render_neb(ref, a)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -2328,6 +2896,293 @@ class StructureHandler(Handler):
             + render_agent_table(
                 rows, schema=["gate", "input", "threshold", "verdict", "next"]
             )
+        )
+
+    def _render_neb(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``view='neb'`` — the NEB edge runs touching this design as IS,
+        FS or minted TS (``struct_neb_runs``; gr512126, slice 3).
+        ``args={'run': N}`` opens one run: the priced scalars, the trust
+        table and the band — image · E−E_IS · max |F| · the distances of
+        the bonds that change IS→FS."""
+        run_arg = args.get("run")
+        if run_arg is not None:
+            return self._render_neb_run(ref, run_arg)
+        runs = self.store.struct_neb_runs_for(ref.id)
+        if not runs:
+            return Response(
+                body=(
+                    f"# {ref.slug}: no NEB runs\n\n"
+                    "Next: gate the pair first — "
+                    f"get(kind='structure', id={ref.slug!r}, view='pair', "
+                    "args={'other': '<fs-slug>'}), then "
+                    "put(kind='structure', id='<is-slug>', mode='neb', "
+                    "args={'final': '<fs-slug>'})."
+                )
+            )
+        ids = {
+            int(v)
+            for r in runs
+            for v in (r["is_ref_id"], r["fs_ref_id"], r["ts_ref_id"])
+            if v is not None
+        }
+        names = {
+            rid: (str(rl.slug) if rl.slug else f"st{rid}")
+            for rid, rl in self.store.fetch_refs_by_ids(ids).items()
+        }
+        from precis.structure.neb import neb_engine_token
+
+        current_engine = neb_engine_token()
+        rows = []
+        for r in runs:
+            role = (
+                "IS"
+                if r["is_ref_id"] == ref.id
+                else "FS"
+                if r["fs_ref_id"] == ref.id
+                else "TS"
+            )
+            eng = r.get("engine")
+            rows.append(
+                {
+                    "run": r["id"],
+                    "edge": f"{names.get(int(r['is_ref_id']), '?')}→"
+                    f"{names.get(int(r['fs_ref_id']), '?')}",
+                    "role": role,
+                    "status": r["status"],
+                    "E_a fwd": "—"
+                    if r["barrier_fwd_ev"] is None
+                    else f"{r['barrier_fwd_ev']:.3f}",
+                    "ΔE": "—" if r["delta_e_ev"] is None else f"{r['delta_e_ev']:.3f}",
+                    "trusted": "yes" if r["trusted"] else "no",
+                    "model": r["model"] or "—",
+                    "engine": (
+                        "—"
+                        if not eng
+                        else eng + (" (stale)" if eng != current_engine else "")
+                    ),
+                    "job": f"jo{r['job_ref_id']}" if r["job_ref_id"] else "—",
+                }
+            )
+        return Response(
+            body=f"# {ref.slug}: {len(runs)} NEB run(s)\n"
+            + render_agent_table(
+                rows,
+                schema=[
+                    "run",
+                    "edge",
+                    "role",
+                    "status",
+                    "E_a fwd",
+                    "ΔE",
+                    "trusted",
+                    "model",
+                    "engine",
+                    "job",
+                ],
+            )
+            + "\n\nBand + trust: get(kind='structure', id="
+            + repr(ref.slug)
+            + ", view='neb', args={'run': N})."
+        )
+
+    def _render_neb_run(self, ref: Any, run_arg: Any) -> Response:
+        """``view='neb', args={'run': N}`` — one run's scalars, trust table
+        and band. The run must touch this design (as IS, FS or TS)."""
+        try:
+            run_id = int(run_arg)
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"args 'run' must be a run id, got {run_arg!r}",
+                next=f"get(kind='structure', id={ref.slug!r}, view='neb') "
+                "for the run list",
+            ) from exc
+        run = self.store.struct_neb_get(run_id)
+        if run is None or ref.id not in {
+            run["is_ref_id"],
+            run["fs_ref_id"],
+            run["ts_ref_id"],
+        }:
+            raise BadInput(
+                f"neb run {run_id} doesn't touch {ref.slug}",
+                next=f"get(kind='structure', id={ref.slug!r}, view='neb') "
+                "for the run list",
+            )
+        from precis.structure.neb import neb_engine_token
+
+        eng = run.get("engine")
+        stale = bool(eng) and eng != neb_engine_token()
+        lines = [
+            f"# neb run {run_id} — st{run['is_ref_id']} → "
+            f"st{run['fs_ref_id']} · {run['status']}",
+            self._neb_scalars(run),
+            f"{run['fidelity']}/{run['model']} · converged "
+            f"{'yes' if run['converged'] else 'no'}"
+            + (f" · wall {run['wall_s']:.0f} s" if run.get("wall_s") else "")
+            + (f" · job jo{run['job_ref_id']}" if run.get("job_ref_id") else ""),
+        ]
+        if eng:
+            lines.append(
+                f"engine {eng}" + (" — stale, rerun on current" if stale else "")
+            )
+        if run.get("ts_ref_id"):
+            lines.append(
+                f"TS → st{run['ts_ref_id']} (band image {run['ts_index']}, "
+                f"fmax {run['ts_fmax']})"
+            )
+        if run["status"] == "failed":
+            reason, nxt = self._neb_failure(run)
+            lines += [f"failed: {reason}", f"next: {nxt}"]
+        lines.append("")
+        lines.append(self._neb_trust_table(recs=list(run.get("trust") or []), run=run))
+        images = self.store.struct_neb_images(run_id)
+        if images:
+            lines.append("")
+            lines.append(self._neb_band_table(run, images))
+        return Response(body="\n".join(lines))
+
+    @staticmethod
+    def _neb_failure(run: Mapping[str, Any]) -> tuple[str, str]:
+        """Why a failed run failed, and the working ``next=`` (spec: a
+        failed run shows its reason and a next — denser band, more seeds,
+        or fix the endpoint)."""
+        recs = [r for r in (run.get("trust") or []) if r.get("verdict") == "fail"]
+        if recs:
+            ev = recs[0].get("evidence") or {}
+            reason = str(ev.get("reason") or f"{recs[0].get('check')} failed")
+        else:
+            reason = f"failed before pricing — see job jo{run.get('job_ref_id')}"
+        return reason, (
+            "retry with a denser band (more 'images') or more seeds "
+            "('path_seeds'), or fix the endpoint geometry — "
+            "put(kind='structure', id='<is-slug>', mode='neb', "
+            "args={'final': '<fs-slug>', ...})"
+        )
+
+    def _neb_trust_table(
+        self, *, recs: list[dict[str, Any]], run: Mapping[str, Any]
+    ) -> str:
+        """The run-trust table: one row per stored record, ``not-run``
+        rows for required checks the engine never graded (a check that
+        emitted no records is not a passing one — trust_gate's rule),
+        plus the slice-5 ``frequency`` slot — ``not checked`` until the
+        saddle frequency pass exists. A record stamped to a different
+        engine than the run's own renders ``stale, rerun on current``
+        (the same-version-seeds ruling, gr517804)."""
+        from precis.utils.trust_gate import is_stale, record_engine
+        from precis.workers.job_types.struct_neb import _NEB_REQUIRED_CHECKS
+
+        engines = [e for e in (record_engine(r) for r in recs) if e]
+        current = max(set(engines), key=engines.count) if engines else None
+        rows = []
+        for r in recs:
+            ev = r.get("evidence") or {}
+            note = (
+                "stale, rerun on current"
+                if is_stale(r, current)
+                else str(ev.get("reason") or "")
+            )
+            rows.append(
+                {
+                    "check": r.get("check"),
+                    "verdict": r.get("verdict"),
+                    "severity": r.get("severity"),
+                    "engine": record_engine(r) or "—",
+                    "note": note,
+                }
+            )
+        seen = {r.get("check") for r in recs}
+        for check in _NEB_REQUIRED_CHECKS:
+            if check not in seen:
+                rows.append(
+                    {
+                        "check": check,
+                        "verdict": "not-run",
+                        "severity": "—",
+                        "engine": "—",
+                        "note": "check emitted no records",
+                    }
+                )
+        n_imag = run.get("n_imag")
+        rows.append(
+            {
+                "check": "frequency",
+                "verdict": "not checked" if n_imag is None else "checked",
+                "severity": "—",
+                "engine": "—",
+                "note": ""
+                if n_imag is None
+                else f"n_imag={n_imag}"
+                + (
+                    f", {run['imag_cm1']} cm⁻¹"
+                    if run.get("imag_cm1") is not None
+                    else ""
+                ),
+            }
+        )
+        verdict = "trusted" if run.get("trusted") else "untrusted"
+        return f"trust: {verdict}\n" + render_agent_table(
+            rows, schema=["check", "verdict", "severity", "engine", "note"]
+        )
+
+    def _neb_band_table(
+        self, run: Mapping[str, Any], images: list[dict[str, Any]]
+    ) -> str:
+        """The band: per image E−E_IS (eV), max |F| (eV/Å) and the
+        distances (Å) of the bonds that change IS→FS — the changed-bond
+        set is the stored graphs' symmetric difference, read in the band's
+        slab-first atom order (``neb.slab_first_order`` on the IS — the
+        same order the job built the images in). Endpoints load at the
+        versions the run was minted against (``is_version``/``fs_version``
+        on the row) — a later edit must not relabel the band's atoms."""
+        from precis.structure.neb import slab_first_order
+
+        is_v = run.get("is_version")
+        fs_v = run.get("fs_version")
+        is_scene, _ = self.store.structure_load(
+            run["is_ref_id"], version=int(is_v) if is_v is not None else None
+        )
+        fs_scene, _ = self.store.structure_load(
+            run["fs_ref_id"], version=int(fs_v) if fs_v is not None else None
+        )
+        order, _n_slab = slab_first_order(is_scene)
+        label_idx = {la: i for i, la in enumerate(order)}
+        is_bonds = {frozenset((b.i, b.j)) for b in is_scene.bonds}
+        fs_bonds = {frozenset((b.i, b.j)) for b in fs_scene.bonds}
+        changed = sorted(
+            (tuple(sorted(p)) for p in (is_bonds ^ fs_bonds)),
+        )
+        e0 = images[0].get("energy_ev")
+        rows = []
+        for img in images:
+            e = img.get("energy_ev")
+            row: dict[str, Any] = {
+                "idx": img["idx"],
+                "E−E_IS": "—" if e is None or e0 is None else f"{e - e0:+.3f}",
+                "max|F|": "—"
+                if img.get("max_force") is None
+                else f"{img['max_force']:.3f}",
+            }
+            fracs = (img.get("positions") or {}).get("frac") or []
+            full = len(fracs) == len(order)
+            for la, lb in changed:
+                col = f"{la}–{lb}"
+                if full and la in label_idx and lb in label_idx:
+                    d, _img_off = is_scene.cell.mic(
+                        np.asarray(fracs[label_idx[la]], dtype=float),
+                        np.asarray(fracs[label_idx[lb]], dtype=float),
+                    )
+                    row[col] = f"{d:.2f}"
+                else:
+                    row[col] = "—"
+            rows.append(row)
+        schema = ["idx", "E−E_IS", "max|F|"] + [f"{la}–{lb}" for la, lb in changed]
+        mark = (
+            f" · TS at image {run['ts_index']}"
+            if run.get("ts_index") is not None
+            else ""
+        )
+        return f"band (E−E_IS eV, max|F| eV/Å, bond Å){mark}:\n" + render_agent_table(
+            rows, schema=schema
         )
 
     def _render_generator(self, ref: Any) -> Response:

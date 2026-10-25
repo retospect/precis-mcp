@@ -1289,7 +1289,6 @@ ignore_imports = [
     "precis.workers.job_types.draft_export -> precis.handlers.draft",
     "precis.workers.job_types.draft_refresh -> precis.handlers.draft",
     "precis.workers.job_types.reground_claim -> precis.handlers.draft",
-    "precis.workers.job_types.struct_search -> precis.handlers.structure",
     "precis.workers.job_types.taproot_backfill -> precis.handlers.draft",
     "precis.workers.news_poll -> precis.handlers.news",
     "precis.workers.orcid_enrich -> precis.handlers.orcid",

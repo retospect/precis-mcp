@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from precis.handlers.structure import card_text
 from precis.structure import Atom, Bond, Scene
+from precis.structure.card import card_text
 from precis.structure.cell import Cell
 from precis.structure.fragment_names import fragment_names
 

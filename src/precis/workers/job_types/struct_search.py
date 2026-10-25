@@ -272,7 +272,7 @@ def _record_search(
 ) -> None:
     """Write back the top-K distinct candidates and the population summary —
     the one seam both a real and a stubbed :data:`SEARCH_RUNNER` land on."""
-    from precis.handlers.structure import card_text
+    from precis.structure.card import card_text
 
     ranked = top_k_distinct(result.candidates, k=top_k)
     if not ranked:

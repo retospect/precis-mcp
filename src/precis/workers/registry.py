@@ -1494,6 +1494,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-structure-help",
     ),
     ServiceSpec(
+        name="struct_neb",
+        label="Structure NEB edge (CI-NEB)",
+        category="compute",
+        kind=ServiceKind.COMPUTE,
+        requires=frozenset({"gpu"}),
+        one_line=(
+            "One CI-NEB edge between two structure endpoints on the GPU "
+            "node; sinks the band, trust records and TS design."
+        ),
+        doc_skill="precis-structure-help",
+    ),
+    ServiceSpec(
         name="fold",
         label="AlphaFold3 fold",
         category="compute",
