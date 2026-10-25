@@ -179,27 +179,41 @@ def _wait_for(predicate, timeout: float = 10.0, interval: float = 0.1) -> bool:
 
 
 def _make_fake_claude_binary(tmp_path: Path) -> Path:
-    """A real `bash` binary, copied to a file literally named `claude`, run
-    DIRECTLY (never through a `#!` shebang indirection). This is what makes
-    `comm` (the kernel's own process-name field — `ps -o comm=` /
-    `/proc/<pid>/comm` on Linux) read exactly "claude", matching what the
-    real Claude Code process presents as.
+    """An executable that runs as a real `bash` process whose `comm` reads
+    exactly "claude" — what the real Claude Code process presents as
+    (`ps -o comm=` / `/proc/<pid>/comm`). How `comm` gets set differs per
+    OS, so the shape does too:
 
-    Two things that do NOT work and were tried first:
-      - `exec -a claude <cmd>` only overrides argv[0] (visible in `ps args`)
-        -- on Linux, `comm` still reports the real executable's own
-        basename, so this technique doesn't fake a `comm == claude` process
-        there (it did on this macOS host, which isn't the authoritative
-        test environment per `scripts/test`'s container).
+    - Linux (the authoritative `scripts/test` container): `comm` comes
+      from the exec'd file's own name — a `bash` binary copied to a file
+      literally named "claude" and run DIRECTLY (never through a `#!`
+      shebang indirection, which reports the interpreter's name instead).
+    - Darwin: `comm` shows argv[0] instead of the exec'd file's name, and
+      a COPY of /bin/bash is SIGKILL'd at exec — macOS launch constraints
+      bind Apple platform binaries to their signed path (gr514910). A
+      SYMLINK to /bin/bash named "claude" gets both: the binary runs from
+      its signed path, while argv[0] is the symlink's own path, so
+      `comm`'s basename reads "claude" — and it's a direct exec, no
+      `#!/bin/sh` hop whose transient `comm` an ancestor walk could
+      catch mid-start.
+
+    Two things that do NOT work:
+      - `exec -a claude <cmd>` on Linux only overrides argv[0] (visible
+        in `ps args`); `comm` still reports the real executable's own
+        basename.
       - naming a `#!/usr/bin/env bash` SCRIPT "claude" and exec'ing it
-        directly: the shebang indirection makes the kernel report `comm` as
-        the interpreter's name ("bash"), not the script's own file name.
-    Only a real binary, executed by its own "claude" path with no shebang
-    hop, gets `comm == claude` on both platforms.
+        directly: the shebang indirection makes `comm` the interpreter's
+        name ("bash"), not the script's own file name — and a script
+        holds no way to rename itself on Linux anyway.
     """
     claude_bin = tmp_path / "claude"
-    shutil.copy(shutil.which("bash") or "/bin/bash", claude_bin)
-    claude_bin.chmod(0o755)
+    if sys.platform == "darwin":
+        # No chmod: it would land on the symlink's TARGET (/bin/bash),
+        # which this user may not touch — the link itself needs none.
+        claude_bin.symlink_to(shutil.which("bash") or "/bin/bash")
+    else:
+        shutil.copy(shutil.which("bash") or "/bin/bash", claude_bin)
+        claude_bin.chmod(0o755)
     return claude_bin
 
 
@@ -728,15 +742,6 @@ def test_session_start_lock_never_steals_a_live_unrelated_lock(
     _git(primary, "worktree", "unlock", str(b))
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason=(
-        "process-table session lookup (session-lock.sh other_session_in) is "
-        "authoritative in the scripts/test container; on Darwin its ps/lsof "
-        "reads miss the fake survivor session and the tree is reaped under "
-        "it (gr514910)"
-    ),
-)
 def test_session_end_reap_hands_the_lock_to_a_second_session_in_the_tree(
     repo_trio: dict[str, Path],
     tmp_path: Path,
@@ -779,15 +784,6 @@ cat "{payload}" | bash "{end_hook}"
     _git(primary, "worktree", "unlock", str(b))
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason=(
-        "process-table session lookup (session-lock.sh other_session_in) is "
-        "authoritative in the scripts/test container; on Darwin its ps/lsof "
-        "reads miss the fake survivor session and the tree is reaped under "
-        "it (gr514910)"
-    ),
-)
 def test_reap_worktrees_skips_a_dead_locked_tree_with_a_live_session_in_it(
     repo_trio: dict[str, Path],
     tmp_path: Path,
@@ -1688,11 +1684,28 @@ def test_reap_worktrees_grace_period_skips_a_tree_that_goes_dirty_mid_sleep(
         encoding="utf-8",
     )
     try:
-        time.sleep(0.5)
+        # Land the edit INSIDE the grace window, not at a guessed offset:
+        # the reaper's only child during the shared sleep is `sleep`, so
+        # its appearance proves the first bucket pass already ran AND B
+        # was a candidate. A fixed delay races that pass — on a loaded
+        # host the first scan can outlast it, B is "keep" before grace
+        # even starts, and the run reports "nothing to reap" (gr514910).
+        assert _wait_for(
+            lambda: (
+                subprocess.run(
+                    ["pgrep", "-P", str(proc.pid), "sleep"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                ).stdout.strip()
+                != ""
+            ),
+            timeout=15.0,
+        ), "reaper never reached its grace sleep — B wasn't a candidate?"
         assert b.exists(), "worktree removed before the grace sleep even elapsed"
         (b / "resumed-work.txt").write_text("mid-turn edit\n", encoding="utf-8")
 
-        stdout, stderr = proc.communicate(timeout=15)
+        stdout, stderr = proc.communicate(timeout=30)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()

@@ -13,26 +13,31 @@
 #     the parse ("Hook returned invalid pre_compact JSON output"). Devin has
 #     no documented context-injection output for this event, so under Devin
 #     stdout stays empty and the advisory goes to stderr.
-# Devin detection: its hook stdin payload carries the per-turn ids prompt_id
-# and turn_id that Claude's payload lacks — but those ids are absent for
-# events that fire before the first user prompt (e.g. auto-compaction on a
-# resumed session, gr514171), and Devin does not set AI_AGENT. The reliable
-# marker is DEVIN_PROJECT_DIR, which Devin CLI exports for every hook spawn.
+# Harness detection lives in scripts/hooks/_devin-detect.sh (gr515490):
+# DEVIN_PROJECT_DIR is the reliable marker — Devin's payload ids are absent
+# for events before the first user prompt (gr514171) and it sets no AI_AGENT.
 set -euo pipefail
 
 payload=""
 [ -t 0 ] || payload="$(cat 2>/dev/null || true)"
 
-devin=0
-case "$payload" in
-    *'"prompt_id"'* | *'"turn_id"'*) devin=1 ;;
-esac
-case "${AI_AGENT:-}" in
-    devin*) devin=1 ;;
-esac
-[ -n "${DEVIN_PROJECT_DIR:-}" ] && devin=1
+_detect="$(cd "$(dirname "$0")" && pwd)/_devin-detect.sh"
+[ -f "$_detect" ] || _detect="${DEVIN_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-}}/scripts/hooks/_devin-detect.sh"
+if [ -f "$_detect" ]; then
+    # shellcheck source=/dev/null
+    . "$_detect"
+else
+    # Helper unreachable (a copied-out hook with no project dir exported):
+    # fall back to the marker that is always present under Devin.
+    hook_is_devin() { [ -n "${DEVIN_PROJECT_DIR:-}" ]; }
+    hook_project_dir() { printf '%s' "${DEVIN_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-}}"; }
+fi
 
-cd "${DEVIN_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}}" 2>/dev/null || exit 0
+devin=0
+hook_is_devin "$payload" && devin=1
+
+_proj="$(hook_project_dir)"
+cd "${_proj:-$(dirname "$0")/../..}" 2>/dev/null || exit 0
 
 note() {
     echo "⏳ PreCompact — persist anything that must outlive this context (free text won't):"

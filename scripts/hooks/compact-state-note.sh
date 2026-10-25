@@ -3,21 +3,24 @@
 #
 # Devin's pre_compact contract wants stdout EMPTY or valid JSON; plain text
 # fails with "Hook returned invalid pre_compact JSON output" (gr514434,
-# gr514171). Detect Devin as precis-mcp's precompact-persist.sh does: its
-# hook stdin carries prompt_id/turn_id, which Claude's payload lacks;
-# AI_AGENT=devin_* is a fallback. Under Devin the note goes to stderr.
+# gr514171). Under Devin the note goes to stderr. Harness detection lives
+# in scripts/hooks/_devin-detect.sh (gr515490) — DEVIN_PROJECT_DIR is the
+# reliable marker; the live copy of this hook sits in ~/.claude/hooks/, so
+# the helper resolves there via the project dir the harness exports for
+# every hook spawn.
 payload=""
 [ -t 0 ] || payload="$(cat 2>/dev/null || true)"
+
+_detect="$(cd "$(dirname "$0")" && pwd)/_devin-detect.sh"
+[ -f "$_detect" ] || _detect="${DEVIN_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-}}/scripts/hooks/_devin-detect.sh"
+if [ -f "$_detect" ]; then
+    # shellcheck source=/dev/null
+    . "$_detect"
+else
+    hook_is_devin() { [ -n "${DEVIN_PROJECT_DIR:-}" ]; }
+fi
 devin=0
-case "$payload" in
-    *'"prompt_id"'* | *'"turn_id"'*) devin=1 ;;
-esac
-case "${AI_AGENT:-}" in
-    devin*) devin=1 ;;
-esac
-# Auto-compaction before the first prompt carries no prompt_id/turn_id and
-# Devin never sets AI_AGENT; DEVIN_PROJECT_DIR is always set (gr514171).
-[ -n "${DEVIN_PROJECT_DIR:-}" ] && devin=1
+hook_is_devin "$payload" && devin=1
 
 if [[ "${1:-}" == "--resume" ]]; then
     msg='[compact] Resume from the compacted state note and accepted decisions. Use its document paths and headings/ranges to fetch only missing sections; avoid re-reading whole governing documents. Pre-compact file bodies may be absent, so read any section needed to verify current work.'

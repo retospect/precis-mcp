@@ -50,9 +50,8 @@
 # Build context is the precis-mcp repo root. Builds native to the host
 # (ARM64 on Apple Silicon, AMD64 on intel hosts); multi-arch via
 # `docker buildx --platform` for release builds. See
-# docs/decisions/0004-multi-stage-dockerfile.md,
-# docs/decisions/0009-dockerfile-relocation-container-first.md, and
-# docs/design/bake-models-into-image.md (premodels seed mechanism).
+# docs/runbooks/dev-image-rebuild.md (multi-stage layout, premodels
+# seed mechanism, image lineages).
 
 # PYTHON_IMAGE is overridable so a deploy can substitute a registry mirror
 # (e.g. mirror.gcr.io/library/python) when Docker Hub is unreachable
@@ -131,8 +130,8 @@ RUN /opt/venv/bin/python -c "from marker.util import download_font; download_fon
 #
 # Inputs: the `deps` venv only. Source edits under src/precis/** do NOT
 # invalidate this layer — only marker-pdf / sentence-transformers
-# version bumps or model ID changes force a re-download.
-# See docs/design/bake-models-into-image.md.
+# version bumps or model ID changes force a re-download. See
+# docs/runbooks/dev-image-rebuild.md (the model seed mechanism).
 # =============================================================================
 FROM deps AS models
 
@@ -218,7 +217,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # it's often 1000:1000. ``-o`` (--non-unique) on both groupadd and
 # useradd is load-bearing: a stock python:3.12-slim-bookworm has GID 20
 # already taken (`dialout`), so without ``-o`` the build fails on macOS.
-# See docs/decisions/0011-claude-in-dev-image.md.
 ARG UID=501
 ARG GID=20
 RUN groupadd -g "${GID}" -o precis && \
@@ -241,7 +239,7 @@ COPY --from=builder /opt/venv /opt/venv
 # Baked-in HuggingFace cache (marker surya + bge-m3). ~3.8 GB on disk;
 # mmap'd lazily on first embed / first PDF, so RAM behaviour is unchanged
 # from the previous lazy-download model. See
-# docs/design/bake-models-into-image.md.
+# docs/runbooks/dev-image-rebuild.md (the model seed mechanism).
 COPY --from=models --chown=precis:precis /opt/precis/models /opt/precis/models
 
 USER precis
@@ -338,7 +336,7 @@ RUN ldconfig
 # so the agent binary is identical between coding-base-derived projects
 # and precis-mcp's dev shell. OAuth state arrives via bind-mounted
 # ~/.claude and ~/.claude.json from the host (no API key in the image
-# or env). See docs/decisions/0011-claude-in-dev-image.md.
+# or env).
 ARG NODE_MAJOR=20
 ARG CLAUDE_CODE_VERSION=2.1.143
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -678,7 +676,7 @@ CMD ["precis", "serve-embeddings"]
 # Auth is a long-lived CLAUDE_CODE_OAUTH_TOKEN passed as --env at run time
 # (NOT --bare / ANTHROPIC_API_KEY) — nothing baked here. The harvest run-wrapper
 # (code-task-run.sh) ships with the harvest slice; slice 1 has the executor pass
-# the command. Design: docs/design/sandbox-run.md.
+# the command.
 # =============================================================================
 FROM ${PYTHON_IMAGE}@${PYTHON_DIGEST} AS code-task
 
