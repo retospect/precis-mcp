@@ -55,12 +55,18 @@
     - compute
   become: false
   tasks:
+    # The scratch path, the export into it and its cleanup are controller-local
+    # and touch no managed host, so they run under --check too
+    # (check_mode: false): without the real file the copy task below has
+    # nothing to diff and every play importing this one dies on
+    # `precis_constraints_tmp.path` (gr517276).
     - name: Allocate a controller-local scratch path for the export
       ansible.builtin.tempfile:
         state: file
         suffix: precis-constraints.txt
       delegate_to: localhost
       run_once: true
+      check_mode: false
       register: precis_constraints_tmp
 
     - name: Export uv.lock -> a hash-free constraints file (controller-local, once)
@@ -86,6 +92,7 @@
         chdir: "{{ playbook_dir }}/.."
       delegate_to: localhost
       run_once: true
+      check_mode: false
       changed_when: false
 
     - name: Ensure /opt/precis exists (shared by every precis-mcp install role)
@@ -128,3 +135,4 @@
         state: absent
       delegate_to: localhost
       run_once: true
+      check_mode: false
