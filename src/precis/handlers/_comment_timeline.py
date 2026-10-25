@@ -13,9 +13,11 @@ tags + comment count only — the body and timeline come only through
 bounded body and a one-line gist of the newest comment back on the card;
 the full timeline still lives behind ``view='comments'``. The comments
 view is selectable
-(``args={'comments': K}`` newest K, ``args={'comment': K}`` one) and caps
-each comment at :data:`COMMENT_VIEW_CHARS`; ``view='full'`` stays the
-uncapped complete read. Todo keeps the original bare-get newest-3 policy.
+(``args={'comments': K}`` newest K, ``args={'comments': 'A-B'}`` an ord
+window, ``args={'comment': K}`` one) and pages whole comments under
+:data:`COMMENT_PAGE_CHARS` — never a mid-text cut (gr515093) — naming
+the next window's call when a page can't hold the rest. ``view='full'``
+bounds the same way. Todo keeps the original bare-get newest-3 policy.
 
 Comments are chunks (``gripe_comment`` / ``todo_comment``); chunks are
 append-only, so "hiding a stale comment" is not a chunk write. The hidden
@@ -44,11 +46,14 @@ ONE_LINER_CAP = 20
 #: Characters of comment text in a one-liner.
 ONE_LINER_CHARS = 100
 
-#: Per-comment cap inside gripe's ``view='comments'`` (gr499040): the
-#: timeline view shows every comment but cuts a long one mid-text with a
-#: pointer at ``args={'comment': K}`` — the single-comment read is the
-#: uncapped escape. ``view='full'`` never caps.
-COMMENT_VIEW_CHARS = 3000
+#: Whole-comment page budget inside gripe's ``view='comments'`` /
+#: ``view='full'`` (gr514350, gr515093): comments render whole — the
+#: view never cuts inside one — as many oldest-first as fit under the
+#: budget, then a line names the ``args={'comments': 'A-B'}`` window
+#: that reaches the rest in one call. A single comment larger than the
+#: page still renders whole; the transport fold, not the view, is the
+#: bound there. ``args={'comment': K}`` stays the one-comment read.
+COMMENT_PAGE_CHARS = 3000
 
 HIDDEN_META_KEY = "hidden_comments"
 
@@ -212,8 +217,14 @@ def _selector_footer(ref: Ref, kind: str, note: str) -> str:
     return (
         f"{note} · one: {get}, view='comments', args={{'comment': <K>}}) · "
         f"newest K: {get}, view='comments', args={{'comments': <K>}}) · "
+        f"range A-B: {get}, view='comments', args={{'comments': '<A>-<B>'}}) · "
         f"+body: {get}, view='full')"
     )
+
+
+def _comment_piece(c: ChunkRow, hidden: set[int]) -> str:
+    mark = " [hidden]" if c.ord in hidden else ""
+    return f"## comment {c.ord} · {_stamp(c)}{mark}\n{c.text}"
 
 
 def render_comment_view(
@@ -223,13 +234,18 @@ def render_comment_view(
     kind: str,
     last: int | None = None,
     only: int | None = None,
+    lo: int | None = None,
+    hi: int | None = None,
+    budget: int = COMMENT_PAGE_CHARS,
 ) -> str:
-    """The selectable ``view='comments'`` render (gr499040).
+    """The selectable ``view='comments'`` render (gr499040, gr515093).
 
-    ``only=K`` is one comment, uncapped — the escape for a body that the
-    :data:`COMMENT_VIEW_CHARS` window cap cut. ``last=K`` is the newest K,
-    rendered oldest first like the complete view. No selector is all
-    comments, oldest first, each capped. Hidden comments render marked
+    ``only=K`` is one comment, uncapped. ``last=K`` is the newest K and
+    ``lo``/``hi`` an ord window (``args={'comments': 'A-B'}``); both
+    render oldest first like the complete view. Everything pages whole
+    comments under ``budget`` — the view never cuts inside one — and a
+    page that can't hold the rest names the elided ords and the one
+    windowed call that reaches them. Hidden comments render marked
     ``[hidden]`` everywhere (the chunk is never the thing hidden).
     """
     if not comments:
@@ -240,28 +256,45 @@ def render_comment_view(
         c = next((c for c in ordered if c.ord == only), None)
         if c is None:
             return ""
-        mark = " [hidden]" if c.ord in hidden else ""
         return (
-            f"## comment {c.ord} · {_stamp(c)}{mark}\n{c.text}\n\n"
+            _comment_piece(c, hidden)
+            + "\n\n"
             + _selector_footer(
                 ref, kind, f"comment {c.ord} of {len(ordered)} — uncapped"
             )
         )
-    window = ordered if last is None else ordered[-last:]
-    pointer = (
-        f"get(kind={kind!r}, id={ref.id}, view='comments', args={{'comment': %d}})"
-    )
-    parts = [
-        f"## comment {c.ord} · {_stamp(c)}"
-        f"{' [hidden]' if c.ord in hidden else ''}\n"
-        + clip_middle(c.text, COMMENT_VIEW_CHARS, pointer % c.ord)
-        for c in window
+    window = [
+        c
+        for c in ordered
+        if (lo is None or c.ord >= lo) and (hi is None or c.ord <= hi)
     ]
-    note = (
-        f"comments: newest {last} of {len(ordered)} (long ones cut mid-text)"
-        if last is not None and len(ordered) > last
-        else f"comments: all {len(ordered)} (long ones cut mid-text)"
-    )
+    if last is not None:
+        window = window[-last:]
+    shown: list[ChunkRow] = []
+    used = 0
+    for c in window:
+        piece_len = len(_comment_piece(c, hidden))
+        if shown and used + piece_len > budget:
+            break
+        shown.append(c)
+        used += piece_len
+    remaining = window[len(shown) :]
+    if lo is not None or hi is not None:
+        span = f"{lo if lo is not None else ''}-{hi if hi is not None else ''}"
+        note = f"comments: {span} of {len(ordered)}"
+    elif last is not None and len(ordered) > last:
+        note = f"comments: newest {last} of {len(ordered)}"
+    else:
+        note = f"comments: all {len(ordered)}"
+    parts = [_comment_piece(c, hidden) for c in shown]
+    if remaining:
+        span = f"{remaining[0].ord}-{remaining[-1].ord}"
+        parts.append(
+            f"… comments {span} elided — the page held "
+            f"{shown[0].ord}-{shown[-1].ord} whole; one call reads the "
+            f"rest: get(kind={kind!r}, id={ref.id}, view='comments', "
+            f"args={{'comments': '{span}'}})"
+        )
     parts.append(_selector_footer(ref, kind, note))
     return "\n\n".join(parts)
 

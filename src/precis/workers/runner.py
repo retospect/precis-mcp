@@ -137,6 +137,13 @@ class BatchResult:
     hot-spins re-claiming the same unstamped rows until the block
     lifts (gr514421). ``extra`` is the extension point for
     pass-specific metrics (gr514422; see :func:`run_loop`).
+
+    Example — a pass returning ``BatchResult(handler="fetch_oa",
+    claimed=12, ok=11, failed=1, extra={"abstracts_filled": 9})`` lands
+    in ``worker_logs`` as ``payload = {"handler": "fetch_oa",
+    "claimed": 12, "ok": 11, "failed": 1, "report_only": false,
+    "duration_ms": 8430, "abstracts_filled": 9}``, surfaced by
+    ``precis logs --pass fetch --payload``.
     """
 
     handler: str

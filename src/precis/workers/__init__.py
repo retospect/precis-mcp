@@ -57,8 +57,8 @@ Job digests
 Every pass ends in one **digest row**: a :class:`.runner.BatchResult`
 that :func:`run_loop` logs into ``worker_logs.payload`` (read it with
 ``precis logs --pass <name> --payload``). Pass counters ride in
-``BatchResult.extra``, blocked claims set ``report_only`` (rules on the
-class); crash paths log an errored row under the same
+``BatchResult.extra``, blocked claims set ``report_only`` (rules +
+example row on the class); crash paths log an errored row under the same
 ``payload.handler`` so the pass-dead probe sees them (gr328589).
 
 Profiles + service registry

@@ -134,7 +134,7 @@ collisions="$(awk -F'\t' '
         pair = $1 SUBSEP $3
         all[pair] = 1
         if ($2 == "main") main[pair] = 1
-        where[pair] = where[pair] " " $2
+        where[pair] = (pair in where) ? where[pair] ", " $2 : $2
     }
     END {
         for (p in all)  { split(p, a, SUBSEP); ntot[a[1]]++ }
@@ -146,7 +146,7 @@ collisions="$(awk -F'\t' '
                 for (p in all) {
                     split(p, a, SUBSEP)
                     if (a[1] == num && !(p in main))
-                        print "    NEW   " a[2] "  (in" where[p] " )"
+                        print "    NEW   " a[2] "  (in " where[p] ")"
                 }
                 for (p in main) {
                     split(p, a, SUBSEP)
@@ -162,11 +162,11 @@ if [[ "$TAKEN" == 1 ]]; then
     echo "highest number on main: $hi"
     echo "next free number: $nxt"
     claims="$(awk -F'\t' -v hi="$hi" '
-        $2 != "main" { k = $1 SUBSEP $3; w[k] = w[k] " " $2 }
+        $2 != "main" { k = $1 SUBSEP $3; w[k] = (k in w) ? w[k] ", " $2 : $2 }
         END {
             for (k in w) {
                 split(k, a, SUBSEP)
-                if (a[1]+0 > hi+0) printf "%s  %s  (in%s )\n", a[1], a[2], w[k]
+                if (a[1]+0 > hi+0) printf "%s  %s  (in %s)\n", a[1], a[2], w[k]
             }
         }' "$rows" | sort)"
     if [[ -n "$claims" ]]; then

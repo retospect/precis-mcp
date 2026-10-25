@@ -182,19 +182,23 @@ get(kind="gripe", id=42)
 #   gist of the newest comment, then the body (a long one is head+tail-
 #   clipped; the cut marker names view='body')
 get(kind="gripe", id=42, view="body")  # the body, uncapped
-get(kind="gripe", id=42, view="comments")  # every comment, oldest first
-get(kind="gripe", id=42, view="full")  # body + every comment, uncapped
+get(kind="gripe", id=42, view="comments")  # every comment, oldest first,
+                                         # paged whole (never cut mid-text)
+get(kind="gripe", id=42, view="full")  # body + comments on one bounded page
 ```
 
 A bare `get` shows the body (clipped at ~1500 chars when long) plus a
 one-line gist of the newest comment; the full
 comment timeline stays behind `view='comments'` (gr514351, gr515189). The
 selectors work inside `view='comments'`
-or `view='full'`: `args={'comments': K}` is the newest K, `args={'comment': K}`
-is one comment uncapped (a long comment in the window is cut mid-text and
-names that call). Plain `view='full'` is the complete read — body + every
-comment, uncapped; with a selector it is body + the window.
-`view='log'` remains the audit log.
+or `view='full'`: `args={'comments': K}` is the newest K,
+`args={'comments': 'A-B'}` is comments A through B (also `'A-'`, A on),
+`args={'comment': K}` is one comment uncapped. Both views page *whole*
+comments — a page that can't hold the rest names the
+`args={'comments': 'A-B'}` call that reads the remainder in one fetch.
+Plain `view='full'` is the bounded complete read: a long body clips
+naming `view='body'`, and comments the page can't hold are elided by
+ord with the windowed call named. `view='log'` remains the audit log.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
 50); add a single-id view to map it over the batch —

@@ -29,11 +29,15 @@ Surface (see ``precis-gripe-help``):
   ``view='body'`` for the uncapped read. The ruling's measured cost
   was the *timeline* (no pagination then), which stays behind
   ``view='comments'``; the selectors ``args={'comments': K}`` (the
-  newest K) and ``args={'comment': K}`` (one comment uncapped) work
-  inside ``view='comments'`` and ``view='full'`` — a long one in a
-  window is cut mid-text at :data:`_comment_timeline.COMMENT_VIEW_CHARS`
-  and names that read. ``view='full'`` without a selector is the
-  complete read (body + every comment, uncapped);
+  newest K), ``args={'comments': 'A-B'}`` (an ord window — gr515093)
+  and ``args={'comment': K}`` (one comment uncapped) work inside
+  ``view='comments'`` and ``view='full'``. Both views page whole
+  comments — never a mid-text cut — under
+  :data:`_comment_timeline.COMMENT_PAGE_CHARS`; what doesn't fit names
+  the ``args={'comments': 'A-B'}`` call that reaches it in one fetch
+  (gr514350: ``view='full'`` clips the body at :data:`_BODY_HEAD_CHARS`
+  naming ``view='body'`` and elides the remaining comments by ord, all
+  under :data:`_FULL_VIEW_CHARS`, so nothing needs a cursor to reach).
   ``log`` stays audit events. ``delete(id=N, args={'comment': K})`` hides one.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
@@ -115,6 +119,19 @@ _TITLE_CARD_CHARS = 240
 #: pasted-log body can't re-inflate the card either.
 _BODY_HEAD_CHARS = 1500
 
+#: ``view='full'`` total budget (gr514350): the complete read stays
+#: inside the agent-facing fold (~4 KB, :mod:`precis._pagination`), so
+#: nothing on the page needs a cursor to reach — the body clips at
+#: :data:`_BODY_HEAD_CHARS` naming ``view='body'``, and the timeline
+#: renders the whole comments that fit the remainder, then names the
+#: ``args={'comments': 'A-B'}`` window holding the rest.
+_FULL_VIEW_CHARS = 3500
+
+#: Below this much leftover inside :data:`_FULL_VIEW_CHARS`, a comments
+#: section would squeeze in a fraction of one comment — 'full' lists
+#: the windowed read for all of them instead (never a partial comment).
+_MIN_COMMENT_PAGE = 400
+
 #: Open-view age cut: a gripe filed before this is "older than 3d" in the
 #: list summary (2026-10-18 audit: the newest-20 page hid the 44 oldest).
 _STALE_AFTER = timedelta(days=3)
@@ -136,6 +153,16 @@ class _CreatedGripe(NamedTuple):
     has_thread: bool
     short_title: str | None
     title_src_len: int | None
+
+
+class _Window(NamedTuple):
+    """A validated comment selector: one comment, the newest K, or an
+    ord range ``lo``-``hi`` (``args={'comments': 'A-B'}``)."""
+
+    only: int | None = None
+    last: int | None = None
+    lo: int | None = None
+    hi: int | None = None
 
 
 def age_summary(
@@ -1219,7 +1246,15 @@ class GripeHandler(NumericRefHandler):
                         view=view,
                         comment=comment,
                         comments=comments,
-                    )
+                    ),
+                    # When the transport fold still cuts (one comment or
+                    # the body alone over the budget), name the windowed
+                    # reads that reach the rest without a cursor.
+                    pagination_alt_hint=(
+                        f"get(kind='gripe', id={ref.id}, view='comments', "
+                        "args={'comments': '<A>-<B>'}) reads the timeline "
+                        "in windows; view='body' reads the body uncapped"
+                    ),
                 ),
                 readings,
             )
@@ -1231,9 +1266,9 @@ class GripeHandler(NumericRefHandler):
                 f"unknown view {view!r} for kind='gripe'",
                 options=views,
                 next=(
-                    lead
-                    + "get(kind='gripe', id=<id>, view='comments') — every comment "
-                    "(args={'comments': K} newest K, {'comment': K} one); "
+                    lead + "get(kind='gripe', id=<id>, view='comments') — every "
+                    "comment, paged whole (args={'comments': K} newest K, "
+                    "{'comments': 'A-B'} a window, {'comment': K} one); "
                     "view='body' the body; the plain get is title + tags + count"
                 ),
             )
@@ -1320,26 +1355,42 @@ class GripeHandler(NumericRefHandler):
         if view == "body":
             return f"{head}\n\n{body}"
         if view == "full":
-            if comment is not None or comments is not None:
-                # A selector inside 'full' windows the timeline the same
-                # way view='comments' does — newest K / one uncapped —
-                # on top of the body (gr503545).
-                only, last = self._comment_window(ref, cblocks, comment, comments)
+            # The bounded complete read (gr514350): the body clips
+            # naming view='body'; the timeline fills the rest of
+            # _FULL_VIEW_CHARS with whole comments and names the
+            # args={'comments': 'A-B'} window holding what didn't fit.
+            body_shown = tl.clip_middle(
+                body,
+                _BODY_HEAD_CHARS,
+                f"get(kind='gripe', id={ref.id}, view='body')",
+            )
+            budget = _FULL_VIEW_CHARS - len(head) - len(body_shown)
+            w = self._comment_window(ref, cblocks, comment, comments)
+            if w.only is not None:
                 section = tl.render_comment_view(
-                    ref, cblocks, kind=self.kind, last=last, only=only
+                    ref, cblocks, kind=self.kind, only=w.only
                 )
-                if not section:
-                    section = (
-                        "no comments — "
-                        f"put(kind='gripe', id={ref.id}, text='...') adds one"
-                    )
+            elif budget >= _MIN_COMMENT_PAGE:
+                section = tl.render_comment_view(
+                    ref,
+                    cblocks,
+                    kind=self.kind,
+                    last=w.last,
+                    lo=w.lo,
+                    hi=w.hi,
+                    budget=budget,
+                )
             else:
-                section = tl.render_comments(ref, cblocks, kind=self.kind, full=True)
-            return f"{head}\n\n{body}" + (f"\n\n{section}" if section else "")
+                section = self._comments_elided_line(ref, cblocks, w)
+            if (comment is not None or comments is not None) and not section:
+                section = (
+                    f"no comments — put(kind='gripe', id={ref.id}, text='...') adds one"
+                )
+            return f"{head}\n\n{body_shown}" + (f"\n\n{section}" if section else "")
         # view == "comments"
-        only, last = self._comment_window(ref, cblocks, comment, comments)
+        w = self._comment_window(ref, cblocks, comment, comments)
         section = tl.render_comment_view(
-            ref, cblocks, kind=self.kind, last=last, only=only
+            ref, cblocks, kind=self.kind, last=w.last, only=w.only, lo=w.lo, hi=w.hi
         )
         if not section:
             section = (
@@ -1347,14 +1398,33 @@ class GripeHandler(NumericRefHandler):
             )
         return f"{head}\n\n{section}"
 
+    @staticmethod
+    def _comments_elided_line(ref: Ref, cblocks: list[Any], w: _Window) -> str:
+        """The 'full'-page-overflow line: which comments, which call."""
+        ords = sorted(
+            c.ord
+            for c in cblocks
+            if (w.lo is None or c.ord >= w.lo) and (w.hi is None or c.ord <= w.hi)
+        )
+        if w.last is not None:
+            ords = ords[-w.last :]
+        if not ords:
+            return ""
+        span = f"{ords[0]}-{ords[-1]}"
+        return (
+            f"comments {span} elided — the body used the page; one call "
+            f"reads them: get(kind='gripe', id={ref.id}, view='comments', "
+            f"args={{'comments': '{span}'}})"
+        )
+
     def _comment_window(
         self,
         ref: Ref,
         cblocks: list[Any],
         comment: int | str | None,
         comments: int | str | None,
-    ) -> tuple[int | None, int | None]:
-        """Validate the ``comment``/``comments`` selectors into (only, last)."""
+    ) -> _Window:
+        """Validate the ``comment``/``comments`` selectors into a window."""
         if comment is not None and comments is not None:
             raise BadInput(
                 "pass args={'comment': K} or args={'comments': K}, not both",
@@ -1385,13 +1455,42 @@ class GripeHandler(NumericRefHandler):
                         else f"{self._sense()} {ref.id} has no comments"
                     ),
                 )
-            return number, None
+            return _Window(only=number)
         if comments is not None:
+            text = str(comments).strip()
+            lo_s, sep, hi_s = text.partition("-")
+            # 'A-B' / 'A-' is an ord window (gr515093): the middle
+            # comments a folded page hid, reachable in one call.
+            if sep and lo_s.isdigit() and (hi_s.isdigit() or hi_s == ""):
+                lo, hi = int(lo_s), int(hi_s) if hi_s else None
+                if lo < 1 or (hi is not None and hi < lo):
+                    raise BadInput(
+                        "args['comments'] range must be 'A-B' with "
+                        f"1 <= A <= B, got {comments!r}",
+                        next=(
+                            f"comments on {self._sense()} {ref.id}: {ords}"
+                            if ords
+                            else f"{self._sense()} {ref.id} has no comments"
+                        ),
+                    )
+                if not any(
+                    c.ord >= lo and (hi is None or c.ord <= hi) for c in cblocks
+                ):
+                    raise BadInput(
+                        f"{self._sense()} {ref.id} has no comments in range {text!r}",
+                        next=(
+                            f"comments on {self._sense()} {ref.id}: {ords}"
+                            if ords
+                            else f"{self._sense()} {ref.id} has no comments"
+                        ),
+                    )
+                return _Window(lo=lo, hi=hi)
             try:
-                count = int(comments)
+                count = int(text)
             except (TypeError, ValueError):
                 raise BadInput(
-                    f"args['comments'] must be a count, got {comments!r}",
+                    f"args['comments'] must be a count or 'A-B' range, "
+                    f"got {comments!r}",
                     next=(
                         f"get(kind='gripe', id={ref.id}, view='comments', "
                         "args={'comments': 5})"
@@ -1405,8 +1504,8 @@ class GripeHandler(NumericRefHandler):
                         "args={'comments': 5})"
                     ),
                 )
-            return None, count
-        return None, None
+            return _Window(last=count)
+        return _Window()
 
     def _render_create_ack(
         self,

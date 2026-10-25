@@ -4,8 +4,11 @@ A bare ``get(kind='gripe', id=N)`` shows the title, tags, status, the
 comment count and the body — head+tail-clipped at a budget with the
 cut marker naming ``view='body'``, the uncapped read. The timeline
 stays behind ``view='comments'``, which is selectable
-(``args={'comments': K}`` / ``args={'comment': K}``) and caps long
-comment bodies. ``view='full'`` stays the uncapped complete read.
+(``args={'comments': K}`` newest K, ``args={'comments': 'A-B'}`` a
+window, ``args={'comment': K}`` one) and pages whole comments — never
+a mid-text cut (gr515093). ``view='full'`` is the bounded complete
+read: a long body clips naming ``view='body'`` and elided comments
+name their windowed call (gr514350).
 """
 
 import re
@@ -106,25 +109,111 @@ def test_comments_view_window_and_single(hub: Hub) -> None:
     assert "comment number 5" not in one and "## comment 5" not in one
 
 
-def test_comments_view_caps_long_comment_and_single_is_the_escape(
-    hub: Hub,
-) -> None:
-    from precis.handlers._comment_timeline import COMMENT_VIEW_CHARS
+def test_comments_view_pages_whole_comments_never_cut(hub: Hub) -> None:
+    # gr515093: the page budget bounds the page, not a comment — the
+    # view never cuts inside one.
+    from precis.handlers._comment_timeline import COMMENT_PAGE_CHARS
 
+    handler = GripeHandler(hub=hub)
+    handler.put(text="paging fixture")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    # ~640-char comments: 4 fit a 3000-char page, the 5th can't start.
+    for i in range(1, 9):
+        handler.put(id=rid, text="y" * 600 + f" tail-{i}")
+    view = handler.get(id=rid, view="comments").body
+    assert "chars cut" not in view
+    assert "## comment 1" in view and "tail-4" in view
+    assert "## comment 5" not in view
+    # the page names exactly what it elided and the one call that reads it
+    assert "comments 5-8 elided" in view
+    assert "args={'comments': '5-8'}" in view
+    rest = handler.get(id=rid, view="comments", comments="5-8").body
+    for i in (5, 6, 7, 8):
+        assert f"tail-{i}" in rest
+    assert "## comment 4" not in rest
+    # a lone comment bigger than the page renders whole — the view's
+    # bound is the transport fold, never a mid-text cut
+    handler.put(id=rid, text="z " * (COMMENT_PAGE_CHARS + 200))
+    view = handler.get(id=rid, view="comments", comments="9-9").body
+    assert "chars cut" not in view and "z " * 100 in view
+
+
+def test_comments_range_selector_reads_a_window(hub: Hub) -> None:
+    # gr515093: comments 7-9 took three per-comment fetches; the range
+    # selector reads them in one.
+    handler = GripeHandler(hub=hub)
+    handler.put(text="range fixture")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    for i in range(1, 10):
+        handler.put(id=rid, text=f"comment number {i}")
+    window = handler.get(id=rid, view="comments", comments="7-9").body
+    for i in (7, 8, 9):
+        assert f"comment number {i}" in window
+    assert "## comment 6" not in window and "## comment 4" not in window
+    assert "comments: 7-9 of 9" in window
+    open_end = handler.get(id=rid, view="comments", comments="8-").body
+    assert "comment number 8" in open_end and "comment number 9" in open_end
+    assert "## comment 7" not in open_end
+
+
+def test_comments_range_selector_validates(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    handler.put(text="range validate fixture")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    handler.put(id=rid, text="c1")
+    handler.put(id=rid, text="c2")
+    with pytest.raises(BadInput, match="1 <= A <= B"):
+        handler.get(id=rid, view="comments", comments="2-1")
+    with pytest.raises(BadInput, match="count or 'A-B' range"):
+        handler.get(id=rid, view="comments", comments="bogus")
+    with pytest.raises(BadInput, match="no comments in range"):
+        handler.get(id=rid, view="comments", comments="5-9")
+
+
+def test_full_view_bounds_and_names_the_reads(hub: Hub) -> None:
+    # gr514350: 'full' stays inside the agent-facing fold; what it
+    # elides is named with the call that reads it — no cursor needed.
+    handler = GripeHandler(hub=hub)
+    handler.put(text="pad " * 600 + "the tail ask")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    for i in range(1, 6):
+        handler.put(id=rid, text="q" * 400 + f" ctail-{i}")
+    body = handler.get(id=rid, view="full").body
+    # the clipped body names view='body' (the same marker the card uses)
+    assert f"get(kind='gripe', id={rid}, view='body')" in body
+    assert "the tail ask" in body
+    # whatever comments the page couldn't hold are named as a window
+    if "elided" in body:
+        span = re.search(r"comments (\d+-\d+) elided", body)
+        assert span is not None
+        assert f"args={{'comments': '{span.group(1)}'}}" in body
+        # and that window really is a one-call read
+        more = handler.get(id=rid, view="comments", comments=span.group(1)).body
+        assert "chars cut" not in more
+
+
+def test_full_view_with_no_room_lists_the_window(hub: Hub) -> None:
+    # a fat header (many tags) plus the clipped body eats the page:
+    # 'full' names every comment ord rather than squeezing a fraction
+    # of one onto it.
+    handler = GripeHandler(hub=hub)
+    handler.put(text="pad " * 900 + "the tail ask")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    handler.tag(id=rid, add=[f"bulk:t{i:03d}-{'a' * 20}" for i in range(90)])
+    for i in range(1, 4):
+        handler.put(id=rid, text=f"small comment {i}")
+    body = handler.get(id=rid, view="full").body
+    assert "comments 1-3 elided" in body
+    assert "args={'comments': '1-3'}" in body
+    assert "## comment" not in body
+
+
+def test_comments_view_single_read_still_uncapped(hub: Hub) -> None:
     handler = GripeHandler(hub=hub)
     handler.put(text="cap fixture")
     rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
-    long_text = "x " * (COMMENT_VIEW_CHARS // 2 + 1000)
+    long_text = "x " * 2500
     handler.put(id=rid, text=long_text)
-    view = handler.get(id=rid, view="comments").body
-    assert long_text not in view
-    marker = re.search(r"\[… (\d+) chars cut — (.*?) …\]", view)
-    assert marker is not None
-    assert (
-        marker.group(2)
-        == f"get(kind='gripe', id={rid}, view='comments', args={{'comment': 1}})"
-    )
-    # the single-comment read is the uncapped escape; 'full' never caps
     one = handler.get(id=rid, view="comments", comment=1).body
     assert long_text in one
     assert long_text in handler.get(id=rid, view="full").body
