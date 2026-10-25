@@ -1341,6 +1341,9 @@ def _llm_op_stats(store: Store) -> dict[str, dict[str, Any]]:
                 "(array_agg(model ORDER BY ts DESC))[1] AS last_seen_model "
                 "FROM llm_call_log "
                 "WHERE source IS NOT NULL AND source <> '' "
+                # Gate-outs (features.gated, gr516941) never ran — a paused
+                # attempt is not activity for last_run/calls_7d.
+                "AND (features->>'gated') IS DISTINCT FROM 'true' "
                 "GROUP BY source"
             )
             rows = cur.fetchall()

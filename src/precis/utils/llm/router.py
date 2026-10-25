@@ -62,10 +62,19 @@ from precis.utils.claude_agent import (
     call_claude_agent,
     call_claude_agent_async,
 )
-from precis.utils.claude_p import ClaudePResult, call_claude_p
+from precis.utils.claude_p import (
+    ClaudePResult,
+    ClaudePUnparseableError,
+    call_claude_p,
+    unwrap_envelope,
+)
 from precis.utils.llm import failure as _failure
 from precis.utils.llm import keyword_route as _keyword_route
-from precis.utils.llm.quota import is_quota_exhaustion_text, quota_retry_at
+from precis.utils.llm.quota import (
+    is_quota_exhaustion_text,
+    is_quota_notice_strict,
+    quota_retry_at,
+)
 from precis.utils.rate_limit import RateLimited
 
 if TYPE_CHECKING:
@@ -2043,12 +2052,14 @@ def _fallback_placement(transport: Transport) -> str:
     belt-and-suspenders fallback for a call whose :attr:`LlmResult.placement`
     somehow arrived unset.
 
-    Every current call site already stamps ``placement`` before reaching
-    ``_record_dispatch``, so this branch is not known to fire today. Mirrors
-    :func:`_rung_is_cloud`'s transport-only classification (no ``Rung`` — with
-    its possible operator ``placement`` label — is available at the
-    recording chokepoint) so a future call site that forgets to stamp
-    placement still logs a best-effort value instead of a silent NULL.
+    Not consulted for ``gated`` rows (a call that never ran stores NULL
+    placement, gr516941); every other call site stamps ``placement`` before
+    reaching ``_record_dispatch``, so this branch is not known to fire
+    today. Mirrors :func:`_rung_is_cloud`'s transport-only classification
+    (no ``Rung`` — with its possible operator ``placement`` label — is
+    available at the recording chokepoint) so a future call site that
+    forgets to stamp placement still logs a best-effort value instead of a
+    silent NULL.
     """
     if transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
         return "cloud"
@@ -2632,6 +2643,40 @@ def _keyword_plan(
     return ladder, kw_model, tier
 
 
+def _gate_result(
+    req: LlmRequest,
+    result: LlmResult,
+    *,
+    entered: float,
+    transport: Transport | None,
+    routed: str | None = None,
+) -> LlmResult:
+    """Log + return a gate early-out — a breaker trip, an admission refusal,
+    a saturated-slot pause, an emptied chain — so a call refused *before* the
+    provider ran still leaves an ``llm_call_log`` row carrying its
+    ``reason_class``/``error`` (gr516941: a paused attempt was otherwise
+    invisible — no row, only a ``log.debug``).
+
+    Same ``_record_dispatch`` gates (``req.log_call`` + a bound store), so a
+    ``log_call=False`` batch pass stays unlogged; ``duration_ms`` covers the
+    router's own gate work only — no provider call ran. ``transport`` is the
+    rung the call was gated on (``None`` when resolution produced no rung at
+    all). The row is written ``gated`` — lite, ``placement`` NULL,
+    ``features.gated = true`` — so health readers can tell it apart from a
+    call that ran."""
+    return _replace(
+        result,
+        request_hash=_record_dispatch(
+            req,
+            result,
+            transport=transport,
+            duration_ms=int((time.monotonic() - entered) * 1000),
+            routed=routed,
+            gated=True,
+        ),
+    )
+
+
 def route(req: LlmRequest) -> LlmResult:
     """Route ``req`` to its provider and return a normalized
     :class:`LlmResult`.
@@ -2663,8 +2708,14 @@ def route(req: LlmRequest) -> LlmResult:
     (:func:`_run_with_retry`, ``PRECIS_LLM_RETRY_ATTEMPTS``) before it
     surfaces; a ``quota`` failure on a claude-OAuth rung stamps the quota
     snapshot (:func:`_react_to_quota`) so the next call pauses at the gate.
+
+    A gate early-out (a breaker trip, an admission refusal, a saturated
+    slot, an emptied chain) is still logged to the route-log —
+    :func:`_gate_result` — so a paused call is visible in
+    ``llm_call_log`` with its ``reason_class`` (gr516941).
     """
 
+    entered = time.monotonic()
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
@@ -2751,39 +2802,52 @@ def route(req: LlmRequest) -> LlmResult:
         _served_local_rung(req) if ladder else []
     )
     if ladder and not _placed_ladder:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=(
-                f"placement={req.placement!r} requested but the {_chain_name} "
-                f"has no {req.placement} rung"
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=(
+                    f"placement={req.placement!r} requested but the {_chain_name} "
+                    f"has no {req.placement} rung"
+                ),
+                paused=False,
             ),
-            paused=False,
+            entered=entered,
+            transport=ladder[0].transport,
+            routed=_placement_of(ladder[0]),
         )
     ladder = _placed_ladder
     # Cloud-throttle: with cloud disabled, prune the chain's
     # cloud rungs → local. A cloud-only tier (FRONTIER) prunes to empty and
     # pauses (skip-not-fail), never silently degrading to a local model. No-op
     # while cloud is on (the default) — byte-identical to above.
+    _gate_rung = ladder[0] if ladder else None
     ladder = _apply_cloud_throttle(ladder)
     if not ladder:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=(
-                "cloud is disabled and this tier has no local rung — "
-                "waiting for cloud to be re-enabled"
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=(
+                    "cloud is disabled and this tier has no local rung — "
+                    "waiting for cloud to be re-enabled"
+                ),
+                paused=True,
+                # An operator cap on cloud spend: the budget class, no horizon
+                # beyond its default — the throttle clears when the operator says.
+                reason_class="budget",
             ),
-            paused=True,
-            # An operator cap on cloud spend: the budget class, no horizon
-            # beyond its default — the throttle clears when the operator says.
-            reason_class="budget",
+            entered=entered,
+            transport=_gate_rung.transport if _gate_rung is not None else None,
+            routed=_placement_of(_gate_rung) if _gate_rung is not None else None,
         )
     # The rung the operator's intent picked, before the mechanical fallbacks
     # below can replace it — `placement_routed` is classified off this.
@@ -2810,23 +2874,29 @@ def route(req: LlmRequest) -> LlmResult:
     if ladder:
         ladder, _unavail = _drop_unavailable_rungs(ladder, model)
         if not ladder:
-            return LlmResult(
-                text="",
-                cost_usd=None,
-                turns_used=None,
-                model=model,
-                tier=req.tier,
-                error=(
-                    f"no usable rung on this host ({_chain_name}): "
-                    + "; ".join(reason for _, reason in _unavail)
+            return _gate_result(
+                req,
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=(
+                        f"no usable rung on this host ({_chain_name}): "
+                        + "; ".join(reason for _, reason in _unavail)
+                    ),
+                    paused=True,
+                    cli_unavailable=any(
+                        r.transport in _CLAUDE_TRANSPORTS for r, _ in _unavail
+                    ),
+                    # The wire this rung would have needed doesn't exist here.
+                    reason_class="transport",
+                    retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["transport"],
                 ),
-                paused=True,
-                cli_unavailable=any(
-                    r.transport in _CLAUDE_TRANSPORTS for r, _ in _unavail
-                ),
-                # The wire this rung would have needed doesn't exist here.
-                reason_class="transport",
-                retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["transport"],
+                entered=entered,
+                transport=_unavail[0][0].transport,
+                routed=_routed_placement(routed_rung, None),
             )
     transport = ladder[0].transport
     # Wrap in FailoverProvider only when there's genuinely a ladder to walk:
@@ -2868,17 +2938,23 @@ def route(req: LlmRequest) -> LlmResult:
         # A breaker trip is a window-scoped *pause*, not a failure — flag it so a
         # pinned pass skips (and re-runs when the window clears) rather than
         # spinning: record-failed → re-claim → re-trip every worker cycle.
-        return _classified(
-            LlmResult(
-                text="",
-                cost_usd=None,
-                turns_used=None,
-                model=model,
-                tier=req.tier,
-                error=trip,
-                paused=True,
+        return _gate_result(
+            req,
+            _classified(
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=trip,
+                    paused=True,
+                ),
+                reason_class=_trip_class(transport, bare=ladder[0].bare),
             ),
-            reason_class=_trip_class(transport, bare=ladder[0].bare),
+            entered=entered,
+            transport=transport,
+            routed=_routed_placement(routed_rung, None),
         )
     # Window admission (llm-catalog slice 2): refuse a doomed (context, model)
     # pairing loudly — with the numbers — after the budget gate, before spending
@@ -2889,13 +2965,19 @@ def route(req: LlmRequest) -> LlmResult:
 
     refusal = _admit.check_dispatch(req, model=model, transport=transport)
     if refusal is not None:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=refusal,
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=refusal,
+            ),
+            entered=entered,
+            transport=transport,
+            routed=_routed_placement(routed_rung, None),
         )
     # Local serving slot: if this host declares `served_by` for the model,
     # hold one of its local slots for the call's duration so concurrent local
@@ -2959,29 +3041,41 @@ def route(req: LlmRequest) -> LlmResult:
                 degraded=bool(req.degraded_from),
             )
             if esc_trip is not None:
-                return _classified(
+                return _gate_result(
+                    req,
+                    _classified(
+                        LlmResult(
+                            text="",
+                            cost_usd=None,
+                            turns_used=None,
+                            model=model,
+                            tier=req.tier,
+                            error=esc_trip,
+                            paused=True,
+                        ),
+                        reason_class=_trip_class(nxt.transport, bare=nxt.bare),
+                    ),
+                    entered=entered,
+                    transport=nxt.transport,
+                    routed=routed,
+                )
+            esc_refusal = _admit.check_dispatch(
+                req, model=nxt.model or model, transport=nxt.transport
+            )
+            if esc_refusal is not None:
+                return _gate_result(
+                    req,
                     LlmResult(
                         text="",
                         cost_usd=None,
                         turns_used=None,
                         model=model,
                         tier=req.tier,
-                        error=esc_trip,
-                        paused=True,
+                        error=esc_refusal,
                     ),
-                    reason_class=_trip_class(nxt.transport, bare=nxt.bare),
-                )
-            esc_refusal = _admit.check_dispatch(
-                req, model=nxt.model or model, transport=nxt.transport
-            )
-            if esc_refusal is not None:
-                return LlmResult(
-                    text="",
-                    cost_usd=None,
-                    turns_used=None,
-                    model=model,
-                    tier=req.tier,
-                    error=esc_refusal,
+                    entered=entered,
+                    transport=nxt.transport,
+                    routed=routed,
                 )
             started = time.monotonic()
             result = _classified(FailoverProvider(ladder[1:]).run(req, model=model))
@@ -3041,17 +3135,23 @@ def route(req: LlmRequest) -> LlmResult:
                 ),
             )
             return result
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=f"all local serving slots for {model} are busy — backing off",
-            paused=True,
-            # Capacity, not a fault: the shortest horizon.
-            reason_class="rate",
-            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=f"all local serving slots for {model} are busy — backing off",
+                paused=True,
+                # Capacity, not a fault: the shortest horizon.
+                reason_class="rate",
+                retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+            ),
+            entered=entered,
+            transport=transport,
+            routed=routed,
         )
     # A reserved slot that declares a direct `endpoint` (llama-swap) routes
     # the local transport there instead of the default, using the
@@ -3154,8 +3254,8 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     loop to block).
 
     Logs via the same :func:`_record_dispatch` call as the sync path; the
-    breaker-pause/admission-refusal/all-slots-busy early-outs are not logged
-    (same as :func:`route` — only a call that actually ran is recorded).
+    breaker-pause/admission-refusal/all-slots-busy early-outs log through
+    :func:`_gate_result` (same as :func:`route`, gr516941).
 
     Checks only the primary rung's transport to decide whether to stream —
     does not wrap the streaming call in :class:`FailoverProvider`, so a
@@ -3164,6 +3264,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     caller sits on the cloud claude tiers, where :func:`resolve_chain`
     returns a single rung anyway.
     """
+    entered = time.monotonic()
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
@@ -3180,17 +3281,23 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # paused/degrade. No-op when req.placement is None/unrecognized.
     _placed_ladder = _apply_placement(ladder, req.placement)
     if ladder and not _placed_ladder:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=(
-                f"placement={req.placement!r} requested but the {req.tier.value} "
-                f"chain has no {req.placement} rung"
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=(
+                    f"placement={req.placement!r} requested but the {req.tier.value} "
+                    f"chain has no {req.placement} rung"
+                ),
+                paused=False,
             ),
-            paused=False,
+            entered=entered,
+            transport=ladder[0].transport,
+            routed=_placement_of(ladder[0]),
         )
     ladder = _placed_ladder
     # Cloud-throttle parity with sync route(): prune cloud rungs when disabled.
@@ -3224,30 +3331,42 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
         degraded=bool(req.degraded_from),
     )
     if trip is not None:
-        return _classified(
-            LlmResult(
-                text="",
-                cost_usd=None,
-                turns_used=None,
-                model=model,
-                tier=req.tier,
-                error=trip,
-                paused=True,
+        return _gate_result(
+            req,
+            _classified(
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=trip,
+                    paused=True,
+                ),
+                reason_class=_trip_class(transport, bare=ladder[0].bare),
             ),
-            reason_class=_trip_class(transport, bare=ladder[0].bare),
+            entered=entered,
+            transport=transport,
+            routed=_routed_placement(ladder[0], None),
         )
 
     from precis.utils.llm import admit as _admit
 
     refusal = _admit.check_dispatch(req, model=model, transport=transport)
     if refusal is not None:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=refusal,
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=refusal,
+            ),
+            entered=entered,
+            transport=transport,
+            routed=_routed_placement(ladder[0], None),
         )
 
     from precis.utils.llm import local_serving as _local
@@ -3259,17 +3378,23 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     serve_model = ladder[0].model or model
     slot = _local.acquire(serve_model)
     if slot is not None and slot.paused:
-        return LlmResult(
-            text="",
-            cost_usd=None,
-            turns_used=None,
-            model=model,
-            tier=req.tier,
-            error=f"all local serving slots for {model} are busy — backing off",
-            paused=True,
-            # Capacity, not a fault: the shortest horizon.
-            reason_class="rate",
-            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=f"all local serving slots for {model} are busy — backing off",
+                paused=True,
+                # Capacity, not a fault: the shortest horizon.
+                reason_class="rate",
+                retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+            ),
+            entered=entered,
+            transport=transport,
+            routed=_routed_placement(ladder[0], slot),
         )
     call_req = req
     call_model = model
@@ -3516,6 +3641,10 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         # burned the ceiling and recorded nothing. Cheap to stamp, and it is
         # what an alert should actually fire on.
         feats["empty_output"] = len((result.text or "").strip()) < 10
+        # A paused row (gate early-out, provider unavailability) is
+        # distinguishable from a genuine failure without reading `error` —
+        # gr516941's "which calls never ran" question.
+        feats["paused"] = result.paused
         # The failure class + horizon, so the ledger answers "how many
         # quota/rate/transport failures this month" without a regex over
         # `error` (docs/backlog/llm-quota-failure-classification.md).
@@ -3558,39 +3687,62 @@ def _record_dispatch(
     req: LlmRequest,
     result: LlmResult,
     *,
-    transport: Transport,
+    transport: Transport | None,
     duration_ms: int,
     routed: str | None = None,
+    gated: bool = False,
 ) -> str | None:
     """Best-effort: record the full call to the route-log. Dark (no-op) unless a
     store is bound at boot; any failure is swallowed so it can't break dispatch.
     Returns the logged ``request_hash`` (``None`` when nothing was logged) for
     the caller to stamp onto :attr:`LlmResult.request_hash`.
 
+    ``transport`` is the wire the call ran (or was gated) on — ``None`` when
+    a gate early-out had no rung at all (an emptied chain, gr516941).
     ``routed`` is :func:`_routed_placement` — where the router meant the call
-    to run, logged beside the landed ``result.placement``."""
+    to run, logged beside the landed ``result.placement``.
+
+    ``gated`` marks a gate early-out — a call refused before any provider ran
+    (breaker trip, admission refusal, saturated slot, emptied chain). A gated
+    row is a **lite** row (``store_blobs=False``: nothing ran, the prompt has
+    no replay value), stores ``placement`` NULL (no rung landed — the
+    ``_fallback_placement`` guess would fabricate a landed class), and gets
+    ``features.gated = true`` so health readers (the llm-degraded probe, the
+    llm_catalog tote, ``_llm_spend``, ``placement_share``) can exclude rows
+    that never ran from call-health stats."""
     from precis import route_log
 
     if not req.log_call or not route_log.enabled():
         return None
+    feats = _route_features(req, result)
+    if gated:
+        feats["gated"] = True
     try:
         logged = route_log.record_call(
             route_log.LlmCallRecord(
                 source=req.source or None,
                 tier=req.tier.value,
-                transport=transport.value,
+                transport=transport.value if transport is not None else None,
                 model=result.model,
                 tools_needed=req.tools_needed,
                 request_text=_serialize_request(req),
                 response_text=result.text or "",
                 cost_usd=result.cost_usd,
-                # Every caller already stamps this before calling us; the
-                # fallback is a chokepoint safety net, not the primary path —
-                # see _fallback_placement.
+                # A gated row stores NULL — no rung landed. Every other caller
+                # already stamps placement; the fallback is a chokepoint
+                # safety net, not the primary path — see _fallback_placement.
                 placement=(
-                    result.placement
-                    if result.placement is not None
-                    else _fallback_placement(transport)
+                    None
+                    if gated
+                    else (
+                        result.placement
+                        if result.placement is not None
+                        else (
+                            _fallback_placement(transport)
+                            if transport is not None
+                            else None
+                        )
+                    )
                 ),
                 placement_routed=routed,
                 turns_used=result.turns_used,
@@ -3599,8 +3751,8 @@ def _record_dispatch(
                 error=result.error,
                 data_parsed=result.data is not None,
                 ref_id=req.ref_id,
-                store_blobs=req.log_blobs,
-                features=_route_features(req, result),
+                store_blobs=False if gated else req.log_blobs,
+                features=feats,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 cache_read_tokens=result.cache_read_tokens,
@@ -4311,6 +4463,29 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     # wire nor the model — leave it unclassified so nothing retries it.
     if result.cli_unavailable or result.mcp_not_ready:
         return result
+    # An unparseable reply can still BE the account-quota notice: claude
+    # answers exhaustion as a plain text turn, so `claude -p`'s caller raises
+    # ClaudePUnparseableError ("no parseable JSON block") over it and the
+    # unclassified error spins the caller every poll (gr516941). Classify
+    # only on quota *wording*: an explicit notice (`is_quota_notice_strict`)
+    # anywhere, or — when the envelope self-flags ``is_error`` — the looser
+    # whole-reply check. The flag alone never classifies: an exit-0
+    # ``is_error`` envelope for "API Error: 529 Overloaded" is a transient,
+    # not a quota window, and stamping quota would pause every claude call
+    # for ~2h on a seconds-scale blip.
+    if result.text and isinstance(exc, ClaudePUnparseableError):
+        reply, _, _, env_is_error = unwrap_envelope(result.text)
+        if is_quota_notice_strict(reply) or (
+            env_is_error and is_quota_exhaustion_text(reply)
+        ):
+            return _replace(
+                result,
+                paused=True,
+                quota_exhausted=True,
+                reason_class="quota",
+                retry_at=quota_retry_at(reply),
+                error=f"account quota exhausted: {reply.strip()}",
+            )
     return _classified(result)
 
 

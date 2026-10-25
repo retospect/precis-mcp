@@ -187,11 +187,40 @@ def is_quota_exhaustion_text(text: str) -> bool:
     return QUOTA_MESSAGE_PATTERN.search(normalized) is not None
 
 
+#: Strict subset of :data:`QUOTA_LEAD_IN` for the *error* path
+#: (:func:`~precis.utils.llm.router._error_result`): stdout that failed its
+#: output contract classifies as quota only on the two explicit notice
+#: wordings — the legacy epoch reset ("…usage limit reached|<epoch>") and
+#: the clock-clause family ("hit your weekly/session limit",
+#: "out of extra usage"). The bare phrase ``usage limit`` and the
+#: ``out_of_credits`` payload key are deliberately absent: a short
+#: claude -p judge reply like "could not find the usage limit in this
+#: datasheet" is ordinary prose, and a false positive here stamps the
+#: fleet-wide quota snapshot (gr516941 review).
+QUOTA_STRICT_PATTERN = re.compile(
+    rf"usage limit reached|{_QUOTA_CLOCK_LEAD_IN}", re.IGNORECASE
+)
+
+
+def is_quota_notice_strict(text: str) -> bool:
+    """:func:`is_quota_exhaustion_text` narrowed to :data:`QUOTA_STRICT_PATTERN`
+    — for reply text recovered from an *exception* (a parse failure's
+    captured stdout), where a looser match pauses a whole lane on prose."""
+    if not text:
+        return False
+    normalized = " ".join(text.split())
+    if not normalized or len(normalized) > _MAX_QUOTA_TEXT_CHARS:
+        return False
+    return QUOTA_STRICT_PATTERN.search(normalized) is not None
+
+
 __all__ = [
     "QUOTA_LEAD_IN",
     "QUOTA_MESSAGE_PATTERN",
     "QUOTA_RESET_PATTERN",
+    "QUOTA_STRICT_PATTERN",
     "is_quota_exhaustion_text",
+    "is_quota_notice_strict",
     "parse_api_usage_reset_at",
     "quota_retry_at",
 ]

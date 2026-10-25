@@ -641,11 +641,17 @@ def _probe_pass_wedged(store: Store) -> list[ConditionFinding]:
     ]
 
 
+#: ``features->>'gated'`` excludes router gate-outs (a breaker trip / cloud
+#: throttle / saturated slot that never ran, gr516941): they log
+#: ``errored`` lite rows, but a pause is demand queued, not a degraded wire —
+#: a multi-hour quota pause would otherwise fire this warn alert at 100%
+#: ``err_rate`` on every poll.
 _LLM_DEGRADED_SQL = """
 SELECT model, transport, COALESCE(placement, 'cloud') AS placement,
        count(*) AS n, avg(errored::int) AS err_rate
   FROM llm_call_log
  WHERE ts > now() - interval '60 minutes'
+   AND (features->>'gated') IS DISTINCT FROM 'true'
  GROUP BY 1, 2, 3
 HAVING count(*) >= %(min_calls)s AND avg(errored::int) >= %(err_rate)s
 """

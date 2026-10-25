@@ -352,7 +352,7 @@ def call_claude_p(
         **stdin_kwargs,
     )
 
-    payload, cost, usage = _unwrap_envelope(res.stdout or "")
+    payload, cost, usage, _is_error = unwrap_envelope(res.stdout or "")
     data = _parse_last_json_block(payload)
     if data is None:
         raise ClaudePUnparseableError(
@@ -387,15 +387,19 @@ _EMPTY_USAGE: dict[str, int | None] = {
 }
 
 
-def _unwrap_envelope(
+def unwrap_envelope(
     stdout: str,
-) -> tuple[str, float | None, dict[str, int | None]]:
-    """Split ``--output-format json`` stdout into (assistant text, cost, usage).
+) -> tuple[str, float | None, dict[str, int | None], bool]:
+    """Split ``--output-format json`` stdout into
+    (assistant text, cost, usage, is_error).
 
     ``claude -p --output-format json`` wraps the answer in a metadata envelope
     whose ``result`` field holds the assistant text, whose ``total_cost_usd``
     is the only place the real dollar figure appears, and whose ``usage``
     object carries the token telemetry (see :func:`_extract_usage`).
+    ``is_error`` is the envelope's own failure flag — newer CLIs stamp it on
+    an API/account-level refusal returned as a result envelope (the router
+    reads it to classify an unparseable reply, gr516941).
 
     Tolerant by design: test stubs (``PRECIS_CLAUDE_BIN``) and any CLI that
     ignores the flag emit the model's JSON directly, so anything that isn't a
@@ -405,23 +409,23 @@ def _unwrap_envelope(
     """
     text = stdout.strip()
     if not text.startswith("{"):
-        return stdout, None, dict(_EMPTY_USAGE)
+        return stdout, None, dict(_EMPTY_USAGE), False
     try:
         env = json.loads(text)
     except json.JSONDecodeError:
-        return stdout, None, dict(_EMPTY_USAGE)
+        return stdout, None, dict(_EMPTY_USAGE), False
     # Discriminate on ``type == "result"`` *and* a string ``result`` — the CLI
     # envelope's own self-identification. A string ``result`` alone is too
     # weak: no judge prompt in the tree currently defines a top-level string
     # field named ``result``, but one plausibly could, and the misread would
     # surface as "no parseable JSON block" pointing nowhere near the cause.
     if not isinstance(env, dict):
-        return stdout, None, dict(_EMPTY_USAGE)
+        return stdout, None, dict(_EMPTY_USAGE), False
     if env.get("type") != "result" or not isinstance(env.get("result"), str):
-        return stdout, None, dict(_EMPTY_USAGE)
+        return stdout, None, dict(_EMPTY_USAGE), False
     raw_cost = env.get("total_cost_usd")
     cost = float(raw_cost) if isinstance(raw_cost, int | float) else None
-    return env["result"], cost, _extract_usage(env)
+    return env["result"], cost, _extract_usage(env), env.get("is_error") is True
 
 
 def _extract_usage(env: dict[str, Any]) -> dict[str, int | None]:
@@ -487,4 +491,5 @@ __all__ = [
     "ClaudePError",
     "ClaudePResult",
     "call_claude_p",
+    "unwrap_envelope",
 ]

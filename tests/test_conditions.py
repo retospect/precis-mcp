@@ -748,6 +748,26 @@ def test_llm_degraded_fires_on_error_rate(
     assert "50%" in found[0].detail
 
 
+def test_llm_degraded_ignores_gated_rows(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr516941: a router gate-out (breaker trip / cloud throttle / saturated
+    slot) logs an ``errored`` lite row with ``features.gated`` — a queued
+    pause is not a degraded wire, so the probe must not count it (a multi-hour
+    quota pause would otherwise fire at 100% err_rate on every poll)."""
+    model = _uniq("mdl")
+    monkeypatch.setenv("PRECIS_COND_LLM_MIN_CALLS", "5")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, errored, "
+            "features) SELECT 'cond-test', 'SMALL', 'local', %(model)s, true, "
+            "%(feat)s::jsonb FROM generate_series(1, 10) gs",
+            {"model": model, "feat": json.dumps({"gated": True})},
+        )
+        conn.commit()
+    assert [f for f in _probe_llm_degraded(store) if model in f.key] == []
+
+
 # ── dead-generation-claims (the claims-vs-liveness panel row) ────────────
 
 

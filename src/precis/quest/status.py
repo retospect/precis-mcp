@@ -222,14 +222,19 @@ def _llm_spend(store: Store, quest_id: int, *, error_limit: int = 5) -> LlmSpend
         row = conn.execute(
             "SELECT count(*)::int, "
             "  COALESCE(sum(cost_usd) FILTER (WHERE cost_usd IS NOT NULL), 0)::float, "
-            "  count(*) FILTER (WHERE errored)::int, "
+            # Gate-outs (features.gated, gr516941) never ran — a queued call
+            # is not a call failure, so it doesn't count as an error here.
+            "  count(*) FILTER (WHERE errored AND "
+            "    (features->>'gated') IS DISTINCT FROM 'true')::int, "
             "  max(ts)::text "
             "FROM llm_call_log WHERE ref_id = %s",
             (quest_id,),
         ).fetchone()
         err_rows = conn.execute(
             "SELECT ts::text, source, error FROM llm_call_log "
-            "WHERE ref_id = %s AND errored ORDER BY ts DESC LIMIT %s",
+            "WHERE ref_id = %s AND errored "
+            "AND (features->>'gated') IS DISTINCT FROM 'true' "
+            "ORDER BY ts DESC LIMIT %s",
             (quest_id, error_limit),
         ).fetchall()
     calls, real_usd, errors, last_ts = row if row else (0, 0.0, 0, None)

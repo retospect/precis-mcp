@@ -499,6 +499,13 @@ _TOTE_COLS = (
     "COALESCE(sum(input_tokens), 0), COALESCE(sum(output_tokens), 0)"
 )
 
+#: Excludes router gate-outs (``features.gated``, gr516941): a gated row is
+#: a call that *never ran* — including it would drag ``error_rate`` toward
+#: 100% during any pause window and pull ``p50_duration_ms`` toward 0 (gate
+#: rows are ~0 ms). The tote measures calls that ran; the pause volume is
+#: answerable from the gated rows themselves when needed.
+_NOT_GATED = "(features->>'gated') IS DISTINCT FROM 'true'"
+
 
 def _tote_row(row: tuple[Any, ...]) -> ToteRow:
     return ToteRow(
@@ -520,7 +527,8 @@ def llm_tote(store: Store, model_id: str, *, window_days: int = 30) -> ToteRow:
     """
     sql = (
         f"SELECT {_TOTE_COLS} FROM llm_call_log "
-        "WHERE model = %s AND ts > now() - (%s * interval '1 day')"
+        "WHERE model = %s AND ts > now() - (%s * interval '1 day') "
+        f"AND {_NOT_GATED}"
     )
     with store.pool.connection() as conn:
         row = conn.execute(sql, (model_id, window_days)).fetchone()
@@ -539,6 +547,7 @@ def llm_tote_by_source(
     sql = (
         f"SELECT source, {_TOTE_COLS} FROM llm_call_log "
         "WHERE model = %s AND ts > now() - (%s * interval '1 day') "
+        f"AND {_NOT_GATED} "
         "GROUP BY source ORDER BY count(*) DESC LIMIT %s"
     )
     with store.pool.connection() as conn:
@@ -555,7 +564,8 @@ def llm_op_tote(store: Store, source: str, *, window_days: int = 30) -> ToteRow:
     """
     sql = (
         f"SELECT {_TOTE_COLS} FROM llm_call_log "
-        "WHERE source = %s AND ts > now() - (%s * interval '1 day')"
+        "WHERE source = %s AND ts > now() - (%s * interval '1 day') "
+        f"AND {_NOT_GATED}"
     )
     with store.pool.connection() as conn:
         row = conn.execute(sql, (source, window_days)).fetchone()
@@ -571,6 +581,7 @@ def llm_op_models(
     sql = (
         f"SELECT model, {_TOTE_COLS} FROM llm_call_log "
         "WHERE source = %s AND ts > now() - (%s * interval '1 day') "
+        f"AND {_NOT_GATED} "
         "GROUP BY model ORDER BY count(*) DESC LIMIT %s"
     )
     with store.pool.connection() as conn:
@@ -634,6 +645,9 @@ def placement_share(
         "FROM llm_call_log "
         "WHERE ts > now() - (%s * interval '1 day') "
         "AND (%s::text IS NULL OR source = %s) "
+        # Gate-outs (gr516941) ran no rung — their landed share would be
+        # fabricated, so they are out of this report entirely.
+        f"AND {_NOT_GATED} "
         f"GROUP BY 1 ORDER BY {order}"
     )
     with store.pool.connection() as conn:

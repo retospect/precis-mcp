@@ -4,9 +4,10 @@
 ``served`` (admitted past the budget gate), ``paused`` (refused by the
 quota taper / park or the dollar cap) or ``degraded`` (a deliverable or
 interactive caller re-asked on a smaller tier after a pause) over the last
-24h. A paused call never reaches ``llm_call_log`` — the gate returns before
-dispatch — so the tally lives in its own table, ``llm_outcome_hourly``
-(one upserted row per hour × class × outcome).
+24h. A paused call does reach ``llm_call_log`` — as a lite ``gated`` row
+since gr516941 — but this tally predates and outlives that ledger's shape:
+the per-work-class hourly rollup lives in its own table,
+``llm_outcome_hourly`` (one upserted row per hour × class × outcome).
 
 ``served``/``paused`` are counted per gate decision, so a degraded call
 shows once as ``paused`` (the refused tier), once as ``served`` (the

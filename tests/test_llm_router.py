@@ -6166,3 +6166,394 @@ def test_rung_unavailable_local_is_exempt(monkeypatch: pytest.MonkeyPatch) -> No
     by calling it, and _skip_unserved_local_rung owns the dead-wire case."""
     rung = Rung(Transport.LOCAL, model="summarizer")
     assert router._rung_unavailable(rung, "summarizer") is None
+
+
+# ── gr516941: gate early-outs leave an llm_call_log row ────────────────
+
+
+def test_gate_breaker_trip_writes_route_log_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A breaker trip returns the paused result AND logs a row carrying the
+    reason — before gr516941 a paused call left no llm_call_log trace at all."""
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "budget: daily cap $20.00 reached ($85.06 spent) — paused",
+    )
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+
+    assert out.paused is True
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.errored is True
+    assert rec.error == out.error
+    # A claude-OAuth rung's trip is the quota class (see _trip_class).
+    assert rec.reason_class == "quota" == out.reason_class
+    assert rec.transport == Transport.CLAUDE_AGENT.value
+    assert rec.features["paused"] is True
+    assert rec.features["gated"] is True
+    # A gate row is a lite row: NULL placement (nothing landed), no blobs.
+    assert rec.placement is None
+    assert rec.store_blobs is False
+    assert rec.duration_ms is not None
+
+
+def test_gate_breaker_trip_log_call_false_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``log_call=False`` batch pass stays unlogged — the gate-out row
+    honours the same opt-out as a dispatched call."""
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "paused",
+    )
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", log_call=False))
+
+    assert out.paused is True
+    assert recorded == []
+
+
+def test_gate_cloud_throttle_pause_writes_route_log_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cloud disabled + a cloud-only tier pauses and logs — transport names
+    the rung the call was gated on even though no provider ran."""
+    monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: False)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+
+    assert out.paused is True
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.errored is True
+    assert rec.reason_class == "budget"
+    assert rec.transport == Transport.CLAUDE_AGENT.value
+    assert rec.placement is None
+    assert rec.placement_routed == "cloud"
+    assert rec.features["paused"] is True
+    assert rec.features["gated"] is True
+
+
+def test_gate_admission_refusal_writes_route_log_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A window-admission refusal (error, not paused) is logged too — a
+    refused call was as invisible as a paused one."""
+    monkeypatch.setattr(
+        "precis.utils.llm.admit.check_dispatch",
+        lambda req, *, model, transport: "model window 8192 < prompt needs 20000",
+    )
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+
+    assert out.error is not None and "8192" in out.error
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.errored is True
+    assert rec.error == out.error
+    assert rec.features["paused"] is False
+
+
+def test_gate_saturated_slot_writes_route_log_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The all-local-slots-busy backoff leaves a ``rate``-class row naming
+    the busy wire."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "local",
+                "model": "qwen3-235b-a22b-2507",
+                "transport": "openai_tools",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+    called = _FakeProv(_ok("should not run"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, called)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, placement="local")
+    )
+
+    assert out.paused is True
+    assert called.calls == 0
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.errored is True
+    assert rec.reason_class == "rate"
+    # Nothing landed: NULL placement — a fabricated "cloud" would miscount
+    # this as a local→cloud fallback in placement_share.
+    assert rec.placement is None
+    assert rec.placement_routed == "local"
+    assert rec.features["paused"] is True
+    assert rec.features["gated"] is True
+    assert rec.store_blobs is False
+
+
+def test_error_result_unparseable_quota_notice_is_a_quota_pause() -> None:
+    """gr516941: a ``claude -p`` reply that IS the account-quota notice raises
+    :class:`ClaudePUnparseableError` ("no parseable JSON block") — the router
+    must classify it as a quota pause (free retry at the reset), not an
+    unclassified parse error that respins the caller every poll."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block",
+        stdout="You're out of extra usage · resets 3am (UTC)",
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+
+    assert res.paused is True
+    assert res.quota_exhausted is True
+    assert res.reason_class == "quota"
+    assert res.retry_at is not None
+    assert res.error is not None and "quota" in res.error
+
+
+def test_error_result_quota_notice_inside_json_envelope_is_a_quota_pause() -> None:
+    """Same notice inside the CLI's ``--output-format json`` envelope — the
+    check reads the reply payload, not the metering wrapper."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    notice = "Claude AI usage limit reached|1761000000"
+    stdout = json.dumps({"type": "result", "result": notice, "total_cost_usd": 0.0})
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block", stdout=stdout
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+
+    assert res.paused is True
+    assert res.quota_exhausted is True
+    assert res.reason_class == "quota"
+
+
+def test_error_result_unparseable_prose_is_not_a_quota_pause() -> None:
+    """A genuine format flake — a long real answer quoting a quota phrase —
+    stays an unclassified parse error, never a pause."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    prose = (
+        "Here is the analysis you asked for. Some users hit your weekly "
+        "limit and see a notice, but this answer keeps going with real "
+        "content for several more sentences — enough of them that the "
+        "whole-reply guard correctly refuses to swallow it as a pause."
+    )
+    assert len(prose) > 240  # past the quota-notice whole-reply cap
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block", stdout=prose
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+
+    assert res.paused is False
+    assert res.quota_exhausted is False
+    assert res.reason_class != "quota"
+    assert res.error is not None and "no parseable JSON block" in res.error
+
+
+def test_gate_emptied_chain_records_transport_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chain that resolves empty has no rung to name — the gate row logs
+    transport NULL rather than a fabricated wire."""
+    monkeypatch.setattr(router, "resolve_chain", lambda *a, **kw: [])
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+
+    assert out.paused is True
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.transport is None
+    assert rec.placement is None
+    assert rec.placement_routed is None
+    assert rec.features["gated"] is True
+
+
+def test_dispatch_async_gate_out_writes_gated_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The streaming path's breaker trip logs through ``_gate_result`` too —
+    same gated lite row as the sync route()."""
+    import asyncio
+
+    from precis.utils.llm.router import dispatch_async
+
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "quota window exhausted — paused",
+    )
+    recorded = _capture_route_log(monkeypatch)
+
+    async def on_event(evt: dict) -> None:
+        pass
+
+    out = asyncio.run(
+        dispatch_async(
+            LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True, on_event=on_event)
+        )
+    )
+
+    assert out.paused is True
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.errored is True
+    assert rec.transport == Transport.CLAUDE_AGENT.value
+    assert rec.placement is None
+    assert rec.features["gated"] is True
+    assert rec.store_blobs is False
+
+
+def test_error_result_is_error_envelope_without_quota_wording_not_paused() -> None:
+    """gr516941 (Opus N1): an ``is_error`` envelope no longer classifies on
+    the flag alone — an exit-0 "API Error: …" refusal is a transient, not a
+    quota window, and stamping quota would pause every claude call for ~2h
+    on a seconds-scale blip. The flag only *permits* the looser
+    whole-reply wording check below."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "result": "API Error: request could not be served",
+            "is_error": True,
+        }
+    )
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block", stdout=stdout
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+
+    assert res.paused is False
+    assert res.quota_exhausted is False
+    assert res.reason_class != "quota"
+    assert res.error is not None and "no parseable JSON block" in res.error
+
+
+def test_error_result_is_error_envelope_quota_wording_is_a_quota_pause() -> None:
+    """… but ``is_error`` DOES open the looser whole-reply check: wording
+    the strict pattern deliberately misses (the bare "usage limit" phrase,
+    no reset clause — see ``QUOTA_STRICT_PATTERN``) still pauses as quota
+    when the CLI self-flags the turn as an API-level refusal."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "result": "API Error: usage limit exceeded for this account",
+            "is_error": True,
+        }
+    )
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block", stdout=stdout
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+
+    assert res.paused is True
+    assert res.quota_exhausted is True
+    assert res.reason_class == "quota"
+    assert res.retry_at is not None
+    assert res.error is not None and "account quota exhausted" in res.error
+
+
+def test_error_result_short_usage_limit_prose_is_not_a_quota_pause() -> None:
+    """gr516941 review: a short reply merely containing the bare phrase
+    "usage limit" must NOT classify — a datasheet/judge answer can quote it,
+    and a false positive stamps the fleet-wide quota snapshot."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block",
+        stdout="I could not find the usage limit in this datasheet.",
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+
+    assert res.paused is False
+    assert res.quota_exhausted is False
+    assert res.reason_class != "quota"
+    assert res.error is not None and "no parseable JSON block" in res.error
+
+
+def test_error_result_non_unparseable_error_never_classifies_quota() -> None:
+    """Only ``ClaudePUnparseableError`` gets the quota look — a non-zero exit
+    whose stderr-adjacent stdout happens to carry a notice stays a plain
+    error (the process DID fail; the wording is not a clean reply)."""
+    from precis.utils.claude_p import ClaudePError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudePError(
+        "claude -p exited 1: boom",
+        stdout="You're out of extra usage · resets 3am (UTC)",
+        stderr="",
+        returncode=1,
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+
+    assert res.quota_exhausted is False
+    assert res.reason_class != "quota"
+    assert res.error == "claude -p exited 1: boom"
+
+
+def test_route_unparseable_quota_reply_stamps_quota_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Route-level: an unparseable ``claude -p`` reply that is the quota
+    notice classifies as quota AND triggers ``_react_to_quota`` — the fleet
+    stamp that pauses the next call at the gate instead of respraying."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+
+    def boom(prompt: str, **kwargs: object) -> ClaudePResult:
+        raise ClaudePUnparseableError(
+            "claude -p returned no parseable JSON block",
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "result": "You're out of extra usage · resets 3am (UTC)",
+                    "total_cost_usd": 0.0,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(router, "call_claude_p", boom)
+    stamped: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        router,
+        "_react_to_quota",
+        lambda result, *, transport, bare: stamped.append(
+            (result.reason_class, transport, bare)
+        ),
+    )
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert out.paused is True
+    assert out.reason_class == "quota"
+    assert stamped == [("quota", Transport.CLAUDE_P, False)]

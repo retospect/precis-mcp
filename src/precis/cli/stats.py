@@ -419,7 +419,10 @@ def _query_llm_utilization(store: Store, hours: float) -> list[dict[str, Any]]:
         "       count(*)::int AS calls, "
         "       sum(duration_ms) / 36000.0 AS busy_pct, "
         "       sum(cost_usd) AS cost_usd, "
-        "       count(*) FILTER (WHERE errored)::int AS errors "
+        # Gate-outs (features.gated, gr516941) never ran — a queued pause is
+        # not a call failure, so it stays out of errors.
+        "       count(*) FILTER (WHERE errored AND "
+        "         (features->>'gated') IS DISTINCT FROM 'true')::int AS errors "
         "FROM llm_call_log "
         "WHERE ts > now() - (%s || ' hours')::interval "
         "GROUP BY 1 ORDER BY 1"
@@ -447,6 +450,10 @@ def _query_llm_gaps(store: Store, hours: float) -> list[dict[str, Any]]:
         "  SELECT ts, ts - lag(ts) OVER (ORDER BY ts) AS gap "
         "  FROM llm_call_log "
         "  WHERE ts > now() - (%s || ' hours')::interval "
+        # A gated row is a queued pause, not a call that ran — exclude it so
+        # a multi-hour pause reads as one silence, not N tiny gaps
+        # (gr516941).
+        "    AND (features->>'gated') IS DISTINCT FROM 'true' "
         ") "
         "SELECT ts, EXTRACT(EPOCH FROM gap) / 60.0 AS gap_minutes "
         "FROM gaps "
