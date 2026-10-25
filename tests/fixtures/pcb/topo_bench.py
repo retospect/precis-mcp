@@ -84,17 +84,56 @@ TOPO_ROUTE_MODE = "pose hand-off (pre-slice-5)"
 _BASE_CROSS_RE = re.compile(r"crossings (\d+) → (\d+)")
 
 
+#: Net classes that mark a rail — the plane-class set ``ratsnest`` uses
+#: plus the power names ``planes`` knows.
+_POWER_CLASSES = frozenset({"gnd", "ground", "power", "pwr", "plane"})
+#: Rail-shaped names for boards whose nets carry no class — EasyEDA
+#: exports tag every net with the DEFAULT class, so GND/3V3/12V_*/PV+
+#: are only findable by name (gr515107 loop-9: GND alone took 75/169
+#: vias and skewed the via comparison).
+_POWER_NAME_RE = re.compile(
+    r"(?:gnd|ground|vcc|vdd|vss|vee|vbat|vbus|pv\+|(?:^|_)\d+v\d*(?:_|$))",
+    re.IGNORECASE,
+)
+
+
+def power_net_names(nets: list[dict[str, Any]]) -> set[str]:
+    """The nets the widen stage and the split metrics treat as power/GND:
+    a plane/power net class, ``domain='power'``, a declared current, or a
+    rail-shaped name (``GND``, ``3V3``, ``12V_POWER``, ``PV+``)."""
+    out: set[str] = set()
+    for n in nets:
+        name = str(n.get("name") or "")
+        cls = str(n.get("net_class") or "").strip().lower()
+        if (
+            cls in _POWER_CLASSES
+            or str(n.get("domain") or "").strip().lower() == "power"
+            or (n.get("est_current_a") or 0) > 0
+            or _POWER_NAME_RE.search(name)
+        ):
+            out.add(name)
+    return out
+
+
 @dataclass(frozen=True)
 class PipeSide:
     """One pipeline's route numbers. ``None`` fields print ``n/a`` —
     pre-slice-5 refusals, absent boards and gate failures all land as
-    ``None`` with the reason in ``note`` rather than as a 0."""
+    ``None`` with the reason in ``note`` rather than as a 0. The
+    ``*_signal``/``*_power`` splits report power/GND copper separately
+    (:func:`power_net_names`) so a rail-dominated via count does not
+    skew the pipeline comparison; the bar metrics compare signal-side
+    numbers when present, the totals otherwise."""
 
     routed: int | None = None
     nets: int | None = None
     drc_errors: int | None = None
     median_mm: float | None = None
     vias: int | None = None
+    vias_signal: int | None = None
+    vias_power: int | None = None
+    median_mm_signal: float | None = None
+    median_mm_power: float | None = None
     wall_s: float | None = None
     note: str = ""
 
@@ -112,6 +151,11 @@ class TopoStage:
     place_s: float | None = None
     odd_cycles: str = "n/a (slice 2)"
     via_bracket: str = "n/a (slice 2)"
+    #: Post-pass rows from ``manifest.json.result`` (absent pre-shove).
+    shove_mm: float | None = None
+    shove_rounds: int | None = None
+    legalize_mm: float | None = None
+    legalize_left: int | None = None
 
 
 @dataclass(frozen=True)
@@ -136,13 +180,21 @@ _METRICS: tuple[tuple[str, str, Any], ...] = (
 )
 
 
+def _bar_value(side: PipeSide, metric: str) -> Any:
+    """The number a bar metric compares: the signal-side split when it
+    exists (a GND-dominated via or length total would skew the flip
+    comparison — the review's pour-net ask), the plain field otherwise."""
+    split = getattr(side, f"{metric}_signal", None)
+    return split if split is not None else getattr(side, metric)
+
+
 def verdicts(row: TopoBenchRow) -> dict[str, str]:
     """PASS/FAIL/n/a per bar metric — ``n/a`` whenever either side lacks
     the number (a refused pipeline is a missing measurement, not a 0)."""
     out: dict[str, str] = {}
     for metric, _header, passes in _METRICS:
-        a = getattr(row.anneal, metric)
-        t = getattr(row.topo, metric)
+        a = _bar_value(row.anneal, metric)
+        t = _bar_value(row.topo, metric)
         out[metric] = (
             "n/a" if a is None or t is None else ("PASS" if passes(a, t) else "FAIL")
         )
@@ -169,9 +221,30 @@ def _board_cell(row: TopoBenchRow) -> str:
     return f"{row.board} ({row.source})" if row.source else row.board
 
 
+def _vias_cell(side: PipeSide) -> str:
+    """``sig+pow`` when the power split exists — the totals when it does
+    not (a refused side, a board with no power copper)."""
+    if side.vias is None:
+        return "n/a"
+    if side.vias_power is None:
+        return str(side.vias)
+    return f"{side.vias_signal}+{side.vias_power}p"
+
+
+def _mm_cell(side: PipeSide) -> str:
+    """Median net length as ``sig+pow`` — same split as ``_vias_cell``."""
+    if side.median_mm is None:
+        return "n/a"
+    if side.median_mm_power is None:
+        return f"{side.median_mm:.1f}"
+    return f"{side.median_mm_signal:.1f}+{side.median_mm_power:.1f}p"
+
+
 def render_table(rows: list[TopoBenchRow]) -> str:
     """The two-pipeline results table — the topo+vroute columns fill in
-    from the same row shape when slice 5 swaps the hand-off."""
+    from the same row shape when slice 5 swaps the hand-off. ``vias``
+    and ``med net mm`` render ``signal+power`` (:func:`power_net_names`)
+    so rail copper reports separately from the signal comparison."""
     lines = [
         f"topo+vroute route mode: {TOPO_ROUTE_MODE}",
         "",
@@ -185,8 +258,8 @@ def render_table(rows: list[TopoBenchRow]) -> str:
                 f"| {_board_cell(r)} | {label} | "
                 f"{_cell(side, 'routed')}/{_cell(side, 'nets')} "
                 f"| {_cell(side, 'drc_errors')} "
-                f"| {_cell(side, 'median_mm', '{:.1f}')} "
-                f"| {_cell(side, 'vias')} "
+                f"| {_mm_cell(side)} "
+                f"| {_vias_cell(side)} "
                 f"| {_cell(side, 'wall_s', '{:.1f}')}{note} |"
             )
     return "\n".join(lines)
@@ -247,6 +320,10 @@ def bench_json(rows: list[TopoBenchRow], *, generated_utc: str) -> dict[str, Any
             "drc_errors": s.drc_errors,
             "median_mm": s.median_mm,
             "vias": s.vias,
+            "vias_signal": s.vias_signal,
+            "vias_power": s.vias_power,
+            "median_mm_signal": s.median_mm_signal,
+            "median_mm_power": s.median_mm_power,
             "wall_s": s.wall_s,
             "note": s.note,
         }
@@ -347,6 +424,18 @@ def _topo_stage(store: Store, job_id: int, place_wall: float) -> TopoStage:
             else None
         ),
         place_s=round(place_wall, 1),
+        shove_mm=(
+            float((result.get("shove") or {})["moved_mm"])
+            if (result.get("shove") or {}).get("moved_mm") is not None
+            else None
+        ),
+        shove_rounds=(result.get("shove") or {}).get("rounds"),
+        legalize_mm=(
+            float((result.get("legalize") or {})["moved_mm"])
+            if (result.get("legalize") or {}).get("moved_mm") is not None
+            else None
+        ),
+        legalize_left=(result.get("legalize") or {}).get("remaining"),
     )
 
 
@@ -378,25 +467,39 @@ def _measure(store: Store, pcb: PcbHandler, slug: str, wall: float) -> PipeSide:
         if r["name"] in multi
     }
     board_id = store.pcb_ensure_board(ref.id)
+    power = power_net_names(graph["nets"])
     vias = 0
+    via_per_net: dict[str, int] = collections.defaultdict(int)
     per_net: dict[str, float] = collections.defaultdict(float)
     for item in store.pcb_copper_list(board_id):
         if item.get("fixed"):
             continue
         if item["ctype"] == "via":
             vias += 1
+            via_per_net[str(item["net"])] += 1
         elif item["ctype"] == "track":
             per_net[str(item["net"])] += rb._track_length(item.get("segments") or ())
     pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     _run, findings = store.pcb_drc_findings_latest(ref.id)
     errors, _warns, _keys = rb._split_findings(findings)
     lengths = [v for v in per_net.values() if v > 0]
+    sig_lengths = [v for k, v in per_net.items() if v > 0 and k not in power]
+    pow_lengths = [v for k, v in per_net.items() if v > 0 and k in power]
+    vias_power = sum(c for n, c in via_per_net.items() if n in power)
     return PipeSide(
         routed=sum(1 for s in status.values() if s == "realized"),
         nets=len(multi),
         drc_errors=sum(errors.values()),
         median_mm=(round(statistics.median(lengths), 2) if lengths else 0.0),
         vias=vias,
+        vias_signal=vias - vias_power,
+        vias_power=vias_power,
+        median_mm_signal=(
+            round(statistics.median(sig_lengths), 2) if sig_lengths else 0.0
+        ),
+        median_mm_power=(
+            round(statistics.median(pow_lengths), 2) if pow_lengths else 0.0
+        ),
         wall_s=round(wall, 1),
     )
 
@@ -682,6 +785,7 @@ __all__ = [
     "bench_nano",
     "bench_snapshot",
     "overall",
+    "power_net_names",
     "render",
     "render_stage_table",
     "render_table",

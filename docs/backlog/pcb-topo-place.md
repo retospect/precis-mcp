@@ -292,7 +292,14 @@ Sizes: 0 S–M, 1 L (three builds), 2 L (two builds), 3 M, 4 M–L, 5 S.
 "Devin alone" means a fresh builder can finish it from this text; "Opus
 seam review" means an Opus pass on the API before the slice lands.
 
-Progress: slice 0 (0a/0b/0c), **1a**, **1b** and **1c** landed
+Progress: slice 0 (0a/0b/0c), **1a**, **1b**, **1c**, **2a** landed;
+phase-3 shove engine landed overlap-driven 2026-10-25 (pcb-loop2):
+`topoplace/shove.py` runs before legalize — soft MTV-separation rows +
+round-mesh triangle signed-area guard (linearised, backtrack-verified
+on actual areas) + legal centre-box bounds, ≤10 rounds; tris inside a
+conflict's intersection lens are exempt (transient geometry). The
+corridor demand/capacity driver (`corridor.py`) waits on slice-2b
+wires.
 2026-10-25 — `src/precis/pcb/topoplace/` exists (design, pairmap,
 proxy, archive, placer, pins, writeback, summary, runstore); 2a mesh
 in flight on `worktree-topo-s2`: `edge_owner`/`edge_side` per

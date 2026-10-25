@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # scripts/pcb-loop — the local PCB dev loop: import an .epro2 into this
-# worktree's dev DB, topo-place it, route it with vroute, run DRC and
-# write summary.md + metrics.json + SVG renders. No prod, no MCP, no
-# deploy — the PCB lane's iteration command.
+# worktree's dev DB, topo-place it, run DRC and write summary.md +
+# metrics.json + SVG renders. No prod, no MCP, no deploy — the PCB
+# lane's iteration command. Route is topo slice 2 output (lands with
+# topo-2b); until then the loop reports placement metrics, topo
+# crossings and the realized via count — vroute is gone, topo is the
+# only router.
 #
 # Usage:
 #   scripts/pcb-loop [--board <epro2>] [--seed N] [--effort N]
-#                    [--skip-route] [--out DIR]
+#                    [--skip-place] [--out DIR]
 #
 # Defaults: --board ~/taz15.epro2 (READ-ONLY: copied into .scratch first;
 # the file is never moved or rewritten), --out /tmp/pcb-topo/loop/<n>
@@ -21,7 +24,6 @@ board="${HOME}/taz15.epro2"
 board_uuid=""
 seed=1
 effort=20000
-skip_route=0
 out=""
 extra=()
 while [[ $# -gt 0 ]]; do
@@ -30,10 +32,8 @@ while [[ $# -gt 0 ]]; do
         --board-uuid) board_uuid="$2"; shift 2 ;;
         --seed) seed="$2"; shift 2 ;;
         --effort) effort="$2"; shift 2 ;;
-        --skip-route) skip_route=1; shift ;;
         --skip-place) extra+=(--skip-place); shift ;;
         --force) extra+=(--force); shift ;;
-        --anneal-route) extra+=(--anneal-route); shift ;;
         --out) out="$2"; shift 2 ;;
         *) echo "ERR: unknown flag $1" >&2; exit 64 ;;
     esac
@@ -70,7 +70,6 @@ cp "$board" "${stage}/input.epro2"
 
 scripts/dev db-up >/dev/null
 
-if (( skip_route )); then extra+=(--skip-route); fi
 if [[ -n "$board_uuid" ]]; then extra+=(--board-uuid "$board_uuid"); fi
 
 sha="$(git rev-parse --short HEAD)"
@@ -96,12 +95,25 @@ try:
 except (OSError, json.JSONDecodeError):
     sys.exit(0)
 r = m.get("route") or {}
+p = m.get("place") or {}
 d = m.get("drc") or {}
+v = m.get("vias") or {}
 n = m.get("slug", "?")
+x = f"{r.get('crossings_start')}→{r.get('crossings')}"
+shove = (
+    f" shove {p['shove_mm']}mm/{p['shove_rounds']}r"
+    if p.get("shove_mm") is not None
+    else ""
+)
+leg = (
+    f" leg {p['legalize_mm']}mm/left{p['legalize_left']}"
+    if p.get("legalize_mm") is not None
+    else ""
+)
 print(
-    f"LOOP {n} routed {r.get('routed')}/{r.get('nets')} "
+    f"LOOP {n} crossings {x} evals/s {p.get('evals_per_s')} "
     f"drc {d.get('errors')} ov {d.get('overlap_errors')} "
-    f"wall {m.get('total_s')}s {sys.argv[2]}"
+    f"vias {v.get('total')}{shove}{leg} wall {m.get('total_s')}s {sys.argv[2]}"
 )
 PY
 echo "loop out: $out"

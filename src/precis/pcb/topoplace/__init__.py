@@ -57,6 +57,7 @@ from precis.pcb.topoplace.proxy import (
     evaluate,
     overlap_area,
     pin_world,
+    spread_total,
 )
 
 __all__ = [
@@ -89,5 +90,6 @@ __all__ = [
     "overlap_area",
     "pair_map",
     "pin_world",
+    "spread_total",
     "topo_place",
 ]

@@ -39,7 +39,8 @@ RUN_SCHEMA = "precis.topo-run/1"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
-CODE_VERSION = 1
+#: 2 — the shove LP runs before legalize (gr515107, phase 3a).
+CODE_VERSION = 2
 
 _JSON_FILES = ("manifest.json", "elites.json", "pairs.json", "pins.json")
 _TEXT_FILES = ("summary.txt", "placement.svg")
@@ -98,6 +99,8 @@ def manifest(
         "objective": {
             "crossings": float(objective.crossings),
             "ratsnest": float(objective.ratsnest),
+            "overlap": float(objective.overlap),
+            "spread": float(objective.spread),
         },
         "board_hash": str(board_hash),
         "parts": parts,
@@ -109,6 +112,28 @@ def manifest(
             "evals": int(result.evals),
             "restarts": int(result.restarts),
             "last_improve_eval": int(result.last_improve_eval),
+            # post-pass reports (additive — readers ignore absent keys)
+            "legalize": (
+                {
+                    "resolved": bool(result.legalize.resolved),
+                    "rounds": int(result.legalize.rounds),
+                    "moved_mm": round(float(result.legalize.moved_mm), 4),
+                    "remaining": len(result.legalize.remaining),
+                }
+                if result.legalize is not None
+                else None
+            ),
+            "shove": (
+                {
+                    "resolved": bool(result.shove.resolved),
+                    "rounds": int(result.shove.rounds),
+                    "moved_mm": round(float(result.shove.moved_mm), 4),
+                    "remaining": len(result.shove.remaining),
+                    "reason": str(result.shove.reason),
+                }
+                if result.shove is not None
+                else None
+            ),
         },
     }
 
@@ -150,78 +175,88 @@ def _heat(strength: float, max_strength: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def _overlap_refdes(d: TopoDesign, pose: np.ndarray) -> set[str]:
+    """Refdes of every part in a same-side courtyard collision — the
+    figure's red-fill set. Computed pairwise (not read off the legalize
+    report) so the mark reflects the pose actually drawn."""
+    from precis.pcb.topoplace.proxy import (
+        _EPS,
+        _collides,
+        _ring_geom,
+        through_hole_parts,
+    )
+
+    n = len(d.parts)
+    th = through_hole_parts(d)
+    sides = np.asarray(pose)[:, 3] >= 0.5
+    geoms = [_ring_geom(d, pose[i], i) for i in range(n)]
+    out: set[str] = set()
+    for i, gi in enumerate(geoms):
+        if gi is None:
+            continue
+        x0, y0, x1, y1 = gi.bounds
+        for j in range(i + 1, n):
+            gj = geoms[j]
+            if gj is None or not _collides(sides, th, i, j):
+                continue
+            bx0, by0, bx1, by1 = gj.bounds
+            if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+                continue
+            if float(gi.intersection(gj).area) > _EPS:
+                out.update((str(d.parts[i]), str(d.parts[j])))
+    return out
+
+
 def placement_svg(d: TopoDesign, result: TopoPlaceResult, pm: PairMap) -> str:
     """``placement.svg`` — the best pose's MST airwires coloured by pair
-    strength (the heatmap), each proper crossing marked, parts as
-    labelled dots, the outline behind. Hand-rendered (not
-    ``precis.pcb.svg``) so the file carries exactly the three layers the
-    spec names and stays byte-deterministic."""
+    strength (the heatmap), each proper crossing marked, parts as their
+    courtyard outlines through the shared figure
+    (:func:`precis.pcb.topoplace.render.courtyard_figure`): bottom-side
+    orange, same-side overlap filled red, the outline behind."""
+    from precis.pcb.topoplace.proxy import local_to_world
+    from precis.pcb.topoplace.render import courtyard_figure
     from precis.pcb.topoplace.summary import _wire_model
 
     wires, ends, _nets = _wire_model(d, result.best_pose)
     cross_pts, _counts = crossing_info(d, result.best_pose)
-
-    pts = [result.best_pose[:, :2]]
-    if len(d.outline) >= 3:
-        pts.append(d.outline)
-    if len(cross_pts):
-        pts.append(cross_pts)
-    all_pts = np.concatenate([p for p in pts if len(p)])
-    finite = np.isfinite(all_pts).all(axis=1)
-    lo = all_pts[finite].min(axis=0) if finite.any() else np.zeros(2)
-    hi = all_pts[finite].max(axis=0) if finite.any() else np.ones(2) * 10.0
-    pad = max(float((hi - lo).max()) * 0.06, 2.0)
-    lo, hi = lo - pad, hi + pad
-    w_mm, h_mm = float(hi[0] - lo[0]), float(hi[1] - lo[1])
-
-    def fmt(v: float) -> str:
-        return f"{v:.3f}".rstrip("0").rstrip(".")
-
-    def X(v: float) -> str:
-        return fmt(v - lo[0])
-
-    def Y(v: float) -> str:
-        return fmt(v - lo[1])
-
     max_str = max((s.strength for s in pm.pairs.values()), default=1.0)
 
-    out = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '
-        f'{fmt(w_mm)} {fmt(h_mm)}" width="960">',
-        '<rect width="100%" height="100%" fill="#ffffff"/>',
+    def underlay(fmt: Any) -> list[str]:
+        out: list[str] = []
+        for k, w in enumerate(wires):
+            a, b = ends[k]
+            key = (a, b) if a <= b else (b, a)
+            strength = pm.pairs[key].strength if key in pm.pairs else 0.0
+            out.append(
+                f'<line x1="{fmt(w[0])}" y1="{fmt(w[1])}" x2="{fmt(w[2])}" '
+                f'y2="{fmt(w[3])}" stroke="{_heat(strength, max_str)}" '
+                'stroke-width="0.25" stroke-opacity="0.8"/>'
+            )
+        for x, y in cross_pts:
+            out.append(
+                f'<circle cx="{fmt(x)}" cy="{fmt(y)}" r="0.6" fill="none" '
+                'stroke="#d00000" stroke-width="0.35"/>'
+            )
+        return out
+
+    pose = np.asarray(result.best_pose, dtype=np.float64)
+    rings = [
+        (
+            local_to_world(np.asarray(d.part_outline[i], dtype=np.float64), pose[i])
+            if i < len(d.part_outline) and len(d.part_outline[i]) >= 4
+            else None
+        )
+        for i in range(len(d.parts))
     ]
-    if len(d.outline) >= 3:
-        poly = " ".join(f"{X(x)},{Y(y)}" for x, y in d.outline)
-        out.append(
-            f'<polygon points="{poly}" fill="none" stroke="#222222" '
-            'stroke-width="0.4"/>'
-        )
-    for k, w in enumerate(wires):
-        a, b = ends[k]
-        key = (a, b) if a <= b else (b, a)
-        strength = pm.pairs[key].strength if key in pm.pairs else 0.0
-        out.append(
-            f'<line x1="{X(w[0])}" y1="{Y(w[1])}" x2="{X(w[2])}" '
-            f'y2="{Y(w[3])}" stroke="{_heat(strength, max_str)}" '
-            'stroke-width="0.25" stroke-opacity="0.8"/>'
-        )
-    for x, y in cross_pts:
-        out.append(
-            f'<circle cx="{X(x)}" cy="{Y(y)}" r="0.6" fill="none" '
-            'stroke="#d00000" stroke-width="0.35"/>'
-        )
-    for part, row in enumerate(result.best_pose):
-        x, y = float(row[0]), float(row[1])
-        if not (np.isfinite(x) and np.isfinite(y)):
-            continue
-        mark = "#d00000" if bool(d.fixed[part]) else "#222222"
-        out.append(
-            f'<circle cx="{X(x)}" cy="{Y(y)}" r="0.7" fill="{mark}"/>'
-            f'<text x="{X(x)}" y="{Y(y)}" font-size="1.6" fill="#333333" '
-            f'text-anchor="middle" dy="-1">{d.parts[part]}</text>'
-        )
-    out.append("</svg>")
-    return "\n".join(out) + "\n"
+    return courtyard_figure(
+        rings,
+        refdes=[str(p) for p in d.parts],
+        bottom=[bool(v) for v in pose[:, 3] >= 0.5],
+        overlap=_overlap_refdes(d, pose),
+        outline=d.outline if len(d.outline) >= 3 else None,
+        centers=pose[:, :2],
+        underlay=underlay,
+    )
 
 
 def run_files(

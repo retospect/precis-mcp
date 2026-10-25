@@ -4,23 +4,30 @@ Postgres). No MCP server, no prod, no deploy: the same code path the
 jobs run, executed in-process.
 
 One iteration: import an ``.epro2`` into a fresh dev slug →
-``placer='topo'`` place job → route-only ``place=False`` job → DRC →
-SVG renders (topo placement, sketch, realized board) → ``summary.md`` +
-``metrics.json``. Per-stage wall times land in both outputs; the loop's
-job is to make every stage land cleanly in a few minutes.
+``placer='topo'`` place job → DRC → SVG renders (topo placement,
+sketch, board) → ``summary.md`` + ``metrics.json``. Per-stage wall
+times land in both outputs; the loop's job is to make every stage land
+cleanly in a few minutes.
+
+Route is topo slice 2 output, landing with builder topo-2b; vroute is
+gone — topo is the only router (Reto 2026-10-25). Until the topo route
+exists the loop reports the place stage's own numbers (crossings,
+evals, airwire) plus the realized via count, and never enqueues an
+``op='route'`` job. The route stage below is the seam topo-2b's output
+plugs into.
 
 Reuses the topo bench's helpers (``tests.fixtures.pcb.topo_bench``) so
 loop numbers and bench numbers come from the same measurement code.
 
 Run inside the container: ``python -m tests.fixtures.pcb.pcb_loop
 --board <epro2> --slug <slug> --out <dir> [--seed N] [--effort N]
-[--skip-route]``.
+[--skip-place]``.
 """
 
 from __future__ import annotations
 
 import argparse
-import dataclasses
+import collections
 import json
 import sys
 import time
@@ -33,7 +40,9 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
 from precis.ingest.pcb_epro import import_epro
-from precis.response import Response
+from precis.pcb.capabilities import capability_for
+from precis.pcb.drc import process_for_stackup
+from precis.pcb.rules import resolve_net_rules
 from precis.store import Store
 from precis.workers.executors._common import SUCCEEDED
 from tests.fixtures.pcb import route_bench as rb
@@ -47,6 +56,10 @@ _STAGE_FIELDS = (
     "evals_per_s",
     "airwire_mm",
     "place_s",
+    "shove_mm",
+    "shove_rounds",
+    "legalize_mm",
+    "legalize_left",
 )
 
 
@@ -115,9 +128,6 @@ def _placement_svg(
                 overlap.update(str(v) for v in o.values())
 
     outside: list[str] = []
-    body: list[str] = []
-    xs: list[float] = []
-    ys: list[float] = []
     for i, poly in enumerate(polys):
         if not poly:
             continue
@@ -125,42 +135,135 @@ def _placement_svg(
         pg = Polygon(poly)
         if outline_poly is not None and not pg.within(outline_poly):
             outside.append(refdes)
-        xs += [p[0] for p in poly]
-        ys += [p[1] for p in poly]
-        color = (
-            "#d62728"
-            if refdes in overlap
-            else ("#ff7f0e" if bool(ir.inst_bottom[i]) else "#1f77b4")
-        )
-        pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in poly)
-        body.append(
-            f'<polygon points="{pts}" fill="{color}" fill-opacity="0.3" '
-            f'stroke="{color}" stroke-width="0.1"/>'
-        )
-        body.append(
-            f'<text x="{pg.centroid.x:.2f}" y="{pg.centroid.y:.2f}" '
-            f'font-size="1.6" font-family="sans-serif" '
-            f'text-anchor="middle">{refdes}</text>'
-        )
-    if outline_poly is not None and outline is not None:
-        xs += [p[0] for p in outline]
-        ys += [p[1] for p in outline]
-        opts = " ".join(f"{x:.2f},{y:.2f}" for x, y in outline)
-        body.insert(
-            0,
-            f'<polygon points="{opts}" fill="none" stroke="#000000" '
-            'stroke-width="0.3"/>',
-        )
-    if not xs:
-        xs, ys = [0.0], [0.0]
-    x0, x1, y0, y1 = min(xs) - 2, max(xs) + 2, min(ys) - 2, max(ys) + 2
-    svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'viewBox="{x0:.2f} {y0:.2f} {x1 - x0:.2f} {y1 - y0:.2f}">'
-        + "".join(body)
-        + "</svg>\n"
+    from precis.pcb.topoplace.render import courtyard_figure
+
+    svg = courtyard_figure(
+        [poly or None for poly in polys],
+        refdes=[str(r) for r in ir.instance_refdes],
+        bottom=[bool(b) for b in ir.inst_bottom],
+        overlap=overlap,
+        outline=outline if outline_poly is not None else None,
     )
     return svg, outside, (outline_poly.area if outline_poly else None)
+
+
+#: Power-copper floors for the widen stage (handoff numbers): tracks
+#: never narrower than this, vias never smaller — a net's resolved or
+#: declared width only ever RAISES the target.
+_WIDEN_TRACK_FLOOR_MM = 0.5
+_WIDEN_VIA_FLOOR_MM = 0.8
+
+
+def _widen_power_copper(store: Store, pcb: PcbHandler, ref: Any) -> dict[str, Any]:
+    """Widen the route's GND/power copper before final DRC (loop
+    quality ask): each power net's tracks grow to
+    ``max(0.5, declared width_mm, rules-resolved width_mm)`` and its
+    vias to ``max(0.8, rules-resolved via_dia_mm)``, then the DERIVED
+    ``pcb_copper`` rows are rewritten wholesale via
+    ``SELECT pcb_copper`` + ``pcb_copper_replace`` — never
+    ``pcb_copper_list`` back in, which would persist its unioned
+    authored fixed copper into the derived table. DRC brackets the
+    rewrite so the pre/post numbers land in the report."""
+    design = store.pcb_load(ref.id)
+    board = design["board"]
+    out: dict[str, Any] = {"changed": 0}
+    if board is None:
+        out["note"] = "no board"
+        return out
+    board_id = int(board["board_id"])
+    nets = design.get("nets") or []
+    power = tb.power_net_names(nets)
+    out["power_nets"] = sorted(power)
+    if not power:
+        return out
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT c.ctype, c.layer, c.net_id, c.route_id, c.geom, n.name "
+            "FROM pcb_copper c JOIN pcb_nets n ON n.net_id = c.net_id "
+            "WHERE c.board_id = %s AND n.retired_at IS NULL",
+            (board_id,),
+        ).fetchall()
+    if not rows:
+        return out
+    caps = capability_for(process_for_stackup(board.get("stackup") or []))
+    net_classes = design.get("net_classes") or {}
+    stack_layers = [str(ly["name"]) for ly in board.get("stackup") or []]
+    outer = {stack_layers[0], stack_layers[-1]} if stack_layers else set()
+
+    def targets(net: dict[str, Any]) -> tuple[float, float, float]:
+        cls = str(net.get("net_class") or "")
+        overrides = net_classes.get(cls)
+        current = net.get("est_current_a")
+        outer_r = resolve_net_rules(
+            cls,
+            layer_is_outer=True,
+            fab_caps=caps,
+            overrides=overrides,
+            current_a=current,
+        )
+        inner_w = resolve_net_rules(
+            cls,
+            layer_is_outer=False,
+            fab_caps=caps,
+            overrides=overrides,
+            current_a=current,
+        ).track_width_mm
+        declared = float(net.get("width_mm") or 0.0)
+        floor = max(_WIDEN_TRACK_FLOOR_MM, declared)
+        return (
+            max(floor, outer_r.track_width_mm),
+            max(floor, inner_w),
+            max(_WIDEN_VIA_FLOOR_MM, outer_r.via_dia_mm or 0.0),
+        )
+
+    want = {str(n["name"]): targets(n) for n in nets if str(n.get("name")) in power}
+    per_net: dict[str, dict[str, Any]] = collections.defaultdict(
+        lambda: {"tracks": 0, "vias": 0, "mm": 0.0}
+    )
+    new_rows: list[dict[str, Any]] = []
+    for ctype, layer, net_id, route_id, geom, net_name in rows:
+        g = dict(geom or {})
+        name = str(net_name)
+        w_outer, w_inner, w_via = want.get(name, (0.0, 0.0, 0.0))
+        if ctype == "track" and name in power:
+            want_w = w_outer if str(layer) in outer else w_inner
+            per_net[name]["mm"] += float(rb._track_length(g.get("segments") or ()))
+            if float(g.get("width_mm") or 0.0) < want_w:
+                g["width_mm"] = want_w
+                per_net[name]["tracks"] += 1
+        elif ctype == "via" and name in power:
+            if float(g.get("dia_mm") or 0.0) < w_via:
+                g["dia_mm"] = w_via
+                per_net[name]["vias"] += 1
+        new_rows.append(
+            {
+                "ctype": ctype,
+                "layer": layer,
+                "net_id": net_id,
+                "route_id": route_id,
+                "geom": g,
+            }
+        )
+    changed = sum(v["tracks"] + v["vias"] for v in per_net.values())
+    out.update(
+        {"changed": changed, "per_net": {k: dict(v) for k, v in per_net.items()}}
+    )
+    if changed:
+        # DRC brackets the wholesale rewrite: pre numbers read the
+        # route's copper, post numbers read the widened one.
+        out["drc_pre"] = _drc_errors(store, pcb, ref)
+        store.pcb_copper_replace(board_id, new_rows)
+        out["drc_post"] = _drc_errors(store, pcb, ref)
+    return out
+
+
+def _drc_errors(store: Store, pcb: PcbHandler, ref: Any) -> int:
+    """One recorded DRC run's error count — the widen stage's pre/post
+    bracket."""
+    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
+    _run, findings = store.pcb_drc_findings_latest(ref.id)
+    errors, _warns, _keys = rb._split_findings(findings)
+    return sum(errors.values())
 
 
 def _finish(out: Path, metrics: dict[str, Any], files: list[str]) -> None:
@@ -194,6 +297,37 @@ def _finish(out: Path, metrics: dict[str, Any], files: list[str]) -> None:
             "| net | vias |",
             "|---|---|",
             *(f"| {n} | {c} |" for n, c in list(vias["per_net"].items())[:15]),
+            "",
+        ]
+    widen = metrics.get("widen") or {}
+    if widen.get("power_nets"):
+        lines += [
+            "## power nets (widen)",
+            "",
+            f"changed {widen.get('changed', 0)} copper rows "
+            f"(drc {widen.get('drc_pre', '—')} → {widen.get('drc_post', '—')})",
+            "",
+            "| net | tracks | vias | track mm |",
+            "|---|---|---|---|",
+            *(
+                f"| {n} | {v.get('tracks', 0)} | {v.get('vias', 0)} "
+                f"| {v.get('mm', 0.0):.1f} |"
+                for n, v in sorted((widen.get("per_net") or {}).items())
+            ),
+            "",
+        ]
+    unrouted = (metrics.get("route") or {}).get("unrouted_nets") or []
+    if unrouted:
+        lines += [
+            "## unrouted nets",
+            "",
+            "| net | status | reason |",
+            "|---|---|---|",
+            *(
+                f"| {u['name']} | {u['status']} "
+                f"| {(u.get('note') or '').replace('|', '/')} |"
+                for u in unrouted
+            ),
             "",
         ]
     lines += [
@@ -260,9 +394,10 @@ def run(args: argparse.Namespace) -> int:
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
 
-    # ── topo place (--skip-place: nothing queued; the route leg then
-    # runs the default pipeline = the anneal+vroute baseline) ──────────
+    # ── topo place (--skip-place: nothing queued; DRC and the renders
+    # then read the stored authored pose) ─────────────────────────────
     place_ok = True
+    stage = tb.TopoStage()
     if args.skip_place:
         metrics["place"] = {"status": "skipped", "note": "--skip-place"}
     else:
@@ -294,87 +429,48 @@ def run(args: argparse.Namespace) -> int:
         place_job, status, place_wall = tb._drain(store, ref.id)
         stages["place"] = round(place_wall, 1)
         place_ok = status == SUCCEEDED
+        stage = tb._topo_stage(store, place_job, place_wall)
         if not place_ok:
-            side = tb._fail_side(store, place_job, "topo place refused")
-            metrics["place"] = {"status": status, "note": side.note}
             # The refusal still stamps meta.topo_run (job stamps it
             # before recording the failure) — surface its stage numbers.
-            stage = tb._topo_stage(store, place_job, place_wall)
+            note = tb._fail_side(store, place_job, "topo place refused").note
+            metrics["place"] = {"status": status, "note": note}
             metrics["place"].update({k: getattr(stage, k) for k in _STAGE_FIELDS})
         else:
-            stage = tb._topo_stage(store, place_job, place_wall)
             metrics["place"] = {
                 "status": status,
                 **{k: getattr(stage, k) for k in _STAGE_FIELDS},
             }
 
-    # ── route (vroute, poses held) — a refused place leaves the stored
-    # (authored) pose; routing it still exercises the vroute leg, and the
-    # row is labelled so authored-pose numbers are never read as topo.
-    side = tb.PipeSide(note="--skip-route")
-    route_ok = place_ok
-    # --skip-place means the stored pose is the authored one and route
-    # re-places: the default anneal+route pipeline, i.e. the baseline.
-    want_place = bool(args.anneal_route or args.skip_place)
-    if not args.skip_route:
-        route_enq: Response | None
-        try:
-            route_enq = pcb.put(
-                id=slug,
-                args={
-                    "op": "route",
-                    # --anneal-route re-runs the joint anneal seeded from
-                    # the stored pose: with --force it is the interim
-                    # legalize step for a placement-illegal topo pose.
-                    "place": want_place,
-                    "seed": args.seed,
-                    "force": args.force,
-                },
-            )
-        except BadInput as exc:
-            side = tb.PipeSide(note=f"route refused: {exc}")
-            route_ok = False
-            route_enq = None
-        if route_enq is not None and "enqueued" in route_enq.body:
-            route_job, status, route_wall = tb._drain(store, ref.id)
-            stages["route"] = round(route_wall, 1)
-            if status == SUCCEEDED:
-                side = tb._measure(store, pcb, slug, route_wall)
-            else:
-                # A refused route still writes its partial copper — the
-                # loop wants the counts it did get plus the failure note.
-                failed = tb._fail_side(store, route_job, "route refused")
-                side = dataclasses.replace(
-                    tb._measure(store, pcb, slug, route_wall),
-                    note=failed.note,
-                )
-            route_ok = status == SUCCEEDED
-        elif route_enq is not None:
-            side = tb.PipeSide(note=f"route enqueue refused: {route_enq.body[:400]}")
-            route_ok = False
+    # ── route — topo slice 2 output once topo-2b lands it; this is the
+    # seam. vroute is gone (topo is the only router), so no job is
+    # enqueued: the loop reports the place stage's crossing numbers and
+    # the realized via count (computed below) until the topo route
+    # writes copper.
+    route_ran = False
+    metrics["route"] = {
+        "status": "pending topo slice 2",
+        "note": "topo route output lands with topo-2b; vroute removed",
+        "crossings_start": stage.crossings_start,
+        "crossings": stage.crossings,
+        "via_bracket": stage.via_bracket,
+    }
 
-    metrics["route_mode"] = (
-        "--skip-route"
-        if args.skip_route
-        else (
-            "anneal+vroute baseline"
-            if args.skip_place
-            else (
-                ("anneal+route from " if args.anneal_route else "pose hand-off of ")
-                + ("topo pose" if place_ok else "authored pose (topo place refused)")
-            )
-        )
-    )
+    # ── widen — GND/power copper grown after route, before final DRC
+    # (the loop's power-rail ask). No route stage means no derived
+    # copper, so today it reports 0 — the seam and its DRC bracket are
+    # in place for topo-2b's output.
+    metrics["widen"] = _widen_power_copper(store, pcb, ref)
 
-    # ── DRC — _measure runs it on a routed board; run it standalone
-    # when there is no route side (skip-route or a refused job) so a
-    # placement-illegal topo pose still shows its errors.
+    # ── DRC — no route stage runs it; run it standalone so a
+    # placement-illegal topo pose still shows its errors. A widen pass
+    # that rewrote copper already recorded the post-widen run — the
+    # latest findings ARE the final ones.
     t = time.monotonic()
-    if side.drc_errors is None:
+    if "drc_post" not in metrics["widen"]:
         pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     _run, findings = store.pcb_drc_findings_latest(ref.id)
     errors, warns, _keys = rb._split_findings(findings)
-    side = dataclasses.replace(side, drc_errors=sum(errors.values()))
     stages["drc"] = round(time.monotonic() - t, 1)
     # Footprint/courtyard overlap counts as a DRC violation and is
     # reported separately from the copper DRC (Reto) — on an illegal
@@ -391,19 +487,22 @@ def run(args: argparse.Namespace) -> int:
         "warns": sum(warns.values()),
     }
 
-    metrics["route"] = {
-        "routed": side.routed,
-        "nets": side.nets,
-        "unrouted": (
-            side.nets - side.routed
-            if side.nets is not None and side.routed is not None
-            else None
-        ),
-        "median_mm": side.median_mm,
-        "vias": side.vias,
-        "drc_errors": side.drc_errors,
-        "note": side.note,
-    }
+    # Per-net route statuses with their reasons — the same rows
+    # view='route-status' shows (status + the legible note the route job
+    # writes), restricted to the >=2-member nets the routed count
+    # covers. Meaningful only once the topo route stage runs; with no
+    # router every net reports unrouted, which is noise not signal.
+    unrouted_nets: list[dict[str, Any]] = []
+    if route_ran:
+        fanout = {
+            str(n["name"]): len(n["members"]) for n in store.pcb_graph(ref.id)["nets"]
+        }
+        unrouted_nets = [
+            {"name": r["name"], "status": r["status"], "note": r.get("note")}
+            for r in store.pcb_route_status(ref.id)
+            if fanout.get(str(r["name"]), 0) >= 2 and r["status"] != "realized"
+        ]
+    metrics["route"]["unrouted_nets"] = unrouted_nets
 
     # ── placement figure + out-of-outline count ──────────────────────
     try:
@@ -417,10 +516,8 @@ def run(args: argparse.Namespace) -> int:
     metrics["drc"]["outside_outline_count"] = len(outside)
 
     # ── vias per net + density (Reto: cluster check near R25/CN3) ────
-    import collections as _c
-
     board = store.pcb_load(ref.id)["board"]
-    via_per_net: _c.Counter[str] = _c.Counter()
+    via_per_net: collections.Counter[str] = collections.Counter()
     if board is not None:
         for item in store.pcb_copper_list(int(board["board_id"])):
             if item.get("ctype") == "via" and not item.get("fixed"):
@@ -438,18 +535,20 @@ def run(args: argparse.Namespace) -> int:
     _finish(out, metrics, files)
 
     print(
-        f"pcb-loop {slug}: routed {side.routed}/{side.nets} "
-        f"drc {side.drc_errors} (overlap {metrics['drc']['overlap_errors']}) "
+        f"pcb-loop {slug}: crossings {stage.crossings_start}→{stage.crossings} "
+        f"drc {metrics['drc']['errors']} "
+        f"(overlap {metrics['drc']['overlap_errors']}) "
         f"wall {metrics['total_s']}s — {out}"
     )
-    return 0 if (route_ok and place_ok) else (1 if place_ok else 2)
+    return 0 if place_ok else 2
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="pcb_loop",
         description="local PCB dev loop: epro2 import -> topo place -> "
-        "vroute -> DRC + metrics + renders (dev DB only)",
+        "DRC + metrics + renders (dev DB only; route is topo slice 2, "
+        "pending topo-2b)",
     )
     ap.add_argument("--board", required=True, help=".epro2 path (the copy)")
     ap.add_argument(
@@ -462,26 +561,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, help="output dir (worktree-relative)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--effort", type=int, default=tb.TOPO_EFFORT)
-    ap.add_argument("--skip-route", action="store_true")
     ap.add_argument(
         "--skip-place",
         action="store_true",
-        help="no topo place — route runs the default pipeline: the "
-        "anneal+vroute baseline for the before/after table",
-    )
-    ap.add_argument(
-        "--anneal-route",
-        action="store_true",
-        help="route job re-runs the joint anneal (place=True) seeded "
-        "from the stored pose instead of holding poses — the interim "
-        "legalize step for a --force-committed topo pose",
+        help="no topo place — DRC and the renders read the stored authored pose",
     )
     ap.add_argument(
         "--force",
         action="store_true",
-        help="force=True on the place + route jobs' gates — commits an "
-        "illegal topo pose and routes it anyway; override is recorded in "
-        "each job summary",
+        help="force=True on the place job's gates — commits an illegal "
+        "topo pose anyway; override is recorded in the job summary",
     )
     args = ap.parse_args(argv)
     return run(args)

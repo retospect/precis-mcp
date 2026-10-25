@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import pytest
 
 from precis.pcb.place import autoplace
 from precis.pcb.topoplace import (
@@ -69,6 +70,44 @@ def test_proxy_throughput_floor_and_printed_rate() -> None:
     rate = n_evals / (time.perf_counter() - t0)
     print(f"\nproxy throughput: {rate:.0f} evals/s (floor 500, target 2000)")
     assert rate >= 500.0
+
+
+def test_spread_proxy_term_parity_and_direction() -> None:
+    """The loop's board-fill term (gr515107): staged/commit tracks the
+    full recompute, clumping raises it, dispersal lowers it, and parts
+    sharing a net never repel each other."""
+    from precis.pcb.topoplace.proxy import _part_shared, spread_total
+
+    d, _inst, _nets = synth_design(seed=0)
+    w = ObjectiveShares(crossings=0.5, ratsnest=0.1, overlap=0.2, spread=0.2)
+    proxy = ProxyState(d, d.pose0, w)
+    assert proxy.spread == pytest.approx(spread_total(d, d.pose0))
+    rng = np.random.default_rng(3)
+    movable = np.flatnonzero(~d.fixed)
+    for i in range(300):
+        p = int(movable[rng.integers(len(movable))])
+        row = proxy.pose[p].copy()
+        row[0] += rng.normal(0.0, 3.0)
+        row[1] += rng.normal(0.0, 3.0)
+        if rng.random() < 0.1:
+            row[3] = 1.0 - row[3]
+        proxy.try_move(p, row)
+        (proxy.commit if rng.random() < 0.5 else proxy.revert)()
+        if i % 25 == 0:
+            assert proxy.spread == pytest.approx(spread_total(d, proxy.pose)), i
+    assert proxy.spread == pytest.approx(spread_total(d, proxy.pose))
+
+    # direction: every movable part clumped on one point is the
+    # repulsion maximum — strictly worse than any real pose.
+    clump = proxy.pose.copy()
+    clump[movable, :2] = clump[movable[0], :2]
+    assert spread_total(d, clump) > spread_total(d, proxy.pose)
+
+    # exemption: two parts on the same net contribute nothing even at
+    # distance 0 — ``_part_shared`` must mark them.
+    for pins in d.net_pins:
+        members = np.unique(d.pin_part[pins])
+        assert _part_shared(d)[np.ix_(members, members)].all()
 
 
 def test_placer_beats_autoplace_at_equal_evals_median() -> None:

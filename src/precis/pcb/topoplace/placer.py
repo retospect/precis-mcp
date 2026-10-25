@@ -73,6 +73,9 @@ class TopoPlaceResult:
     #: before legalization existed — always populated now). The
     #: summary prints its remaining-pairs count.
     legalize: Any = None
+    #: The phase-3 shove-LP report (``ShoveResult``) — runs before
+    #: legalize; ``remaining`` in the same (a, b, area) encoding.
+    shove: Any = None
 
     def elites_json(self) -> bytes:
         """Canonical ``elites.json`` bytes — the determinism contract:
@@ -348,16 +351,26 @@ def topo_place(
         best_rank = (final.crossings, final.cost)
 
     assert best_pose is not None
-    # Legalize: the overlap share pulls the anneal toward legal poses,
-    # but the commit gate counts hard collisions as pre-route DRC
-    # errors — on a dense real board the best pose is still illegal
-    # (taz15: 147 errors, pcb-loop handoff). Separate what remains.
+    # Shove then legalize: the overlap share pulls the anneal toward
+    # legal poses, but the commit gate counts hard collisions as
+    # pre-route DRC errors — on a dense real board the best pose is
+    # still illegal (taz15: 147 errors, pcb-loop handoff). The phase-3
+    # LP separates every pair at once at min |Δ| under the mesh's
+    # no-inversion guard; legalize's exact MTV + pull-back mops up what
+    # the linearisation can't reach. A shoved pose re-enters the
+    # archive as an elite (spec §4).
     from precis.pcb.topoplace.legalize import legalize_pose
+    from precis.pcb.topoplace.shove import shove_pose
 
+    shoved = shove_pose(d, best_pose)
+    if shoved.moved_mm > 0:
+        best_pose = shoved.pose
     legal = legalize_pose(d, best_pose)
     if legal.moved_mm > 0:
         best_pose = legal.pose
     final = ProxyState(d, best_pose, objective)
+    if shoved.moved_mm > 0:
+        archive.admit(best_pose, final.cost)
     best_rank = (final.crossings, final.cost)
     return TopoPlaceResult(
         best_pose=best_pose,
@@ -371,6 +384,7 @@ def topo_place(
         ladder_scores=tuple(ladder_scores),
         last_improve_eval=last_improve,
         legalize=legal,
+        shove=shoved,
     )
 
 

@@ -78,6 +78,7 @@ vocabulary and almost nothing else. Everything below is spike-verified
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
@@ -1802,6 +1803,14 @@ def extract_footprints(
 
     names: dict[str, str] = {}
     out: list[dict[str, Any]] = []
+    # title -> the content hash of the first footprint emitted under it.
+    # EasyEDA stores one FOOTPRINT document per placed instance, so a
+    # title like 'R0805' arrives dozens of times: identical copies map
+    # to the same stored footprint (one summary line, not a warning per
+    # copy); a genuinely different same-title footprint keeps the
+    # uuid-suffixed rename and its warning.
+    by_title: dict[str, str] = {}
+    identical: dict[str, int] = {}
     for fp_uuid, device_uuids in sorted(placed.items()):
         doc = by_uuid.get(fp_uuid)
         if doc is None:
@@ -1811,51 +1820,75 @@ def extract_footprints(
             )
             continue
         title = footprint_title(doc)
-        name = title
-        if name in names.values():
-            # Two footprints with one title: the join key must stay unique
-            # or one silently wins. Never seen (33 distinct titles for 33
-            # documents) but cheap to make impossible.
-            name = f"{title}~{fp_uuid[:8]}"
-            warnings.append(
-                f"two footprints share the title {title!r}; the second is "
-                f"imported as {name!r} so both keep their own pads"
-            )
-        names[fp_uuid] = name
 
+        # This copy's warnings collect separately — an identical copy
+        # produces exactly the first copy's warnings again, so dropping
+        # them is dedupe, not loss.
+        local: list[str] = []
         pads: list[dict[str, Any]] = []
         for b in doc.bodies("PAD"):
-            pad, pad_warnings = _pad_to_precis(b, f"footprint {name!r}")
-            warnings += pad_warnings
+            pad, pad_warnings = _pad_to_precis(b, f"footprint {title!r}")
+            local += pad_warnings
             if pad is not None:
                 pads.append(pad)
         if not pads:
+            names[fp_uuid] = title
             warnings.append(
-                f"footprint {name!r} yielded no usable pads; its components "
+                f"footprint {title!r} yielded no usable pads; its components "
                 f"import as placed outlines with nothing to solder"
             )
             continue
 
         maps = {tuple(sorted(pin_maps.get(d, {}).items())) for d in device_uuids if d}
         if len(maps) > 1:
-            warnings.append(
-                f"footprint {name!r} is placed by {len(maps)} devices that name "
+            local.append(
+                f"footprint {title!r} is placed by {len(maps)} devices that name "
                 f"its pins DIFFERENTLY; precis stores one pin map per footprint, "
                 f"so the first is used and the others fall back to pad numbers"
             )
         chosen = dict(sorted(maps)[0]) if maps else {}
         pin_map, dedup_warnings = _dedup_pin_names(
-            pad_numbers(pads), chosen, f"footprint {name!r}"
+            pad_numbers(pads), chosen, f"footprint {title!r}"
         )
-        warnings += dedup_warnings
-        out.append(
-            {
-                "name": name,
-                "pads": pads,
-                "pin_map": pin_map,
-                "courtyard": _footprint_courtyard(doc, pads),
-                "holes": _footprint_holes(doc, name, warnings),
-            }
+        local += dedup_warnings
+        holes_warn: list[str] = []
+        cand = {
+            "pads": pads,
+            "pin_map": pin_map,
+            "courtyard": _footprint_courtyard(doc, pads),
+            "holes": _footprint_holes(doc, title, holes_warn),
+        }
+        local += holes_warn
+        sha = hashlib.sha256(
+            json.dumps(cand, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:16]
+
+        prev_sha = by_title.get(title)
+        if prev_sha is None:
+            name = title
+            by_title[title] = sha
+            warnings += local
+            out.append({"name": name, **cand})
+        elif prev_sha == sha:
+            names[fp_uuid] = title
+            identical[title] = identical.get(title, 0) + 1
+            continue
+        else:
+            # Two footprints with one title: the join key must stay unique
+            # or one silently wins.
+            name = f"{title}~{fp_uuid[:8]}"
+            warnings += local
+            warnings.append(
+                f"two footprints share the title {title!r}; the second is "
+                f"imported as {name!r} so both keep their own pads"
+            )
+            out.append({"name": name, **cand})
+        names[fp_uuid] = name
+    for title, count in sorted(identical.items()):
+        warnings.append(
+            f"footprint {title!r} appears in {count + 1} identical copies "
+            f"(EasyEDA stores one FOOTPRINT document per placed instance); "
+            f"imported once"
         )
     return out, names, warnings
 

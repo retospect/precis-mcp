@@ -280,6 +280,7 @@ def render_summary(
         f"run: {result.evals} evals, {result.restarts} restart(s), seed "
         f"{result.seed}, effort {effort}, objective crossings "
         f"{objective.crossings:.2f}/ratsnest {objective.ratsnest:.2f}"
+        f"/overlap {objective.overlap:.2f}/spread {objective.spread:.2f}"
     )
     if result.elites:
         costs = np.asarray([e.cost for e in result.elites])

@@ -199,6 +199,89 @@ def test_bench_json_shape_and_provenance() -> None:
     json.dumps(doc)  # serialisable verbatim
 
 
+def test_power_net_names_class_domain_current_and_rail_names() -> None:
+    nets: list[dict[str, Any]] = [
+        {"name": "GND"},
+        {"name": "3V3"},
+        {"name": "12V_POWER"},
+        {"name": "PV+"},
+        {"name": "SDA"},
+        {"name": "U1_7"},
+        {"name": "P1", "net_class": "power"},
+        {"name": "P2", "domain": "power"},
+        {"name": "P3", "est_current_a": 1.5},
+        {"name": "plane1", "net_class": "gnd"},
+    ]
+    assert tb.power_net_names(nets) == {
+        "GND",
+        "3V3",
+        "12V_POWER",
+        "PV+",
+        "P1",
+        "P2",
+        "P3",
+        "plane1",
+    }
+
+
+def test_power_split_renders_and_drives_the_verdict() -> None:
+    """A rail-dominated via count must not skew the flip verdict: the
+    split columns show ``sig+pow`` and the bar compares signal-side."""
+    row = _row(
+        anneal=tb.PipeSide(
+            routed=10,
+            nets=10,
+            drc_errors=0,
+            median_mm=30.0,
+            vias=90,
+            vias_signal=15,
+            vias_power=75,
+            median_mm_signal=29.0,
+            median_mm_power=40.0,
+            wall_s=20.0,
+        ),
+        topo=tb.PipeSide(
+            routed=10,
+            nets=10,
+            drc_errors=0,
+            median_mm=28.0,
+            vias=80,
+            vias_signal=12,
+            vias_power=68,
+            median_mm_signal=27.0,
+            median_mm_power=35.0,
+            wall_s=12.0,
+        ),
+    )
+    table = tb.render_table([row])
+    assert "| 29.0+40.0p | 15+75p |" in table
+    assert "| 27.0+35.0p | 12+68p |" in table
+    # Totals would fail (90 → 80 vias passes anyway) — the signal split
+    # is what the bar reads: 15 → 12 PASS either way here, so pin the
+    # adverse case instead.
+    row2 = _row(
+        anneal=tb.PipeSide(
+            routed=10,
+            nets=10,
+            drc_errors=0,
+            vias=90,
+            vias_signal=15,
+            vias_power=75,
+            wall_s=20.0,
+        ),
+        topo=tb.PipeSide(
+            routed=10,
+            nets=10,
+            drc_errors=0,
+            vias=60,
+            vias_signal=16,
+            vias_power=44,
+            wall_s=12.0,
+        ),
+    )
+    assert tb.verdicts(row2)["vias"] == "FAIL"  # 16 > 15 signal vias
+
+
 def test_topo_handoff_routes_a_tiny_board(store: Store) -> None:
     """The (b) pipeline end to end: placer='topo' writes poses, a
     route-only job realizes them, the side reports real numbers."""

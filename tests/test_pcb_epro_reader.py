@@ -747,6 +747,82 @@ def test_a_multi_layer_fill_in_a_footprint_imports_as_a_footprint_hole(project):
     assert fp["holes"] == holes["R0603"]
 
 
+def _dup_footprint_stream(mutate: tuple[str, str] | None = None) -> str:
+    """The fixture stream plus a third FOOTPRINT document — a clone of
+    fp1 under uuid fp3 (``mutate`` retargets one pad's centerX inside the
+    clone only) — and a component placed with it. EasyEDA stores one
+    FOOTPRINT document per placed instance, so same-title identical
+    copies are the norm, not a collision."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    lines = stream.splitlines(keepends=True)
+    fp1 = lines[43:51]
+    assert '"docType":"FOOTPRINT"' in fp1[0] and "fp1" in fp1[0]
+    clone = [ln.replace("tiny000000000fp1", "tiny000000000fp3") for ln in fp1]
+    if mutate is not None:
+        clone = [ln.replace(mutate[0], mutate[1], 1) for ln in clone]
+    comp = (
+        '{"type":"COMPONENT","ticket":200,"id":"c3"}||{"layerId":1,"x":600,'
+        '"y":150,"angle":0,"attrs":{"Unique ID":"gge3"},"locked":false}|\n'
+        '{"type":"ATTR","ticket":201,"id":"c3e0"}||{"parentId":"c3","layerId":3,'
+        '"x":600,"y":120,"key":"Designator","value":"R2","valueVisible":true}|\n'
+        '{"type":"ATTR","ticket":202,"id":"c3e1"}||{"parentId":"c3","layerId":3,'
+        '"x":null,"y":null,"key":"Footprint","value":"tiny000000000fp3",'
+        '"valueVisible":false}|\n'
+        '{"type":"ATTR","ticket":203,"id":"c3e2"}||{"parentId":"c3","layerId":3,'
+        '"x":null,"y":null,"key":"Device","value":"tiny000000000dv1",'
+        '"valueVisible":false}|\n'
+    )
+    return (
+        "".join(lines[:43])
+        + comp
+        + "".join(lines[43:51])
+        + "".join(clone)
+        + "".join(lines[51:])
+    )
+
+
+def _dup_footprint_project(project, mutate=None):
+    return epro.EproProject(
+        title=project.title,
+        editor_version=project.editor_version,
+        documents=epro.split_documents(_dup_footprint_stream(mutate)),
+    )
+
+
+def test_identical_same_title_footprints_import_once_with_one_summary(project):
+    """The EasyEDA one-copy-per-instance footprint store: a byte-equal
+    same-title document is the SAME footprint — mapped onto the shared
+    name, warned about once, never uuid-suffixed."""
+    proj = _dup_footprint_project(project)
+    fps, names, warnings = epro.extract_footprints(proj, proj.by_type("PCB")[0])
+    assert [f["name"] for f in fps] == ["R0603", "SOT-23-3_L2.9-W1.3-P0.95"]
+    assert names["tiny000000000fp3"] == "R0603"
+    summary = [w for w in warnings if "identical copies" in w]
+    assert summary == [
+        "footprint 'R0603' appears in 2 identical copies (EasyEDA stores one "
+        "FOOTPRINT document per placed instance); imported once"
+    ]
+    assert not [w for w in warnings if "share the title" in w]
+
+
+def test_different_same_title_footprints_still_split_and_warn(project):
+    """A same-title footprint whose pads differ is a REAL collision —
+    the uuid-suffixed rename and the warning stay."""
+    proj = _dup_footprint_project(project, mutate=('"centerX":-30', '"centerX":-31'))
+    fps, names, warnings = epro.extract_footprints(proj, proj.by_type("PCB")[0])
+    assert [f["name"] for f in fps] == [
+        "R0603",
+        "SOT-23-3_L2.9-W1.3-P0.95",
+        "R0603~tiny0000",
+    ]
+    assert names["tiny000000000fp3"] == "R0603~tiny0000"
+    assert [w for w in warnings if "share the title" in w] == [
+        "two footprints share the title 'R0603'; the second is imported as "
+        "'R0603~tiny0000' so both keep their own pads"
+    ]
+    assert not [w for w in warnings if "identical copies" in w]
+
+
 def test_a_footprint_courtyard_comes_from_its_component_shape_layer(project):
     """With no courtyard imported, the store falls back to the bare pad
     extent, an outline lying ON the pads. The R0603 fixture draws a

@@ -100,15 +100,22 @@ class ObjectiveShares:
     #: evals — slice-2a seam item 6). 0 keeps a share vector identical
     #: to slice 1's.
     overlap: float = 0.0
+    #: Board-fill repulsion (loop-2 quality ask): part pairs that share
+    #: NO net and could collide repel each other, so unconnected clumps
+    #: spread over the whole outline while net-connected parts still
+    #: cluster under the ratsnest pull. 0 keeps a share vector identical
+    #: to slice 2a's.
+    spread: float = 0.0
 
     def __post_init__(self) -> None:
-        total = self.crossings + self.ratsnest + self.vias + self.overlap
+        total = self.crossings + self.ratsnest + self.vias + self.overlap + self.spread
         if total <= 0:
             raise ValueError("objective shares must not all be zero")
         object.__setattr__(self, "crossings", self.crossings / total)
         object.__setattr__(self, "ratsnest", self.ratsnest / total)
         object.__setattr__(self, "vias", self.vias / total)
         object.__setattr__(self, "overlap", self.overlap / total)
+        object.__setattr__(self, "spread", self.spread / total)
 
 
 #: The named share vectors (Decision 18's presets) over the terms slice 1
@@ -118,9 +125,12 @@ class ObjectiveShares:
 #: a crossing cannot be resolved on one layer, so crossings are the
 #: slice-1 proxy for both (spec-call, 1c). Every preset carries the same
 #: overlap share: an authored courtyard collision is a violation on any
-#: objective, never a trade-off (Reto ruling 2026-10-25).
+#: objective, never a trade-off (Reto ruling 2026-10-25). ``compact``
+#: — the share vector the ``placer='topo'`` job runs — also carries a
+#: modest ``spread`` share: the loop's ask is whole-board usage, and
+#: repulsion between unconnected parts is what pays for it.
 PRESETS: dict[str, ObjectiveShares] = {
-    "compact": ObjectiveShares(crossings=0.6, ratsnest=0.2, overlap=0.2),
+    "compact": ObjectiveShares(crossings=0.55, ratsnest=0.2, overlap=0.2, spread=0.05),
     "low-via": ObjectiveShares(crossings=0.75, ratsnest=0.05, overlap=0.2),
     "2-layer-only": ObjectiveShares(crossings=0.8, ratsnest=0.0, overlap=0.2),
 }

@@ -23,7 +23,12 @@ statement about priority rather than unit conversion. The third term,
 ``overlap``, is the same-side courtyard overlap AREA in mm² — a real
 violation the placer must price between rung-2 evals (Reto ruling
 2026-10-25), counted with the ``bottom_by_refdes`` split DRC applies
-(parts on opposite faces overlap legally).
+(parts on opposite faces overlap legally). The fourth term, ``spread``,
+is a board-fill repulsion (the loop's whole-board-usage ask): part
+pairs sharing NO net that the same collision predicate admits repel
+each other through a Gaussian on part origins, so unconnected clumps
+disperse over the outline while net-connected parts still cluster
+under the ratsnest pull.
 """
 
 from __future__ import annotations
@@ -134,6 +139,65 @@ def all_pin_world(d: TopoDesign, pose: np.ndarray) -> np.ndarray:
     for part in range(len(d.parts)):
         out[d.pin_part == part] = pin_world(d, pose[part], part)
     return out
+
+
+def _part_shared(d: TopoDesign) -> np.ndarray:
+    """(N, N) bool — True when two parts share at least one routed net
+    (``net_pins``; plane nets are already dropped). The spread term
+    exempts connected pairs so net clusters stay clustered."""
+    n = len(d.parts)
+    shared = np.zeros((n, n), dtype=bool)
+    for pins in d.net_pins:
+        members = np.unique(d.pin_part[pins])
+        shared[np.ix_(members, members)] = True
+    return shared
+
+
+def _spread_scale(d: TopoDesign, pose: np.ndarray) -> float:
+    """The repulsion kernel's range: the mean part cell size
+    sqrt(board_area / N) — the outline's area when it carries one, the
+    pose bounding box otherwise (synthetic designs)."""
+    n = max(len(d.parts), 1)
+    if len(d.outline) >= 3:
+        area = float(Polygon(np.asarray(d.outline, dtype=np.float64)).area)
+    elif len(pose):
+        span = pose[:, :2].max(axis=0) - pose[:, :2].min(axis=0)
+        area = float(span[0] * span[1])
+    else:
+        area = 0.0
+    return float(np.sqrt(area / n)) if area > _EPS else 1.0
+
+
+def _spread_pairs(
+    cent: np.ndarray,
+    sides: np.ndarray,
+    th: np.ndarray,
+    noshare: np.ndarray,
+    scale: float,
+) -> float:
+    """Σ over unordered ``noshare & collidable`` pairs of
+    exp(−d²/2s²) on part origins — the full-recompute body shared by
+    :func:`spread_total` and ``ProxyState`` init."""
+    d2 = ((cent[:, None, :] - cent[None, :, :]) ** 2).sum(axis=2)
+    kern = np.exp(-d2 / (2.0 * scale * scale))
+    collide = (sides[:, None] == sides[None, :]) | (th[:, None] | th[None, :])
+    return float(np.triu(kern * (noshare & collide), 1).sum())
+
+
+def spread_total(d: TopoDesign, pose: np.ndarray) -> float:
+    """Board-fill repulsion, full recompute — the reference the
+    ``ProxyState`` spread parity-check runs against."""
+    if not len(d.parts):
+        return 0.0
+    noshare = ~_part_shared(d)
+    np.fill_diagonal(noshare, False)
+    return _spread_pairs(
+        np.asarray(pose, dtype=np.float64)[:, :2],
+        np.asarray(pose)[:, 3] >= 0.5,
+        through_hole_parts(d),
+        noshare,
+        _spread_scale(d, pose),
+    )
 
 
 def _mst_edges(pts: np.ndarray) -> list[tuple[int, int]]:
@@ -294,18 +358,37 @@ class ProxyState:
             if self._rings
             else 0.0
         )
+        #: spread term: the no-shared-net pair mask, kernel scale and
+        #: committed repulsion total — built only when the share is on
+        #: (an (N, N) mask is the whole setup cost).
+        self._noshare: np.ndarray | None = None
+        self._s_scale = 1.0
+        self._sp = 0.0
+        if self.w.spread and len(d.parts):
+            self._noshare = ~_part_shared(d)
+            np.fill_diagonal(self._noshare, False)
+            self._s_scale = _spread_scale(d, self.pose)
+            self._sp = _spread_pairs(
+                self.pose[:, :2],
+                self.pose[:, 3] >= 0.5,
+                self._th,
+                self._noshare,
+                self._s_scale,
+            )
         #: reference magnitudes for share-normalised cost (floors keep a
         #: zero-crossing seed from dividing by zero — same "one per term
         #: in code" fallback the intent-api spec gives R_i ≈ 0).
         self._ref_cross = max(float(self._cross), 1.0)
         self._ref_len = max(self._len, 1.0)
         self._ref_ov = max(self._ov, 1.0)
+        self._ref_sp = max(self._sp, 1.0)
         self._stage: dict[int, np.ndarray] = {}
         self._stage_wires: dict[int, np.ndarray] = {}
         self._stage_rings: dict[int, Any] = {}
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
+        self._d_sp = 0.0
 
     @property
     def crossings(self) -> int:
@@ -321,12 +404,18 @@ class ProxyState:
         return self._ov + self._d_ov
 
     @property
+    def spread(self) -> float:
+        """Board-fill repulsion total (dimensionless pair-kernel sum)."""
+        return self._sp + self._d_sp
+
+    @property
     def cost(self) -> float:
         """Share-weighted, reference-normalised J."""
         return (
             self.w.crossings * self.crossings / self._ref_cross
             + self.w.ratsnest * self.length / self._ref_len
             + self.w.overlap * self.overlap / self._ref_ov
+            + self.w.spread * self.spread / self._ref_sp
         )
 
     def _rest_view(self, affected: set[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -378,6 +467,22 @@ class ProxyState:
             total += float(geom.intersection(gj).area)
         return total
 
+    def _pair_spread(self, part: int, cent: np.ndarray, side: bool) -> float:
+        """``part``'s repulsion total against every OTHER part under the
+        current staged-or-committed state — the same telescoping unit as
+        ``_pair_overlap``: O(N) numpy per staged move, each staged move
+        replacing its own pair row."""
+        assert self._noshare is not None
+        c = self.pose[:, :2].copy()
+        sides = self.pose[:, 3] >= 0.5
+        for q, row in self._stage.items():
+            c[q] = row[:2]
+            sides[q] = row[3] >= 0.5
+        d2 = ((c - cent) ** 2).sum(axis=1)
+        kern = np.exp(-d2 / (2.0 * self._s_scale * self._s_scale))
+        mask = self._noshare[part] & ((sides == side) | self._th)
+        return float(kern[mask].sum())
+
     def try_move(self, part: int, pose_row: np.ndarray) -> float:
         """Stage ``pose_row`` for ``part``; return Δcost under the staged
         state (a second ``try_move`` before ``commit`` stacks, which is
@@ -419,6 +524,11 @@ class ProxyState:
                 part, new_geom, staged_row[3] >= 0.5
             ) - self._pair_overlap(part, self._ring_of(part), self._side_of(part))
             self._stage_rings[part] = new_geom
+        if self.w.spread:
+            old_row = self._stage.get(part, self.pose[part])
+            self._d_sp += self._pair_spread(
+                part, staged_row[:2], bool(staged_row[3] >= 0.5)
+            ) - self._pair_spread(part, old_row[:2], bool(old_row[3] >= 0.5))
         self._stage[part] = staged_row.copy()
         self._stage_wires.update(new_wires)
         self._d_cross += d_cross
@@ -433,6 +543,7 @@ class ProxyState:
             if self._rings:
                 self._rings[p] = self._stage_rings.get(p, self._rings[p])
         self._ov += self._d_ov
+        self._sp += self._d_sp
         self._wires = [self._stage_wires.get(k, w) for k, w in enumerate(self._wires)]
         self._flat, self._flat_net = _concat(
             self._wires, list(range(len(self.d.net_pins)))
@@ -460,3 +571,4 @@ class ProxyState:
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
+        self._d_sp = 0.0
