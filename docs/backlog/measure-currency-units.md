@@ -60,7 +60,7 @@ and `value_err` hold the amount in the *reported* currency, with the
 remainder scaled to the canonical remainder. New nullable columns:
 
 - `measures.currency` (`^[A-Z]{3}$`)
-- `measures.price_year` (smallint, 1900–2100)
+- `measures.price_year` (integer, 1900–2100)
 
 A legacy row has `currency` NULL. Its effective currency is the token in
 its `reported_unit`, else the one in its taxon's canonical unit. That is
@@ -179,38 +179,9 @@ coordinator at deploy, not by a build slice.
 ## Slices
 
 Each slice lands alone; none writes prod data. Take the next free
-migration number at build time (0248 is free as of a821e9bfa). Slices 1–2
+migration number at build time (S1 took 0249 after vault took 0248).
+Slices 1–2
 need the Opus review before land.
-
-**S1 — currency as reported (store + show, no conversion).**
-
-- `money.py` with `split_currency`, the `money` pint unit, and a currency
-  branch in `make_converter`.
-- `MeasureSpec.price_year`, plus `price_year` in `_measure_write.RunParser`.
-- Migration: the two columns and the sha function.
-- `_insert_one` sets `currency` and `price_year`:
-  - A year given both in the token and as a field, with different values,
-    is refused.
-  - A currency taxon without a currency in `reported_unit` is refused,
-    with `next="reported_unit='EUR2015/t'"`.
-  - A missing price year is accepted, and the ack adds the line "no price
-    year: shown as reported, not converted; pass price_year= when the
-    source states it".
-- Until S3, comparisons stay within one currency:
-  - `search_measures` ranges match only rows in the bound's currency, and
-    a footer counts the rest.
-  - `best_measure` partitions by effective currency.
-  - The outlier median in `_sanity_escalations` is computed per currency.
-- `render.value_text` shows `1000 EUR(2015)/t`.
-- Skill text goes in `precis-measure-help.md` and `precis-measures-help.md`.
-- Tests: `tests/test_money_units.py` (pure: token forms, symbols, refusals,
-  remainder scaling, `/nozzle`) and `tests/test_measures_currency.py` (dev
-  DB):
-  - insert stores the columns; conflict, no-currency and ack-hint cases;
-  - same-currency range and footer; `best_measure` partition;
-  - a legacy NULL row reads as its canonical currency;
-  - the sha is unchanged for a NULL row; the frozen trigger refuses an
-    UPDATE of `price_year`.
 
 **S2 — rate tables + `money_refresh` job.**
 
@@ -315,6 +286,10 @@ Decided:
   no other series.
 - **Order.** FX first, then deflate.
 - **Source.** The ECB file directly, not Frankfurter.
+- **Skill text** goes in `precis-measure-help.md` — `precis-measures-help.md`
+  is the PCB measuring-tape skill, not the measure kind.
+- **S1 comparisons** group by `(currency, price_year)`; a NULL year is its
+  own group (Opus review, 2026-10-25).
 
 Non-blocking (defaults apply unless Reto overrides):
 

@@ -12,7 +12,9 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
 
 * ``measurand`` (taxon handle, path or id; required), ``subject`` (ref handle or
   id; an input defaults to the output's);
-* ``literal`` (inputs only; the output's literal is ``text=``), ``reported_unit``;
+* ``literal`` (inputs only; the output's literal is ``text=``), ``reported_unit``
+  (a currency figure carries its ISO token, ``'EUR2015/t'``), ``price_year``
+  (the year a currency figure is priced at, when it is not in the unit token);
 * ``subject_label``, ``subject_group``, ``value_num`` / ``value_low`` /
   ``value_high`` / ``value_err`` (in the REPORTED unit, the unit of
   ``reported_unit`` and the literal; put converts them to the canonical unit) /
@@ -45,6 +47,7 @@ _ROW_FIELDS = frozenset(
         "subject",
         "literal",
         "reported_unit",
+        "price_year",
         "subject_label",
         "subject_group",
         "value_num",
@@ -263,6 +266,15 @@ class RunParser:
             raw["value_bool"], bool
         ):
             raise _bad(where, "value_bool", f"{raw['value_bool']!r} is not true/false")
+        py_raw = raw.get("price_year")
+        if isinstance(py_raw, str) and py_raw.strip().isdigit():
+            py_raw = int(py_raw.strip())
+        if py_raw is not None and (
+            isinstance(py_raw, bool) or not isinstance(py_raw, int)
+        ):
+            raise _bad(
+                where, "price_year", f"{raw['price_year']!r} is not a year (an int)"
+            )
 
         anchor = (
             self._anchor(raw["anchor"], where, "anchor")
@@ -302,6 +314,7 @@ class RunParser:
             literal=literal,
             subject_ref_id=subject,
             reported_unit=raw.get("reported_unit"),
+            price_year=py_raw,
             subject=raw.get("subject_label"),
             subject_group=group,
             value_num=raw.get("value_num"),

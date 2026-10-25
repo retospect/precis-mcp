@@ -1715,13 +1715,22 @@ class TestLiteralAndUnits:
     def test_non_pint_canonical_unit_refuses_another_unit_naming_both(
         self, store: Store, world: dict[str, Any]
     ) -> None:
+        # A second currency is not "another unit" since gr510555 S1: it is
+        # recorded as reported (currency='EUR', the amount unconverted). A
+        # non-currency unit on a currency measurand is refused, naming the
+        # missing token.
         cost = _taxon(store, "unit cost", unit="USD", parent=world["start"])
-        with pytest.raises(BadInput) as err:
+        run = store.insert_measure(
+            MeasureSpec(cost, "12.5", world["paper"], reported_unit="EUR"),
+            actor="reader",
+        )
+        r = _row(store, run.output_id)
+        assert r["currency"] == "EUR" and r["value_num"] == 12.5
+        with pytest.raises(BadInput, match="no currency token"):
             store.insert_measure(
-                MeasureSpec(cost, "12.5", world["paper"], reported_unit="EUR"),
+                MeasureSpec(cost, "12.5", world["paper"], reported_unit="kg"),
                 actor="reader",
             )
-        assert "'EUR'" in str(err.value) and "'USD'" in str(err.value)
 
     def test_the_required_conditions_walk_uses_the_runs_connection(
         self, store: Store, world: dict[str, Any]

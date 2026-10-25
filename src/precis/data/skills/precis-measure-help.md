@@ -61,7 +61,7 @@ not a node.
 |---|---|
 | `property=` | the measurand: a taxon handle (`tn42`, `taxon:42`) or path (`measurand/faradaic-efficiency`); covers the taxon and every `specialises` descendant |
 | `min=` / `max=` | numbers, in `unit=` (else the taxon's `display_unit`, else SI); converted to SI, then matched by **interval overlap** on low/high (a point is a one-value interval, `<x` reaches down from x, `>x` up). Need `property=` |
-| `unit=` | the unit of `min`/`max` **and of the output**; a unit of another kind than the measurand is refused, naming both |
+| `unit=` | the unit of `min`/`max` **and of the output**; a unit of another kind than the measurand is refused, naming both. A currency unit (`unit='EUR/t'`, `unit='USD2015/t'`) bounds within that one currency **and price year** only — no year is its own group. With **no** `unit=` the taxon's currency bounds across *every* price year and each row labels its own (`USD(2010)/t`); either way rows in another currency are left out of the range and counted in a footer line |
 | `q=` | condition terms and subject words (below) |
 | `status='all'` | also superseded, ambiguous, escalated and anchor-lost rows, each marked; default is live rows only |
 
@@ -75,15 +75,20 @@ word must occur in the subject label, the measurand name, the literal,
 or the quantified-by anchor chunk text. Results are output rows only, one line
 each: `mx12 | subject | measurand: value | conditions | tier | paper handle`.
 
+## Rank measures for a quest
+
 `get(kind='quest', id=Q, view='measures')` lists, for everything that serves
 the quest at any depth, the best live value per `(measurand, reference,
-normalization)` group, further partitioned by the measurand's *categorical*
+normalization, currency, price_year)` group — a NULL year is its own group —
+further partitioned by the measurand's
+*categorical*
 required conditions — a Faradaic efficiency ranks per product, so a line reads
 "FE vs RHE · product=NH3" — with its conditions, tier, paper and current
 review state
 (`approved`, `proposed` or `unreviewed`). The direction comes
 from the taxon's `higher_is_better`; a group without it shows its row count and
-no best. Per-area and per-mass yields, or RHE and SHE potentials, are separate
+no best. Per-area and per-mass yields, RHE and SHE potentials, or EUR and USD
+costs, are separate
 lines: groups are never compared. Left out of every ranking: ambiguous
 measurands, flagged rows (`meta.escalation`), anchor-lost `measured` rows,
 `trusted = false`, rows whose newest current review is `rejected`, and anything
@@ -109,6 +114,11 @@ prefix, so 1.4e-10 m reads `140 pm`, never `0.00000000014 m`.
   `25 °C`. A temperature difference is its own measurand.
 - `display_unit` is a taxon meta key (see `precis-taxon-help`): a unit of the
   same dimension as `canonical_unit`.
+- A **currency** row is the exception to "stored in SI": the number stays in
+  the *reported* currency and only the remainder scales — `1 EUR2015/kg` on a
+  `USD/t` measurand stores `1000` with `currency='EUR'`, `price_year=2015`,
+  and shows as `1000 EUR(2015)/t`. Currencies never convert between each
+  other.
 
 ## One measure, one run
 
@@ -158,6 +168,22 @@ converted to the measurand's canonical unit.
   value and flagged `no_molar_mass`.
 - A subscript basis label on a denominator (`mg_cat⁻¹`, `mg_Fe⁻¹`) is moved into
   `normalization`.
+- A **currency unit** carries an ISO 4217 code (`USD`, `EUR`, `GBP`, `JPY`,
+  ... — every code the ECB euro reference rates quote, plus EUR) or one of
+  the symbols `$`/`US$`/`€`/`£` (mapped to USD/USD/EUR/GBP; `¥`, `A$` and
+  `C$` are refused as ambiguous — give the code; a `$...$` pair whose
+  contents carry TeX, like `mA$^{-1}$`, is a math delimiter, never a
+  dollar — `$/t (2015$)` is two dollars and reads as USD 2015). An optional
+  4-digit price
+  year sits next to the code: `EUR2015/t`, `EUR 2015`, `EUR(2015)`,
+  `2015 EUR`; or pass `price_year=` in meta. Only 1900–2100 reads as a
+  year — `1000 USD/yr` is a scale factor and is refused; state the plain
+  unit with the number already scaled. A year in both places that
+  disagrees is refused; a year on a non-currency figure is refused; a
+  currency measurand whose `reported_unit` carries no token is refused with
+  `reported_unit='EUR2015/t'` as the hint. No year is accepted — the answer
+  reminds you the row is shown as reported, never converted, until a
+  `price_year=` supersession lands.
 
 ## Evidence
 
@@ -223,7 +249,9 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
 
 - **`meta`** (the output): `measurand` (taxon handle, path or id) and
   `subject` (ref handle or id) are required; optional `subject_label`,
-  `subject_group`, `reported_unit`, `value_num` / `value_low` / `value_high` /
+  `subject_group`, `reported_unit`, `price_year` (the year a currency figure
+  is priced at, when the unit token does not say it), `value_num` /
+  `value_low` / `value_high` /
   `value_err` / `value_text` / `value_bool` / `value_form`, `reference`,
   `normalization`, `normalization_status`, `tier`, `source_attribution`,
   `measurand_status`, `anchor`, `extra_anchors`, `supersedes` (a measure id or

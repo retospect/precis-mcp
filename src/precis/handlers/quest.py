@@ -1204,11 +1204,13 @@ class QuestHandler(NumericRefHandler):
         """`view='measures'` — the quest's number table: the best live value of
         every measurand over everything serving it (``Store.best_measure``,
         ``serves`` at any depth), one line per ``(measurand, reference,
-        normalization, categorical-condition partition)`` group, in the
-        measurand's display unit, with the
+        normalization, currency, price_year, categorical-condition
+        partition)`` group,
+        in the measurand's display unit, with the
         run's conditions, current review state and the paper. Groups never mix:
-        a per-area and a per-mass yield, RHE and SHE potentials, or FE toward
-        NH3 and toward NO2, are separate lines."""
+        a per-area and a per-mass yield, RHE and SHE potentials, EUR and USD
+        costs (unconverted currencies never rank against each other, gr510555
+        S1), or FE toward NH3 and toward NO2, are separate lines."""
         from precis.handlers import _measure_render as render
         from precis.utils import handle_registry
 
@@ -1234,6 +1236,12 @@ class QuestHandler(NumericRefHandler):
                 f"{g['measurand']}"
                 + (f" vs {g['reference']}" if g["reference"] else "")
                 + (f" [{g['normalization']}]" if g["normalization"] else "")
+                + (
+                    f" · {g['currency']}"
+                    + (f"({g['price_year']})" if g.get("price_year") else "")
+                    if g.get("currency")
+                    else ""
+                )
                 + (f" · {part}" if part else "")
             )
             best = g["best"]

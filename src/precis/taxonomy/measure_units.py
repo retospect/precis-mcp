@@ -42,6 +42,15 @@ from ase.formula import Formula
 
 from precis.errors import BadInput
 from precis.taxonomy.census import _normalize_unit_candidate
+from precis.taxonomy.money import (
+    _LONE_DOLLAR_MATH_RE,
+    _MATH_DOLLARS_RE,
+    _TEX_MARK_RE,
+    MONEY_DEFINITION,
+    CurrencyUnit,
+    money_unit_text,
+    split_currency,
+)
 from precis.utils.text import markup_surface, markup_unit
 
 _UREG: pint.UnitRegistry | None = None
@@ -143,6 +152,9 @@ def _registry() -> pint.UnitRegistry:
     global _UREG
     if _UREG is None:
         _UREG = pint.UnitRegistry()
+        # one stand-in currency unit: make_converter's currency branch swaps
+        # the ISO token for `money` so pint scales only the unit's remainder
+        _UREG.define(MONEY_DEFINITION)
     return _UREG
 
 
@@ -193,9 +205,37 @@ def _strip_gas_qualifier(unit_text: str) -> tuple[str, str | None]:
     return re.sub(r" {2,}", " ", text), gas
 
 
+def _currency_symbols_to_codes(text: str) -> str:
+    """Unambiguous currency symbols -> their ISO code, before ``markup_unit``
+    folds ``$`` away as a math delimiter (``'US$/t'`` -> ``'USD/t'``,
+    ``'€/t'`` -> ``'EUR/t'``). Math spans — balanced TeX-carrying ``$...$``
+    pairs and a lone ``$`` before a TeX command — are stashed so their
+    ``$`` never reads as USD, then restored verbatim: ``markup_unit`` owns
+    the TeX fold (``'$\\mu$m'`` -> ``'µm'``). ``¥``, ``A$`` and ``C$``
+    are left alone: the ambiguous-symbol refusal is
+    :func:`split_currency`'s."""
+    spans: list[str] = []
+
+    def stash(m: re.Match[str]) -> str:
+        spans.append(m.group(0))
+        return f"\x00{len(spans)}\x00"
+
+    text = _MATH_DOLLARS_RE.sub(
+        lambda m: stash(m) if _TEX_MARK_RE.search(m.group(1)) else m.group(0),
+        text,
+    )
+    text = _LONE_DOLLAR_MATH_RE.sub(stash, text)
+    text = text.replace("US$", "USD").replace("€", "EUR").replace("£", "GBP")
+    text = re.sub(r"(?<![A-Za-z])\$", "USD", text)
+    for i, span in enumerate(spans):
+        text = text.replace(f"\x00{i + 1}\x00", span)
+    return text
+
+
 def _pint_unit_ex(raw_unit: str) -> tuple[str, str | None, str | None]:
     """``(text pint can parse, basis label, gas qualifier)``."""
-    stripped, label = split_basis_label(markup_unit(raw_unit.strip()))
+    text = _currency_symbols_to_codes(raw_unit.strip())
+    stripped, label = split_basis_label(markup_unit(text))
     text = _normalize_unit_candidate(stripped)
     text, gas = _strip_gas_qualifier(text)
     if text.replace(" ", "") in ("%", "percent", "mol%"):
@@ -341,6 +381,12 @@ def make_converter(
             "pH and dB are logarithmic scales, so only the identical unit is accepted",
             next="state the number in the measurand's own scale",
         )
+    src_cur = split_currency(src_text)
+    dst_cur = split_currency(dst_text)
+    if src_cur.currency is not None or dst_cur.currency is not None:
+        return _money_converter(
+            reported_unit, canonical_unit, src_cur, dst_cur, label, gas
+        )
     try:
         dst, _, _ = _parse_unit(canonical_unit, what="canonical")
     except BadInput as exc:
@@ -380,6 +426,63 @@ def make_converter(
         elif bridge == "amount_to_mass":
             q = q * ureg.Quantity(molar_mass_g_mol, "g/mol")
         return float(q.to(dst).magnitude)
+
+    return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label, gas=gas)
+
+
+def _money_converter(
+    reported_unit: str,
+    canonical_unit: str,
+    src_cur: CurrencyUnit,
+    dst_cur: CurrencyUnit,
+    label: str | None,
+    gas: str | None,
+) -> Conversion:
+    """The currency branch of :func:`make_converter` (measure-currency-units
+    slice 1, gr510555). Both units' tokens swap for the ``money`` pint unit
+    and pint scales only the remainder, so ``EUR/kg`` on a ``USD/t`` measurand
+    stores x1000 *in EUR* — the reported currency never converts. A remainder
+    pint cannot parse (``/nozzle``) must match the canonical remainder
+    textually. A currency unit against a non-currency canonical, or the
+    reverse, keeps the ordinary dimension refusal."""
+    if src_cur.currency is None or dst_cur.currency is None:
+        raise BadInput(
+            f"unit {reported_unit!r} has no dimension match with the "
+            f"measurand's canonical unit {canonical_unit!r}",
+            next="correct the unit, or file the number under a measurand "
+            "whose canonical unit has that dimension",
+        )
+    ureg = _registry()
+    try:
+        src = ureg.Unit(money_unit_text(src_cur))
+    except _PARSE_ERRORS:
+        src = None
+    try:
+        dst = ureg.Unit(money_unit_text(dst_cur))
+    except _PARSE_ERRORS:
+        dst = None
+    if src is None or dst is None:
+        same = re.sub(r"\s+", "", src_cur.remainder) == re.sub(
+            r"\s+", "", dst_cur.remainder
+        )
+        if not same:
+            raise BadInput(
+                f"unit {reported_unit!r} has no dimension match with the "
+                f"measurand's canonical unit {canonical_unit!r}",
+                next="correct the unit, or file the number under a measurand "
+                "whose canonical unit has that dimension",
+            )
+        return Conversion(value=lambda v: v, scale=1.0, label=label, gas=gas)
+    if src.dimensionality != dst.dimensionality:
+        raise BadInput(
+            f"unit {reported_unit!r} has no dimension match with the "
+            f"measurand's canonical unit {canonical_unit!r}",
+            next="correct the unit, or file the number under a measurand "
+            "whose canonical unit has that dimension",
+        )
+
+    def conv(v: float) -> float:
+        return float(ureg.Quantity(v, src).to(dst).magnitude)
 
     return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label, gas=gas)
 

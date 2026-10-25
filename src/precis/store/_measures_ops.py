@@ -101,7 +101,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Final
 
 import psycopg
 from psycopg import Connection
@@ -122,6 +122,13 @@ from precis.taxonomy.measure_units import (
     parse_literal,
     si_form,
     to_canonical,
+)
+from precis.taxonomy.money import (
+    check_price_year,
+    effective_currency,
+    row_currency,
+    split_currency,
+    taxon_is_currency,
 )
 from precis.taxonomy.nodes import slugify
 from precis.utils.glyph_health import glyph_suspected
@@ -171,6 +178,9 @@ class MeasureSpec:
     literal: str
     subject_ref_id: int
     reported_unit: str | None = None
+    #: the year a currency figure is priced at (``EUR2015/t``, or the field);
+    #: NULL means unknown — shown as reported, never converted (gr510555 S1)
+    price_year: int | None = None
     subject: str | None = None
     subject_group: str | None = None
     value_num: float | None = None
@@ -230,13 +240,25 @@ class ConditionFilter:
     text: str | None = None
 
 
+#: ``bound_currency`` year sentinel in :meth:`MeasuresMixin.search_measures`:
+#: the bound's currency at *any* price year — a range without an explicit
+#: ``unit=`` spans the taxon's currency across all years, each row still
+#: labelling its own (gr510555 S1 ruling). An explicit ``unit=`` is an
+#: exact ``(currency, price_year)`` group instead, NULL year included.
+ANY_YEAR: Final = -1
+
+
 @dataclass(frozen=True, slots=True)
 class MeasureSearch:
     """What :meth:`MeasuresMixin.search_measures` found. ``truncated`` means
-    the candidate scan hit its cap before the end."""
+    the candidate scan hit its cap before the end. ``other_currency`` counts
+    in-range candidates left out of a currency-bounded range because they
+    are in another ``(currency, price_year)`` group (gr510555 S1: ranges
+    compare within one group until conversion lands)."""
 
     rows: list[dict[str, Any]]
     truncated: bool = False
+    other_currency: int = 0
 
 
 #: The row that re-based this one (migration 0188 supersedes a legacy row L, whose
@@ -853,25 +875,52 @@ class MeasuresMixin:
         spec: MeasureSpec,
         anchor: MeasureAnchor | None,
         values: tuple[float | None, ...],
+        *,
+        currency: str | None = None,
+        price_year: int | None = None,
+        currency_taxon: bool = False,
+        canonical_unit: str | None = None,
     ) -> list[dict[str, Any]]:
         """Slice-8 sanity flags on an output row (canonical ``values`` are
         ``(value_num, value_low, value_high)``). Both are needs-review, never
         a refusal or a drop: ``implausible_value`` when a reading sits
         ``_OUTLIER_DECADES`` or more orders of magnitude from the measurand's
         live median, and ``glyph_suspected`` when the source paper carries the
-        ingest glyph-health flag."""
+        ingest glyph-health flag. The median is computed per effective
+        ``(currency, price_year)`` group — a NULL year is its own group;
+        ``currency``/``price_year`` are the new row's, a stored/legacy row's
+        comes from its columns or the token in its reported/canonical unit —
+        unconverted currencies and price years never mix (gr510555 S1). On a
+        measurand that is not a currency measurand at all every live row is
+        in the one group and no unit is parsed."""
         out: list[dict[str, Any]] = []
         nums = [float(v) for v in values if v is not None and v != 0]
         if nums:
-            mags = sorted(
-                math.log10(abs(float(r[0])))
-                for r in c.execute(
-                    "SELECT value_num FROM measures WHERE direction = 'output' "
-                    "AND superseded_by IS NULL AND measurand_ref_id = %s "
-                    "AND value_num IS NOT NULL AND value_num <> 0",
-                    (spec.measurand_ref_id,),
-                ).fetchall()
-            )
+            if currency is None and not currency_taxon:
+                mags = sorted(
+                    math.log10(abs(float(r[0])))
+                    for r in c.execute(
+                        "SELECT value_num FROM measures "
+                        "WHERE direction = 'output' AND superseded_by IS NULL "
+                        "AND measurand_ref_id = %s "
+                        "AND value_num IS NOT NULL AND value_num <> 0",
+                        (spec.measurand_ref_id,),
+                    ).fetchall()
+                )
+            else:
+                mags = sorted(
+                    math.log10(abs(float(r[0])))
+                    for r in c.execute(
+                        "SELECT value_num, currency, price_year, reported_unit "
+                        "FROM measures "
+                        "WHERE direction = 'output' AND superseded_by IS NULL "
+                        "AND measurand_ref_id = %s "
+                        "AND value_num IS NOT NULL AND value_num <> 0",
+                        (spec.measurand_ref_id,),
+                    ).fetchall()
+                    if effective_currency(r[1], r[2], r[3], canonical_unit)
+                    == (currency, price_year)
+                )
         if nums and len(mags) >= _OUTLIER_MIN_SAMPLE:
             n = len(mags)
             med = mags[n // 2] if n % 2 else (mags[n // 2 - 1] + mags[n // 2]) / 2
@@ -1008,6 +1057,45 @@ class MeasuresMixin:
         canonical = taxon.get("canonical_unit")
         has_numbers = any(v is not None for v in (num, low, high))
         conditions = dict(spec.conditions or {})
+
+        # currency (gr510555 slice 1): the reported_unit's token is recorded,
+        # never converted; the price year comes from the token or the field,
+        # and a disagreement between the two is refused
+        cur = split_currency(reported_unit)
+        is_currency_taxon = taxon_is_currency(taxon, canonical)
+        if (
+            is_currency_taxon
+            and reported_unit
+            and reported_unit.strip()
+            and cur.currency is None
+        ):
+            raise BadInput(
+                f"measure of {taxon.get('name') or 'this measurand'!r} is a "
+                f"currency measurand, but reported_unit {reported_unit!r} "
+                "carries no currency token",
+                next="reported_unit='EUR2015/t'",
+            )
+        if (
+            spec.price_year is not None
+            and cur.price_year is not None
+            and spec.price_year != cur.price_year
+        ):
+            raise BadInput(
+                f"price_year={spec.price_year} disagrees with the year in "
+                f"reported_unit {reported_unit!r} ({cur.price_year})",
+                next="give the price year once: in the unit ('EUR2015/t') "
+                "or as price_year=2015",
+            )
+        price_year = spec.price_year if spec.price_year is not None else cur.price_year
+        currency = cur.currency
+        if price_year is not None:
+            check_price_year(price_year)
+            if currency is None:
+                raise BadInput(
+                    f"price_year={price_year} on a measure with no currency: "
+                    "a price year belongs to a currency figure",
+                    next="report the unit as a currency ('EUR2015/t'), or drop price_year=",
+                )
         if canonical and has_numbers and not (reported_unit and reported_unit.strip()):
             # Store SI: the number's unit is never guessed (a silent factor of
             # 1000, or of 100 for a fraction, is the failure this guards)
@@ -1107,7 +1195,16 @@ class MeasuresMixin:
                 high = None if high is None else abs(high)
         if direction == "output":
             escalation.extend(
-                self._sanity_escalations(c, spec, anchor, (num, low, high))
+                self._sanity_escalations(
+                    c,
+                    spec,
+                    anchor,
+                    (num, low, high),
+                    currency=currency,
+                    price_year=price_year,
+                    currency_taxon=is_currency_taxon,
+                    canonical_unit=canonical,
+                )
             )
         if escalation:
             meta["escalation"] = escalation
@@ -1169,6 +1266,7 @@ class MeasuresMixin:
             row = c.execute(
                 "INSERT INTO measures "
                 "(subject_ref_id, measurand_ref_id, literal, reported_unit, "
+                " currency, price_year, "
                 " value_num, value_low, value_high, value_text, value_bool, "
                 " value_err, value_form, reference, tier, extraction_status, "
                 " normalization, normalization_status, source_attribution, "
@@ -1176,8 +1274,8 @@ class MeasuresMixin:
                 " subject_group, derived_from, primary_link_id, anchor_scheme, span, "
                 " supersedes, source_ref_id, actor, model, meta, conditions, maturity, "
                 " method, source_chunk, source_url, as_of, notes) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-                "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
                 "        coalesce(%s, '{}'::jsonb), coalesce(%s, 'lab'), %s, %s, %s, %s, %s) "
                 "RETURNING id",
                 (
@@ -1185,6 +1283,8 @@ class MeasuresMixin:
                     spec.measurand_ref_id,
                     spec.literal,
                     reported_unit,
+                    currency,
+                    price_year,
                     num,
                     low,
                     high,
@@ -1634,7 +1734,9 @@ class MeasuresMixin:
         conversion between references is not built, so a SHE row never stands
         in for an RHE one.
 
-        Rows group by ``(measurand, reference, normalization)`` plus the
+        Rows group by ``(measurand, reference, normalization, currency,
+        price_year)`` — a NULL price year is its own group, so EUR 2010
+        never ranks against EUR 2023 — plus the
         values of the measurand's *categorical* required conditions — a
         Faradaic efficiency is ranked per product, so a group reads "FE ·
         product=NH3" — and are never compared across groups: each group
@@ -1642,7 +1744,8 @@ class MeasuresMixin:
         (``higher``/``max`` or ``lower``/``min``) overrides the taxon's
         ``higher_is_better``; a group with neither has ``best=None`` and says
         how many rows it holds. Each result is ``{measurand_ref_id, measurand,
-        reference, normalization, by, sense, n, best}``, ``by`` the
+        reference, normalization, currency, price_year, by, sense, n, best}``,
+        ``by`` the
         ``{name: value}`` partition (``{'product': 'NH3'}``), ``best`` a row
         dict with
         its run's ``conditions`` and ``review_state`` (newest current verdict,
@@ -1678,7 +1781,14 @@ class MeasuresMixin:
             where.append("m.reference = %(reference)s")
             params["reference"] = reference
         groups: dict[
-            tuple[int, str | None, str | None, tuple[tuple[str, str], ...]],
+            tuple[
+                int,
+                str | None,
+                str | None,
+                tuple[tuple[str, str], ...],
+                str | None,
+                int | None,
+            ],
             list[dict[str, Any]],
         ] = {}
         rows = [
@@ -1713,12 +1823,20 @@ class MeasuresMixin:
                 required.get(r["measurand_ref_id"], ()),
                 by_run.get(r["run_key"], []),
             )
+            currency, year = row_currency(r)
             groups.setdefault(
-                (r["measurand_ref_id"], r["reference"], r["normalization"], part),
+                (
+                    r["measurand_ref_id"],
+                    r["reference"],
+                    r["normalization"],
+                    part,
+                    currency,
+                    year,
+                ),
                 [],
             ).append(r)
         results: list[dict[str, Any]] = []
-        for (mid, ref, norm, part), members in groups.items():
+        for (mid, ref, norm, part, currency, year), members in groups.items():
             direction = override or _sense(members[0]["higher_is_better"])
             best: dict[str, Any] | None = None
             if direction == "higher":
@@ -1731,6 +1849,8 @@ class MeasuresMixin:
                     "measurand": members[0]["measurand"],
                     "reference": ref,
                     "normalization": norm,
+                    "currency": currency,
+                    "price_year": year,
                     "by": dict(part),
                     "sense": direction,
                     "n": len(members),
@@ -1742,6 +1862,8 @@ class MeasuresMixin:
                 g["measurand"] or "",
                 g["reference"] or "",
                 g["normalization"] or "",
+                g["currency"] or "",
+                g["price_year"] or 0,
                 sorted(g["by"].items()),
             )
         )
@@ -1793,6 +1915,7 @@ class MeasuresMixin:
         text: str | None = None,
         include_all: bool = False,
         scan_cap: int = 5000,
+        bound_currency: tuple[str, int | None] | None = None,
     ) -> MeasureSearch:
         """Output rows matching all of: the measurand and its descendants; a
         numeric range by interval overlap (``min_si``/``max_si`` are SI
@@ -1802,7 +1925,16 @@ class MeasuresMixin:
         superseded, ambiguous, flagged and anchor-lost ``measured`` rows are
         left out (only ``measured`` drops its claim with the link — see
         :meth:`best_measure`; other tiers stay, marked ``anchor_lost``).
-        Scans at most ``scan_cap`` candidate rows (``truncated`` says so)."""
+        Scans at most ``scan_cap`` candidate rows (``truncated`` says so).
+
+        ``bound_currency`` is the ``(currency, price_year)`` group the bounds
+        are stated in: an explicit ``unit=`` token, exact to the year (a
+        NULL year is its own group), or the taxon's currency paired with
+        :data:`ANY_YEAR` — a range with no ``unit=`` compares the taxon's
+        currency across every price year. The range itself still runs in
+        SQL; until conversion lands only the group filter runs in Python: a
+        row outside the bound group never mixes, and ``other_currency``
+        counts them for the search footer (gr510555 S1)."""
         where = ["m.direction = 'output'"]
         params: dict[str, Any] = {"cap": scan_cap + 1}
         if not include_all:
@@ -1857,12 +1989,22 @@ class MeasuresMixin:
         rows = rows[:scan_cap]
         _si_normalise(rows)
         by_run = self._conditions_by_run([r["run_key"] for r in rows])
+        bound = bound_currency if min_si is not None or max_si is not None else None
         out = []
+        other_currency = 0
         for r in rows:
             r["conditions"] = by_run.get(r["run_key"], [])
-            if all(_condition_holds(f, r["conditions"]) for f in conditions):
-                out.append(r)
-        return MeasureSearch(rows=out, truncated=truncated)
+            if not all(_condition_holds(f, r["conditions"]) for f in conditions):
+                continue
+            if bound is not None:
+                currency, year = row_currency(r)
+                if currency != bound[0] or (bound[1] != ANY_YEAR and year != bound[1]):
+                    other_currency += 1
+                    continue
+            out.append(r)
+        return MeasureSearch(
+            rows=out, truncated=truncated, other_currency=other_currency
+        )
 
     def measure_detail(self, measure_id: int) -> dict[str, Any]:
         """One row, any liveness, with what a review needs: its run's

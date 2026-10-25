@@ -15,7 +15,11 @@ verbs are listed below.
   — range-and-conditions search. ``property`` is a taxon handle or path and
   covers its ``specialises`` descendants; ``min``/``max`` are numbers in
   ``unit`` (else the taxon's ``display_unit``, else SI) converted to SI before
-  they meet the stored values by interval overlap; ``q`` holds condition terms
+  they meet the stored values by interval overlap — a bound in a currency
+  compares only rows in that currency (an explicit ``unit='USD2020/t'``
+  narrows to that price year, a NULL year its own group; without ``unit=``
+  all years of the taxon's currency), and the footer counts the rest
+  (gr510555 S1); ``q`` holds condition terms
   (``quant=Q4 potential<-0.5``) matched against the run's input rows, and any
   other word matches the subject label. One line per row.
 
@@ -46,7 +50,7 @@ from precis.handlers._eye import is_eye_view
 from precis.handlers._measure_write import RunParser, flag_lines
 from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
-from precis.store._measures_ops import ConditionFilter
+from precis.store._measures_ops import ANY_YEAR, ConditionFilter
 from precis.store._salience import current_background_actor
 from precis.store.revision_context import current_revision_context
 from precis.taxonomy.measure_units import (
@@ -54,9 +58,9 @@ from precis.taxonomy.measure_units import (
     MINUS_FOLD,
     format_number,
     is_unit,
-    pint_unit_text,
     to_canonical,
 )
+from precis.taxonomy.money import row_currency, split_currency
 from precis.utils import handle_registry
 
 _DEFAULT_PAGE_SIZE = 20
@@ -338,8 +342,7 @@ class MeasureHandler(Handler):
                 text += f" ± {r['value_err']:.6g}"
         else:
             return "—"
-        unit = (r["canonical_unit"] or "").strip()
-        unit = "" if pint_unit_text(unit)[0] == "1" else unit
+        unit = render.stored_unit(r)
         return text + (f" {unit}" if unit else "")
 
     def _anchor_line(self, r: dict[str, Any]) -> str:
@@ -405,6 +408,16 @@ class MeasureHandler(Handler):
         if flagged:
             lines.append("flagged:")
             lines.extend(f"  {line}" for line in flagged)
+        no_year = [
+            handle_registry.format_handle("measure", mid)
+            for mid, r in details.items()
+            if (cur := row_currency(r))[0] is not None and cur[1] is None
+        ]
+        if no_year:
+            lines.append(
+                f"no price year on {', '.join(no_year)}: shown as reported, "
+                "not converted; pass price_year= when the source states it"
+            )
         return Response(body="\n".join(lines))
 
     # ── edit: one ledger review ──────────────────────────────────────
@@ -579,6 +592,7 @@ class MeasureHandler(Handler):
             conditions=conditions,
             text=text or None,
             include_all=status == "all",
+            bound_currency=self._bound_currency(unit, taxon_meta),
         )
         rows = found.rows
         size = page_size if page_size > 0 else _DEFAULT_PAGE_SIZE
@@ -590,11 +604,47 @@ class MeasureHandler(Handler):
         lines = [head, *(render.result_line(r, unit=unit) for r in shown)]
         if len(rows) > page * size:
             lines.append(f"… {len(rows) - page * size} more: page={page + 1}")
+        if found.other_currency:
+            lines.append(
+                f"({found.other_currency} row(s) in another currency or price "
+                "year left out of the range: a range compares within one "
+                "currency-year group until conversion lands)"
+            )
         if found.truncated:
             lines.append(
                 "(candidate scan stopped at its cap: narrow with property=, min=/max= or q=)"
             )
         return Response(body="\n".join(lines))
+
+    @staticmethod
+    def _bound_currency(
+        unit: str | None, taxon_meta: dict[str, Any]
+    ) -> tuple[str, int | None] | None:
+        """The ``(currency, price_year)`` group the range bounds are stated
+        in. An explicit ``unit=`` token is exact — ``unit='USD2020/t'``
+        compares only 2020 dollars, and a yearless token only yearless
+        rows. With no ``unit=`` the taxon's currency (its display unit,
+        else canonical) bounds across *every* price year
+        (:data:`ANY_YEAR`) — each returned row still labels its own —
+        until conversion lands (gr510555 S1)."""
+        text = (unit or "").strip()
+        if text:
+            try:
+                cur = split_currency(text)
+            except BadInput:
+                return None
+            return (cur.currency, cur.price_year) if cur.currency else None
+        for taxon_unit in (
+            taxon_meta.get("display_unit"),
+            taxon_meta.get("canonical_unit"),
+        ):
+            try:
+                cur = split_currency(taxon_unit)
+            except BadInput:
+                continue
+            if cur.currency is not None:
+                return cur.currency, ANY_YEAR
+        return None
 
     @staticmethod
     def _to_si(

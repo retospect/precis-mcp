@@ -5,7 +5,9 @@ returns; no DB.
 A stored value is SI; this turns it into the unit a person expects
 (:func:`precis.taxonomy.measure_units.display_numbers`): the caller's
 ``unit=``, else the measurand's ``display_unit``, else SI with an automatic
-prefix.
+prefix. A currency row is the exception: its stored number is already in
+the reported currency, so only the remainder converts and the label carries
+that currency and price year (``1000 EUR(2015)/t``; gr510555 S1).
 """
 
 from __future__ import annotations
@@ -14,8 +16,92 @@ from collections.abc import Sequence
 from typing import Any
 
 from precis.errors import BadInput
-from precis.taxonomy.measure_units import display_numbers, format_number
+from precis.taxonomy.measure_units import (
+    display_numbers,
+    format_number,
+    make_converter,
+    pint_unit_text,
+)
+from precis.taxonomy.money import row_currency, split_currency
 from precis.utils import handle_registry
+
+
+def _money_label(currency: str, price_year: int | None, remainder: str) -> str:
+    """``EUR(2015)/t`` — the currency, its price year when known, the unit's
+    non-money remainder."""
+    text = currency + (f"({price_year})" if price_year is not None else "")
+    if remainder:
+        text += remainder if remainder.startswith("/") else f" {remainder}"
+    return text
+
+
+def _money_unit(currency: str, remainder: str) -> str:
+    """``'EUR' + '/t'`` -> ``'EUR/t'`` — the unit text split_currency and
+    make_converter read back."""
+    if not remainder:
+        return currency
+    return (
+        currency + remainder
+        if remainder.startswith("/")
+        else (f"{currency} {remainder}")
+    )
+
+
+def _money_numbers(
+    row: dict[str, Any], values: Sequence[float], unit: str | None
+) -> tuple[list[float], str] | None:
+    """Numbers + label for a currency row, or None on a non-currency row.
+
+    Slice 1 of measure-currency-units (gr510555): a stored value is in the
+    *reported* currency (``measures.currency``, or the legacy token) with the
+    remainder scaled to the canonical one. Currencies never convert, so the
+    only thing pint scales here is the remainder — toward the requested
+    ``unit``'s, else the display unit's, else the canonical remainder —
+    and the label always carries the row's own currency
+    (``1000 EUR(2015)/t``)."""
+    currency, price_year = row_currency(row)
+    if currency is None:
+        return None
+    try:
+        canon_rem = split_currency(row.get("canonical_unit")).remainder
+    except BadInput:
+        canon_rem = ""
+    rem = canon_rem
+    target = (unit or "").strip() or (row.get("display_unit") or "").strip()
+    if target:
+        try:
+            t = split_currency(target)
+            if t.remainder:
+                rem = t.remainder
+        except BadInput:
+            pass
+    if rem != canon_rem:
+        try:
+            conv = make_converter(
+                _money_unit(currency, canon_rem), _money_unit(currency, rem)
+            )
+        except BadInput:
+            rem = canon_rem  # an unconvertible target keeps the stored remainder
+        else:
+            return [conv.value(v) for v in values], _money_label(
+                currency, price_year, rem
+            )
+    return list(values), _money_label(currency, price_year, rem)
+
+
+def stored_unit(row: dict[str, Any]) -> str:
+    """The unit the stored numbers are in: the canonical unit for an SI row
+    (``''`` when dimensionless), the row's currency + canonical remainder
+    for a currency row (``EUR(2015)/t``)."""
+    unit = (row.get("canonical_unit") or "").strip()
+    currency, price_year = row_currency(row)
+    if currency is not None:
+        try:
+            rem = split_currency(unit).remainder
+        except BadInput:
+            rem = ""
+        return _money_label(currency, price_year, rem)
+    return "" if pint_unit_text(unit)[0] == "1" else unit
 
 
 def _numbers(
@@ -24,6 +110,8 @@ def _numbers(
     """Display numbers for a row; an explicit ``unit`` that does not fit this
     row's measurand falls back to the row's own default rather than failing a
     whole result list."""
+    if (money := _money_numbers(row, values, unit)) is not None:
+        return money
     try:
         return display_numbers(
             values,
