@@ -148,60 +148,12 @@ the splitter already makes each pipe row its own sentence
 
 ### T1 — table recipes, with units in a column
 
-For a chunk with `chunk_kind='table'` the reader prompt switches to a
-recipe contract (one reply per table chunk):
-
-```json
-{"table": {
-  "header_row": 0,
-  "subject_column": 0,
-  "group": "Table 2",
-  "conditions": [{"condition": "electrolyte", "measurand": "<slug>",
-                  "literal": "0.1 M KOH", "role": "context",
-                  "anchor": "<sentence in this chunk, or null>"}],
-  "columns": [
-    {"column": 2, "measurand": "<slug>", "unit": "mV", "role": "output"},
-    {"column": 3, "measurand": "<slug>", "unit_column": 4, "role": "output"},
-    {"column": 1, "measurand": "<slug>", "unit": "°C", "role": "input",
-     "condition": "temperature"}
-  ],
-  "skip_cells": ["3:2"],
-  "overrides": {"5:3": {"measurand_status": "ambiguous"}}
-}}
-```
-
-A new pure module `src/precis/extract/recipes.py` expands it:
-
-- parse the pipe table: rows are the chunk's sentence spans; drop the
-  separator row; every data row must have the header's cell count, or
-  the whole table drops with reason `ragged_table` (the pilot's
-  collapsed-OCR case stays a drop, never a guess);
-- one output run per non-empty data cell of each `role: "output"`
-  column; skipped cells are empty, `-`, `—`, `n/a`, and `skip_cells`;
-- `literal` = the exact cell text; `value_form` comes from the store's
-  `parse_literal` (`<1` → `upper_bound`, `9.6 ± 1.7` → point + err,
-  `550–575` → interval), never from the reader;
-- `subject` = the row's `subject_column` cell; `subject_group` =
-  `group`;
-- unit: the column's `unit`, or the same row's cell in `unit_column`;
-  the unit must be spelled in the header cell or the unit cell, else
-  flag `unit_without_text_support` (the column header is the support,
-  as in the pilot);
-- `role: "input"` columns become input rows of every output run in the
-  same row; `conditions` become input rows of every run in the table
-  (this is the group-level set for tables);
-- `overrides` patch one cell's fields; an override can change
-  `measurand`, `measurand_status`, `reference`, `normalization`,
-  `unit`, never `literal`;
-- evidence: the output's anchor is the row span; `meta.table = {chunk,
-  row, column, header}` records the cell for the sampler.
-
-Every expanded run goes through the same `literal_supported` check
-against its row span and lands through `insert_measure` unchanged. The
-reply costs O(columns), not O(cells).
-
-**Escalation counts.** The job's `summary_meta` gains
-`drops_by_reason` and `flags_by_kind`.
+Moved to [table-numeric-extraction](table-numeric-extraction.md)
+(gr506762, 2026-10-25), which builds it as slice 2. Its contract adds
+row orientation, log-scale cells, detected citation attribution and a
+cell-level anchor in place of the row span. The escalation counts
+(`drops_by_reason`, `flags_by_kind`) ship there too. Slice T's ACs
+1, 2 and 7 below are covered by that item's slice 2 ACs.
 
 ### T2 — group condition sets for prose results
 
