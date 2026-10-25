@@ -65,6 +65,15 @@ container) that a rebuild left behind; tagged and non-precis images are never
 touched. `--dry-run` lists every project with its verdict and each image it
 would remove. The next gate in a reaped tree rebuilds its caches.
 
+`safe_remove` also needs a **clean** tree, so a scratch ignore can work
+against the reaper: a `.gitignore` written inside a test worktree is
+itself an uncommitted change, the tree goes dirty and survives
+SessionEnd (gr514908). To keep a tree-local path out of `git status`
+without editing a tracked file, use `.git/info/exclude` — same syntax as
+`.gitignore`, lives under `.git/` so it never dirties the checkout — or
+put scratch under the already-ignored `scratch/`, `.scratch/` /
+`.scratch_*` names, or `.claude/`.
+
 The remote side leaks the same way. `scripts/ship --remote` pushes the tree to
 a throwaway `ci/<branch>` for check.yml, and deletes it again only on a
 completed ship — a red gate you then `/qland`, or a ship killed mid-run, leaves
@@ -203,7 +212,11 @@ first-party import), and the extras a bare host `uv sync` skips are on the
 `ignore_missing_imports` override list in `pyproject.toml` — the overrides
 only bite where the dep is missing, so container checking is unchanged.
 Host mypy is an honest fast-loop check; the container run is still the
-verdict (gr514869, gr514401, gr514976, gr515001).
+verdict (gr514869, gr514401, gr514976, gr515001). Extensionless scripts
+ride `scripts_are_modules` (`[tool.mypy]`), so `mypy scripts/ship-wait
+scripts/board` checks both in one call — before it, every extensionless
+argument took module name `__main__` and a multi-script call died on
+"Duplicate module named __main__" (gr515187).
 
 **The local gate's default lane is `-m 'not slow'`.** The `slow` cluster is a
 handful of tests holding a large share of wall-clock: on 2026-09-25 a full

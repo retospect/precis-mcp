@@ -882,11 +882,119 @@ forbidden_modules = [
 [tool.ruff]
 target-version = "py312"
 line-length = 88
+# ruff parses ANY path handed to it explicitly — `ruff check
+# scripts/prod-precis` reported 138 invalid-syntax "errors" on a bash
+# script (gr514997). force-exclude makes extend-exclude bind explicit
+# paths too; without it the list below only applies to traversal.
+force-exclude = true
 # Don't descend into Claude Code worktrees — sibling sessions live under
 # .claude/worktrees/<name>/ (nested copies of the repo) and would
 # otherwise be scanned twice and trip the format/lint gate on unrelated
 # in-flight work.
-extend-exclude = [".claude"]
+#
+# scripts/ mixes ~40 extensionless Python scripts with ~75 extensionless
+# bash ones plus *.sh/*.mjs/data files. Every non-Python file is excluded
+# so an explicit `ruff check scripts/<bash-script>` skips instead of
+# parsing bash as Python; the Python scripts stay linted.
+# tests/test_ruff_scripts_excludes.py keeps this list in sync.
+extend-exclude = [
+    ".claude",
+    # Python-free subdirectories.
+    "scripts/exercise-mcp",
+    "scripts/host-ops",
+    # Non-Python suffixes anywhere under scripts/.
+    "scripts/**/*.csv",
+    "scripts/**/*.json",
+    "scripts/**/*.jsonl",
+    "scripts/**/*.md",
+    "scripts/**/*.mjs",
+    "scripts/**/*.sh",
+    "scripts/**/*.txt",
+    "scripts/**/*.yaml",
+    "scripts/**/.gitignore",
+    # Dotfile the *.json glob already catches in ruff; listed so the sync
+    # test's own (dot-shy) glob expansion sees it covered too.
+    "scripts/.doi_status.json",
+    # Extensionless bash scripts (no suffix for a glob to catch).
+    "scripts/_prod-run",
+    "scripts/backlog-lint",
+    "scripts/build-all",
+    "scripts/build-image",
+    "scripts/build-tblite-wheel",
+    "scripts/bump",
+    "scripts/chunk-numerics-recompute",
+    "scripts/classify/classify",
+    "scripts/classify/cluster-papers",
+    "scripts/classify/eval-classifier",
+    "scripts/classify/sample-gold",
+    "scripts/classify/sample-gold-chunks",
+    "scripts/claude-local",
+    "scripts/cluster-ping",
+    "scripts/db",
+    "scripts/db-thrash-review",
+    "scripts/deploy",
+    "scripts/dev",
+    "scripts/devin-tree",
+    "scripts/doilist",
+    "scripts/dream-cleanup",
+    "scripts/embedder-reload",
+    "scripts/enrich-paper-identifiers",
+    "scripts/fda-grant-review",
+    "scripts/find-citing-papers",
+    "scripts/fixer-tick",
+    "scripts/fleet",
+    "scripts/fleet-authority",
+    "scripts/fleet-report-install",
+    "scripts/gen-schema",
+    "scripts/geom-wheel-smoke",
+    "scripts/gist-cleanup",
+    "scripts/gripe-gc-review",
+    "scripts/guide-web",
+    "scripts/inflight",
+    "scripts/mcp-entry-preflight",
+    "scripts/mcp-http-install",
+    "scripts/mcp-loadtest",
+    "scripts/memory-attribution-audit",
+    "scripts/memory-lint",
+    "scripts/migration-check",
+    "scripts/mutate-diff",
+    "scripts/nightly",
+    "scripts/onto-groups",
+    "scripts/onto-repoint",
+    "scripts/paper-count",
+    "scripts/paper-monitor-ingest-dir",
+    "scripts/pcb-pr-bench",
+    "scripts/pcb-route-bench",
+    "scripts/perplexity-monitor-ingest-dir",
+    "scripts/pgb-pools",
+    "scripts/precis-add",
+    "scripts/precis-embed",
+    "scripts/precis-index",
+    "scripts/precis-shell",
+    "scripts/precis-summarize",
+    "scripts/precis-watch",
+    "scripts/prod-precis",
+    "scripts/prod-psql",
+    "scripts/reap-stale-serves",
+    "scripts/reap-test-dbs",
+    "scripts/reap-worktrees",
+    "scripts/rebase",
+    "scripts/render-uml",
+    "scripts/restart-worker-and-watch",
+    "scripts/retrofit-acatome-external-ids",
+    "scripts/secrets-check-review",
+    "scripts/serving-soundness",
+    "scripts/ship",
+    "scripts/skill-eval",
+    "scripts/skill-search-review",
+    "scripts/surface-review",
+    "scripts/take-agent",
+    "scripts/test",
+    "scripts/title-body-sweep",
+    "scripts/token-review",
+    "scripts/wheel-smoke",
+    "scripts/ws-promote",
+]
 
 [tool.ruff.format]
 # ruff 0.16 formats python fences inside markdown by default; our LLM-facing
@@ -950,6 +1058,12 @@ python_version = "3.12"
 warn_unused_configs = false
 check_untyped_defs = true
 warn_unused_ignores = true
+# Extensionless script arguments each default to module name `__main__`,
+# so `mypy scripts/ship-wait scripts/board` died on "Duplicate module
+# named __main__" (gr515187). With this on, each takes its module name
+# from its filename and one mypy call typechecks several scripts at once.
+# Package/directory targets (the gate's `mypy src tests`) are unaffected.
+scripts_are_modules = true
 # `mypy src tests` (the gate's scope) never passes `scripts/` as a target,
 # but tests/test_guide_scripts.py imports scripts/guide_lib.py at runtime
 # via a sys.path insert (scripts/*.py isn't a package under src/ — see the
