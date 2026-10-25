@@ -1793,12 +1793,22 @@ class PcbHandler(Handler):
 
         stale = self._stale_note(ref.id)
         if self._claiming_worker_live():
+            job_line = job_resp.body
             drain_note = (
                 f"Runs on the cluster worker's code, not necessarily this "
                 f"session's ({code_stamp()}) — the job's `ran_on:` line records "
                 "which build actually ran.\n"
             )
         else:
+            # A scratch/test store: the job's numeric id is a local row
+            # nothing else can poll — `get(kind='job', id=N)` would hit
+            # the session's own store, not this one (gr513874). Name it
+            # a ref_id and let the drain note say how it runs.
+            verb = "existing" if job_resp.reused else "created"
+            job_line = (
+                f"{verb} job ref_id={job_resp.ref_id} "
+                f"(job_type='pcb_{op}', queued on this store)"
+            )
             drain_note = (
                 "No live worker on this store — nothing claims the job until "
                 "something drains it in-process "
@@ -1806,7 +1816,7 @@ class PcbHandler(Handler):
                 "which runs the draining process's own code.\n"
             )
         return (
-            f"# {op} {ref.slug} — enqueued\n{job_resp.body}\n\n"
+            f"# {op} {ref.slug} — enqueued\n{job_line}\n\n"
             + (stale + "\n\n" if stale else "")
             + drain_note
             + f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "

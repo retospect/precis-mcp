@@ -1137,14 +1137,27 @@ def test_op_place_never_computes_inline(pcb, store, monkeypatch):
 def test_enqueue_note_names_inproc_drain_when_no_worker_is_live(pcb, store):
     """gr513874: on a local/test store no cluster worker heartbeats into
     it, so the job can ONLY ever be drained in-process — the 'cluster
-    worker's code' caveat is wrong there and must not print. The job row
-    is deleted afterwards (gr295496's stranded-orphan rule)."""
+    worker's code' caveat is wrong there and must not print. The job's
+    numeric id is a local row nothing else can poll (a
+    ``get(kind='job', id=N)`` hint would point at the session's own
+    store), so the ack names it a ``ref_id`` on this store instead. The
+    job row is deleted afterwards (gr295496's stranded-orphan rule)."""
     pcb.put(id="no-worker", args=_CROSSED)
     try:
         resp = pcb.put(id="no-worker", args={"op": "place"})
         assert "enqueued" in resp.body
         assert "cluster worker's code" not in resp.body
         assert "in-process" in resp.body
+        assert "job ref_id=" in resp.body
+        assert "poll: get(kind='job'" not in resp.body
+        ref = store.get_ref(kind="pcb", id="no-worker")
+        assert ref is not None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (ref.id,),
+            ).fetchone()
+        assert f"job ref_id={row[0]} " in resp.body
     finally:
         ref = store.get_ref(kind="pcb", id="no-worker")
         assert ref is not None
@@ -1167,6 +1180,7 @@ def test_enqueue_note_keeps_cluster_caveat_when_a_worker_is_live(pcb, store):
         assert "enqueued" in resp.body
         assert "cluster worker's code" in resp.body
         assert "ran_on:" in resp.body
+        assert "created job id=" in resp.body  # prod keeps the pollable id
     finally:
         ref = store.get_ref(kind="pcb", id="live-worker")
         assert ref is not None
@@ -1191,7 +1205,7 @@ def test_op_route_warm_start_flag(store, monkeypatch):
     ref = store.get_ref(kind="pcb", id="route-warm-start")
     assert ref is not None
     job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured")
+    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
     monkeypatch.setattr(hub, "sibling", lambda kind: job)
     handler = PcbHandler(hub=hub)
     handler._enqueue_op(ref, "route", {"warm_start": "radial"})
@@ -1221,7 +1235,7 @@ def test_op_route_corridor_and_escape_flags(store, monkeypatch):
     ref = store.get_ref(kind="pcb", id="route-opt-ins")
     assert ref is not None
     job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured")
+    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
     monkeypatch.setattr(hub, "sibling", lambda kind: job)
     handler = PcbHandler(hub=hub)
     handler._enqueue_op(ref, "route", {"corridor": 5, "escape": "plaza"})
@@ -1414,7 +1428,7 @@ def test_op_route_loop_enqueues_params_and_forwards_authored_caps(store, monkeyp
     ref = store.get_ref(kind="pcb", id="op-loop-caps")
     assert ref is not None
     job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured")
+    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
     monkeypatch.setattr(hub, "sibling", lambda kind: job)
     handler = PcbHandler(hub=hub)
     handler._enqueue_op(ref, "route", {"loop": 2})
@@ -1441,7 +1455,7 @@ def test_op_route_cleanup_must_be_boolean_and_only_off_is_forwarded(store, monke
     with pytest.raises(BadInput, match="cleanup"):
         PcbHandler(hub=hub).put(id="op-cleanup", args={"op": "route", "cleanup": 1})
     job = Mock()
-    job.put.return_value = SimpleNamespace(body="job captured")
+    job.put.return_value = SimpleNamespace(body="job captured", ref_id=0, reused=False)
     monkeypatch.setattr(hub, "sibling", lambda kind: job)
     handler = PcbHandler(hub=hub)
     handler._enqueue_op(ref, "route", {"cleanup": False})

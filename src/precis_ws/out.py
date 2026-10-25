@@ -147,7 +147,8 @@ def block(
     ``blocks/<name>.bonds.json`` or an already-staged relative path.
     ``frame`` defaults to the calling trace frame. A
     :class:`precis_geom.assembly.Geom` flattens to geometry here and
-    carries its declared ports into the manifest entry. A
+    carries its declared ports and findings (``chirality.flipped`` &c.)
+    into the manifest entry (gr514205). A
     :class:`precis_geom.pcb.Board` routes to :func:`board` — the run's
     whole ``kind='pcb'`` manifest, not a block file (gr513754)."""
     from precis_geom import pcb as _pcb
@@ -160,7 +161,7 @@ def block(
         board(obj)
         return
     _vet_not_board("block")
-    obj, gports = _geom_parts(obj)
+    obj, gports, gfindings = _geom_parts(obj)
     if ports is None:
         ports = gports
     fname, payload, inferred = _block_file(name, obj)
@@ -171,6 +172,8 @@ def block(
     }
     if ports:
         entry["ports"] = list(ports)
+    if gfindings:
+        entry["findings"] = gfindings
     if relax is not None:
         entry["relax"] = relax
     if desc is not None:

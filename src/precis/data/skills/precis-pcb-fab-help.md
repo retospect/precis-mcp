@@ -53,6 +53,13 @@ response opens with a `DRC FAILED` block naming the error count, the rules
 and the first findings. Do not send that bundle to a fab: fix the board and
 re-export until the first line reads `DRC: 0 errors`.
 
+Synthesized (guessed) pad bounds refuse the export. For a look anyway pass
+`args={'allow_synthesized': True}` — the response opens `PREVIEW` and the
+file is named `{slug}-preview.zip`, never the order-upload `-fab.zip`, so a
+preview can't be sent to a fab by mistake. `view='fab'` and `op='order'`
+never accept the flag; the real fix is `op='footprint'` with the part's
+LCSC number (see [[precis-pcb-check-help]]).
+
 **Silkscreen is generated, not authored.** Each part gets one closed
 outline drawn two silk line widths clear of its own pads. Close
 neighbours bend their outlines toward each other but keep two line widths

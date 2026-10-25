@@ -285,6 +285,86 @@ def test_mirror_flips_chiral_index() -> None:
         assert np.allclose(carts[:, 2], before[:, 2]), name
 
 
+def test_geom_findings_ride_the_manifest_block_row(store: Any, tmp_path: Path) -> None:
+    """gr514205 — ``Geom.findings`` (``chirality.flipped`` &c.) surface
+    on the manifest's block row and in the import echo, not only on
+    ``geom.findings``; a mirrored child inside an assembly surfaces too
+    — the finding lives on the child Geom, not the parent's."""
+    from precis_se.workspace_import import import_workspace_run
+
+    g = pga.geom(_scene([("C", (0.0, 0.0, 0.0))]))
+    with _trace.run():
+        mirrored = pga.mirror(g, "yz")
+        asm = pga.assembly("a", children=[mirrored])
+    assert any("chirality.flipped" in f for f in mirrored.findings)
+    assert not asm.findings  # the finding stays on the child
+
+    with geom_out.run(tmp_path / "run", check=False) as o:
+        o.block("m", asm)
+    manifest = json.loads(
+        (tmp_path / "run" / "manifest.json").read_text(encoding="utf-8")
+    )
+    findings = manifest["blocks"][0]["findings"]
+    assert any("chirality.flipped" in f for f in findings)
+
+    ref = store.insert_ref(kind="se", slug="ws-findings", title="x", meta={})
+    job = store.insert_ref(kind="job", slug=None, title="x", meta={})
+    result = import_workspace_run(
+        store,
+        workspace="hcol-test",
+        design="ws-findings",
+        out_dir=tmp_path / "run",
+        run_job=int(job.id),
+        script_sha="x",
+        lock_sha="x",
+        image_digest="sha256:i",
+        params={},
+        requested_by="agent:test",
+    )
+    assert any("chirality.flipped" in f and "'m'" in f for f in result.findings)
+
+
+def test_ws_out_block_carries_geom_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr514205 — the sandbox lane (``precis_ws.out.block``) stamps the
+    same ``findings`` row on the manifest block."""
+    from precis_ws import out as ws_out
+
+    monkeypatch.setenv("PRECIS_WS_OUT_DIR", str(tmp_path / "out"))
+    ws_out._reset()
+    g = pga.geom(_scene([("C", (0.0, 0.0, 0.0))]))
+    with _trace.run():
+        mirrored = pga.mirror(g, "yz")
+        ws_out.block("m", mirrored)
+        od = ws_out.finish()
+    manifest = json.loads((od / "manifest.json").read_text(encoding="utf-8"))
+    findings = manifest["blocks"][0]["findings"]
+    assert any("chirality.flipped" in f for f in findings)
+    ws_out._reset()
+
+
+def test_manifest_block_findings_must_be_strings() -> None:
+    """The ``findings`` key is the ``out.block`` channel — the vet
+    refuses a non-list-of-strings so it can't go free-form."""
+    from precis.errors import BadInput
+    from precis_se.workspace_import import _vet_manifest
+
+    doc = {
+        "schema": 1,
+        "blocks": [
+            {
+                "name": "m",
+                "file": "blocks/m.extxyz",
+                "scale": "atomic",
+                "findings": "chirality.flipped",
+            }
+        ],
+    }
+    with pytest.raises(BadInput, match="findings"):
+        _vet_manifest(doc)
+
+
 def test_nested_assembly_places_through_parent_port() -> None:
     """``place`` lands the sub-assembly's ``rim`` port on the parent's
     ``dock`` — through a parent that is itself rotated AND translated,

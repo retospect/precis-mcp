@@ -82,19 +82,37 @@ def _vet_name(name: str, *, what: str = "block") -> str:
     return n
 
 
-def _geom_parts(obj: Any) -> tuple[Any, list[dict[str, Any]] | None]:
+def _geom_findings(g: Any) -> list[str]:
+    """A :class:`precis_geom.assembly.Geom` tree's findings, deduped in
+    walk order — its own plus every placement descendant's (a mirrored
+    child inside an assembly keeps its ``chirality.flipped`` on the
+    child Geom, not the parent's)."""
+    seen: list[str] = []
+    queue = [g]
+    for node in queue:
+        for f in node.findings:
+            if f not in seen:
+                seen.append(str(f))
+        queue.extend(c for c, _x, _fid in node.placements)
+    return seen
+
+
+def _geom_parts(obj: Any) -> tuple[Any, list[dict[str, Any]] | None, list[str]]:
     """Unwrap a :class:`precis_geom.assembly.Geom` → ``(geometry,
-    manifest ports)``; anything else passes through with ``None`` ports.
+    manifest ports, findings)``; anything else passes through with
+    ``None`` ports and no findings.
 
     A pga object flattens to its merged geometry (the ``out`` boundary
     writes bytes, not the object graph); its declared ports become
     manifest port rows verbatim — ``atom`` names a label of the
     flattened scene (kept by flatten while unique), ``direction`` is
-    the block-frame direction vector."""
+    the block-frame direction vector. Its findings (``chirality.flipped``
+    and the like) ride the block's manifest row so a mirrored hand is
+    visible in the run record, not only on ``geom.findings`` (gr514205)."""
     from precis_geom import assembly as _pga
 
     if not isinstance(obj, _pga.Geom):
-        return obj, None
+        return obj, None, []
     flat = obj.flatten()
     ports: list[dict[str, Any]] = []
     flat_labels = set(getattr(flat, "atoms", {}) or {})
@@ -112,7 +130,7 @@ def _geom_parts(obj: Any) -> tuple[Any, list[dict[str, Any]] | None]:
         if p.direction is not None:
             row["direction"] = [float(v) for v in p.direction]
         ports.append(row)
-    return flat, ports or None
+    return flat, ports or None, _geom_findings(obj)
 
 
 def _array_fields(spec: dict[str, Any]) -> dict[str, Any]:
@@ -364,7 +382,9 @@ class Run:
         pass through to the manifest entry verbatim (the importer's
         vet is the contract), as do ``mode``/``measures``/``loads`` —
         the block's manufacturing mode, named measures and load
-        declarations (gr514245). ``template=True`` marks a library part:
+        declarations (gr514245) — and a Geom's findings
+        (``chirality.flipped`` &c.) ride the row as ``findings``
+        (gr514205). ``template=True`` marks a library part:
         instanced by :meth:`instance`, never itself placed in the
         assembly (gr514241). ``frame`` defaults to this call's own
         trace-frame id."""
@@ -372,7 +392,7 @@ class Run:
         if n in self._names:
             raise ValueError(f"out.block: duplicate block name {n!r}")
         self._vet_not_board("block")
-        geom, gports = _geom_parts(geom)
+        geom, gports, gfindings = _geom_parts(geom)
         if ports is None:
             ports = gports
         kind = _block_kind(geom, n, scale)
@@ -386,6 +406,8 @@ class Run:
         entry: dict[str, Any] = {"name": n, "file": file_rel, "scale": kind}
         if ports:
             entry["ports"] = [dict(p) for p in ports]
+        if gfindings:
+            entry["findings"] = gfindings
         if relax is not None:
             entry["relax"] = dict(relax)
         if desc is not None:

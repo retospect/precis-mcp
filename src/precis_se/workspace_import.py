@@ -173,6 +173,7 @@ _BLOCK_KEYS = frozenset(
         "measures",
         "loads",
         "template",
+        "findings",
     }
 )
 _PORT_KEYS = frozenset(
@@ -294,6 +295,7 @@ class BlockEntry:
     measures: list[dict[str, Any]]
     loads: dict[str, Any] | None
     template: bool
+    findings: list[str]
 
 
 def _vet_manifest(
@@ -404,6 +406,16 @@ def _vet_manifest(
                 "true marks a library part instanced by out.instance, "
                 "never itself placed in the assembly (gr514241)"
             )
+        findings = raw.get("findings")
+        if findings is not None and (
+            not isinstance(findings, list)
+            or any(not isinstance(f, str) for f in findings)
+        ):
+            raise BadInput(
+                f"manifest {where}: 'findings' must be a list of strings — "
+                "the Geom findings out.block stamps "
+                "(chirality.flipped &c., gr514205)"
+            )
         frame = raw.get("frame")
         bonds_path = raw.get("bonds")
         blocks.append(
@@ -420,6 +432,7 @@ def _vet_manifest(
                 measures=[dict(m) for m in measures or []],
                 loads=dict(loads) if loads is not None else None,
                 template=bool(template),
+                findings=[str(f) for f in findings or []],
             )
         )
     for field_name, allowed in (
@@ -1104,6 +1117,10 @@ def import_workspace_run(
         for entry in manifest["blocks"]:
             kind, payload = parsed[entry.name]
             bsite = _site(entry.frame)
+            # gr514205 — the run's Geom findings ride the block row;
+            # echo them so an import, not just manifest.json, shows a
+            # mirrored hand.
+            result.findings.extend(f"block {entry.name!r}: {f}" for f in entry.findings)
             existing = tree.blocks.get(entry.name)
             if existing is not None and entry.name not in owned:
                 raise BadInput(
