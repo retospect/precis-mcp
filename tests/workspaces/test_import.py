@@ -382,7 +382,9 @@ def test_instance_named_like_existing_design_block(
 ) -> None:
     """gr514240 design-side backstop: an instance name colliding with a
     block already in the design (vet only sees the manifest) names the
-    namespace rule and the script line."""
+    namespace rule and the script line. Runs through ``target='fork'`` —
+    on 'design' a block the workspace did not make is refused by the
+    foreign-block gate before the namespace check is reached."""
     _design(store)
     se_ref = store.get_ref(kind="se", id="ws-test")
     assert se_ref is not None
@@ -407,7 +409,7 @@ def test_instance_named_like_existing_design_block(
         trace=_trace_doc({2: ("main.py", 11)}),
     )
     with pytest.raises(BadInput) as exc:
-        _import(store, out)
+        _import(store, out, target="fork")
     msg = str(exc.value)
     assert "duplicate block name" not in msg
     assert "share one namespace" in msg

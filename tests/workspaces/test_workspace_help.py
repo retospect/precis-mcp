@@ -5,27 +5,24 @@
   resolves to a shipped skill file;
 - the stated ``t_`` rule and cad DSL frame conventions match the code
   that fixes them (``precis.cad.vec``/``scene``/``primitives``);
-- the fenced throwaway-import recipe executes against ``store``.
+- the fenced ``import_workspace`` recipe names only real op keys.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.skill import SkillHandler, _list_skills
-from precis.store import Store
 
 SKILL = "precis-workspace-help"
 SKILL_FILE = (
     Path(__file__).resolve().parents[2] / "src/precis/data/skills" / f"{SKILL}.md"
 )
 HANDLER = Path(__file__).resolve().parents[2] / "src/precis_se/handler.py"
-BRACKET_OUT = Path(__file__).resolve().parent / "data" / "bracket" / "out"
 
 _FENCE_PY = re.compile(r"```python\n(.*?)```", re.DOTALL)
 
@@ -159,12 +156,12 @@ def test_manifest_key_list_matches_the_vet() -> None:
         assert f"`{key}`" in body
 
 
-# ── the recipe executes (gr514239's interim path) ────────────────────
+# ── the recipe matches the op it documents ───────────────────────────
 
 
 def _recipe_block() -> str:
     blocks = _FENCE_PY.findall(SKILL_FILE.read_text(encoding="utf-8"))
-    [recipe] = [b for b in blocks if "import_workspace_run" in b]
+    [recipe] = [b for b in blocks if "'op': 'import_workspace'" in b]
     return recipe
 
 
@@ -172,11 +169,14 @@ def test_skill_has_exactly_one_recipe_block() -> None:
     assert _recipe_block()
 
 
-def test_recipe_executes_against_store(store: Store) -> None:
-    """gr514239's throwaway pytest, verbatim from the skill, runs — the
-    out dir is pointed at the macro fixture instead of scratch/out."""
-    ns: dict[str, Any] = {}
-    exec(compile(_recipe_block(), str(SKILL_FILE), "exec"), ns)
-    ns["OUT_DIR"] = BRACKET_OUT
-    ns["DESIGN"] = "zz-bracket"
-    ns["test_zz_import"](store)
+def test_recipe_states_only_real_op_keys() -> None:
+    """The fenced op call names no key the vet would refuse — the
+    nested ``run``/``files`` relpaths are not op keys (the regex's
+    ``[a-z_]+`` skips every ``.``/``/``-carrying name)."""
+    from precis_se import workspace_import as wi
+
+    recipe = _recipe_block()
+    for required in ("'op'", "'workspace'", "'run'"):
+        assert required in recipe
+    for key in re.findall(r"'([a-z_]+)':", recipe):
+        assert key in wi._IMPORT_OP_KEYS, f"recipe key {key!r} not in the op"

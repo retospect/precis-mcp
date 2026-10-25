@@ -147,7 +147,7 @@ from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import finding_id as se_finding_id
 from precis_se import freedom as se_freedom
-from precis_se import fret, persist, simp_bridge
+from precis_se import fret, persist, simp_bridge, workspace_import
 from precis_se import joints as se_joints
 from precis_se import kinematics as se_kinematics
 from precis_se import kinematics_drc as se_kinematics_drc
@@ -380,6 +380,10 @@ class SeHandler(Handler):
             "declare_states/declare_transitions/set_current_state/"
             "declare_helix/declare_strand/add_domain/unpair/remove_domain/"
             "fill_complement/clear_chain/layout_chain); "
+            "import_workspace(workspace=, run={relpath:text}, files?=, "
+            "dry_run?=, target?='design'|'fork') — edit-only, the sole op "
+            "of its call — imports a workspace run's out/ tree into the "
+            "design (precis-workspace-help); "
             "declare_helix block= n_units= (bp) + lattice='honeycomb'|"
             "'square' row= col= OR path={'waypoints':[[x,y,z],…]} declares "
             "the block to BE a helix (nucleic='DNA'|'RNA', phase0=, "
@@ -927,6 +931,15 @@ class SeHandler(Handler):
             ops = payload.get("ops") or []
         if not isinstance(ops, list):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
+        if any(isinstance(o, dict) and o.get("op") == "import_workspace" for o in ops):
+            raise BadInput(
+                "import_workspace is an edit(kind='se') op — put builds a "
+                "fresh tree and the import writes the design's whole "
+                "workspace-owned block set",
+                next="put(kind='se', id=...) the design first, then "
+                "edit(kind='se', id=..., ops=[{'op':'import_workspace', "
+                "'workspace': '<slug>', 'run': {...}}])",
+            )
         description = str(payload.get("description") or "").strip()
         scenario_id = _vet_scenario(self.store, payload.get("scenario"))
         # ``prefunits`` is the sticky display preference: stored verbatim
@@ -1080,9 +1093,6 @@ class SeHandler(Handler):
         stamped onto the revision row; ``None`` for every other caller."""
         if id is None or not str(id).strip():
             raise BadInput("edit(kind='se') requires id= (the design slug)")
-        ref = self.store.get_ref(kind="se", id=str(id).strip())
-        if ref is None:
-            raise NotFound(f"se design {id!r} not found")
         # ``ops=`` given directly still honours a payload's ``prefunits``
         # key; an absent text/args parses as the empty payload.
         payload = _payload(text, args) if ops is None or text or args else {}
@@ -1090,12 +1100,49 @@ class SeHandler(Handler):
         op_list = ops
         if op_list is None:
             op_list = payload.get("ops", payload if isinstance(payload, list) else [])
+        ref = self.store.get_ref(kind="se", id=str(id).strip())
+        if ref is None:
+            nxt = (
+                f"put(kind='se', id={str(id).strip()!r}, ...) first — "
+                "import_workspace imports into an existing design"
+                if any(
+                    isinstance(o, dict) and o.get("op") == "import_workspace"
+                    for o in op_list or []
+                )
+                else None
+            )
+            raise NotFound(f"se design {id!r} not found", next=nxt)
         if not op_list and "prefunits" not in payload:
             raise BadInput(
                 "edit(kind='se') requires ops=",
                 next="edit(kind='se', id="
                 f"{str(ref.slug)!r}, "
                 "ops=[{'op':'add_block','name':'hub','parent':'fork'}])",
+            )
+        # ``import_workspace`` is a whole-run door, not a tree op —
+        # intercepted here like the design-history ops, BEFORE
+        # ``tree_mutation`` (and before the dry_run-join check: the op's
+        # own ``dry_run`` key means "show me, write nothing").
+        if any(
+            isinstance(o, dict) and o.get("op") == "import_workspace" for o in op_list
+        ):
+            if len(op_list) != 1:
+                raise BadInput(
+                    "import_workspace must be the only op in its edit call",
+                    next="edit(kind='se', id="
+                    f"{str(ref.slug)!r}, ops=[{{'op':'import_workspace',"
+                    "'workspace':'<slug>','run':{...}}}])",
+                )
+            if "prefunits" in payload:
+                raise BadInput(
+                    "prefunits cannot ride an import_workspace op — it "
+                    "returns before the meta write; send the prefunits "
+                    "change as a separate edit"
+                )
+            return Response(
+                body=workspace_import.import_workspace_op(
+                    self.store, design=str(ref.slug), op=op_list[0]
+                )
             )
         # Sticky ``meta.prefunits``: an edit carrying ``prefunits`` rewrites
         # the map wholesale (replace, not merge — predictable like put's
@@ -1441,6 +1488,11 @@ class SeHandler(Handler):
             raise BadInput("pin's 'ops' must be a list of typed ops for the branch")
         if any(o.get("op") in _HISTORY_OPS for o in branch_ops):
             raise BadInput("pin's 'ops' cannot carry another design-history op")
+        if any(o.get("op") == "import_workspace" for o in branch_ops):
+            raise BadInput(
+                "pin's 'ops' cannot carry an import_workspace op — run it "
+                "on the branch design after the pin lands"
+            )
         if self.store.get_ref(kind="se", id=new_slug) is not None:
             raise BadInput(
                 f"se design {new_slug!r} already exists — a pin never overwrites; "

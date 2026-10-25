@@ -2,7 +2,7 @@
 id: precis-workspace-help
 family: se
 title: precis — build an se design with a workspace script (out.run → import)
-summary: the script loop for building an se design — precis_geom (pg/pga) + out.run writes scratch/out/<run> (manifest.json + trace.json + blocks/), then import_workspace_run lands it in a design. The out.* API verbatim (block/instance/connect/ray), every manifest key, atomic vs macro geometry forms, the cad DSL frame conventions (cyl base z=0 axis +z, box centred in x/y, rot = Rz·Ry·Rx, polar about the node's z), the t_ template-name convention, the trace asks, and what the manifest cannot yet say (no material/measure/binding/BOM keys).
+summary: the script loop for building an se design — precis_geom (pg/pga) + out.run writes scratch/out/<run> (manifest.json + trace.json + blocks/), then the import_workspace edit op lands it in a design. The out.* API verbatim (block/instance/connect/ray), every manifest key, atomic vs macro geometry forms, the cad DSL frame conventions (cyl base z=0 axis +z, box centred in x/y, rot = Rz·Ry·Rx, polar about the node's z), the t_ template-name convention, the trace asks, and what the manifest cannot yet say (no material/measure/binding/BOM keys).
 answers:
   - how do I build a macro mechanical design by script workspace?
   - what do out.run / o.block / o.instance / o.connect / o.ray write to the manifest?
@@ -11,7 +11,7 @@ answers:
   - what frame do cyl / box / polar / rot land a cad shape in?
   - why does view='trace' show no frames for my cad blocks?
   - can a workspace script set material, binding or a BOM?
-applies-to: workspace scripts that build se/cad geometry (precis_geom out.* → import_workspace_run → get(kind='se'))
+applies-to: workspace scripts that build se/cad geometry (precis_geom out.* → the import_workspace op → get(kind='se'))
 status: active
 tags: [design]
 kinds: [se, cad]
@@ -42,8 +42,8 @@ out`.
    the error-marked trace before re-raising.
 3. `uv run python scratch/<run>/main.py` — the out dir is the whole
    record.
-4. Import it into a dev design and read the views (the throwaway
-   recipe below). The sandbox `run` lane (a workspace ref built by a
+4. Import it into the design and read the views (the `import_workspace`
+   op below). The sandbox `run` lane (a workspace ref built by a
    `sandbox_run` job) is not built yet — this host loop is today's
    path.
 
@@ -189,7 +189,10 @@ library part that is never itself placed (gr514241). A block's
 `findings` is a list of strings — the Geom findings `out.block` stamps
 (`chirality.flipped` and the like); import echoes each as
 `block '<name>': <finding>` so a mirrored hand shows in the run record
-(gr514205).
+(gr514205). `sha` is the writer's sha256 of the geometry file —
+`out.block` stamps it automatically and import stores it on the bound
+ref's `meta.generated.sha`, so a re-import can answer
+changed/unchanged without re-diffing geometry (gr514248).
 
 **Not yet supported.** The manifest has no `material`, `measure`,
 `binding` or `bom` keys — the vet refuses them as unknown. Ruling
@@ -243,47 +246,37 @@ reports no construction trace.
 frames only from the conversion call — the OCP internals are
 untraced.
 
-## Look at a run — the throwaway import
+## Import a run — the `import_workspace` op
 
-No one-command import exists yet; the interim recipe is a throwaway
-pytest on the `store` fixture (a dev DB), run via `scripts/test`.
-Copy this file, point `OUT_DIR` at the run's out dir, run the line
-under it:
+One `edit(kind='se')` carries the run's `out/` tree inline as
+`{relpath: text}` — nothing on prod needs a host path:
 
 ```python
-# tests/workspaces/test_zz_<run>_scratch.py — throwaway, do not commit
-from pathlib import Path
-
-from precis.dispatch import Hub
-from precis_se.handler import SeHandler
-from precis_se.workspace_import import import_workspace_run
-
-OUT_DIR = Path("scratch/out/<run>")  # the run's out/ dir
-DESIGN = "zz-<run>"
-VIEWS = ("tree", "drc", "validate")
-
-
-def test_zz_import(store):
-    store.insert_ref(kind="se", slug=DESIGN, title=DESIGN, meta={})
-    job = store.insert_ref(kind="job", slug=None, title="scratch run", meta={})
-    res = import_workspace_run(
-        store,
-        workspace="scratch",
-        design=DESIGN,
-        out_dir=OUT_DIR,
-        run_job=int(job.id),
-    )
-    assert res.imported, res.findings
-    se = SeHandler(hub=Hub(store=store))
-    for view in VIEWS:
-        print(f"--- {view} ---\n{se.get(id=DESIGN, view=view).body}")
+get(kind='se', id='<design>')               # precheck: expect not-found
+put(kind='se', id='<design>', title='…', text='{}')
+edit(kind='se', id='<design>', ops=[{
+    'op': 'import_workspace',
+    'workspace': '<workspace-slug>',
+    'run': {'manifest.json': '…', 'trace.json': '…',
+            'blocks/p.extxyz': '…', 'blocks/p.bonds.json': '…'},
+    'files': {'main.py': '…'},   # optional — syncs the code folder
+    # 'dry_run': True           — the plan, nothing written
+}])
 ```
 
-```shell
-scripts/test tests/workspaces/test_zz_<run>_scratch.py -s
-```
+`run` is the whole `out/` verbatim (`manifest.json` + `trace.json` +
+`blocks/*`; the `.fitcache/` cache dir may be dropped). `files` syncs
+the workspace's code: a `folder` ref `part-of` the design plus
+`plaintext` children slugged `ws-<workspace>--<path>` — the
+`ws-<workspace>` python root then serves them (`get(kind='python',
+id='ws-<workspace>::<qualname>')`). Absent `files` leaves the folder
+untouched; `files={}` retires every file.
 
-`target='fork'` imports into a copy `<design>--<job|workspace>` linked
+The op rides alone — the sole op of its `edit`, refused in `put` (put
+builds a fresh tree). An unknown design's error `next=` points at
+`put(kind='se')`. On `target='design'` (the default) a design holding
+blocks this workspace did not make is refused outright;
+`target='fork'` imports into a copy `<design>--<workspace>` linked
 `derived-from` instead, when the existing design must stay untouched.
 Re-importing the same workspace replaces what the last run made and
 retires what it dropped — a same-named block is rewritten in place

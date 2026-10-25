@@ -87,7 +87,8 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -105,6 +106,7 @@ from precis.design import scenarios as design_scenarios
 from precis.errors import BadInput, NotFound
 from precis.store.types import ChunkInsert
 from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
+from precis.utils.md_parse import _normalize_segment
 from precis.utils.units import UnitRequiredError
 from precis_geom import trace_schema
 from precis_se import persist, traceview
@@ -126,6 +128,27 @@ MAX_WS_TRACE_BYTES = 8_000_000
 MAX_WS_OUT_BYTES = 32_000_000
 MAX_WS_BLOCKS = 256
 MAX_WS_BLOCK_ATOMS = 100_000
+MAX_WS_FILES = 512
+
+#: A workspace slug doubles as a directory name under the python-kind
+#: stage dir (:mod:`precis.handlers._python_ws`) — this regex is the
+#: traversal gate (gr517172): lowercase letters/digits/'-', starting
+#: alphanumeric, ≤64 chars.
+_WS_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+
+
+def _vet_workspace_slug(workspace: str) -> None:
+    """Refuse a workspace slug that is not a safe identifier token — it
+    lands in ``stage_dir/<slug>`` paths, ``ws-<slug>--`` file slugs and
+    ``<design>--<workspace>`` fork slugs, so ``../../app`` must never
+    reach them."""
+    if not _WS_SLUG_RE.fullmatch(workspace):
+        raise BadInput(
+            f"workspace slug {workspace!r} must match ^[a-z0-9][a-z0-9-]{{0,63}}$",
+            next="lowercase letters/digits/'-', starting alphanumeric — "
+            "e.g. 'hexfold-prism'",
+        )
+
 
 #: ``status``/``error`` are a failed run's record keys (``Run.fail``) —
 #: legal top-level shape so the vet reaches the run-failed refusal
@@ -888,6 +911,46 @@ def _apply(tree: SeTree, ops: list[dict[str, Any]], *, what: str, at: str = "") 
         raise BadInput(f"workspace import: {what}: {exc}{at}") from exc
 
 
+def _foreign_blocks(
+    store: Any, ref: Any, tree: SeTree, workspace: str, *, conn: Any = None
+) -> list[str]:
+    """Block names of ``tree`` this workspace did NOT make.
+
+    A bound node is owned when the bound structure/cad ref's
+    ``meta.generated.workspace`` stamp matches — the stamp is
+    authoritative over the name: a hand-made block squatting on an
+    imported block's name does not inherit the record's ownership. An
+    unbound node (an instance) is owned when the design's
+    ``meta.workspaces[workspace]`` record lists the name — it carries no
+    binding to stamp-check. ``conn`` re-reads the design row under the
+    caller's lock so the record is the committed-latest, not a stale
+    pre-lock snapshot."""
+    live = (
+        store.get_ref(kind="se", id=int(ref.id), conn=conn) if conn is not None else ref
+    )
+    record = (((live or ref).meta or {}).get("workspaces") or {}).get(workspace) or {}
+    owned_names = set(record.get("blocks") or []) | set(record.get("instances") or [])
+    foreign = []
+    for name, node in tree.blocks.items():
+        if node.bound_kind in ("structure", "cad") and node.bound:
+            bref = store.get_ref(
+                kind=node.bound_kind,
+                id=node.bound,
+                include_deleted=True,
+                conn=conn,
+            )
+            if (
+                bref is not None
+                and ((bref.meta or {}).get("generated") or {}).get("workspace")
+                == workspace
+            ):
+                continue
+        elif name in owned_names:
+            continue
+        foreign.append(name)
+    return sorted(foreign)
+
+
 def import_workspace_run(
     store: Any,
     *,
@@ -910,6 +973,7 @@ def import_workspace_run(
     ``tree_mutation`` transaction writes anything; a bad manifest or a bad
     file refuses naming the key and writes nothing.
     """
+    _vet_workspace_slug(workspace)
     out_path = Path(out_dir)
     if not out_path.is_dir():
         raise BadInput(f"workspace out/ dir not found: {out_dir!r}")
@@ -1072,6 +1136,29 @@ def import_workspace_run(
         tree = persist.load_tree(store, ref.id)
         tree.own_slug = design
         tree.foreign = persist.foreign_resolver(store)
+
+        # The foreign-block gate (the gripe's safety rule): an import on
+        # 'design' replaces the workspace's whole record, so a design
+        # holding blocks this workspace did not make is refused outright
+        # — it could never replace or retire them anyway, and a silent
+        # co-exist hides exactly the hexfold-dogfood-r4 mix-up the gate
+        # exists for. It runs here — under the tree advisory lock, inside
+        # the write transaction — so the check serializes with every
+        # other writer of this design and guards every caller of this
+        # function, not only the ``import_workspace`` op door. 'fork' is
+        # the sanctioned escape: the copy may carry anything.
+        if target == "design":
+            foreign = _foreign_blocks(store, ref, tree, workspace, conn=conn)
+            if foreign:
+                raise BadInput(
+                    f"workspace import: design {design!r} has blocks "
+                    f"workspace {workspace!r} did not make: "
+                    f"{', '.join(foreign)}",
+                    next=[
+                        "put(kind='se', id='<fresh-slug>', ...) a fresh design",
+                        "'target': 'fork' imports into a derived copy instead",
+                    ],
+                )
 
         # Which live blocks does THIS workspace own? Via the bound ref's
         # generated.workspace — one lookup per bound slug.
@@ -1688,3 +1775,403 @@ def import_workspace_run(
         )
     )
     return result
+
+
+# ── The ``import_workspace`` se op ─────────────────────────────────────
+#
+# ``edit(kind='se', id=<design>, ops=[{'op': 'import_workspace', ...}])`` —
+# the agent-callable door into :func:`import_workspace_run` (the
+# precis-workspace-help "one-command import"). The run's ``out/`` tree and
+# the workspace's source files ride inline as ``{relpath: text}`` dicts:
+# nothing on prod needs a host path. ``SeHandler._edit_impl`` intercepts
+# it before ``tree_mutation`` (sole op, like the design-history ops);
+# ``_put_impl`` refuses it — put builds a fresh tree and the op needs an
+# existing design ref.
+
+#: ``additionalProperties: false``, same posture as the manifest vet —
+#: a typo'd key is the caller's failure, named.
+_IMPORT_OP_KEYS = frozenset(
+    {
+        "op",
+        "workspace",
+        "run",
+        "files",
+        "dry_run",
+        "target",
+        "script_sha",
+        "lock_sha",
+        "params",
+        "requested_by",
+        "run_job",
+    }
+)
+
+#: The workspace folder predicates — the rows
+#: :mod:`precis.handlers._python_ws` reads for the ``ws-<slug>`` python
+#: roots (``_FOLDER_SQL``/``_FILES_SQL``). precis cannot import precis_se,
+#: so the reader keeps its own copy; keep these aligned with it.
+_WS_FOLDER_SQL = """
+SELECT r.ref_id, r.meta FROM refs r
+WHERE r.kind = 'folder' AND r.retired_at IS NULL
+  AND (r.meta->'workspace'->>'slug' = %s
+       OR (SELECT ri.id_value FROM ref_identifiers ri
+            WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
+            LIMIT 1) = %s)
+"""
+_WS_FILES_SQL = """
+SELECT ref_id,
+       COALESCE(meta->>'workspace_path', meta->>'harvest_orig_path')
+  FROM refs
+ WHERE parent_id = %s AND kind = 'plaintext' AND retired_at IS NULL
+"""
+
+
+class _DryRunDone(Exception):
+    """Sentinel unwinding the dry-run ``store.atomic()`` scope — the
+    result is already captured; raising this IS the rollback."""
+
+
+def _vet_relpath_map(raw: Any, *, what: str, total_cap: int) -> dict[str, str]:
+    """A ``{relpath: text}`` tree — the run's ``out/`` or the workspace
+    file set — vetted before any write: clean relative posix paths only
+    (no absolute, no ``..``/``.``/empty segments, no redundant
+    separators), text values, the harvest's file-count, per-file and
+    total byte caps, and no path that is a proper ancestor of another
+    (``manifest.json`` + ``manifest.json/x`` would explode the staging
+    write as NotADirectoryError — refuse it as BadInput)."""
+    if not isinstance(raw, dict):
+        raise BadInput(
+            f"import_workspace: {what} must be an object mapping relpath → file text",
+            next="'run': {'manifest.json': '{...}', 'trace.json': '{...}', "
+            "'blocks/tube.extxyz': '...'}",
+        )
+    if len(raw) > MAX_WS_FILES:
+        raise BadInput(
+            f"import_workspace: {what} holds {len(raw)} files, over the "
+            f"{MAX_WS_FILES} file-count cap"
+        )
+    out: dict[str, str] = {}
+    total = 0
+    for rel, text in raw.items():
+        rel_s = str(rel)
+        p = PurePosixPath(rel_s)
+        if (
+            p.is_absolute()
+            or any(s in ("", ".", "..") for s in rel_s.split("/"))
+            or rel_s != p.as_posix()
+        ):
+            raise BadInput(
+                f"import_workspace: {what} path must be a clean relative "
+                f"posix path, got {rel_s!r}",
+                next="keys like 'manifest.json' or 'blocks/tube.extxyz' — "
+                "no leading '/', no '..', no '.', no '//'",
+            )
+        if not isinstance(text, str):
+            raise BadInput(
+                f"import_workspace: {what}[{rel_s!r}] must be text, "
+                f"got {type(text).__name__}"
+            )
+        size = len(text.encode("utf-8"))
+        if size > MAX_WS_FILE_BYTES:
+            raise BadInput(
+                f"import_workspace: {what} {rel_s!r} is {size} B, over the "
+                f"{MAX_WS_FILE_BYTES} B file cap"
+            )
+        total += size
+        if total > total_cap:
+            raise BadInput(
+                f"import_workspace: {what} totals over the {total_cap} B cap"
+            )
+        out[p.as_posix()] = text
+    for rel in out:
+        for parent in PurePosixPath(rel).parents:
+            parent_s = parent.as_posix()
+            if parent_s == ".":
+                break
+            if parent_s in out:
+                raise BadInput(
+                    f"import_workspace: {what} path {rel!r} nests under "
+                    f"{parent_s!r}, which is also a file — a key can't be "
+                    "both file and directory",
+                    next="drop one of the two keys",
+                )
+    return out
+
+
+def _file_slug(rel: str) -> str:
+    """``main.py`` → ``main-py``; ``lib/util.py`` → ``lib--util-py`` — the
+    file's plaintext-slug tail. The extension stays encoded (unlike
+    ``file_slug_from_path``, which strips it): ``main`` and ``main.py``
+    must not collide."""
+    return "--".join(
+        seg for p in PurePosixPath(rel).parts if (seg := _normalize_segment(p))
+    )
+
+
+def _sync_workspace_files(
+    store: Any,
+    conn: Any,
+    *,
+    workspace: str,
+    design_slug: str,
+    design_ref_id: int,
+    files: dict[str, str],
+    requested_by: str | None,
+) -> str:
+    """Find-or-mint the workspace's ``folder`` ref (the ``_python_ws``
+    predicate), sync its ``plaintext`` children to ``files`` — a file the
+    dict drops retires; bodies rewrite by chunks DELETE+INSERT, never
+    UPDATE — and keep the folder's ``part-of`` edge to the design.
+    Returns the echo line."""
+    folder_id: int | None = None
+    folder_meta: dict[str, Any] = {}
+    rows = conn.execute(_WS_FOLDER_SQL, (workspace, f"ws-{workspace}")).fetchall()
+    for ref_id, meta in rows:
+        ws = (meta or {}).get("workspace")
+        if isinstance(ws, dict) and ws.get("slug", workspace) == workspace:
+            folder_id, folder_meta = int(ref_id), dict(ws)
+            break
+    if folder_id is None:
+        folder = store.insert_ref(
+            kind="folder",
+            slug=None,
+            title=f"workspace {workspace}",
+            meta={
+                "workspace": {
+                    "slug": workspace,
+                    "design": design_slug,
+                    "created_by": requested_by or "import_workspace",
+                }
+            },
+            conn=conn,
+        )
+        folder_id = int(folder.id)
+    else:
+        other = folder_meta.get("design")
+        if other is not None and str(other).split(":")[-1] != design_slug:
+            raise BadInput(
+                f"import_workspace: workspace {workspace!r}'s folder already "
+                f"belongs to design {other!r} — two designs never share a "
+                "folder",
+                next=f"pick another 'workspace' slug, or import into "
+                f"{str(other).split(':')[-1]!r}",
+            )
+    store.add_link(
+        src_ref_id=folder_id,
+        dst_ref_id=design_ref_id,
+        relation="part-of",
+        set_by="workspace_import",
+        conn=conn,
+    )
+    existing: dict[str, int] = {}
+    for ref_id, rel in conn.execute(_WS_FILES_SQL, (folder_id,)).fetchall():
+        if rel:
+            existing[str(rel)] = int(ref_id)
+    created: list[str] = []
+    updated: list[str] = []
+    retired: list[str] = []
+    unchanged = 0
+    for rel in sorted(files):
+        child_id = existing.get(rel)
+        state = "live"
+        if child_id is None:
+            state = "new"
+            slug = f"ws-{workspace}--{_file_slug(rel)}"
+            prior = store.get_ref(
+                kind="plaintext", id=slug, include_deleted=True, conn=conn
+            )
+            if prior is not None:
+                # A child this folder already owns that an earlier import
+                # retired — restore it and rewrite its chunks rather than
+                # refuse on the slug, so files {a,b} → {a} → {a,b}
+                # converges back. Only when its recorded path IS this
+                # file's: ``_file_slug`` folds case and punctuation, so
+                # 'Main.py' collides with 'main.py' — a same-slug ref
+                # carrying a different ``workspace_path`` is not this
+                # file and stays a refusal.
+                if (
+                    prior.retired_at is None
+                    or int(prior.parent_id or -1) != folder_id
+                    or (prior.meta or {}).get("workspace_path") != rel
+                ):
+                    raise BadInput(
+                        f"import_workspace: file slug {slug!r} is taken outside "
+                        "this workspace",
+                        next="rename the file in 'files' (slugs fold case "
+                        "and punctuation — 'Main.py' collides with "
+                        "'main.py'), or pick another 'workspace' slug",
+                    )
+                store.restore_ref(int(prior.id), conn=conn)
+                child_id = int(prior.id)
+                state = "restored"
+            else:
+                child = store.insert_ref(
+                    kind="plaintext",
+                    slug=slug,
+                    title=rel,
+                    parent_id=folder_id,
+                    meta={"workspace_path": rel, "harvest_orig_path": rel},
+                    conn=conn,
+                )
+                child_id = int(child.id)
+        prev = (
+            "".join(
+                c.text for c in store.chunks.list_chunks_for_ref(child_id, conn=conn)
+            )
+            if state == "live"
+            else None
+        )
+        if prev != files[rel]:
+            store.chunks.insert_chunks(
+                child_id,
+                [ChunkInsert(ord=0, text=files[rel])],
+                replace=True,
+                conn=conn,
+            )
+        if state != "live":
+            created.append(rel)
+        elif prev != files[rel]:
+            updated.append(rel)
+        else:
+            unchanged += 1
+    for rel, ref_id in sorted(existing.items()):
+        if rel not in files:
+            store.retire_ref(ref_id, conn=conn)
+            retired.append(rel)
+    bits = []
+    if created:
+        bits.append("+" + ", +".join(created))
+    if updated:
+        bits.append("~" + ", ~".join(updated))
+    if retired:
+        bits.append("-" + ", -".join(retired))
+    if unchanged:
+        bits.append(f"{unchanged} unchanged")
+    return "files: " + (", ".join(bits) if bits else "folder in sync")
+
+
+def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
+    """Run the ``import_workspace`` se op; return the response body.
+
+    Keys: ``workspace`` (req — the workspace slug), ``run`` (req —
+    ``{relpath: text}``, the run's whole ``out/`` tree verbatim:
+    ``manifest.json``, ``trace.json``, ``blocks/*``), ``files`` (opt —
+    ``{relpath: text}`` synced into the workspace folder, linked
+    ``part-of`` the design; absent = the folder untouched, ``{}`` =
+    cleared), ``dry_run``, ``target`` ('design'|'fork'), and the
+    provenance keys ``script_sha``/``lock_sha``/``params``/
+    ``requested_by``/``run_job`` (``None`` stores the trace on the
+    design ref — the containerless path)."""
+    _unknown_keys(op, _IMPORT_OP_KEYS, "import_workspace op")
+    workspace = str(op.get("workspace") or "").strip()
+    if not workspace:
+        raise BadInput(
+            "import_workspace needs 'workspace' (the workspace slug)",
+            next="edit(kind='se', id=..., ops=[{'op':'import_workspace',"
+            "'workspace':'hexfold','run':{'manifest.json':'{...}', ...}}])",
+        )
+    _vet_workspace_slug(workspace)
+    run = _vet_relpath_map(op.get("run"), what="'run'", total_cap=MAX_WS_OUT_BYTES)
+    if "manifest.json" not in run:
+        raise BadInput(
+            "import_workspace: 'run' holds no manifest.json",
+            next="the out/ tree verbatim — out.run writes manifest.json "
+            "beside trace.json and blocks/",
+        )
+    files_raw = op.get("files")
+    files = (
+        None
+        if files_raw is None
+        else _vet_relpath_map(files_raw, what="'files'", total_cap=MAX_WS_OUT_BYTES)
+    )
+    dry_run = bool(op.get("dry_run"))
+    target = str(op.get("target") or "design").strip()
+    if target not in ("design", "fork"):
+        raise BadInput(
+            f"import_workspace 'target' must be 'design' or 'fork', "
+            f"got {op.get('target')!r}",
+            options=["design", "fork"],
+        )
+    run_job = op.get("run_job")
+    if run_job is not None:
+        try:
+            run_job = int(run_job)
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"import_workspace 'run_job' must be a job ref id, "
+                f"got {op.get('run_job')!r}"
+            ) from exc
+        if store.get_ref(kind="job", id=run_job) is None:
+            raise BadInput(
+                f"import_workspace: run_job {run_job} is not a job ref",
+                next="omit 'run_job' — the trace then stores on the design ref itself",
+            )
+    params = op.get("params")
+    if params is not None and not isinstance(params, dict):
+        raise BadInput("import_workspace 'params' must be an object")
+    script_sha = str(op["script_sha"]).strip() if op.get("script_sha") else None
+    lock_sha = str(op["lock_sha"]).strip() if op.get("lock_sha") else None
+    requested_by = str(op["requested_by"]).strip() if op.get("requested_by") else None
+    ref = store.get_ref(kind="se", id=design)
+    if ref is None:
+        raise NotFound(
+            f"se design {design!r} not found",
+            next=f"put(kind='se', id={design!r}, title=...) first — "
+            "import_workspace imports into an existing design",
+        )
+    # The foreign-block gate runs inside ``import_workspace_run``, under
+    # the tree advisory lock its ``tree_mutation`` takes inside this
+    # ``atomic`` — the check and the writes share one serialized span.
+    result: ImportResult | None = None
+    files_echo: str | None = None
+    try:
+        with store.atomic() as conn:
+            if files is not None:
+                files_echo = _sync_workspace_files(
+                    store,
+                    conn,
+                    workspace=workspace,
+                    design_slug=design,
+                    design_ref_id=int(ref.id),
+                    files=files,
+                    requested_by=requested_by,
+                )
+            with TemporaryDirectory() as td:
+                out_dir = Path(td) / "out"
+                for rel, text in run.items():
+                    dest = out_dir / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(text, encoding="utf-8")
+                result = import_workspace_run(
+                    store,
+                    workspace=workspace,
+                    design=design,
+                    out_dir=out_dir,
+                    run_job=run_job,
+                    script_sha=script_sha,
+                    lock_sha=lock_sha,
+                    params=params,
+                    requested_by=requested_by,
+                    target=target,
+                )
+            if dry_run:
+                raise _DryRunDone
+    except _DryRunDone:
+        pass
+    assert result is not None
+    head = f"# se design '{result.design_slug}' — workspace {workspace!r} import" + (
+        " — DRY RUN, nothing written" if dry_run else ""
+    )
+    parts = [head]
+    if files_echo is not None:
+        parts.append(files_echo)
+    parts.append(result.echo())
+    parts.append(
+        f"Next: get(kind='se', id={result.design_slug!r}, view='tree')"
+        + (
+            f" · the code: get(kind='python', id='ws-{workspace}::<qualname>')"
+            if files is not None
+            else ""
+        )
+    )
+    return "\n\n".join(parts)
