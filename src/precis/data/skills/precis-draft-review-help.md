@@ -75,6 +75,37 @@ numeric ref id) soft-deletes the **whole document** — ref plus every
 chunk, one transaction, recoverable. The owning project todo is left
 intact: that deletes the document, not the project.
 
+## Replace a block's own content
+
+```python
+edit(id="dc12", mode="replace-content", text="# Renamed\n\nNew intro.\n\n- a\n- b")
+#  — rewrite a SECTION's own content (heading text + its direct body up to
+#    the first child heading); subsections keep their ids
+```
+
+`edit(id=<block>, mode='replace-content', text=<markdown>)` is the
+one-call section rewrite: on a **heading** it swaps the heading's *own*
+content — the heading text plus its direct body (the paragraphs, lists
+and other non-heading children up to the first child heading) — while
+every child subsection keeps its `dc<id>` and its contents. On a
+**leaf** chunk it rewrites that chunk's text in place (same as `text=`
+alone). `id=` also takes `'<slug>~<heading>'`; an ambiguous title
+refuses naming the candidate handles. A first line that is a markdown
+heading (`# …`) replaces the heading's text — kept otherwise; the rest
+parses like `put` (blank-line blocks, a bullet block becomes a list).
+The heading chunk keeps its id — but the replaced body chunks are
+retired and re-inserted as **new** chunks, so `[dc<id>]` cross-refs
+into the old body die (the ack says so). `base_sha=` guards the whole
+span at once: a heading's read shows it as `span-sha:` next to `sha:`
+(a leaf's is just its `sha:`), and the ack returns the new one for
+chained edits. `dry_run=` runs the same refusals, then diffs the old
+span against the new markdown — a kept heading shows as context, not a
+deletion. Two refusals: a registry home heading (Glossary/Parts — its
+`term` children are managed data, not body prose; edit them directly),
+and a body run holding a chunk markdown can't recreate (figure, table,
+term…) — the error names each `dc<id>`; edit them by their own handles
+or move them out of the block first.
+
 ## Audit the draft — hygiene checks & the gap-finder
 
 Before export, runtime flags undefined abbreviations, unresolved citations

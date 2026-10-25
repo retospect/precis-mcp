@@ -54,6 +54,7 @@ call)
 | param | does |
 |---|---|
 | `text=` | whole-chunk rewrite |
+| `mode='replace-content'` (+`text=`) | rewrite a block's own content (heading text + direct body), child subsections keep their ids — `id` also takes `'<slug>~<heading>'`; `base_sha=` = the read view's `span-sha:` |
 | `find=` (+`text=`) | find-replace within the chunk (implies `mode='find-replace'`) |
 | `dry_run=True`/`'full'` | preview a `text=`/`find=` edit, write nothing |
 | `move=` | reorder/reparent — grammar below |

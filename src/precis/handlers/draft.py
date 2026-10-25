@@ -18,7 +18,9 @@ behind the existing seven verbs — **no new verbs**:
   many `chunk_kind='term'` leaves in one transaction.
 - ``get``   — list drafts (no id), a draft's outline (`id='<slug>'`), or
   a chunk verbatim with a relative window (`id='dc<id>'`, `dc<id>-2..3`).
-- ``edit``  — change a chunk's text (`text=`) or move it (`move=`).
+- ``edit``  — change a chunk's text (`text=`), move it (`move=`), or
+  replace a block's own content while keeping its child subsections
+  (`mode='replace-content'`).
 - ``delete``— soft-retire a chunk (`mode='cascade'|'promote'` for a
   heading with children), or the whole document when `id=` is
   ref-level (slug / ref id).
@@ -50,7 +52,11 @@ from precis.handlers._slug_ref_shared import (
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import Ref
-from precis.store._draft_ops import content_sha
+from precis.store._draft_ops import (
+    _HEADING_LINE_RE,
+    content_sha,
+    own_content_sha,
+)
 from precis.utils import draft_regex, handle_registry
 from precis.utils.authors import to_author_dicts
 from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
@@ -372,7 +378,9 @@ class DraftHandler(Handler):
             "lists / outlines / reads a chunk window dc<id>-B+A; search "
             "(q=, mode=lexical|semantic|hybrid|regex, scope=slug|dc<id>, "
             "headings_only=) over prose — mode=regex is a literal grep; edit "
-            "changes text, moves (move=), renames the document "
+            "changes text, moves (move=), rewrites a block's own content "
+            "keeping its child subsections (mode='replace-content', "
+            "base_sha= the read view's span-sha:), renames the document "
             "(title=, syncs refs.title + the title heading), sets a heading's "
             "section style (style=<skill>), or regex-substitutes across a "
             "draft/section (sub={find,replace}, dry-run unless apply=True); "
@@ -2263,6 +2271,51 @@ class DraftHandler(Handler):
                     next=hint,
                 )
 
+        # ``mode='replace-content'`` — replace a block's OWN content (a
+        # heading's text + its direct body up to the first child heading;
+        # a leaf's text) while every child subsection keeps its handle —
+        # the section-level rewrite gr514338 asked for (rewriting a
+        # section used to mean per-chunk edits plus separate retires).
+        # Dispatched ahead of every other op branch so a stray second op
+        # kwarg (find=, move=, sub=, …) is a loud refusal, never silently
+        # ignored — and before ``_require_chunk_id`` since ``id=`` here
+        # also takes the ``<slug>~<heading>`` selector.
+        if (mode or "").strip() == "replace-content":
+            return self._edit_replace_content(
+                id,
+                text=text,
+                base_sha=base_sha,
+                dry_mode=dry_mode,
+                source=source,
+                extras={
+                    "title": title,
+                    "find": find,
+                    "where": where,
+                    "move": move,
+                    "style": style,
+                    "list_kind": list_kind,
+                    "word_target": word_target,
+                    "char_target": char_target,
+                    "authors": authors,
+                    "not_abbrev": not_abbrev,
+                    "is_abbrev": is_abbrev,
+                    "sub": sub,
+                    "apply": apply or None,
+                    "permission": permission,
+                    "origin": origin,
+                    "table": table,
+                    "caption": caption,
+                    "regen": regen,
+                    "cell": cell,
+                    "meta": meta,
+                    "voice": voice,
+                    "lang": lang,
+                    "review": review,
+                    "verdict": verdict if verdict != "approved" else None,
+                    "authoring": authoring,
+                    "scaffold": scaffold,
+                },
+            )
         # ``title`` is a draft-level op (rename the document) — id is the slug
         # (or any handle in the draft), not a single chunk. Writes BOTH
         # ``refs.title`` and the title heading chunk (``store.drafts.set_draft_title``):
@@ -2746,6 +2799,167 @@ class DraftHandler(Handler):
             "abbrev hint), or is_abbrev= (un-silence it)",
             next="edit(kind='draft', id='dc<chunk_id>', text='…')",
         )
+
+    def _edit_replace_content(
+        self,
+        id: str | int | None,
+        *,
+        text: str | None,
+        base_sha: str | None,
+        dry_mode: str | None,
+        source: dict[str, Any] | None,
+        extras: dict[str, Any],
+    ) -> Response:
+        """``edit(mode='replace-content')`` — rewrite a block's own
+        content, keep its child subsections (gr514338).
+
+        ``id`` is the block: a ``dc<id>``/``¶<base58>`` chunk handle, or
+        the ``<slug>~<heading>``/``<slug>~dc<N>`` selector (a shared
+        get-side convenience — :meth:`_parse_selector` resolves it and
+        refuses an ambiguous heading with ``options=``). ``text`` is the
+        replacement markdown; ``base_sha`` is the span sha (``span-sha:``
+        on a heading's read, ``sha:`` on a leaf's) — the whole replaced
+        span is guarded at once, so an edit landing mid-section can't be
+        clobbered silently. Every other edit kwarg is refused: this op
+        composes with nothing.
+        """
+        bad = sorted(k for k, v in extras.items() if v is not None)
+        if bad:
+            raise BadInput(
+                f"mode='replace-content' takes only id=, text= and "
+                f"base_sha= — unexpected kwarg(s): "
+                f"{', '.join(f'{k}=' for k in bad)}",
+                next="edit(kind='draft', id='dc<id>', mode='replace-content', "
+                "text='…')",
+            )
+        s = str(id or "").strip()
+        if "~" in s:
+            addr = self._chunk_of_selector(s)
+        elif _is_draft_chunk_handle(s):
+            addr = s
+        else:
+            raise BadInput(
+                f"mode='replace-content' targets one block — id='dc<chunk_id>'"
+                f" or '<slug>~<heading>', got {s!r}",
+                next="get(kind='draft', id='<slug>', view='toc') lists live "
+                "heading handles",
+            )
+        chunk = self.store.drafts.get_draft_chunk(addr)
+        if chunk is None or chunk.retired:
+            raise NotFound(
+                f"draft chunk {addr!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists live "
+                "chunk handles",
+            )
+        self._refuse_if_machine_owned(int(chunk.ref_id))
+        if chunk.chunk_kind == "table":
+            raise BadInput(
+                f"{chunk.dc} is a table chunk — its text re-derives from "
+                "meta.table and is never hand-edited",
+                next=f"edit(kind='draft', id={chunk.dc!r}, table={{...}}) "
+                "— or cell=/find= for field edits",
+            )
+        if text is None or not str(text).strip():
+            raise BadInput(
+                "mode='replace-content' requires text= (the replacement markdown)",
+                next=f"edit(kind='draft', id={chunk.dc!r}, "
+                "mode='replace-content', text='…')",
+            )
+        new_raw = str(text)
+        own = self.store.drafts.block_own_chunks(chunk)
+        old_text = "\n\n".join(c.text or "" for c in own)
+        self._raise_on_new_dangling_refs(new_raw)
+        if dry_mode is not None:
+            # The store op's dry_run runs the write path's refusals
+            # (registry home, stale base_sha, non-prose span) against the
+            # locked rows and writes nothing.
+            self.store.drafts.replace_block_content(
+                chunk.handle,
+                new_raw,
+                base_sha=base_sha,
+                source=source,
+                dry_run=True,
+            )
+            shown = new_raw
+            if chunk.chunk_kind == "heading":
+                # A heading block diffs as the ATX line the reader sees;
+                # when the replacement carries no heading line of its
+                # own the kept heading is context, not a deletion.
+                own_head = own[0].text or ""
+                old_shown = f"# {own_head}" + (
+                    "\n\n" + "\n\n".join(c.text or "" for c in own[1:])
+                    if len(own) > 1
+                    else ""
+                )
+                if not _HEADING_LINE_RE.match(new_raw.partition("\n")[0]):
+                    shown = f"# {own_head}\n\n{new_raw}"
+            else:
+                old_shown = old_text
+            return self._render_draft_dry_run(chunk.dc, old_shown, shown, mode=dry_mode)
+        block, n_retired, inserted, span_sha = self.store.drafts.replace_block_content(
+            chunk.handle, new_raw, base_sha=base_sha, source=source
+        )
+        self.sync_draft_links(int(block.ref_id))
+        self._attribute_touch([block.chunk_id, *(c.chunk_id for c in inserted)])
+        ref = self.store.get_ref(kind="draft", id=int(block.ref_id))
+        slug = ref.slug if ref and ref.slug else str(block.ref_id)
+        made = {c.chunk_id for c in inserted}
+        top = [c for c in inserted if c.parent_chunk_id not in made]
+        body = f"replaced {block.dc} [{block.chunk_kind}] own content"
+        if block.chunk_kind == "heading":
+            bits: list[str] = []
+            if n_retired:
+                bits.append(
+                    f"retired {n_retired} body chunk"
+                    f"{'s' if n_retired != 1 else ''} — their dc<id>s died "
+                    "with them, so any [dc<id>] cross-refs into the old "
+                    "span now dangle"
+                )
+            if top:
+                bits.append(
+                    f"added {len(top)} chunk{'s' if len(top) != 1 else ''}: "
+                    + " ".join(str(c.dc) for c in top)
+                )
+            n_kept = len(self.store.drafts.descendant_chunk_ids(block.chunk_id)) - len(
+                inserted
+            )
+            if n_kept:
+                bits.append(
+                    f"kept {n_kept} child chunk"
+                    f"{'s' if n_kept != 1 else ''} (subsections untouched, "
+                    "same ids)"
+                )
+            if bits:
+                body += " — " + "; ".join(bits)
+        else:
+            body = f"edited {block.dc}"
+        body += _draft_lint.write_abbrev_hints(
+            self.store, slug, int(block.ref_id), new_raw, old_text
+        )
+        body += _draft_lint.citation_form_hint(new_raw)
+        body += _draft_lint.whole_paper_cite_hint(new_raw, old_text)
+        body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_raw)
+        body += _draft_lint.glyph_cite_hint(self.store, new_raw)
+        body += _draft_lint.pin_hint(self.store, new_raw, old_text)
+        body += _draft_lint.literal_cite_hint(new_raw)
+        body += _draft_lint.bare_identifier_hint(new_raw)
+        body += _draft_lint.temperature_form_hint(new_raw)
+        body += _draft_lint.math_form_hint(new_raw, old_text)
+        body += _draft_lint.house_style_hint(new_raw, "paragraph")
+        body += _draft_lint.bare_xref_hint(new_raw, old_text)
+        body += _draft_lint.title_heading_dup_hint(
+            self.store,
+            int(block.ref_id),
+            block.chunk_id,
+            block.chunk_kind,
+            block.text,
+        )
+        body += _draft_lint.dangling_edit_hint(self.store, new_raw, old_text)
+        # The chained-edit token: the span sha of what landed, computed
+        # inside the write tx, so a follow-up replace-content needs no
+        # re-read (``sha:`` for a leaf — same value, one label).
+        body += f"\nspan-sha:{span_sha[:12]}"
+        return Response(body=body)
 
     # ── delete: soft-retire ──────────────────────────────────────────
 
@@ -4547,11 +4761,22 @@ class DraftHandler(Handler):
         # clobber a change that landed since this read. 12 hex chars (48
         # bits) is ample to detect a change to one chunk; the full digest
         # is needlessly long on every line. ``edit`` matches by prefix, so
-        # a full 64-char sha still works.
+        # a full 64-char sha still works. A live heading also shows
+        # ``span-sha:`` — the sha of its whole own-content span (heading +
+        # direct body up to the first child heading), the ``base_sha`` for
+        # ``edit(mode='replace-content')``.
         blocks = [
             f"{c.dc}  [{c.chunk_kind}]"
             f"{'  ⚠ RETIRED' if c.retired else ''}"
-            f"  sha:{content_sha(c.text)[:12]}\n{c.text}"
+            f"  sha:{content_sha(c.text)[:12]}"
+            + (
+                f"  span-sha:{own_content_sha(c2.text or '' for c2 in span)[:12]}"
+                if c.chunk_kind == "heading"
+                and not c.retired
+                and (span := self.store.drafts.block_own_chunks(c))
+                else ""
+            )
+            + f"\n{c.text}"
             for c in window
         ]
         body = "\n\n".join(blocks)

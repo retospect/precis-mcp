@@ -27,7 +27,7 @@ import logging
 import re
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
@@ -89,6 +89,32 @@ def content_sha(text: str) -> str:
     """Hash of the resolved-for-search text (markers are stripped later;
     for now the raw source). Drives per-consumer re-derivation."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def own_content_sha(texts: Iterable[str]) -> str:
+    """The ``mode='replace-content'`` span sha: ``content_sha`` over the
+    block's own-content chunk texts joined by a blank line (the same
+    separator the chunk read view prints between blocks). What
+    ``get`` shows as ``span-sha:`` on a heading and what
+    ``replace_block_content``'s ``base_sha`` prefix-matches. For a
+    non-heading block the span is one chunk, so this is its plain
+    ``sha:``."""
+    return content_sha("\n\n".join(texts))
+
+
+#: First-line ATX heading in replacement markdown (``# Title`` …
+#: ``###### Title``, optional closing hashes). Requires a space after the
+#: hashes — ``#foo`` is plain text, not a heading, same as CommonMark.
+_HEADING_LINE_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
+
+
+#: Chunk kinds a ``replace_block_content`` retire may contain — exactly
+#: what its markdown ``text=`` recreates on re-insert: plain paragraphs
+#: and list trees. Anything else (figure, table, term, callout, …)
+#: carries structure plain markdown cannot express; retiring it would
+#: silently downgrade or destroy it, so the op refuses and names the
+#: offenders instead.
+_REPLACEABLE_CHUNK_KINDS = frozenset({"paragraph", "ulist", "olist", "item"})
 
 
 #: Intra-draft chunk cross-refs as they appear *in prose* — the bare
@@ -728,6 +754,25 @@ class DraftStore(_AbbrevMixin):
         cite-closure resolver, ``precis.handlers._exclude_closure``)."""
         with self.pool.connection() as conn:
             return self._descendant_ids(conn, chunk_id)
+
+    def block_own_chunks(self, chunk: DraftChunk) -> list[DraftChunk]:
+        """The block's *own content* — the span
+        :meth:`replace_block_content` replaces and
+        :func:`own_content_sha` fingerprints.
+
+        For a heading: the heading chunk itself plus its live **non-heading**
+        children up to the first child heading — its direct body
+        (paragraphs, lists, figures, terms), not its subsections. For any
+        other chunk: just the chunk. Child headings and their subtrees
+        are never part of the span."""
+        own = [chunk]
+        if chunk.chunk_kind == "heading":
+            with self.pool.connection() as conn:
+                for c in self._children(conn, chunk.ref_id, chunk.chunk_id):
+                    if c.chunk_kind == "heading":
+                        break
+                    own.append(c)
+        return own
 
     def draft_term_shorts(self, ref_id: int) -> set[str]:
         """The ``short`` of every live glossary ``term`` chunk in the
@@ -2622,9 +2667,12 @@ class DraftStore(_AbbrevMixin):
         pos: str,
         meta: dict[str, Any] | None,
         kind: str,
+        source: dict[str, Any] | None = None,
     ) -> list[DraftChunk]:
         """Insert a parsed list tree depth-first, container before its
-        items, and return every chunk created in that order."""
+        items, and return every chunk created in that order. ``source``
+        overrides the created-event payload (default: the ``add`` /
+        markdown-list provenance ``put`` stamps)."""
         row = self._insert_draft_chunk(
             conn,
             ref_id=ref_id,
@@ -2632,7 +2680,7 @@ class DraftStore(_AbbrevMixin):
             text=node.text,
             parent_chunk_id=parent_chunk_id,
             pos=pos,
-            source={"reason": "add", "from": "markdown-list"},
+            source=source or {"reason": "add", "from": "markdown-list"},
             meta=meta,
             kind=kind,
         )
@@ -2649,6 +2697,7 @@ class DraftStore(_AbbrevMixin):
                         pos=key,
                         meta=meta,
                         kind=kind,
+                        source=source,
                     )
                 )
         return out
@@ -3607,6 +3656,265 @@ class DraftStore(_AbbrevMixin):
                VALUES (%s, 'edited', %s, %s, %s)""",
             (row[0], sha, row[5], Jsonb(source or {})),
         )
+
+    def replace_block_content(
+        self,
+        handle: str,
+        text: str,
+        *,
+        base_sha: str | None = None,
+        source: dict[str, Any] | None = None,
+        kind: str = "draft",
+        dry_run: bool = False,
+    ) -> tuple[DraftChunk, int, list[DraftChunk], str]:
+        """Replace a block's own content, keeping its child subsections
+        (``edit(kind='draft', mode='replace-content')`` — gr514338).
+
+        The span is :meth:`block_own_chunks`: for a heading, its text plus
+        the live non-heading children up to the first child heading; for
+        any other chunk, just its text. ``text`` is markdown parsed the
+        way ``add_chunks`` (the ``put`` path) does — split at blank lines,
+        a wholly-list block lands as a ulist/olist tree. When the first
+        line is an ATX heading (``# …``) it replaces the heading's text;
+        without one the heading text is kept. A heading line anywhere but
+        the first line is ordinary paragraph text, same as ``put``.
+
+        The addressed chunk always keeps its id — it is the block's
+        address and the child subsections' anchor. A heading's own text
+        is edited in place (the draft-chunk exception to append-only:
+        ``content_sha`` bumps, an ``edited`` event logs); its replaced
+        body children are retired and re-inserted as NEW chunks — their
+        ``dc<id>`` handles die, so intra-draft ``[dc<id>]`` cross-refs to
+        them dangle (the ack says so). A non-heading block's text is
+        replaced in place like :meth:`edit_text`, children untouched.
+
+        ``base_sha`` guards the whole replaced span at once: a prefix
+        match (≥8 hex chars) against :func:`own_content_sha` of the
+        current own-content texts — the ``span-sha:`` the read view
+        prints on a heading. One transaction, so a mid-parse failure
+        never lands a half-replaced section.
+
+        The span is locked ``FOR UPDATE`` before the ``base_sha`` check
+        and the retire — ``edit_text`` takes no section lock, so without
+        row locks a concurrent text edit could commit mid-op and be
+        silently retired. A span whose retired run holds a chunk kind
+        markdown cannot recreate (figure, table, term, … — anything
+        outside :data:`_REPLACEABLE_CHUNK_KINDS`) is refused, naming the
+        offenders. ``dry_run=True`` runs every refusal and returns
+        without writing.
+
+        Returns ``(block, n_retired, inserted, span_sha)`` — the
+        post-write block chunk, how many chunks the replaced body run
+        retired (each body child's whole subtree goes with it, e.g. a
+        list's items), the newly inserted chunks in order, and the
+        post-write span sha computed inside the write transaction (the
+        ack's chained-edit ``base_sha`` token)."""
+        new_raw = text.strip()
+        if not new_raw:
+            raise BadInput(
+                "replace-content requires non-empty text= (markdown)",
+                next="edit(kind='draft', id='dc<id>', mode='replace-content', "
+                "text='…')",
+            )
+        first, _, after_first = new_raw.partition("\n")
+        m = _HEADING_LINE_RE.match(first)
+        heading_text = m.group(1).strip() if m else None
+        body_md = after_first if m else new_raw
+        with self.tx() as conn:
+            row = self._row(conn, handle)
+            if row is None:
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+            ref_id = int(row[1])
+            self._lock_sections(conn, ref_id, row[3], int(row[0]))
+            # Re-read under the section lock — the pre-lock read could be
+            # stale (same discipline as merge_prev_block).
+            row = self._row(conn, handle)
+            if row is None:
+                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+            if row[6] is not None:
+                raise Gone(
+                    f"¶{_bare(handle)} is retired — it was removed or "
+                    "replaced; edit the current live chunk instead"
+                )
+            chunk_id, ck, parent, cur_text = (
+                int(row[0]),
+                row[2],
+                row[3],
+                row[5] or "",
+            )
+            base = DraftChunk(
+                chunk_id=chunk_id,
+                ref_id=ref_id,
+                handle=_bare(handle),
+                chunk_kind=ck,
+                text=cur_text,
+                pos=row[4],
+                parent_chunk_id=parent,
+                depth=0,
+                kind=kind,
+            )
+            own = [base]
+            subs: list[tuple[DraftChunk, list[int]]] = []
+            if ck == "heading":
+                for c in self._children(conn, ref_id, chunk_id):
+                    if c.chunk_kind == "heading":
+                        break
+                    own.append(c)
+                if len(own) > 1:
+                    # A registry home heading's ``term`` children are a
+                    # managed collection, not rewriteable prose — the
+                    # leading-run span would retire them wholesale.
+                    mrow = conn.execute(
+                        "SELECT meta->>'registry' FROM chunks WHERE chunk_id = %s",
+                        (chunk_id,),
+                    ).fetchone()
+                    if mrow and mrow[0]:
+                        raise BadInput(
+                            f"{base.dc} is the {mrow[0]} registry home — its "
+                            "term children are managed data, and this op "
+                            "would retire them all",
+                            next="edit the term leaves directly "
+                            "(put chunk_kind='term' / edit meta=)",
+                        )
+                for c in own[1:]:
+                    subs.append(
+                        (c, [c.chunk_id, *self._descendant_ids(conn, c.chunk_id)])
+                    )
+            # Lock every row the op reads or retires — the hashed span
+            # plus the body subtrees — before the base_sha check:
+            # ``edit_text`` takes no section lock, so without row locks a
+            # concurrent text edit could commit mid-op and be silently
+            # retired. Sorted order keeps lock acquisition deterministic.
+            span_ids = [c.chunk_id for c in own] + [
+                cid for _, sub in subs for cid in sub
+            ]
+            locked = conn.execute(
+                "SELECT chunk_id, chunk_kind, text FROM chunks "
+                "WHERE chunk_id = ANY(%s) ORDER BY chunk_id FOR UPDATE",
+                (span_ids,),
+            ).fetchall()
+            text_of = {int(r[0]): (r[2] or "") for r in locked}
+            kind_of = {int(r[0]): r[1] for r in locked}
+            base = replace(base, text=text_of[chunk_id])
+            non_prose = [
+                (cid, kind_of[cid])
+                for _, sub in subs
+                for cid in sub
+                if kind_of[cid] not in _REPLACEABLE_CHUNK_KINDS
+            ]
+            if non_prose:
+                names = ", ".join(
+                    f"{handle_registry.format_handle(kind, cid, chunk=True)} [{k}]"
+                    for cid, k in non_prose
+                )
+                raise BadInput(
+                    f"{base.dc}'s own content holds chunk(s) markdown cannot "
+                    f"recreate: {names} — nothing was retired",
+                    next="edit them by their own handles, or move them out "
+                    "of the block first, then retry",
+                )
+            current = own_content_sha(text_of[c.chunk_id] for c in own)
+            if base_sha is not None:
+                # Same prefix-match contract as edit_text: the read path
+                # shows a 12-char prefix; a full digest still matches.
+                nb = base_sha.strip().lower()
+                if len(nb) < 8:
+                    raise BadInput(
+                        f"base_sha {base_sha!r} too short — need ≥8 hex "
+                        "chars (the sha prefix shown on read)",
+                        next=f"get(kind='draft', id='{base.dc}') for the span-sha",
+                    )
+                if not current.startswith(nb):
+                    raise BadInput(
+                        f"{base.dc}'s own content changed since you read it "
+                        f"(you read {nb[:8]}…, now {current[:8]}…) — "
+                        "re-read and retry so you don't clobber the newer "
+                        "edit",
+                        next=(
+                            f"get(kind='draft', id='{base.dc}') — its "
+                            "span-sha: is the replace-content base_sha"
+                        ),
+                    )
+            n_retired = 0
+            inserted: list[DraftChunk] = []
+            new_span_sha = current
+            if dry_run:
+                # Every refusal above ran against the locked rows; the
+                # write path is skipped so the diff preview never lands.
+                return base, 0, [], current
+            if ck != "heading":
+                self.edit_text_in_tx(conn, handle, new_raw, source=source)
+                new_span_sha = own_content_sha([new_raw])
+            else:
+                if (
+                    heading_text is not None
+                    and heading_text != text_of[chunk_id].strip()
+                ):
+                    self.edit_text_in_tx(conn, handle, heading_text, source=source)
+                # Retire the replaced body run — each direct child with
+                # its whole subtree (a list container's items die with
+                # it). Retire is the append-only delete; the replacement
+                # chunks are fresh inserts below.
+                for c, sub in subs:
+                    conn.execute(
+                        "UPDATE chunks SET retired_at = now() WHERE chunk_id = ANY(%s)",
+                        (sub,),
+                    )
+                    self._log(
+                        conn,
+                        c.chunk_id,
+                        "retired",
+                        source,
+                        {"mode": "replace-content"},
+                    )
+                    n_retired += len(sub)
+                if body_md.strip():
+                    blocks = _split_blocks(body_md)
+                    # Land ahead of the first kept child (the first child
+                    # heading — its subsections stay contiguous after the
+                    # new body, exactly where the replaced run sat).
+                    kids = self._children(conn, ref_id, chunk_id)
+                    keys = n_keys_between(
+                        None, kids[0].pos if kids else None, len(blocks)
+                    )
+                    ins_source = {**(source or {}), "reason": "replace-content"}
+                    for block, key in zip(blocks, keys, strict=True):
+                        tree = mdlist.parse_list_block(block)
+                        if tree is not None:
+                            inserted.extend(
+                                self._insert_list_tree(
+                                    conn,
+                                    ref_id=ref_id,
+                                    node=tree,
+                                    parent_chunk_id=chunk_id,
+                                    pos=key,
+                                    meta=None,
+                                    kind=kind,
+                                    source=ins_source,
+                                )
+                            )
+                            continue
+                        inserted.append(
+                            self._insert_draft_chunk(
+                                conn,
+                                ref_id=ref_id,
+                                chunk_kind="paragraph",
+                                text=block,
+                                parent_chunk_id=chunk_id,
+                                pos=key,
+                                source=ins_source,
+                                kind=kind,
+                            )
+                        )
+                # The ack's chained-edit token, computed under the same
+                # tx as the writes so no racing edit can slip between.
+                head = heading_text if heading_text is not None else text_of[chunk_id]
+                new_span_sha = own_content_sha(
+                    [head] + [c.text for c in inserted if c.parent_chunk_id == chunk_id]
+                )
+        post = self.get_draft_chunk(handle, kind=kind)
+        assert post is not None  # verified live inside the tx above
+        return post, n_retired, inserted, new_span_sha
 
     # -- review ledger (paper-writing pipeline rung 3) --------------------
     #
