@@ -4,7 +4,7 @@
 > then drop to reference. This file holds **invariants and seams** — the
 > shape that survives refactors — NOT present-state status (that's
 > the owning package's `__init__.py` docstring) and NOT rationale (also the
-> the owning package's docstring too). If a line here reads like "the current status of X,"
+> owning package's docstring too). If a line here reads like "the current status of X,"
 > it's in the wrong file. **Keep true:** update in the same commit that
 > changes the *shape*; terse per `docs/conventions/llm-facing-prose.md`.
 >
