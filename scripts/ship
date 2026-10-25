@@ -1867,7 +1867,7 @@ remote_gate_wait() {
                 echo "✖ remote gate RED: ${status#completed } — failing jobs:" >&2
                 gh run view "$run_id" --json jobs \
                     --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null) | "  " + .name + ": " + .conclusion' >&2 2>/dev/null || true
-                echo "  → gh run view ${run_id} --log-failed" >&2
+                echo "  → scripts/ci-failed ${run_id}" >&2
                 return 1 ;;
             *) sleep 60 ;;
         esac
@@ -2009,8 +2009,11 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
 
     # Harness classifier (release-train, docs/backlog/release-train.md §1) —
-    # before any gate: harness is scripts/ship, scripts/test, scripts/lib/ and
-    # .github/. A harness diff keeps a PRE-MERGE gate, so the ungated lanes
+    # THE canonical harness-lane membership list (gr515000): docs and fleet
+    # briefs point at this case, they never restate or widen it — harness is
+    # exactly scripts/ship, scripts/test, scripts/lib/* and .github/* (NOT
+    # the whole scripts/ dir; scripts/release, scripts/deploy etc. are not
+    # harness). A harness diff keeps a PRE-MERGE gate, so the ungated lanes
     # refuse it and name --remote (its ci/<branch> check.yml run is that
     # gate); everything else — uv.lock, pyproject.toml, migrations and schema
     # included — lands --quick under the train, so a non-harness diff on

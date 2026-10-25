@@ -72,12 +72,7 @@ def build_ref_passes(
 
         def _chunk_keywords_pass(batch_size: int) -> BatchResult:
             r = run_chunk_keywords_pass(store, kw_embedder, batch_size=batch_size)
-            return BatchResult(
-                handler="chunk_keywords",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return BatchResult.from_dict("chunk_keywords", r)
 
         ref_passes.append(_chunk_keywords_pass)
 
@@ -119,12 +114,7 @@ def build_ref_passes(
                 batch_size=min(batch_size, 4),
                 mailto=_bp_mailto,
             )
-            return _BpBatchResult(
-                handler="bib_parse",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BpBatchResult.from_dict("bib_parse", r)
 
         ref_passes.append(_bib_parse_pass)
 
@@ -168,12 +158,7 @@ def build_ref_passes(
 
         def _bib_retag_pass(batch_size: int) -> _BrBatchResult:
             r = run_bib_retag_pass(store, batch_size=batch_size)
-            return _BrBatchResult(
-                handler="bib_retag",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BrBatchResult.from_dict("bib_retag", r)
 
         ref_passes.append(_bib_retag_pass)
 
@@ -203,17 +188,11 @@ def build_ref_passes(
 
         def _inbound_chase_pass(batch_size: int) -> _InboundBatchResult:
             r = run_inbound_chase_pass(store, limit=batch_size)
-            return _InboundBatchResult(
-                handler="inbound_chase",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-                # gr514421: a ceiling-blocked pass still reports the
-                # rows it locked; report_only keeps that count out of
-                # the loop's any_work tally so a spent pass can't
-                # hot-poll itself back into claiming them.
-                report_only=bool(r.get("report_only")),
-            )
+            # gr514421: a ceiling-blocked pass still reports the rows it
+            # locked; the dict's report_only flows through from_dict so a
+            # spent pass stays out of the loop's any_work tally instead of
+            # hot-polling itself back into claiming them.
+            return _InboundBatchResult.from_dict("inbound_chase", r)
 
         ref_passes.append(_inbound_chase_pass)
 
@@ -264,12 +243,7 @@ def build_ref_passes(
 
         def _hub_refine_pass(batch_size: int) -> _HubRefineBatchResult:
             r = run_hub_refine_pass(store, embedder=_hub_refine_get_embedder())
-            return _HubRefineBatchResult(
-                handler="hub_refine",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _HubRefineBatchResult.from_dict("hub_refine", r)
 
         ref_passes.append(_hub_refine_pass)
 
@@ -286,12 +260,7 @@ def build_ref_passes(
 
         def _hub_tagline_pass(batch_size: int) -> _HubTaglineBatchResult:
             r = run_hub_tagline_pass(store, limit=batch_size)
-            return _HubTaglineBatchResult(
-                handler="hub_tagline",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _HubTaglineBatchResult.from_dict("hub_tagline", r)
 
         ref_passes.append(_hub_tagline_pass)
 
@@ -403,12 +372,7 @@ def build_ref_passes(
 
         def _clusterize_pass(batch_size: int) -> _BatchResult:
             r = run_clusterize_pass(store, batch_size=batch_size)
-            return _BatchResult(
-                handler="clusterize",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("clusterize", r)
 
         ref_passes.append(_clusterize_pass)
 
@@ -439,12 +403,7 @@ def build_ref_passes(
 
         def _tag_embeddings_pass(batch_size: int) -> _BatchResult:
             r = run_tag_embeddings_pass(store, te_embedder, batch_size=batch_size)
-            return _BatchResult(
-                handler="tag_embeddings",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("tag_embeddings", r)
 
         ref_passes.append(_tag_embeddings_pass)
 
@@ -462,12 +421,7 @@ def build_ref_passes(
             # runs a multi-minute LLM subprocess and we want the
             # outer loop to yield between attempts.
             r = run_claude_inproc_pass(store, limit=min(batch_size, 4))
-            return _BatchResult(
-                handler="job_claude_inproc",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("job_claude_inproc", r)
 
         ref_passes.append(_job_claude_inproc_pass)
 
@@ -515,12 +469,7 @@ def build_ref_passes(
 
         def _job_coordinator_pass(batch_size: int) -> _BatchResult:
             r = run_coordinator_pass(store, limit=min(batch_size, 4))
-            return _BatchResult(
-                handler="job_coordinator",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("job_coordinator", r)
 
         ref_passes.append(_job_coordinator_pass)
 
@@ -535,12 +484,7 @@ def build_ref_passes(
 
         def _job_ssh_node_pass(batch_size: int) -> _BatchResult:
             r = run_ssh_node_pass(store, limit=min(batch_size, 2))
-            return _BatchResult(
-                handler="job_ssh_node",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("job_ssh_node", r)
 
         ref_passes.append(_job_ssh_node_pass)
 
@@ -555,12 +499,7 @@ def build_ref_passes(
 
         def _job_inproc_pass(batch_size: int) -> _BatchResult:
             r = run_job_inproc_pass(store, limit=1)
-            return _BatchResult(
-                handler="job_inproc",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("job_inproc", r)
 
         ref_passes.append(_job_inproc_pass)
 
@@ -583,12 +522,7 @@ def build_ref_passes(
             # Detached-poll: each tick is a cheap inspect + heartbeat
             # plus up to a couple of launches, so the cap is small.
             r = run_claude_docker_pass(store, limit=min(batch_size, 4))
-            return _BatchResult(
-                handler="job_claude_docker",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("job_claude_docker", r)
 
         ref_passes.append(_job_claude_docker_pass)
 
@@ -659,12 +593,7 @@ def build_ref_passes(
                     _svc_resolver, _summarize_cfg.concurrency
                 ),
             )
-            return _BatchResult(
-                handler="llm_summarize",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("llm_summarize", r)
 
         ref_passes.append(_llm_summarize_pass)
 
@@ -749,12 +678,7 @@ def build_ref_passes(
                 escalate_client=_cls_escalate_client,
                 concurrency=_concurrency,
             )
-            return _ClsBatchResult(
-                handler="classify",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _ClsBatchResult.from_dict("classify", r)
 
         ref_passes.append(_classify_pass)
 
@@ -786,12 +710,7 @@ def build_ref_passes(
                 client=_describe_client,
                 batch_size=min(batch_size, 16),
             )
-            return _CdBatchResult(
-                handler="card_describe",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _CdBatchResult.from_dict("card_describe", r)
 
         ref_passes.append(_card_describe_pass)
 
@@ -850,12 +769,7 @@ def build_ref_passes(
                 client=_pg_client,
                 batch_size=min(batch_size, 8),
             )
-            return _PgBatchResult(
-                handler="paper_glossary",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _PgBatchResult.from_dict("paper_glossary", r)
 
         ref_passes.append(_paper_glossary_pass)
 
@@ -920,12 +834,7 @@ def build_ref_passes(
                 batch_size=min(batch_size, 8),
                 embedder=_ctx_sent_get_embedder(),
             )
-            return _CtxSentBatchResult(
-                handler="context_sentence",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _CtxSentBatchResult.from_dict("context_sentence", r)
 
         ref_passes.append(_context_sentence_pass)
 
@@ -948,12 +857,7 @@ def build_ref_passes(
             from precis.workers.paper_rank import run_paper_rank_pass
 
             r = run_paper_rank_pass(store, batch_size=batch_size)
-            return _PrBatchResult(
-                handler="paper_rank",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _PrBatchResult.from_dict("paper_rank", r)
 
         ref_passes.append(_paper_rank_pass)
 
@@ -1023,12 +927,7 @@ def build_ref_passes(
                 enabled_slugs=enabled,
                 opt_in_kinds=_opt_in_kinds(),
             )
-            return _CtBatchResult(
-                handler="classify_topics",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _CtBatchResult.from_dict("classify_topics", r)
 
         ref_passes.append(_classify_topics_pass)
 
@@ -1088,12 +987,7 @@ def build_ref_passes(
                     batch_size=min(batch_size, 16),
                     opt_in_kinds=_opt_in_kinds(),
                 )
-                return _AxisBatchResult(
-                    handler=f"axis:{axis_id}",
-                    claimed=r["claimed"],
-                    ok=r["ok"],
-                    failed=r["failed"],
-                )
+                return _AxisBatchResult.from_dict(f"axis:{axis_id}", r)
 
             # Per-cycle live gate (below, passed to run_loop as
             # ``pass_gate``): every ``_axis_pass`` closure shares the
@@ -1301,12 +1195,7 @@ def build_ref_passes(
                 inbox_dir=fetch_inbox,
                 email=fetch_email,
             )
-            return _BatchResult(
-                handler="fetch_oa",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("fetch_oa", r)
 
         ref_passes.append(_fetch_pass)
 
@@ -1323,12 +1212,7 @@ def build_ref_passes(
 
         def _watch_poll_pass(batch_size: int) -> _BatchResult:
             r = run_watch_pass(store, limit=batch_size)
-            return _BatchResult(
-                handler="watch_poll",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("watch_poll", r)
 
         ref_passes.append(_watch_poll_pass)
 
@@ -1343,12 +1227,7 @@ def build_ref_passes(
 
         def _news_poll_pass(batch_size: int) -> _BatchResult:
             r = run_news_pass(store)
-            return _BatchResult(
-                handler="news_poll",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("news_poll", r)
 
         ref_passes.append(_news_poll_pass)
 
@@ -1368,12 +1247,7 @@ def build_ref_passes(
             # below — the pass caps itself via its own row budget
             # (workers/parts_refresh.py's DEFAULT_ROW_BUDGET).
             r = run_parts_refresh_pass(store)
-            return _BatchResult(
-                handler="parts_refresh",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("parts_refresh", r)
 
         ref_passes.append(_parts_refresh_pass)
 
@@ -1390,12 +1264,7 @@ def build_ref_passes(
 
         def _mail_poll_pass(batch_size: int) -> _BatchResult:
             r = run_mail_poll(store)
-            return _BatchResult(
-                handler="mail_poll",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("mail_poll", r)
 
         ref_passes.append(_mail_poll_pass)
 
@@ -1435,12 +1304,7 @@ def build_ref_passes(
                 escalate_client=_inj_escalate,
                 batch_size=min(batch_size, 8),
             )
-            return _InjBatchResult(
-                handler="inject_scan",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _InjBatchResult.from_dict("inject_scan", r)
 
         ref_passes.append(_inject_scan_pass)
 
@@ -1482,12 +1346,7 @@ def build_ref_passes(
             # The exponential backoff inside the pass handles HTTP
             # transients without re-hammering.
             r = run_gp_fetch_pass(store, limit=min(batch_size, 1))
-            return _BatchResult(
-                handler="fetch_google_patents",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("fetch_google_patents", r)
 
         ref_passes.append(_gp_fetch_pass)
 
@@ -1776,12 +1635,7 @@ def build_ref_passes(
                 band_client=_stub_rank_band_client,
                 band_limit=None,
             )
-            return _BatchResult(
-                handler="stub_rank",
-                claimed=r["claimed"],
-                ok=r["ok"],
-                failed=r["failed"],
-            )
+            return _BatchResult.from_dict("stub_rank", r)
 
         ref_passes.append(_stub_rank_pass)
 

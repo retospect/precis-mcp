@@ -89,6 +89,10 @@ def _stage(tmp_path: Path, name: str) -> Path:
     (tree / "docker" / "dev" / "compose.yaml").write_text(
         "services: {}\n", encoding="utf-8"
     )
+    # scripts/test refuses a missing test path before any docker call
+    # (gr514948) — the staged tree needs the default arg's file to exist.
+    (tree / "tests").mkdir(exist_ok=True)
+    (tree / "tests" / "x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(tree)], check=True)
     return tree
 

@@ -127,6 +127,11 @@ memory/
 coverage.xml
 .coverage
 .coverage.*
+# scripts/test caches (gr514478): preflight-check stamp keyed by
+# image+lock+pyproject+UV_WITH, and the test-schema dump keyed by
+# migration fingerprint — both per-worktree build artifacts.
+.precis-preflight
+.precis-test-schema-*.sql
 # scripts/mutate-diff's scratch diff patch — regenerated per run, not source.
 .mutate-diff.patch
 # scripts/skill-eval's JSON report — regenerated per run, not source.

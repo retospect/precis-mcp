@@ -99,7 +99,7 @@ Optional ship message from the user: `$ARGUMENTS`
    | other | `scripts/deploy` failed; the pin is retained | surface the failing ansible task verbatim — the cluster may be on mixed versions. Fix, re-run `scripts/release`; it resumes |
 
    **Red release (exit 2).** The log names the failing jobs and the
-   `gh run view <id> --log-failed` line; read its `FAILED` / `E  ` lines.
+   `scripts/ci-failed <id>` line; read its `FAILED` / `E  ` lines.
    The release branch stays and blocks other sessions' releases until it is
    fixed or abandoned. Classify flake vs real first — OOM-137, colima
    bind-mount and shared test-DB failures look like reds but aren't code: a

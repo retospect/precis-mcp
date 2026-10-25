@@ -29,32 +29,36 @@
 #                                             # invariants + corpus/import map
 #                                             # (testmon when a map exists)
 #   scripts/test --typecheck                  # `uv run mypy src tests` in the container
+#   scripts/test --random [pytest args…]      # order-dependence probe: bridges
+#                                             # pytest-randomly on the fly; the
+#                                             # plugin prints its seed.
+#                                             # PRECIS_RANDOM_SEED=N pins the
+#                                             # order (--randomly-seed) and
+#                                             # implies --random on its own
 #   scripts/test --bg <args…>                 # detach the run; prints an --await line
 #   scripts/test --await <run-id>             # bounded wait: exits with the run's
 #                                             # code, or 124 = still running (re-run)
 #
-# Refuses with exit 3 (named message) when the docker VM disk has less than
-# PRECIS_DOCKER_MIN_FREE_GB (default 10) free; PRECIS_DOCKER_DISK_CHECK=0 skips.
+# Refuses with exit 3 (named message) when the docker VM disk is nearly
+# full — the disk knobs are in the `--help` Env block below.
 #
 # Everything after the script name is passed straight to pytest. Default
-# parallelism is -n6 (the measured sweet spot); pass your own -n0/-nN to
-# override for a single fast test.
+# parallelism is -n6 (the measured sweet spot) — except a selection whose
+# positional args are all test files or node ids: then the container counts
+# the collected items first and runs -n0 at ≤500 (PRECIS_AUTO_N_MAX), because
+# xdist worker bring-up (~4.8 s no-DB, ~24 s DB) outweighs the tests at that
+# size. Directories and bare -k/-m selections keep -n6 with no count pass;
+# a caller-supplied -nN always wins.
 #
-# PRECIS_TEST_KEEP_DB=1 : in a subagent worktree (basename `agent-*`) this
-# script `compose down -v`s the tree's compose project at exit, so an idle
-# subagent test-db stops holding one of docker's ~31 network address pools
-# (see agent_db_teardown below). Set it to keep the warm db between runs.
+# The three stale-baked-venv preflight checks (see below) are cached
+# per-worktree: a stamp at ./.precis-preflight keyed on the image id +
+# uv.lock + pyproject.toml + UV_WITH skips them on a hit (~6 s saved per
+# run); any failure or entry-points heal leaves no stamp.
 #
-# PRECIS_TEST_ENV="NAME=value …" : extra env vars to forward into the
-# test container, space-separated. Only a fixed allowlist crosses
-# otherwise (see ARTIFACT_ENV below) — a test-tuning var like NANO_SEEDS
-# that is exported on the host but not forwarded is dropped silently and
-# gets one stderr warning instead (gr513868).
-# PRECIS_TEST_PASSENV=FOO,BAR : forward the named environment variables into
-# the test container (gr514238). The ARTIFACT_ENV whitelist below only covers
-# fixed test-artifact knobs, so an ad-hoc knob like UNI_VIEWS never reached
-# pytest. Names are validated; values are inherited by docker (`-e NAME`),
-# never expanded into argv or logs — the vars may be secrets.
+# Env knobs are documented ONCE, in the `--help` Env block — do not repeat
+# the list here (gr514431). The comments at each use site keep only the
+# why: agent_db_teardown's docker-network-pool story, the gr513868
+# silently-dropped host var behind the unforwarded-name warning, and so on.
 #
 # --impacted (-i): impact selection via pytest-testmon. Runs only the tests
 # affected by your working-tree changes — the inner-loop accelerator when the
@@ -65,8 +69,9 @@
 # (gitignored). Still not authoritative — scripts/ship runs the full gate.
 #
 # NOTE: the dev image bakes all extras, so you never need `--with`/`--extra`
-# here — that's only for the torch-free host (and the testmon plugin, which
-# --impacted pulls in on the fly so no image rebuild is needed).
+# here — that's only for the torch-free host (and the testmon and
+# pytest-randomly plugins, which --impacted and --random pull in on the fly
+# so no image rebuild is needed).
 #
 # --typecheck : the gate's mypy check (`uv run mypy src tests`), through the
 # same container path as pytest — same compose project, same worktree bind
@@ -100,6 +105,12 @@ Usage:
   scripts/test --selected                   # the ship --checked selection locally:
                                             # contract invariants + corpus/map +
                                             # import-scan (testmon if a map exists)
+  scripts/test --random [pytest args…]      # shuffled order (pytest-randomly,
+                                            # seed printed); PRECIS_RANDOM_SEED=N
+                                            # reproduces an order, implies --random
+  scripts/test --typecheck [targets…]       # `uv run mypy src tests` in the
+                                            # container; trailing args replace
+                                            # the src tests targets
   scripts/test --bg <args…>                 # detach the run; prints an --await line
   scripts/test --await <run-id>             # bounded wait: exits with the run's
                                              # code, or 124 = still running (re-run)
@@ -107,27 +118,54 @@ Usage:
 
 Everything after the script name (other than the flags above) is passed
 straight to pytest. Default parallelism is -n6; pass your own -n0/-nN to
-override for a single fast test.
+override for a single fast test. A positional arg naming a path that does
+not exist is refused up front, before any container starts (gr514948).
 
-Env: PRECIS_TEST_KEEP_DB=1 keeps the test-db up after the run. Without it, a
-subagent worktree (basename agent-*) tears its compose project down at exit.
-     PRECIS_TEST_ENV="NAME=value …" forwards extra env vars into the test
-     container (only a fixed allowlist crosses otherwise; an unforwarded
-     NANO_/ESP32C3_/PRECIS_PCB_ var warns once on stderr).
-     PRECIS_TEST_AUTOBRIDGE=1 bridges missing core deps into the run's uv env
-     automatically when the baked image is stale (opt-in; the refusal message
-     names the exact UV_WITH line if you only want it once).
-PRECIS_TEST_PASSENV=FOO,BAR forwards the named env vars into the test
-container (values are inherited by docker, never printed).
+Env — every knob is documented here, and only here (gr514431):
+  PRECIS_TEST_ENV="NAME=value …"  extra vars forwarded into the test
+        container, space-separated (names match ^[A-Z][A-Z0-9_]*$;
+        PATH/HOME/PYTHON*/DATABASE*/PG* refused). Only a fixed allowlist
+        crosses otherwise; an unforwarded NANO_/ESP32C3_/PRECIS_PCB_ var
+        warns once on stderr (gr513868).
+  PRECIS_TEST_KEEP_DB=1           keep the test-db up after the run; without
+        it a subagent worktree (basename agent-*) tears its compose project
+        down at exit.
+  PRECIS_TEST_AWAIT_BUDGET=<s>    --await's per-call wait cap (default 480).
+  UV_WITH="--with dep …"          extra uv packages for this run — the
+        escape hatch for a dep the baked image lacks (--impacted uses it
+        for pytest-testmon + pytest-timeout).
+  PRECIS_IMPACTED_TEST_TIMEOUT=<s>  per-test timeout under --impacted
+        (default 900).
+  PRECIS_STRICT_LOCK_CHECK=1      refuse, not just warn, when an installed
+        package differs from uv.lock.
+  PRECIS_DOCKER_MIN_FREE_GB=<n>   refuse when the docker VM has less free
+        (default 10).
+  PRECIS_DOCKER_DISK_CHECK=0      skip that disk preflight.
+  PRECIS_GATE_SLOTS=<n>           fleet-wide concurrent container cap
+        (default 3; queued runs wait).
+  PRECIS_COMPOSE=<path>           alternate compose file (default
+        docker/dev/compose.yaml).
+  KEEP_TESTMON_LOG=1              keep the captured --impacted run log.
+  PRECIS_TEST_PASSENV=FOO,BAR     forward the named host env vars into the
+        container by inheritance (`-e NAME`; values are never printed or put
+        in argv — they may be secrets; gr514238). Names are validated.
+  PRECIS_TEST_AUTOBRIDGE=1        bridge missing core deps into the run's uv
+        env automatically when the baked image is stale (opt-in).
+  PRECIS_RANDOM_SEED=N            reproduce a --random order (implies --random).
+
+Every var that crosses uses compose's explicit `-e NAME=value` form —
+never the bare `-e NAME`, which copies whatever value the host happens to
+have set (the silent-passthrough trap behind gr513868) — except
+PRECIS_TEST_PASSENV, below.
 
 Two-call background protocol for capped foreground shells: `--bg <args>`
 detaches the run and prints its run-id; poll with `--await <run-id>`
-repeatedly (each call blocks up to PRECIS_TEST_AWAIT_BUDGET seconds, default
-480, and exits 124 while still running — re-run the same command until it
-returns the run's real exit code).
+repeatedly (each call blocks up to PRECIS_TEST_AWAIT_BUDGET seconds and
+exits 124 while still running — re-run the same command until it returns
+the run's real exit code).
 
 See the header comment in this script for the full rationale (why the
-wrapper exists, --impacted/testmon details, the UV_WITH escape hatch).
+wrapper exists, --impacted/testmon details).
 USAGE
 }
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -231,10 +269,67 @@ SELECTED=0
 # .coverage.precis.json — a sha256-per-measured-file manifest the python
 # `tests` view verifies against indexed bytes before trusting the DB.
 COVERAGE=0
-if [[ "${1:-}" == "--coverage" ]]; then COVERAGE=1; shift; fi
-if [[ "${1:-}" == "--impacted" || "${1:-}" == "-i" ]]; then IMPACTED=1; shift; fi
-if [[ "${1:-}" == "--fast" || "${1:-}" == "-f" ]]; then FAST=1; shift; fi
-if [[ "${1:-}" == "--selected" ]]; then SELECTED=1; shift; fi
+RANDOM_ORDER=0
+# Leading flags combine in any order (a loop, not a single pass): with
+# single-pass ifs `scripts/test --random --fast` would hand `--fast` to
+# pytest unparsed.
+while :; do
+    case "${1:-}" in
+        --coverage) COVERAGE=1; shift ;;
+        --impacted|-i) IMPACTED=1; shift ;;
+        --fast|-f) FAST=1; shift ;;
+        --selected) SELECTED=1; shift ;;
+        # --random : order-dependence probe (test-loop-speed Decision 6).
+        # Bridges pytest-randomly through UV_WITH below (same on-the-fly
+        # shape as testmon — no image rebuild); the plugin prints its seed.
+        --random) RANDOM_ORDER=1; shift ;;
+        *) break ;;
+    esac
+done
+# PRECIS_RANDOM_SEED=N pins the order via --randomly-seed=N and implies
+# --random on its own — that is the reproduce-an-order path.
+if [[ -n "${PRECIS_RANDOM_SEED:-}" ]]; then RANDOM_ORDER=1; fi
+
+# Missing-path preflight (gr514948): one bad filename used to reach pytest
+# as a green-looking "no tests ran" (exit 5) that voided the whole run.
+# Refuse before the disk probe, test-db and container start, naming every
+# positional arg that is not an existing path (a 'path::node' id checks its
+# path part). Args following a value-taking flag (-k/-m expressions,
+# --junitxml's not-yet-written output, …) are skipped, so pytest's own
+# arguments keep working; --typecheck's mypy targets are its own errors.
+if [[ "${1:-}" != "--typecheck" ]]; then
+    MISSING_PATHS=()
+    _consumes_next=0
+    for _arg in "$@"; do
+        if [[ "$_consumes_next" == 1 ]]; then
+            _consumes_next=0
+            continue
+        fi
+        if [[ "$_arg" == -* ]]; then
+            case "${_arg}" in
+                *=*) ;;  # --flag=value carries its own argument
+                -k|-m|-n|-p|-o|-c|-r|-W|\
+                --deselect|--ignore|--ignore-glob|--collect-glob|--rootdir|\
+                --basetemp|--confcutdir|--junitxml|--junit-prefix|--resultlog|\
+                --lfnames|--maxfail|--durations|--durations-min|--tb|--capture|\
+                --color|--code-highlight|--pastebin|--verbosity|--doctest-report|\
+                --doctest-glob|--timeout|--timeout-method|--timeout_method|\
+                --numprocesses|--max-worker-restart|--dist|--tx|--rsyncdir|\
+                --cov|--cov-report|--cov-context|--cov-config|--cov-fail-under|\
+                --cov-precision|--shard)
+                    _consumes_next=1 ;;
+            esac
+            continue
+        fi
+        _path="${_arg%%::*}"
+        [[ -n "$_path" && -e "$_path" ]] || MISSING_PATHS+=("$_arg")
+    done
+    if [[ ${#MISSING_PATHS[@]} -gt 0 ]]; then
+        printf 'ERR: test path not found: %s\n' ${MISSING_PATHS[@]+"${MISSING_PATHS[@]}"} >&2
+        echo "check the name — node ids (tests/test_x.py::test_y) and -k/-m expressions still work" >&2
+        exit 2
+    fi
+fi
 
 # --selected: compute the checked-gate selection host-side (no container
 # needed). testmon=1 means a ./.testmondata map exists
@@ -383,11 +478,40 @@ cleanup() {
     if [[ -n "$TESTMON_LOG" && "${KEEP_TESTMON_LOG:-0}" != "1" ]]; then
         rm -f "$TESTMON_LOG"
     fi
+    hb_stop
     agent_db_teardown || true
     exit "$rc"
 }
 trap cleanup EXIT
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
+
+# Heartbeat (gr514502): a run that goes quiet — xdist's ~25 s "bringing up
+# nodes", a congested gate queue — reads as wedged and gets backgrounded or
+# killed by the harness. A subshell prints the current phase every 10 s on
+# stderr until hb_stop; cleanup() kills it so nothing prints after exit.
+HB_PID=""
+hb_stop() {
+    if [[ -n "$HB_PID" ]]; then
+        kill "$HB_PID" 2>/dev/null || true
+        wait "$HB_PID" 2>/dev/null || true
+        HB_PID=""
+    fi
+}
+hb_start() {
+    local phase="$1" t0=$SECONDS
+    hb_stop
+    (
+        while :; do
+            # >/dev/null on the sleep is load-bearing: an orphaned sleep
+            # would otherwise keep the caller's stdout/stderr pipes open
+            # ~10 s past exit, and subprocess.run-style harnesses block on
+            # pipe EOF (every env-test _run took +10 s before this).
+            sleep "${PRECIS_TEST_HEARTBEAT_S:-10}" >/dev/null 2>&1
+            printf 'scripts/test: %s … %ss\n' "$phase" "$((SECONDS - t0))" >&2
+        done
+    ) &
+    HB_PID=$!
+}
 
 # --typecheck : reuses the compose project/mount above but skips the test-db
 # startup and the gate-slot wait entirely (see header) — runs mypy and exits
@@ -426,13 +550,15 @@ THREAD_CAP_ENV=(
 # selected only no-DB tests (`-m 'not db and not slow'`), so it skips the
 # queue too — no Postgres, no slot.
 if [[ "$FAST" != "1" ]]; then
+    hb_start "gate-slot wait"
     gate_slot_acquire
+    hb_stop
 fi
 
 TEST_DB_ENV=()
 if [[ "$FAST" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
-elif run_marker_write; DB_UP_OUT="$(compose up -d --wait precis-test-db 2>&1)"; then
+elif hb_start "test db up" && run_marker_write && DB_UP_OUT="$(compose up -d --wait precis-test-db 2>&1)"; then
     TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
 else
     echo "WARNING: precis-test-db didn't start — falling back to the container's default test DB" >&2
@@ -443,10 +569,40 @@ else
         echo "docker is out of network address pools (idle worktree test-dbs hold them): run scripts/reap-test-dbs; PRECIS_REAP_DB_MIN_AGE_SECONDS=7200 widens it to thread trees idle 2 h" >&2
     fi
 fi
+hb_stop
 
-# Default -n6 unless the caller set their own -n (single fast test → pass -n0).
+# Parallelism: a caller-supplied -nN always wins. Otherwise default -n6 —
+# except a selection whose positional args are all test files / node ids
+# (test-loop-speed Decision 1): then PRECIS_AUTO_N=1 asks the container to
+# count collected items first and run -n0 at ≤500, because xdist worker
+# bring-up (~4.8 s no-DB, ~24 s DB) outweighs the tests at that size.
+# Directories and bare -k/-m selections keep -n6 with no count pass —
+# collecting the whole suite to classify it would cost ~95 s.
+AUTO_N=0
+CALLER_N=0
+for a in "$@"; do [[ "$a" == -n* ]] && CALLER_N=1; done
 NPROC=(-n6)
-for a in "$@"; do [[ "$a" == -n* ]] && NPROC=(); done
+if [[ "$CALLER_N" == 1 ]]; then
+    NPROC=()
+elif [[ "$IMPACTED" != "1" && "$SELECTED" != "1" ]]; then
+    _auto_any=0
+    _auto_files=1
+    for a in "$@"; do
+        case "$a" in
+            -*) ;;
+            *)
+                _auto_any=1
+                if [[ "$a" == */ || ! -f "${a%%::*}" ]]; then
+                    _auto_files=0
+                fi
+                ;;
+        esac
+    done
+    if [[ "$_auto_any" == 1 && "$_auto_files" == 1 ]]; then
+        AUTO_N=1
+        NPROC=()
+    fi
+fi
 
 # Default -q unless the caller set their own verbosity — same convention
 # as NPROC (gr514718): the -q used to live in the fixed pytest command,
@@ -503,6 +659,18 @@ if [[ "$IMPACTED" == "1" ]]; then
     TESTMON_LOG="$(mktemp "${TMPDIR:-/tmp}/precis-test-testmon.XXXXXX")"
 fi
 
+# --random: pin the plugin version so the bridge resolves identically on
+# every host. The seed arg only exists once the plugin is loaded, so it is
+# added here (never bare): RANDOM_ORDER already covers a seed set without
+# the flag.
+RANDOM_ARGS=()
+if [[ "$RANDOM_ORDER" == "1" ]]; then
+    UV_WITH="${UV_WITH:+${UV_WITH} }--with pytest-randomly==3.16.0"
+    if [[ -n "${PRECIS_RANDOM_SEED:-}" ]]; then
+        RANDOM_ARGS=("--randomly-seed=${PRECIS_RANDOM_SEED}")
+    fi
+fi
+
 # Fast mode: deselect the whole DB suite (auto-applied `db` marker) AND the
 # heavy `slow` cluster. Both matter: the slowest two tests in the suite are
 # no-DB compute tests in the `slow` pathway file, so `not db` alone would let
@@ -527,6 +695,24 @@ if [[ "$IMPACTED" == "1" && "$FAST" != "1" ]]; then
     fi
 fi
 
+# Preflight cache key (gr514478): the three stale-baked-venv checks run
+# when this changes, skip on a hit (see pytest-inner.sh). Covers exactly
+# the drift the checks guard: the baked image (id), deps (uv.lock,
+# pyproject.toml) and the UV_WITH bridge. Empty when no sha256 tool —
+# the inner then runs the checks every time, as before.
+_sha256() {
+    if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$@"
+    elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"
+    else return 1; fi
+}
+PRECIS_PREFLIGHT_KEY=""
+if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; then
+    _img="$(docker image inspect precis-dev --format '{{.Id}}' 2>/dev/null || true)"
+    _lock_sha="$(_sha256 uv.lock 2>/dev/null | cut -d' ' -f1 || true)"
+    _py_sha="$(_sha256 pyproject.toml 2>/dev/null | cut -d' ' -f1 || true)"
+    PRECIS_PREFLIGHT_KEY="$(printf '%s' "${_img:-noimg}|${_lock_sha:-nolock}|${_py_sha:-nopy}|${UV_WITH:-}" | _sha256 | cut -d' ' -f1)"
+fi
+
 # Artifact-writing tests (the PCB fab render, chiefly) need to be TOLD where to
 # put their output, and nothing but UV_WITH used to cross the container
 # boundary — so producing a board to look at meant hand-editing a default path
@@ -548,11 +734,8 @@ done
 # PRECIS_TEST_ENV — the opt-in for everything the fixed list above does
 # NOT cover (gr513868: NANO_SEEDS was exported on the host, silently
 # dropped at the container boundary, and a 4-minute seed-iteration run
-# measured seed 1). Space-separated NAME=value pairs:
-#   PRECIS_TEST_ENV="NANO_SEEDS=2 FOO=bar" scripts/test -n0 tests/x.py
-# Names must match ^[A-Z][A-Z0-9_]*$ and may not shadow the container's
-# own runtime surface (PATH/HOME/PYTHON*/DATABASE*/PG*); values may not
-# contain whitespace.
+# measured seed 1). Syntax and the refused-name list are documented once,
+# in the --help Env block; the loop below enforces them.
 for _kv in ${PRECIS_TEST_ENV:-}; do
     _env_name="${_kv%%=*}"
     if [[ "$_kv" != *=* || ! "$_env_name" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
@@ -651,14 +834,17 @@ run_pytest() {
     compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
         -e PRECIS_STRICT_LOCK_CHECK="${PRECIS_STRICT_LOCK_CHECK:-}" \
         -e PRECIS_TEST_AUTOBRIDGE="$AUTOBRIDGE" \
+        -e PRECIS_AUTO_N="$AUTO_N" \
+        -e PRECIS_PREFLIGHT_KEY="$PRECIS_PREFLIGHT_KEY" \
         "${THREAD_CAP_ENV[@]}" \
         "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
         "${PASSENV[@]+"${PASSENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'AUTO_WITH=""; if [ "${PRECIS_TEST_AUTOBRIDGE}" = "1" ]; then AUTO_WITH="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py --with-flags 2>/dev/null || true)"; if [ -n "$AUTO_WITH" ]; then echo "PRECIS_TEST_AUTOBRIDGE: bridging missing core dep(s) for this run: ${AUTO_WITH} (durable fix: scripts/build-image precis-dev)" >&2; fi; fi; uv run --no-sync ${UV_WITH} ${AUTO_WITH} bash -c "python3 scripts/lib/prewarm-pycache.py pysbd && python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-lock-pins.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
+        bash -lc 'AUTO_WITH=""; if [ "${PRECIS_TEST_AUTOBRIDGE}" = "1" ]; then AUTO_WITH="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py --with-flags 2>/dev/null || true)"; if [ -n "$AUTO_WITH" ]; then echo "PRECIS_TEST_AUTOBRIDGE: bridging missing core dep(s) for this run: ${AUTO_WITH} (durable fix: scripts/build-image precis-dev)" >&2; fi; fi; uv run --no-sync ${UV_WITH} ${AUTO_WITH} bash scripts/lib/pytest-inner.sh "$@"' \
         _ "${VERBOSITY[@]+"${VERBOSITY[@]}"}" "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
+        "${RANDOM_ARGS[@]+"${RANDOM_ARGS[@]}"}" \
         "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@" \
         | sed -u '/^bringing up nodes/d' || rc=$?
     # Exit 137 = the container's own OOM kill (mem_limit in compose.yaml) —
@@ -675,12 +861,15 @@ if [[ "$SELECTED" == 1 ]]; then
     if [[ ${#SEL_ARGS[@]} -gt 0 ]]; then
         SEL_MARK=(-m "not slow")
         for a in "$@"; do [[ "$a" == -m* ]] && SEL_MARK=(); done
+        hb_start "pytest"
         run_pytest plain -n6 "${SEL_MARK[@]+"${SEL_MARK[@]}"}" "${SEL_ARGS[@]+"${SEL_ARGS[@]}"}" "$@" || exit $?
+        hb_stop
     fi
     # No map → the static list was the whole selection; a map → testmon run below.
     [[ "$IMPACTED" == 1 ]] || exit 0
 fi
 
+hb_start "pytest"
 if [[ -n "$TESTMON_LOG" ]]; then
     # --impacted: stream to the terminal AND capture, so a post-run guard can
     # see the same text a human would tail (see the TESTMON_LOG comment
@@ -717,3 +906,4 @@ if [[ -n "$TESTMON_LOG" ]]; then
 else
     run_pytest testmon "$@"
 fi
+hb_stop

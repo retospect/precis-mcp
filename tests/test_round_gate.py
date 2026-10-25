@@ -334,7 +334,7 @@ def test_gate_routes_to_the_newest_red_commit_above_the_candidate(rig: Rig) -> N
     assert f"red above the candidate: {rig.shas['c3'][:8]}" in out.stdout
     assert "failing: test-linux (2), test-linux (3.12, 3)" in out.stdout
     assert "test-other" not in out.stdout
-    assert "gh run view 4242 --log-failed" in out.stdout
+    assert "scripts/ci-failed 4242" in out.stdout
 
 
 def test_gate_flags_a_red_failed_first_despite_skipped_shards(rig: Rig) -> None:

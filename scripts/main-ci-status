@@ -14,7 +14,7 @@ This script is the watcher + the ownership signal:
 
 * reads the newest *completed, non-cancelled* `check` run on `main` via `gh`
   (cancelled = superseded by the concurrency group, not a verdict);
-* on RED prints the sha, run id, failing jobs, and the `gh run view --log-failed`
+* on RED prints the sha, run id, failing jobs, and the `scripts/ci-failed`
   line to read — then scans every in-flight worktree's `.claude/purpose` for a
   claim (`red main` / `main red` / `ci red` / `fix main`, case-insensitive). A
   claim names the owner; no claim prints the exact line to write so the NEXT
@@ -237,7 +237,7 @@ def main() -> int:
     jobs = ", ".join(failing_jobs(verdict["databaseId"])) or "(jobs unavailable)"
     print(
         f"🔴 main is RED on CI: {sha} run {verdict['databaseId']} ({age(verdict['createdAt'])}) — "
-        f"failing: {jobs}. Read: gh run view {verdict['databaseId']} --log-failed"
+        f"failing: {jobs}. Read: scripts/ci-failed {verdict['databaseId']}"
     )
     if pending:
         print(
@@ -372,7 +372,7 @@ def nightly_check_report() -> None:
         jobs = ", ".join(unfinished_jobs(rid)) or "(job detail unavailable)"
         print(
             f"🔴 nightly-check {verdict['conclusion']}: run {rid} on {sha} ({when}) — "
-            f"jobs: {jobs}. Failing tests: gh run view {rid} --log-failed"
+            f"jobs: {jobs}. Failing tests: scripts/ci-failed {rid}"
             + (
                 f"; a newer run is {running['status']} on {running['headSha'][:8]}"
                 if running

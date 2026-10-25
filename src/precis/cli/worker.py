@@ -849,12 +849,7 @@ def _build_chase_pass(
             with_llm=_chase_with_llm,
             taproot_embedder=chase_embedder,
         )
-        return _BatchResult(
-            handler="finding_chase",
-            claimed=r["claimed"],
-            ok=r["ok"],
-            failed=r["failed"],
-        )
+        return _BatchResult.from_dict("finding_chase", r)
 
     return _chase_pass
 
@@ -980,12 +975,7 @@ def _build_inbound_ground_pass(
         r = run_inbound_ground_pass(
             store, embedder=_inbound_ground_get_embedder(), limit=None
         )
-        return _InboundGroundBatchResult(
-            handler="inbound_ground",
-            claimed=r["claimed"],
-            ok=r["ok"],
-            failed=r["failed"],
-        )
+        return _InboundGroundBatchResult.from_dict("inbound_ground", r)
 
     return _inbound_ground_pass
 

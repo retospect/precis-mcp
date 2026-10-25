@@ -102,7 +102,7 @@ def test_red_unclaimed_prints_the_purpose_line(
         "echo 'fix red main 8b881979: lint, test-linux (3.13, 5)' > .claude/purpose"
         in out
     )
-    assert "gh run view 1 --log-failed" in out
+    assert "scripts/ci-failed 1" in out
 
 
 def test_red_claimed_names_the_owner_and_pending_run(
@@ -346,7 +346,7 @@ def test_nightly_check_red_prints_even_under_for_hook(
     assert "nightly-check failure: run 51 on 8b881979" in out
     assert "test-other (macos-latest, 3.13) (failure)" in out
     assert "lint" not in out, "successful jobs are not interesting on a red run"
-    assert "gh run view 51 --log-failed" in out
+    assert "scripts/ci-failed 51" in out
 
 
 def test_nightly_check_cancelled_is_a_verdict_not_skipped(

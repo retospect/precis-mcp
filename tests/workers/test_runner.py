@@ -570,6 +570,48 @@ class TestBatchResultExtra:
         assert payloads[0]["claimed"] == 4
 
 
+class TestBatchResultFromDict:
+    """``BatchResult.from_dict`` — the shared dict-shaped-pass adapter
+    (gr514620): every field-named key flows, pass-internal keys don't."""
+
+    def test_forwards_every_field_named_key(self) -> None:
+        r = BatchResult.from_dict(
+            "pass_x",
+            {
+                "claimed": 4,
+                "ok": 3,
+                "failed": 1,
+                "report_only": True,
+                "extra": {"ceiling_hit": True},
+            },
+        )
+        assert r == BatchResult(
+            handler="pass_x",
+            claimed=4,
+            ok=3,
+            failed=1,
+            extra={"ceiling_hit": True},
+            report_only=True,
+        )
+
+    def test_drops_pass_internal_keys_and_defaults_optional(self) -> None:
+        r = BatchResult.from_dict(
+            "pass_y",
+            {"claimed": 2, "ok": 2, "failed": 0, "chunks_swept": 9},
+        )
+        assert r == BatchResult(handler="pass_y", claimed=2, ok=2, failed=0)
+
+    def test_new_fields_flow_without_adapter_edits(self) -> None:
+        """The point of the converter (gr514620): a dataclass field the
+        adapters were never taught about still arrives from the dict."""
+        assert (
+            BatchResult.from_dict(
+                "p", {"claimed": 0, "ok": 0, "failed": 0, "report_only": True}
+            ).report_only
+            is True
+        )
+
+
 # ---------------------------------------------------------------------------
 # run_loop — drain file pauses claims
 # ---------------------------------------------------------------------------

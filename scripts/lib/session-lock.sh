@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # scripts/lib/session-lock.sh — shared helpers for identifying the durable
 # Claude session process behind a hook invocation, and for reading/comparing
 # against whatever pid a worktree's `git worktree lock` currently names.
@@ -52,8 +53,8 @@
 # discriminator is pinned by tests/test_worktree_lock_reap.py — do not
 # "improve" the matching logic without re-reading that test first.
 find_session_pid() {
-    local pid=$1 i comm base args ppid
-    for i in $(seq 1 25); do
+    local pid=$1 comm base args ppid
+    for _ in $(seq 1 25); do
         [ -z "${pid:-}" ] && return 1
         case "$pid" in ''|*[!0-9]*) return 1 ;; esac
         [ "$pid" -le 1 ] && return 1
@@ -94,8 +95,8 @@ find_session_pid() {
 # latter (stale/dead/someone-else's) is exactly what the existing
 # unlock-then-lock / unlock-then-reap behaviour must still handle.
 is_ancestor() {
-    local target=$1 pid=$2 i ppid
-    for i in $(seq 1 25); do
+    local target=$1 pid=$2 ppid
+    for _ in $(seq 1 25); do
         [ -z "${pid:-}" ] && return 1
         case "$pid" in ''|*[!0-9]*) return 1 ;; esac
         [ "$pid" -le 1 ] && return 1

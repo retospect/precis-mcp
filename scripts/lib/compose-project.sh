@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # scripts/lib/compose-project.sh — shared derivation of a per-worktree Docker
 # Compose project name (sourced, not executed).
 #

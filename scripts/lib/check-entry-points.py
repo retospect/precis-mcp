@@ -107,6 +107,11 @@ def main(argv: list[str]) -> int:
         )
         if _reinstall():
             drift = _drift(data)
+            if not drift:
+                # Marker scripts/test's preflight stamp greps for: a heal
+                # patched only this throwaway container, so no stamp may be
+                # written — the next run must check again.
+                print("precis-preflight: healed")
 
     if drift:
         print(

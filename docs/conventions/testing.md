@@ -110,9 +110,36 @@ scripts/test --impacted              # ONLY tests your change affects (testmon)
 scripts/test --selected              # the `ship --checked` selection via
                                      # scripts/impacted-tests: contract +
                                      # corpus/map + index (testmon if a map)
+scripts/test --random tests/…        # shuffled order (pytest-randomly, seed
+                                     # printed); PRECIS_RANDOM_SEED=N reproduces
 scripts/test --durations=25 …        # profile: pytest prints the 25 slowest
 scripts/test --shard 2/10            # bucket 2 of a 10-way split (what CI runs per job)
 ```
+
+**Small selections run serial.** When every positional arg is a test file or
+node id, the runner counts the collected items and uses `-n0` at ≤500 —
+xdist worker bring-up (~5 s no-DB, ~24 s DB) outweighs the tests at that
+size. Directories, bare `-k`/`-m` and the full suite keep `-n6`; your own
+`-nN` always wins. A session that collects no `db`-marked item skips
+template maintenance and the per-worker `CREATE DATABASE` entirely.
+
+**Test-DB isolation.** Every pytest process (the session at `-n0`, each
+xdist worker) clones the maintained `precis_test` template into a private
+`precis_test_<uuid>` — the cross-process boundary — and within a process a
+per-test `TRUNCATE … CASCADE` resets data. No test may fail because of the
+order it runs in or a resource another test shares; `--random` is the
+standing probe for order dependence, and a test that only passes in
+declaration order is a bug to fix, not to pin. Details: the `tests/conftest.py`
+docstring.
+
+Host env vars do not cross the container boundary implicitly. `scripts/test`
+forwards a fixed allowlist plus `PRECIS_TEST_ENV="NAME=value …"` pairs, and
+every forward uses compose's explicit `-e NAME=value` form — never the bare
+`-e NAME`, which would copy whatever value the host happens to have set
+(the silent-passthrough trap behind gr513868; the one deliberate exception is
+`PRECIS_TEST_PASSENV=FOO,BAR`, gr514238, which inherits named secrets by value; an unforwarded
+`NANO_*`/`ESP32C3_*`/`PRECIS_PCB_*` var warns once on stderr). The full knob
+list lives in `scripts/test --help`'s Env block.
 
 `--shard K/N` (tests/conftest.py) hashes every test id into one of N
 buckets (crc32, so every process agrees). The N shards partition the suite
@@ -135,8 +162,10 @@ numbers. The ship gate
 Linux+db on
 3.13 — 12 jobs. Under the
 release train `ci/**` is the harness gate: `scripts/ship --remote` pushes
-there only for diffs under `scripts/ship`, `scripts/test`, `scripts/lib/`
-or `.github/` — every other diff lands `--quick` and meets the full matrix
+there only for diffs the `scripts/ship` harness classifier counts
+(`scripts/ship`, `scripts/test`, `scripts/lib/*`, `.github/*` — the
+`HARNESS_DIFF` case is the canonical list) — every other diff lands
+`--quick` and meets the full matrix
 at the release cut. A **push to
 `main` runs the slim lane instead** (gr495187, Reto 2026-10-23 — "only
 release branch gets ci"): `plan` + `lint` only, no shard matrix. A main

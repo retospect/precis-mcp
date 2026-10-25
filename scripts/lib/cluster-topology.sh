@@ -95,8 +95,8 @@ topology_var() {
     local name="$1" repo overlay gvars f v val
     repo="$(cd "${_CT_HERE}/../.." && pwd)"
     v=""
-    for f in "$repo/deploy/group_vars/all.yml"; do
-        [ -f "$f" ] || continue
+    f="$repo/deploy/group_vars/all.yml"
+    if [ -f "$f" ]; then
         val="$(awk -v k="$name:" '
             $1 == k { line = $0
                       sub(/^[^:]*:[[:space:]]*/, "", line)
@@ -105,7 +105,7 @@ topology_var() {
                       gsub(/^["\047]|["\047]$/, "", line)
                       print line }' "$f" | tail -1)"
         [ -n "$val" ] && v="$val"
-    done
+    fi
     if overlay="$(resolve_overlay 2>/dev/null)"; then
         gvars="$(dirname "$overlay")/group_vars/all"
         for f in "$gvars"/*.yml; do

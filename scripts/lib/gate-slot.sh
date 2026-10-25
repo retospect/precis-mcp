@@ -199,7 +199,7 @@ gate_slot_acquire() {
                 continue
             fi
             [[ "$seen_self" == 0 ]] && my_rank=$((my_rank + 1))
-        done < <(ls -1 "$qdir" 2>/dev/null | sort)
+        done < <(find "$qdir" -mindepth 1 -maxdepth 1 -exec basename {} \; 2>/dev/null | sort)
         [[ "$seen_self" == 0 ]] && my_rank=0
         if ((my_rank < slots)); then
             for ((i = 0; i < slots; i++)); do

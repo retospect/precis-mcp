@@ -34,8 +34,8 @@ import os
 import random
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, fields
 from functools import partial, update_wrapper
 from typing import Any
 
@@ -160,6 +160,25 @@ class BatchResult:
     #: ``claimed`` is reporting-only: the pass was blocked from working
     #: the rows it claimed and must not count as "work this cycle".
     report_only: bool = False
+
+    @classmethod
+    def from_dict(cls, handler: str, result: Mapping[str, Any]) -> BatchResult:
+        """Adapt a dict-shaped pass result (``{"claimed": …, "ok": …,
+        "failed": …}``) into a :class:`BatchResult`.
+
+        Every key naming a dataclass field forwards verbatim, so a NEW
+        field added here flows from dict-shaped passes without touching
+        each adapter (gr514620 — the ``cli/_worker_passes.py`` closures
+        used to hand-forward ``claimed``/``ok``/``failed`` one key at a
+        time, which is how ``report_only`` arrived needing a per-site
+        edit). Keys without a field stay pass-internal; a pass whose
+        dict uses different names remaps them itself.
+        """
+        known = {f.name for f in fields(cls)} - {"handler"}
+        return cls(
+            handler=handler,
+            **{k: v for k, v in result.items() if k in known},
+        )
 
 
 def run_handler_once(

@@ -15,13 +15,14 @@ marker found, in this order: the last `SHIP_STATUS:` token, the last
 one — red, conflict, timeout, NETWORK, stayed-cancelled), `remote gate
 GREEN` / `CI green on`, then `CI red on` / `CI not green after` /
 `deploy failed`. A cancelled verdict exits 3; red exits 1 with the first
-failure line and the log's `gh run view --log-failed` pointer when there
+failure line and the log's failure-log pointer (`scripts/ci-failed <id>`
+now, `gh run view --log-failed` in older logs — both are picked up) when there
 is one. Both the caller's epilogue log and ship's own full transcript
 carry these markers.
 
 Run-id mode polls `gh run view <id> --json status,conclusion`; on a
 completed non-success conclusion it names the first failing job from
-`--json jobs` and prints the `--log-failed` pointer.
+`--json jobs` and prints the `scripts/ci-failed` pointer.
 
 Exit codes: 0 green · 1 red/failed · 3 cancelled · 4 timed out (or the log
 never appeared) · 2 bad usage. Knobs: --interval SEC (default 20 for a
@@ -71,7 +72,9 @@ def _first_failure(lines: list[str]) -> str:
 
 
 def _log_pointer(raw: str) -> str:
-    m = re.findall(r"gh run view \d+ --log-failed", raw)
+    m = re.findall(
+        r"scripts/ci-failed \d+|gh run view \d+ --log-failed", raw
+    )
     return m[-1] if m else ""
 
 
@@ -225,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         def verdict() -> tuple[int, str, str] | None:
             return _run_verdict(run_id)
 
-        pointer = f"gh run view {run_id} --log-failed"
+        pointer = f"scripts/ci-failed {run_id}"
         desc = f"run {run_id}"
     else:
         log = Path(a.target)

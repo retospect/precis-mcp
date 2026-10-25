@@ -71,6 +71,9 @@ def _stage(tmp_path: Path) -> Path:
     (tree / "docker" / "dev" / "compose.yaml").write_text(
         "services: {}\n", encoding="utf-8"
     )
+    # scripts/test refuses a positional path that does not exist (gr514948).
+    (tree / "tests").mkdir()
+    (tree / "tests" / "x.py").write_text("", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(tree)], check=True)
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)

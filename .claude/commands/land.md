@@ -102,7 +102,7 @@ Optional ship message from the user: `$ARGUMENTS`
    - **Merge conflict during sync** — resolve the conflict, then
      `git add -A && git commit`, then re-run `scripts/ship`.
    - **Red remote gate** — ship prints the failing jobs and the
-     `gh run view <id> --log-failed` pointer. Diagnose from the run log,
+     `scripts/ci-failed <id>` pointer. Diagnose from the run log,
      fix, re-run `scripts/ship --remote`. Reproduce locally with
      `scripts/test <path or -k>`; remember the matrix covers macOS/Windows
      paths the local container can't (auto-memory `green-gate-neq-green-ci`).

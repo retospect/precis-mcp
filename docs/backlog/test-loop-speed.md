@@ -96,22 +96,25 @@ Other measurements:
 | skip Postgres and the gate slot for no-DB selections | 0.7–2.8 s, plus all slot wait | **S4** |
 | make per-process session setup cheap (fingerprint, clone only) | ~3.5 s per DB process | **S5** |
 | heartbeat while silent | 0 s; stops harness backgrounding (gr514502) | **S6** |
-| read-only main-DB fixture (gr514466) | n/a; adds real-data tests | **S7** |
+| read-only main-DB fixture (gr514466) | n/a; adds real-data tests | dropped: tests never read prod (Q2) |
 | warm long-lived test container | ≤0.6 s (measured) | rejected: exec = run |
 | tmpfs pgdata | ≤1 s; fsync, full_page_writes and synchronous_commit are already off | deferred: cold `up` is container start, not IO |
 | template DB instead of migrating | already done (FILE_COPY clone per session) | S5 trims what is left |
-| in-process store instead of Postgres (gr514466 ask) | removes Postgres from DB runs | not now: Questions 1 |
-| avoid host `uv run` | 0.5 s on `--selected` only | not reproduced; Questions 4 |
+| in-process store instead of Postgres (gr514466 ask) | removes Postgres from DB runs | rejected: keep Postgres, made cheap (Q1) |
+| avoid host `uv run` | 0.5 s on `--selected` only | not reproduced; gr514875 closed (Q4) |
 
 Expected after S1–S5: no-DB file 17.9 s → ~4 s, and it never queues. DB
 file 40.6 s → ~9 s.
 
 ## Decisions
 
-1. **Small selections run serial.** When the caller passes no `-n`, every
-   positional argument is a test file or node id (no directories, no bare
-   `-k` over the suite), and there are at most 3 distinct files, use
-   `-n0`. Otherwise keep `-n6`. `--impacted` already forces `-n0`.
+1. **Serial at ≤500 collected tests.** When the caller passes no `-n`
+   and every positional argument is a test file or node id (no
+   directories, no bare `-k`/`-m` over the suite), the runner counts the
+   selection first and uses `-n0` at 500 or fewer collected tests; above
+   that, `-n6`. Directories and bare `-k`/`-m` selections keep `-n6`
+   without a count pass — collecting the whole suite costs ~95 s.
+   `--impacted` already forces `-n0`. (Reto 2026-10-24, Q3.)
 2. **Preflight results are cached, not dropped.** The three checks guard
    against a stale baked venv (gr286507, gr453828, gr494988), which is a
    real failure. They run when the key changes and are skipped on a hit.
@@ -127,34 +130,56 @@ file 40.6 s → ~9 s.
 4. **No-DB runs take no gate slot.** This extends the `--fast` rule from
    the `gf-gateslots` branch. A `-n0` no-DB run peaks well under the
    4.5 GiB the slot formula budgets for.
-5. **Tests never write to prod.** Main-DB access is only through the
-   `agent_ro` role, with `default_transaction_read_only=on` in the
-   connection options as a second guard. It is opt-in and never runs in
-   CI. Coordinates come from the gitignored overlay
-   (`scripts/lib/pgb-host.sh`), never from the repo, which is public.
+5. **Tests never read prod; S7 is dropped.** The per-process test DB is
+   built from a schema dump file cached per worktree, keyed by a
+   fingerprint over the discovered migration files — cached, not checked
+   in: the dump is a build artifact, a committed copy would need a regen
+   step in the migration workflow and merge-conflict churn on a generated
+   file, and the keyed cache is self-verifying (the key IS the content
+   hash, so a stale file cannot silently serve). The `precis_test`
+   template is stamped with the fingerprint (`COMMENT ON DATABASE`); a
+   stamp match skips `apply_all`, the truncate and the seeds, and a cold
+   or missing template is rebuilt by loading the cached file — no
+   per-run migrations while the fingerprint matches. (Reto 2026-10-24,
+   Q2.)
+6. **Keep Postgres; isolation is explicit.** The in-process store is
+   dropped (Q1): DB tests keep Postgres, set up once per session and made
+   cheap by Decision 5. Isolation, spelled out: every pytest process
+   (each xdist worker) gets its own `precis_test_<uuid>` template clone —
+   that is the cross-session boundary — and within a process, per-test
+   `TRUNCATE … CASCADE` resets data. No test may fail because of the
+   order it runs in or a resource another test shares. A `--random` lane
+   (pytest-randomly, seed printed; `PRECIS_RANDOM_SEED` to pin) is the
+   standing probe for order dependence. (Reto 2026-10-24, Q1.)
+7. **gr514875 is closed** — host `uv run` did not reproduce (1.2 s cold,
+   ≤0.1 s warm). (Reto 2026-10-24, Q4.)
 
 ## Slices
 
 | # | what | target (warm, uncontended) | blocked-by |
 |---|---|---|---|
-| 1 | `-n0` for ≤3-file selections | DB file ≤18 s (from 40.6); no-DB ≤12 s | — |
+| 1 | `-n0` at ≤500 collected tests | DB file ≤18 s (from 40.6); no-DB ≤12 s | — |
 | 2 | cache the preflight checks | −5 s per run; stamp hit ≤0.3 s | — |
 | 3 | lazy session DB setup | no-DB file with DB up: no `CREATE DATABASE` | — |
 | 4 | no-DB selections: no Postgres, no slot | single no-DB file under 5 s; 0 s queue at full slots | gf-gateslots lands |
-| 5 | cheap per-process DB session | session setup ≤1 s; DB file under 10 s | 1 |
+| 5 | fingerprint-stamped template + cached schema dump | session setup ≤1 s; DB file under 10 s | 1 |
 | 6 | heartbeat | no silent gap over 15 s | — |
-| 7 | read-only main-DB fixture | opt-in `prod_ro` tests run; writes refused | Questions 2 |
+| 7 | ~~read-only main-DB fixture~~ | dropped — tests never read prod (Q2) | — |
+| 8 | `--random` lane + isolation docs | order-dependence probe exists; seed printed | — |
 
-### 1. Serial for small selections
+### 1. Serial at ≤500 collected tests
 
-Files: `scripts/test` (the `NPROC` block). The rule follows Decision 1.
-Print one line, `small selection: -n0 (pass -nN to override)`.
+Files: `scripts/test` (the `NPROC` block) plus a collect-count helper in
+`scripts/lib/`. The rule follows Decision 1: count the selection with a
+`--collect-only` pass (only when every positional arg is a file or node
+id), `-n0` at ≤500. Print one line,
+`small selection: -n0 (<N> tests collected; pass -nN to override)`.
 
 Tests: `tests/test_scripts_test_env.py`, alongside its stubbed-compose
 cases:
-- one file gets `-n0`;
-- four files get `-n6`;
-- a directory gets `-n6`;
+- a file with ≤500 tests gets `-n0`;
+- a selection counting >500 gets `-n6`;
+- a directory gets `-n6` with no count pass;
 - `-n2` passes through unchanged;
 - `--impacted` stays `-n0`.
 
@@ -241,27 +266,43 @@ Targets:
 - With every gate slot held by a sleeping stub, the same run still
   finishes under 5 s.
 
-### 5. Cheap per-process DB session
+### 5. Fingerprint-stamped template + cached schema dump
 
+Revised by Q2 (Reto 2026-10-24): this replaces the stamp-only approach.
 First, measure what the 4.5 s is made of: `apply_all` on an up-to-date
 template, `_truncate_data_tables`, `_ensure_vocab_seeds`, the backend
 terminate, and the `CREATE DATABASE … STRATEGY = FILE_COPY` clone. Record
-the breakdown in this file. Then remove the dominant step. Likely: stamp
-the template with a migration-set fingerprint (`COMMENT ON DATABASE`:
-sha256 over migration names and checksums). When the stamp matches, skip
-`apply_all`, the truncate and the seeds; the template is data-free by
-construction. On a mismatch, take the existing rebuild path (gr479991).
-If the clone itself dominates, compare `WAL_LOG` with `FILE_COPY` on this
-small DB.
+the breakdown in this file.
+
+Measured (2026-10-24, warm): the "4.5 s session setup" is ~4.2 s the first
+`boot(store)` call (handler/plugin discovery — not DB work at all) plus
+~1.0 s of actual DB work: discover 0.77 s, `apply_all` 0.08 s, truncate
+0.07 s, seeds 0.02 s, FILE_COPY clone 0.03 s. So the lever this slice owns
+is the ~1 s; `boot(store)` discovery is a separate problem.
+
+Then: fingerprint = sha256 over every discovered migration file
+(`Migrator.discover_sources` → name + content), covering plugin sources.
+The template carries the fingerprint it was built at in
+`COMMENT ON DATABASE`. On a match the maintainer skips `apply_all`,
+`_truncate_data_tables` and `_ensure_vocab_seeds` — the template is
+data-free by construction — and goes straight to the clone. After a
+maintenance run (mismatch or fresh template), `pg_dump` the template to
+`.precis-test-schema-<fp>.sql` at the worktree root (gitignored; the
+container sees it at `/app`). A cold template — test-db recreated, dump
+file still matching the fingerprint — is rebuilt by loading that file
+(`_execute_dump_sql`, the same driver the baseline load uses), not by
+replaying migrations. That is "no per-run migrations when the
+fingerprint matches" on both the warm and cold paths.
 
 Files: `tests/conftest.py` (`_initialise_test_db`,
-`_claim_template_maintenance`), possibly `src/precis/migrations` runner
-helpers (read-only use).
+`_claim_template_maintenance`), `.gitignore`, possibly
+`src/precis/store/schema_dump.py` helpers (reuse, not new machinery).
 
 Tests:
 - a pytester case: a second session against the same template skips
   `apply_all`;
 - adding a draft migration file changes the fingerprint and rebuilds;
+- a cold template + matching dump file loads the file (no `apply_all`);
 - per-session isolation still holds (two sessions get two clones).
 
 Target: first-test setup ≤1 s at `-n0`.
@@ -277,28 +318,33 @@ killed in `cleanup()`. No change to pytest output.
 Tests: `tests/test_scripts_test_env.py` with a stub compose that sleeps
 25 s: at least two heartbeat lines, and none after exit.
 
-### 7. Read-only main-DB fixture (gr514466)
+### 7. Dropped
+
+Tests never read prod (Q2, Reto 2026-10-24). No `prod_ro` fixture, no
+`--prod-ro` flag.
+
+### 8. `--random` lane + isolation docs (Q1)
 
 Files:
-- `tests/conftest.py`: a `prod_ro` marker and a `prod_ro_conn` fixture.
-  Skipped unless `-m` names `prod_ro`, the same opt-in shape as `mp_live`.
-- `scripts/test --prod-ro`: builds the DSN at run time from the overlay
-  via `scripts/lib/pgb-host.sh`. The role is `agent_ro`. The options are
-  `-c default_transaction_read_only=on -c statement_timeout=30s`. The DSN
-  is forwarded as `PRECIS_TEST_RO_DSN` and never written to disk.
-- `docs/conventions/testing.md`: document when a test may use it (real
-  data shapes, read-only queries), and that no lane runs it by default.
+- `scripts/test`: a `--random` flag bridging pytest-randomly through
+  `UV_WITH` (same on-the-fly shape as testmon — no image rebuild), seed
+  printed by the plugin; `PRECIS_RANDOM_SEED=N` forwards
+  `--randomly-seed=N` to reproduce an order.
+- `tests/conftest.py` + `docs/conventions/testing.md`: document which
+  isolation applies where — per-worker `precis_test_<uuid>` clone across
+  sessions, per-test `TRUNCATE … CASCADE` within one — and name
+  `--random` as the order-dependence probe.
 
-Tests: the fixture's own self-test:
-- `INSERT` into a scratch table raises `ReadOnlySqlTransaction` or
-  permission denied;
-- `SET default_transaction_read_only=off` followed by a write still fails
-  (the role guard);
-- `tests/test_deploy_tree_no_secrets.py` stays green.
+Tests: `tests/test_scripts_test_env.py` — `--random` adds the
+`--with pytest-randomly` bridge; `PRECIS_RANDOM_SEED` becomes
+`--randomly-seed`.
 
 ## Explicitly NOT in scope
 
-- Replacing Postgres with an in-process store for `db` tests (Questions 1).
+- Replacing Postgres with an in-process store for `db` tests — ruled out
+  (Q1): keep Postgres, set it up once, make it cheap.
+- Read-only prod access from tests — dropped with S7 (Q2): tests never
+  read prod.
 - The full-suite and ship-gate paths (`scripts/ship`, check.yml shards).
   They keep `-n6`, every preflight check and the DB.
 - Pytest import and collection speed (~2.5 s): plugin load and conftest
@@ -322,31 +368,13 @@ unless stated), on the same two files:
    is classified `db`. A forced misclassification errors with
    `re-run with scripts/test --db` and is never skipped green.
 5. No run goes 15 s without output.
-6. A `prod_ro` test cannot write: both guards are tested. No hostname or
-   IP appears in the diff (`tests/test_deploy_tree_no_secrets.py`).
+6. `scripts/test --random` shuffles order (seed printed) and
+   `PRECIS_RANDOM_SEED=N` reproduces an order; a seeded re-run visits the
+   same order.
 7. `docs/conventions/testing.md` and the `scripts/test` header/usage
-   describe the small-selection, no-DB and `--prod-ro` behaviour.
+   describe the small-selection, no-DB, isolation and `--random`
+   behaviour.
 
 ## Questions
 
-1. **In-process store (gr514466).** 35 % of tests (15,014) are `db`, and
-   many test SQL behaviour: migrations, triggers, constraints, pgvector
-   search. An in-memory store would be a second `Store` implementation
-   kept in step with the SQL one. After S1–S5 a DB file costs ~9 s, with
-   ~1 s of that in Postgres. Proposal: drop the in-process store and keep
-   Postgres, made cheap. Reto to confirm or overrule.
-2. **Prod read path for S7.** Tests run in a container on this Mac.
-   Reaching prod needs the container to route to the prod pooler.
-   `scripts/prod-psql` today goes over ssh, not a direct connection.
-   Options: (a) a direct `agent_ro` connection from the container if the
-   tailnet routes; (b) an ssh tunnel opened by `scripts/test --prod-ro`;
-   (c) a nightly read-only `pg_dump` subset restored into a local
-   read-only DB (a snapshot, no prod connection at test time). Which?
-3. **Small-selection threshold.** "At most 3 files" is a guess. With S5 a
-   DB worker costs ~1 s, so `-n6` breaks even at roughly 30+ DB tests.
-   Should the rule count collected items (costs a collection pass)
-   instead of files?
-4. **gr514875 (host `uv run` ~17 s)** did not reproduce (1.2 s cold, ≤0.1 s
-   warm). Likely a concurrent cache lock or a re-lock after a `uv.lock`
-   change. Proposal: close it as not reproduced, and ask the next reporter
-   for `uv run -v` timing.
+All resolved 2026-10-24 — the rulings are Decisions 1, 5, 6 and 7 above.

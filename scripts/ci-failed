@@ -1,0 +1,137 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/ci-failed — a compact failure digest for a check.yml run.
+
+`gh run view <id> --log-failed` dumps the full log of every failed job —
+megabytes when a shard dies mid-suite, and the pointer the ship/release/
+round/main-ci-status scripts print on red sent the reader to grep. This
+filters that stream to the part a human or agent reads first: per failed
+job, the pytest short-test-summary lines (FAILED/ERROR/E …) plus generic
+signal lines (errors, ✖ markers, timeouts, the runner's own
+"Process completed with exit code" verdict), deduplicated. A failed job
+with no signal lines — a lint gate, an infra kill — gets its tail
+instead, which is where the reason lives.
+
+    scripts/ci-failed <run-id>            digest of the run's failed jobs
+    scripts/ci-failed <run-id> -n N       cap per-job output at N lines
+                                          (default 40; 0 = unlimited)
+    scripts/ci-failed <run-id> --tail K   fallback tail per silent job
+                                          (default 15)
+
+Input format: `gh run view --log-failed` shared-log lines
+``job <TAB> step <TAB> <ISO timestamp> <text>``; the timestamp is
+stripped, lines without the prefix pass through under the previous job.
+
+Exit codes: 0 digested · 1 the gh read failed · 2 bad usage. The full log
+is always one flag away: `gh run view <id> --log-failed`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from collections import OrderedDict
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+#: ``2026-10-24T21:00:00.0000000Z `` leading a gh log line's text field.
+TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\s+")
+#: What a red pytest/typecheck/lint/GA-runner log actually carries. The
+#: ``E `` prefix is pytest's failure-detail body; ``Error``/``error``
+#: covers ruff/mypy/GA annotations (``Error: Process completed with
+#: exit code 1.`` is the runner's own per-step verdict) and Python
+#: exception names; the rest are shell/infra kills.
+SIGNAL = re.compile(
+    r"^(FAILED|ERROR|E\s)|short test summary info|"
+    r"\b(AssertionError|Error|error|fatal|FATAL|✖|Traceback|timed out|"
+    r"timeout|Killed|OOM|exit code \d|exited with \d|command not found|"
+    r"No such file|ModuleNotFoundError)\b"
+)
+
+
+def _parse(text: str) -> OrderedDict[str, list[str]]:
+    """Shared-log text -> ordered ``{job: [stripped log lines]}``.
+
+    Lines missing the ``job\\tstep\\t`` prefix keep the previous job
+    (continuation of a multi-line entry); before any prefix they land in
+    the unnamed ``""`` job.
+    """
+    jobs: OrderedDict[str, list[str]] = OrderedDict()
+    current = ""
+    for raw in text.splitlines():
+        job, tab1, rest = raw.partition("\t")
+        _step, tab2, content = rest.partition("\t")
+        if tab1 and tab2 and job.strip():
+            current = job.strip()
+            line = TS.sub("", ANSI.sub("", content), count=1)
+        else:
+            line = ANSI.sub("", raw)
+        jobs.setdefault(current, []).append(line)
+    return jobs
+
+
+def digest(text: str, *, lines: int = 40, tail: int = 15) -> str:
+    """Per failed job: deduped signal lines, or the tail when none."""
+    jobs = _parse(text)
+    if not jobs:
+        return "ci-failed: no failed-job log lines"
+    out: list[str] = []
+    for job, entries in jobs.items():
+        out.append(f"== {job or '(log)'} ==")
+        seen: set[str] = set()
+        picked: list[str] = []
+        for line in entries:
+            if not SIGNAL.search(line) or line in seen:
+                continue
+            seen.add(line)
+            picked.append(line)
+        if picked:
+            shown = picked if lines <= 0 else picked[:lines]
+            out.extend(f"  {line}" for line in shown)
+            if len(picked) > len(shown):
+                out.append(f"  … {len(picked) - len(shown)} more signal lines")
+        else:
+            body = [line for line in entries if line.strip()]
+            shown = body[-tail:] if tail > 0 else body
+            out.append(f"  (no signal lines — last {len(shown)} of {len(body)} lines)")
+            out.extend(f"  {line}" for line in shown)
+    return "\n".join(out)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="ci-failed",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("run_id", help="check.yml run id (numeric)")
+    ap.add_argument("-n", "--lines", type=int, default=40, metavar="N")
+    ap.add_argument("--tail", type=int, default=15, metavar="K")
+    a = ap.parse_args(argv)
+    if not re.fullmatch(r"\d+", a.run_id):
+        ap.error(f"run id must be numeric: {a.run_id!r}")
+    try:
+        cp = subprocess.run(
+            ["gh", "run", "view", a.run_id, "--log-failed"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"ci-failed: gh run view {a.run_id} --log-failed: {exc}", file=sys.stderr)
+        return 1
+    if cp.returncode != 0:
+        print(
+            f"ci-failed: gh run view {a.run_id} --log-failed failed "
+            f"({cp.returncode}): {(cp.stderr or cp.stdout).strip()}",
+            file=sys.stderr,
+        )
+        return 1
+    print(digest(cp.stdout, lines=a.lines, tail=a.tail))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

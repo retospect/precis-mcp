@@ -913,7 +913,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
             )
             print(f"  {red['url']}")
             if red["run_id"]:
-                print(f"  gh run view {red['run_id']} --log-failed")
+                print(f"  scripts/ci-failed {red['run_id']}")
     return 0 if f["candidate"] else 1
 
 

@@ -285,6 +285,8 @@ backup_window_decide() {
         *)
             printf 'The live pg_stat_activity check could not run (prod-psql missing or prod unreachable), so the fixed window decides.\n' ;;
     esac
+    # shellcheck disable=SC2016  # the `ps ... | grep pg_dump` text is the
+    # literal advice printed to the operator, not an expansion
     printf 'The nightly pg_dump holds ACCESS SHARE on every table, so the migration'"'"'s DDL would block behind it and the deploy would hang with a silent log (2026-09-08). Aborting mid-deploy is worse than waiting. Wait until the window ends at %s UTC, or — after checking the dump is not running (`ps -eo pid,etime,args | grep pg_dump` on the DB node) — re-run with --ignore-backup-window. docs/runbooks/migration-deploy-window.md.\n' "$end"
     return 1
 }

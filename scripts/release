@@ -34,7 +34,7 @@ Steps, in order:
      Early red comes from the head's check-runs (sha-keyed REST `gh api`, never
      `gh run list`: stale cache, see scripts/last-gated-main-sha): a completed
      `lint` / `test-linux*` run that is not success/skipped/neutral exits 2
-     with job names, URLs and the `gh run view --log-failed` line. The release
+     with job names, URLs and the `scripts/ci-failed` line. The release
      branch stays; fix via `scripts/ship --release` or `round cut --abandon`.
      --ci-timeout also exits 2.
   7. `round deploy`, output streamed. Exit 3 (rollout done, runtime pending)
@@ -606,9 +606,7 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
                 for u in red["urls"]:
                     print(f"  {u}", file=sys.stderr)
                 if red["run_id"]:
-                    print(
-                        f"  gh run view {red['run_id']} --log-failed", file=sys.stderr
-                    )
+                    print(f"  scripts/ci-failed {red['run_id']}", file=sys.stderr)
                 print(
                     f"{branch} left in place: fix via scripts/ship --release, "
                     "or abandon with scripts/round cut --abandon",

@@ -3,11 +3,12 @@
 The CI test lanes run ``--no-extra catalyst --no-extra catalyst-gpu``
 (``.github/workflows/check.yml``), but the local ship gate's container has the
 catalyst extra installed. So a test module that imports ``autocatpath`` — or
-any ``src/`` module that imports it at module scope, such as
-``precis_pathway.runner`` — passes the gate and then fails **collection** of
-its whole CI shard with ``ModuleNotFoundError: No module named 'autocatpath'``.
+any ``src/`` module that imports it at module scope — passes the gate and
+then fails **collection** of its whole CI shard with ``ModuleNotFoundError:
+No module named 'autocatpath'``.
 Collection failure, not test failure: one unguarded import reddens every test
-in the shard.
+in the shard. (``precis_pathway.runner`` was the offender until gr514717
+lazified its engine surface; today no ``src/`` module infects.)
 
 That happened on 2026-09-27: ``tests/test_pathway_kinetics_timeout.py`` landed
 via an ungated ``/qland``, did ``from precis_pathway import runner`` at module
@@ -70,14 +71,14 @@ def _module_scope_imports(tree: ast.AST) -> set[str]:
     return names
 
 
-def _infected_src_modules() -> set[str]:
+def _infected_src_modules(src_root: Path = _SRC) -> set[str]:
     """`src/` modules importing an extra-only module at module scope.
 
     Returned as importable dotted paths (``precis_pathway.runner``) plus the
     bare ``from X import Y`` spelling a test would use.
     """
     infected: set[str] = set()
-    for path in _SRC.rglob("*.py"):
+    for path in src_root.rglob("*.py"):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - would fail elsewhere first
@@ -85,7 +86,7 @@ def _infected_src_modules() -> set[str]:
         roots = {n.split(".")[0] for n in _module_scope_imports(tree)}
         if not (roots & _EXTRA_ONLY):
             continue
-        rel = path.relative_to(_SRC).with_suffix("")
+        rel = path.relative_to(src_root).with_suffix("")
         parts = list(rel.parts)
         if parts[-1] == "__init__":
             parts = parts[:-1]
@@ -108,13 +109,33 @@ def _guards_the_extra(source: str) -> bool:
     )
 
 
-def test_the_detector_is_not_vacuous() -> None:
-    """A refactor must not silently empty the infected set."""
-    infected = _infected_src_modules()
-    assert infected, "no src module imports an extra-only module — detector dead"
-    assert "precis_pathway.runner" in infected, (
-        "precis_pathway.runner is the known extra-only importer; the derivation "
-        f"missed it (found: {sorted(infected)})"
+def test_the_detector_is_not_vacuous(tmp_path: Path) -> None:
+    """A refactor must not silently break the derivation.
+
+    Since gr514717 no ``src/`` module imports an extra-only module at module
+    scope (``precis_pathway.runner`` lazifies its engine names through PEP
+    562), so the real set is legitimately empty and the detector is exercised
+    on a synthetic tree instead: module-scope imports infect, a function-
+    scope import and a TYPE_CHECKING block do not.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("import autocatpath\n", encoding="utf-8")
+    (pkg / "mod.py").write_text(
+        "from autocatpath.pipeline import run\n", encoding="utf-8"
+    )
+    (pkg / "clean.py").write_text(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from autocatpath.config import Config\n"
+        "def f():\n"
+        "    import autocatpath\n",
+        encoding="utf-8",
+    )
+    infected = _infected_src_modules(tmp_path)
+    assert infected == {"pkg", "pkg.mod"}, (
+        f"the derivation missed the synthetic infected modules "
+        f"(found: {sorted(infected)})"
     )
 
 

@@ -763,27 +763,165 @@ def test_sweep_path_names_no_kinetics_v2_dead_branch():
     never sets ``kinetics_v2``, so a read of that key in the sweep path is
     a dead branch with no producer (the D8 record reaches ``results_json``
     from ``run_kinetics``'s solve and the TPD leg, not the sweep).  Pins
-    the removal: the three sweep functions must not name the key at all —
-    read as source (not import) because ``precis_pathway.runner`` pulls
-    the engine at module level, which this file deliberately avoids."""
-    import ast
+    the removal: the three sweep functions must not name the key at all.
+    Since gr514717 ``precis_pathway.runner`` imports engine-free, this
+    reads the live functions rather than parsing the file."""
+    import inspect
 
-    src = (
-        Path(__file__).parent.parent / "src" / "precis_pathway" / "runner.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    sweep_fns = {
+    from precis_pathway import runner
+
+    for name in (
         "run_kinetics_sweep_subprocess",
         "_run_kinetics_sweep",
         "_kinetics_sweep_child",
+    ):
+        fn = getattr(runner, name, None)
+        assert fn is not None, f"{name} renamed or removed"
+        assert "kinetics_v2" not in inspect.getsource(fn), (
+            f"{name} names kinetics_v2 — the engine sweep never "
+            "produces that key; the branch is dead (gr514391)"
+        )
+
+
+# --- gr514717: the sweep internals run against a fake engine ----------------
+
+
+def _fake_engine(monkeypatch: pytest.MonkeyPatch, sweep: Any) -> dict[str, Any]:
+    """Stand-in ``autocatpath`` modules in ``sys.modules`` — enough of the
+    engine surface for :func:`precis_pathway.runner._run_kinetics_sweep`
+    (config/net/ledgers/refs/table + ``kinetics.sweep``).  Returns the call
+    log each fake writes into.  Works with the engine absent (CI
+    ``--no-extra catalyst``) or installed (the fakes shadow it)."""
+    import sys
+    from types import ModuleType
+
+    calls: dict[str, Any] = {}
+
+    class _Config:
+        @classmethod
+        def from_dict(cls, d: dict[str, Any]) -> Any:
+            calls["config_dict"] = d
+            return "CFG"
+
+    config_mod: Any = ModuleType("autocatpath.config")
+    config_mod.Config = _Config
+
+    def _build_net(cfg: Any) -> Any:
+        calls["build_net"] = cfg
+        return "NET"
+
+    def _ledger_refs(cfg: Any, net: Any, ledgers: Any, *, log: Any) -> Any:
+        calls["refs_args"] = (cfg, net, ledgers)
+        return {"r": 1.0}
+
+    pipeline_mod: Any = ModuleType("autocatpath.pipeline")
+    pipeline_mod._build_net = _build_net
+    pipeline_mod.ledger_refs = _ledger_refs
+
+    def _compute_ledgers(net: Any) -> Any:
+        calls["ledgers_net"] = net
+        return {"L": 2.0}, ["w1"]
+
+    ledger_mod: Any = ModuleType("autocatpath.ledger")
+    ledger_mod.compute_ledgers = _compute_ledgers
+
+    class _Table:
+        def corrected_refs(self, refs: Any) -> Any:
+            calls["corrected_refs_in"] = refs
+            return {"r": 1.5}
+
+    def _build_table(cfg: Any) -> Any:
+        calls["table_cfg"] = cfg
+        return _Table()
+
+    thermo_mod: Any = ModuleType("autocatpath.thermo")
+    thermo_mod.build_table = _build_table
+
+    kinetics_mod: Any = ModuleType("autocatpath.kinetics")
+    kinetics_mod.sweep = sweep
+
+    parent: Any = ModuleType("autocatpath")
+    parent.kinetics = kinetics_mod
+
+    monkeypatch.setitem(sys.modules, "autocatpath", parent)
+    monkeypatch.setitem(sys.modules, "autocatpath.kinetics", kinetics_mod)
+    monkeypatch.setitem(sys.modules, "autocatpath.config", config_mod)
+    monkeypatch.setitem(sys.modules, "autocatpath.pipeline", pipeline_mod)
+    monkeypatch.setitem(sys.modules, "autocatpath.ledger", ledger_mod)
+    monkeypatch.setitem(sys.modules, "autocatpath.thermo", thermo_mod)
+    return calls
+
+
+def test_run_kinetics_sweep_normalizes_g_target_tpd(monkeypatch):
+    """gr514717: ``_run_kinetics_sweep`` runs engine-free — ``g`` flattens
+    Estimate/dict node records to floats, ``target`` reads score → config →
+    ``"NH3"``, and ``kinetics_tpd`` is forwarded only when it carries
+    ``offsets``."""
+    from precis_pathway import runner
+
+    seen: dict[str, Any] = {}
+
+    def _sweep(cfg, nodes, edges, net, ledgers, refs, **kw):
+        seen.update(
+            cfg=cfg,
+            nodes=nodes,
+            edges=edges,
+            net=net,
+            ledgers=ledgers,
+            refs=refs,
+            **kw,
+        )
+        return {"points": [{"T": 500.0}]}
+
+    calls = _fake_engine(monkeypatch, _sweep)
+
+    results: dict[str, Any] = {
+        "nodes": {"A": {"mean": -1.25}, "B": -0.5, "C": "0.75"},
+        "edges": [{"a": "A", "b": "B"}],
+        "score": {"target": "NO"},
+        "thermo": {"basis": "x"},
+        "kinetics_tpd": {"offsets": {"CO": {"offset_eV": -0.1}}},
     }
-    found = 0
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in sweep_fns:
-            found += 1
-            seg = ast.get_source_segment(src, node) or ""
-            assert "kinetics_v2" not in seg, (
-                f"{node.name} names kinetics_v2 — the engine sweep never "
-                "produces that key; the branch is dead (gr514391)"
-            )
-    assert found == len(sweep_fns), "a sweep function was renamed or removed"
+    runner._run_kinetics_sweep({"target": "CH4"}, results)
+
+    assert calls["config_dict"] == {"target": "CH4"}
+    assert seen["cfg"] == "CFG" and seen["net"] == "NET"
+    assert seen["ledgers"] == {"L": 2.0}
+    assert seen["refs"] == {"r": 1.5}  # the table-corrected refs, not raw
+    assert seen["g"] == {"A": -1.25, "B": -0.5, "C": 0.75}
+    assert seen["target"] == "NO"  # score.target outranks config.target
+    assert seen["thermo_record"] == {"basis": "x"}
+    assert seen["tpd"] == {"offsets": {"CO": {"offset_eV": -0.1}}}
+    assert results["kinetics_sweep"] == {"points": [{"T": 500.0}]}
+
+    # target falls back through config to "NH3"; tpd without offsets is
+    # not forwarded at all
+    results2: dict[str, Any] = {"nodes": {}, "edges": []}
+    seen.clear()
+    runner._run_kinetics_sweep({}, results2)
+    assert seen["target"] == "NH3"
+    assert "tpd" not in seen
+    results3: dict[str, Any] = {
+        "nodes": {},
+        "edges": [],
+        "kinetics_tpd": {"tpd": {"CO": {"status": "mismatch"}}},
+    }
+    seen.clear()
+    runner._run_kinetics_sweep({}, results3)
+    assert seen["target"] == "NH3" and "tpd" not in seen
+
+
+def test_run_kinetics_sweep_records_error_never_raises(monkeypatch):
+    """gr514717: any engine-side failure lands as ``kinetics_sweep_error``
+    on the results dict — the job turns it into a note, never a
+    pathway-fatal."""
+    from precis_pathway import runner
+
+    def _boom(*a, **k):
+        raise RuntimeError("engine exploded")
+
+    _fake_engine(monkeypatch, _boom)
+    results: dict[str, Any] = {"nodes": {}, "edges": []}
+    runner._run_kinetics_sweep({}, results)
+    assert results["kinetics_sweep_error"] == "engine exploded"
+    assert "kinetics_sweep" not in results

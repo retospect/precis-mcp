@@ -111,6 +111,9 @@ def _stage(tmp_path: Path) -> Path:
     (tree / "docker" / "dev" / "compose.yaml").write_text(
         "services: {}\n", encoding="utf-8"
     )
+    # scripts/test refuses a positional path that does not exist (gr514948).
+    (tree / "tests").mkdir()
+    (tree / "tests" / "x.py").write_text("", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(tree)], check=True)
     return tree
 
@@ -171,12 +174,10 @@ def test_prewarm_is_chained_before_pytest(tmp_path: Path) -> None:
     """The pyc prewarm runs inside the same `uv run` env, first in the
     chain — check-core-deps.py's own `import pysbd` would otherwise emit
     the warnings before pytest ever started."""
-    rc, _, log, stderr = _run(tmp_path)
-    assert rc == 0, stderr
-    run = _run_line(log)
-    assert (
-        "scripts/lib/prewarm-pycache.py pysbd && "
-        "python3 scripts/lib/check-core-deps.py" in run
+    inner = (REPO / "scripts" / "lib" / "pytest-inner.sh").read_text(encoding="utf-8")
+    assert inner.index("prewarm-pycache.py pysbd") < inner.index("check-core-deps.py")
+    assert "scripts/lib/pytest-inner.sh" in (REPO / "scripts" / "test").read_text(
+        encoding="utf-8"
     )
 
 

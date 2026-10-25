@@ -72,7 +72,7 @@ Note from the user: `$ARGUMENTS`
 
 4. **Red verdict → route, do not absorb.** `round gate` names the newest
    failed main sha above the candidate, its failing jobs and the
-   `gh run view <id> --log-failed` line. Read the `FAILED` and `E  ` lines
+   `scripts/ci-failed <id>` line. Read the `FAILED` and `E  ` lines
    there, find the owning commit, and send that peer the test id, the
    decisive line, and "qland the fix". Ratchet failures are fixed at the new
    site, never by raising a ceiling. Fix it yourself only when it is trivial

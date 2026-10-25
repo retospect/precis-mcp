@@ -138,7 +138,7 @@ def test_red_check_run_exits_two_with_job_and_url(rig: Rig) -> None:
     assert "test-linux (2)" in out.stderr
     assert "other" not in out.stderr
     assert url in out.stderr
-    assert "gh run view 4242 --log-failed" in out.stderr
+    assert "scripts/ci-failed 4242" in out.stderr
     assert rig.origin_ref("release/r1") == s  # left in place
     assert rig.deploy_log() == []
 
@@ -401,7 +401,7 @@ def test_red_names_job_and_run_of_the_current_run(rig: Rig) -> None:
     assert out.returncode == 2
     assert "test-linux (3)" in out.stderr
     assert "test-linux (12)" not in out.stderr
-    assert "gh run view 2222 --log-failed" in out.stderr
+    assert "scripts/ci-failed 2222" in out.stderr
 
 
 def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:

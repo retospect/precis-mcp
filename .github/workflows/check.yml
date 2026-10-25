@@ -336,6 +336,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      # shellcheck gate tests (test-linux's comment) — install, don't
+      # trust the runner image.
+      - run: |
+          uv tool install 'shellcheck-py==0.11.0.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # Node ids can carry spaces (parametrize ids); the JSON list is split
       # by jq, never by the shell. A stale id — renamed or deleted since the
       # red run — must not red this job: a --collect-only miss or pytest's
@@ -463,6 +468,14 @@ jobs:
       # (test_nm_sugars' rdkit-primary-path assertion, and test_rxn's
       # q='CCO' search, which only matches the rdkit-CANONICALISED
       # ethanol; the raw fixture SMILES spells it OCC).
+      # shellcheck gates scripts/lib/*.sh, scripts/host-ops/* and the
+      # hardening role's files (tests/test_scripts_lib.py et al.). The
+      # runner image happens to ship it; install it anyway (pinned) so an
+      # image bump can't silently turn those tests into skips — under
+      # CI=true they fail instead (tests/_node.py's rule).
+      - run: |
+          uv tool install 'shellcheck-py==0.11.0.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # `not nightly` (release-train §3, Reto 2026-10-24): the `nightly`-
       # marked cluster — the >240 s tests that don't split under the gate's
       # ~4 min single-test bar — stays out of every gate-shape shard run
@@ -515,6 +528,11 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: '3.13'
+      # shellcheck gate tests (test-linux's comment) — install, don't
+      # trust the runner image.
+      - run: |
+          uv tool install 'shellcheck-py==0.11.0.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/4 -m 'not db and not slow'
 
   # Nightly per-test coverage DB — the measured tier for
@@ -573,6 +591,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      # shellcheck gate tests (test-linux's comment) — install, don't
+      # trust the runner image.
+      - run: |
+          uv tool install 'shellcheck-py==0.11.0.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: >-
           uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu
           pytest -n 6 --cov=src --cov-context=test --cov-report=
@@ -616,6 +639,11 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
+      # shellcheck gate tests (test-linux's comment) — install, don't
+      # trust the runner image.
+      - run: |
+          uv tool install 'shellcheck-py==0.11.0.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # Same extras rationale as test-linux; every subtracted-set package
       # ships macosx_arm64 wheels (checked against uv.lock),
       # and the platform-gated ones (marker-pdf, tblite) carry their own

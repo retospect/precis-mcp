@@ -1,9 +1,13 @@
 """In-process autocatpath run → a self-contained, JSON-serialisable artifact.
 
 This is the *pure* half of the precis bridge: it imports **only autocatpath**
-(no ``precis``), so it is importable and testable without precis-mcp
-installed. The precis-facing handler (``precis_pathway.handler``) calls
-``run_pathway`` and persists what it returns.
+(no ``precis``), and even that lazily — the five engine names resolve through
+PEP 562 ``__getattr__`` on first use, so the module itself is importable and
+testable without precis-mcp AND without the ``catalyst`` extra (gr514717;
+``Config``/``Results``/``run``/``__version__``/``provenance`` still read as
+module attributes, just deferred). The precis-facing handler
+(``precis_pathway.handler``) calls ``run_pathway`` and persists what it
+returns.
 
 It mirrors :func:`autocatpath.pipeline.write_outputs` — same graph, same
 ``results.json`` shape, same ``methods.md`` — but assembles everything
@@ -37,11 +41,7 @@ import signal
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
-
-from autocatpath import __version__, provenance
-from autocatpath.config import Config
-from autocatpath.pipeline import Results, run
+from typing import TYPE_CHECKING, Any, cast
 
 from .coverage_sites import representable_coverages, slab_top_sites
 from .scratch import (
@@ -64,6 +64,49 @@ from .types import (
     SeedPartialResult,
     SeedStructureEntry,
 )
+
+if TYPE_CHECKING:
+    from autocatpath.config import Config
+    from autocatpath.pipeline import Results
+
+
+def __getattr__(name: str) -> Any:
+    """The autocatpath surface, resolved on first use (PEP 562). Importing
+    this module stays engine-free so the no-catalyst CI lane can exercise
+    the in-process helpers directly; a missing engine raises
+    ``ModuleNotFoundError`` at the call that needs it, not at import
+    (gr514717). ``runner.__version__`` still reads as the engine version
+    (``coverage_job``'s feature-detect messages), unchanged from the
+    module-scope import."""
+    if name == "__version__":
+        from autocatpath import __version__ as engine_version
+
+        return engine_version
+    if name == "provenance":
+        from autocatpath import provenance
+
+        return provenance
+    if name == "Config":
+        from autocatpath.config import Config
+
+        return Config
+    if name in ("Results", "run"):
+        from autocatpath import pipeline
+
+        return getattr(pipeline, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _engine(name: str) -> Any:
+    """Read a lazy engine name through this module's attributes. A bare
+    global lookup inside a function body would skip ``__getattr__``
+    entirely (``NameError``); going through ``sys.modules[__name__]``
+    fires the lazy import when unbound AND keeps the
+    ``monkeypatch.setattr(runner, name, …)`` seam the module-scope
+    imports used to give — a patched ``__dict__`` entry wins over
+    ``__getattr__``."""
+    return getattr(sys.modules[__name__], name)
+
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +151,7 @@ def network_topology(config: dict[str, Any]) -> NetworkTopology:
     contest the network (is this intermediate real? is this step right?) before
     any relax/NEB is spent. No slab is built and no calculator is loaded, so it
     is fast and dependency-light (ASE/RDKit only, no potential)."""
+    Config = _engine("Config")
     from autocatpath.network import build_network
 
     cfg = Config.from_dict(config)
@@ -148,6 +192,8 @@ def network_topology(config: dict[str, Any]) -> NetworkTopology:
 def _prep(config: dict[str, Any], force_backend: str | None) -> Config:
     """Build the Config, applying a backend override (used by the run and by
     the cache-key computation so they never diverge)."""
+    Config = _engine("Config")
+
     cfg = Config.from_dict(config)
     if force_backend:
         cfg.mlip.backend = force_backend
@@ -209,6 +255,8 @@ def content_key(config: dict[str, Any]) -> str:
     invalidates stale artifacts (autocatpath itself does no hashing —
     provenance is deterministic text only, so precis owns the key).
     """
+    __version__ = _engine("__version__")
+
     canonical = json.dumps(config, sort_keys=True, separators=(",", ":"))
     payload = f"{canonical}\x00autocatpath=={__version__}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -338,6 +386,10 @@ def run_pathway(
     * ``methods_md`` — the citable methods paragraph
     * ``structures_extxyz`` — relaxed geometries per state (for slice-1 ingest)
     """
+    __version__ = _engine("__version__")
+    provenance = _engine("provenance")
+    run = _engine("run")
+
     cfg = _prep(config, force_backend)
     # Key on the EFFECTIVE config (post-override) so the cache address
     # matches what actually ran — not the raw request.
@@ -407,6 +459,8 @@ def seed_content_key(
     ``seed``/``model_index`` appended — the version fold is load-bearing the
     same way it is there (a redeployed autocatpath re-keys every seed rather
     than dedup-pinning stale partials, the qu164903 fix)."""
+    __version__ = _engine("__version__")
+
     effective = effective_config(config, force_backend=force_backend)
     canonical = json.dumps(effective, sort_keys=True, separators=(",", ":"))
     payload = (
@@ -421,6 +475,7 @@ def root_state(config: dict[str, Any]) -> str:
     energy zero every partial is referenced to in ``aggregate_partials``).
     Built the way the engine's own ``_build_net`` builds it (template /
     desorb / leavers included), rule-based, no ML."""
+    Config = _engine("Config")
     from autocatpath.network import build_network
 
     cfg = Config.from_dict(config)
@@ -867,6 +922,8 @@ def coverage_anchor_key(config: dict[str, Any], *, slab_key: str | None = None) 
     dispatch uses ``sha256`` of the exported bytes); same crystal → same
     key → twins still pool. ``None`` = label-built slab, the pre-0.25.0
     behaviour, and keys against it unchanged."""
+    __version__ = _engine("__version__")
+
     cfg = _prep(config, None).to_dict()
     cfg.pop("mlip", None)
     cov = cfg.get("coverage")
@@ -924,6 +981,7 @@ def run_coverage_scan(
     scan, and the only call an older engine accepts — the caller gates on
     :func:`coverage_seed_supported`.
     """
+    __version__ = _engine("__version__")
     from autocatpath.calculators import resolve_backend
     from autocatpath.coverage import scan
 
@@ -1379,6 +1437,8 @@ def aggregate_seed_partials(
     Pure numpy (``autocatpath.pipeline.aggregate_partials`` — no ML deps),
     so this runs in-process on any node, not just wherever the seeds ran.
     """
+    __version__ = _engine("__version__")
+    provenance = _engine("provenance")
     from autocatpath.pipeline import aggregate_partials
 
     cfg = _prep(config, force_backend)
@@ -1469,6 +1529,8 @@ def spectators_supported() -> bool:
     ``Config.from_dict`` refuses the unknown key."""
     import dataclasses
 
+    Config = _engine("Config")
+
     return "spectators" in {f.name for f in dataclasses.fields(Config)}
 
 
@@ -1479,6 +1541,8 @@ def drop_unsupported_spectators(config: dict[str, Any]) -> dict[str, Any]:
     one. The dispatchers call this before the config reaches the engine."""
     if "spectators" not in config or spectators_supported():
         return config
+    __version__ = _engine("__version__")
+
     log.warning(
         "autocatpath engine %s has no Config.spectators; running %r without "
         "the spectator layer",
@@ -1690,6 +1754,8 @@ def run_kinetics(
     results_json = artifact["results_json"]
     kinetics = _import_kinetics()
     if kinetics is None:
+        __version__ = _engine("__version__")
+
         results_json["kinetics_error"] = f"engine {__version__} lacks kinetics"
         return
     try:
@@ -2142,6 +2208,7 @@ def run_kinetics_tpd_subprocess(
 def _run_kinetics_tpd(config: dict[str, Any], results_json: dict[str, Any]) -> None:
     """In-process half of :func:`run_kinetics_tpd_subprocess`; never raises."""
     try:
+        __version__ = _engine("__version__")
         from autocatpath import kinetics as _kin
 
         if not hasattr(_kin, "tpd_check"):

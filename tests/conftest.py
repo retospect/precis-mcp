@@ -9,28 +9,47 @@ store layer take ``store`` directly.
 Test-DB lifecycle
 -----------------
 
-We share **one** postgres database across the whole test session:
 ``precis_test`` (owner ``precis_test``, password set in
-``PRECIS_TEST_PG_URL``). At session start, an autouse fixture
-**drops every table** in the test DB then applies all migrations
-from ``0001`` so the schema is exactly what the source tree says
-it is, no matter what shape the previous run left it in. If a
-still-draft migration was edited or renumbered since the template
-applied it, the template rebuilds itself
-(``apply_all(rebuild_on_checksum_mismatch=True)``, gr479991) instead
-of refusing once and cascading an error through every DB test.
+``PRECIS_TEST_PG_URL``) is a **template**, never the database a
+test touches. Every pytest process — the session at ``-n0``, each
+xdist worker at ``-n6`` — clones it into a private
+``precis_test_<uuid>`` at session start and drops it at session
+end (``_initialise_test_db``). That clone is the cross-process
+isolation boundary: no test can fail because a sibling session or
+worker shares its physical DB.
 
-Per-test isolation is by ``TRUNCATE … CASCADE`` of every data
-table at fixture entry — fast (ms scale), and preserves the
-seeded vocabulary tables (``kinds``, ``chunk_kinds``,
-``relations``, ``actors``, ``providers``, ``embedders``,
-``summarizers``, ``artifact_kinds``) the migration installs and
-that almost every handler test depends on.
+Template maintenance runs once per run (first worker claims it
+under an advisory lock) and is keyed by a sha256 fingerprint over
+the discovered migration files, stamped into the template's
+``COMMENT ON DATABASE``. A stamp match skips ``apply_all``, the
+truncate and the vocab seeds — no per-run migrations. A cold or
+stale template is rebuilt by loading the cached dump at
+``./.precis-test-schema-<fp>.sql`` (written after each maintenance
+run, gitignored), falling back to ``apply_all`` +
+truncate + seeds when no dump matches — including the
+``rebuild_on_checksum_mismatch`` path (gr479991) for a draft
+edited or renumbered since the template applied it. The whole
+fixture is skipped when the session collected no ``db``-marked
+item: a no-DB selection pays no lock, no maintenance and no
+``CREATE DATABASE``.
+
+Within a process, per-test isolation is by ``TRUNCATE … CASCADE``
+of every data table at ``store`` fixture entry — fast (ms scale),
+and preserves the seeded vocabulary tables (``kinds``,
+``chunk_kinds``, ``relations``, ``actors``, ``providers``,
+``embedders``, ``summarizers``, ``artifact_kinds``) the migration
+installs and that almost every handler test depends on.
 
 Why not ephemeral DBs per test? Per-test CREATE DATABASE +
 migrations costs ~1 s × hundreds of tests = unusable for tight
 loops. TRUNCATE+CASCADE costs sub-millisecond and gives the same
 isolation guarantee.
+
+Order dependence is probed, not assumed away: ``scripts/test
+--random`` runs the selection under pytest-randomly (seed
+printed; ``PRECIS_RANDOM_SEED=N`` reproduces an order). A test
+that only passes in declaration order violates this contract —
+per-worker clone across processes, per-test TRUNCATE within one.
 
 Setup (one-time, as the postgres superuser):
 
@@ -776,11 +795,190 @@ def _claim_template_maintenance(admin_dsn: str) -> bool:
         return True  # can't coordinate → prepare it ourselves
 
 
+# --- migration fingerprint + cached schema dump (gr514478 S5, Decision 5) --
+#
+# Per Decision 5 the template carries a stamp naming the migration
+# fingerprint it was built at; a match skips apply_all/truncate/seeds, and
+# a pg_dump of the post-maintenance template cached at
+# ``<worktree>/.precis-test-schema-<fp>.sql`` rebuilds a cold template
+# without replaying migrations.
+
+_TEMPLATE_COMMENT_PREFIX = "precis-test-fp:"
+
+#: The worktree root — ``/app`` inside the test container, the checkout on
+#: the host. The dump file lives here so it survives ``compose down -v``.
+_WORKTREE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _cheap_migration_sources() -> list[Any] | None:
+    """``Migrator.discover_sources`` minus the ``ep.load()`` imports.
+
+    ``precis.migrations`` entry-point values are module names by
+    convention (``precis_se.migrations``); the directory resolves through
+    ``find_spec`` on the TOP-LEVEL package — which locates without
+    executing — instead of importing every plugin (the ~0.8 s this
+    skips). ``None`` on any shape the convention doesn't cover; the
+    caller then pays for full ``discover_sources`` instead.
+    """
+    import importlib.util
+
+    from precis.store.migrate import (
+        MIGRATIONS_PLUGIN_GROUP,
+        PRECIS_PLUGIN_NAME,
+        MigrationSource,
+        _entry_points,
+    )
+
+    sources = [MigrationSource(PRECIS_PLUGIN_NAME, MIGRATIONS_DIR)]
+    try:
+        eps = _entry_points(MIGRATIONS_PLUGIN_GROUP)
+    except Exception:
+        return None
+    for ep in eps:
+        module = str(getattr(ep, "value", "")).split(":", 1)[0]
+        parts = [p for p in module.split(".") if p]
+        try:
+            spec = importlib.util.find_spec(parts[0]) if parts else None
+            locations = getattr(spec, "submodule_search_locations", None)
+            base = Path(next(iter(locations))) if locations else None
+            cand = base.joinpath(*parts[1:]) if base and len(parts) > 1 else base
+        except Exception:
+            return None
+        if cand is None or not cand.is_dir():
+            return None
+        sources.append(MigrationSource(ep.name, cand))
+    return sources
+
+
+def _migration_fingerprint() -> str:
+    """sha256 over ``(plugin, version, checksum)`` of every discovered
+    migration file — the same set ``apply_all`` would consider."""
+    import hashlib
+
+    from precis.store.migrate import _load_migrations
+
+    sources = _cheap_migration_sources() or Migrator.discover_sources(MIGRATIONS_DIR)
+    h = hashlib.sha256()
+    for source in sources:
+        try:
+            files = _load_migrations(source)
+        except FileNotFoundError:
+            continue
+        for f in files:
+            h.update(f.plugin.encode("utf-8"))
+            h.update(b"\0")
+            h.update(f.version.encode("utf-8"))
+            h.update(b"\0")
+            h.update(f.checksum.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _read_template_fp(
+    admin: psycopg.Connection, name: str = _TEMPLATE_DB
+) -> str | None:
+    """The fingerprint stamped on the template DB, or ``None``."""
+    row = admin.execute(
+        "SELECT shobj_description(oid, 'pg_database') "
+        "FROM pg_database WHERE datname = %s",
+        (name,),
+    ).fetchone()
+    comment = row[0] if row else None
+    if comment and comment.startswith(_TEMPLATE_COMMENT_PREFIX):
+        return comment[len(_TEMPLATE_COMMENT_PREFIX) :]
+    return None
+
+
+def _stamp_template_fp(
+    admin: psycopg.Connection, fp: str, name: str = _TEMPLATE_DB
+) -> None:
+    from psycopg import sql as _sql
+
+    admin.execute(
+        _sql.SQL("COMMENT ON DATABASE {} IS {}").format(
+            _sql.Identifier(name),
+            _sql.Literal(_TEMPLATE_COMMENT_PREFIX + fp),
+        )
+    )
+
+
+def _template_state(admin: psycopg.Connection, name: str = _TEMPLATE_DB) -> str:
+    """'missing' | 'fresh' (exists, no ``_migrations`` ledger) | 'migrated'."""
+    row = admin.execute(
+        "SELECT 1 FROM pg_database WHERE datname = %s", (name,)
+    ).fetchone()
+    if row is None:
+        return "missing"
+    with psycopg.connect(_dsn_with_db(PG_TEST_DSN, name)) as conn:
+        ledger = conn.execute("SELECT to_regclass('public._migrations')").fetchone()
+    return "migrated" if ledger and ledger[0] else "fresh"
+
+
+def _schema_dump_path(fp: str) -> Path:
+    return _WORKTREE_ROOT / f".precis-test-schema-{fp}.sql"
+
+
+def _write_schema_dump(fp: str, dsn: str = PG_TEST_DSN) -> None:
+    """pg_dump the freshly-maintained template to the worktree cache file.
+
+    ``_clean_dump(seed_data=True)`` gives the COPY blocks the same
+    ``public, pg_temp`` local path the baseline load needs (sealed trigger
+    bodies call unqualified helpers), and strips psql-only ``\\restrict``
+    noise. Older fingerprints' files are pruned — the cache is one-deep.
+    """
+    from precis.store.schema_dump import _clean_dump, _run_pg_dump
+
+    text = _clean_dump(_run_pg_dump("pg_dump", dsn, []), seed_data=True)
+    path = _schema_dump_path(fp)
+    path.write_text(text, encoding="utf-8")
+    for stale in _WORKTREE_ROOT.glob(".precis-test-schema-*.sql"):
+        if stale != path:
+            stale.unlink(missing_ok=True)
+
+
+def _load_schema_dump(
+    admin: psycopg.Connection, fp: str, name: str = _TEMPLATE_DB
+) -> bool:
+    """Rebuild a cold template from the cached dump file. False when the
+    file or the DB isn't in a loadable state, or the load fails (a
+    restricted role that can't CREATE EXTENSION, say) — the caller then
+    takes the migration path as before."""
+    from precis.store.migrate import _execute_dump_sql
+
+    path = _schema_dump_path(fp)
+    if not path.exists():
+        return False
+    state = _template_state(admin, name)
+    if state == "migrated":
+        return False
+    try:
+        if state == "missing":
+            admin.execute(f'CREATE DATABASE "{name}"')
+        with psycopg.connect(_dsn_with_db(PG_TEST_DSN, name), autocommit=True) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = 0"
+                    )
+                    _execute_dump_sql(cur, path.read_text(encoding="utf-8"))
+            conn.execute("RESET search_path")
+        _stamp_template_fp(admin, fp, name)
+        return True
+    except psycopg.Error:
+        log.warning(
+            "conftest: schema-dump load into %r failed — migrating instead",
+            name,
+        )
+        return False
+
+
 @pytest.fixture(scope="session", autouse=True)
-def _initialise_test_db() -> Iterator[None]:
+def _initialise_test_db(request: pytest.FixtureRequest) -> Iterator[None]:
     """Give each pytest session its OWN ephemeral database — an instant
     clone of the maintained ``precis_test`` template — and drop it at
-    session end.
+    session end. Skipped entirely when the session collected no
+    ``db``-marked item (gr514478 S3): a no-DB selection then pays no
+    template maintenance, no advisory lock and no ``CREATE DATABASE`` —
+    the same no-op it always had when postgres was unreachable.
 
     The whole suite used to share one physical ``precis_test``, so per-test
     ``TRUNCATE … CASCADE`` and ``fresh_db`` drop/rebuilds deadlocked across
@@ -806,7 +1004,10 @@ def _initialise_test_db() -> Iterator[None]:
     No-op when no postgres is reachable (the per-test fixtures skip instead).
     """
     global _ACTIVE_DSN
-    if not _pg_available():
+    if (
+        not any(item.get_closest_marker("db") for item in request.session.items)
+        or not _pg_available()
+    ):
         yield
         return
 
@@ -829,17 +1030,32 @@ def _initialise_test_db() -> Iterator[None]:
         # Do it once per run (first worker claims it), not once per worker —
         # see _claim_template_maintenance.
         if _claim_template_maintenance(admin_dsn):
-            # rebuild_on_checksum_mismatch: the persistent template's
-            # ledger seals every applied migration's checksum, so a run
-            # after a draft was edited or renumbered would refuse once and
-            # cascade through every DB test (gr479991). Rebuilding the
-            # disposable template in place is the same reset a
-            # `compose down -v` gives, without leaving the container.
-            Migrator(PG_TEST_DSN, Migrator.discover_sources(MIGRATIONS_DIR)).apply_all(
-                rebuild_on_checksum_mismatch=True
-            )
-            _truncate_data_tables(PG_TEST_DSN)
-            _ensure_vocab_seeds(PG_TEST_DSN)
+            fp = _migration_fingerprint()
+            with psycopg.connect(admin_dsn, autocommit=True) as adm:
+                stamped = _read_template_fp(adm)
+                if stamped == fp:
+                    pass  # stamp match: no per-run migrations (Decision 5)
+                elif _load_schema_dump(adm, fp):
+                    pass  # cold template rebuilt from the cached dump
+                else:
+                    # rebuild_on_checksum_mismatch: the persistent template's
+                    # ledger seals every applied migration's checksum, so a run
+                    # after a draft was edited or renumbered would refuse once and
+                    # cascade through every DB test (gr479991). Rebuilding the
+                    # disposable template in place is the same reset a
+                    # `compose down -v` gives, without leaving the container.
+                    Migrator(
+                        PG_TEST_DSN, Migrator.discover_sources(MIGRATIONS_DIR)
+                    ).apply_all(rebuild_on_checksum_mismatch=True)
+                    _truncate_data_tables(PG_TEST_DSN)
+                    _ensure_vocab_seeds(PG_TEST_DSN)
+                    _stamp_template_fp(adm, fp)
+                    try:
+                        _write_schema_dump(fp)
+                    except Exception as exc:
+                        # Best-effort: the dump only speeds up a cold
+                        # template — a missing pg_dump must not fail the run.
+                        log.warning("conftest: schema dump not written: %s", exc)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)

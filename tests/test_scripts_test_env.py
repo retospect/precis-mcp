@@ -30,7 +30,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 REPO = Path(__file__).resolve().parent.parent
-_LIBS = ("compose-project.sh", "docker-disk.sh", "gate-slot.sh", "lock-holder.sh")
+_LIBS = (
+    "compose-project.sh",
+    "docker-disk.sh",
+    "gate-slot.sh",
+    "lock-holder.sh",
+    "pytest-inner.sh",
+    "collect_count.py",
+)
 
 _FAKE_DOCKER = r"""#!/usr/bin/env bash
 # Synthetic docker -- logs compose invocations; never touches a daemon.
@@ -62,7 +69,10 @@ case "${args[0]:-}" in
     done
     case "$verb" in
       up)   echo "up|$proj" >> "$FAKE_DOCKER_LOG" ;;
-      run)  echo "run|$proj|${args[*]}" >> "$FAKE_DOCKER_LOG" ;;
+      run)
+        echo "run|$proj|${args[*]}" >> "$FAKE_DOCKER_LOG"
+        sleep "${FAKE_RUN_SLEEP:-0}"
+        ;;
       down) echo "down|$proj" >> "$FAKE_DOCKER_LOG" ;;
     esac
     exit 0
@@ -78,6 +88,7 @@ _SCRUB_PREFIXES = (
     "PRECIS_TEST_",
     "PRECIS_COMPOSE",
     "PRECIS_STRICT_LOCK_CHECK",
+    "PRECIS_RANDOM",
     "UV_WITH",
 )
 
@@ -93,6 +104,10 @@ def _stage(tmp_path: Path, name: str = "envtest") -> Path:
     (tree / "docker" / "dev" / "compose.yaml").write_text(
         "services: {}\n", encoding="utf-8"
     )
+    # scripts/test refuses a missing test path before any docker call
+    # (gr514948) — the staged tree needs the default arg's file to exist.
+    (tree / "tests").mkdir(exist_ok=True)
+    (tree / "tests" / "x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(tree)], check=True)
     return tree
 
@@ -102,9 +117,14 @@ def _run(
     *,
     args: tuple[str, ...] = ("-n0", "tests/x.py"),
     extra_env: dict[str, str] | None = None,
+    files: tuple[str, ...] = (),
 ) -> tuple[int, list[str], str]:
     """Run staged scripts/test; return (rc, docker log lines, stderr)."""
     tree = _stage(tmp_path)
+    for rel in files:
+        p = tree / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("", encoding="utf-8")
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
     docker = fakebin / "docker"
@@ -194,3 +214,109 @@ def test_precis_test_env_refuses_malformed_entries(tmp_path: Path, bad: str) -> 
     assert rc != 0
     assert "is not NAME=value" in stderr
     assert not [line for line in log if line.startswith("run|")]
+
+
+# --- auto -n0 for small selections (test-loop-speed Decision 1) -------------
+# The host side only decides WHETHER the container counts (-e PRECIS_AUTO_N):
+# the count itself runs inside the container (scripts/lib/collect_count.py,
+# covered by tests/test_collect_count.py).
+
+
+def test_single_file_selection_counts_for_auto_n(tmp_path: Path) -> None:
+    rc, log, stderr = _run(tmp_path, args=("tests/x.py",), files=("tests/x.py",))
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert " -e PRECIS_AUTO_N=1 " in f" {line} "
+    assert " -n6 " not in f" {line} "
+
+
+def test_node_id_selection_counts_for_auto_n(tmp_path: Path) -> None:
+    rc, log, stderr = _run(
+        tmp_path, args=("tests/x.py::test_a",), files=("tests/x.py",)
+    )
+    assert rc == 0, stderr
+    assert " -e PRECIS_AUTO_N=1 " in f" {_run_line(log)} "
+
+
+def test_directory_selection_keeps_n6_without_count(tmp_path: Path) -> None:
+    rc, log, stderr = _run(tmp_path, args=("tests/",), files=("tests/x.py",))
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert " -e PRECIS_AUTO_N=0 " in f" {line} "
+    assert " -n6 " in f" {line} "
+
+
+def test_missing_path_argument_is_refused(tmp_path: Path) -> None:
+    """A positional arg that names no file is refused before any container
+    (gr514948) - the auto -n0 heuristic never sees a mistyped path."""
+    rc, log, stderr = _run(
+        tmp_path, args=("tests/does_not_exist.py",), files=("tests/x.py",)
+    )
+    assert rc == 2, stderr
+    assert "test path not found: tests/does_not_exist.py" in stderr
+    assert not log
+
+
+def test_caller_n_passes_through_unchanged(tmp_path: Path) -> None:
+    rc, log, stderr = _run(tmp_path, args=("-n2", "tests/x.py"), files=("tests/x.py",))
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert " -e PRECIS_AUTO_N=0 " in f" {line} "
+    assert " -n2 " in f" {line} "
+
+
+def test_heartbeat_during_silent_phase_and_none_after_exit(tmp_path: Path) -> None:
+    """gr514502: a run that goes quiet gets backgrounded by the harness —
+    heartbeat lines name the phase every interval, and stop at exit."""
+    rc, log, stderr = _run(
+        tmp_path,
+        extra_env={"FAKE_RUN_SLEEP": "3", "PRECIS_TEST_HEARTBEAT_S": "1"},
+        args=("-n0", "tests/x.py"),
+        files=("tests/x.py",),
+    )
+    assert rc == 0, stderr
+    beats = [
+        line for line in stderr.splitlines() if "… " in line and "scripts/test:" in line
+    ]
+    assert len(beats) >= 2, f"expected >=2 heartbeat lines, got: {stderr!r}"
+    assert any("pytest" in b for b in beats)
+
+
+# --- --random order probe (test-loop-speed Decision 6) ----------------------
+# pytest-randomly is not a baked dep — it bridges through UV_WITH the same
+# way testmon does. PRECIS_RANDOM_SEED is a pytest arg (--randomly-seed),
+# not a forwarded env var, and implies --random on its own.
+
+
+def test_random_flag_bridges_pytest_randomly(tmp_path: Path) -> None:
+    rc, log, stderr = _run(
+        tmp_path, args=("--random", "tests/x.py"), files=("tests/x.py",)
+    )
+    assert rc == 0, stderr
+    assert "-e UV_WITH=--with pytest-randomly==3.16.0" in _run_line(log)
+
+
+def test_random_seed_implies_random_and_becomes_seed_arg(tmp_path: Path) -> None:
+    rc, log, stderr = _run(
+        tmp_path,
+        args=("tests/x.py",),
+        files=("tests/x.py",),
+        extra_env={"PRECIS_RANDOM_SEED": "1234"},
+    )
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert "pytest-randomly==3.16.0" in line
+    assert "--randomly-seed=1234" in line
+    assert "-e PRECIS_RANDOM_SEED" not in line
+
+
+def test_random_combines_with_later_flags(tmp_path: Path) -> None:
+    """Flag parsing is a loop: --random before --fast must not strand --fast
+    as a pytest arg (single-pass parsing would)."""
+    rc, log, stderr = _run(
+        tmp_path, args=("--random", "--fast", "tests/x.py"), files=("tests/x.py",)
+    )
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert "pytest-randomly==3.16.0" in line
+    assert "not db and not slow" in line

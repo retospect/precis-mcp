@@ -41,7 +41,7 @@ check run 223355 → https://example.invalid/run/223355
 ✖ remote gate RED: failure — failing jobs:
   test-linux (3.13, 5): failure
   lint: success
-  → gh run view 223355 --log-failed
+  → scripts/ci-failed 223355
 full log: /tmp/ship-x.log
 SHIP_STATUS: error
 """
@@ -72,7 +72,7 @@ RELEASE_EXIT=0
 RELEASE_RED_LOG = """\
 waiting for CI on release/r42
 CI red on release/r42 at deadbeef1 — failing: test-linux (3.13, 5)
-  gh run view 223377 --log-failed
+  scripts/ci-failed 223377
 RELEASE_EXIT=2
 """
 
@@ -145,6 +145,18 @@ def test_red_ship_log_names_first_failure_and_pointer(tmp_path: Path) -> None:
     assert cp.returncode == 1
     assert "ship-wait: RED" in cp.stdout
     assert "first failure: test-linux (3.13, 5): failure" in cp.stdout
+    assert "scripts/ci-failed 223355" in cp.stdout
+
+
+def test_red_ship_log_passes_through_the_old_log_failed_pointer(
+    tmp_path: Path,
+) -> None:
+    """Logs written before `scripts/ci-failed` still carry
+    `gh run view <id> --log-failed` — the pointer regex picks up both
+    spellings (gr514904)."""
+    log = RED_LOG.replace("scripts/ci-failed 223355", "gh run view 223355 --log-failed")
+    cp = _run([str(_log(tmp_path, log))])
+    assert cp.returncode == 1
     assert "gh run view 223355 --log-failed" in cp.stdout
 
 
@@ -169,7 +181,7 @@ def test_release_exit_nonzero_is_red(tmp_path: Path) -> None:
     cp = _run([str(_log(tmp_path, RELEASE_RED_LOG))])
     assert cp.returncode == 1
     assert "RELEASE_EXIT=2" in cp.stdout
-    assert "gh run view 223377 --log-failed" in cp.stdout
+    assert "scripts/ci-failed 223377" in cp.stdout
 
 
 def test_run_id_green(tmp_path: Path) -> None:
@@ -187,7 +199,7 @@ def test_run_id_red_names_first_failing_job(tmp_path: Path) -> None:
     cp = _run(["998877"], env=env)
     assert cp.returncode == 1
     assert "first failure: test-linux (3.13, 5): failure" in cp.stdout
-    assert "gh run view 998877 --log-failed" in cp.stdout
+    assert "scripts/ci-failed 998877" in cp.stdout
 
 
 def test_run_id_cancelled_exits_nonzero(tmp_path: Path) -> None:

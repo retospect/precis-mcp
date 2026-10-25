@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # scripts/lib/autocatpath-wheel.sh — pure helpers for matching this repo's
 # declared `autocatpath` version floor against the wheels a controller has
 # actually built. Sourced by scripts/deploy; no side effects, so the version

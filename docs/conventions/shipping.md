@@ -70,7 +70,8 @@ instead of the current files (gr515222). Re-stage after regenerating
 gr495187) on every push to main, so a lint-red main's failures usually
 already sit on GitHub — a pytest red surfaces on the release gate or the
 nightly instead. Run `scripts/main-ci-status` first (run id, failing
-jobs, UNCLAIMED or not), then `gh run view <id> --log-failed`; read the
+jobs, UNCLAIMED or not), then `scripts/ci-failed <id>` (the signal-line
+digest of `gh run view <id> --log-failed`); read the
 whole summary line ("1 failed, 2 errors" is three problems). A full local
 gate validates, never diagnoses. Claim the fix in `.claude/purpose`, fix every
 named cause in one branch, un-red with `--remote`; it skips the local ruff
@@ -114,10 +115,14 @@ to wait on a gate (gr515152): no polling subagents, no log-tail loops in
 the main loop.
 
 Under the release train (Reto 2026-10-23) `--remote` is the HARNESS lane:
-required when the diff has any path under `scripts/ship`, `scripts/test`,
-`scripts/lib/` or `.github/`, refused otherwise ("`--remote` is for harness
-diffs … Re-run scripts/ship --quick"). `uv.lock`, `pyproject.toml`,
-migrations and schema are not harness — they qland like everything else.
+required when the diff touches the landing harness, refused otherwise
+("`--remote` is for harness diffs … Re-run scripts/ship --quick").
+Harness-lane membership has ONE canonical list — the `HARNESS_DIFF` case
+in `scripts/ship` (`scripts/ship`, `scripts/test`, `scripts/lib/*`,
+`.github/*`; NOT the whole `scripts/` dir — `scripts/release`,
+`scripts/deploy` and friends are not harness). `uv.lock`,
+`pyproject.toml`, migrations and schema are not harness — they qland like
+everything else.
 
 The repo-wide ship lock is narrow: held only for the seconds of fetch →
 squash → CAS push → local-main ff, never across sync, lint, a gate or the CI
@@ -240,8 +245,9 @@ flight — qland them one by one, then one `/go` releases the integrated
 `main` (ship lands nothing when the tree already equals main).
 
 Under the release train `--quick` is the default lane for every non-harness
-diff; a harness diff (any path under `scripts/ship`, `scripts/test`,
-`scripts/lib/` or `.github/`) is refused before any gate and takes `/land`.
+diff; a harness diff (the `HARNESS_DIFF` classifier in `scripts/ship` —
+the canonical list, see /land above) is refused before any gate and takes
+`/land`.
 The same refusal covers `--checked`.
 
 ## --checked — the qland burst lane with a selected pytest
@@ -305,8 +311,10 @@ wire protocol (`testmon=N` then bare targets) for `ship --checked` /
   web import).
 - **full** — `pyproject.toml`, `uv.lock`, `conftest.py`, `scripts/test`,
   `scripts/impacted-tests`, `docker/`, `.github/workflows/` changes answer
-  `FULL`: those change the harness (or the selector itself), so no subset
-  is honest.
+  `FULL`: no subset is honest when the test machinery (or the selector
+  itself) moves. This set is wider than the `HARNESS_DIFF` harness-lane
+  list — `pyproject.toml`, `uv.lock` and `docker/` are not harness-lane
+  paths; they just have no honest subset.
 
 When unsure it widens; it never narrows below the always-include floor.
 
@@ -357,7 +365,7 @@ broken code until the next pass: accepted on a dev cluster, and
 All paths abort+report on failure and are idempotent — fix and re-run.
 Merge target is `main` (no `master`). Red gate: the failure is printed above
 the `✖` — read *that*, never `scripts/ship` (remote-gate red: ship prints the
-failing jobs + `gh run view <id> --log-failed`). A dead package-index route
+failing jobs + `scripts/ci-failed <id>`). A dead package-index route
 is NOT a red: before the gate command, ship syncs the gate's project env
 offline-first (`uv sync --offline`, falling back online only on a uv cache
 miss — the cache lives on the per-worktree `gate-cache` volume shared by
