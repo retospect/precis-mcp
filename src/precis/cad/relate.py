@@ -44,11 +44,19 @@ Every tolerance here is relative to a governing length (the query region's
 diagonal, or the smaller body's, per the units policy in
 ``docs/backlog/multiscale-design-architecture.md``): the same code has to
 hold at Å and at km, and an absolute epsilon holds at neither.
+
+:func:`clearance` is **deprecated** (gr514448): inside a carved body the
+CSG SDF only *bounds* distance, and the seed grid misses thin features,
+so its gap reads wrong (the unicycle's axle/fork came back 2.5 mm against
+a true 13.5 mm) — the mesh referee :func:`precis.cad.fit.component_gap`
+replaces it. The SDF machinery stays for the connectivity graph and the
+DOF probe's contact scan, where only the overlap boolean is needed.
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 from collections import deque
 from dataclasses import dataclass
 
@@ -480,8 +488,11 @@ def _min_max_sdf(
     return best_v, as_vec3(best_p)
 
 
-def clearance(design: Design, a: str, b: str) -> ClearanceResult:
-    """Signed min surface gap between components ``a`` and ``b``."""
+def _clearance(design: Design, a: str, b: str) -> ClearanceResult:
+    """Signed min surface gap between components ``a`` and ``b`` — the
+    CSG-SDF minimiser, kept for :func:`connectivity` and for callers
+    whose components a mesh cannot hold (``field:``/``relief:``/
+    ``rd``/``blend`` leaves)."""
     ea, eb = design.components[a], design.components[b]
     region = _region(design, [ea, eb])
     half, p = _min_max_sdf(design, ea, eb, vec3(0, 0, 0), region)
@@ -492,6 +503,27 @@ def clearance(design: Design, a: str, b: str) -> ClearanceResult:
         point=p,
         resolution=CONTACT_TOL_REL * scale,
     )
+
+
+def clearance(design: Design, a: str, b: str) -> ClearanceResult:
+    """Signed min surface gap between components ``a`` and ``b``.
+
+    .. deprecated:: gr514448
+        The CSG SDF only *bounds* distance inside a carved body and the
+        seed grid misses thin features, so the gap reads wrong there
+        (unicycle axle/fork: 2.5 mm reported, 13.5 mm true; bearing/wheel:
+        1.0 mm reported, 0.148 mm true). Use the mesh referee
+        :func:`precis.cad.fit.component_gap` instead. Kept callable for
+        one release; emits a :class:`DeprecationWarning`.
+    """
+    warnings.warn(
+        "precis.cad.relate.clearance is deprecated (gr514448: wrong gaps "
+        "inside carved bodies, misses thin features) — use "
+        "precis.cad.fit.component_gap",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _clearance(design, a, b)
 
 
 # ── connectivity — the assembly contact graph ─────────────────────────────
@@ -597,7 +629,7 @@ def connectivity(design: Design, *, tol: float | None = None) -> ConnectivityRes
     connected groups they form, and whether the assembly is one solid.
 
     Two components are *connected* when their realised (post-cut) material
-    touches or overlaps — signed gap ≤ ``tol`` via :func:`clearance` (the
+    touches or overlaps — signed gap ≤ ``tol`` via :func:`_clearance` (the
     exact-sign CSG SDF, so the overlapping-discs-before-cuts trap never
     arises). This is the graph behind "what's connected to X", "is there a
     path from A to B", and the "a real part is one connected solid" truism.
@@ -621,7 +653,7 @@ def connectivity(design: Design, *, tol: float | None = None) -> ConnectivityRes
     contacts: list[Contact] = []
     for i in range(len(comps)):
         for j in range(i + 1, len(comps)):
-            cl = clearance(design, comps[i], comps[j])
+            cl = _clearance(design, comps[i], comps[j])
             pair_tol = tol if tol is not None else cl.resolution
             if cl.gap <= pair_tol:
                 contacts.append(

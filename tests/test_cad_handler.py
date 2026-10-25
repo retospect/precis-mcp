@@ -800,6 +800,90 @@ def test_instance_name_weld_flags_an_air_weld_with_min_gap(cad):
     assert "20 mm apart" in resp.body
 
 
+# ── gr514448: the unicycle gaps the SDF read wrong, via the mesh referee ──
+# The four unicycle blocks the gripe measured (verbatim from
+# tests/workspaces/data/unicycle/out/blocks/, at their manifest poses).
+_UNI_AXLE = """\
+component axle
+rod add cyl:r10mmh220.0mm @0mm,110.0mm,0mm rot:90deg,0deg,0deg
+"""
+_UNI_FORK = """\
+component fork
+leg    add box:w30mmd45mmh460.0mm
+house  add cyl:r30mmh45mm @0mm,22.5mm,40mm rot:90deg,0deg,0deg
+bore   cut cyl:r23.5mmh50mm @0mm,25mm,40mm rot:90deg,0deg,0deg
+"""
+_UNI_BEARING = """\
+component bearing
+ring add cyl:r23.5mmh14mm @0mm,7mm,0mm rot:90deg,0deg,0deg
+hole cut cyl:r10mmh16mm @0mm,8mm,0mm rot:90deg,0deg,0deg
+"""
+_UNI_WHEEL = """\
+component wheel
+tire   add cyl:r254.0mmh45.0mm @0mm,22.5mm,0mm rot:90deg,0deg,0deg
+inner  cut cyl:r240.0mmh47.0mm @0mm,23.5mm,0mm rot:90deg,0deg,0deg
+hub    add cyl:r25mmh45.0mm @0mm,22.5mm,0mm rot:90deg,0deg,0deg
+spokes add box:w240.0mmd3mmh3mm @132.0mm,0mm,0mm polar:n12r0mm
+bore   cut cyl:r10mmh47.0mm @0mm,23.5mm,0mm rot:90deg,0deg,0deg
+"""
+_UNI_TOP = """\
+use axle as axle @0mm,0mm,254mm
+use bearing as bearing_left @0mm,51mm,254mm
+use fork as fork_left @0mm,50mm,214mm
+use wheel as wheel @0mm,0mm,254mm
+weld axle fork_left
+"""
+
+
+def _clearance_mm(body: str) -> float:
+    m = re.search(r"clearance .*?: (-?[\d.]+) (mm|µm)", body)
+    assert m, body
+    return float(m.group(1)) * (1e-3 if m.group(2) == "µm" else 1.0)
+
+
+def test_unicycle_clearance_view_uses_the_mesh_referee(cad):
+    """gr514448: relate.clearance reported 2.5 mm axle/fork (true 13.5)
+    and 1.0 mm bearing/wheel (true ~0.148) — the mesh referee answers
+    both through view='clearance'."""
+    for slug, text in (
+        ("axle", _UNI_AXLE),
+        ("fork", _UNI_FORK),
+        ("bearing", _UNI_BEARING),
+        ("wheel", _UNI_WHEEL),
+    ):
+        cad.put(id=slug, text=text)
+    cad.put(id="uni", text=_UNI_TOP)
+    af = cad.get(
+        id="uni", view="clearance", args={"a": "axle.axle", "b": "fork_left.fork"}
+    )
+    assert "clear" in af.body
+    assert _clearance_mm(af.body) == pytest.approx(13.5, abs=0.2)
+    bw = cad.get(
+        id="uni",
+        view="clearance",
+        args={"a": "bearing_left.bearing", "b": "wheel.wheel"},
+    )
+    assert "clear" in bw.body
+    assert _clearance_mm(bw.body) == pytest.approx(0.148, abs=0.05)
+
+
+def test_unicycle_air_weld_note_reports_the_mesh_gap(cad):
+    """gr514448: the put-time weld sweep (the other relate.clearance
+    caller) reports the same mesh-measured gap — axle/fork reads
+    ~13.5 mm apart, not the SDF's 2.5 mm."""
+    for slug, text in (
+        ("axle", _UNI_AXLE),
+        ("fork", _UNI_FORK),
+        ("bearing", _UNI_BEARING),
+        ("wheel", _UNI_WHEEL),
+    ):
+        cad.put(id=slug, text=text)
+    resp = cad.put(id="uni", text=_UNI_TOP)
+    assert "⚠ weld axle ↔ fork_left declared but the parts are" in resp.body
+    m = re.search(r"parts are ([\d.]+) mm apart", resp.body)
+    assert m and float(m.group(1)) == pytest.approx(13.5, abs=0.2), resp.body
+
+
 def test_put_surfaces_awkward_mantissa_warning(cad):
     resp = cad.put(id="tiny", text="plate add cyl:r0.000000003mh12mm")
     assert "created" in resp.body  # warn, never deny

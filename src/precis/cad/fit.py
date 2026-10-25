@@ -423,6 +423,105 @@ def place(
 
 
 # ---------------------------------------------------------------------------
+# single-pair gap (the Decision-3 referee as a query)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ComponentGap:
+    """One pair's signed gap, measured on the folded manifold3d solids —
+    the same measurement the fit engine trusts (gr514448: the CSG SDF
+    only *bounds* distance inside carved bodies and its seed grid misses
+    thin features, so ``relate.clearance`` reads wrong there — axle/fork
+    on the unicycle reported 2.5 mm against a true 13.5 mm).
+
+    ``gap`` is signed: positive surface distance when disjoint,
+    ``−thickness`` (``2V/A``) when the boolean intersection is
+    non-empty. ``resolution`` is ``BAND ×`` the chord the answer was
+    computed at — a ``|gap|`` inside it is "touching within mesh
+    resolution", the band renderers must not print as a bare "clear".
+    ``refined`` marks a measurement the chord/10 referee recomputed."""
+
+    gap: float
+    interfering: bool
+    resolution: float
+    thickness: float
+    refined: bool
+
+
+def component_gap(
+    spec: SceneSpec,
+    a: str,
+    b: str,
+    *,
+    solids: MutableMapping[tuple[str, float], Any] | None = None,
+) -> ComponentGap | None:
+    """Signed minimum gap between components ``a`` and ``b`` of ``spec``.
+
+    Each component folds through :func:`tessellate_component` at its own
+    :func:`component_chord`; the pair measures with
+    ``Manifold.min_gap`` plus a boolean intersection, and a result within
+    ``BAND × chord`` of the touch boundary — or an overlap thinner than
+    ``BAND_THIN × chord`` — re-tessellates both sides at ``chord/10`` and
+    recomputes (Decision 3's referee, applied to a bare query the same
+    way the fit engine applies it inside a band verdict).
+
+    ``solids`` is an optional ``(component, chord) → Manifold`` memo so a
+    caller sweeping many pairs tessellates each component once. The
+    ``min_gap`` search bound is the pair's union-AABB diagonal — the
+    largest distance two enclosed bodies can have — so the returned gap
+    is the true figure, never a clamped one.
+
+    Returns ``None`` when either component cannot be meshed
+    (:func:`unmeshable_reason` — ``field:``/``relief:``/``rd``/``blend``)
+    or folds to nothing; the caller falls back to the analytic path.
+    """
+    if unmeshable_reason(spec, a) is not None or unmeshable_reason(spec, b) is not None:
+        return None
+
+    def solid(comp: str, chord: float) -> Any:
+        if solids is None:
+            return tessellate_component(spec, comp, chord)
+        key = (comp, chord)
+        if key not in solids:
+            solids[key] = tessellate_component(spec, comp, chord)
+        return solids[key]
+
+    chord_a, chord_b = component_chord(spec, a), component_chord(spec, b)
+    sa, sb = solid(a, chord_a), solid(b, chord_b)
+    if sa is None or sb is None:
+        return None
+    chord = max(chord_a, chord_b)
+
+    box_a, box_b = sa.bounding_box(), sb.bounding_box()
+    lo = np.minimum(np.asarray(box_a[:3]), np.asarray(box_b[:3]))
+    hi = np.maximum(np.asarray(box_a[3:]), np.asarray(box_b[3:]))
+    search = float(np.linalg.norm(hi - lo)) or SEARCH_M
+
+    def measure(x: Any, y: Any) -> tuple[float, float]:
+        gap, vol, area = _measure(x, y, search)
+        thickness = 2.0 * vol / area if area > 0.0 else 0.0
+        return (-thickness if vol > 0.0 else gap), thickness
+
+    sg, thickness = measure(sa, sb)
+    refined = False
+    if abs(sg) <= BAND * chord or 0.0 < thickness <= BAND_THIN * chord:
+        finer = chord / REFINE_DIV
+        ra, rb = solid(a, finer), solid(b, finer)
+        if ra is not None and rb is not None:
+            sg, thickness = measure(ra, rb)
+            chord = finer
+            refined = True
+    return ComponentGap(
+        gap=sg,
+        interfering=thickness > 0.0,
+        resolution=BAND * chord,
+        thickness=thickness,
+        refined=refined,
+    )
+
+
+# ---------------------------------------------------------------------------
 # connects / measurements
 # ---------------------------------------------------------------------------
 
@@ -951,6 +1050,7 @@ def _mass_section(
 
 
 __all__ = [
+    "ComponentGap",
     "Connect",
     "FitError",
     "FitReport",
@@ -958,6 +1058,7 @@ __all__ = [
     "Row",
     "Rule",
     "component_chord",
+    "component_gap",
     "default_rules",
     "fit",
     "geometry_hash",

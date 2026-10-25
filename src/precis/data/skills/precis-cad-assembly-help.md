@@ -251,11 +251,11 @@ nudged 0.1 mm too short silently disconnects the rim. Connectivity is at
 the **component** level — a stray *instance* inside one component isn't
 caught; keep distinct bodies as distinct components.
 
-One cost caveat: every `put` runs a pairwise clearance/interference sweep
-over all components — O(N²) in **component count**, and a ~14-component
-assembly can push a `put` past 120 s. For larger assemblies either merge
-bodies you don't need connectivity verdicts on, or expect to background
-the `put` and poll.
+Cost note: every `put` runs a pairwise clearance/interference sweep over
+all components — O(N²) in **component count**, but measured on folded
+meshes (the same referee `view='clearance'` uses), so it is milliseconds
+per pair plus one tessellation per component, not the old SDF sweep's
+tens of seconds per pair.
 
 ## See also
 

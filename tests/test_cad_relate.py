@@ -24,8 +24,13 @@ from precis.cad.relate import (
 from precis.cad.vec import pose, translation, vec3
 
 # DOF probing over real SDFs — 30s+ per test in the 2026-09-26 gate profile.
-# See the `slow` marker in tests/conftest.py.
-pytestmark = pytest.mark.slow
+# See the `slow` marker in tests/conftest.py. The deprecation warning is
+# expected here: this file is the deprecated path's own pinned-behaviour
+# suite (its replacement is covered in test_cad_fit.py).
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
+]
 
 # ---------------------------------------------------------------------------
 # component SDF sign correctness (foundation)
@@ -268,6 +273,18 @@ def test_clearance_resolution_flags_a_true_touch() -> None:
     res = clearance(_anchor_and_rod(0.0), "anchor", "rod")
     assert res.resolution > 0.0
     assert abs(res.gap) <= res.resolution
+
+
+def test_clearance_emits_deprecation_warning() -> None:
+    """gr514448: kept callable for one release, but names its mesh
+    replacement — the connectivity graph and DOF probe use the private
+    SDF path and stay quiet."""
+    d = Design()
+    d.add_component("a", d.prim("a", build_config("box:w10d10h10")))
+    d.add_component("b", d.prim("b", build_config("box:w10d10h10")))
+    with pytest.warns(DeprecationWarning, match="component_gap"):
+        res = clearance(d, "a", "b")
+    assert res.interfering  # both boxes sit at the origin — still answers
 
 
 # ---------------------------------------------------------------------------

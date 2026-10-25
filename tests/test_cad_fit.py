@@ -15,6 +15,7 @@ from precis.cad.fit import (
     Connect,
     FitReport,
     component_chord,
+    component_gap,
     default_rules,
     fit,
     place,
@@ -255,3 +256,58 @@ def test_aabb_broadphase_under_200ms() -> None:
     assert rep.errors == []
     assert rep.n_pairs == 0
     assert elapsed_ms < 200.0
+
+
+# ---------------------------------------------------------------------------
+# component_gap — the Decision-3 referee as a bare pair query (gr514448)
+# ---------------------------------------------------------------------------
+
+#: The carved-body case the SDF got wrong: a shaft in a bored hub — CSG
+#: SDF ``max(d_base, −d_cutter)`` only bounds distance inside the carved
+#: region, so ``relate.clearance`` read 2.5 mm where the true radial gap
+#: (here and on the unicycle's axle/fork) is 13.5 mm.
+_SHAFT_IN_BORE = """
+component shaft
+rod   add cyl:r10mmh30mm @0mm,0mm,-5mm
+component hub
+plate add cyl:r30mmh20mm
+bore  cut cyl:r23.5mmh22mm @0mm,0mm,-1mm
+"""
+
+
+def test_component_gap_inside_carved_bore() -> None:
+    spec = parse_source(_SHAFT_IN_BORE)
+    res = component_gap(spec, "shaft", "hub")
+    assert res is not None and not res.interfering
+    assert res.gap == pytest.approx(13.5e-3, abs=5e-4)  # r23.5 − r10
+
+
+def test_component_gap_overlap_reports_thickness() -> None:
+    spec = parse_source(
+        "component a\nab add box:w10mmd10mmh10mm\n"
+        "component b\nbb add box:w10mmd10mmh10mm @8mm,0mm,0mm\n"
+    )
+    res = component_gap(spec, "a", "b")
+    assert res is not None and res.interfering
+    assert res.gap < 0.0 and res.thickness > 0.0
+
+
+def test_component_gap_touching_pair_rides_the_referee() -> None:
+    """A gap inside BAND×chord re-tessellates at chord/10 and reports a
+    tighter resolution — the same referee the fit engine runs."""
+    spec = parse_source(
+        "component a\nab add box:w10mmd10mmh10mm\n"
+        "component b\nbb add box:w10mmd10mmh10mm @10mm,0mm,0mm\n"
+    )
+    res = component_gap(spec, "a", "b")
+    assert res is not None and res.refined
+    assert not res.interfering
+    assert abs(res.gap) <= res.resolution
+
+
+def test_component_gap_unmeshable_component_returns_none() -> None:
+    spec = parse_source(
+        "component a\nab add box:w10mmd10mmh10mmrd1mm\n"
+        "component b\nbb add box:w10mmd10mmh10mm @20mm,0mm,0mm\n"
+    )
+    assert component_gap(spec, "a", "b") is None

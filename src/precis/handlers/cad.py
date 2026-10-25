@@ -43,6 +43,7 @@ from precis.cad.export import (
     step_available,
     to_openscad,
 )
+from precis.cad.fit import component_gap as mesh_clearance
 from precis.cad.printability import (
     BuildCandidate,
     PrintFinding,
@@ -56,7 +57,7 @@ from precis.cad.probe import (
     probe_section_z,
 )
 from precis.cad.relate import CONTACT_TOL_REL, translational_dof
-from precis.cad.relate import clearance as cad_clearance
+from precis.cad.relate import _clearance as sdf_clearance
 from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.scene import (
     PAYLOAD_SEP,
@@ -156,6 +157,21 @@ def _declared_weld_pairs(
                         if x != y:
                             pairs.add(frozenset((x, y)))
     return pairs
+
+
+def _component_gap(
+    design: Any, spec: Any, a: str, b: str, solids: dict[Any, Any]
+) -> Any:
+    """The pair-gap the clearance view and interference note report
+    (gr514448): the mesh referee :func:`precis.cad.fit.component_gap`
+    over the expanded spec, with the deprecated SDF kept only for the
+    components a mesh cannot hold (``field:``/``relief:``/``rd``/
+    ``blend`` leaves — ``component_gap`` returns ``None`` for those).
+    ``solids`` is the caller's ``(component, chord) → Manifold`` memo."""
+    res = mesh_clearance(spec, a, b, solids=solids)
+    if res is not None:
+        return res
+    return sdf_clearance(design, a, b)
 
 
 def _fmt_interval_line(iv: Any) -> str:
@@ -2082,12 +2098,13 @@ class CadHandler(Handler):
         declared = _declared_weld_pairs(star_scopes, named_groups, comps)
 
         gap_cache: dict[tuple[str, str], Any] = {}
+        solids: dict[Any, Any] = {}
 
         def gap(a: str, b: str) -> Any:
             key = (a, b) if a <= b else (b, a)
             if key not in gap_cache:
                 try:
-                    gap_cache[key] = cad_clearance(design, a, b)
+                    gap_cache[key] = _component_gap(design, spec, a, b, solids)
                 except Exception:  # pragma: no cover - defensive
                     gap_cache[key] = None
             return gap_cache[key]
@@ -2334,7 +2351,7 @@ class CadHandler(Handler):
             )
         if view == "clearance":
             a, b = self._two_components(args, spec)
-            cl = cad_clearance(design, a, b)
+            cl = _component_gap(design, spec, a, b, {})
             tag = "interfere" if cl.interfering else "clear"
             return Response(
                 body=f"clearance {a} ↔ {b}: {format_quantity(cl.gap, 'length')} ({tag})"
