@@ -19,7 +19,7 @@ run's failure, refused naming the key)::
                  "ports"?: [{"name", "atom"?, "roles"?, "direction"?,
                              "expected_element"?, "expected_hybridization"?,
                              "frame"?}],
-                 "relax"?, "desc"?, "frame"?, "bonds"?, "mode"?,
+                 "relax"?, "desc"?, "frame"?, "bonds"?, "mode"?, "sha"?,
                  "measures"?: [{"name", "value"?|"min"?/"max"?, "unit"?,
                                 "strength"?, "reason"?, "relation"?,
                                 "datum"?, "origin"?}],
@@ -56,6 +56,10 @@ run's failure, refused naming the key)::
   back onto the block as ``template_only`` — instance-named
   template-ness needs no flag at all (:func:`precis_se.ops.
   template_names` is the union).
+* ``sha`` on a block (gr514248): the writer's sha256 of the geometry
+  file's bytes — stamped back onto the bound ref as
+  ``meta.generated.sha`` so the next import can answer
+  changed/unchanged without re-diffing geometry (gr514249).
 
 * atomic ``file``: ``blocks/<name>.extxyz``
   (:func:`precis.structure.importers.extxyz.extxyz_to_scene`); bonds ride
@@ -79,6 +83,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -174,6 +179,7 @@ _BLOCK_KEYS = frozenset(
         "loads",
         "template",
         "findings",
+        "sha",
     }
 )
 _PORT_KEYS = frozenset(
@@ -296,6 +302,7 @@ class BlockEntry:
     loads: dict[str, Any] | None
     template: bool
     findings: list[str]
+    sha: str | None
 
 
 def _vet_manifest(
@@ -433,6 +440,7 @@ def _vet_manifest(
                 loads=dict(loads) if loads is not None else None,
                 template=bool(template),
                 findings=[str(f) for f in findings or []],
+                sha=str(raw["sha"]).strip() if raw.get("sha") else None,
             )
         )
     for field_name, allowed in (
@@ -652,6 +660,7 @@ def _generated_ctx(
     run_job: int | None,
     script_sha: str | None,
     lock_sha: str | None,
+    sha: str | None,
     image_digest: str | None,
     params: dict[str, Any] | None,
     requested_by: str | None,
@@ -660,12 +669,15 @@ def _generated_ctx(
     relax: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """The ``meta['generated']`` provenance record — which agent, which
-    workspace, which script made the block (spec §Import boundary)."""
+    workspace, which script made the block (spec §Import boundary).
+    ``sha`` is the manifest's own sha256 of the block file — the next
+    import's changed/unchanged signal (gr514248/gr514249)."""
     ctx: dict[str, Any] = {
         "workspace": workspace,
         "run_job": run_job,
         "script_sha": script_sha,
         "lock_sha": lock_sha,
+        "sha": sha,
         "image_digest": image_digest,
         "params": params or {},
         "requested_by": requested_by,
@@ -737,13 +749,23 @@ def _load_trace(text: str) -> TraceView:
 
 @dataclass
 class ImportResult:
-    """What one workspace import did — the run echo's data half."""
+    """What one workspace import did — the run echo's data half.
+
+    ``changed``/``unchanged``/``sha_unknown`` classify the ``replaced``
+    blocks by their bound ref's prior ``meta.generated.sha`` against the
+    manifest's ``sha`` (and the port-name set — a facet the file sha
+    cannot see); ``moved`` names the instances whose local pose/rot
+    shifted numerically (gr514249)."""
 
     design_slug: str
     run_ref: int | None = None
     imported: list[str] = field(default_factory=list)
     replaced: list[str] = field(default_factory=list)
     retired: list[dict[str, Any]] = field(default_factory=list)
+    changed: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+    sha_unknown: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
     trace: TraceView | None = None
 
@@ -754,6 +776,16 @@ class ImportResult:
         ]
         if self.replaced:
             lines.append("replaced: " + ", ".join(self.replaced))
+        if self.changed:
+            lines.append("block sources changed: " + ", ".join(self.changed))
+        if self.unchanged:
+            lines.append("block sources unchanged: " + ", ".join(self.unchanged))
+        if self.sha_unknown:
+            lines.append(
+                "block sources unknown (no prior sha): " + ", ".join(self.sha_unknown)
+            )
+        if self.moved:
+            lines.append("poses moved: " + ", ".join(self.moved))
         for r in self.retired:
             lines.append(
                 f"retired: {r['name']} ({r['kind']} {r['slug']}) — "
@@ -833,6 +865,20 @@ def _macro_dsl_spec(entry: BlockEntry, body: str) -> SceneSpec:
         ) from exc
     except SceneError as exc:
         raise BadInput(f"block {entry.name!r}: cad DSL parse failed: {exc}") from exc
+
+
+#: Re-import pose compare tolerance (gr514249) — ``local_pose``/
+#: ``local_rot`` are already SI metres/radians, the same bound the
+#: writer-side manifest diff uses (:data:`precis_geom.out._POSE_REL_TOL`).
+_POSE_REL_TOL = 1e-9
+_POSE_ABS_TOL = 1e-12
+
+
+def _vec_close(a: list[float], b: list[float]) -> bool:
+    return len(a) == len(b) and all(
+        math.isclose(x, y, rel_tol=_POSE_REL_TOL, abs_tol=_POSE_ABS_TOL)
+        for x, y in zip(a, b)
+    )
 
 
 def _apply(tree: SeTree, ops: list[dict[str, Any]], *, what: str, at: str = "") -> None:
@@ -1133,6 +1179,7 @@ def import_workspace_run(
                 run_job=run_job,
                 script_sha=script_sha,
                 lock_sha=lock_sha,
+                sha=entry.sha,
                 image_digest=image_digest,
                 params=params,
                 requested_by=requested_by,
@@ -1155,6 +1202,29 @@ def import_workspace_run(
                         {"op": "set_desc", "block": entry.name, "desc": entry.desc}
                     )
                 result.replaced.append(entry.name)
+                # gr514249 — a same-named block is a replace either way;
+                # what the echo owes the reader is whether anything
+                # actually moved: the prior bound ref's
+                # ``meta.generated.sha`` vs this manifest's ``sha`` (the
+                # bound_meta snapshot predates this loop's writes), plus
+                # the port-name set the file sha cannot see.
+                prior_meta: dict[str, Any] | None = None
+                if existing.bound_kind and existing.bound:
+                    prior_meta = bound_meta.get((existing.bound_kind, existing.bound))
+                prior_sha = ((prior_meta or {}).get("generated") or {}).get("sha")
+                ports_same = set(existing.ports) == {
+                    str(p["name"]) for p in entry.ports
+                }
+                if prior_sha is not None and entry.sha is not None:
+                    (
+                        result.unchanged
+                        if prior_sha == entry.sha and ports_same
+                        else result.changed
+                    ).append(entry.name)
+                elif ports_same:
+                    result.sha_unknown.append(entry.name)
+                else:
+                    result.changed.append(entry.name)
             port_ops = []
             for p in entry.ports:
                 po: dict[str, Any] = {
@@ -1379,6 +1449,11 @@ def import_workspace_run(
                     "point the instance's template at it (the t_ prefix "
                     "convention)",
                 )
+            was_pose = (
+                (list(existing_inst.local_pose), list(existing_inst.local_rot))
+                if existing_inst is not None
+                else None
+            )
             if existing_inst is not None:
                 del tree.blocks[name]  # re-created below (pose/template update)
             # linear/polar make the row an array_block — the script-side
@@ -1411,6 +1486,16 @@ def import_workspace_run(
                 what=f"instance {name!r}",
                 at=_site(inst.get("frame")),
             )
+            # gr514249 — a re-placed instance reports its pose/rot move
+            # numerically (local_* are SI), where a byte-compare of the
+            # manifest strings would flag float noise as a move.
+            if was_pose is not None:
+                new_inst = tree.blocks[name]
+                if not (
+                    _vec_close(was_pose[0], new_inst.local_pose)
+                    and _vec_close(was_pose[1], new_inst.local_rot)
+                ):
+                    result.moved.append(name)
         for c in manifest["connects"]:
             pair = tuple(sorted((str(c["a"]), str(c["b"]))))
             have = {

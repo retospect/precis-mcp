@@ -307,6 +307,9 @@ class Part:
         height_mm: float | None = None,
         roles: Iterable[str] = (),
         note: str | None = None,
+        part_meta: dict[str, Any] | None = None,
+        supplies: Any = None,
+        pin_swap_groups: Any = None,
     ) -> None:
         self.board = board
         self.refdes = refdes
@@ -317,6 +320,15 @@ class Part:
         self.height_mm = height_mm
         self.roles: list[str] = list(dict.fromkeys(roles))
         self.note = note
+        #: The import's catalog-identity blob (``{value, mpn, mfr,
+        #: supplier, supplier_part}``) — carried verbatim as the
+        #: component's ``part_meta`` batch key.
+        self.part_meta = part_meta
+        #: The authored ``supplies`` declaration list — stored under a
+        #: different attr name because :meth:`supplies` is the §1b
+        #: role-annotation method.
+        self.supply_blocks = supplies
+        self.pin_swap_groups = pin_swap_groups
         self._pins: dict[str, Pin] = {}
         self._pin_order: list[str] = []
         self._declared_pins: set[str] = set()
@@ -544,6 +556,12 @@ class Part:
         decls = self._pin_decls()
         if decls:
             d["pin_decls"] = decls
+        if self.part_meta is not None:
+            d["part_meta"] = copy.deepcopy(self.part_meta)
+        if self.supply_blocks is not None:
+            d["supplies"] = copy.deepcopy(self.supply_blocks)
+        if self.pin_swap_groups is not None:
+            d["pin_swap_groups"] = copy.deepcopy(self.pin_swap_groups)
         return d
 
     def _pin_decls(self) -> dict[str, Any]:
@@ -591,6 +609,8 @@ class Net:
         function: str | None = None,
         note: str | None = None,
         domain: str | None = None,
+        width_mm: float | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         self.board = board
         self.name = name
@@ -602,6 +622,8 @@ class Net:
         self.function = function
         self.note = note
         self.domain = domain
+        self.width_mm = width_mm
+        self.meta = meta
 
     def tie(
         self,
@@ -656,6 +678,10 @@ class Net:
             d["domain"] = self.domain
         if self.note is not None:
             d["note"] = self.note
+        if self.width_mm is not None:
+            d["width_mm"] = self.width_mm
+        if self.meta is not None:
+            d["meta"] = dict(self.meta)
         return d
 
 
@@ -729,6 +755,7 @@ class Footprint:
         courtyard: Any = None,
         centroid: Any = None,
         note: str | None = None,
+        holes: list[dict[str, Any]] | None = None,
     ) -> None:
         self.name = name
         self.pads = pads
@@ -736,6 +763,7 @@ class Footprint:
         self.courtyard = courtyard
         self.centroid = centroid
         self.note = note
+        self.holes = list(holes or [])
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"name": self.name, "pads": copy.deepcopy(self.pads)}
@@ -747,6 +775,8 @@ class Footprint:
             d["centroid"] = self.centroid
         if self.note is not None:
             d["note"] = self.note
+        if self.holes:
+            d["holes"] = copy.deepcopy(self.holes)
         return d
 
 
@@ -1145,6 +1175,9 @@ class Board:
         roles: Iterable[str] = (),
         pins: Iterable[Any] = (),
         note: str | None = None,
+        part_meta: dict[str, Any] | None = None,
+        supplies: Any = None,
+        pin_swap_groups: Any = None,
     ) -> Part:
         qualified = self._qualify(refdes, ".")
         if qualified in self._parts:
@@ -1166,6 +1199,9 @@ class Board:
             height_mm=height_mm,
             roles=roles,
             note=note,
+            part_meta=part_meta,
+            supplies=supplies,
+            pin_swap_groups=pin_swap_groups,
         )
         for entry in pins:
             if isinstance(entry, dict):
@@ -1202,6 +1238,8 @@ class Board:
         function: str | None = None,
         note: str | None = None,
         domain: str | None = None,
+        width_mm: float | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> Net:
         if domain not in _ELECTRICAL_DOMAINS:
             raise PcbBuilderError(
@@ -1224,6 +1262,8 @@ class Board:
             function=function,
             note=note,
             domain=domain,
+            width_mm=width_mm,
+            meta=meta,
         )
         self._nets[qualified] = n
         self._net_order.append(qualified)

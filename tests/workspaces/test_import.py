@@ -478,6 +478,69 @@ def test_replace_retire_restore(store: Store) -> None:
     assert store.get_ref(kind="cad", id="ws-test-plate") is not None
 
 
+def test_reimport_reports_changed_unchanged_and_moved(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr514249: a re-import names the replaced blocks whose bound source
+    actually changed (prior ``meta.generated.sha`` vs the manifest's
+    ``sha``), the unchanged ones and the sha-less unknowns, and the
+    instances whose pose moved numerically — where before the echo only
+    said ``replaced: t_a, t_b`` for all of them."""
+    _design(store)
+    cad_a = "pa add box:w10mmd10mmh10mm\n"
+    cad_a2 = "pa add box:w10mmd10mmh12mm\n"
+    cad_b = "pb add box:w10mmd10mmh10mm\n"
+
+    def write(cad_a_text: str, pose_a: str, pose_b: str, *, sha: bool) -> Path:
+        blocks: list[dict[str, Any]] = [
+            {"name": "t_a", "file": "blocks/a.cad", "scale": "macro"},
+            {"name": "t_b", "file": "blocks/b.cad", "scale": "macro"},
+        ]
+        if sha:
+            for blk, text in ((blocks[0], cad_a_text), (blocks[1], cad_b)):
+                blk["sha"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return _write_out(
+            tmp_path,
+            manifest={
+                "schema": 1,
+                "blocks": blocks,
+                "instances": [
+                    {"name": "a", "template": "t_a", "pose": pose_a},
+                    {"name": "b", "template": "t_b", "pose": pose_b},
+                ],
+            },
+            files={"blocks/a.cad": cad_a_text, "blocks/b.cad": cad_b},
+        )
+
+    res1 = _import(store, write(cad_a, "[0 0 10] mm", "[0 0 10] mm", sha=True))
+    assert res1.changed == [] and res1.moved == []
+    # the manifest's sha landed on the bound ref for the NEXT import
+    cref = store.get_ref(kind="cad", id="ws-test-t_a")
+    assert cref is not None
+    assert (
+        cref.meta["generated"]["sha"]
+        == hashlib.sha256(cad_a.encode("utf-8")).hexdigest()
+    )
+
+    res2 = _import(
+        store,
+        write(cad_a2, "[0 0 20] mm", "[0 0 10.000000000000002] mm", sha=True),
+    )
+    assert res2.changed == ["t_a"]
+    assert res2.unchanged == ["t_b"]
+    assert res2.sha_unknown == []
+    assert res2.moved == ["a"]  # b's pose is float noise — not a move
+    echo = res2.echo()
+    assert "block sources changed: t_a" in echo
+    assert "block sources unchanged: t_b" in echo
+    assert "poses moved: a" in echo
+
+    # a sha-less manifest can't be classified — reported, not silent.
+    res3 = _import(store, write(cad_a, "[0 0 10] mm", "[0 0 10] mm", sha=False))
+    assert res3.sha_unknown == ["t_a", "t_b"]
+    assert "block sources unknown (no prior sha): t_a, t_b" in res3.echo()
+
+
 def test_unknown_key_refuses_naming_it(store: Store, tmp_path: Path) -> None:
     _design(store)
     bad = tmp_path / "out"

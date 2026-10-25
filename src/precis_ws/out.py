@@ -30,6 +30,7 @@ explicit ``frame=`` is given.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -169,6 +170,7 @@ def block(
         "name": name,
         "file": fname,
         "scale": scale or inferred,
+        "sha": hashlib.sha256(payload).hexdigest(),
     }
     if ports:
         entry["ports"] = list(ports)

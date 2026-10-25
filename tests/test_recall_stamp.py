@@ -11,6 +11,7 @@ import pytest
 
 from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.store.types import ChunkInsert
 
 
 def _put(rt: PrecisRuntime, kind: str, text: str) -> int:
@@ -148,3 +149,38 @@ def test_one_statement_stamps_by_slug(runtime: PrecisRuntime, store: Store) -> N
     p = store.insert_ref(kind="paper", slug="stamp2020slug", title="T")
     runtime.dispatch("get", {"kind": "paper", "id": "stamp2020slug"})
     assert _row(store, p.id)[0] is not None
+
+
+def test_chunk_reads_stamp_the_parent_ref(store: Store) -> None:
+    """gr514186: a chunk read counts as an access of the parent ref —
+    ``pa<N>~k`` / ``pa<N>~k..j`` selectors, a ``pc<chunk_id>`` handle and
+    relative chunk nav all stamp the owning paper, same 1h throttle."""
+    from precis.utils import handle_registry
+
+    ref = store.insert_ref(kind="paper", slug="chunkread2020", title="T")
+    rows = store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text="b0"), ChunkInsert(ord=1, text="b1")],
+    )
+    cid = int(rows[0].id)
+    pa = handle_registry.format_handle("paper", ref.id)
+    pc = handle_registry.format_handle("paper", cid, chunk=True)
+
+    def _clear() -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET last_recalled_at = NULL WHERE ref_id = %s",
+                (ref.id,),
+            )
+
+    for ident in (f"{pa}~0", f"{pa}~0..1", pc, f"{pc}+1", "chunkread2020~1"):
+        store.touch_recalled_for("paper", ident)
+        assert _row(store, ref.id)[0] is not None, ident
+        _clear()
+
+    # A chunk of another kind and a retired/missing chunk stamp nothing.
+    me = store.insert_ref(kind="memory", slug=None, title="m")
+    store.touch_recalled_for("paper", handle_registry.format_handle("memory", me.id))
+    store.touch_recalled_for("paper", "pc999999999")
+    assert _row(store, ref.id)[0] is None
+    assert _row(store, me.id)[0] is None

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import importlib.util
 import json
 import time
@@ -505,6 +506,12 @@ def test_out_writes_manifest_and_trace(tmp_path: Path, monkeypatch) -> None:
     assert manifest["schema"] == 1
     assert manifest["blocks"][0]["file"] == "blocks/plate.cad"
     assert manifest["blocks"][0]["scale"] == "macro"
+    # gr514248: the sandbox lane stamps the same ``sha`` the dev loop
+    # does — the importer's changed/unchanged signal.
+    assert (
+        manifest["blocks"][0]["sha"]
+        == hashlib.sha256((od / "blocks/plate.cad").read_bytes()).hexdigest()
+    )
     assert manifest["instances"][0]["template"] == "plate"
     assert manifest["connects"][0]["a"] == "p.tail"
     doc = json.loads((od / "trace.json").read_text(encoding="utf-8"))
@@ -613,6 +620,47 @@ def test_out_run_diffs_against_the_previous_trace(tmp_path: Path) -> None:
     # gr514055: build's own frame changed on args alone (made is empty) —
     # the note carries the ``rows 8 -> 10`` delta that edited the script.
     assert "rows 8 -> 10" in manifest["notes"]
+
+
+def test_out_run_diff_names_moved_poses_and_changed_sources(
+    tmp_path: Path,
+) -> None:
+    """gr514248: the frame diff is structural — an edited pose string or
+    a rewritten block file with identical call shapes reads ``+0 -0 ~0``.
+    The manifest diff catches both: poses/rots compare NUMERICALLY (float
+    noise on a ``304.79999999999995`` pose stays unmoved), block files
+    compare by the ``sha`` each entry carries."""
+    from precis_geom import out as geom_out
+
+    out_dir = tmp_path / "out" / "re"
+    with geom_out.run(out_dir, work_root=_WORK_ROOT, check=False) as r1:
+        r1.block("plate", "plate add box:w40mmd20mmh10mm\n")
+        r1.instance("plate-1", template="plate", pose="[0 0 304.8] mm")
+    assert r1.manifest_diff is None  # first run: nothing to diff against
+
+    # float noise on the pose + byte-identical sources → not moved, not
+    # changed.
+    with geom_out.run(out_dir, work_root=_WORK_ROOT, check=False) as r2:
+        r2.block("plate", "plate add box:w40mmd20mmh10mm\n")
+        r2.instance("plate-1", template="plate", pose="[0 0 304.79999999999995] mm")
+    assert r2.manifest_diff is None
+    notes = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8")).get(
+        "notes", ""
+    )
+    assert "poses moved" not in notes and "block sources" not in notes
+
+    # a real pose move + a rewritten block source → both named.
+    with geom_out.run(out_dir, work_root=_WORK_ROOT, check=False) as r3:
+        r3.block("plate", "plate add box:w40mmd20mmh12mm\n")
+        r3.instance("plate-1", template="plate", pose="[0 0 724.8] mm")
+    assert r3.manifest_diff == {
+        "poses_moved": ["plate-1"],
+        "blocks_changed": ["plate"],
+        "blocks_unknown": [],
+    }
+    notes = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))["notes"]
+    assert "poses moved: plate-1" in notes
+    assert "block sources changed: plate" in notes
 
 
 def test_out_run_diff_groups_same_path_frames(tmp_path: Path) -> None:

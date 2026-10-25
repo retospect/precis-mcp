@@ -309,6 +309,34 @@ def test_handler_recent_view_and_no_put(hub: Hub) -> None:
     assert handler.spec.supports_delete is True
 
 
+def test_search_link_finds_runs_that_touched_a_ref(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr514341: ``search(kind='agentlog', link='<ref>')`` lists the runs
+    whose ``touched`` edges land on that ref — the "which run wrote this
+    chunk" question in the direction the reader actually asks it."""
+    from precis.handlers.agentlog import AgentLogHandler
+    from precis.utils import handle_registry
+
+    handler = AgentLogHandler(hub=hub)
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    chunk = hub.live_store.drafts.reading_order(ref.id)[0]
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="run-on-nt")
+    agentlog.attach_touch(hub.live_store, log_id=log_id, chunk_ids=[chunk.chunk_id])
+    agentlog.open_log(hub.live_store, source="chat", title="unrelated run")
+
+    dr = handle_registry.format_handle("draft", ref.id)
+    out = handler.search(link=dr).body
+    assert "run-on-nt" in out
+    assert "unrelated run" not in out
+    # A chunk handle resolves to its owning ref the same way.
+    dc = handle_registry.format_handle("draft", chunk.chunk_id, chunk=True)
+    assert "run-on-nt" in handler.search(link=dc).body
+
+
 # ── web routes (real store, injected runtime) ───────────────────────
 
 

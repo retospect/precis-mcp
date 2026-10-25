@@ -366,6 +366,30 @@ def test_long_wait_detector_excludes_terminal_todos(
     assert rid not in {f.ref_id for f in findings}
 
 
+def test_long_wait_detail_carries_triage_context(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr514252: the detail names the todo's handle, the wait's
+    since-date and threshold, and quotes the todo_body — a reader
+    triages the alert without a second ``get``."""
+    r = handler.put(
+        text="Re-request the empty papers",
+        body="Waiting on the fetch-si deploy before re-requesting",
+    )
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("waiting-for:deploy"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:deploy", (LONG_WAIT_DAYS + 1) * 24)
+
+    findings = _detect_long_waits(store)
+
+    f = next(f_ for f_ in findings if f_.ref_id == rid)
+    assert f"td{rid}" in f.detail
+    assert "waiting-for:deploy" not in f.detail
+    assert "on deploy since " in f.detail
+    assert f"threshold {LONG_WAIT_DAYS}d" in f.detail
+    assert "'Waiting on the fetch-si deploy before re-requesting'" in f.detail
+
+
 # ── stuck doable ──────────────────────────────────────────────────
 
 

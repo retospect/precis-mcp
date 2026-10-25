@@ -25,11 +25,10 @@ Readability within byte-equality:
   ties stay outside so authored order is exact).
 
 What ``precis_geom.pcb`` cannot express is reported, never silently
-dropped — ``footprints[].holes``, a component's ``part_meta``/
-``supplies``/``pin_swap_groups``/``courtyard``/``centroid``, a net's
-``meta``/``width_mm`` and stored-shape ``measures`` land in ``loss``;
-:func:`emit` refuses on a non-empty loss unless ``allow_loss=True``,
-when they are listed in a header comment instead.
+dropped — a component's ``pin_decls``/``courtyard``/``centroid`` and
+stored-shape ``measures`` land in ``loss``; :func:`emit` refuses on a
+non-empty loss unless ``allow_loss=True``, when they are listed in a
+header comment instead.
 
 Db annotation (gr514049's minimal layer): one trailing
 ``# <handle> [why]`` per ``b.part(``/``b.footprint(`` (line above for a
@@ -96,6 +95,9 @@ _PART_KEYS = {
     "group_offset",
     "pattern",
     "pattern_instance",
+    "part_meta",
+    "supplies",
+    "pin_swap_groups",
 }
 #: batch net key -> the ``b.net`` kwarg (``None`` = the key itself).
 _NET_KEYS = {
@@ -114,6 +116,8 @@ _NET_KEYS = {
     "function_hint": "function",
     "note": "note",
     "domain": "domain",
+    "width_mm": None,
+    "meta": None,
 }
 _PAD_CALL_KEYS = {
     "pin",
@@ -213,12 +217,11 @@ def _emit_footprint(
     }
     if unknown:
         loss.append(f"footprint {fp['name']!r}: unknown keys {sorted(unknown)}")
+    rest: dict[str, Any] = {
+        k: fp[k] for k in ("pin_map", "courtyard", "centroid", "note") if k in fp
+    }
     if fp.get("holes"):
-        loss.append(
-            f"footprint {fp['name']!r}: 'holes' — precis_geom.pcb.Footprint "
-            "cannot emit them (needs a geom kwarg)"
-        )
-    rest = {k: fp[k] for k in ("pin_map", "courtyard", "centroid", "note") if k in fp}
+        rest["holes"] = fp["holes"]
     one = (
         f"{var} = b.footprint(pcb.Footprint({fp['name']!r}, {pads_var}"
         + ((", " + _kw(**rest)) if rest else "")
@@ -283,6 +286,9 @@ def _emit_part(
             ("roles", c.get("roles") or None),
             ("pins", pins or None),
             ("note", c.get("note")),
+            ("part_meta", c.get("part_meta")),
+            ("supplies", c.get("supplies")),
+            ("pin_swap_groups", c.get("pin_swap_groups")),
         )
         if v is not None
     ]
@@ -489,11 +495,6 @@ def emit(
             "holes",
         }:
             loss.append(f"footprint {fp['name']!r}: unknown key {k!r}")
-        if fp.get("holes"):
-            loss.append(
-                f"footprint {fp['name']!r}: 'holes' — precis_geom.pcb.Footprint "
-                "cannot emit them (needs a geom kwarg)"
-            )
     if loss and not allow_loss:
         raise BoardScriptError(
             "batch carries keys precis_geom.pcb cannot express: "

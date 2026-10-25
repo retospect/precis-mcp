@@ -265,11 +265,26 @@ def test_annotation_handle_and_lcsc_fallback() -> None:
     assert "pn777" not in text2
 
 
-def test_unexpressible_keys_refuse_or_report() -> None:
+def test_import_keys_roundtrip() -> None:
+    """gr514214: the epro-import keys emit verbatim — footprint holes,
+    component part_meta/supplies/pin_swap_groups, net width_mm/meta."""
     batch = _tiny_batch()
     batch["footprints"][0]["holes"] = [{"x": 0.0, "y": 0.0, "dia_mm": 3.0}]
-    batch["components"][0]["part_meta"] = {"mpn": "X"}
-    with pytest.raises(BoardScriptError, match="holes"):
+    batch["components"][0]["part_meta"] = {"mpn": "X", "supplier": "LCSC"}
+    batch["components"][0]["supplies"] = [
+        {"role": "VCC", "blocks": [["1"]], "voltage_v": 5.0}
+    ]
+    batch["components"][1]["pin_swap_groups"] = [["1", "2"]]
+    batch["nets"][0]["width_mm"] = 0.4
+    batch["nets"][0]["meta"] = {"src": "import"}
+    _roundtrip(batch)
+
+
+def test_unexpressible_keys_refuse_or_report() -> None:
+    batch = _tiny_batch()
+    batch["components"][0]["pin_decls"] = {"claims": [{"pin": "1", "name": "A"}]}
+    batch["components"][0]["courtyard"] = [[0, 0], [1, 1]]
+    with pytest.raises(BoardScriptError, match="pin_decls"):
         emit(batch, "t", "test")
     text = emit(batch, "t", "test", allow_loss=True)
     assert "dropped keys" in text
@@ -294,20 +309,15 @@ def test_readback_roundtrip_store(store) -> None:
     assert _exec(text).build().to_batch() == got
 
 
-def test_readback_epro_fixture_names_the_geom_gap(store) -> None:
+def test_readback_epro_fixture(store) -> None:
     """``tests/test_pcb_epro_import.py::_zip`` -> import -> ``board_batch``
-    -> ``emit``. The R0603 footprint's ``holes`` and pad ``rot``/``layer``
-    fields are beyond ``precis_geom.pcb`` today: pads emit raw, ``holes``
-    is the named geom gap (reported to the coordinator)."""
+    -> ``emit`` -> ``to_batch`` byte-equal — footprint ``holes`` and pad
+    ``rot``/``layer`` included (gr514214 closed the geom gap: pads emit
+    raw, holes ride the Footprint kwarg)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("project2.json", (_FIXTURE / "project2.json").read_bytes())
         zf.writestr("board.epru", (_FIXTURE / "board.epru").read_bytes())
     pcb_epro.import_epro(store, buf.getvalue(), slug="epro-bs", title="Tiny")
     batch, _annotations = board_batch(store, "epro-bs")
-    with pytest.raises(BoardScriptError, match="holes"):
-        emit(batch, "epro-bs", "epro")
-    # minus the holes the rest of the import round-trips byte-equal
-    for fp in batch["footprints"]:
-        fp.pop("holes", None)
     assert _exec(emit(batch, "epro-bs", "epro")).build().to_batch() == batch

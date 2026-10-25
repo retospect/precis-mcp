@@ -451,6 +451,7 @@ WORKSPACE_GENERATED_KEYS = (
     "run_job",
     "script_sha",
     "lock_sha",
+    "sha",
     "image_digest",
     "params",
     "requested_by",

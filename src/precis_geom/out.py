@@ -46,14 +46,16 @@ re-raised untouched; a previous good ``trace.json`` is kept as
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import itertools
 import json
+import math
 import os
 import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from precis_geom import extxyz as _extxyz
 from precis_geom import trace as _trace
@@ -226,31 +228,34 @@ def _block_kind(scene_like: Any, name: str, scale: str | None) -> str:
     return kind
 
 
-def _write_atomic(root: Path, name: str, scene: Any) -> str:
+def _write_atomic(root: Path, name: str, scene: Any) -> tuple[str, str]:
     """``blocks/<name>.extxyz`` via the one canonical writer
     (:mod:`precis_geom.extxyz`, duck-typed on the scene protocol — this
     package is a standalone kernel and never imports ``precis``), plus
     the ``.bonds.json`` sidecar when the scene carries bonds (the
     importer's default sidecar path — no ``bonds`` key needed in the
-    manifest). Returns the manifest ``file``."""
+    manifest). Returns ``(the manifest ``file``, the written file's
+    sha256)`` — the sha is the block's ``vs previous``/re-import change
+    signal (gr514248)."""
     rel = f"blocks/{name}.extxyz"
     p = root / rel
-    p.write_text(_extxyz.to_extxyz(scene), encoding="utf-8")
+    body = _extxyz.to_extxyz(scene)
+    p.write_text(body, encoding="utf-8")
     bonds = list(getattr(scene, "bonds", None) or [])
     if bonds:
         (root / f"blocks/{name}.bonds.json").write_text(
             _extxyz.bonds_to_json(bonds), encoding="utf-8"
         )
-    return rel
+    return rel, hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def _write_macro(root: Path, name: str, geom: Any) -> str:
+def _write_macro(root: Path, name: str, geom: Any) -> tuple[str, str]:
     """``blocks/<name>.cad.json`` for a SceneSpec, or verbatim DSL source
-    to ``blocks/<name>.cad`` for a string."""
+    to ``blocks/<name>.cad`` for a string. Returns ``(file, sha256)``."""
     if isinstance(geom, str):
         rel = f"blocks/{name}.cad"
         (root / rel).write_text(geom, encoding="utf-8")
-        return rel
+        return rel, hashlib.sha256(geom.encode("utf-8")).hexdigest()
     rel = f"blocks/{name}.cad.json"
     nodes = []
     for n in geom.nodes:
@@ -262,8 +267,9 @@ def _write_macro(root: Path, name: str, geom: Any) -> str:
         "components": list(getattr(geom, "components", None) or ["part"]),
         "meta": dict(getattr(geom, "meta", None) or {"units": "mm"}),
     }
-    (root / rel).write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
-    return rel
+    body = json.dumps(doc, indent=1) + "\n"
+    (root / rel).write_text(body, encoding="utf-8")
+    return rel, hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def _ray_entry(
@@ -340,6 +346,11 @@ class Run:
         #: ``kind='pcb'`` document, not the se blocks/instances one.
         self._board: tuple[Any, list[dict[str, Any]]] | None = None
         self.diff: dict[str, Any] | None = None
+        #: The ``vs previous`` manifest-level diff ``finish()`` computes
+        #: when this ``root`` already holds a ``manifest.json`` —
+        #: ``{"poses_moved", "blocks_changed", "blocks_unknown"}`` name
+        #: lists (gr514248); ``None`` on a first run.
+        self.manifest_diff: dict[str, Any] | None = None
         #: ``check=`` from :func:`run` — ``False`` opts the fit check out
         #: (Decision 13), a dict carries ``check()`` kwargs; ``True`` is the
         #: default run-at-``finish()``.
@@ -400,10 +411,15 @@ class Run:
             return self.board(geom)
         (self.root / "blocks").mkdir(parents=True, exist_ok=True)
         if kind == "atomic":
-            file_rel = _write_atomic(self.root, n, geom)
+            file_rel, file_sha = _write_atomic(self.root, n, geom)
         else:
-            file_rel = _write_macro(self.root, n, geom)
-        entry: dict[str, Any] = {"name": n, "file": file_rel, "scale": kind}
+            file_rel, file_sha = _write_macro(self.root, n, geom)
+        entry: dict[str, Any] = {
+            "name": n,
+            "file": file_rel,
+            "scale": kind,
+            "sha": file_sha,
+        }
         if ports:
             entry["ports"] = [dict(p) for p in ports]
         if gfindings:
@@ -639,7 +655,12 @@ class Run:
         prev, rotate = _prev_trace(self.root)
         if trace_doc is not None and prev is not None:
             self.diff = _trace_diff(prev, trace_doc)
-        line = _diff_note(self.diff) if self.diff is not None else None
+        # The frame diff is structural — pose strings and block file
+        # bytes aren't frame args, so an edited pose or source read as
+        # "+0 -0 ~0" (gr514248). The manifest diff catches both: block
+        # ``sha`` byte-compare, poses/rots NUMERICALLY with tolerance.
+        self.manifest_diff = _manifest_diff(_prev_manifest(self.root), doc)
+        line = _diff_note(self.diff, self.manifest_diff)
         if notes is not None:
             doc["notes"] = str(notes)
         elif line is not None:
@@ -943,20 +964,133 @@ def _arg_note(v: Any) -> str:
     return "—" if v is _ABSENT else str(v)
 
 
-def _diff_note(diff: dict[str, Any]) -> str:
+def _prev_manifest(root: Path) -> dict[str, Any] | None:
+    """The manifest this ``finish()`` is about to overwrite — the pose/
+    block-source baseline the frame diff can't see (gr514248)."""
+    try:
+        doc = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+#: Pose/rot numeric-diff tolerance — SI metres/radians after
+#: ``parse_vector_quantity``. Float noise on a ``[0 0 304.79999999999995]
+#: mm``-style pose sits near 1e-13 relative; the rel bound swallows it
+#: and the 1 pm abs floor covers near-zero components (gr514248).
+_POSE_REL_TOL = 1e-9
+_POSE_ABS_TOL = 1e-12
+
+
+def _quantities_close(
+    wv: Any, wu: Any, nv: Any, nu: Any, dim: Literal["length", "angle"]
+) -> bool | None:
+    """Two pose/rot values numerically equal within
+    :data:`_POSE_REL_TOL`/:data:`_POSE_ABS_TOL` → True/False; ``None``
+    when either side won't parse (the caller falls back to raw
+    equality)."""
+    from precis.utils.units import parse_vector_quantity
+
+    try:
+        a = parse_vector_quantity(wv, dim, unit=wu, arg_name="pose")
+        b = parse_vector_quantity(nv, dim, unit=nu, arg_name="pose")
+    except Exception:
+        return None
+    return len(a) == len(b) and all(
+        math.isclose(x, y, rel_tol=_POSE_REL_TOL, abs_tol=_POSE_ABS_TOL)
+        for x, y in zip(a, b)
+    )
+
+
+def _manifest_diff(
+    old: dict[str, Any] | None, new: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The manifest-level half of ``vs previous`` (gr514248): block
+    sources by ``sha`` and instance poses/rots NUMERICALLY — the frame
+    diff is structural, so a pose edit or a rewritten ``.cad``/``.extxyz``
+    with identical call shapes never showed. ``None`` on a first run or
+    when nothing differs."""
+    if old is None:
+        return None
+    out: dict[str, Any] = {
+        "poses_moved": [],
+        "blocks_changed": [],
+        "blocks_unknown": [],
+    }
+    old_blocks = {
+        str(b.get("name")): b for b in old.get("blocks") or [] if isinstance(b, dict)
+    }
+    new_blocks = {
+        str(b.get("name")): b for b in new.get("blocks") or [] if isinstance(b, dict)
+    }
+    for name in sorted(set(old_blocks) & set(new_blocks)):
+        was, now = old_blocks[name].get("sha"), new_blocks[name].get("sha")
+        if was is None or now is None:
+            out["blocks_unknown"].append(name)
+        elif was != now:
+            out["blocks_changed"].append(name)
+    old_insts = {
+        str(i.get("name")): i for i in old.get("instances") or [] if isinstance(i, dict)
+    }
+    for inst in new.get("instances") or []:
+        if not isinstance(inst, dict):
+            continue
+        name = str(inst.get("name"))
+        was = old_insts.get(name)
+        if was is None:
+            continue  # an added instance is the frame diff's beat
+        moved = False
+        dims: tuple[tuple[str, Literal["length", "angle"]], ...] = (
+            ("pose", "length"),
+            ("rot", "angle"),
+        )
+        for key, dim in dims:
+            wv, nv = was.get(key), inst.get(key)
+            if wv is None and nv is None:
+                continue
+            if wv is None or nv is None:
+                moved = True
+                break
+            eq = _quantities_close(
+                wv, was.get(f"{key}_unit"), nv, inst.get(f"{key}_unit"), dim
+            )
+            if eq is None:
+                eq = wv == nv and was.get(f"{key}_unit") == inst.get(f"{key}_unit")
+            if not eq:
+                moved = True
+                break
+        if moved:
+            out["poses_moved"].append(name)
+    return out if any(out.values()) else None
+
+
+def _names_brief(names: list[str], cap: int = 6) -> str:
+    shown = ", ".join(names[:cap])
+    return f"{shown} (+{len(names) - cap} more)" if len(names) > cap else shown
+
+
+def _diff_note(diff: dict[str, Any] | None, man: dict[str, Any] | None) -> str | None:
     """``vs previous: +A -R ~C (main.build>strip x6: atoms 24 -> 32;
-    periods 4 -> 6)``.
+    periods 4 -> 6; poses moved: crown +2 more; block sources: frame)``.
 
     Same-path changed frames (the ``occ`` the match id carries and the
     render drops) group into one ``path xN:`` line so six identical
     ``strip`` occurrences print once with a count instead of six
-    identical lines (gr514055)."""
+    identical lines (gr514055); the manifest-diff segments name the
+    moved poses and sha-changed blocks the frame diff is blind to
+    (gr514248)."""
+    if diff is None and man is None:
+        return None
     note = (
         f"vs previous: +{len(diff['added'])} -{len(diff['removed'])} "
         f"~{len(diff['changed'])}"
+        if diff is not None
+        else "vs previous:"
     )
     parts: list[str] = []
-    for path, group in itertools.groupby(diff["changed"], key=lambda c: c["path"]):
+    for path, group in itertools.groupby(
+        (diff or {}).get("changed", []), key=lambda c: c["path"]
+    ):
         entries = list(group)
         label = f"{path} x{len(entries)}" if len(entries) > 1 else path
         segs: list[str] = []
@@ -980,6 +1114,18 @@ def _diff_note(diff: dict[str, Any]) -> str:
                 )
         if segs:
             parts.append(f"{label}: " + "; ".join(segs))
+    if man:
+        if man["poses_moved"]:
+            parts.append(f"poses moved: {_names_brief(man['poses_moved'])}")
+        if man["blocks_changed"]:
+            parts.append(
+                f"block sources changed: {_names_brief(man['blocks_changed'])}"
+            )
+        if man["blocks_unknown"]:
+            parts.append(
+                f"block sources unknown (no prior sha): "
+                f"{_names_brief(man['blocks_unknown'])}"
+            )
     return note + (" (" + "; ".join(parts) + ")" if parts else "")
 
 

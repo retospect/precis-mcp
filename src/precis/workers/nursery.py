@@ -104,7 +104,9 @@ from precis.store._todo_sql import (
     direction_todo_sql,
     todo_root_sql,
 )
+from precis.store.types import TODO_BODY_KIND
 from precis.todo import TERMINAL_TODO_STATUSES
+from precis.utils import handle_registry
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -625,13 +627,20 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
 
     The wait may still be legitimate (a slow API, a paper that takes
     weeks to ingest) but past the threshold the operator probably
-    wants to know about it. The detail line names the wait target so
-    triage doesn't require an extra ``get``.
+    wants to know about it. The detail line carries the todo's handle,
+    the since-date, the threshold and a quote of its ``todo_body`` —
+    enough to triage without a second ``get`` (gr514252); the alert's
+    ``related-to`` subject link (gr514321) names the todo itself.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.ref_id, r.title, t.value AS wait, rt.created_at
+            SELECT r.ref_id, r.title, t.value AS wait, rt.created_at,
+                   (SELECT c.text FROM chunks c
+                     WHERE c.ref_id = r.ref_id
+                       AND c.chunk_kind = %(body_kind)s
+                       AND c.retired_at IS NULL
+                     ORDER BY c.ord LIMIT 1) AS body
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
@@ -657,21 +666,27 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
                 "exempt": sorted(_LONG_WAIT_EXEMPT_TARGETS),
                 "age": f"{LONG_WAIT_DAYS} days",
                 "terminal": sorted(TERMINAL_TODO_STATUSES),
+                "body_kind": TODO_BODY_KIND,
             },
         ).fetchall()
     out: list[Symptom] = []
     for r in rows:
         wait = str(r[2])
         days = _days_since(r[3])
+        detail = (
+            f"{handle_registry.format_handle('todo', int(r[0]))} waiting "
+            f"{days:.0f}d on {wait.removeprefix('waiting-for:')} since "
+            f"{r[3]:%Y-%m-%d} UTC (threshold {LONG_WAIT_DAYS}d)"
+        )
+        if r[4]:
+            detail += f"; {_first_line(str(r[4]))!r}"
+        detail += "; decide: chase the dependency, extend the wait, or close the todo"
         out.append(
             Symptom(
                 category="long-wait",
                 ref_id=int(r[0]),
                 title=_first_line(r[1]),
-                detail=(
-                    f"waiting {days:.0f}d on {wait.removeprefix('waiting-for:')}; "
-                    f"check whether the dependency is still alive"
-                ),
+                detail=detail,
             )
         )
     return out

@@ -68,6 +68,11 @@ requested tier/pin.
 get(kind='agentlog', id=42)         # one run
 get(kind='agentlog', id='/recent')  # recent runs, newest-first
 search(kind='agentlog', q='...')    # lexical over run titles
+search(kind='agentlog', link='dr42995')  # runs linked to that ref — the
+                                    # touched edges included, so this is
+                                    # "which runs wrote this draft/chunk"
+                                    # (a dc… chunk handle resolves to its
+                                    # owning ref); q= never matches handles
 tag / link / delete                 # classify / relate / prune
 ```
 

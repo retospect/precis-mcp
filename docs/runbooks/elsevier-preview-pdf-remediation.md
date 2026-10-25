@@ -209,3 +209,31 @@ candidate would get) then `precis bodiless-heal --apply` on a node that
 mounts the corpus — a file only another node holds is reported `deferred`
 and left for that node's pass. Read verdicts back with
 `SELECT event, count(*) FROM ref_events WHERE source = 'heal:bodiless' GROUP BY 1`.
+
+## Re-ingesting a paper's SI (gr515002)
+
+**Symptom.** A paper's supplement ref needs re-ingesting — bad extraction,
+or an ingest fix that should apply to it. There is no re-ingest verb, and a
+plain `precis paper fetch-si <parent>` does nothing useful: the SI pass
+re-downloads the same bytes, but a byte-identical PDF short-circuits before
+Marker — `probe_existing` (`src/precis/ingest/db_writer.py`) matches its
+`pdf_sha256` on the live SI ref and `_reuse_supplement`
+(`src/precis/ingest/add.py`) only re-links it.
+
+**Procedure.** Soft-delete the SI ref first, then re-queue the fetch:
+
+```sql
+UPDATE refs SET retired_at = now() WHERE ref_id = <si ref_id>;
+```
+
+(`edit(kind='paper', args={'retire': …})` won't do it — that door is
+phantom-stub only and refuses a ref with body chunks, an attached PDF or
+external identifiers; `delete` refuses `kind='paper'` outright. The soft
+delete is a prod write — [`prod-db-access`](./prod-db-access.md) /
+`scripts/prod-psql`.) Then `precis paper fetch-si <parent>` — the probe
+joins on `retired_at IS NULL`, so the next SI pass re-downloads and mints a
+fresh linked supplement. The stale `pdf_sha256` identifier stays parked on
+the retired row — identifier inserts are `ON CONFLICT DO NOTHING`, so the
+new ref simply doesn't claim it; nothing conflicts. A wrong retire undoes
+with `UPDATE refs SET retired_at = NULL WHERE ref_id = <si ref_id>` —
+chunks and links were never removed.

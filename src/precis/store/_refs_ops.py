@@ -2839,8 +2839,11 @@ class RefsMixin:
     def touch_recalled_for(self, kind: str, ident: str) -> None:
         """:meth:`touch_recalled` from a ``get`` id as the caller spelled it —
         an int, a ``kind:id`` target, a record handle (``me5``) or a slug —
-        in ONE statement on one connection (no id lookup first). Chunk handles
-        and window selectors are not a read of the ref's own view: skipped."""
+        in ONE statement on one connection (no id lookup first). A chunk read
+        (``pa123~4``, ``pa123~4..8``, a ``pc…`` handle, relative chunk nav)
+        counts as a read of the parent ref (gr514186): the selector is
+        stripped, a chunk handle maps to the chunk's owning ref, same 1h
+        throttle."""
         from precis.utils import handle_registry
 
         s = ident.strip()
@@ -2849,15 +2852,34 @@ class RefsMixin:
         if kind == "skill":
             self._touch_skill_recalled(s)
             return
-        if not s or "~" in s or ".." in s:
+        if not s:
             return
-        parsed = handle_registry.parse(s)
+        base = re.split(r"~|\.\.", s, maxsplit=1)[0].strip()
+        if not base:
+            return
+        parsed = handle_registry.parse(base)
+        chunk_pk: int | None = None
         if parsed is not None:
-            if parsed[0] != kind or parsed[1]:
+            if parsed[0] != kind:
                 return
+            if parsed[1]:
+                chunk_pk = parsed[2]
             ref_id: int | None = parsed[2]
         else:
-            ref_id = int(s) if s.isdigit() else None
+            rel = handle_registry.parse_relative(base)
+            if rel is not None:
+                if rel[0] != kind:
+                    return
+                chunk_pk = rel[2]
+            ref_id = int(base) if base.isdigit() else None
+        if chunk_pk is not None:
+            self._stamp_recalled_sql(
+                f"UPDATE refs SET last_recalled_at = now() "
+                f"WHERE kind = %s AND ref_id = (SELECT ref_id FROM chunks "
+                f"WHERE chunk_id = %s) {self._RECALL_THROTTLE}",
+                (kind, chunk_pk),
+            )
+            return
         if ref_id is not None:
             self._stamp_recalled_sql(
                 f"UPDATE refs SET last_recalled_at = now() "
@@ -2869,7 +2891,7 @@ class RefsMixin:
             f"UPDATE refs SET last_recalled_at = now() "
             f"WHERE kind = %s AND ref_id = (SELECT ref_id FROM ref_identifiers "
             f"WHERE id_kind = 'cite_key' AND id_value = %s) {self._RECALL_THROTTLE}",
-            (kind, s),
+            (kind, base),
         )
 
     def _touch_skill_recalled(self, ident: str) -> None:
