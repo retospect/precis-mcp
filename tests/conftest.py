@@ -641,6 +641,26 @@ def _reset_connection_scope() -> Iterator[None]:
     _scope._boot_read_only = False
 
 
+@pytest.fixture(autouse=True)
+def _reset_design_tree_caches() -> Iterator[None]:
+    """Clear ``design_tree``'s ``@cache``d export reads around each test.
+
+    ``load_export``/``leaf_ids`` are process-global caches over the
+    packaged ``design_rules.json``; a test that monkeypatches
+    ``load_export`` (or one that just runs after such a test) would
+    otherwise see the other ordering's leaf vocabulary on the same
+    xdist worker. Captured by reference at setup: at teardown the
+    module attribute can still hold the test's patch."""
+    from precis import design_tree
+
+    load_export, leaf_ids = design_tree.load_export, design_tree.leaf_ids
+    load_export.cache_clear()
+    leaf_ids.cache_clear()
+    yield
+    load_export.cache_clear()
+    leaf_ids.cache_clear()
+
+
 @pytest.fixture
 def hints() -> HintBus:
     """Standalone HintBus for tests that exercise it directly."""

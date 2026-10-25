@@ -18,8 +18,11 @@ Two manifest lanes share one converge engine:
   ``specialises`` (child -> parent, incl. ``also_under``/stub parents),
   ``qualifies`` (issue -> node), ``fixes`` (fix -> issue), ``part-of``
   (rule -> node), ``cites`` (node/rule -> source), ``tests``
-  (enforcer -> rule) and ``related-to`` (``links``/``see``, with link meta
-  ``{as: ...}`` for axis/failure-mode/principle/process/system targets).
+  (enforcer -> rule) and ``related-to`` (``links`` plus the implicit
+  leaf -> registry declarations — a node's ``axes`` keys mint
+  ``{as: axis}`` edges to ``axis/<key>`` and its issues' ``failure_mode``
+  mint ``{as: mode}`` edges to ``failure/<name>``; link meta ``{as: ...}``
+  for axis/failure-mode/principle/process/system targets).
   ``--space design-conventions --kind finding`` is required (and the
   default) on this lane; anything else is refused.
 
@@ -39,8 +42,12 @@ title and body of importer-owned refs whose text differs (body = DELETE +
 INSERT via ``replace_body_chunk``, never an UPDATE), converges the
 importer-owned meta fragment (``meta.dtree`` is replaced wholesale, so a
 role/domain/scale/coverage change propagates), converges the lane's
-importer-managed tags (``dt:<role>``, ``domain:<d>``, ``SPACE:`` — adds
-missing, removes stale ``set_by='system'`` ones, never an agent tag),
+importer-managed vocabulary tags (``dt:<role>``, ``domain:<d>``,
+``convention``, ``enforcer`` — adds missing, removes stale
+``set_by='system'`` ones, never an agent tag; ``SPACE:`` is a location
+rather than vocabulary — the lane's tag is added only when the ref
+carries no ``SPACE:*`` at all and ``SPACE:*`` is never removed, so a
+human retag is respected),
 replaces importer edges whose link meta changed (``{as: ...}`` follows
 the target's role), and removes importer edges
 (``meta.source='conventions-import'``) the manifest no longer has.
@@ -138,7 +145,8 @@ class _Lane:
     ``--sync`` still reaps their edges. ``relations`` bounds the ``have``
     edge fetch and the ``--sync`` reap. ``tag_prefixes`` (matched against
     the rendered tag string) bound which stale ``set_by='system'`` tags
-    ``--sync`` may remove."""
+    ``--sync`` may remove — ``SPACE:`` is deliberately absent (see
+    :func:`_sync_tags`)."""
 
     key_fields: tuple[str, ...]
     relations: frozenset[str]
@@ -371,7 +379,7 @@ def import_conventions(
         lane = _Lane(
             key_fields=("dtree",),
             relations=_EDGE_RELATIONS,
-            tag_prefixes=("dt:", "domain:", "SPACE:"),
+            tag_prefixes=("dt:", "domain:"),
         )
     else:
         if space not in (None, _CONVENTIONS_SPACE) or kind not in (
@@ -387,7 +395,7 @@ def import_conventions(
         lane = _Lane(
             key_fields=("convention_rule", "convention_enforcer"),
             relations=frozenset({"tests"}),
-            tag_prefixes=("convention", "enforcer", "SPACE:"),
+            tag_prefixes=("convention", "enforcer"),
         )
     report = ConventionsReport()
     try:
@@ -614,10 +622,13 @@ def _sync_tags(
     lane: _Lane,
     report: ConventionsReport,
 ) -> bool:
-    """Converge the importer-managed tags (``dt:<role>``, ``domain:<d>``,
-    ``SPACE:``): add missing, remove stale — but only ``set_by='system'``
-    tags inside the lane's prefixes, never an agent/human tag."""
-    desired = {space_tag, *item.tags}
+    """Converge the importer-managed vocabulary tags (``dt:<role>``,
+    ``domain:<d>``, ``convention``, ``enforcer``): add missing, remove
+    stale — but only ``set_by='system'`` tags inside the lane's prefixes,
+    never an agent/human tag. ``SPACE:`` is a location, not vocabulary:
+    the lane's tag is added only when the ref carries no ``SPACE:*`` at
+    all, and no ``SPACE:*`` is ever removed — a human retag (or a space
+    a different importer put there) is respected."""
     have: dict[str, str] = {}  # rendered tag -> set_by
     for ns, val, set_by in conn.execute(
         "SELECT t.namespace, t.value, rt.set_by FROM ref_tags rt "
@@ -625,6 +636,9 @@ def _sync_tags(
         (rid,),
     ).fetchall():
         have[val if ns in ("OPEN", "FLAG") else f"{ns}:{val}"] = str(set_by)
+    desired = set(item.tags)
+    if not any(t.startswith("SPACE:") for t in have):
+        desired.add(space_tag)
     changed = False
     for tag_s in sorted(set(have) - desired):
         if have[tag_s] == "system" and tag_s.startswith(lane.tag_prefixes):

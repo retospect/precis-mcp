@@ -1,0 +1,208 @@
+design_tree_manifest: S1
+status: 'criterion registry — the question vocabulary of asks/when/avoid_when (an asks entry names one of these; a {…} suffix on the entry lists its answer set)'
+ai_use: 'hand-authored from the pilot vocabulary (the asks entries the goal roots carry); not Perplexity-filled'
+criterion/access:
+  id: criterion/access
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: which sides of the joint the assembler can reach
+  variants:
+  - one-side
+  - both-sides
+  - none
+criterion/child_or_tamper_resistant:
+  id: criterion/child_or_tamper_resistant
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: must the closure defeat a child or a casual tamperer
+criterion/cost_weight:
+  id: criterion/cost_weight
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: how much cost sensitivity drives the choice
+  variants:
+  - low
+  - medium
+  - high
+criterion/duty:
+  id: criterion/duty
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: how often and how long the motion runs — continuous, intermittent, rare
+criterion/environment:
+  id: criterion/environment
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: what the joint lives in — indoor dry, outdoor, wet, chemical, dusty; corrosion is always checked regardless
+criterion/equipment_available:
+  id: criterion/equipment_available
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: which machines, tools and processes the designer can actually use
+criterion/hinged_or_removable:
+  id: criterion/hinged_or_removable
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: whether the closure stays attached (hinged, tethered) or lifts free
+criterion/lead_time:
+  id: criterion/lead_time
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: how soon parts are needed — rules out tooling-bound processes at short notice
+criterion/load_N:
+  id: criterion/load_N
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the force the joint carries, in newtons
+criterion/load_axial_N:
+  id: criterion/load_axial_N
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the force component along the axis, in newtons
+criterion/load_kind:
+  id: criterion/load_kind
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the character of the load
+  variants:
+  - static
+  - cyclic
+  - shock
+criterion/load_radial_N:
+  id: criterion/load_radial_N
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the force component across the axis, in newtons
+criterion/material:
+  id: criterion/material
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: what the part is made of
+criterion/material_pair:
+  id: criterion/material_pair
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the two materials meeting at the joint — drives the galvanic-corrosion check
+criterion/motion:
+  id: criterion/motion
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the motion the joint allows
+  variants:
+  - continuous
+  - oscillating
+  - limited-angle
+criterion/open_frequency:
+  id: criterion/open_frequency
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: how often the closure opens — daily use wants tool-free and wear-resistant
+criterion/play_mm:
+  id: criterion/play_mm
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the free movement the joint may have, in millimetres
+criterion/process:
+  id: criterion/process
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: how the parts are made — FDM, SLA, moulded, machined, sheet, cast, bought
+criterion/quantity:
+  id: criterion/quantity
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: how many parts — drives tooling vs. serial cost
+criterion/sealing:
+  id: criterion/sealing
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: how tight the joint must be
+  variants:
+  - none
+  - dust
+  - splash
+  - IP67
+criterion/separable:
+  id: criterion/separable
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: whether the joint ever comes apart — the join tree's first question (VDI 2232 order)
+  variants:
+  - never
+  - service
+  - frequent
+criterion/size_mm:
+  id: criterion/size_mm
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the part envelope, in millimetres — bounds process and handling
+criterion/speed_rpm:
+  id: criterion/speed_rpm
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the rotational speed, in rpm — bounds bearing and lubrication choices
+criterion/surface_Ra:
+  id: criterion/surface_Ra
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the surface finish needed, as roughness average in micrometres
+criterion/temp_range_C:
+  id: criterion/temp_range_C
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the temperature range in service, in degrees Celsius — softening, embrittlement, thermal mismatch
+criterion/tolerance_mm:
+  id: criterion/tolerance_mm
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the dimensional accuracy needed, in millimetres
+criterion/tool_free:
+  id: criterion/tool_free
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: whether the user opens or adjusts it with bare hands
+criterion/user_force_N:
+  id: criterion/user_force_N
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the force the user applies, in newtons — snap engagement, latch effort, grip comfort
+criterion/torque_Nm:
+  id: criterion/torque_Nm
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: the torque the joint or drive carries, in newton metres
+criterion/vibration:
+  id: criterion/vibration
+  role: criterion
+  coverage: stub
+  authored: by-hand
+  def: whether the joint sees vibration — drives the locking axis and the loosening check

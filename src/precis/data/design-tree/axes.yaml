@@ -1,0 +1,72 @@
+design_tree_manifest: S1
+status: 'shared axis library — the sub-choices every leaf considers (SPEC ruling 4: every axis on every leaf, ''n/a + reason'' is a valid answer)'
+ai_use: 'hand-authored from the pilot vocabulary (the axes: keys the leaf manifests declare); not Perplexity-filled'
+axis/locking:
+  id: axis/locking
+  role: axis
+  coverage: shallow
+  authored: by-hand
+  def: how a joint is kept from loosening under vibration and load cycling — friction, positive lock, adhesive, or none
+  asks:
+  - environment
+  - load_kind
+  variants:
+  - none — low vibration, non-critical, or the joint never sees a loosening load
+  - friction — spring or tooth washer, prevailing-torque nut, wedge-lock washer
+  - adhesive — anaerobic threadlocker or a pre-applied patch
+  - positive — lock wire, cotter pin, tab washer, castellated nut
+  note: preload decays on printed and soft parts; a lock holds the fastener, not the lost preload
+axis/captive:
+  id: axis/captive
+  role: axis
+  coverage: shallow
+  authored: by-hand
+  def: whether loosened or separated parts stay captive — a dropped fastener or detached part is a lost-part failure
+  asks:
+  - separable
+  - access
+  variants:
+  - free — parts separate fully and can be put down or lost
+  - captive fastener — panel screw, tethered pin, retained washer
+  - captive part — hinge, tether, print-in-place, chained plug
+axis/corrosion:
+  id: axis/corrosion
+  role: axis
+  coverage: shallow
+  authored: by-hand
+  def: corrosion is always designed out on a metal pair, not gated on outdoor use — match metals, isolate the couple, coat, or accept the rate
+  asks:
+  - material_pair
+  - environment
+  variants:
+  - match metals — same family or close galvanic neighbours
+  - isolate — washer, bush or coating breaks the path; useless where the screw threads into the metal
+  - coat or plate — plating, anodising, paint keeps the electrolyte off
+  - accept — thick sections, a benign couple, a dry indoor life
+  note: an isolating washer does nothing when the screw threads into the aluminium (Reto ruling)
+axis/bearing-face:
+  id: axis/bearing-face
+  role: axis
+  coverage: shallow
+  authored: by-hand
+  def: what the fastener head, pivot or slider bears on — the clamped or sliding surface material and its finish
+  asks:
+  - material_pair
+  - load_kind
+  variants:
+  - direct — the part material carries the contact
+  - spreader — washer or plate spreads the clamp load on a soft face
+  - insert — bushing, bearing seat or hard face carries the moving contact
+axis/material-direction:
+  id: axis/material-direction
+  role: axis
+  coverage: shallow
+  authored: by-hand
+  def: direction-dependent strength — FDM layers, sheet rolling direction, grain, weave; orient the weak axis out of the load path
+  asks:
+  - process
+  - material
+  variants:
+  - orient for load — layers, plies or grain lie along the stress
+  - isotropic enough — cast, machined or bulk polymer carries either way
+  note: generalises build orientation; the FDM interlayer bond is the weakest direction

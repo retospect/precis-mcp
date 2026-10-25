@@ -1,0 +1,159 @@
+design_tree_manifest: S1
+status: 'cross-cutting failure-mode registry — the names issues'' failure_mode fields reference (SPEC ruling 3)'
+ai_use: 'hand-authored from the pilot vocabulary (the failure_mode names the leaf issues use); not Perplexity-filled'
+failure/anisotropy:
+  id: failure/anisotropy
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: direction-dependent properties — FDM layers, grain, weave — leave the part weaker across its weak axis
+failure/assembly-error:
+  id: failure/assembly-error
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: assembled wrong or not at all — fused moving parts, swapped halves, missed order, wrong orientation
+failure/brittle-fracture:
+  id: failure/brittle-fracture
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: sudden fracture with little plastic flow — a notched, cold, brittle or layer-loaded part goes without warning
+failure/buckling:
+  id: failure/buckling
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a slender member or thin wall collapses sideways in compression well under its stress limit
+failure/burr:
+  id: failure/burr
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a leftover edge or flash cuts hands, seals badly or jams the assembly
+failure/creep-preload-loss:
+  id: failure/creep-preload-loss
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a polymer creeps under sustained load and the clamp, snap force or preload relaxes with time and temperature
+failure/crevice-corrosion:
+  id: failure/crevice-corrosion
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a stagnant shielded gap — under a head, in a lap — corrodes where the bulk surface stays passive
+failure/dimensional-error:
+  id: failure/dimensional-error
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: the part misses its dimensions — process accuracy, shrinkage, tool deflection, thermal drift
+failure/embrittlement:
+  id: failure/embrittlement
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: the material loses ductility in service — hydrogen uptake, UV, the cold transition, solvent exposure
+failure/environmental-degradation:
+  id: failure/environmental-degradation
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: UV, moisture, chemicals or temperature age the material past its working properties
+failure/environmental-stress-cracking:
+  id: failure/environmental-stress-cracking
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a polymer cracks where stress meets a chemical environment — cleaner, oil, flux plus residual or working stress
+failure/excess-deflection:
+  id: failure/excess-deflection
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: the part bends past what function allows without failing — sealing, accuracy and feel all suffer
+failure/fatigue:
+  id: failure/fatigue
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a cyclic load grows a crack far below the static strength — cycles and stress range, not peak load
+failure/galvanic-corrosion:
+  id: failure/galvanic-corrosion
+  role: failure-mode
+  coverage: shallow
+  authored: by-hand
+  def: dissimilar metals in an electrolyte corrode the anodic member; a small anode on a big cathode goes fast
+failure/impact:
+  id: failure/impact
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a shock or drop load exceeds what the static rating covers — corners, hooks and thin sections go first
+failure/loosening:
+  id: failure/loosening
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: vibration or load cycling backs a fastener or seating off — the locking axis is the fix
+failure/lost-part:
+  id: failure/lost-part
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a fastener, clip or detached part is lost — the captive axis designs it out
+failure/notch:
+  id: failure/notch
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a stress concentration starts the crack — sharp roots, keyways, weld toes, thread runouts
+failure/overload:
+  id: failure/overload
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: the load exceeds the part's static strength or the joint's rating — yield, tear or pull-through
+failure/porosity:
+  id: failure/porosity
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: voids in a cast, moulded or printed section weaken the part and leak under pressure
+failure/residual-stress:
+  id: failure/residual-stress
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: locked-in process stress warps, cracks or distorts the part — machining opens it, heat or time releases it
+failure/sink:
+  id: failure/sink
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: a thick section shrinks more and dimples the visible face — a moulded or cast tell-tale
+failure/softening:
+  id: failure/softening
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: heat or solvent softens the material below its working load — creep and relaxation follow
+failure/thermal-mismatch:
+  id: failure/thermal-mismatch
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: different expansion rates stress, warp or gap the joint over the temperature swing
+failure/warpage:
+  id: failure/warpage
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: uneven shrinkage twists the part off its intended shape — thick-thin transitions and asymmetric cooling drive it
+failure/wear-fretting:
+  id: failure/wear-fretting
+  role: failure-mode
+  coverage: stub
+  authored: by-hand
+  def: sliding, fretting or abrasion removes material — fits loosen, debris seeds further wear

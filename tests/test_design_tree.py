@@ -88,6 +88,33 @@ def test_related_to_as_meta(tree: DesignTree) -> None:
     assert meta[("join/frequent", "close")] is None  # cross-file link
 
 
+def test_axes_and_failure_mode_mint_related_to(tree: DesignTree) -> None:
+    """An ``axes`` key and an issue's ``failure_mode`` declare the same
+    leaf -> registry links SPEC §2.3 gives ``links`` — minted implicitly,
+    deduped against an explicit ``links`` entry (tapped -> galvanic-
+    corrosion exists once)."""
+    meta = {
+        (e.src, e.dst): e.meta.get("as")
+        for e in tree.edges
+        if e.relation == "related-to"
+    }
+    tapped = "join/service/threaded/clearance-tapped"
+    assert meta[(tapped, "axis/locking")] == "axis"  # relevant axes key
+    # an 'n/a:' axes value declares the axis was weighed and is not
+    # relevant — no edge (one would show it as relevant in a fisheye)
+    assert (tapped, "axis/corrosion") not in meta
+    assert meta[(tapped, "failure/loosening")] == "mode"  # issue failure_mode
+    assert meta[("join/service/pinned", "failure/lost-part")] == "mode"
+    assert meta[("principle/retention-all-dof", "failure/lost-part")] == "mode"
+    galv = [
+        e
+        for e in tree.edges
+        if (e.src, e.dst, e.relation)
+        == (tapped, "failure/galvanic-corrosion", "related-to")
+    ]
+    assert len(galv) == 1  # links + failure_mode name one edge
+
+
 def test_items_cover_every_mint_role(tree: DesignTree) -> None:
     roles = {i.role for i in tree.items}
     assert roles >= {
@@ -120,7 +147,7 @@ def test_export_shape(tree: DesignTree) -> None:
         "join/service/pinned",
         "join/service/threaded/clearance-tapped",
     ]
-    assert out["axes"] == ["axis/locking"]
+    assert out["axes"] == ["axis/corrosion", "axis/locking"]
     assert out["principles"] == ["principle/retention-all-dof"]
     tapped = out["nodes"]["join/service/threaded/clearance-tapped"]
     assert tapped["role"] == "leaf"
@@ -134,7 +161,7 @@ def test_export_shape(tree: DesignTree) -> None:
     c1, c2 = tapped["rules"]
     assert c2["equipment"] == "desktop-fdm"
     assert c2["confidence"] == "secondary"
-    assert c2["table_ref"] == "fdm/pla"
+    assert c2["table_ref"] == "dtree/process/cutting/cnc-mill/tolerances-and-finish#c8"
     assert "enforcers" not in c2  # link-side data, not export payload
 
 
@@ -142,7 +169,7 @@ def test_export_marks_conflicted_rules(tree: DesignTree) -> None:
     """A node ``conflicts`` record rides the export verbatim; the rules
     its ``rules:`` names are marked ``conflicted`` so DRC never enforces
     them — plus every rule in the forest sharing a marked rule's
-    ``table_ref`` (pinned#c1 shares c2's fdm/pla row)."""
+    ``table_ref`` (pinned#c1 shares c2's capability row)."""
     out = export_rules(tree)
     tapped = out["nodes"]["join/service/threaded/clearance-tapped"]
     assert tapped["conflicts"] == [
@@ -326,7 +353,29 @@ def test_rejects_bad_nodes(tmp_path: Path) -> None:
         ),
         (
             {"a": {"id": "a", "role": "goal", "equipment": "any"}},
-            "only allowed on role=process",
+            "role=process or role=leaf",
+        ),
+        (
+            {"a": {"id": "a", "role": "goal", "domain": "Mech"}},
+            "lowercase",
+        ),
+        (
+            {"a": {"id": "a", "role": "leaf", "asks": ["nope"]}},
+            "no criterion",
+        ),
+        (
+            {"a": {"id": "a", "role": "leaf", "axes": {"nope": "relevant"}}},
+            "no axis node",
+        ),
+        (
+            {
+                "a": {
+                    "id": "a",
+                    "role": "leaf",
+                    "issues": [{"issue": "x", "failure_mode": "nope"}],
+                }
+            },
+            "no failure-mode node",
         ),
         (
             {"a": {"id": "a", "role": "process", "equipment": "warp"}},
@@ -380,7 +429,7 @@ def test_rejects_bad_rules(tmp_path: Path) -> None:
         ({"rules": [{"id": "f2", "text": "t"}]}, "reserved"),
         (
             {"rules": [{"id": "c1", "text": "t", "table_ref": "fdm/unobtainium"}]},
-            "no se_capabilities row",
+            "names no design-tree/capabilities.json row or standard table",
         ),
         (
             {"rules": [{"id": "c1", "text": "t", "table_ref": 3}]},
@@ -412,7 +461,12 @@ def test_conflicts_mark_named_rules_forest_wide(tmp_path: Path) -> None:
                     }
                 ],
                 "rules": [
-                    {"id": "c1", "text": "t", "value": "5", "table_ref": "fdm/pla"},
+                    {
+                        "id": "c1",
+                        "text": "t",
+                        "value": "5",
+                        "table_ref": "dtree/process/cutting/cnc-mill/tolerances-and-finish#c8",
+                    },
                     {"id": "c2", "text": "u", "value": "5"},
                 ],
             },
@@ -420,7 +474,11 @@ def test_conflicts_mark_named_rules_forest_wide(tmp_path: Path) -> None:
                 "id": "b",
                 "role": "leaf",
                 "rules": [
-                    {"id": "c1", "text": "v", "table_ref": "fdm/pla"},
+                    {
+                        "id": "c1",
+                        "text": "v",
+                        "table_ref": "dtree/process/cutting/cnc-mill/tolerances-and-finish#c8",
+                    },
                     {"id": "c2", "text": "w", "value": "5"},
                 ],
             },
@@ -435,8 +493,25 @@ def test_conflicts_mark_named_rules_forest_wide(tmp_path: Path) -> None:
 
 def test_rejects_inherited_equipment_disagreement(tmp_path: Path) -> None:
     """Two parents resolving to different equipment refuse the node and
-    ask for an explicit declaration."""
+    ask for an explicit declaration — but only on a role that may carry
+    one; a method node is told to pick a parent instead (it cannot hold
+    equipment)."""
     path = _tmp_manifest(
+        tmp_path,
+        {
+            "p1": {"id": "p1", "role": "process", "equipment": "desktop-fdm"},
+            "p2": {"id": "p2", "role": "process", "equipment": "sla"},
+            "m": {"id": "m", "role": "method", "also_under": ["p1", "p2"]},
+        },
+    )
+    with pytest.raises(
+        DesignTreeError, match="disagree on equipment.*pick one parent"
+    ) as exc:
+        load_files((path,))
+    assert "declare 'equipment'" not in str(exc.value)
+
+    # a leaf gets the declare-it-here advice
+    path2 = _tmp_manifest(
         tmp_path,
         {
             "p1": {"id": "p1", "role": "process", "equipment": "desktop-fdm"},
@@ -444,8 +519,27 @@ def test_rejects_inherited_equipment_disagreement(tmp_path: Path) -> None:
             "n": {"id": "n", "role": "leaf", "also_under": ["p1", "p2"]},
         },
     )
-    with pytest.raises(DesignTreeError, match="disagree on equipment"):
-        load_files((path,))
+    with pytest.raises(DesignTreeError, match="declare 'equipment'"):
+        load_files((path2,))
+
+
+def test_leaf_equipment_override(tmp_path: Path) -> None:
+    """The disagreement advice works for leaves: an explicit ``equipment``
+    on a leaf beats the disagreeing parents (S0 review R2-1)."""
+    path = _tmp_manifest(
+        tmp_path,
+        {
+            "p1": {"id": "p1", "role": "process", "equipment": "desktop-fdm"},
+            "p2": {"id": "p2", "role": "process", "equipment": "sla"},
+            "n": {
+                "id": "n",
+                "role": "leaf",
+                "also_under": ["p1", "p2"],
+                "equipment": "sla",
+            },
+        },
+    )
+    assert load_files((path,)).nodes["n"].equipment == "sla"
 
 
 def test_related_to_cycle_is_legal(tmp_path: Path) -> None:
@@ -469,13 +563,20 @@ def test_load_dir_empty(tmp_path: Path) -> None:
 
 
 def test_real_manifests_validate() -> None:
-    """The draft manifests destined for S1 already satisfy the schema
-    (they use the function/branch pilot names and one ref stub)."""
-    drafts = sorted(Path("/tmp/design-tree").glob("*.yaml"))
-    if not drafts:
-        pytest.skip("/tmp/design-tree drafts not present")
-    tree = load_files(tuple(drafts))
-    assert len(tree.nodes) > 50
+    """The packaged manifests (S1 seed) validate as one forest — roles
+    are the renamed goal/method set, and the shared-vocabulary
+    references resolve across files."""
+    tree = load_dir(design_tree.packaged_data_dir() / "design-tree")
+    assert len(tree.nodes) > 200
+    assert tree.nodes["join"].role == "goal"
+    assert tree.nodes["join/service"].role == "method"
+    assert tree.nodes["process"].role == "goal"
+    leaves = tree.leaves()
+    assert "join/integrate/one-body-print-mould" in leaves
+    # the shared libraries resolved (would have raised otherwise)
+    assert "axis/locking" in tree.nodes
+    assert "failure/galvanic-corrosion" in tree.nodes
+    assert "criterion/separable" in tree.nodes
 
 
 def test_leaf_ids_from_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

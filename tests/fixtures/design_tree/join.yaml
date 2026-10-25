@@ -64,7 +64,7 @@ join:
               - tap the core hole in the far member
               axes:
                 locking: 'relevant: preload decays; pick a lock'
-                corrosion: 'relevant: steel screw in aluminium member'
+                corrosion: 'n/a: stainless screw in stainless member — declared but not relevant'
               issues:
               - issue: screw backs out under vibration
                 fix: threadlocker or a prevailing-torque feature
@@ -92,7 +92,7 @@ join:
                 confidence: secondary
                 standard: ISO 68-1
                 corrected: true
-                table_ref: fdm/pla
+                table_ref: dtree/process/cutting/cnc-mill/tolerances-and-finish#c8
                 source_url: https://example.invalid/prusa-kb
                 source_quality: secondary
               conflicts:
@@ -132,7 +132,7 @@ join:
             equipment: any
             confidence: shop-rule
             source_quality: none
-            table_ref: fdm/pla
+            table_ref: dtree/process/cutting/cnc-mill/tolerances-and-finish#c8
     frequent:
       id: join/frequent
       role: method

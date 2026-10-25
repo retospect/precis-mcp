@@ -1,0 +1,3191 @@
+design_tree_manifest: run2
+status: run 2, verified drafts merged; for review, not yet linked or deduped
+ai_use: 'Pre-filled with Perplexity (perplexity-reasoning) to find sources, then each rule was checked against its cited source
+  by a separate agent. Prose and rule texts are our own wording; values trace to the listed source_url. Confidence levels:
+  standard, handbook, secondary, excerpt-only, shop-rule (not DRC-enforceable), unverified. Principles checks are hand-written;
+  their rules are verified claims.'
+close:
+  id: close
+  role: goal
+  scale: macro
+  domain: mech
+  coverage: deep
+  def: open and re-close access to an enclosure or container, by hand or with a tool, optionally sealed
+  asks:
+  - open_frequency
+  - tool_free
+  - sealing{none,dust,splash,IP67}
+  - user_force_N
+  - child_or_tamper_resistant
+  - process
+  - hinged_or_removable
+  - quantity
+  children:
+    snap-and-friction:
+      id: close/snap-and-friction
+      role: method
+      def: lids held by moulded or printed elastic features or by interference
+      children:
+        cantilever-snap-lid:
+          id: close/snap-and-friction/cantilever-snap-lid
+          role: leaf
+          coverage: deep
+          summary: A flexed beam with a hook that springs into an undercut; tool-free, cheap, integral to the housing. Good
+            for retention and light loads, poor where the hook carries sustained load, pressure or needs a preload.
+          when:
+          - tool-free repeated opening, light to moderate retention load
+          - tough ductile thermoplastic, or FDM with beam bending in-plane of layers
+          - integral feature preferred over extra parts
+          avoid_when:
+          - sustained, shock, pressure or prying load on the hook
+          - brittle or heavily glass-filled material that must flex a lot
+          - tight sealing or precise preload needed
+          - high temperature, UV, solvent or long-term preload (creep, relaxation)
+          variants:
+          - straight cantilever
+          - tapered cantilever (preferred general form)
+          - L-shaped cantilever
+          - U-shaped / double cantilever
+          - torsional snap
+          - annular snap (see sibling)
+          tradeoffs:
+          - 'vs screw: faster and no parts, but no clamp load and weaker long-term retention'
+          - 'vs separate latch: cheaper and integral, but lower cycle life and release force less predictable'
+          - 'vs magnet: positive retention against sliding, but the root flexes and fatigues'
+          - 'vs living hinge: removable lid, but needs undercut and mould/print geometry'
+          howto:
+          - Size the beam from allowable strain of the actual material, not yield; use about 60 percent of the single-assembly
+            strain for repeated opening.
+          - Make the engaged position stress-free; the hook deflects only during closing and opening.
+          - Taper thickness to about half at the hook (or width to a quarter) and radius the root generously.
+          - Use a sloped lead-in face and a squarer return face; set the return angle by how hard it should be to open.
+          - Provide separate locating ribs or pins; the snap only retains.
+          - Leave a relief slot beside the flexing arm that covers process tolerance.
+          - On FDM, orient the beam so bending stress runs along the printed layers, then print a fit coupon in the final
+            material and orientation.
+          issues:
+          - issue: sharp beam-to-wall corner
+            fix: root fillet, R/t at least 0.5
+            failure_mode: fatigue
+          - issue: constant-thickness beam strains the root
+            fix: taper thickness to about half or width to a quarter
+            failure_mode: fatigue
+          - issue: undercut too large
+            fix: reduce undercut, lengthen beam, use L or U path, share over several hooks
+            failure_mode: overload
+          - issue: hook left deflected after closing
+            fix: design engaged state stress-free
+            failure_mode: creep-preload-loss
+          - issue: FDM beam bends across weak layer bonds
+            fix: reorient so bending is in-plane of layers; raise print temperature if layers are weak
+            failure_mode: brittle-fracture
+          - issue: snap used as the locating feature
+            fix: add ribs, pins or guides for location
+            failure_mode: assembly-error
+          - issue: molded dimensions copied to FDM
+            fix: print a clearance coupon and tune
+            failure_mode: assembly-error
+          - issue: snap used as clamp or seal preload
+            fix: use a compression stop plus screw or separate latch for sustained compression
+            failure_mode: creep-preload-loss
+          axes:
+            locking: 'relevant: undercut and return angle set removable vs permanent; add secondary latch if accidental opening
+              is unsafe'
+            captive: 'n/a: lid is integral or removable, captivity is a separate hinge question'
+            corrosion: 'n/a: plastic; only relevant for metal inserts or springs'
+            bearing-face: 'relevant: return face of the hook carries retention'
+            material-direction: 'relevant: FDM beam bending must follow layer direction'
+          rules:
+          - id: c1
+            text: 'Repeated opening: use about 60 percent of the single-assembly allowable strain'
+            value: '60'
+            unit: percent
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c2
+            text: Snap-beam root fillet radius to thickness ratio R/t of at least 0.5 (BASF Snap-Fit Design Manual); Covestro
+              instead gives R/h about 0.6 as an optimum and calls it a compromise
+            value: '0.5'
+            unit: R/t
+            source_url: https://productdesignonline.com/wp-content/uploads/2019/08/Snap-Fit-Design-Manual.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c3
+            text: Covestro cautions against an internal root radius below 0.015 in
+            value: '0.015'
+            unit: in
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c4
+            text: 'Taper thickness linearly to about half the root thickness at the hook: 0.5 ratio'
+            value: '0.5'
+            unit: ratio
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c5
+            text: 'Or taper width to about a quarter of the root width: 0.25 ratio'
+            value: '0.25'
+            unit: ratio
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c6
+            text: Half-thickness taper raised permissible deflection by more than 60 percent versus constant section
+            value: '60'
+            unit: percent
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c7
+            text: Root strain of a rectangular cantilever is about 1.5 h y / L squared
+            value: '1.5'
+            unit: factor
+            source_url: https://jbrplas.com/posts/snap-fit-design-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c8
+            text: Prefer beam length to thickness ratio L/t of 5 to 10; deflection under about t at L/t 5, about t at L/t
+              10
+            value: 5-10
+            unit: L/t
+            source_url: https://rjcmold.com/guides/snap-fit-design/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c9
+            text: FDM cantilever base thickness at least 1 mm
+            value: '1'
+            unit: mm
+            source_url: https://www.hubs.com/knowledge-base/how-design-snap-fit-joints-3d-printing/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c10
+            text: FDM nominal clearance about 0.5 mm; about 0.3 mm for SLA, SLS, MJF
+            value: '0.5'
+            unit: mm
+            source_url: https://www.hubs.com/knowledge-base/how-design-snap-fit-joints-3d-printing/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c11
+            text: FDM root fillet at least 0.5 times base thickness
+            value: '0.5'
+            unit: ratio
+            source_url: https://www.hubs.com/knowledge-base/how-design-snap-fit-joints-3d-printing/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c12
+            text: 'Short-term allowable strain at 23 C: high-heat PC 4 percent, PC/ABS 2.5, PC blends 3.5, PC 4, PC 10 percent
+              glass 2.2, PC 20 percent glass 2.0'
+            value: 2.0-4
+            unit: percent
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c13
+            text: 'Covestro worked example: L 19 mm, b 9.5 mm, y 2.4 mm, lead angle 30 deg, PC root 3.28 mm, deflection force
+              32.5 N, mating force 58.5 N'
+            value: 32.5/58.5
+            unit: N
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c14
+            text: 'SnapFit Quick Guide (student handout, weak): clearance about 0.35 mm and an outer flexing wall of at most
+              1.9 mm, both listed under annular snaps and internally inconsistent (0.012 in is 0.30 mm); not a cantilever
+              side clearance'
+            value: 0.35 / 1.9
+            unit: mm
+            source_url: https://aarontyleranderson.com/wp-content/uploads/2022/02/SnapFit_Quick_Guide.pdf
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+            corrected: true
+          - id: c15
+            text: 'Prusa: PETG has good layer adhesion and very little shrinkage or warping but poorer bridging and overhangs'
+            value: null
+            unit: null
+            source_url: https://help.prusa3d.com/article/petg_2059?product=mk3-5s
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c17
+            text: At high strain use the secant modulus Es (strain dependent), not Young's modulus, in beam formulas (Covestro)
+            value: null
+            unit: null
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          sources:
+          - perplexity-reasoning:517425
+          - https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+          - https://productdesignonline.com/wp-content/uploads/2019/08/Snap-Fit-Design-Manual.pdf
+          - https://jbrplas.com/posts/snap-fit-design-guide/
+          - https://rjcmold.com/guides/snap-fit-design/
+          - https://www.hubs.com/knowledge-base/how-design-snap-fit-joints-3d-printing/
+          - https://aarontyleranderson.com/wp-content/uploads/2022/02/SnapFit_Quick_Guide.pdf
+          - https://help.prusa3d.com/article/petg_2059?product=mk3-5s
+        annular-snap-cap:
+          id: close/snap-and-friction/annular-snap-cap
+          role: leaf
+          coverage: deep
+          summary: A continuous bead on a cap snaps into a groove around the whole circumference. Even retention for round
+            lids, but the whole ring strains on assembly and the undercut complicates the mould.
+          when:
+          - round cap or lid, axial pull-off or light radial load
+          - fast push-on assembly, occasional removal
+          - tough thermoplastic (PP, PE, POM, PA) in volume
+          - retention distributed around the circumference
+          avoid_when:
+          - high structural, pressure or shock load
+          - permanent, tamper-evident or child-resistant unless release is designed
+          - tight axial location or sealing preload without a seal or datum
+          - brittle or highly reinforced plastic
+          - simple two-plate mould with a true cross-parting undercut
+          variants:
+          - external bead into internal groove
+          - internal bead onto external groove
+          - continuous ring
+          - split ring (axial gaps)
+          - flexible skirt or bell-mouth cap
+          - multiple beads
+          - tamper-evident band
+          - child-resistant indexed closure
+          tradeoffs:
+          - 'vs thread: faster but lower retention and no preload'
+          - 'vs bayonet: no rotation needed, but less positive'
+          - 'vs cantilever snap: even retention, but higher insertion force and harder to mould'
+          - 'vs press fit: positive retention, but needs undercut'
+          - 'vs adhesive or weld: serviceable but not sealed'
+          howto:
+          - Fix pull-off load, insertion and removal force, cycle count and environment first, then choose lead and return
+            angles.
+          - Round the bead and groove corners; keep the root fillet ratio R/t at least 0.5.
+          - Size the undercut from allowable hoop strain of the material at service temperature; use an axisymmetric or nonlinear
+            check for thick or thin rings.
+          - Put the feature on the line of draw or choose flex ejection, split ring, lifter, slide or collapsible core.
+          - Dimension bead, groove, ovality and wall thickness together and check worst-case parts.
+          - For FDM, use a ductile filament, print a ring-and-groove coupon and tune the CAD clearance.
+          issues:
+          - issue: sharp bead or groove corners
+            fix: radius bead and root, R/t at least 0.5
+            failure_mode: fatigue
+          - issue: too much radial interference
+            fix: reduce undercut, lengthen or thin the skirt, add lead-in
+            failure_mode: overload
+          - issue: too little engagement
+            fix: increase return-face engagement, add second bead, or use thread or bayonet
+            failure_mode: loosening
+          - issue: near-vertical return face on a service lid
+            fix: use a shallower return angle
+            failure_mode: assembly-error
+          - issue: gate or weld line at the snap root
+            fix: move the gate and avoid knit line at the root
+            failure_mode: brittle-fracture
+          - issue: zero-clearance FDM mating geometry
+            fix: start at 0.3 mm clearance and test
+            failure_mode: assembly-error
+          - issue: nylon dimensions change with moisture
+            fix: specify conditioned state or pick a less hygroscopic resin
+            failure_mode: environmental-degradation
+          - issue: FDM ring printed across weak layer interfaces
+            fix: orient so strain follows filament paths; use PETG or nylon not brittle PLA
+            failure_mode: brittle-fracture
+          axes:
+            locking: 'relevant: return angle sets removable vs positive lock'
+            captive: 'n/a: closure retention, not a captive part question'
+            corrosion: 'n/a: plastic ring; relevant only for metal parts'
+            bearing-face: 'relevant: bead return face carries pull-off'
+            material-direction: 'relevant: FDM ring strain vs layer direction'
+          rules:
+          - id: c1
+            text: Repeated-use design stress often about 50 percent of the elastic limit
+            value: '50'
+            unit: percent
+            source_url: https://www.plasticstoday.com/injection-molding/injection-molding-design-fundamentals-snap-fits-for-plastic-parts
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c2
+            text: Annular snap engagement (lead-in) angle 20-30 deg from the axis (JBR guide)
+            value: 20-30
+            unit: deg
+            source_url: https://jbrplas.com/posts/snap-fit-design-guide/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+            corrected: true
+          - id: c3
+            text: Return angle range is 45-90 deg; the steep end (75-90 deg) gives strong positive retention
+            value: 75-90
+            unit: deg
+            source_url: https://jbrplas.com/posts/snap-fit-design-guide/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c4
+            text: Effective annular angle 30 deg for a rounded edge, nominal lead/return example 45 deg
+            value: 30/45
+            unit: deg
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1557216102.pdf?rev=7f99fec8fdc8470fa4f372ccd5971d63&hash=4B2A9EB4640EA9AFCEFC6C283A333861
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c5
+            text: Snap-arm (cantilever) root thickness no more than 60 to 70 percent of the adjacent wall; the source states
+              this for the arm root, not the annular ring
+            value: 60-70
+            unit: percent
+            source_url: https://customplasticmoldings.com/blog-injection-molding-design-engineering/injection-molding-snap-fit-design-guide-12013465.html
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c6
+            text: Snap root fillet ratio R/t at least 0.5 (BASF Snap-Fit Design Manual, Figure VI-1)
+            value: '0.5'
+            unit: R/t
+            source_url: https://productdesignonline.com/wp-content/uploads/2019/08/Snap-Fit-Design-Manual.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c7
+            text: Side draft on moulded snap faces 0.5 to 1 deg
+            value: 0.5-1
+            unit: deg
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: shop-rule
+            note: no primary source found; not DRC-enforceable; common moulding draft practice, Covestro guide has no draft
+              angles
+          - id: c8
+            text: Top and bottom draft 1 to 2 deg
+            value: 1-2
+            unit: deg
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: injection-mould
+            confidence: shop-rule
+            note: no primary source found; not DRC-enforceable; common moulding draft practice
+          - id: c10
+            text: Annular diameter example range 10 to 60 mm
+            value: 10-60
+            unit: mm
+            source_url: https://jbrplas.com/posts/snap-fit-design-guide/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c11
+            text: Radial interference example 0.2 to 0.6 mm per side; larger parts 0.3 to 1.0 mm
+            value: 0.2-1.0
+            unit: mm
+            source_url: https://jbrplas.com/posts/snap-fit-design-guide/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c12
+            text: Engagement angle example 20 to 30 deg from the axis
+            value: 20-30
+            unit: deg
+            source_url: https://jbrplas.com/posts/snap-fit-design-guide/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c13
+            text: 'Short-term strain: PP 5-8 percent single assembly, 2-4 multi-cycle; POM 4-6 and 2-3; ABS 2-3 and 1-1.5'
+            value: 1-8
+            unit: percent
+            source_url: https://customplasticmoldings.com/blog-injection-molding-design-engineering/injection-molding-snap-fit-design-guide-12013465.html
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c14
+            text: Reinforced plastic screening value about 50 percent of strain at break; elastic materials 60 to 70 percent
+              with safety factor
+            value: 50-70
+            unit: percent
+            source_url: https://ptacts.uspto.gov/ptacts/public-informations/petitions/1496694
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c15
+            text: 'If both mating parts flex similarly, each deflection is about half: 0.5 ratio'
+            value: '0.5'
+            unit: ratio
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+            source_quality: primary
+            equipment: any
+            confidence: handbook
+          - id: c16
+            text: ISO 20457 is the framework for moulded part tolerances; specify snap dimensions directly
+            value: null
+            unit: null
+            source_url: https://www.iso.org/standard/68097.html
+            source_quality: primary
+            equipment: injection-mould
+            confidence: unverified
+            note: source could not be read; value kept for review
+          - id: c17
+            text: Prusa printer accuracy about 0.1 mm in Z and 0.3 mm in X/Y; 0.05 mm after calibration
+            value: 0.05-0.3
+            unit: mm
+            source_url: https://help.prusa3d.com/article/faq-frequently-asked-questions_1932
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c18
+            text: 'Prusa: initial clearance for moving parts at least 0.3 mm'
+            value: '0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c19
+            text: FDM snug/alignment gap 0.15 to 0.20 mm; sliding 0.20-0.25; loose or print-in-place 0.30-0.40
+            value: 0.15-0.40
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printing-tolerances/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c20
+            text: General interlocking FDM starting gap 0.5 mm
+            value: '0.5'
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printed-joints/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c21
+            text: Typical stock nozzle 0.4 mm
+            value: '0.4'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/faq-frequently-asked-questions_1932
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          sources:
+          - perplexity-reasoning:517432
+          - https://www.plasticstoday.com/injection-molding/injection-molding-design-fundamentals-snap-fits-for-plastic-parts
+          - https://jbrplas.com/posts/snap-fit-design-guide/
+          - https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1557216102.pdf?rev=7f99fec8fdc8470fa4f372ccd5971d63&hash=4B2A9EB4640EA9AFCEFC6C283A333861
+          - https://customplasticmoldings.com/blog-injection-molding-design-engineering/injection-molding-snap-fit-design-guide-12013465.html
+          - https://productdesignonline.com/wp-content/uploads/2019/08/Snap-Fit-Design-Manual.pdf
+          - https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1556891135.pdf
+          - https://ptacts.uspto.gov/ptacts/public-informations/petitions/1496694
+          - https://www.iso.org/standard/68097.html
+          - https://help.prusa3d.com/article/faq-frequently-asked-questions_1932
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://firstlayerlab.com/3d-printing-tolerances/
+          - https://firstlayerlab.com/3d-printed-joints/
+        friction-press-lid:
+          id: close/snap-and-friction/friction-press-lid
+          role: leaf
+          coverage: deep
+          summary: A lid held by radial interference or crush ribs. Fine as a low-load, hand-openable locating joint on tins
+            and printed boxes; not a structural press fit and not a seal.
+          when:
+          - little or no load, only handling or vibration
+          - stiff, dimensionally stable parts (tinplate, aluminium, formed lip, low-creep plastic)
+          - fast tool-free opening
+          - volume that justifies tolerance control
+          avoid_when:
+          - substantial axial load or torque
+          - controlled opening force, child resistant or tamper evident needs
+          - thin, brittle or creep-prone plastic rim kept highly stressed
+          - pressure-tight or liquid seal without a gasket
+          - wide temperature swings or swelling
+          variants:
+          - plain cylindrical lip
+          - external-overlap sleeve
+          - internal plug or rim
+          - crush-rib fit
+          - bead or rolled-rim fit
+          - tapered fit
+          - annular snap or detent assist
+          - magnet-assisted friction lid
+          tradeoffs:
+          - 'vs slip fit: holds in vibration, but opening force varies'
+          - 'vs snap: lower cost, but no positive retention'
+          - 'vs thread: quick, but no preload or seal'
+          - 'vs hinge plus latch: lid can be lost'
+          - 'vs gasketed lid: no sealing'
+          howto:
+          - Use crush ribs or a short guided lip rather than interference around the whole circumference.
+          - Add a lead-in chamfer and a short guide land.
+          - Define minimum and maximum interference and check insertion force, pull-off force and wall stress; the fit class
+            alone is not a load calculation.
+          - Radius or relieve corners on rectangular lids.
+          - For FDM start with a guided lip 4 to 8 mm deep, about 0.2 mm per side, and a 0.5 to 1 mm chamfer, then tune with
+            a coupon.
+          - Add a detent, latch or magnet where vibration, heat or sustained load can exceed friction.
+          issues:
+          - issue: nominal press fit with no worst-case tolerance analysis
+            fix: define min and max interference and verify forces
+            failure_mode: assembly-error
+          - issue: full-circumference heavy interference
+            fix: lighter fit or discrete crush ribs
+            failure_mode: overload
+          - issue: no lead-in
+            fix: chamfer or radius at entry
+            failure_mode: assembly-error
+          - issue: long tight engagement jams
+            fix: short guided engagement
+            failure_mode: assembly-error
+          - issue: thin unsupported skirt
+            fix: skirt about wall thickness plus bead or backing flange
+            failure_mode: excess-deflection
+          - issue: interference relaxes in plastic over time or heat
+            fix: ribs that flex locally, lower-creep material, positive detent
+            failure_mode: creep-preload-loss
+          - issue: friction fit assumed airtight
+            fix: add gasket or compression seal
+            failure_mode: environmental-degradation
+          - issue: isotropic print assumption
+            fix: orient critical skirt dimensions in stable direction, compensate elephant foot, use coupon
+            failure_mode: assembly-error
+          axes:
+            locking: 'relevant: friction alone does not lock; add detent for vibration or transport'
+            captive: 'n/a: lid is loose when open'
+            corrosion: 'relevant: tins: moisture and galvanic contact change friction'
+            bearing-face: 'n/a: radial interference, no bearing face'
+            material-direction: 'relevant: FDM skirts'
+          rules:
+          - id: c1
+            text: 'Prusa: no universal tolerance; 0.3 mm a good initial clearance for movable parts'
+            value: '0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c2
+            text: FDM snug fit about 0.1 to 0.2 mm gap per side
+            value: 0.1-0.2
+            unit: mm
+            source_url: https://www.snapmaker.com/blog/3d-printing-tolerances/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c3
+            text: FDM tight interference modeled at 0 to -0.05 mm
+            value: 0 to -0.05
+            unit: mm
+            source_url: https://www.snapmaker.com/blog/3d-printing-tolerances/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c4
+            text: FDM friction-lid lip depth 4 to 8 mm
+            value: 4-8
+            unit: mm
+            source_url: https://meshra.ai/blog/3d-printed-box-with-a-lid/raw
+            source_quality: weak
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c5
+            text: FDM lip lead-in 0.5 to 1 mm at about 45 deg
+            value: 0.5-1
+            unit: mm
+            source_url: https://meshra.ai/blog/3d-printed-box-with-a-lid/raw
+            source_quality: weak
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c6
+            text: FDM wall or lip thickness about 1.6 to 2.0 mm
+            value: 1.6-2.0
+            unit: mm
+            source_url: https://meshra.ai/blog/3d-printed-box-with-a-lid/raw
+            source_quality: weak
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c7
+            text: Light/medium/heavy press fit examples H7/p6, H7/s6, H7/u6
+            value: H7/p6, s6, u6
+            unit: ISO 286
+            source_url: https://rollyu.com/interference-fit-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c8
+            text: 'At 25 mm nominal: H7/p6 interference 0.001 to 0.035 mm; H7/s6 0.014-0.048; H7/u6 0.027-0.061 (machined-metal
+              ISO 286 numbers, not transferable to printed plastic lids)'
+            value: 0.001-0.061
+            unit: mm
+            source_url: https://rollyu.com/press-fit-tolerance/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+            standard: ISO 286
+          - id: c9
+            text: Cylindrical press-fit lead chamfer 15 to 20 deg with 1.5 to 3.0 mm axial length (metal shaft and housing
+              advice; too large for 0.5-1 mm printed-lid chamfers)
+            value: 15-20 / 1.5-3.0
+            unit: deg / mm
+            source_url: https://asprototypes.com/press-fit-tolerance-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c10
+            text: Press-fit engagement ratio 0.8 <= L/D <= 1.5 (metal press fits)
+            value: 0.8-1.5
+            unit: L/D
+            source_url: https://asprototypes.com/press-fit-tolerance-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c11
+            text: Outer diameter about 1.5 to 2 times bore diameter for interference retention
+            value: 1.5-2
+            unit: ratio
+            source_url: https://rollyu.com/interference-fit-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c12
+            text: Friction coefficient steel about 0.3 dry, 0.1 lubricated
+            value: 0.3 / 0.1
+            unit: mu
+            source_url: https://rollyu.com/interference-fit-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c13
+            text: Snap strain for frequent separation about 60 percent of one-time value; Bayblend example 2.5 percent
+            value: 60 / 2.5
+            unit: percent
+            source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1557218421.pdf?rev=f36ba0f40394490e9026a2d752c3e05a
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c14
+            text: Prusa printer accuracy about 0.2 mm (modeling guide) and about 0.3 mm X/Y (FAQ)
+            value: 0.2-0.3
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c15
+            text: Holding force F = mu p A; torque T = mu p A r (the source prints the DIN 7190 capacity and a force form;
+              the torque form is plain statics)
+            value: null
+            unit: null
+            source_url: https://rollyu.com/interference-fit-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+            standard: DIN 7190
+          - id: c16
+            text: DIN 7190 elastic calc does not capture long-term creep and relaxation
+            value: null
+            unit: null
+            source_url: https://www.mechanixcalc.com/validation/pressfit
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+            standard: DIN 7190
+          - id: c17
+            text: Plastic interference fit can loosen after weeks by creep
+            value: null
+            unit: null
+            source_url: https://rollyu.com/press-fit-tolerance/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          sources:
+          - perplexity-reasoning:517436
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://www.snapmaker.com/blog/3d-printing-tolerances/
+          - https://meshra.ai/blog/3d-printed-box-with-a-lid/raw
+          - https://rollyu.com/interference-fit-guide/
+          - https://rollyu.com/press-fit-tolerance/
+          - https://asprototypes.com/press-fit-tolerance-guide/
+          - https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1557218421.pdf?rev=f36ba0f40394490e9026a2d752c3e05a
+          - https://www.mechanixcalc.com/validation/pressfit
+    threaded-and-twist:
+      id: close/threaded-and-twist
+      role: method
+      def: 'lids closed by turning: screw caps, bayonets, quarter-turn fasteners'
+      children:
+        screw-cap:
+          id: close/threaded-and-twist/screw-cap
+          role: leaf
+          coverage: deep
+          summary: Helical thread closure with repeatable seal and adjustable clamp. Container finishes (400/410/415, buttress,
+            M-profile) set turns of engagement; on desktop FDM use coarse rounded threads, M6 or larger, or metal inserts.
+          when:
+          - repeated opening with liner or seal compression
+          - moderate axial load and torque
+          - tough PP or HDPE closures in volume
+          - coarse printed threads on light-duty lids
+          avoid_when:
+          - instant, tamper-evident or snap opening
+          - zero backlash or high stiffness under cyclic load
+          - fine thread in desktop FDM or frequent removal of printed threads
+          - brittle or creep-sensitive material with solvents or heat
+          variants:
+          - continuous single-start
+          - multi-start
+          - buttress / L-profile
+          - modified buttress / M-profile
+          - V-thread / ISO metric / Unified
+          - lug or interrupted thread
+          - tapered pipe thread
+          - printed custom plastic thread
+          tradeoffs:
+          - 'vs snap: controlled compression, but slower'
+          - 'vs bayonet: continuous sealing travel, more turns'
+          - 'vs lug: higher pull-off resistance, slower'
+          - 'vs press fit: controlled removal torque'
+          - 'vs heat-set insert: printed thread cheaper, wears faster'
+          howto:
+          - 'Specify full thread: pitch, lead, hand, start count and profile on both parts; match container finish series,
+            not only diameter.'
+          - Treat the thread as retention and design the seal separately with a stop, liner or O-ring.
+          - Check worst-case cap-high/neck-low stacks so the seal seats before the thread bottoms.
+          - Round crests and roots, add entry chamfer, keep runout out of the engaged zone.
+          - On FDM print the thread axis vertical, use coarse pitch, size at M6 or larger, and start with 0.20 to 0.25 mm
+            clearance.
+          - Use an insert or injection-moulded closure for high cycles, torque, pressure or heat.
+          issues:
+          - issue: same diameter but different finish, e.g. 28/400 vs 28/410
+            fix: match series, pitch and profile
+            failure_mode: assembly-error
+          - issue: thread bottoms before liner seats
+            fix: positive axial stop, check tolerance stack
+            failure_mode: assembly-error
+          - issue: sharp roots and crests
+            fix: rounded crest, generous root radius, lead-in
+            failure_mode: fatigue
+          - issue: pitch too fine for process
+            fix: coarser pitch, larger diameter, or metal insert
+            failure_mode: overload
+          - issue: overtightening to fix a weak seal
+            fix: improve liner, land and stop
+            failure_mode: overload
+          - issue: fine thread printed horizontally
+            fix: vertical thread axis, low layer height
+            failure_mode: brittle-fracture
+          - issue: frequent removal of printed threads
+            fix: heat-set insert, captured nut or moulded reinforcement
+            failure_mode: wear-fretting
+          - issue: vibration loosening
+            fix: liner, O-ring, detent, lock ring or thread locker
+            failure_mode: loosening
+          axes:
+            locking: 'relevant: friction only self-locks if friction angle exceeds lead angle; add liner or detent'
+            captive: 'n/a: cap is a loose part unless tethered'
+            corrosion: 'relevant: metal threads and inserts: galvanic isolation'
+            bearing-face: 'relevant: liner and sealing land seat on axial stop'
+            material-direction: 'relevant: FDM thread axis vertical'
+          rules:
+          - id: c1
+            text: 'Container finish 400 gives one turn of engagement: 1 turn'
+            value: '1'
+            unit: turn
+            source_url: https://www.sgsbottle.com/resources/specs-and-compatibility/neck-finish-library/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c2
+            text: 'Finish 410 gives one and a half turns: 1.5 turns'
+            value: '1.5'
+            unit: turns
+            source_url: https://www.sgsbottle.com/resources/specs-and-compatibility/neck-finish-library/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c3
+            text: 'Finish 415 gives two turns: 2 turns'
+            value: '2'
+            unit: turns
+            source_url: https://www.sgsbottle.com/resources/specs-and-compatibility/neck-finish-library/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c4
+            text: '18-400 neck: start 0.93 mm, pitch 3.17 mm, finish height 9.42 mm'
+            value: 0.93 / 3.17 / 9.42
+            unit: mm
+            source_url: https://multidesign.ca/en/glossaire/neck-finishes/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c5
+            text: '28-400 neck: start 1.17 mm, pitch 4.23 mm, finish height 10.16 mm'
+            value: 1.17 / 4.23 / 10.16
+            unit: mm
+            source_url: https://multidesign.ca/en/glossaire/neck-finishes/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c6
+            text: Modified buttress M-profile flanks about 10 deg lower and 45 deg upper
+            value: 10 / 45
+            unit: deg
+            source_url: https://www.studocu.com/ph/document/rizal-memorial-colleges-inc/bsed-major-in-english/chapter-3-c-packaging-closures-functions-and-types/140842796?origin=related-document
+            source_quality: weak
+            equipment: injection-mould
+            confidence: unverified
+            note: source could not be read; value kept for review
+          - id: c7
+            text: Symmetrical buttress about 30 deg
+            value: '30'
+            unit: deg
+            source_url: https://www.studocu.com/ph/document/rizal-memorial-colleges-inc/bsed-major-in-english/chapter-3-c-packaging-closures-functions-and-types/140842796?origin=related-document
+            source_quality: weak
+            equipment: injection-mould
+            confidence: unverified
+            note: source could not be read; value kept for review
+          - id: c8
+            text: Thread engagement in steel about 1 x nominal diameter
+            value: '1'
+            unit: x D
+            source_url: https://engicalchub.com/guides/metric-thread-dimensions-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c9
+            text: Softer tapped material incl. plastic about 1.5 to 2 x nominal diameter
+            value: 1.5-2
+            unit: x D
+            source_url: https://engicalchub.com/guides/metric-thread-dimensions-guide/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c10
+            text: 'Bambu forum: printed screw hole engagement 2 to 2.5 x major diameter for tight joints'
+            value: 2-2.5
+            unit: x D
+            source_url: https://forum.bambulab.com/t/how-to-design-screw-holes-for-3d-printing/217352
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c11
+            text: 'Bambu forum: 1 to 1.5 x major diameter for lightly loaded printed joints'
+            value: 1-1.5
+            unit: x D
+            source_url: https://forum.bambulab.com/t/how-to-design-screw-holes-for-3d-printing/217352
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c12
+            text: Bambu forum minimum examples 4 mm for BT2/M2 and 3 mm for BT2.5/M2.5
+            value: 3-4
+            unit: mm
+            source_url: https://forum.bambulab.com/t/how-to-design-screw-holes-for-3d-printing/217352
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c13
+            text: FDM sliding clearance about 0.20 to 0.25 mm
+            value: 0.20-0.25
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printing-tolerances/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c14
+            text: FDM loose clearance about 0.30 to 0.40 mm
+            value: 0.30-0.40
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printing-tolerances/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c15
+            text: Bambu printed thread starting clearance 0.10 to 0.30 mm
+            value: 0.10-0.30
+            unit: mm
+            source_url: https://forum.bambulab.com/t/p2s-threads-not-fitting-together/255329
+            source_quality: weak
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c16
+            text: Reliable printed threads at M6 or 1/4-20 and larger
+            value: M6
+            unit: size
+            source_url: https://firstlayerlab.com/3d-printing-tolerances/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c17
+            text: Functional thread layer height about 0.10 to 0.20 mm
+            value: 0.10-0.20
+            unit: mm
+            source_url: https://proto-stack.com/post/how-to-design-threads-and-mechanical-connections-for-3d-printing/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c18
+            text: Bambu forum high-quality thread layer height 0.16 mm
+            value: '0.16'
+            unit: mm
+            source_url: https://forum.bambulab.com/t/printing-nuts-and-threaded-holes/145508
+            source_quality: weak
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c19
+            text: FDM fit adjustment step 0.05 mm
+            value: '0.05'
+            unit: mm
+            source_url: https://proto-stack.com/post/how-to-design-threads-and-mechanical-connections-for-3d-printing/
+            source_quality: weak
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c20
+            text: 'NASA-STD-5020: the external (bolt) thread should extend at least 2 pitches past the nut; applies to bolted
+              joints, not to caps'
+            value: '2'
+            unit: pitches
+            source_url: https://s3vi.ndc.nasa.gov/ssri-kb/static/resources/nasa-std-5020.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: standard
+          - id: c21
+            text: Screw self-locks only when friction angle exceeds lead angle
+            value: null
+            unit: null
+            source_url: https://engineeringstatics.org/Chapter_09-screw-friction.html
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c22
+            text: ASME B1.1 defines Unified thread form, series, class, allowance, tolerance
+            value: null
+            unit: null
+            source_url: https://www.asme.org/wwwasmeorg/media/codes-standards/find-codes/c-t_b1_1_2024.pdf
+            source_quality: primary
+            equipment: any
+            confidence: standard
+          - id: c23
+            text: Prefer vertical thread axis for printed threads
+            value: null
+            unit: null
+            source_url: https://firstlayerlab.com/3d-printing-tolerances/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          sources:
+          - perplexity-reasoning:517443
+          - https://www.sgsbottle.com/resources/specs-and-compatibility/neck-finish-library/
+          - https://multidesign.ca/en/glossaire/neck-finishes/
+          - https://www.studocu.com/ph/document/rizal-memorial-colleges-inc/bsed-major-in-english/chapter-3-c-packaging-closures-functions-and-types/140842796?origin=related-document
+          - https://engicalchub.com/guides/metric-thread-dimensions-guide/
+          - https://forum.bambulab.com/t/how-to-design-screw-holes-for-3d-printing/217352
+          - https://firstlayerlab.com/3d-printing-tolerances/
+          - https://forum.bambulab.com/t/p2s-threads-not-fitting-together/255329
+          - https://proto-stack.com/post/how-to-design-threads-and-mechanical-connections-for-3d-printing/
+          - https://forum.bambulab.com/t/printing-nuts-and-threaded-holes/145508
+          - https://s3vi.ndc.nasa.gov/ssri-kb/static/resources/nasa-std-5020.pdf
+          - https://engineeringstatics.org/Chapter_09-screw-friction.html
+          - https://www.asme.org/wwwasmeorg/media/codes-standards/find-codes/c-t_b1_1_2024.pdf
+        bayonet:
+          id: close/threaded-and-twist/bayonet
+          role: leaf
+          coverage: deep
+          summary: Lugs slide axially into L-slots and turn a fraction of a turn into a detent; fast, positive, repeatable.
+            Low to medium axial load; ramps give preload; seal must sit on a stationary land.
+          when:
+          - frequent tool-free access with positive end stop
+          - low to medium axial load shared by several lugs
+          - tough metal or reinforced plastic lugs
+          - connector-style sealed closures
+          avoid_when:
+          - high tensile, pressure, bending or torque load
+          - fine preload adjustment needed (threads better)
+          - abrasive dirt, icing or large thermal swings without clearance
+          - thin FDM lugs across weak layers
+          variants:
+          - plain L-slot
+          - ramp or helical bayonet
+          - detented L-slot
+          - J-slot with reverse hook
+          - spring-loaded bayonet
+          - two, three or four lugs
+          - child-resistant push-and-turn
+          - ring bayonet for large closures
+          tradeoffs:
+          - 'vs thread: faster, positive stop, but lower load and preload control'
+          - 'vs snap: positive retention, but needs rotation'
+          - 'vs quarter-turn fastener: can be integral to the lid, no rated hardware'
+          - 'vs clamp: compact, but less tolerant of large seals'
+          howto:
+          - Use symmetric lugs, two to four, with a lead-in chamfer and rounded slot corners.
+          - Keep the entry clearance larger than the final seating clearance, and do not use detent clearance as running clearance.
+          - Make a defined detent pocket with a controlled flank, not a shallow bump.
+          - Make lugs short and thick; check shear, bearing, root bending, shell ligament and detent contact pressure.
+          - Keep the O-ring or gasket on a stationary land, not in the sliding track.
+          - On FDM use at least 0.3 mm moving clearance, split parts to avoid severe overhangs, and print a coupon.
+          issues:
+          - issue: slot too tight
+            fix: running clearance, coupon test
+            failure_mode: assembly-error
+          - issue: slot too loose
+            fix: ramp, spring or controlled detent
+            failure_mode: wear-fretting
+          - issue: detent too shallow
+            fix: defined pocket and detent flank
+            failure_mode: loosening
+          - issue: sharp slot corner
+            fix: radius at least 0.5 mm in small joints
+            failure_mode: fatigue
+          - issue: lug carries bending
+            fix: short thick lug supported near root
+            failure_mode: overload
+          - issue: no positive stop
+            fix: hard stop, lock mark or tactile detent
+            failure_mode: assembly-error
+          - issue: seal dragged in track
+            fix: stationary sealing land
+            failure_mode: environmental-degradation
+          - issue: unsupported slot roof sags in FDM
+            fix: reorient, split part or chamfer roof
+            failure_mode: assembly-error
+          - issue: lugs aligned across weak FDM layers
+            fix: orient load in-plane, thicker fillets
+            failure_mode: brittle-fracture
+          axes:
+            locking: 'relevant: detent, J-hook or spring preload resist back-out'
+            captive: 'n/a: closure without captive hardware'
+            corrosion: 'relevant: metal lug/track: galvanic isolation, coatings'
+            bearing-face: 'relevant: lug bearing on slot wall and ramp'
+            material-direction: 'relevant: FDM lugs'
+          rules:
+          - id: c1
+            text: 'Connector bayonets commonly turn one-third of a turn: 0.33 turn'
+            value: '0.33'
+            unit: turn
+            source_url: https://www.milnec.com/mil-26482-series-2/mil-26482-series-2-specs.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c2
+            text: 'Prusa: initial clearance for moving parts at least 0.3 mm'
+            value: '0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c3
+            text: Prusa accuracy at least 0.2 mm for an Original Prusa
+            value: '0.2'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c4
+            text: 'Perimeter widths with a 0.4 mm nozzle: 0.45 / 0.9 / 1.35 / 1.8 mm for 1 to 4 perimeters'
+            value: 0.45-1.8
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c5
+            text: Unsupported FFF overhang about 45 to 60 deg; some Prusa models up to 75 deg
+            value: 45-75
+            unit: deg
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c6
+            text: Small metal pin or lug diameter about 1.5 to 3 mm, up to 6 mm for heavier connectors
+            value: 1.5-6
+            unit: mm
+            source_url: https://www.firgelliauto.com/blogs/mechanisms/bayonet-joint
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c7
+            text: Small metal slot clearance about 0.1 to 0.2 mm around pin; other guide 0.1 to 0.3 mm diametral
+            value: 0.1-0.3
+            unit: mm
+            source_url: https://www.firgelliauto.com/blogs/mechanisms/bayonet-joint
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c8
+            text: Detent depth about 0.3 to 0.5 mm for a small fitting
+            value: 0.3-0.5
+            unit: mm
+            source_url: https://www.firgelliauto.com/blogs/mechanisms/bayonet-joint
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c9
+            text: Slot corner radius at least 0.5 mm in one small-joint guide
+            value: '0.5'
+            unit: mm
+            source_url: https://www.firgelliauto.com/blogs/mechanisms/bayonet-joint
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c10
+            text: Detent seating radius about 1.05 to 1.2 x lug radius
+            value: 1.05-1.2
+            unit: ratio
+            source_url: https://vectree.io/c/design-materials-and-contact-stress-of-bayonet-lugs-and-pins-in-multi-lug-bayonet-couplings
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c11
+            text: Lug engagement depth about 1.5 to 3 x radial clearance plus tolerance stack
+            value: 1.5-3
+            unit: ratio
+            source_url: https://vectree.io/c/design-materials-and-contact-stress-of-bayonet-lugs-and-pins-in-multi-lug-bayonet-couplings
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c12
+            text: Spring preload example 5 to 20 N for small electrical fittings
+            value: 5-20
+            unit: N
+            source_url: https://www.firgelliauto.com/blogs/mechanisms/bayonet-joint
+            source_quality: secondary
+            equipment: bought
+            confidence: secondary
+          - id: c13
+            text: 'Connector layouts often use three lugs at 120 deg: 3 lugs'
+            value: '3'
+            unit: lugs
+            source_url: https://www.milnec.com/mil-26482-series-2/mil-26482-series-2-specs.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c14
+            text: MIL-DTL-26482 minimum 500 mating cycles
+            value: '500'
+            unit: cycles
+            source_url: https://www.milnec.com/mil-26482-series-2/mil-26482-series-2-specs.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c15
+            text: Series-2 connector temperature range -55 to +200 C
+            value: -55 to 200
+            unit: C
+            source_url: https://www.milnec.com/mil-26482-series-2/mil-26482-series-2-specs.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c16
+            text: IP67 with sealing accessories; immersion 1 m for 30 min
+            value: 1 m / 30 min
+            unit: IP67
+            source_url: https://www.milnec.com/mil-26482-series-2/mil-26482-series-2-specs.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c17
+            text: Series-2 connector maximum coupling torque about 0.904 to 4.29 N m across shell sizes
+            value: 0.904-4.29
+            unit: N m
+            source_url: https://www.milnec.com/mil-26482-series-2/mil-26482-series-2-specs.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c18
+            text: 'Ring bayonet pressure closures lock in one-eighth or one-sixteenth turn: 1/8-1/16 turn'
+            value: 1/8-1/16
+            unit: turn
+            source_url: https://www.kwdesign.co.uk/products/pressure-vessel-closures/bayonet-lock-closure-pressure-vessels/
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          sources:
+          - perplexity-reasoning:517449
+          - https://www.milnec.com/mil-26482-series-2/mil-26482-series-2-specs.pdf
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://www.firgelliauto.com/blogs/mechanisms/bayonet-joint
+          - https://vectree.io/c/design-materials-and-contact-stress-of-bayonet-lugs-and-pins-in-multi-lug-bayonet-couplings
+          - https://www.kwdesign.co.uk/products/pressure-vessel-closures/bayonet-lock-closure-pressure-vessels/
+        quarter-turn-fastener:
+          id: close/threaded-and-twist/quarter-turn-fastener
+          role: leaf
+          coverage: deep
+          summary: Quarter-turn cam fasteners (Dzus type, camlocks) and captive panel screws give fast tool-light access with
+            no loose hardware. Pick the receptacle first, work out total material thickness, and use metal inserts in printed
+            panels.
+          when:
+          - panels opened often and quickly, captive hardware
+          - clamp and in-plane shear load on a stiff frame
+          - covers, guards, enclosures, access doors in sheet metal
+          - volume that justifies standard receptacles
+          avoid_when:
+          - primary structural or pressure-retaining joint, high preload
+          - thin, soft or unsupported panel
+          - precise permanent alignment
+          - bare FDM polymer carrying repeated clamp load
+          - no room behind panel for receptacle
+          variants:
+          - spade-cam (high cycle)
+          - external spiral-cam (thickness tolerance)
+          - internal spiral-cam (higher tensile)
+          - push-to-close turn-to-open
+          - wire-form receptacle
+          - flat, saddle, angle, press-in, blind receptacles
+          - captive panel screw
+          - self-clinching captive screw
+          - printed captive screw assembly
+          tradeoffs:
+          - 'vs machine screw: faster and captive, but less preload and sealing'
+          - 'vs captive screw: faster, but less preload and gasket force'
+          - 'vs rivet: serviceable, costlier'
+          - 'vs latch: smaller, but lower opening-load capacity'
+          - 'vs snap: more predictable clamp, more parts'
+          howto:
+          - Select the receptacle first, then compute total material thickness and pick the stud length.
+          - Include outer panel, frame, gasket compression, coatings and tolerance in total material thickness; add ejector
+            and wear washer thickness.
+          - Check panel pull-through, bearing, tear-out and frame bending separately from the fastener rating.
+          - Locate the panel with dowels, pilots or flanges; the fastener only clamps.
+          - Follow the supplier hole and edge-distance drawing; press-in parts with the specified tool, not a hammer.
+          - In printed panels move the load into a metal insert, washer or backed receptacle and add 0.3 mm clearance.
+          issues:
+          - issue: stud chosen before receptacle
+            fix: receptacle first, then total material thickness
+            failure_mode: assembly-error
+          - issue: nominal panel thickness only
+            fix: include all layers, ejector and wear washer
+            failure_mode: assembly-error
+          - issue: fastener rating treated as panel rating
+            fix: check pull-through, tear-out, frame bending
+            failure_mode: overload
+          - issue: fastener used to locate the panel
+            fix: dowels, pilots, flanges
+            failure_mode: assembly-error
+          - issue: thin sheet or unsupported plastic
+            fix: doubler, flange, backing washer or self-clinching insert
+            failure_mode: overload
+          - issue: loaded printed receptacle
+            fix: metal receptacle or heat-set insert; orient layers
+            failure_mode: creep-preload-loss
+          - issue: hammer installation
+            fix: specified press and backup tool
+            failure_mode: assembly-error
+          - issue: no tool or hand clearance
+            fix: model driver and hand path
+            failure_mode: assembly-error
+          axes:
+            locking: 'relevant: cam detent holds; add secondary retention for safety-critical covers'
+            captive: 'relevant: stud and retainer stay with the panel; verify retainer groove'
+            corrosion: 'relevant: dissimilar metals, plating, salt'
+            bearing-face: 'relevant: washer and receptacle bearing on panel'
+            material-direction: 'relevant: FDM panels and receptacles'
+          rules:
+          - id: c1
+            text: Operating rotation 90 deg
+            value: '90'
+            unit: deg
+            source_url: https://media.southco.com/media/static/Literature/D7.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c2
+            text: 'Southco small-series Product Strength Guidelines: maximum working load 440 N (100 lbf) for the applicable
+              assembly; one product family, not a general Southco figure'
+            value: '440'
+            unit: N
+            source_url: https://media.southco.com/media/static/Literature/7-1.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c3
+            text: D5 fastener rated tensile and shear load 890 N (200 lbf)
+            value: '890'
+            unit: N
+            source_url: https://media.southco.com/media/static/Literature/D5.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c4
+            text: Southco D7 (light-duty push-to-close fastener) designed maximum axial load 11 lbf
+            value: '11'
+            unit: lbf
+            source_url: https://southco.com/en_any_int/fasteners/emdzusemreg-quarter-turn-fasteners/emdzusemreg-push-to-close-turn-to-open-quarter-turn-fasteners/d7-dzusreg-pilotarrow-quarter-turn-fasteners
+            source_quality: primary
+            equipment: bought
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c5
+            text: Southco D7 (light-duty push-to-close fastener) designed maximum shear strength 28 lbf
+            value: '28'
+            unit: lbf
+            source_url: https://southco.com/en_any_int/fasteners/emdzusemreg-quarter-turn-fasteners/emdzusemreg-push-to-close-turn-to-open-quarter-turn-fasteners/d7-dzusreg-pilotarrow-quarter-turn-fasteners
+            source_quality: primary
+            equipment: bought
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c6
+            text: D2 Rapier stud sizes 3.5, 5, 7, 9 mm
+            value: 3.5-9
+            unit: mm
+            source_url: https://media.southco.com/media/static/Literature/D2.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c7
+            text: D2 total material thickness range 0.5 to 30.4 mm across combinations
+            value: 0.5-30.4
+            unit: mm
+            source_url: https://media.southco.com/media/static/Literature/D2.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c8
+            text: Southco D7 standard support hole 9.5 mm (the 'square' shape is not confirmed)
+            value: '9.5'
+            unit: mm
+            source_url: https://southco.com/en_any_int/fasteners/emdzusemreg-quarter-turn-fasteners/emdzusemreg-push-to-close-turn-to-open-quarter-turn-fasteners/d7-dzusreg-pilotarrow-quarter-turn-fasteners
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c9
+            text: Southco D7 pilot lateral tolerance example +/-0.20 mm (about 0.008 in) for lateral-tolerance receptacles
+            value: '0.20'
+            unit: mm
+            source_url: https://media.southco.com/media/static/Literature/D7.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+            corrected: true
+          - id: c10
+            text: Add 0.8 mm (0.032 in) to total material thickness for stud ejector
+            value: '0.8'
+            unit: mm
+            source_url: https://media.southco.com/media/static/Literature/7-1.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c11
+            text: Add 0.5 mm (0.020 in) for wear washer
+            value: '0.5'
+            unit: mm
+            source_url: https://media.southco.com/media/static/Literature/7-1.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c13
+            text: 'Prusa: initial clearance for movable printed parts at least 0.3 mm'
+            value: '0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c14
+            text: Prusa stated printer accuracy at least 0.2 mm
+            value: '0.2'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c15
+            text: Unsupported FFF overhang 45 to 60 deg; newer models up to 75 deg
+            value: 45-75
+            unit: deg
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c18
+            text: Prusa recommends PC, ASA or PETG over PLA for outdoor or mechanically stressed printed parts
+            value: null
+            unit: null
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          sources:
+          - perplexity-reasoning:517455
+          - https://media.southco.com/media/static/Literature/D7.en.pdf
+          - https://media.southco.com/media/static/Literature/7-1.en.pdf
+          - https://media.southco.com/media/static/Literature/D5.en.pdf
+          - https://southco.com/en_any_int/fasteners/emdzusemreg-quarter-turn-fasteners/emdzusemreg-push-to-close-turn-to-open-quarter-turn-fasteners/d7-dzusreg-pilotarrow-quarter-turn-fasteners
+          - https://media.southco.com/media/static/Literature/D2.en.pdf
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+    hinged:
+      id: close/hinged
+      role: method
+      def: lids that stay attached on a hinge axis
+      children:
+        pin-hinge:
+          id: close/hinged/pin-hinge
+          role: leaf
+          coverage: shallow
+          summary: Knuckle hinge with a separate pin carries lid load best; use metal pin and leaves for load and life, print-in-place
+            only for light prototype lids. Size pin for bending, bearing and tear-out, not shear alone.
+          when:
+          - cyclic load, radial load or cantilever lid torque, metal pin and leaves
+          - slow or intermittent opening, moderate play acceptable
+          - lid must be removable (lift-off or loose pin) or tamper-resistant (peened pin)
+          - print-in-place for one-offs, prototypes, light enclosures, quantity 1 to few
+          avoid_when:
+          - 'continuous or fast cycling, or tight angular precision: use bushing or ball-bearing hinge'
+          - wet or salt environment with unprotected carbon steel
+          - fully printed pin where load, temperature or moisture swing is significant
+          variants:
+          - loose-pin butt
+          - fixed or peened pin
+          - piano (continuous)
+          - lift-off
+          - friction hinge
+          - free-fit plain
+          - bushed
+          - ball-bearing
+          - printed leaves with metal pin
+          - FDM print-in-place
+          tradeoffs:
+          - 'vs living hinge: replaceable and stronger, but more parts and assembly'
+          - 'vs strap hinge: locates accurately but no compliance for misalignment'
+          - 'vs snap fit: fixed axis and controlled angle, but needs hinge alignment'
+          howto:
+          - Put the hinge axis near the lid centre of gravity and use two hinges spaced wide apart.
+          - Check pin bending, double shear, bearing pressure p = F/(d*L), leaf tear-out and leaf bending.
+          - Keep the gap between supporting knuckles small to cut pin bending.
+          - Add a separate positive lid stop; never use the pin or knuckle as the stop.
+          - Retain the pin (head, peen, E-clip, boss) and keep threads out of the shear plane.
+          - For FDM start at 0.3 mm clearance, print a coupon, and fillet the knuckle roots.
+          - Print a separate pin horizontally or use a metal rod, not a thin vertical pin.
+          issues:
+          - issue: axis too far from lid load path
+            fix: move axis near centre of gravity, two wide-spaced hinges
+            failure_mode: overload
+          - issue: pin sized on shear only
+            fix: check bending, bearing, tear-out, increase pin or bearing length
+            failure_mode: overload
+          - issue: printed hinge with zero clearance fuses at first layer
+            fix: 0.3 mm minimum, elephant-foot compensation, chamfer bed-side edges
+            failure_mode: assembly-error
+          - issue: friction fit in creeping polymer loses torque or seizes
+            fix: free-fit metal pin, bushing, separate friction element
+            failure_mode: creep-preload-loss
+          - issue: pin walks out under vibration
+            fix: headed, peened or clipped pin
+            failure_mode: loosening
+          - issue: sharp root at knuckle-to-leaf
+            fix: generous fillet, orient layers so root is not pulled across layers
+            failure_mode: fatigue
+          - issue: polymer clearance lost to heat or moisture
+            fix: size clearance for full temperature and moisture range
+            failure_mode: thermal-mismatch
+          - issue: dry sliding wear grows play
+            fix: replaceable bushing, hardened or stainless pin, larger d*L
+            failure_mode: wear-fretting
+          axes:
+            locking: 'relevant: pin retention against walk-out'
+            captive: 'relevant: peened or captive pin vs removable pin'
+            corrosion: 'relevant: stainless pin and leaves, isolate dissimilar metals'
+            bearing-face: 'n/a: knuckle bore is the bearing, see bearing pressure'
+            material-direction: 'relevant: FDM: layers across pin or root delaminate'
+          rules:
+          - id: c1
+            text: Start movable printed parts at least 0.3 mm clearance, then tune on a coupon
+            value: '>=0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c2
+            text: 'FDM snug alignment gap: 0.15-0.20 mm'
+            value: 0.15-0.20
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printed-joints/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c3
+            text: 'FDM sliding gap: 0.20-0.25 mm'
+            value: 0.20-0.25
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printed-joints/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c4
+            text: 'FDM loose or print-in-place starting gap: 0.30-0.40 mm'
+            value: 0.30-0.40
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printed-joints/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c5
+            text: 'igus starting diametral clearance for plastic plain bearings: 0.05-0.10 mm'
+            value: 0.05-0.10
+            unit: mm
+            source_url: https://www.igus.com/company/plain-bearings-limits-of-plain-bearings-ca
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c6
+            text: igus plastic bearing housing bore H7, shaft h9
+            value: H7/h9
+            unit: ISO fit
+            source_url: https://www.igus.co.uk/plain-bearing/wiki/tolerances
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c7
+            text: igus bushing press excess up to 2 percent of bore diameter
+            value: <=2
+            unit: '%'
+            source_url: https://www.igus.co.uk/plain-bearing/wiki/tolerances
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c8
+            text: igus lifetime-calculator example uses 0.25 mm maximum wear
+            value: '0.25'
+            unit: mm
+            source_url: https://www.igus.com/company/plain-bearings-limits-of-plain-bearings-ca
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c9
+            text: 'SPIROL coiled-pin hinge: outer member thickness about 1 to 1.5 pin diameters'
+            value: 1-1.5
+            unit: x pin diameter
+            source_url: https://cdn.thomasnet.com/kc/2524/doc/0000101915_70_82241.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c10
+            text: 'SPIROL free-fit hinge: hole about 0.02 mm over measured free pin diameter'
+            value: '0.02'
+            unit: mm
+            source_url: https://cdn.thomasnet.com/kc/2524/doc/0000101915_70_82241.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c11
+            text: Polymer thermal expansion is about 10 to 20 times that of metals, so a low-clearance printed hinge can jam
+              (K principle thermal-expansion cites 6-9x from another source)
+            value: 10-20
+            unit: x metal
+            source_url: https://www.igus.com.au/plain-bearing/wiki/temperatures
+            source_quality: primary
+            equipment: any
+            confidence: handbook
+          - id: c12
+            text: iglidur B limited to 100 C; mechanical fastening of the bushing from 50 C
+            value: 100 / 50
+            unit: C
+            source_url: https://www.igus.com/plastic-bearings/resources/plain-bearings-iglide-b-material-data-ca
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c13
+            text: Average bearing pressure p = F / (d * Lb)
+            value: p=F/(d*Lb)
+            unit: null
+            source_url: null
+            source_quality: none
+            equipment: any
+            confidence: shop-rule
+            note: standard mechanics formula, no source cited; not DRC-enforceable
+          - id: c14
+            text: Lid torque on hinge T = F * e, so put axis near centre of gravity
+            value: T=F*e
+            unit: null
+            source_url: null
+            source_quality: none
+            equipment: any
+            confidence: shop-rule
+            note: torque = force x lever arm; no source cited; not DRC-enforceable
+          sources:
+          - perplexity-reasoning:517422
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://firstlayerlab.com/3d-printed-joints/
+          - https://www.igus.com/company/plain-bearings-limits-of-plain-bearings-ca
+          - https://www.igus.co.uk/plain-bearing/wiki/tolerances
+          - https://cdn.thomasnet.com/kc/2524/doc/0000101915_70_82241.pdf
+          - https://www.igus.com.au/plain-bearing/wiki/temperatures
+          - https://www.igus.com/plastic-bearings/resources/plain-bearings-iglide-b-material-data-ca
+        living-hinge:
+          id: close/hinged/living-hinge
+          role: leaf
+          coverage: deep
+          summary: Integral thin web hinge, ideal in injection-moulded polypropylene at 0.25-0.35 mm; on desktop FDM it is
+            a prototype or low-cycle feature (TPU strap, PETG short life), never a structural pivot.
+          when:
+          - injection-moulded PP or PE, high quantity, hinge and body one part
+          - low load, slow motion, separability unimportant
+          - desktop FDM prototype or low cycle count (PETG, PP with tuning, TPU strap)
+          avoid_when:
+          - radial, cantilever or impact load on the hinge
+          - tight angular location or controlled holding torque
+          - PLA, glass-filled or stiff engineering plastics flexed repeatedly
+          - lid must be replaceable or service life must be predictable
+          - severe UV, oxidising chemicals or hot wet service without tested PP grade
+          variants:
+          - integral thin-web
+          - recessed or offset web
+          - flat-land hinge
+          - tapered or curved FDM flexure
+          - TPU strap hinge
+          - pin-and-leaf (alternative)
+          - friction or detent hinge (alternative)
+          tradeoffs:
+          - 'vs pin hinge: no assembly and cheap at volume, but permanent, low load and low precision'
+          - 'vs TPU strap: better defined motion, less creep, but needs PP and moulding'
+          - 'vs snap fit: true rotation, but snap arms also fatigue'
+          howto:
+          - 'Keep the web thin and radiused into the body: 0.25-0.35 mm for high-cycle PP.'
+          - Recess the web so the closed lid does not pinch the fold.
+          - Gate so melt crosses the hinge perpendicular to its axis, no weld line at the web.
+          - Flex the part 2-3 times right after moulding.
+          - Add a broad hard stop and a latch; the hinge carries no load.
+          - On FDM print the flexure flat so bending is in the layer plane, 0.4-0.6 mm, at least 2 layers.
+          - Split hinges longer than 150 mm into sections.
+          - Life-test at full angle, rate, temperature.
+          issues:
+          - issue: web too thick
+            fix: reduce toward 0.25-0.35 mm for PP
+            failure_mode: fatigue
+          - issue: sharp transition into body
+            fix: 0.8 mm blend radii or larger
+            failure_mode: fatigue
+          - issue: hinge pinched when closing
+            fix: recess web, leave relief gap
+            failure_mode: overload
+          - issue: weld line or flow along hinge axis
+            fix: gate so flow crosses the hinge
+            failure_mode: brittle-fracture
+          - issue: no stop, user over-opens
+            fix: broad supported stop away from hinge line
+            failure_mode: overload
+          - issue: FDM flexure bends across layer bonds
+            fix: print flat, bend within layers
+            failure_mode: fatigue
+          - issue: PETG treated as production PP
+            fix: PETG for prototypes only, PP for production
+            failure_mode: fatigue
+          - issue: hinge carries sustained lid load hot
+            fix: support lid elsewhere, test at max temperature
+            failure_mode: creep-preload-loss
+          axes:
+            locking: 'n/a: latch is separate'
+            captive: 'n/a: integral'
+            corrosion: 'n/a: polymer; chemical attack and UV apply'
+            bearing-face: 'n/a: no sliding face'
+            material-direction: 'relevant: flow direction in moulding, layer plane in FDM'
+          rules:
+          - id: a1
+            text: Gate so melt flows perpendicular to the hinge line; no weld line at the web
+            value: perpendicular
+            unit: null
+            source_url: https://stuff.mit.edu/afs/athena/course/2/2.75/resources/random/Living%20Hinge%20Design.pdf
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: a2
+            text: 'Start PP hinge web at 0.008-0.010 in and go up only if needed, to at most 0.015 in: 0.20-0.25 start, 0.38
+              max mm'
+            value: 0.20-0.25 start, 0.38 max
+            unit: mm
+            source_url: https://stuff.mit.edu/afs/athena/course/2/2.75/resources/random/Living%20Hinge%20Design.pdf
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: a3
+            text: Flex the hinge a few times immediately after moulding while still warm
+            value: a few
+            unit: flexes
+            source_url: https://stuff.mit.edu/afs/athena/course/2/2.75/resources/random/Living%20Hinge%20Design.pdf
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: a4
+            text: 'Testing of properly designed homopolymer PP hinges was stopped near one million flexes without wear-out;
+              filled grades degrade hinge quality: ~1000000 flexes'
+            value: ~1000000
+            unit: flexes
+            source_url: https://stuff.mit.edu/afs/athena/course/2/2.75/resources/random/Living%20Hinge%20Design.pdf
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c1
+            text: 'Vendor blog: high-cycle polypropylene living hinge web thickness 0.25-0.35 mm; its own table lists 0.15-0.20
+              mm as the longest-life band, and the MIT-hosted PP guide says start at 0.20-0.25 mm (see a2); treat 0.25-0.35
+              mm as a safe middle, not a limit'
+            value: 0.25-0.35
+            unit: mm
+            source_url: https://jbrplas.com/posts/living-hinge-design-guide/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c2
+            text: 'Vendor blog: general polypropylene web range 0.20-0.50 mm; the MIT-hosted PP guide says above 0.38 mm is
+              not a true living hinge, so the 0.50 mm upper end is weak'
+            value: 0.20-0.50
+            unit: mm
+            source_url: https://jbrplas.com/posts/living-hinge-design-guide/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c3
+            text: 'Protolabs nominal web thickness 0.012 in: 0.3 mm'
+            value: '0.3'
+            unit: mm
+            source_url: https://www.protolabs.com/resources/blog/living-hinge-basics-for-injection-molding/
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c4
+            text: 'Flat land length about 0.060 in: 1.5 mm'
+            value: '1.5'
+            unit: mm
+            source_url: https://stuff.mit.edu/afs/athena/course/2/2.75/resources/random/Living%20Hinge%20Design.pdf
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c5
+            text: Flat land length 0.050-0.090 in (1.3-2.3 mm) per Machine Design; a Dow attribution could not be checked
+            value: 1.3-2.3
+            unit: mm
+            source_url: https://www.machinedesign.com/fastening-joining/article/21832469/care-and-feeding-of-living-hinges
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c6
+            text: Hinge radius about 0.030 in (0.8 mm) on the outside (tension) side of the hinge
+            value: '0.8'
+            unit: mm
+            source_url: https://www.machinedesign.com/fastening-joining/article/21832469/care-and-feeding-of-living-hinges
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c7
+            text: 'Protolabs side radius starting value 0.030 in: 0.8 mm'
+            value: '0.8'
+            unit: mm
+            source_url: https://www.protolabs.com/resources/blog/living-hinge-basics-for-injection-molding/
+            source_quality: primary
+            equipment: injection-mould
+            confidence: handbook
+          - id: c9
+            text: Closure clearance above the fold at least 0.005 in (0.13 mm); a 0.005-0.010 in range was seen only in a
+              search excerpt
+            value: '>=0.13'
+            unit: mm
+            source_url: https://www.machinedesign.com/fastening-joining/article/21832469/care-and-feeding-of-living-hinges
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c10
+            text: Hinges longer than 150 mm should be divided into sections
+            value: '>150'
+            unit: mm
+            source_url: https://www.hubs.com/guides/injection-molding/
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c12
+            text: 'Published PP hinges reach more than 1 million cycles when material, flow, geometry and processing are right:
+              >1000000 cycles'
+            value: '>1000000'
+            unit: cycles
+            source_url: https://www.machinedesign.com/fastening-joining/article/21832469/care-and-feeding-of-living-hinges
+            source_quality: secondary
+            equipment: injection-mould
+            confidence: secondary
+          - id: c15
+            text: Printed living hinge thickness 0.4-0.6 mm with at least 2 layers
+            value: 0.4-0.6
+            unit: mm
+            source_url: https://www.hubs.com/knowledge-base/how-design-living-hinges-3d-printing/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c16
+            text: Print-in-place moving joint clearance at least 0.3 mm
+            value: '>=0.3'
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printed-joints/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c17
+            text: General FDM fit range about 0.15-0.50 mm from snug to print-in-place
+            value: 0.15-0.50
+            unit: mm
+            source_url: https://firstlayerlab.com/3d-printed-joints/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c18
+            text: 'Industrial printed-hinge guide: hinge length at least 0.050 in for 90 deg, 0.150 in for 180 deg: 1.27 /
+              3.81 mm'
+            value: 1.27 / 3.81
+            unit: mm
+            source_url: https://www.protolabs.com/resources/blog/how-to-design-3d-printed-living-hinges/
+            source_quality: primary
+            equipment: industrial-fdm
+            confidence: handbook
+          - id: c19
+            text: 'Prusa PETG: 230 C first layer, 240 C other layers, bed 85-90 C'
+            value: 230/240, 85-90
+            unit: C
+            source_url: https://help.prusa3d.com/article/petg_2059
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c21
+            text: Prusa TPU guidance covers about Shore 60A-90A
+            value: 60A-90A
+            unit: Shore
+            source_url: https://firstlayerlab.com/3d-printed-joints/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          sources:
+          - perplexity-reasoning:517429
+          - https://stuff.mit.edu/afs/athena/course/2/2.75/resources/random/Living%20Hinge%20Design.pdf
+          - https://jbrplas.com/posts/living-hinge-design-guide/
+          - https://www.protolabs.com/resources/blog/living-hinge-basics-for-injection-molding/
+          - https://www.machinedesign.com/fastening-joining/article/21832469/care-and-feeding-of-living-hinges
+          - https://www.hubs.com/guides/injection-molding/
+          - https://www.hubs.com/knowledge-base/how-design-living-hinges-3d-printing/
+          - https://firstlayerlab.com/3d-printed-joints/
+          - https://www.protolabs.com/resources/blog/how-to-design-3d-printed-living-hinges/
+          - https://help.prusa3d.com/article/petg_2059
+        stay-detent-stop:
+          id: close/hinged/stay-detent-stop
+          role: leaf
+          coverage: shallow
+          summary: 'Keep the hinge off the stop load: a broad external hard stop or stay carries the over-travel, a friction,
+            detent or spring element supplies feel, and a latch holds closed.'
+          when:
+          - 'heavy lid, shock load or defined maximum angle: separate stay or hard stop'
+          - 'several repeatable angles: detent or cam'
+          - 'arbitrary angles, light lid: friction or torque hinge'
+          - 'heavy lid assist: torsion spring or gas strut'
+          avoid_when:
+          - friction alone holds a heavy, dirty, hot or safety-critical lid open
+          - hinge pin, thin knuckle or printed layer interface is the impact stop
+          - slender polymer stay under sustained load (creep)
+          - gas strut where cold, leakage or compact packaging matter
+          variants:
+          - fixed-angle stay
+          - folding over-centre stay
+          - telescoping stay
+          - removable stay
+          - strap or cable stay
+          - friction stay
+          - ball or spring-plunger detent
+          - cam-and-follower detent
+          - integrated hinge stop
+          - external hard stop
+          - spring-assisted stay
+          - damped stop
+          tradeoffs:
+          - 'friction hinge: continuous but torque drifts with wear and contamination, can spring lid back'
+          - 'detent: tactile and repeatable but wears and rounds off'
+          - 'hard stop: repeatable but impact and noise'
+          - 'spring assist: less effort but fatigue and stored energy'
+          howto:
+          - Compute lid moment M = m*g*r*cos(theta) about the hinge axis.
+          - Size friction or hold torque near 1.5-2 times static moment for a nudge, then measure.
+          - Place the hard stop at large radius from the pivot, wide, on a rib or frame, not on the hinge barrel.
+          - Add a damper or elastomer bumper if the lid arrives at speed.
+          - Pair friction hinges with a positive latch or catch for closure.
+          - Use a metal pin and sleeve for a long-life printed pivot, 0.3 mm initial clearance.
+          - Fit a secondary stay or lock wherever a falling lid could injure.
+          issues:
+          - issue: hinge pin used as over-travel stop
+            fix: separate stop or stay into broad housing ribs
+            failure_mode: overload
+          - issue: stop on thin rib or sharp corner
+            fix: wider contact, radius, gussets, larger radius from pivot
+            failure_mode: impact
+          - issue: sized for static weight only
+            fix: include acceleration, impact, wind, seal force, one-sided load
+            failure_mode: overload
+          - issue: friction treated as constant
+            fix: specify min and max torque, temperature, cycle life
+            failure_mode: wear-fretting
+          - issue: friction used to keep lid closed
+            fix: add latch, magnet or catch
+            failure_mode: assembly-error
+          - issue: several hinges over-constrain axis
+            fix: one axial location, others float
+            failure_mode: thermal-mismatch
+          - issue: spring legs with sharp bends
+            fix: generous bend radii, protect surface
+            failure_mode: fatigue
+          - issue: hold-open lost by rounded detent or leaking strut
+            fix: positive secondary stay or lock
+            failure_mode: wear-fretting
+          axes:
+            locking: 'relevant: stay lock or over-centre to hold open'
+            captive: 'n/a: stay and stop hardware stays fixed to the lid'
+            corrosion: 'relevant: seized pivots and spring cracks from moisture'
+            bearing-face: 'relevant: stop contact width and radius'
+            material-direction: 'relevant: FDM: stop and clevis loads in filament plane'
+          rules:
+          - id: c1
+            text: Maximum lid moment about the hinge = lid mass x 9.80665 x distance from the hinge axis to the lid's centre
+              of gravity (Sugatsune); the moment falls with the cosine of the lid angle from horizontal
+            value: m*g*r
+            unit: null
+            source_url: https://www.sugatsune.com/content/site-assets/300_PDF/136.pdf
+            source_quality: primary
+            equipment: any
+            confidence: handbook
+            note: m*g*r is in the Sugatsune sheet; the cosine factor is plain geometry and not in the source
+          - id: c2
+            text: Friction hinge margin about 1.5-2 times static moment for a nudge
+            value: 1.5-2
+            unit: x static moment
+            source_url: https://www.projects-house.com/articles/mechanical-engineering/hinge-and-folding-mechanism-design/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c3
+            text: Desktop FDM moving clearance at least 0.3 mm
+            value: '>=0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c4
+            text: Prusa printer accuracy at least 0.2 mm
+            value: '0.2'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c6
+            text: Precision pivot ISO H7/g6; 25 mm example diametral clearance 0.007-0.041
+            value: 0.007-0.041
+            unit: mm
+            source_url: https://mlc.org.uk/guides/iso-tolerance-fits-chart
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c7
+            text: 'ISO H7 hole, 18-30 mm band: 0 to +0.021 mm'
+            value: 0 to +0.021
+            unit: mm
+            source_url: https://mlc.org.uk/guides/iso-tolerance-fits-chart
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c8
+            text: 'ISO g6 shaft, 18-30 mm band: -0.007 to -0.020 mm'
+            value: -0.007 to -0.020
+            unit: mm
+            source_url: https://mlc.org.uk/guides/iso-tolerance-fits-chart
+            source_quality: secondary
+            equipment: cnc-mill
+            confidence: secondary
+          - id: c9
+            text: Heavy-duty counterbalance hinge guide allows built-in stop between 45 and 90 deg
+            value: 45-90
+            unit: deg
+            source_url: https://blog.weberknapp.com/designing-heavy-duty-hinges-with-vectis-technology
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c10
+            text: Commercial lid hinge systems offer 90, 110, 180 or 270 deg opening
+            value: 90/110/180/270
+            unit: deg
+            source_url: https://www.kkc-koffer.de/en/knowledge/lid-hinge/
+            source_quality: secondary
+            equipment: bought
+            confidence: secondary
+          - id: c11
+            text: Sugatsune S-TAR lid stay free-stop torque up to 71 kgf*cm (61.7 lbf*in)
+            value: '71'
+            unit: kgf*cm
+            source_url: https://www.sugatsune.com/content/site-assets/300_PDF/136.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          sources:
+          - perplexity-reasoning:517437
+          - https://www.sugatsune.com/content/site-assets/300_PDF/136.pdf
+          - https://www.projects-house.com/articles/mechanical-engineering/hinge-and-folding-mechanism-design/
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://mlc.org.uk/guides/iso-tolerance-fits-chart
+          - https://blog.weberknapp.com/designing-heavy-duty-hinges-with-vectis-technology
+          - https://www.kkc-koffer.de/en/knowledge/lid-hinge/
+    latches:
+      id: close/latches
+      role: method
+      def: devices that hold a lid closed and release it on demand
+      children:
+        draw-latch:
+          id: close/latches/draw-latch
+          role: leaf
+          coverage: deep
+          summary: Over-centre toggle or draw latches clamp a lid against a gasket quickly and tool-free; count latches from
+            gasket compression force, let separate features locate the lid, and let a hard stop, not the latch, limit gasket
+            crush.
+          when:
+          - frequent tool-free opening, coplanar panels pulled together
+          - gasket needs controlled compression or rattle must stop
+          - low to medium quantity, purchased hardware
+          avoid_when:
+          - tamper-resistant, flush or hidden closure needed
+          - 'large perpendicular pull-in or long stroke: use compression or cam latch'
+          - latch used as structural tie, lifting point or pressure closure without verified load path
+          - high-precision repeatable preload or zero play
+          variants:
+          - fixed-bail over-centre
+          - adjustable-bail or threaded hook
+          - spring-loaded toggle
+          - rotary draw
+          - hook or wire-bail
+          - compression over-centre
+          - padlockable
+          - single-point vs multi-point rod
+          - concealed or flush
+          - printed prototype latch
+          tradeoffs:
+          - 'vs cam or compression latch: more tolerant of misalignment, less controlled perpendicular compression'
+          - 'vs screw fastener: much faster, lower preload and accuracy'
+          - 'vs magnets or snap fits: holds gasket load and vibration, but needs deliberate actuation'
+          howto:
+          - Get the gasket force per length from the supplier curve, then count latches N = L*R/470.
+          - Space latches evenly and stiffen the lid so the middle seals as well as the latch zones.
+          - Adjust so the linkage passes over centre, no more.
+          - Let dowels, shoulders or hinge locate the lid; the latch only clamps.
+          - Make the gasket hard stop, not the latch, the compression limit.
+          - Back thin sheet or printed bosses with plates, inserts or large washers.
+          - Use a metal hook and pin on printed enclosures; 0.3 mm clearance for moving printed parts.
+          issues:
+          - issue: capacity read from nominal holding load
+            fix: use the rating for the exact hook position and geometry
+            failure_mode: overload
+          - issue: lever stops short of over-centre
+            fix: adjust bail to pass over centre
+            failure_mode: loosening
+          - issue: latch used to locate the lid
+            fix: separate dowels, stops, hinge
+            failure_mode: wear-fretting
+          - issue: all gasket compression at one point
+            fix: even multi-latch spacing or multi-point rod
+            failure_mode: assembly-error
+          - issue: gasket over-compressed
+            fix: hard stop, gasket force curve
+            failure_mode: creep-preload-loss
+          - issue: unsupported thin sheet or printed boss pulls through
+            fix: backing plate, inserts, ribs
+            failure_mode: overload
+          - issue: PLA latch holds preload warm
+            fix: metal or tough polymer, spring or hard stop
+            failure_mode: creep-preload-loss
+          - issue: sharp hook root
+            fix: generous fillet
+            failure_mode: fatigue
+          axes:
+            locking: 'relevant: over-centre lock, padlock or safety catch'
+            captive: 'n/a: the latch stays fixed to lid and body'
+            corrosion: 'relevant: stainless or plated latch, isolate dissimilar metals'
+            bearing-face: 'relevant: keeper edge strike vs rolling contact'
+            material-direction: 'relevant: FDM: hooks loaded within layers'
+          rules:
+          - id: c1
+            text: 'Southco M3 remote compression latches: number of latches N = L * R / 470, with L the gasket length in mm
+              and R the gasket compression rate in N per mm; 470 N is that latch family''s capacity, so do not apply it to
+              draw latches in general'
+            value: N=L*R/470
+            unit: null
+            source_url: https://media.southco.com/media/static/Literature/M3.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c2
+            text: Southco's worked example gives 5200 mm x 0.3 N/mm / 470 = 3.28 and rounds to 3 latches; round up (4) for
+              margin
+            value: '3.28'
+            unit: latches
+            source_url: https://media.southco.com/media/static/Literature/M3.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c3
+            text: Southco compression latch pull-up 9.5 mm
+            value: '9.5'
+            unit: mm
+            source_url: https://media.southco.com/media/static/Literature/a7.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c4
+            text: Same latch opening or pry-out travel 7.9 mm
+            value: '7.9'
+            unit: mm
+            source_url: https://media.southco.com/media/static/Literature/a7.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c5
+            text: Southco A1 maximum static loads 1200, 1780, 3110 N by size and hook position
+            value: 1200-3110
+            unit: N
+            source_url: https://media.southco.com/media/static/Literature/a1.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c6
+            text: Southco 97 clamping force examples 135 N and 290 N
+            value: 135, 290
+            unit: N
+            source_url: https://media.southco.com/media/static/Literature/97.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c7
+            text: 'Southco 62-series compression latches: two sizes rated 220 N and 440 N static load with a compression range
+              of 2 mm and 3 mm respectively (load rating and compression range, not clamp force at that compression)'
+            value: 220@2, 440@3
+            unit: N@mm
+            source_url: https://media.southco.com/media/static/Literature/62.en.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c8
+            text: 0.4 mm nozzle gives about 0.45 mm extrusion width
+            value: '0.45'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c9
+            text: Wall width for 1/2/3/4 perimeters about 0.45/0.9/1.35/1.8 mm
+            value: 0.45/0.9/1.35/1.8
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c10
+            text: Moving-part clearance at least 0.3 mm
+            value: '>=0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/it/article/modellare-tenendo-a-mente-la-stampa-3d_164135?product=core-one
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c12
+            text: Watertight single wall at least 3-4 perimeters, sometimes 5-6
+            value: 3-4 (5-6)
+            unit: perimeters
+            source_url: https://help.prusa3d.com/article/watertight-prints_112324
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c13
+            text: Best durability at 0.15 mm layer, 0.2 mm acceptable, layer height not above 60-65 percent of nozzle width
+            value: 0.15 / 0.2 / 60-65%
+            unit: mm, %
+            source_url: https://help.prusa3d.com/article/watertight-prints_112324
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c14
+            text: Prusa PETG 230 C first layer, 240 C after, bed 85 then 90 C
+            value: 230/240, 85/90
+            unit: C
+            source_url: https://help.prusa3d.com/article/petg_2059?product=mk3-5s
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c15
+            text: Cured-in-place gasket minimum compression 15 percent
+            value: '15'
+            unit: '%'
+            source_url: https://dm.henkel-dam.com/is/content/henkel/brochure-worldwide-sealing-guidelines-cured-in-place-gaskets-print-en
+            source_quality: primary
+            equipment: any
+            confidence: standard
+          sources:
+          - perplexity-reasoning:517445
+          - https://media.southco.com/media/static/Literature/M3.en.pdf
+          - https://media.southco.com/media/static/Literature/a7.en.pdf
+          - https://media.southco.com/media/static/Literature/a1.en.pdf
+          - https://media.southco.com/media/static/Literature/97.en.pdf
+          - https://media.southco.com/media/static/Literature/62.en.pdf
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://help.prusa3d.com/it/article/modellare-tenendo-a-mente-la-stampa-3d_164135?product=core-one
+          - https://help.prusa3d.com/article/watertight-prints_112324
+          - https://help.prusa3d.com/article/petg_2059?product=mk3-5s
+          - https://dm.henkel-dam.com/is/content/henkel/brochure-worldwide-sealing-guidelines-cured-in-place-gaskets-print-en
+        magnetic-catch:
+          id: close/latches/magnetic-catch
+          role: leaf
+          coverage: shallow
+          summary: Magnet plus steel strike gives quiet low-load closure, strongly gap- and direction-sensitive; add a mechanical
+            datum and stop, capture the magnet mechanically, and do not rely on glue or catalog pull.
+          when:
+          - modest normal pull, quiet compact closure, frequent opening without handle
+          - wood, plastic, glass or printed part where only a steel target is added
+          - low volume where a printed pocket and glued magnet beat a moulded latch
+          avoid_when:
+          - safety-critical, overhead, strong vibration
+          - dominant load is shear, peel or shock
+          - strike is austenitic stainless or aluminium
+          - tight release force or positional precision needed
+          - temperature beyond magnet grade, corrosive moisture
+          variants:
+          - bare disc or block plus steel washer
+          - pot or cup magnet
+          - surface-mount cabinet catch
+          - recessed magnet and strike
+          - floating pinned catch
+          - touch-to-open latch
+          - catch with non-magnetic shim
+          - magnet pair
+          tradeoffs:
+          - 'vs ball catch: quieter, but weak in shear and sensitive to gap'
+          - 'vs draw latch: no clamp force or vibration resistance'
+          - 'vs snap fit: no printed cantilever fatigue, but adds magnet and strike parts'
+          howto:
+          - Size from measured pull on the finished assembly at worst-case gap, with safety factor at least 2 (3-5 under vibration).
+          - Capture the magnet in the pull direction with a lip, dovetail or cap; glue is not the only retainer.
+          - Leave 0.2-0.4 mm pocket allowance and glue with two-part epoxy after degreasing.
+          - Use low-carbon steel strike, around twice magnet width.
+          - 'Keep the real gap small: skins, paint, tape count as air gap.'
+          - Add a stop so the strike never hits the brittle magnet.
+          - Add a shoulder or hook for shear loads.
+          - Use PETG, ASA or PC, not PLA, in warm or outdoor service.
+          issues:
+          - issue: magnet sized from catalog pull alone
+            fix: test finished assembly, apply safety factor
+            failure_mode: overload
+          - issue: nonmagnetic stainless or aluminium strike
+            fix: low-carbon steel strike
+            failure_mode: assembly-error
+          - issue: printed wall or paint between magnet and strike
+            fix: recess both, control the gap
+            failure_mode: overload
+          - issue: tight zero-clearance pocket
+            fix: 0.2-0.4 mm allowance, lead-in chamfer
+            failure_mode: brittle-fracture
+          - issue: glue the only retention
+            fix: lip, dovetail, cap or washer
+            failure_mode: loosening
+          - issue: pocket loaded across layer lines
+            fix: rotate part, continuous perimeters
+            failure_mode: fatigue
+          - issue: strike hits magnet
+            fix: hard stop and relief
+            failure_mode: impact
+          - issue: PLA warm or outdoors
+            fix: PETG, ASA or PC
+            failure_mode: creep-preload-loss
+          axes:
+            locking: 'n/a: magnetic retention only, add latch if safety matters'
+            captive: 'relevant: magnet captured by lip so glue is not sole path'
+            corrosion: 'relevant: neodymium plating damage, seal pocket'
+            bearing-face: 'relevant: flat clean steel contact, gap sets force'
+            material-direction: 'relevant: FDM: pocket walls in strongest print direction'
+          rules:
+          - id: c1
+            text: Floating commercial catch allows about 1 mm magnet float
+            value: '1'
+            unit: mm
+            source_url: https://www.leevalley.com/en-us/shop/hardware/catches/magnetic/48606-brass-magnetic-catch
+            source_quality: secondary
+            equipment: bought
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c2
+            text: Shear capacity only 15-25 percent of rated pull
+            value: 15-25
+            unit: '% of pull'
+            source_url: https://radialmagnet.com/magnets-for-holding-and-latching/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c3
+            text: 300-series stainless reduces attraction 70-90 percent vs low-carbon steel
+            value: 70-90
+            unit: '%'
+            source_url: https://radialmagnet.com/magnets-for-holding-and-latching/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c4
+            text: Pot magnet steel cup gives about 2-4 times the force of a free magnet
+            value: 2-4
+            unit: x
+            source_url: https://www.leevalley.com/en-us/shop/hardware/catches/magnetic/56385-thin-magnetic-catch
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c5
+            text: 'Prusa wall width 0.45 mm per perimeter: 0.45/0.9/1.35/1.8 mm for 1-4'
+            value: 0.45/0.9/1.35/1.8
+            unit: mm
+            source_url: https://help.prusa3d.com/pl/article/modelowanie-pod-druk-3d_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c6
+            text: Moving or sliding clearance start 0.3 mm
+            value: '0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/pl/article/modelowanie-pod-druk-3d_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c7
+            text: Printer accuracy approx 0.2 mm
+            value: '0.2'
+            unit: mm
+            source_url: https://help.prusa3d.com/pl/article/modelowanie-pod-druk-3d_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c8
+            text: Glued pocket additional clearance 0.2-0.4 mm
+            value: 0.2-0.4
+            unit: mm
+            source_url: https://github.com/mike-mones/bambu-easy/blob/master/Reference/fdm-design-rules.md
+            source_quality: weak
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c9
+            text: 'K&J pull-test practice: test steel plate at least about 2x the magnet diameter or width; this is a test
+              condition, not a design rule for a catch strike'
+            value: '>=2'
+            unit: x magnet width
+            source_url: https://www.kjmagnetics.com/blog/testing-magnet-strength
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c10
+            text: 1 mm air gap reduces pull by about 30-50 percent
+            value: 30-50
+            unit: '%'
+            source_url: https://www.strong-magnets.eu/en/calculate-magnetic-adhesion-force/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c11
+            text: 'Adjustable cup catch has about 1/16 in horizontal adjustment: 1.6 mm'
+            value: '1.6'
+            unit: mm
+            source_url: https://www.leevalley.com/en-us/shop/hardware/rare-earth-magnets/accessories/panel-cups/70530-panel-magnet-cup
+            source_quality: secondary
+            equipment: bought
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c12
+            text: Safety factor for benign static magnetic holding at least 2
+            value: '>=2'
+            unit: factor
+            source_url: https://radialmagnet.com/pull-force-explained/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c13
+            text: Safety factor for vibration or dynamic handling 3-5
+            value: 3-5
+            unit: factor
+            source_url: https://radialmagnet.com/pull-force-explained/
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          - id: c14
+            text: Thin catch is 2 mm thick, 3.4 mm with strike, almost 6 lb pull
+            value: 2 / 3.4 / ~6 lb
+            unit: mm, lb
+            source_url: https://www.leevalley.com/en-us/shop/hardware/catches/magnetic/56385-thin-magnetic-catch
+            source_quality: secondary
+            equipment: bought
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c15
+            text: K&J cabinet latch ML-S-X8 pull 10 lb (4.54 kg)
+            value: '10'
+            unit: lb
+            source_url: https://www.kjmagnetics.com/ml-s-x8-magnetic-latches-for-cabinets-doors-drawers
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c16
+            text: Adjustable cup catch holds at least 2 lb
+            value: '>=2'
+            unit: lb
+            source_url: https://www.leevalley.com/en-us/shop/hardware/rare-earth-magnets/accessories/panel-cups/70530-panel-magnet-cup
+            source_quality: secondary
+            equipment: bought
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          sources:
+          - perplexity-reasoning:517451
+          - https://www.leevalley.com/en-us/shop/hardware/catches/magnetic/48606-brass-magnetic-catch
+          - https://radialmagnet.com/magnets-for-holding-and-latching/
+          - https://www.leevalley.com/en-us/shop/hardware/catches/magnetic/56385-thin-magnetic-catch
+          - https://help.prusa3d.com/pl/article/modelowanie-pod-druk-3d_164135
+          - https://github.com/mike-mones/bambu-easy/blob/master/Reference/fdm-design-rules.md
+          - https://www.kjmagnetics.com/blog/testing-magnet-strength
+          - https://www.strong-magnets.eu/en/calculate-magnetic-adhesion-force/
+          - https://www.leevalley.com/en-us/shop/hardware/rare-earth-magnets/accessories/panel-cups/70530-panel-magnet-cup
+          - https://radialmagnet.com/pull-force-explained/
+          - https://www.kjmagnetics.com/ml-s-x8-magnetic-latches-for-cabinets-doors-drawers
+        push-push-and-slide:
+          id: close/latches/push-push-and-slide
+          role: leaf
+          coverage: deep
+          summary: Push-push touch latch retains only; a dovetail or plain rail guides and carries load and independent end
+            stops define the positions. Printed rails need coupon-tuned clearance and wear strips.
+          when:
+          - handle-free short-travel lid, light loads, clean dry indoor use
+          - rail carries service load, latch only retains
+          - low quantity FDM prototype with PETG and a bought latch
+          avoid_when:
+          - 'structural shear, pressure, vibration, large cantilever moment: use draw latch'
+          - lid must never detach without end stop or captive rail
+          - grit, water, UV, heat, abrasive environment for printed dovetails
+          - metrology-grade positioning without adjustable gib
+          variants:
+          - magnetic touch latch
+          - non-magnetic mechanical touch latch
+          - push-to-open ejector
+          - push-to-close
+          - ball or roller detent catch
+          - over-centre draw latch (alternative)
+          - plain rail
+          - dovetail rail
+          - adjustable-gib dovetail
+          - ball or crossed-roller slide
+          tradeoffs:
+          - 'vs magnetic catch plus plain slide: more positive, but alignment-sensitive'
+          - 'vs draw latch plus rails: touch opening but no clamp or seal force'
+          - 'printed dovetail: cheap and custom but creeps, wears, scatters in size'
+          howto:
+          - Let the rail constrain motion, hard stops set open and closed, the latch only retains and releases.
+          - Give the striker a lead-in and a floating or adjustable mount.
+          - Specify clearance per flank; start dovetails at 0.15-0.20 mm per flank on FDM and tune on a coupon.
+          - Reduce contact length, add relief grooves, clean-out slots and replaceable wear strips.
+          - Constrain one rail accurately, relieve the other.
+          - Mount the latch on a plate or heat-set inserts, not thin printed wall.
+          - Use PETG not PLA; design for service temperature, not nozzle temperature.
+          issues:
+          - issue: latch used as stop
+            fix: separate positive stops
+            failure_mode: overload
+          - issue: no lead-in at striker
+            fix: chamfer plus adjustable striker
+            failure_mode: assembly-error
+          - issue: zero clearance in printed rail
+            fix: coupon in real material and orientation, start 0.3 mm
+            failure_mode: assembly-error
+          - issue: total clearance mistaken for per-flank
+            fix: state per flank
+            failure_mode: assembly-error
+          - issue: grit trapped in blind groove
+            fix: clean-out slots and wipers
+            failure_mode: wear-fretting
+          - issue: over-constrained parallel rails
+            fix: one located, one relieved or adjustable
+            failure_mode: excess-deflection
+          - issue: spring printed across layer weak plane
+            fix: bend in filament plane or metal spring
+            failure_mode: fatigue
+          - issue: thin latch boss crushed by screw
+            fix: backing plate or heat-set inserts
+            failure_mode: creep-preload-loss
+          axes:
+            locking: 'relevant: touch latch is the lock; secondary retention for safety'
+            captive: 'relevant: end stop or captive rail so lid cannot detach'
+            corrosion: 'relevant: springs, rails, magnets in humid service'
+            bearing-face: 'relevant: dovetail flanks wear; gib adjusts play'
+            material-direction: 'relevant: FDM: spring and rail loads within layers'
+          rules:
+          - id: c1
+            text: Touch latch rated 49 N compressive force and 100,000 cycles (Sugatsune ML-ZN80)
+            value: 49 N, 100000
+            unit: N, cycles
+            source_url: https://cdn.shopify.com/s/files/1/1516/7678/files/ML-ZN80.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c2
+            text: ML-ZN80 magnetic force 29.4 N (3 kgf)
+            value: '29.4'
+            unit: N
+            source_url: https://cdn.shopify.com/s/files/1/1516/7678/files/ML-ZN80.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c3
+            text: Southco slide latch maximum working load 180 N one series, 220 N larger series
+            value: 180 / 220
+            unit: N
+            source_url: https://sy-dep-epc-lpc.web.cern.ch/components/datasheets/epc-lpc%20(converters)/A3-40-625-12%20(SOUTHCO).pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c4
+            text: Southco latch operating range -40 to 60 C
+            value: -40 to 60
+            unit: C
+            source_url: https://sy-dep-epc-lpc.web.cern.ch/components/datasheets/epc-lpc%20(converters)/A3-40-625-12%20(SOUTHCO).pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c5
+            text: Southco latch panel thickness example 1.2 +/- 0.1 mm
+            value: 1.2+-0.1
+            unit: mm
+            source_url: https://sy-dep-epc-lpc.web.cern.ch/components/datasheets/epc-lpc%20(converters)/A3-40-625-12%20(SOUTHCO).pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c6
+            text: Movable printed parts at least 0.3 mm clearance
+            value: '>=0.3'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c7
+            text: Prusa dimensional accuracy about 0.2 mm
+            value: '0.2'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c8
+            text: Printed dovetail clearance about 0.15-0.20 mm per flank
+            value: 0.15-0.20
+            unit: mm per flank
+            source_url: https://kapycad.com/en/academy/machines/sliding-dovetail
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+          - id: c9
+            text: Sugatsune PR-21P non-magnetic touch latch holding force 10 kg (22 lb)
+            value: '10'
+            unit: kg
+            source_url: https://www.sugatsune.com/non-magnetic-touch-latch-pr-21p-blk/
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c10
+            text: Sugatsune latch strike adjustment about +/-2 mm vertical, +/-3.5 mm horizontal
+            value: 2 / 3.5
+            unit: mm
+            source_url: https://sugatsune.ca/site-assets/300_PDF/187.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c11
+            text: High-temperature touch latch up to 120 C, retaining force then about 29.4 N
+            value: 120 C / 29.4 N
+            unit: C, N
+            source_url: https://global.sugatsune.com/uk/en/arch/products/22187_a
+            source_quality: primary
+            equipment: bought
+            confidence: excerpt-only
+            note: confirmed only from a search excerpt, page not read
+          - id: c12
+            text: PETG service temperature below about 80 C for interior and most exterior use
+            value: <80
+            unit: C
+            source_url: https://help.prusa3d.com/article/petg_2059?product=mk3-9s
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c13
+            text: Prusa PETG print temps 230 C first, 240 C after, bed 85-90 C
+            value: 230/240, 85-90
+            unit: C
+            source_url: https://help.prusa3d.com/article/petg_2059?product=mk3-9s
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          sources:
+          - perplexity-reasoning:517456
+          - https://cdn.shopify.com/s/files/1/1516/7678/files/ML-ZN80.pdf
+          - https://sy-dep-epc-lpc.web.cern.ch/components/datasheets/epc-lpc%20(converters)/A3-40-625-12%20(SOUTHCO).pdf
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://kapycad.com/en/academy/machines/sliding-dovetail
+          - https://www.sugatsune.com/non-magnetic-touch-latch-pr-21p-blk/
+          - https://sugatsune.ca/site-assets/300_PDF/187.pdf
+          - https://global.sugatsune.com/uk/en/arch/products/22187_a
+          - https://help.prusa3d.com/article/petg_2059?product=mk3-9s
+    seal-interface:
+      id: close/seal-interface
+      role: method
+      def: the sealing element and its compression between lid and body
+      children:
+        o-ring-face-seal:
+          id: close/seal-interface/o-ring-face-seal
+          role: leaf
+          coverage: deep
+          summary: 'Static O-ring gland per Parker: pick face gland for a flat lid, radial for a concentric plug; hold squeeze
+            15-30 percent, groove fill under 85 percent, and buy the O-ring while printing only the rigid gland.'
+          when:
+          - stationary lid or flange needing a reusable, compact seal
+          - groove, flatness, compression and concentricity can be held (machined or well-finished)
+          - standard AS568 or Parker sizes, compatible elastomer for fluid and temperature
+          avoid_when:
+          - flexible flange, wide bolt spacing, joint can breathe open
+          - rotary speed above 1500 ft/min, reciprocating below 1 ft/min, stroke above 12 in without precautions
+          - no elastomer compatible with fluid or cleaner
+          - 'rough FDM sealing face with nonstandard large size: use gasket or machined insert'
+          variants:
+          - static face gland
+          - static radial gland
+          - dovetail or half-dovetail face gland
+          - dynamic radial seal
+          - backup-ring gland
+          - crush or rectangular-groove seal
+          - printed housing with purchased O-ring
+          tradeoffs:
+          - 'vs flat gasket: serviceable and lower bolt load, but needs a controlled groove'
+          - 'vs formed-in-place sealant: easier service, but groove cost'
+          - 'vs PTFE or metal seals: cheaper and more compliant, less chemical and temperature capability'
+          howto:
+          - Choose cross-section, then take groove depth, width and radius from the Parker chart for liquid or gas.
+          - Compute squeeze = (d2 - h)/d2 with the real lid gap included; keep static squeeze at or below 30 percent and at
+            least 0.2 mm.
+          - Keep groove fill near 75 percent (60-85) with at least 10 percent void.
+          - Locate the groove diameter from the pressure direction (mean OD for internal pressure, mean ID for external).
+          - Radius groove corners, deburr, lubricate on assembly, limit stretch to 5 percent.
+          - Keep sealing face finish at or below 32 microinch RMS (16 for gas or vacuum).
+          - Add a compression stop and a stiff lid; reduce diametral clearance 50 percent for silicone.
+          - On FDM print only the gland, machine or coat the sealing land, test with coupons.
+          issues:
+          - issue: squeeze too low
+            fix: at least 0.2 mm and within chart range
+            failure_mode: overload
+          - issue: squeeze above 30 percent
+            fix: reduce squeeze, validate compound
+            failure_mode: creep-preload-loss
+          - issue: groove overfilled
+            fix: fill near 75 percent, 10 percent void
+            failure_mode: overload
+          - issue: extrusion gap too big under pressure
+            fix: smaller clearance, harder compound, backup ring
+            failure_mode: overload
+          - issue: sharp groove corner cuts O-ring
+            fix: Parker corner radii
+            failure_mode: assembly-error
+          - issue: flange opens under pressure
+            fix: stiffen lid, more bolts, compression stop
+            failure_mode: excess-deflection
+          - issue: twisted or dry-installed O-ring
+            fix: lubricate, no roll, stretch at most 5 percent
+            failure_mode: assembly-error
+          - issue: rough or seamed FDM sealing face
+            fix: machine or coat the land, orient face flat
+            failure_mode: assembly-error
+          - issue: chosen on temperature alone
+            fix: check fluid, cleaner, hardness, compression set, low-temperature flexibility
+            failure_mode: environmental-degradation
+          axes:
+            locking: 'n/a: no threaded fastener in the seal itself; the lid screws are covered by the lid joint'
+            captive: 'relevant: dovetail groove retains O-ring during lid removal'
+            corrosion: 'n/a: elastomer chemistry applies'
+            bearing-face: 'relevant: gland depth and sealing land finish'
+            material-direction: 'relevant: FDM: layer gaps and seam across seal path'
+          rules:
+          - id: c1
+            text: Rotary contact speed above 1500 ft/min is outside the handbook scope
+            value: '1500'
+            unit: ft/min
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c2
+            text: Reciprocating speed below 1 ft/min excluded
+            value: '1'
+            unit: ft/min
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c3
+            text: Stroke above 12 in needs special precautions
+            value: '12'
+            unit: in
+            source_url: https://www.parker.com/content/dam/Parker-com/Literature/O-Ring-Division-Literature/ORD-5700.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: unverified
+            note: not found in the ORD 5700A/US copy read; may be in the current edition; recheck
+          - id: c4
+            text: 'Minimum absolute squeeze 0.007 in: 0.2 mm'
+            value: '0.2'
+            unit: mm
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c5
+            text: Static squeeze not above about 30 percent
+            value: <=30
+            unit: '%'
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c6
+            text: Groove fill about 75 percent (60-85 percent range) in the Parker handbook; at 85 percent fill the void is
+              15 percent, so the lower-fill end leaves more room
+            value: 75 (60-85), void>=10
+            unit: '%'
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c7
+            text: Groove diameter tolerance -1 percent of mean diameter, max 0.060 in, for one pressure direction, +1 percent
+              for the other
+            value: 1% max 0.060
+            unit: '% / in'
+            source_url: https://www.parker.com/content/dam/Parker-com/Literature/O-Ring-Division-Literature/ORD-5700.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: unverified
+            note: not in ORD 5700A/US; possibly in a newer edition; recheck
+          - id: c8
+            text: Rectangular face groove inside corner radius at least 3x the O-ring cross-section (the 'ideally 6x' was
+              not found)
+            value: '3'
+            unit: x cross-section
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c9
+            text: Reduce maximum diametral clearance by 50 percent for silicone or fluorosilicone
+            value: '50'
+            unit: '%'
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c10
+            text: Assembled O-ring stretch 5 percent or less
+            value: <=5
+            unit: '%'
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c11
+            text: Squeeze = (d2 - h)/d2 * 100 percent
+            value: (d2-h)/d2
+            unit: null
+            source_url: https://blog.parker.com/us/en/emg_oes/how-to-design-an-o-ring-gland-part-2-compression-us.html
+            source_quality: none
+            equipment: any
+            confidence: unverified
+            note: source could not be read; value kept for review
+          - id: c12
+            text: 'Face gland 1/16 in (0.070): depth 0.050-0.054, squeeze 19-32 percent, width liquid 0.101-0.107, gas 0.084-0.089,
+              radius 0.005-0.015 (in)'
+            value: 0.050-0.054 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c13
+            text: 'Face gland 3/32 in (0.103): depth 0.074-0.080, squeeze 20-30 percent, width liquid 0.136-0.142, gas 0.120-0.125,
+              radius 0.005-0.015 (in)'
+            value: 0.074-0.080 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c14
+            text: 'Face gland 1/8 in (0.139): depth 0.101-0.107, squeeze 20-30 percent, width liquid 0.177-0.187, gas 0.158-0.164,
+              radius 0.010-0.025 (in)'
+            value: 0.101-0.107 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c15
+            text: 'Face gland 3/16 in (0.210): depth 0.152-0.162, squeeze 21-30 percent, width liquid 0.270-0.290, gas 0.239-0.244,
+              radius 0.020-0.035 (in)'
+            value: 0.152-0.162 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c16
+            text: 'Face gland 1/4 in (0.275): depth 0.201-0.211, squeeze 21-29 percent, width liquid 0.342-0.362, gas 0.309-0.314,
+              radius 0.020-0.035 (in)'
+            value: 0.201-0.211 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c17
+            text: 'Face gland 3/8 in (0.375): depth 0.276-0.286, squeeze 22-28 percent, width liquid 0.475-0.485, gas 0.419-0.424,
+              radius 0.030-0.045 (in)'
+            value: 0.276-0.286 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c18
+            text: 'Face gland 1/2 in (0.500): depth 0.370-0.380, squeeze 22-27 percent, width liquid 0.638-0.645, gas 0.560-0.565,
+              radius 0.030-0.045 (in)'
+            value: 0.370-0.380 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c19
+            text: 'Radial gland 1/16 in: depth 0.050-0.052, squeeze 22-32 percent, diametral clearance 0.002-0.005, width
+              0.093-0.098, radius 0.005-0.015 (in)'
+            value: 0.050-0.052 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c20
+            text: 'Radial gland 3/32 in: depth 0.081-0.083, squeeze 17-24 percent, clearance 0.002-0.005, width 0.140-0.145,
+              radius 0.005-0.015 (in)'
+            value: 0.081-0.083 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c21
+            text: 'Radial gland 1/8 in: depth 0.111-0.113, squeeze 16-23 percent, clearance 0.003-0.006, width 0.187-0.192,
+              radius 0.010-0.025 (in)'
+            value: 0.111-0.113 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c22
+            text: 'Radial gland 3/16 in: depth 0.170-0.173, squeeze 15-21 percent, clearance 0.003-0.006, width 0.281-0.286,
+              radius 0.020-0.035 (in)'
+            value: 0.170-0.173 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c23
+            text: 'Radial gland 1/4 in: depth 0.226-0.229, squeeze 15-20 percent, clearance 0.004-0.007, width 0.375-0.380,
+              radius 0.020-0.035 (in)'
+            value: 0.226-0.229 depth
+            unit: in
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c24
+            text: Radial static gland chart valid up to 1500 psi (103.5 bar); above, backup rings
+            value: '1500'
+            unit: psi
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c25
+            text: Static sealing surface finish at most 32 microinch RMS; 16 for gas or vacuum face seals
+            value: 32 / 16
+            unit: microinch RMS
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c26
+            text: Dynamic surface preferred 10-20 microinch, avoid below 5
+            value: 10-20
+            unit: microinch
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c27
+            text: General-purpose hardness 70-80 Shore A; 50-60 Shore A for very low pressure
+            value: 70-80 / 50-60
+            unit: Shore A
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c28
+            text: Prusa accuracy about 0.2 mm; start moving fits at 0.3 mm (not a gland tolerance)
+            value: 0.2 / 0.3
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          sources:
+          - perplexity-reasoning:517459
+          - https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+          - https://www.parker.com/content/dam/Parker-com/Literature/O-Ring-Division-Literature/ORD-5700.pdf
+          - https://blog.parker.com/us/en/emg_oes/how-to-design-an-o-ring-gland-part-2-compression-us.html
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+        gasket-and-lip:
+          id: close/seal-interface/gasket-and-lip
+          role: leaf
+          coverage: deep
+          summary: Pick flat, foam, solid elastomer, printed TPU or tongue-and-groove by flange stiffness, reuse and process;
+            specify compressed thickness with a hard stop. IP ratings belong to the tested enclosure, not the gasket.
+          when:
+          - 'flat gasket: broad rigid flange, frequent disassembly, uniform clamp'
+          - 'closed-cell foam: irregular surfaces, low closure force'
+          - 'solid elastomer: repeatedly opened static lid, moderate sealing'
+          - 'printed TPU: prototype, one-off, noncritical static seal'
+          - 'tongue-and-groove: positive location, concealed gasket, washdown'
+          avoid_when:
+          - warped or flexible lid, large unsupported span, poorly controlled bolt load
+          - foam with high temperature, solvents, sharp edges or high pressure
+          - printed TPU for safety-critical, pressure, high-temperature or high-volume seals unless qualified
+          - tongue-and-groove where alignment or accuracy is poor
+          - 'sliding or rotating interface: use a dynamic seal'
+          variants:
+          - flat sheet gasket
+          - solid moulded gasket
+          - closed-cell foam tape or profile
+          - printed TPU gasket
+          - O-ring in face groove
+          - tongue-and-groove gasket
+          - labyrinth lip
+          - dual seal
+          tradeoffs:
+          - 'flat gasket: cheapest and most separable, needs distributed clamp load'
+          - 'foam or TPU: forgiving, but compression set and dimensional drift'
+          - 'tongue-and-groove: best repeatability and gasket protection, less tolerant of dirt and warp'
+          howto:
+          - Specify gasket material and hardness, free and compressed thickness, allowed compression range and a hard stop.
+          - Use solid elastomer at about 15-25 percent, sponge 25-40, closed-cell foam 25-50 percent, then check the supplier
+            curve.
+          - Keep flat gaskets 8-10 mm or wider with thickness-to-width ratio not below 1:5.
+          - Stiffen the lid, add fasteners or latches around the perimeter, keep the seal continuous with generous corner
+            radii.
+          - Retain the gasket in a shallow groove or tongue-and-groove.
+          - Dry TPU before printing, print slowly (about 20 mm/s), use continuous perimeters, leak-test.
+          - Test the complete enclosure to IEC 60529 for the claimed IP code.
+          issues:
+          - issue: design by free gasket thickness only
+            fix: specify compressed thickness and a compression limiter
+            failure_mode: creep-preload-loss
+          - issue: IP rating claimed for the gasket
+            fix: test the whole enclosure to IEC 60529
+            failure_mode: assembly-error
+          - issue: over-wide flat gasket
+            fix: narrow the web, keep at least 8-10 mm, ratio 1:5
+            failure_mode: overload
+          - issue: too much compression
+            fix: positive stop, lower squeeze, low-compression-set compound
+            failure_mode: creep-preload-loss
+          - issue: fasteners only at corners
+            fix: stiffen lid, more fasteners, check mid-span
+            failure_mode: excess-deflection
+          - issue: gasket crosses screw holes or sharp corners
+            fix: continuous seal, radii, holes outside the web
+            failure_mode: assembly-error
+          - issue: wet TPU printed
+            fix: dry before printing
+            failure_mode: assembly-error
+          - issue: no dirt relief in tongue-and-groove
+            fix: lead-in chamfers, drain paths not bypassing the seal
+            failure_mode: assembly-error
+          axes:
+            locking: 'n/a: clamp comes from latches or fasteners'
+            captive: 'relevant: gasket retention groove or tongue-and-groove capture'
+            corrosion: 'relevant: water trap at flange, galvanic contact, bypass around gasket'
+            bearing-face: 'relevant: flange flatness, finish and compression stop'
+            material-direction: 'relevant: FDM TPU: seams and layer interfaces as leak paths'
+          rules:
+          - id: c1
+            text: Flat gasket thickness about 0.5-2.0 mm
+            value: 0.5-2.0
+            unit: mm
+            source_url: https://www.trelleborg.com/seals/-/media/tss-media-repository/tss_website/pdf-and-other-literature/brochures/flatsealguides/flatseal-guide-01-fundamentals-of-flat-gasket-technology_en.pdf?rev=-1
+            source_quality: primary
+            equipment: sheet
+            confidence: handbook
+          - id: c2
+            text: Closed-cell foam working compression about 25-50 percent
+            value: 25-50
+            unit: '%'
+            source_url: https://h-oproducts.com/application/engineered-sealing-gasketing/
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c3
+            text: Solid elastomer starting compression about 15-25 percent
+            value: 15-25
+            unit: '%'
+            source_url: https://h-oproducts.com/industry-applications/outdoor-ip-rated-harsh-environment-sealing/
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c4
+            text: Hollow or sponge starting compression about 25-40 percent
+            value: 25-40
+            unit: '%'
+            source_url: https://h-oproducts.com/industry-applications/outdoor-ip-rated-harsh-environment-sealing/
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c5
+            text: Flat gasket thickness-to-width ratio preferably not below 1:5
+            value: '1:5'
+            unit: ratio
+            source_url: https://www.trelleborg.com/seals/-/media/tss-media-repository/tss_website/pdf-and-other-literature/brochures/flatsealguides/flatseal-guide-04-optimized-gasket-geometry_en.pdf?rev=-1
+            source_quality: primary
+            equipment: sheet
+            confidence: handbook
+          - id: c6
+            text: Soft flat gasket width not below about 8-10 mm
+            value: 8-10
+            unit: mm
+            source_url: https://www.trelleborg.com/seals/-/media/tss-media-repository/tss_website/pdf-and-other-literature/brochures/flatsealguides/flatseal-guide-04-optimized-gasket-geometry_en.pdf?rev=-1
+            source_quality: primary
+            equipment: sheet
+            confidence: handbook
+          - id: c7
+            text: Flat elastomer gasket deflection about 10 percent
+            value: '10'
+            unit: '%'
+            source_url: https://www.parker.com/content/dam/Parker-com/Literature/Chomerics/Parker-Chomerics-Conductive-Elastomer-Engineering-Handbook.pdf
+            source_quality: none
+            equipment: bought
+            confidence: unverified
+            note: source could not be read; value kept for review
+          - id: c8
+            text: 'Bolt-hole edge distance at least 1.5x bolt diameter for punched metal flange holes; drilled: at least gasket
+              thickness'
+            value: '1.5'
+            unit: x bolt diameter
+            source_url: https://www.parker.com/content/dam/Parker-com/Literature/Chomerics/Parker-Chomerics-Conductive-Elastomer-Engineering-Handbook.pdf
+            source_quality: none
+            equipment: sheet
+            confidence: unverified
+            note: source could not be read; value kept for review
+          - id: c9
+            text: Parker O-ring minimum seal squeeze about 0.2 mm; below about 0.1 mm recovery is lost rapidly
+            value: 0.2 / 0.1
+            unit: mm
+            source_url: https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c10
+            text: Parker gland corner radius 0.10-0.40 mm fits only the 1/16 to 3/32 in sections; 3/16 to 1/2 in sections
+              need 0.020-0.045 in (0.5-1.1 mm) per Design Chart 4-2
+            value: 0.10-0.40
+            unit: mm
+            source_url: https://www.vogel-gruppe.de/fileadmin/user_upload/Produktinformationen_Parker/O-Ringe/Parker_O-Ringe_Handbuch_Pdf_ODE5705.pdf
+            source_quality: primary
+            equipment: bought
+            confidence: handbook
+          - id: c11
+            text: 0.4 mm nozzle gives about 0.45 mm extrusion width
+            value: '0.45'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c12
+            text: Perimeter wall widths 0.45/0.90/1.35/1.80 mm for 1-4 perimeters
+            value: 0.45/0.90/1.35/1.80
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c13
+            text: Prusa accuracy at least 0.2 mm; initial moving clearance about 0.3 mm
+            value: 0.2 / 0.3
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+          - id: c16
+            text: 'Bambu TPU guide: 85A TPU cannot be printed with 0.4 mm nozzles, and TPU filament should be dried before
+              printing'
+            value: '0.4'
+            unit: mm
+            source_url: https://wiki.bambulab.com/en/knowledge-sharing/tpu-printing-guide
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+            corrected: true
+          - id: c17
+            text: IEC 60529 first digit solids 0-6, second digit liquids 0-9
+            value: 0-6 / 0-9
+            unit: IP digits
+            source_url: https://www.iec.ch/ip-ratings
+            source_quality: none
+            equipment: any
+            confidence: unverified
+            note: source could not be read; value kept for review
+          - id: c18
+            text: IP67 immersion test up to 1 m for 30 min
+            value: 1 m / 30 min
+            unit: m, min
+            source_url: https://www.pcbcart.com/article/content/ip67-sealing-potting-iot
+            source_quality: secondary
+            equipment: any
+            confidence: secondary
+          sources:
+          - perplexity-reasoning:517460
+          - https://www.trelleborg.com/seals/-/media/tss-media-repository/tss_website/pdf-and-other-literature/brochures/flatsealguides/flatseal-guide-01-fundamentals-of-flat-gasket-technology_en.pdf?rev=-1
+          - https://h-oproducts.com/application/engineered-sealing-gasketing/
+          - https://h-oproducts.com/industry-applications/outdoor-ip-rated-harsh-environment-sealing/
+          - https://www.trelleborg.com/seals/-/media/tss-media-repository/tss_website/pdf-and-other-literature/brochures/flatsealguides/flatseal-guide-04-optimized-gasket-geometry_en.pdf?rev=-1
+          - https://www.parker.com/content/dam/Parker-com/Literature/Chomerics/Parker-Chomerics-Conductive-Elastomer-Engineering-Handbook.pdf
+          - https://wp.optics.arizona.edu/optomech/wp-content/uploads/sites/53/2016/08/Parker-O-ring-handbook.pdf
+          - https://www.vogel-gruppe.de/fileadmin/user_upload/Produktinformationen_Parker/O-Ringe/Parker_O-Ringe_Handbuch_Pdf_ODE5705.pdf
+          - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+          - https://wiki.bambulab.com/en/knowledge-sharing/tpu-printing-guide
+          - https://www.iec.ch/ip-ratings
+          - https://www.pcbcart.com/article/content/ip67-sealing-potting-iot

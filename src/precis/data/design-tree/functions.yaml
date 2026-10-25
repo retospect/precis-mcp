@@ -1,0 +1,424 @@
+design_tree_manifest: S1
+status: 'remaining function goal roots at two levels — hand skeleton, coverage shallow throughout; a walk that lands here falls back to look-up and files a gap (SPEC rulings 2, 7)'
+ai_use: 'hand-authored from proposal-v2''s function list and the DESIGN skeleton rulings; not Perplexity-filled'
+adjust:
+  id: adjust
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: set a position, alignment or preload once and hold it — slotted holes, shims, set screws, turnbuckles
+  asks:
+  - separable
+  - load_kind
+  - tolerance_mm
+  - environment
+  children:
+    slotted-hole:
+      id: adjust/slotted-hole
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: an elongated hole gives one axis of position adjustment under a clamped fastener
+      links:
+      - join/service/threaded
+    shim-and-spacer:
+      id: adjust/shim-and-spacer
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: add or remove thickness to set a gap, height or preload; keep shim stacks short and captive where they can escape
+    set-screw-jack:
+      id: adjust/set-screw-jack
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a screw tip bears on the part and pushes it into position; lock the setting with a jam nut or threadlocker
+      links:
+      - rotate/shaft-hub/set-screw-on-flat
+    turnbuckle-and-tie-rod:
+      id: adjust/turnbuckle-and-tie-rod
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: opposed threads on one body adjust the tension or length of a cable or rod run
+slide:
+  id: slide
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: allow translation along an axis, prismatic or cylindrical, with controlled play and friction
+  asks:
+  - load_radial_N
+  - motion
+  - play_mm
+  - environment
+  - process
+  children:
+    dovetail-and-gib:
+      id: slide/dovetail-and-gib
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a tapered slide carried on matching faces; a gib strip takes up wear and sets the play
+      links:
+      - join/service/releasable-form-lock/dovetail-slide
+    rail-and-carriage:
+      id: slide/rail-and-carriage
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a bought linear rail or round shaft with a recirculating or plain carriage — stiffness and life are catalogue figures
+    rod-in-bore:
+      id: slide/rod-in-bore
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a shaft runs in a plain bore or bushing — the simplest cylindrical slide
+      links:
+      - rotate/plain-bearing/pin-in-hole
+    drawer-and-telescopic:
+      id: slide/drawer-and-telescopic
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: nested members or a bought telescopic slide bring a part out to the user
+hinge:
+  id: hinge
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: rotate through a limited angle between two panels or a lid and a body — specialises both rotate and close
+  also_under:
+  - rotate
+  - close
+  asks:
+  - open_frequency
+  - load_kind
+  - environment
+  - sealing
+  children:
+    knuckle-pin:
+      id: hinge/knuckle-pin
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: interleaved knuckles on a pin — the butt hinge, and the printed version that wants the pin bought
+      links:
+      - close/hinged/pin-hinge
+    flexure:
+      id: hinge/flexure
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a thin compliant web bends instead of a pin — living hinge, notch hinge; cycles and material set the limit
+      links:
+      - close/hinged/living-hinge
+    bought-hinge:
+      id: hinge/bought-hinge
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a catalogue hinge screwed, riveted or welded to both panels; leaves only the mounting to the designer
+transmit:
+  id: transmit
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: carry or convert motion and torque between shafts and parts — gears, belts, leadscrews, cams, linkages
+  asks:
+  - torque_Nm
+  - speed_rpm
+  - motion
+  - duty
+  - environment
+  children:
+    gear-pair:
+      id: transmit/gear-pair
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: meshing gears pass torque and set the ratio; printed and moulded gears want generous backlash and a wear check
+    belt-and-pulley:
+      id: transmit/belt-and-pulley
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a belt couples shafts across a distance — friction belt for torque, timing belt where position matters
+    leadscrew-nut:
+      id: transmit/leadscrew-nut
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: rotary to linear with mechanical advantage; a small lead self-locks, a large one back-drives
+    shaft-coupling:
+      id: transmit/shaft-coupling
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: joins collinear shafts; the flexible kind forgives the misalignment a rigid one cannot
+      links:
+      - rotate/shaft-hub
+    cam-and-follower:
+      id: transmit/cam-and-follower
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a shaped surface programs the follower's motion; dwell and return want a spring or a positive track
+      links:
+      - spring
+    linkage-bar:
+      id: transmit/linkage-bar
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: four-bar and friends convert between motions with only pivots — no rolling contact to wear
+hold-position:
+  id: hold-position
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: stop a moving part at discrete positions or lock it — detent, latch, ratchet, brake, friction
+  asks:
+  - load_N
+  - motion
+  - tool_free
+  - duty
+  children:
+    detent-ball-spring:
+      id: hold-position/detent-ball-spring
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a sprung ball or plunger drops into recesses — it positions; it does not carry a working load
+    ratchet-pawl:
+      id: hold-position/ratchet-pawl
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: one-way stepping with a tooth; a second pawl or a lift gives the release
+    latch-bolt:
+      id: hold-position/latch-bolt
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a sliding bolt or a bought latch holds a door, lid or slide shut
+      links:
+      - close/latches
+    brake-clamp:
+      id: hold-position/brake-clamp
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a friction clamp or band brake holds a shaft or slide wherever it stops — position anywhere, wear and slip to watch
+seal:
+  id: seal
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: keep fluid, dust or gas across a joint or a pass-through — gasket, O-ring, labyrinth, grommet
+  asks:
+  - sealing
+  - environment
+  - separable
+  - temp_range_C
+  - material_pair
+  children:
+    o-ring-groove:
+      id: seal/o-ring-groove
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a squeezed elastomer ring in a groove — face or radial; groove fill and squeeze are catalogue tables
+      links:
+      - close/seal-interface/o-ring-face-seal
+    flat-gasket:
+      id: seal/flat-gasket
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a compressed sheet, cut or formed gasket between faces; needs the clamp load spread evenly
+      links:
+      - close/seal-interface/gasket-and-lip
+    labyrinth:
+      id: seal/labyrinth
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a tortuous non-contact path — splash and dust, never pressure-tight, nothing to wear
+    pass-through-grommet:
+      id: seal/pass-through-grommet
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a cable or tube entry — grommet, gland or seal with strain relief so the seal is not the anchor
+mount:
+  id: mount
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: hold a bought part in a housing — PCB, bearing, battery, motor, display — join applied to a part that cannot change
+  asks:
+  - load_kind
+  - environment
+  - separable
+  - process
+  children:
+    pocket-and-standoff:
+      id: mount/pocket-and-standoff
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: the part sits in a pocket or on standoffs and bosses, held by screws or clips
+      links:
+      - locate/nest-pocket-step
+    clamp-and-strap:
+      id: mount/clamp-and-strap
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a strap, clamp ring or bracket holds a cylindrical or awkward part — batteries, motors, bottles
+    bearing-seat:
+      id: mount/bearing-seat
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a bearing pockets into the housing and is retained — fits and retention live under rotate/seat-and-retain
+      links:
+      - rotate/seat-and-retain/housing-and-shaft-fits
+    pcb-mount:
+      id: mount/pcb-mount
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: board on standoffs, card edge or rail; keep mounting holes, keep-outs and connector access honest
+spring:
+  id: spring
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: store energy and return a force — coil, leaf, torsion, elastomer, printed flexure
+  asks:
+  - load_N
+  - motion
+  - duty
+  - environment
+  children:
+    coil-spring-bought:
+      id: spring/coil-spring-bought
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a catalogue compression, tension or torsion spring — rate and travel are bought, not derived
+    leaf-and-cantilever:
+      id: spring/leaf-and-cantilever
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a beam in bending — strip or printed; strain at the root, not the average stress, is the limit
+    torsion-spring:
+      id: spring/torsion-spring
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a coil or straight bar in twist — clothespin logic; mind the diameter change under wind-up
+    elastomer-and-foam:
+      id: spring/elastomer-and-foam
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a polymer pad or cord in compression — cheap and quiet, but creep and set eat the preload
+    flexure-spring:
+      id: spring/flexure-spring
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a printed compliant element; an FDM beam bends along the layers or it snaps across them
+      links:
+      - join/integrate/one-body-print-mould
+damp:
+  id: damp
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: dissipate energy — slow a motion, absorb a shock, isolate vibration
+  asks:
+  - load_kind
+  - motion
+  - environment
+  - temp_range_C
+  children:
+    elastomer-mount:
+      id: damp/elastomer-mount
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a rubber or polymer isolator carries the part off the frame — motor feet, panel mounts, bump stops
+    friction-and-damping-material:
+      id: damp/friction-and-damping-material
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: foam, felt or a friction face eats the energy — deadens rattle and ring rather than controlling rate
+    bought-damper:
+      id: damp/bought-damper
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a gas strut or dashpot sets a rate the spring alone cannot — lids that lower gently, mechanisms that must not slam
+      links:
+      - spring
+carry:
+  id: carry
+  role: goal
+  domain: mech
+  scale: macro
+  coverage: shallow
+  authored: by-hand
+  def: take a load across a part — wall, rib, gusset, section choice; every other function points here for strength
+  asks:
+  - load_N
+  - load_kind
+  - material
+  - process
+  - size_mm
+  children:
+    section-and-wall:
+      id: carry/section-and-wall
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: pick wall and section so stress and deflection stay inside the material — the first-order sizing step
+    rib-and-gusset:
+      id: carry/rib-and-gusset
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a rib stiffens a wall or boss at little mass; moulded ribs keep the wall ratio down or they sink
+      links:
+      - process/primary-shaping/injection-mould/ribs-and-bosses
+    strut-and-shell:
+      id: carry/strut-and-shell
+      role: method
+      coverage: shallow
+      authored: by-hand
+      summary: a space frame or a closed shell carries the load path — where topology optimisation and printed lattices write
+      links:
+      - principles/load-path

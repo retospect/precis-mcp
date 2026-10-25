@@ -10,7 +10,7 @@ import yaml
 
 from precis.cli import _build_parser
 from precis.cli.conventions import ManifestError, import_conventions
-from precis.store import Store
+from precis.store import Store, Tag
 
 FIXTURE = Path(__file__).parent / "fixtures" / "conventions" / "rules.yaml"
 
@@ -179,6 +179,41 @@ def test_sync_rewrites_removes_edge_never_retires(store: Store, tmp_path: Path) 
     ]
     assert all(ret is None for _, _, ret in _importer_refs(store))
     assert len(_importer_refs(store)) == 5
+
+
+def test_sync_never_touches_space_tags(store: Store) -> None:
+    """R2-3: ``SPACE:*`` is a location, not importer vocabulary — --sync
+    adds the lane's tag only when the ref has none and never removes a
+    ``SPACE:*``, so a human retag is respected."""
+    import_conventions(store, FIXTURE)
+    ids = _by_key(store)
+    rule = ids["invariants/forward-only-migrations"]
+    enf = ids["tests/test_skill_size.py"]
+    # human retag: importer's system tag off, another space on as agent
+    store.remove_tag(rule, Tag.parse_strict("SPACE:repo-dev", kind="memory"))
+    store.add_tag(
+        rule,
+        Tag.parse_strict("SPACE:research", kind="memory"),
+        set_by="agent",
+    )
+    # a system-set foreign space (e.g. left by a different importer)
+    store.add_tag(
+        enf,
+        Tag.parse_strict("SPACE:personal", kind="memory"),
+        set_by="system",
+    )
+    rep = import_conventions(store, FIXTURE, sync=True)
+    assert (rep.created, rep.updated, rep.unchanged) == (0, 0, 5)
+    assert _tags(store, rule) == {"SPACE:research", "convention"}
+    assert {"SPACE:repo-dev", "SPACE:personal", "enforcer"} <= _tags(store, enf)
+    assert not any("tag-" in line for line in rep.lines)
+
+    # a ref with no SPACE:* at all gets the lane's tag (re-)added
+    store.remove_tag(enf, Tag.parse_strict("SPACE:repo-dev", kind="memory"))
+    store.remove_tag(enf, Tag.parse_strict("SPACE:personal", kind="memory"))
+    rep = import_conventions(store, FIXTURE, sync=True)
+    assert "SPACE:repo-dev" in _tags(store, enf)
+    assert f"tag-added me{enf} SPACE:repo-dev" in rep.lines
 
 
 def test_empty_manifest_orphans_and_reaps(store: Store, tmp_path: Path) -> None:

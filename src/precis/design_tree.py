@@ -12,7 +12,12 @@ export rely on:
   parents) is a DAG — multi-parent is legal, a cycle is refused;
 - every ``also_under`` or ``links`` target names a node that exists in
   the forest (``links`` mint ``related-to`` edges, which *may* cycle —
-  the walk never descends them).
+  the walk never descends them);
+- the shared-vocabulary references resolve the same way: an ``axes``
+  key names an ``axis/<key>`` node, an issue's ``failure_mode`` names a
+  ``failure/<name>`` node (both mint ``related-to`` edges with
+  ``{as: axis|mode}`` meta), and an ``asks`` entry names a
+  ``criterion/<name>`` node (vocabulary only — no edge rides on it).
 
 Everything here is pure: no DB, no store — ``precis.cli.conventions``
 turns a validated :class:`DesignTree` into finding refs and edges, and
@@ -30,6 +35,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from functools import cache, lru_cache
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -351,9 +357,10 @@ def _vet_fields(node_id: str, role: str, raw: dict[str, Any], where: str) -> Non
     """Type/vocabulary checks on the optional fields of one node."""
     equip = raw.get("equipment")
     if equip is not None:
-        if role != "process":
+        if role not in ("process", "leaf"):
             raise DesignTreeError(
-                f"{where} ({node_id}): equipment is only allowed on role=process nodes"
+                f"{where} ({node_id}): equipment is only allowed on "
+                "role=process or role=leaf nodes"
             )
         if equip not in EQUIPMENT:
             raise DesignTreeError(
@@ -419,7 +426,9 @@ def _vet_fields(node_id: str, role: str, raw: dict[str, Any], where: str) -> Non
             f"{', '.join(sorted(DIRECTNESS))}; got {direct!r}"
         )
     # domain/scale become tags (domain:<d>) — vet tag-safety now so bad
-    # input fails as a DesignTreeError before any DB work.
+    # input fails as a DesignTreeError before any DB work. Lowercase is
+    # required: Tag.open lowercases values silently, so an uppercase
+    # declaration would drift from the minted tag.
     from precis.errors import BadInput
     from precis.store.types import Tag
 
@@ -427,6 +436,10 @@ def _vet_fields(node_id: str, role: str, raw: dict[str, Any], where: str) -> Non
         val = raw.get(name)
         if val is None:
             continue
+        if val != val.strip().lower():
+            raise DesignTreeError(
+                f"{where} ({node_id}): {name} must be lowercase; got {val!r}"
+            )
         try:
             Tag.parse_strict(val)
         except BadInput as exc:
@@ -514,19 +527,30 @@ def _vet_conflict(node_id: str, c: Any, n: int, where: str, rule_ids: set[str]) 
         )
 
 
+#: ``table_ref`` may also name a standard table shipped as data under
+#: ``precis.data`` (the numbers live in one file, referenced never
+#: restated — ISO 2768-1 today). Extend as more tables land.
+_STANDARD_TABLES = frozenset({"iso_2768_1.json"})
+
+
+@lru_cache(maxsize=1)
 def _capability_row_ids() -> frozenset[str]:
     """The ``table_ref`` vocabulary: the ``mode`` of every row in the
-    packaged ``se_capabilities.json``; empty when the registry file is
-    absent, which refuses every ``table_ref``."""
+    packaged ``design-tree/capabilities.json`` plus the standard-table
+    file names in :data:`_STANDARD_TABLES`. Cached — every
+    ``machine_specific`` rule in the manifests hits this lookup."""
     try:
         data = json.loads(
             resources.files("precis.data")
-            .joinpath("se_capabilities.json")
+            .joinpath("design-tree")
+            .joinpath("capabilities.json")
             .read_text(encoding="utf-8")
         )
     except FileNotFoundError:
-        return frozenset()
-    return frozenset(str(r["mode"]) for r in data.get("rows") or [] if r.get("mode"))
+        return _STANDARD_TABLES
+    return _STANDARD_TABLES | frozenset(
+        str(r["mode"]) for r in data.get("rows") or [] if r.get("mode")
+    )
 
 
 def _vet_rule(
@@ -596,13 +620,14 @@ def _vet_rule(
         if not rows:
             raise DesignTreeError(
                 f"{where} ({node_id})#{rid}: table_ref {tref!r} — the "
-                "se_capabilities row registry is empty until S1; drop "
+                "design-tree/capabilities.json registry is empty; drop "
                 "table_ref until it carries rows"
             )
         if tref not in rows:
             raise DesignTreeError(
                 f"{where} ({node_id})#{rid}: table_ref {tref!r} names no "
-                f"se_capabilities row; options: {', '.join(sorted(rows))}"
+                "design-tree/capabilities.json row or standard table; "
+                f"options: {', '.join(sorted(rows))}"
             )
     for enf in rule.get("enforcers") or []:
         if (
@@ -636,6 +661,26 @@ def _finish(nodes: dict[str, Node]) -> DesignTree:
             if target not in nodes:
                 raise DesignTreeError(
                     f"{node.id}: links target {target!r} does not exist"
+                )
+        for key in node.record.get("axes") or {}:
+            if f"axis/{key}" not in nodes:
+                raise DesignTreeError(
+                    f"{node.id}: axes key {key!r} names no axis node "
+                    f"(expected axis/{key})"
+                )
+        for issue in node.record.get("issues") or []:
+            fm = (issue.get("failure_mode") or "").strip()
+            if fm and f"failure/{fm}" not in nodes:
+                raise DesignTreeError(
+                    f"{node.id}: issue failure_mode {fm!r} names no "
+                    f"failure-mode node (expected failure/{fm})"
+                )
+        for ask in node.record.get("asks") or []:
+            name = ask.split("{", 1)[0].strip()
+            if f"criterion/{name}" not in nodes:
+                raise DesignTreeError(
+                    f"{node.id}: asks entry {ask!r} names no criterion "
+                    f"node (expected criterion/{name})"
                 )
 
     # rebuild nodes with all parents, then check the DAG is acyclic
@@ -698,10 +743,15 @@ def _inherit(nodes: dict[str, Node]) -> dict[str, Node]:
                         if v is not None and v not in vals:
                             vals.append(v)
                     if len(vals) > 1:
+                        advice = (
+                            "declare 'equipment' explicitly on this node"
+                            if node.role in ("process", "leaf")
+                            else "pick one parent — equipment cannot be "
+                            f"declared on role={node.role} nodes"
+                        )
                         raise DesignTreeError(
                             f"{nid}: parents disagree on equipment "
-                            f"({', '.join(vals)}); declare 'equipment' "
-                            "explicitly on this node"
+                            f"({', '.join(vals)}); {advice}"
                         )
                     value = vals[0] if vals else None
                 else:
@@ -768,6 +818,14 @@ def _flatten(nodes: dict[str, Node]) -> tuple[list[Item], list[Edge]]:
             if as_role:
                 meta["as"] = as_role
             edge(nid, target, "related-to", meta)
+        for key, val in (rec.get("axes") or {}).items():
+            if str(val).strip().lower().startswith("n/a"):
+                continue  # not relevant here — an edge reads as relevant
+            edge(nid, f"axis/{key}", "related-to", {"as": "axis"})
+        for issue in rec.get("issues") or []:
+            fm = (issue.get("failure_mode") or "").strip()
+            if fm:
+                edge(nid, f"failure/{fm}", "related-to", {"as": "mode"})
 
         for s in rec.get("sources") or []:
             edge(nid, source_ref(s, nid), "cites")
@@ -894,10 +952,11 @@ def packaged_data_dir() -> Path:
     return Path(__file__).resolve().parent / "data"
 
 
+@cache
 def load_export() -> dict[str, Any]:
-    """Read the packaged ``design_rules.json`` (empty graph when absent or
-    until S1 lands the real manifests — the shipped file is the canonical
-    empty export, so ``params.leaf`` refuses every id honestly)."""
+    """Read the packaged ``design_rules.json`` (empty graph when absent —
+    ``params.leaf`` refuses every id honestly). Cached: the export is
+    over a megabyte and ``joints`` asks for it per ``params.leaf``."""
     try:
         text = (
             resources.files("precis.data")
@@ -909,8 +968,11 @@ def load_export() -> dict[str, Any]:
     return dict(json.loads(text))
 
 
+@cache
 def leaf_ids() -> frozenset[str]:
-    """The ``params.leaf`` vocabulary — leaf node ids from the export."""
+    """The ``params.leaf`` vocabulary — leaf node ids from the export.
+    Cached: tests that monkeypatch :func:`load_export` must
+    ``cache_clear()`` this to re-read."""
     return frozenset(load_export().get("leaves") or [])
 
 

@@ -18,12 +18,27 @@ axis/locking:
     adhesive, or none
   asks:
   - vibration
+axis/corrosion:
+  id: axis/corrosion
+  role: axis
+  coverage: stub
+  summary: corrosion is always designed out on a metal pair
 failure/galvanic-corrosion:
   id: failure/galvanic-corrosion
   role: failure-mode
   coverage: stub
   summary: dissimilar metals in an electrolyte — always designed out on
     metal pairs, never gated on outdoor use
+failure/loosening:
+  id: failure/loosening
+  role: failure-mode
+  coverage: stub
+  summary: vibration or cycling backs a fastener or seating off
+failure/lost-part:
+  id: failure/lost-part
+  role: failure-mode
+  coverage: stub
+  summary: a fastener, clip or detached part is lost
 principle/retention-all-dof:
   id: principle/retention-all-dof
   role: principle
@@ -54,6 +69,16 @@ criterion/separable:
   role: criterion
   coverage: stub
   summary: does the joint need to come apart — never, service or frequent
+criterion/load_kind:
+  id: criterion/load_kind
+  role: criterion
+  coverage: stub
+  summary: the character of the load — static, cyclic, shock
+criterion/vibration:
+  id: criterion/vibration
+  role: criterion
+  coverage: stub
+  summary: whether the joint sees vibration
 process/desktop-fdm:
   id: process/desktop-fdm
   role: process

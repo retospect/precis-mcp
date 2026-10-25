@@ -1,0 +1,1073 @@
+design_tree_manifest: run2
+status: run 2, verified drafts merged; for review, not yet linked or deduped
+ai_use: 'Pre-filled with Perplexity (perplexity-reasoning) to find sources, then each rule was checked against its cited source
+  by a separate agent. Prose and rule texts are our own wording; values trace to the listed source_url. Confidence levels:
+  standard, handbook, secondary, excerpt-only, shop-rule (not DRC-enforceable), unverified. Principles checks are hand-written;
+  their rules are verified claims.'
+principles:
+  id: principles
+  role: goal
+  scale: macro
+  domain: mech
+  coverage: deep
+  def: universal per-part and per-assembly checks, run on every part whether or not a leaf points at them
+  children:
+    retention-all-dof:
+      id: principles/retention-all-dof
+      role: principle
+      coverage: deep
+      summary: 'Give each part a six-row degree-of-freedom table: every row is free by design or stopped in both directions
+        by a named feature. Friction and gravity do not count as retention unless a preload or load calculation says so.'
+      applies: per-part
+      checks:
+      - List the part's 6 DOF (3 translations, 3 rotations) and mark each intended motion or stopped; leave none unclassified.
+      - For every stopped DOF name what stops the + direction and what stops the - direction (shoulder, pin, wall, clamp,
+        latch).
+      - Friction or gravity alone is not a stop when the object vibrates, is carried, or can be turned over; add a form stop
+        or justify it with a load case.
+      - 'An intended motion still needs limits: guide it, and stop its travel where it must end (axial retention for a turning
+        shaft).'
+      - Check every stop is itself retained (a circlip in a groove, a pin that cannot walk out).
+      - Check every orientation of use and of transport, not only the drawn one.
+      - 'Printed stops: check the stop load against creep and against the weak layer direction.'
+      - There must be an assembly path that reaches the stops (links principles/assembly-and-access).
+      issues:
+      - issue: Part held down only by its own weight (battery, cover, tray)
+        fix: Add a latch, captive screw, clip or positive cover stop that reacts lift and lateral motion
+        failure_mode: lost-part
+      - issue: Location by friction against a flat face
+        fix: Add shoulder, dowel, key, vee or pocket, or a clamp with controlled preload
+        failure_mode: wear-fretting
+      - issue: Connector or terminal held only by mating friction
+        fix: Add a housing latch and a secondary lock
+        failure_mode: loosening
+      - issue: Fastener preload treated as a permanent lock
+        fix: Keep clamp load and add a lock suited to the loosening mode, or positive capture
+        failure_mode: loosening
+      - issue: Oversized bolt holes expected to locate parts under cyclic shear
+        fix: Carry shear by preload friction, close-fit pins or dedicated shear features
+        failure_mode: wear-fretting
+      - issue: One-sided stop (blocks outward motion only)
+        fix: Add opposing shoulder, groove plus ring, or captured pin
+        failure_mode: lost-part
+      - issue: Snap ring or clip can walk out of its seat
+        fix: Positive groove and shoulder, installation check, secondary retention if release is hazardous
+        failure_mode: loosening
+      - issue: Several pads, pins and tight holes locate one plate
+        fix: Use a kinematic pattern with only the independent contacts needed
+        failure_mode: assembly-error
+      literature:
+      - 'Blanding, Exact Constraint: Machine Design Using Kinematic Principles, ASME Press 1999'
+      - 'Slocum, Kinematic Couplings: A Review of Design Principles and Applications'
+      - MIT 2.72 Elements of Mechanical Design, lecture 6 Exact Constraint
+      - Hale, Practical Exact-Constraint Design (MIT thesis)
+      - NASA-STD-5017 mechanisms; NASA-STD-5020B threaded fastening
+      rules:
+      - id: c1
+        text: 'A rigid body has six independent degrees of freedom: three translations and three rotations: 6 DOF'
+        value: '6'
+        unit: DOF
+        source_url: https://web.mae.ufl.edu/designlab/DFMA%20Tips/Fundamental_Design_Principles_KCraig.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c2
+        text: Constraints C plus remaining independent DOF R equals 6 (6 - C = R)
+        value: 6 - C = R
+        unit: null
+        source_url: https://ocw.mit.edu/courses/2-72-elements-of-mechanical-design-spring-2009/22c0cb8444c787d92b49afe5ed97ff7b_MIT2_72s09_lec06.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c3
+        text: 'Exact constraint uses one independent constraint per DOF to be constrained, no more: 1 constraint per DOF'
+        value: '1'
+        unit: constraint per DOF
+        source_url: https://ocw.mit.edu/courses/2-72-elements-of-mechanical-design-spring-2009/22c0cb8444c787d92b49afe5ed97ff7b_MIT2_72s09_lec06.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c4
+        text: 'NASA requires each structural fastener to have two verifiable locking features or be positively retained or
+          captured: 2 locking features'
+        value: '2'
+        unit: locking features
+        source_url: https://standards.nasa.gov/sites/default/files/standards/NASA/w/CHANGE-1/1/Historical/nasa-std-5017.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      - id: c5
+        text: 'Quasi-kinematic averaging design uses ten or more compliant support points per DOF restrained (not an exact-constraint
+          rule): >= 10 points per DOF'
+        value: '>= 10'
+        unit: points per DOF
+        source_url: https://web.mae.ufl.edu/designlab/DFMA%20Tips/Fundamental_Design_Principles_KCraig.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c6
+        text: Preload around 70 percent of yield strength is usually but not always enough to prevent vibration loosening
+          (aerospace observation)
+        value: '70'
+        unit: '% of yield'
+        source_url: https://standards.nasa.gov/sites/default/files/standards/NASA/w/CHANGE-1/1/Historical/nasa-std-5017.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      - id: c7
+        text: For cyclic or vibrating joints, shear should go through preload friction, close-fit or interference pins, or
+          dedicated shear features rather than bolt clearance
+        value: null
+        unit: null
+        source_url: https://standards.nasa.gov/sites/default/files/standards/NASA/B/0/2021-08-06-nasa-std-5020b_final.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      sources:
+      - perplexity-reasoning:517419
+      - https://web.mae.ufl.edu/designlab/DFMA%20Tips/Fundamental_Design_Principles_KCraig.pdf
+      - https://ocw.mit.edu/courses/2-72-elements-of-mechanical-design-spring-2009/22c0cb8444c787d92b49afe5ed97ff7b_MIT2_72s09_lec06.pdf
+      - https://standards.nasa.gov/sites/default/files/standards/NASA/w/CHANGE-1/1/Historical/nasa-std-5017.pdf
+      - https://standards.nasa.gov/sites/default/files/standards/NASA/B/0/2021-08-06-nasa-std-5020b_final.pdf
+    fail-safe-retention:
+      id: principles/fail-safe-retention
+      role: principle
+      coverage: deep
+      summary: Assume the primary retainer is already ineffective, then show what physically stops the part, what load that
+        stop carries, and what happens next. A backup counts only if it is independent of the primary, sized for the released
+        load, inspectable and cannot itself escape.
+      applies: per-part, where losing the part hurts someone or wrecks the object
+      checks:
+      - 'Name the primary failure: nut backs off, screw breaks, ring leaves groove, latch opens, glue lets go.'
+      - Say what the freed part then does (falls, flies, jams, drops its load) and whether that is acceptable.
+      - If not acceptable, add a backup that does not share the primary's friction, preload, hole or groove (cotter pin through
+        a castle nut, safety wire, lip, captive feature).
+      - The backup takes the full load after the primary is gone.
+      - The installed state can be seen or felt; a missing backup is obvious.
+      - 'One line answer: with the primary retainer gone, what stops the part, at what load.'
+      issues:
+      - issue: Plain nut on a vibrating or rotating bolt
+        fix: Castellated nut with cotter pin, safety wire or cable, or another positive mechanical lock
+        failure_mode: loosening
+      - issue: Prevailing-torque nut or threadlocker as the only retention in a critical joint
+        fix: Add mechanical retention; treat friction or adhesive devices as supplemental
+        failure_mode: loosening
+      - issue: Serrated lock washer used as backup to a preload-critical joint
+        fix: Use a positive stop such as cotter pin, lock plate, safety wire or captive hardware
+        failure_mode: loosening
+      - issue: Castle nut fitted without cotter pin
+        fix: Fit a correctly sized new cotter pin through the drilled bolt
+        failure_mode: loosening
+      - issue: Over-tightening castle nut to line up the slot
+        fix: Start at low end of torque range, advance only to next slot, never exceed maximum
+        failure_mode: overload
+      - issue: Slack safety wire
+        fix: Install tight under light tension with consistent twists
+        failure_mode: loosening
+      - issue: Retaining ring in chamfered, worn or undersized groove
+        fix: Proper ring and groove with a load-bearing wall
+        failure_mode: loosening
+      - issue: Lip or shoulder too thin or brittle for the abnormal load
+        fix: Size and test for full released load, add second independent capture if hazardous
+        failure_mode: brittle-fracture
+      - issue: Locking quick-release pin treated as fail-safe
+        fix: Add a positive keeper; avoid pins whose balls carry axial tension
+        failure_mode: lost-part
+      - issue: Two locks that share one hole, groove or wire anchor
+        fix: Show separate load paths and separate failure mechanisms
+        failure_mode: lost-part
+      literature:
+      - NASA-STD-5020B Requirements for Threaded Fastening Systems in Spaceflight
+      - NASA RP-1228, Fastener Design Manual, R. T. Barrett, March 1990 (NTRS 19900009424)
+      - FAA AC 43.13-1B and 43.13-2B
+      - MS33540 safety wiring, cabling, cotter pinning
+      - NASA-STD-5019 and NASA-HDBK-5010 fracture control
+      - FAA AC 23-13A, AC 25.571-1B
+      - Shigley, Mechanical Engineering Design
+      rules:
+      - id: c1
+        text: 'Aircraft equipment installation guidance (AC 43.13-2B): each removable fastener needs two retaining devices
+          so one can fail without loss'
+        value: '2'
+        unit: devices
+        source_url: https://www.faa.gov/documentlibrary/media/advisory_circular/ac%2043.13-2b.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      - id: c2
+        text: NASA-STD-5020B cites severe-vibration data showing about 30 percent preload loss when rotation is arrested by
+          a mechanical lock (an example, not an allowance)
+        value: '30'
+        unit: '% preload'
+        source_url: https://standards.nasa.gov/sites/default/files/standards/NASA/B/0/2021-08-06-nasa-std-5020b_final.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      - id: c3
+        text: A good safety-wire job has roughly 6 to 8 twists per inch
+        value: 6-8
+        unit: twists/in
+        source_url: https://www.faa.gov/sites/faa.gov/files/2022-01/Safety%20Wire.pdf
+        source_quality: secondary
+        equipment: bought
+        confidence: secondary
+      - id: c4
+        text: 'NASA GSFC 540-PG-8072.1.2B: running-torque verification of locking fasteners covers the greater of 5 fasteners
+          or 10 percent of the population (check the current revision)'
+        value: 5 or 10
+        unit: fasteners or %
+        source_url: https://www.nasa.gov/wp-content/uploads/2025/06/mechanicalfastenertorqueguidelines.pdf?emrc=6ab8b7d41242d
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      - id: c5
+        text: 'At least one thread should protrude through the nut in the applicable plain and self-locking nut installations:
+          1 thread'
+        value: '1'
+        unit: thread
+        source_url: https://www.faa.gov/sites/faa.gov/files/2023-08/AC_43.13-1B_Ch7.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      - id: c6
+        text: NASA fracture-control fail-safe means remaining structure carries redistributed load with minimum ultimate safety
+          factor 1.0 on limit load and releases no catastrophic free body
+        value: '1.0'
+        unit: factor on limit load
+        source_url: https://standards.nasa.gov/sites/default/files/standards/NASA/w/CHANGE-3/3/Historical/nasa-std-5019.pdf
+        source_quality: primary
+        equipment: any
+        confidence: standard
+      - id: c7
+        text: 'FAA guidance: castle nuts require a cotter pin'
+        value: null
+        unit: null
+        source_url: https://www.faa.gov/sites/faa.gov/files/2022-01/Safety%20Wire.pdf
+        source_quality: secondary
+        equipment: bought
+        confidence: secondary
+      - id: c8
+        text: A bolt subject to rotation in operation needs a mechanical locking feature
+        value: null
+        unit: null
+        source_url: https://standards.nasa.gov/sites/default/files/standards/NASA/B/0/2021-08-06-nasa-std-5020b_final.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      - id: c9
+        text: Free-spinning locking devices cannot serve as the secondary lock when preload is the primary lock
+        value: null
+        unit: null
+        source_url: https://standards.nasa.gov/sites/default/files/standards/NASA/B/0/2021-08-06-nasa-std-5020b_final.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: standard
+      sources:
+      - perplexity-reasoning:517424
+      - https://www.faa.gov/documentlibrary/media/advisory_circular/ac%2043.13-2b.pdf
+      - https://standards.nasa.gov/sites/default/files/standards/NASA/B/0/2021-08-06-nasa-std-5020b_final.pdf
+      - https://www.faa.gov/sites/faa.gov/files/2022-01/Safety%20Wire.pdf
+      - https://www.nasa.gov/wp-content/uploads/2025/06/mechanicalfastenertorqueguidelines.pdf?emrc=6ab8b7d41242d
+      - https://www.faa.gov/sites/faa.gov/files/2023-08/AC_43.13-1B_Ch7.pdf
+      - https://standards.nasa.gov/sites/default/files/standards/NASA/w/CHANGE-3/3/Historical/nasa-std-5019.pdf
+    over-constraint:
+      id: principles/over-constraint
+      role: principle
+      coverage: deep
+      summary: Constrain exactly the degrees of freedom the function needs. Where two features try to fix the same direction,
+        real tolerance, thermal and alignment error makes them fight; make one of them float, flex or have clearance unless
+        the redundancy is analysed on purpose.
+      applies: per-assembly
+      checks:
+      - For each joint list the DOF to stop and to leave free; count independent constraints, with no two fixing the same
+        direction.
+      - Constraints must not depend on perfect parallelism, coaxiality or flatness (two bearings in two separate housings;
+        four feet on a flat face).
+      - On a shaft with two bearings, one locates axially and the other floats (links rotate/seat-and-retain/locating-floating-arrangement).
+      - 'Two screws through clearance holes: check the floating-fastener position tolerance; or use one pin plus one slot
+        (links locate/dowel-pin-and-slot).'
+      - Where redundancy is deliberate (stiffness), name the shim, slot or adjuster that absorbs the misfit.
+      issues:
+      - issue: Two bearings both fixed axially on one shaft
+        fix: One locating and one non-locating bearing
+        failure_mode: thermal-mismatch
+      - issue: Two rails forced parallel by rigid mounting
+        fix: One master guide and a floating or adjustable follower
+        failure_mode: excess-deflection
+      - issue: Four rigid feet on one frame
+        fix: Three support points, or make one or more feet adjustable or compliant
+        failure_mode: assembly-error
+      - issue: Several rigid coaxial bearings on one shaft
+        fix: Fewer locating constraints, self-aligning bearing, or floating bearing
+        failure_mode: wear-fretting
+      - issue: Cover located by tight dowels plus close perimeter walls
+        fix: One feature set locates, the other gets clearance or compliance
+        failure_mode: assembly-error
+      - issue: Frame members of different expansion fixed at both ends
+        fix: Slot, sliding support, flexure, or one fixed and one guided end
+        failure_mode: thermal-mismatch
+      - issue: Binding cured by stiffening parts
+        fix: Remove or relax the redundant constraint instead
+        failure_mode: overload
+      literature:
+      - 'Blanding, Exact Constraint: Machine Design Using Kinematic Principles, ASME Press 1999'
+      - ASME Y14.5 and Y14.5.1 datum reference frames and degrees of freedom
+      - SKF bearing arrangement guidance (locating, non-locating supports)
+      rules:
+      - id: c1
+        text: 'An unconstrained rigid part has six DOF, three translational and three rotational: 6 DOF'
+        value: '6'
+        unit: DOF
+        source_url: https://manufacturingeducation.wordpress.ncsu.edu/files/2019/05/ASME-Y14.5M-2009.pdf
+        source_quality: primary
+        equipment: any
+        confidence: standard
+      - id: c2
+        text: Exact constraint means just enough constraints, no more and no fewer
+        value: null
+        unit: null
+        source_url: https://web.mae.ufl.edu/designlab/DFMA%20Tips/Fundamental_Design_Principles_KCraig.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c3
+        text: Uniform thermal length change is dL = alpha * L * dT
+        value: alpha L dT
+        unit: null
+        source_url: https://nvlpubs.nist.gov/nistpubs/jres/099/jresv99n1p31_a1b.pdf
+        source_quality: primary
+        equipment: any
+        confidence: handbook
+      - id: c4
+        text: SKF CARB toroidal bearing permits relative axial displacement up to 10 percent of bearing width (product-specific)
+        value: '10'
+        unit: '% of bearing width'
+        source_url: https://cdn.skfmediahub.skf.com/api/public/0901d1968089d1b4/pdf_preview_medium/0901d1968089d1b4_pdf_preview_medium.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: handbook
+      - id: c5
+        text: 'Three support points avoid rocking without needing four points to be coplanar: 3 points'
+        value: '3'
+        unit: points
+        source_url: https://web.iitd.ac.in/~jpkhatait/docs/me-2009-sep2-exactconstraint.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c6
+        text: In a two-support shaft arrangement one support locates axially and the other absorbs thermal growth and tolerance
+          accumulation
+        value: null
+        unit: null
+        source_url: https://www.reliableplant.com/Articles/Print/27189
+        source_quality: secondary
+        equipment: bought
+        confidence: secondary
+      sources:
+      - perplexity-reasoning:517430
+      - https://manufacturingeducation.wordpress.ncsu.edu/files/2019/05/ASME-Y14.5M-2009.pdf
+      - https://web.mae.ufl.edu/designlab/DFMA%20Tips/Fundamental_Design_Principles_KCraig.pdf
+      - https://nvlpubs.nist.gov/nistpubs/jres/099/jresv99n1p31_a1b.pdf
+      - https://cdn.skfmediahub.skf.com/api/public/0901d1968089d1b4/pdf_preview_medium/0901d1968089d1b4_pdf_preview_medium.pdf
+      - https://web.iitd.ac.in/~jpkhatait/docs/me-2009-sep2-exactconstraint.pdf
+      - https://www.reliableplant.com/Articles/Print/27189
+    load-path:
+      id: principles/load-path
+      role: principle
+      coverage: deep
+      summary: Draw the free-body diagram and follow every force and moment from where it enters to ground; inspect each transition
+        on the way. Reject paths that go through threads in shear, thin cantilevered tabs, gaps or long flexible shells.
+      applies: per-part and per-joint, per load case
+      checks:
+      - For each load case trace the force from where it enters to ground, part by part and joint by joint; no gaps.
+      - Threads carry tension, not shear; shear goes through a shank, dowel, shoulder or nesting feature.
+      - Thin features in bending, sharp internal corners and holes on the path get a fillet, rib or more section.
+      - 'Printed parts: the main stress runs along the layers, not across them (links axis material-direction).'
+      - 'Plastic under a screw head or in a clamp: check creep and preload loss (links axis bearing-face).'
+      - Where friction carries the shear, check slip margin with the real preload.
+      - Follow torque and moments through too, not only forces (a crank arm, a cantilevered shaft).
+      issues:
+      - issue: Lateral load carried by engaged threads in a tapped hole
+        fix: Clearance hole with shank in shear plane, dowel, shoulder bolt or insert
+        failure_mode: overload
+      - issue: Bolt bending from a gap, gasket or long spacer
+        fix: Remove gap, shorten grip, support the shear plane, or compute bolt moment
+        failure_mode: fatigue
+      - issue: Eccentric bracket with prying
+        fix: Move support plane to load, deepen bracket, add web or gusset, design bolt group for force plus moment
+        failure_mode: overload
+      - issue: Thin tab used as beam
+        fix: Return flange or gusset, two-sided clevis, check bearing, net section and tear-out
+        failure_mode: excess-deflection
+      - issue: Load introduced at a sharp corner or small boss
+        fix: Bearing pad, fillet, flange, rib or taper to spread it
+        failure_mode: fatigue
+      - issue: Long indirect path through flexible cover and remote fasteners
+        fix: Put the support directly over a stiff web or frame member
+        failure_mode: excess-deflection
+      - issue: Preload friction assumed to resist cyclic shear
+        fix: Set minimum preload and slip margin, or add pin, shoulder or key
+        failure_mode: loosening
+      - issue: Equal load sharing assumed between redundant fasteners
+        fix: Analyse stiffness, eccentricity and the most loaded fastener
+        failure_mode: overload
+      literature:
+      - Shigley, Mechanical Engineering Design (bolted and riveted joints)
+      - Roark, Formulas for Stress and Strain
+      - Barrett, NASA RP-1228, Fastener Design Manual, March 1990 (NTRS 19900009424)
+      - VDI 2230 Blatt 1 and Blatt 2 (single and multi-bolt joints)
+      - NASA-STD-5020
+      rules:
+      - id: c1
+        text: Preliminary edge distance for fasteners at least 1.5 times fastener diameter
+        value: '1.5'
+        unit: x d
+        source_url: https://caeflow.com/fea/bolted-joints/
+        source_quality: weak
+        equipment: bought
+        confidence: secondary
+      - id: c2
+        text: 'Preliminary thread engagement about one fastener diameter to guard against thread shear: 1 x d'
+        value: '1'
+        unit: x d
+        source_url: https://mechanicalc.com/reference/bolted-joint-analysis
+        source_quality: weak
+        equipment: bought
+        confidence: secondary
+      - id: c3
+        text: Keep the plain shank in the shear plane of a direct-shear bolt; otherwise use the reduced threaded-section capacity
+        value: null
+        unit: null
+        source_url: https://www.roymech.co.uk/Useful_Tables/Screws/Bolted_Joint.html
+        source_quality: weak
+        equipment: bought
+        confidence: secondary
+      - id: c4
+        text: 'Thin-plate flexural rigidity scales with thickness cubed: 3 exponent on t'
+        value: '3'
+        unit: exponent on t
+        source_url: https://mechcodex.com/learn/strength-of-materials/plate-bending-roark
+        source_quality: weak
+        equipment: any
+        confidence: secondary
+      - id: c5
+        text: Injection-moulded ribs about 50 to 60 percent of nominal wall thickness
+        value: 50-60
+        unit: '% of wall'
+        source_url: https://www.envalior.com/en-us/corrugations-ribs-and-gussets
+        source_quality: primary
+        equipment: injection-mould
+        confidence: handbook
+      - id: c6
+        text: Injection-moulded rib height no more than about 3 times wall thickness
+        value: '3'
+        unit: x t
+        source_url: https://www.envalior.com/en-us/corrugations-ribs-and-gussets
+        source_quality: primary
+        equipment: injection-mould
+        confidence: handbook
+      - id: c7
+        text: Bolt bending moment from transverse shear across a gap is M_b = F_s * a / 2
+        value: F_s a / 2
+        unit: N*mm
+        source_url: https://mechanicalc.com/reference/bolted-joint-analysis
+        source_quality: weak
+        equipment: bought
+        confidence: secondary
+      - id: c8
+        text: Orient stiffening ribs along the bending or load direction; across it they add little stiffness
+        value: null
+        unit: null
+        source_url: https://www.envalior.com/en-us/corrugations-ribs-and-gussets
+        source_quality: primary
+        equipment: injection-mould
+        confidence: handbook
+      sources:
+      - perplexity-reasoning:517434
+      - https://caeflow.com/fea/bolted-joints/
+      - https://mechanicalc.com/reference/bolted-joint-analysis
+      - https://www.roymech.co.uk/Useful_Tables/Screws/Bolted_Joint.html
+      - https://mechcodex.com/learn/strength-of-materials/plate-bending-roark
+      - https://www.envalior.com/en-us/corrugations-ribs-and-gussets
+    assembly-and-access:
+      id: principles/assembly-and-access
+      role: principle
+      coverage: deep
+      summary: For each part, check it can be picked, oriented, inserted along a clear path, secured, inspected, removed and
+        reinstalled with the stated tools and order. Boothroyd-Dewhurst supplies the method (minimum parts, handling plus
+        insertion time) but no fixed clearance number.
+      applies: per-assembly
+      checks:
+      - Write the assembly order; each part and fastener has a straight insertion path at its turn.
+      - Every screw head can be reached by its actual tool (hex key length, driver shaft, socket OD) at its turn.
+      - Disassembly for service works in reverse without cutting or breaking parts that should survive.
+      - Cables, seals and fingers are not pinched when closing.
+      - 'Printed parts: support material can be removed, and a print-in-place gap is clear.'
+      - Prefer fewer parts and fewer fastener types (Boothroyd-Dewhurst minimum part count).
+      issues:
+      - issue: Insertion path blocked by an installed feature
+        fix: Define sequence, relocate rib, or give the part a straight removal path
+        failure_mode: assembly-error
+      - issue: Multi-axis or sideways insertion with tilting
+        fix: Single-axis insertion, lead-in, split housing, change retention
+        failure_mode: assembly-error
+      - issue: Driver cannot align with screw
+        fix: Access window, move screw to accessible face, captive side fastener, or snap
+        failure_mode: assembly-error
+      - issue: Tool cannot be withdrawn from a recessed screw
+        fix: Coaxial tool corridor at least tool engagement plus stroke, shorter or right-angle tool
+        failure_mode: assembly-error
+      - issue: Service item fastened under a glued cover
+        fix: Screws on service side, captive screws or clips, removable without destroying the cover
+        failure_mode: assembly-error
+      - issue: Nut must be held behind a closed panel
+        fix: Captive nut, insert, weld nut, or install before closure
+        failure_mode: assembly-error
+      - issue: No lead-in; part jams if tilted
+        fix: Chamfer, radius, pilot diameter, taper
+        failure_mode: assembly-error
+      - issue: Nearly symmetric part installed backwards
+        fix: Key it, offset holes, exaggerate asymmetry, mark polarity
+        failure_mode: assembly-error
+      - issue: Permanent weld or glue joint in a service path
+        fix: Screws, quarter-turn latches or clips unless sealing or structure requires permanence
+        failure_mode: assembly-error
+      - issue: Mixed screw heads and sizes
+        fix: Standardise fastener family and size
+        failure_mode: assembly-error
+      literature:
+      - Boothroyd, Dewhurst, Knight, Product Design for Manufacture and Assembly, 3rd ed., CRC Press 2010
+      - ISO 8887-1:2017 and ISO 8887-2:2023
+      - IEC 62430:2019; IEC TS 63428:2024; ISO 11469:2016
+      rules:
+      - id: c1
+        text: Boothroyd-Dewhurst ideal basic assembly time is about 3 seconds per part
+        value: '3'
+        unit: s
+        source_url: https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c2
+        text: DFA efficiency = 100 * Nm * tm / ta (minimum part count, minimum time per part, estimated total time)
+        value: 100 Nm tm / ta
+        unit: '%'
+        source_url: https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c3
+        text: 'Three minimum-part questions: moves relative to other parts, needs different material or isolation, must be
+          separate for assembly, service or adjustment: 3 questions'
+        value: '3'
+        unit: questions
+        source_url: https://www.dfma.com/about-history.asp
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c4
+        text: 'Eight core manual DFA rules: fewer parts, no adjustments, self-locating, access and vision, easy bulk handling,
+          few reorientations, prevent wrong installation, symmetry or obvious asymmetry: 8 rules'
+        value: '8'
+        unit: rules
+        source_url: https://web.mit.edu/course/2/2.810/www/files/lectures/lec4-process-performance-2019.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c5
+        text: Assembly time per part is handling time plus insertion and fastening time
+        value: null
+        unit: null
+        source_url: https://www.dfma.com/resources/assembly-cost-estimating.asp
+        source_quality: weak
+        equipment: any
+        confidence: secondary
+      - id: c6
+        text: ISO 8887-1:2017 treats assembly and disassembly documentation as a design output
+        value: null
+        unit: null
+        source_url: https://standards.iteh.ai/catalog/tc/iso/f6e08acb-0b1d-4d8f-ac7f-7cad65073828/iso-tc-10-wg-20
+        source_quality: weak
+        equipment: any
+        confidence: excerpt-only
+        standard: ISO 8887-1
+        note: confirmed only from a search excerpt, page not read
+      sources:
+      - perplexity-reasoning:517441
+      - https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+      - https://www.dfma.com/about-history.asp
+      - https://web.mit.edu/course/2/2.810/www/files/lectures/lec4-process-performance-2019.pdf
+      - https://www.dfma.com/resources/assembly-cost-estimating.asp
+      - https://standards.iteh.ai/catalog/tc/iso/f6e08acb-0b1d-4d8f-ac7f-7cad65073828/iso-tc-10-wg-20
+    mistake-proofing:
+      id: principles/mistake-proofing
+      role: principle
+      coverage: deep
+      summary: For each wrong part, orientation, omission, order or mating pair, either make it physically impossible or detect
+        it where it happens. Make parts fully symmetric or unmistakably asymmetric; markings alone are a fallback.
+      applies: per-assembly
+      checks:
+      - 'A part that fits only one way should only fit one way: make asymmetric parts visibly asymmetric, or key them.'
+      - Mirror-image (left and right) parts are marked or keyed so they cannot be swapped.
+      - 'Similar screws of different length in one assembly: a too-long screw must not damage anything; otherwise use one
+        length.'
+      - Connectors and polarised parts cannot be plugged reversed.
+      - The keying is strong enough that it cannot be forced.
+      issues:
+      - issue: Cover fits both ways but only one is functional
+        fix: Offset one hole, add asymmetric dowels or tab and slot
+        failure_mode: assembly-error
+      - issue: Slight asymmetry that is easy to overlook
+        fix: 'Exaggerate: unequal pin spacing, large notch, different guide-pin diameters'
+        failure_mode: assembly-error
+      - issue: Left and right brackets look alike
+        fix: One common part, or distinct hole spacing and geometry
+        failure_mode: assembly-error
+      - issue: Connector can be forced into wrong socket
+        fix: Notch, asymmetric shell, offset pins, different families
+        failure_mode: assembly-error
+      - issue: Seal or gasket can be reversed
+        fix: Locating shoulder or asymmetric section; if harmless, make truly symmetric
+        failure_mode: assembly-error
+      - issue: Flexible part folds into wrong route
+        fix: Formed or keyed part, routing clips, distinct end fittings
+        failure_mode: assembly-error
+      - issue: Screw omitted or miscounted
+        fix: Captive fasteners, counting driver, fixture exposing all holes
+        failure_mode: assembly-error
+      - issue: Part inserted before its prerequisite
+        fix: Make the later part unavailable until the earlier one is present
+        failure_mode: assembly-error
+      - issue: Orientation only marked TOP, not blocked
+        fix: Add blocking geometry; use marking as a fallback only
+        failure_mode: assembly-error
+      literature:
+      - 'Shingo, Zero Quality Control: Source Inspection and the Poka-Yoke System, Productivity Press 1986'
+      - 'Nikkan Kogyo Shimbun, Poka-Yoke: Improving Product Quality by Preventing Defects, 1989'
+      - Boothroyd, Dewhurst, Knight, Product Design for Manufacture and Assembly
+      - IATF 16949:2016 clause 10.2.4; ISO 9001:2015 clauses 6.1 and 8.6
+      rules:
+      - id: c1
+        text: Alpha symmetry is rotation about an axis perpendicular to the insertion axis (end-to-end orientation)
+        value: null
+        unit: null
+        source_url: https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c2
+        text: Beta symmetry is rotation about the insertion axis; the smallest repeating rotation characterises the part
+        value: null
+        unit: null
+        source_url: https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c3
+        text: DFA efficiency = Nm * tm / ta * 100
+        value: 100 Nm tm / ta
+        unit: '%'
+        source_url: https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c4
+        text: Boothroyd-Dewhurst basic assembly time tm = 3 s per part (method value used in the DFA index)
+        value: '3'
+        unit: s
+        source_url: https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c5
+        text: 'GM customer-specific requirements (IATF 16949 clause 10.2.4 context): error-proofing devices are tested to
+          failure or simulated failure at least at the start of each shift unless the control plan says otherwise; base IATF
+          16949 leaves the frequency to the control plan'
+        value: each shift
+        unit: null
+        source_url: https://www.iatfglobaloversight.org/wp/wp-content/uploads/2025/10/IATF-16949-GM-Customer-Specific-Requirements-October-2025.pdf
+        source_quality: primary
+        equipment: any
+        confidence: handbook
+      - id: c6
+        text: Shingo, Zero Quality Control (1986) is an English-language poka-yoke text that stresses source inspection
+        value: '1986'
+        unit: year
+        source_url: https://books.google.com/books/about/Zero_Quality_Control.html?hl=pl&id=gkE8K7axQbYC
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c7
+        text: Nikkan Kogyo Shimbun poka-yoke book contains about 240 illustrated examples
+        value: '240'
+        unit: examples
+        source_url: https://books.google.com/books/about/Poka_Yoke.html?id=hR_8Ulz6d_oC
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      sources:
+      - perplexity-reasoning:517446
+      - https://bpb-eu-w2.wpmucdn.com/blogs.brighton.ac.uk/dist/c/8330/files/2022/03/design_for_manual_assembly.pdf
+      - https://www.iatfglobaloversight.org/wp/wp-content/uploads/2025/10/IATF-16949-GM-Customer-Specific-Requirements-October-2025.pdf
+      - https://books.google.com/books/about/Zero_Quality_Control.html?hl=pl&id=gkE8K7axQbYC
+      - https://books.google.com/books/about/Poka_Yoke.html?id=hR_8Ulz6d_oC
+    tolerance-stack:
+      id: principles/tolerance-stack
+      role: principle
+      coverage: deep
+      summary: Start from a numeric assembly requirement (clearance, interference, endplay), trace the signed loop of contributors
+        between the two functional features, and add them worst case or RSS. Pick datums from the real seating scheme and
+        fits from ISO 286, not from dimensioning convenience.
+      applies: per functional gap (fits, clearances, alignment)
+      checks:
+      - For each gap that must stay open or closed, list the dimensions in the loop and add worst case; use RSS only for many
+        independent contributors.
+      - Take each contributor's tolerance from the process (printer test coupon, machining class, bought-part datasheet),
+        not from the drawing default.
+      - Include temperature, moisture swell and coating thickness where they matter.
+      - Dimension critical features from shared functional datums, not as a chain.
+      - If the budget does not close, add an adjuster or a shim, or change the datum, before tightening everything.
+      issues:
+      - issue: RSS used to claim a guaranteed fit on a drifting process
+        fix: Worst case for guarantees, or capable SPC with a documented statistical model
+        failure_mode: assembly-error
+      - issue: Tolerances added without signs
+        fix: Signed loop, absolute values only after finding the worst direction
+        failure_mode: assembly-error
+      - issue: Chain dimensioning of hole to hole
+        fix: Dimension from a common datum or a controlled pattern
+        failure_mode: assembly-error
+      - issue: Datum differs from assembly seating surface
+        fix: Choose datums from the surfaces that actually locate the part
+        failure_mode: assembly-error
+      - issue: Two precision dowel patterns both treated as locators
+        fix: One primary pattern; slot or clearance at the secondary
+        failure_mode: assembly-error
+      - issue: Every part tolerance tightened to meet a gap
+        fix: Attack dominant contributors, shift nominal, GD&T on the functional relation, or adjustment
+        failure_mode: assembly-error
+      - issue: Only plus-minus sizes in the stack
+        fix: Include position, orientation, form and datum mobility
+        failure_mode: assembly-error
+      - issue: Transition fit where function needs certainty
+        fix: True clearance or interference fit with worst-case limits met
+        failure_mode: assembly-error
+      literature:
+      - ASME Y14.5-2018 (R2024) Dimensioning and Tolerancing
+      - ASME Y14.5.1-2019 Mathematical Definition
+      - ISO 286-1:2010 and ISO 286-2 limits and fits
+      - Meadows, Tolerance Stack-Up Analysis per the ASME Y14.5 Standard
+      - 'Meadows, Geometric Dimensioning and Tolerancing: Applications, Analysis and Measurement'
+      rules:
+      - id: c1
+        text: Worst-case stack T_WC is the arithmetic sum of absolute contributor tolerances
+        value: sum |Ti|
+        unit: null
+        source_url: https://projectech.in/guides/tolerance-stackup-explained-guide/
+        source_quality: weak
+        equipment: any
+        confidence: secondary
+      - id: c2
+        text: 'RSS stack T_RSS is the square root of the sum of squared contributor tolerances: sqrt(sum Ti^2)'
+        value: sqrt(sum Ti^2)
+        unit: null
+        source_url: https://projectech.in/guides/tolerance-stackup-explained-guide/
+        source_quality: weak
+        equipment: any
+        confidence: secondary
+      - id: c3
+        text: 'Worked example: contributors of 0.10, 0.10, 0.05, 0.05 mm give worst case 0.30 mm and RSS 0.158 mm'
+        value: 0.30 / 0.158
+        unit: mm
+        source_url: https://projectech.in/guides/tolerance-stackup-explained-guide/
+        source_quality: weak
+        equipment: any
+        confidence: shop-rule
+        note: our own arithmetic (sum 0.30; square root of 0.0250 = 0.158); not from the cited page; not DRC-enforceable
+      - id: c4
+        text: ISO 286 minimum clearance is hole lower limit minus shaft upper limit
+        value: null
+        unit: null
+        source_url: https://cdn.standards.iteh.ai/samples/iso/iso-286-1-2010/7d914d99c54f47f0a88f10561c73ca39/iso-286-1-2010.pdf
+        source_quality: primary
+        equipment: any
+        confidence: standard
+      - id: c5
+        text: Statistical tolerance features must be produced under statistical process control
+        value: null
+        unit: null
+        source_url: https://manufacturingeducation.wordpress.ncsu.edu/files/2019/05/ASME-Y14.5M-2009.pdf
+        source_quality: primary
+        equipment: any
+        confidence: handbook
+      - id: c6
+        text: H7/h6 on a 10 mm nominal is a standardised clearance-fit choice; take actual limits from ISO 286 tables
+        value: H7/h6
+        unit: null
+        source_url: https://Amesweb.info/fits-tolerances/preferred-tolerances-table.aspx
+        source_quality: weak
+        equipment: cnc-mill
+        confidence: secondary
+        standard: ISO 286
+      - id: c7
+        text: 'Datum order is primary, secondary, tertiary per ASME Y14.5 and fixes the constrained DOF: 3 datums'
+        value: '3'
+        unit: datums
+        source_url: https://manufacturingeducation.wordpress.ncsu.edu/files/2019/05/ASME-Y14.5M-2009.pdf
+        source_quality: primary
+        equipment: any
+        confidence: standard
+      - id: c8
+        text: ISO 286 defines basic-hole and basic-shaft systems
+        value: null
+        unit: null
+        source_url: https://cdn.standards.iteh.ai/samples/iso/iso-286-1-2010/7d914d99c54f47f0a88f10561c73ca39/iso-286-1-2010.pdf
+        source_quality: primary
+        equipment: any
+        confidence: standard
+        note: read in the ISO 286-1:2010 sample; the cited exam-prep page does not state it
+      sources:
+      - perplexity-reasoning:517450
+      - https://projectech.in/guides/tolerance-stackup-explained-guide/
+      - https://cdn.standards.iteh.ai/samples/iso/iso-286-1-2010/7d914d99c54f47f0a88f10561c73ca39/iso-286-1-2010.pdf
+      - https://manufacturingeducation.wordpress.ncsu.edu/files/2019/05/ASME-Y14.5M-2009.pdf
+      - https://Amesweb.info/fits-tolerances/preferred-tolerances-table.aspx
+    thermal-expansion:
+      id: principles/thermal-expansion
+      role: principle
+      coverage: deep
+      summary: Compute free thermal movement of each joined part over the full temperature range, then give the joint a datum
+        plus a sliding or flexing path for the difference. No universal clearance number exists; clearance is the calculated
+        differential movement plus tolerance, deflection and margin.
+      applies: per joint of dissimilar materials, and any part near heat
+      checks:
+      - Use the real minimum and maximum temperature of the part (sun, motor, enclosure), not room temperature.
+      - Compute the differential movement (alpha1 - alpha2) * L * dT for each joined pair; check fits and clearances at both
+        extremes.
+      - Fix one datum and let the rest slide along the expansion direction (slots, floating joints).
+      - 'Plastics: check the hot case against softening (PLA around 55 C) and the cold case against brittleness.'
+      - Recheck bolt preload and seals at both extremes.
+      issues:
+      - issue: Aluminium panel bolted rigidly to steel frame in all directions
+        fix: One fixed datum; slotted or oversized holes elsewhere with washers that keep clamp load
+        failure_mode: thermal-mismatch
+      - issue: Long cover with round tight holes onto steel pins
+        fix: Fixed hole at one datum, slots along the expansion direction at the rest
+        failure_mode: thermal-mismatch
+      - issue: Long slotted shear connection assumed to give full slot length of travel
+        fix: Use engineered sliding connection and calculate usable travel
+        failure_mode: wear-fretting
+      - issue: Steel pin pressed into aluminium bore
+        fix: Sliding fit, closer CTE, or interference calculated at both temperature limits
+        failure_mode: thermal-mismatch
+      - issue: Steel insert or bushing moulded into plastic housing
+        fix: Compliant geometry, floating insert, shorter constraint length or flexible interface
+        failure_mode: thermal-mismatch
+      - issue: Bolt and clamped material with different CTE
+        fix: Match CTE where practical, compute preload over temperature, compliant washers
+        failure_mode: creep-preload-loss
+      - issue: Adhesive bond treated as rigid over a long bondline
+        fix: Compliant adhesive, shorter bond, check temperature-dependent modulus and creep
+        failure_mode: thermal-mismatch
+      - issue: Seal clearance checked at room temperature only
+        fix: Check groove fill, squeeze and extrusion gap at both extremes
+        failure_mode: thermal-mismatch
+      literature:
+      - NASA-STD-5020B threaded fastening (thermo-elastic preload change)
+      - NASA RP-1228, Fastener Design Manual, R. T. Barrett, March 1990 (NTRS 19900009424)
+      - Roark, Formulas for Stress and Strain, 9th ed.
+      - ASME B31.1 Power Piping (expansion and flexibility)
+      - NASA TP-2226 Theoretical Basis for Design of Thermal-Stress-Free Fasteners
+      rules:
+      - id: c1
+        text: Aluminium linear CTE about 23e-6 per K
+        value: '23'
+        unit: 1e-6/K
+        source_url: https://www.engineeringtoolbox.com/linear-expansion-coefficients-d_95.html
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c2
+        text: Carbon and alloy steel linear CTE 10.8 to 12.5e-6 per K
+        value: 10.8-12.5
+        unit: 1e-6/K
+        source_url: https://www.engineeringtoolbox.com/linear-expansion-coefficients-d_95.html
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c3
+        text: Austenitic stainless 304 linear CTE 17.3e-6 per K
+        value: '17.3'
+        unit: 1e-6/K
+        source_url: https://www.engineeringtoolbox.com/linear-expansion-coefficients-d_95.html
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c4
+        text: General plastics linear CTE 40 to 120e-6 per K
+        value: 40-120
+        unit: 1e-6/K
+        source_url: https://www.engineeringtoolbox.com/linear-expansion-coefficients-d_95.html
+        source_quality: secondary
+        equipment: any
+        confidence: secondary
+      - id: c5
+        text: 'Plastic CTE can be six to nine times that of metals: 6-9 x metal'
+        value: 6-9
+        unit: x metal
+        source_url: https://www.balseal.com/wp-content/uploads/2022/03/Coeffcients_Of_Thermal_Expansion_For_Hardware_And_Seal_MaterialsTR_18.pdf
+        source_quality: primary
+        equipment: any
+        confidence: handbook
+      - id: c6
+        text: Silicone seal CTE about 190e-6 per K in one published table
+        value: '190'
+        unit: 1e-6/K
+        source_url: https://www.balseal.com/wp-content/uploads/2022/03/Coeffcients_Of_Thermal_Expansion_For_Hardware_And_Seal_MaterialsTR_18.pdf
+        source_quality: primary
+        equipment: bought
+        confidence: handbook
+      - id: c7
+        text: Differential movement of two constrained parts is (alpha1 - alpha2) * L * dT
+        value: (a1-a2) L dT
+        unit: null
+        source_url: https://ntrs.nasa.gov/api/citations/19840005546/downloads/19840005546.pdf
+        source_quality: weak
+        equipment: any
+        confidence: shop-rule
+        note: derived from the base relation dL = alpha L dT (NIST); the cited NASA paper does not state the difference form;
+          not DRC-enforceable
+      - id: c8
+        text: 'Example: 1 m aluminium joined to steel over a 100 K rise with 23 and 12e-6/K gives 1.1 mm differential growth'
+        value: '1.1'
+        unit: mm
+        source_url: https://www.engineeringtoolbox.com/linear-expansion-coefficients-d_95.html
+        source_quality: weak
+        equipment: any
+        confidence: shop-rule
+        note: our arithmetic from c1 and c2 (1000 mm x 11e-6 x 100 K); not from the cited page; not DRC-enforceable
+      - id: c9
+        text: Fully restrained uniform member thermal stress is about E * alpha * dT (textbook result; only weak-site excerpts
+          seen)
+        value: E alpha dT
+        unit: MPa
+        source_url: https://ntrs.nasa.gov/api/citations/19840005546/downloads/19840005546.pdf
+        source_quality: weak
+        equipment: any
+        confidence: excerpt-only
+        note: confirmed only from a search excerpt, page not read
+      - id: c10
+        text: 'Our guidance: required clearance is at least the differential expansion plus tolerance, deflection and margin;
+          no universal allowance exists'
+        value: null
+        unit: null
+        source_url: https://ntrs.nasa.gov/api/citations/19840005546/downloads/19840005546.pdf
+        source_quality: weak
+        equipment: any
+        confidence: shop-rule
+        note: design judgement, not a sourced rule; not DRC-enforceable
+      sources:
+      - perplexity-reasoning:517453
+      - https://www.engineeringtoolbox.com/linear-expansion-coefficients-d_95.html
+      - https://www.balseal.com/wp-content/uploads/2022/03/Coeffcients_Of_Thermal_Expansion_For_Hardware_And_Seal_MaterialsTR_18.pdf
+      - https://ntrs.nasa.gov/api/citations/19840005546/downloads/19840005546.pdf
+    look-up-dont-assume:
+      id: principles/look-up-dont-assume
+      role: principle
+      coverage: deep
+      summary: Every non-geometric quantity or interface dimension is a requirement, a verified property from a specification
+        or datasheet, or a recorded assumption to be replaced before release. Guessed yield strengths, nominal catalog sizes
+        and unstated fit classes are the typical failures.
+      applies: per number used in the design
+      checks:
+      - 'Bought parts: record maker, part number and datasheet; dimensions and ratings come from it, never from memory.'
+      - 'Materials: name the grade and condition; strength, temperature limit and creep come from its datasheet.'
+      - Fits and clearances come from a recognised system (ISO 286) or from a test print on this printer.
+      - Record source, revision, unit and condition for each critical number; unsourced numbers are marked provisional and
+        listed.
+      - Typical values are not minimums; rules of thumb are for first sizing only.
+      issues:
+      - issue: 6061 aluminium with a guessed yield strength
+        fix: Specify temper and product form (6061-T6 plate) and use the specification or MMPDS where applicable
+        failure_mode: overload
+      - issue: Average tensile strength used as allowable
+        fix: Code or specification allowable, or statistically justified test data
+        failure_mode: overload
+      - issue: A 10 mm hole drawn for a bearing or shaft
+        fix: Identify the part numbers, get datasheets, specify seat tolerance and fit
+        failure_mode: assembly-error
+      - issue: Bought motor or connector assumed to fit the CAD model
+        fix: Freeze part number and revision, use supplier-controlled dimensions, check delivered part
+        failure_mode: assembly-error
+      - issue: Blanket plus-minus 0.1 mm tolerance
+        fix: Assign tolerances from function, process capability and stack-up
+        failure_mode: assembly-error
+      - issue: Redundant incompatible dimensions on one part
+        fix: Dimension from functional datums, drop redundant ones, GD&T basic dimensions
+        failure_mode: assembly-error
+      - issue: Standard bolt without the standard
+        fix: 'Full designation: thread, length, grade or class, head, coating'
+        failure_mode: assembly-error
+      - issue: Only nominal clearance checked
+        fix: Compute min and max clearance from limits and service conditions
+        failure_mode: assembly-error
+      - issue: Stainless or hardened with no grade or treatment
+        fix: Name exact grade, condition, treatment and acceptance test
+        failure_mode: environmental-degradation
+      literature:
+      - Budynas and Nisbett, Shigley's Mechanical Engineering Design
+      - ASME Y14.5-2018 (R2024); ASME Y14.41
+      - ISO 286 limits and fits; ISO 2768 general tolerances
+      - MMPDS-2024 (supersedes MIL-HDBK-5)
+      - ASTM material and product specifications; manufacturer catalogs
+      rules:
+      - id: c1
+        text: A nominal 1 1/2 in pipe has a theoretical outside diameter of 1.900 in (nominal pipe size is not the real diameter)
+        value: '1.900'
+        unit: in
+        source_url: https://www.rolledalloys.com/pipe-chart/
+        source_quality: weak
+        equipment: bought
+        confidence: secondary
+        corrected: true
+      - id: c2
+        text: A nominal 1/2 inch bolt may measure 0.492 in
+        value: '0.492'
+        unit: in
+        source_url: https://studylib.net/doc/27732898/shigley%E2%80%99s-mechanical-engineering-design-eleventh-edition
+        source_quality: weak
+        equipment: bought
+        confidence: unverified
+        note: source could not be read; value kept for review
+      - id: c3
+        text: Bilateral tolerance 1.005 +/- 0.002 in gives limits 1.003 to 1.007 in
+        value: 1.003-1.007
+        unit: in
+        source_url: https://studylib.net/doc/27732898/shigley%E2%80%99s-mechanical-engineering-design-eleventh-edition
+        source_quality: weak
+        equipment: any
+        confidence: unverified
+        note: source could not be read; value kept for review
+      - id: c4
+        text: MMPDS-2024 supersedes MIL-HDBK-5 and is an accepted source of aerospace metallic and fastener allowables
+        value: '2024'
+        unit: edition
+        source_url: https://img.antpedia.com/standard/files/pdfs_ora/20250812/1/MMPDS-2024.pdf
+        source_quality: primary
+        equipment: any
+        confidence: standard
+      - id: c5
+        text: FAA guidance requires material design values from sufficient testing and statistical analysis unless an accepted
+          source applies
+        value: null
+        unit: null
+        source_url: https://www.faa.gov/documentlibrary/media/advisory_circular/ac%2043.13-2b.pdf
+        source_quality: primary
+        equipment: any
+        confidence: standard
+      sources:
+      - perplexity-reasoning:517457
+      - https://www.rolledalloys.com/pipe-chart/
+      - https://studylib.net/doc/27732898/shigley%E2%80%99s-mechanical-engineering-design-eleventh-edition
+      - https://img.antpedia.com/standard/files/pdfs_ora/20250812/1/MMPDS-2024.pdf
+      - https://www.faa.gov/documentlibrary/media/advisory_circular/ac%2043.13-2b.pdf

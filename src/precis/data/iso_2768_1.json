@@ -1,0 +1,44 @@
+{
+  "_note": "ISO 2768-1:1989 GENERAL TOLERANCES — permissible deviations for linear and angular dimensions without individual tolerance indication. Versioned DATA: a published table transcribed once, referenced by the design-tree manifests through a rule's `standard: ISO 2768-1` (the process manifests used to restate this table per node — nine copies, four wrong — this file is now the single canonical home). Classes f=fine, m=medium, c=coarse, v=very coarse; the drawing note reads e.g. 'ISO 2768-m' or 'ISO 2768-mK' (m linear + K geometric per ISO 2768-2, whose straightness/flatness/perpendicularity/symmetry/run-out tables are NOT in this file). LINEAR values are ± millimetres on the nominal dimension in each range; ANGULAR values are ± arcminutes on the angle's shorter leg length range — the deviation is given as an angle, not converted to a length. Ranges are the standard's: lower bound exclusive, upper bound inclusive, except the first which starts at 0.5 mm.",
+  "standard": "ISO 2768-1:1989",
+  "classes": {
+    "f": "fine",
+    "m": "medium",
+    "c": "coarse",
+    "v": "very coarse"
+  },
+  "linear_mm": {
+    "unit": "mm",
+    "kind": "symmetric deviation on a linear dimension (external, internal, stepped, diameter, distance)",
+    "ranges": [
+      {"min": 0.5, "max": 3,    "f": 0.05, "m": 0.1, "c": 0.2, "v": null},
+      {"min": 3,   "max": 6,    "f": 0.05, "m": 0.1, "c": 0.3, "v": 0.5},
+      {"min": 6,   "max": 30,   "f": 0.1,  "m": 0.2, "c": 0.5, "v": 1.0},
+      {"min": 30,  "max": 120,  "f": 0.15, "m": 0.3, "c": 0.8, "v": 1.5},
+      {"min": 120, "max": 400,  "f": 0.2,  "m": 0.5, "c": 1.2, "v": 2.5},
+      {"min": 400, "max": 1000, "f": 0.3,  "m": 0.8, "c": 2.0, "v": 4.0},
+      {"min": 1000,"max": 2000, "f": 0.5,  "m": 1.2, "c": 3.0, "v": 6.0},
+      {"min": 2000,"max": 4000, "f": null, "m": 2.0, "c": 4.0, "v": 8.0}
+    ]
+  },
+  "radii_chamfer_mm": {
+    "unit": "mm",
+    "kind": "symmetric deviation on external radii and chamfer heights",
+    "ranges": [
+      {"min": 0.5, "max": 3, "f": 0.2, "m": 0.2, "c": 0.4, "v": 0.4},
+      {"min": 3,   "max": 6, "f": 0.5, "m": 0.5, "c": 1.0, "v": 1.0},
+      {"min": 6,   "max": null, "f": 1.0, "m": 1.0, "c": 2.0, "v": 2.0}
+    ]
+  },
+  "angular_arcmin": {
+    "unit": "arcmin",
+    "kind": "symmetric deviation on an angle, ranged by the length of the angle's shorter leg",
+    "ranges": [
+      {"min": 0,   "max": 10,  "f": 60,  "m": 60,  "c": 90,  "v": 180},
+      {"min": 10,  "max": 50,  "f": 30,  "m": 30,  "c": 60,  "v": 120},
+      {"min": 50,  "max": 120, "f": 20,  "m": 20,  "c": 30,  "v": 60},
+      {"min": 120, "max": 400, "f": 10,  "m": 10,  "c": 15,  "v": 30},
+      {"min": 400, "max": null,"f": 5,   "m": 5,   "c": 10,  "v": 20}
+    ]
+  }
+}

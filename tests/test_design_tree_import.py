@@ -10,13 +10,19 @@ from typing import Any
 import pytest
 import yaml
 
+from precis import design_tree
 from precis.cli import _build_parser
-from precis.cli.conventions import ManifestError, import_conventions
+from precis.cli.conventions import (
+    ManifestError,
+    dtree_manifest_dir,
+    import_conventions,
+)
 from precis.store import Store
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "design_tree"
 RULES_FIXTURE = Path(__file__).parent / "fixtures" / "conventions" / "rules.yaml"
 TAPPED = "join/service/threaded/clearance-tapped"
+PACKAGED = design_tree.load_dir(dtree_manifest_dir())
 
 
 def _snapshot(store: Store) -> dict[str, list[Any]]:
@@ -78,9 +84,9 @@ def _body(store: Store, ref_id: int) -> str:
 
 def test_creates_finding_refs_tags_edges(store: Store) -> None:
     rep = import_conventions(store, FIXTURE_DIR)
-    assert (rep.created, rep.edges_added) == (31, 34)
+    assert (rep.created, rep.edges_added) == (36, 37)
     ids = _by_key(store)
-    assert len(ids) == 31
+    assert len(ids) == 36
     node = ids[TAPPED]
     meta = next(m for r, m, _ in _importer_refs(store) if r == node)
     assert meta["dtree"] == {
@@ -126,6 +132,11 @@ def test_creates_finding_refs_tags_edges(store: Store) -> None:
     assert as_meta[(node, ids["system/t-slot-20"])] == "system"
     assert as_meta[(node, ids["join/service/pinned"])] is None
     assert (ids["join/frequent"], ids["close"], "related-to") in edge_triples
+    # implicit edges: axes keys and issue failure_modes mint related-to
+    # too — except an 'n/a:' axes value, which mints none
+    assert (node, ids["axis/corrosion"]) not in as_meta
+    assert as_meta[(node, ids["failure/loosening"])] == "mode"
+    assert as_meta[(ids["join/service/pinned"], ids["failure/lost-part"])] == "mode"
 
 
 def test_second_run_creates_nothing(store: Store) -> None:
@@ -136,7 +147,7 @@ def test_second_run_creates_nothing(store: Store) -> None:
         0,
         0,
         0,
-        31,
+        36,
     )
     assert _snapshot(store) == before
 
@@ -144,7 +155,7 @@ def test_second_run_creates_nothing(store: Store) -> None:
 def test_dry_run_writes_nothing(store: Store) -> None:
     before = _snapshot(store)
     rep = import_conventions(store, FIXTURE_DIR, dry_run=True)
-    assert (rep.created, rep.edges_added) == (31, 34)
+    assert (rep.created, rep.edges_added) == (36, 37)
     assert _snapshot(store) == before
 
 
@@ -162,7 +173,10 @@ def _edited(tmp_path: Path) -> Path:
             tapped["summary"] = "rewritten summary"
             tapped["links"].remove("system/t-slot-20")
         if src.name == "library.yaml":
-            del data["criterion/separable"]
+            # system/t-slot-20 orphans cleanly: its only reference is the
+            # tapped link this edit also drops (a criterion/axis/failure
+            # node would fail validation through asks/axes/failure_mode)
+            del data["system/t-slot-20"]
         (out / src.name).write_text(yaml.safe_dump(data), encoding="utf-8")
     return out
 
@@ -180,9 +194,9 @@ def test_sync_rewrites_removes_edge_never_retires(store: Store, tmp_path: Path) 
     assert (node, ids["system/t-slot-20"], "related-to") not in {
         (s, d, rel) for s, d, rel, _ in _edges(store)
     }
-    assert [o.split(" ", 1)[1] for o in rep.orphaned] == ["criterion/separable"]
+    assert [o.split(" ", 1)[1] for o in rep.orphaned] == ["system/t-slot-20"]
     assert all(ret is None for _, _, ret in _importer_refs(store))
-    assert len(_importer_refs(store)) == 31
+    assert len(_importer_refs(store)) == 36
 
 
 def test_sync_converges_meta_tags_and_edge_meta(store: Store, tmp_path: Path) -> None:
@@ -253,9 +267,6 @@ def test_missing_packaged_dir(store: Store, tmp_path: Path) -> None:
     empty.mkdir()
     with pytest.raises(ManifestError, match="no \\*.yaml"):
         import_conventions(store, empty)
-    # the packaged literal resolves to data/design-tree, absent until S1
-    with pytest.raises(ManifestError, match="no \\*.yaml"):
-        import_conventions(store, "design-tree")
 
 
 def test_cli_registered() -> None:
@@ -278,6 +289,36 @@ def test_cli_registered() -> None:
         "finding",
         True,
     )
+
+
+@pytest.mark.slow
+def test_packaged_manifest_import(store: Store) -> None:
+    """The real packaged manifests (S1, the literal ``design-tree``
+    manifest name), ~17 s per pass so kept in one test rather than
+    paying the truncate-per-test ``store`` reset twice: a dry run
+    proposes everything and writes nothing, a full import mints one
+    ref per item plus every edge, and a second run is a no-op."""
+    before = _snapshot(store)
+    rep = import_conventions(store, "design-tree", dry_run=True)
+    assert rep.created == len(PACKAGED.items)
+    assert _snapshot(store) == before
+
+    rep = import_conventions(store, "design-tree")
+    assert rep.created == len(PACKAGED.items) == 5615
+    assert rep.edges_added == len(PACKAGED.edges) == 9054  # 81 'n/a' axes mint none
+    assert rep.orphaned == []
+    ids = _by_key(store)
+    assert len(ids) == len(PACKAGED.items)
+    leaf = ids["join/integrate/one-body-print-mould"]
+    meta = next(m for r, m, _ in _importer_refs(store) if r == leaf)
+    assert meta["dtree"]["role"] == "leaf"
+    assert "dt:leaf" in _tags(store, leaf)
+
+    before = _snapshot(store)
+    rep = import_conventions(store, "design-tree")
+    assert (rep.created, rep.edges_added, rep.updated) == (0, 0, 0)
+    assert rep.unchanged == len(PACKAGED.items)
+    assert _snapshot(store) == before
 
 
 def test_dtree_import_does_not_touch_repo_dev_lane(store: Store) -> None:
