@@ -13,7 +13,11 @@ Per result the deterministic checks are the pilot's, ported:
   a drop (``unresolvable_anchor``);
 * the literal is verbatim in the resolved span, its numeric regions
   complete — a mismatch drops the result (``literal_not_in_span``);
-  categorical literals are verbatim-checked only;
+  categorical literals are verbatim-checked only. Inside a pipe table
+  (which splits one sentence span per line) a mismatch first retries
+  against the unique table row that carries the literal — a reader
+  that anchored the header while quoting a data row is re-resolved
+  instead of dropped (gr514627);
 * the reported unit is spelled in the span — a miss is a FLAG
   (``unit_without_text_support``), the row still lands (the pilot's
   ruling: flags, not refusals, for things a sampler can still judge);
@@ -242,6 +246,73 @@ def _table_line_cells(text: str) -> list[tuple[int, int, int]]:
     return rows
 
 
+def _is_table_separator(line: str) -> bool:
+    """A ``|---|`` divider row: every cell is only dashes/colons."""
+    cells = line.strip().strip("|").split("|")
+    return all(re.fullmatch(r"[:-]+", cell.strip()) for cell in cells)
+
+
+def _literal_table_row(
+    literal: str,
+    chunk_text: str,
+    anchored_start: int,
+    table_rows: list[tuple[int, int, int]],
+    *,
+    categorical: bool,
+) -> tuple[int, int] | None:
+    """The unique data row in the anchored header's table supporting
+    ``literal``.
+
+    Consulted only when the anchored span is a table *header* line — the
+    first line of a ``|``-line block, or the line right before a
+    ``|---|`` separator — and fails
+    :func:`~precis.extract.verify.literal_supported`: the reader
+    numbered the header as sentence 0 while quoting a data row
+    (gr514627). Candidates are the other lines of *that* table (the run
+    of adjacent ``|`` lines containing the anchor), not every ``|`` line
+    in the chunk — an anchored data row, a literal living in another
+    table, and zero or several qualifying rows all return ``None``: the
+    evidence span must be unambiguous or the drop stands.
+    """
+    idx = next(
+        (i for i, (s, e, _c) in enumerate(table_rows) if s <= anchored_start < e),
+        None,
+    )
+    if idx is None:
+        return None
+    lo = idx
+    while lo > 0 and table_rows[lo - 1][1] + 1 == table_rows[lo][0]:
+        lo -= 1
+    hi = idx
+    while hi + 1 < len(table_rows) and table_rows[hi][1] + 1 == table_rows[hi + 1][0]:
+        hi += 1
+    block = table_rows[lo : hi + 1]
+    offset = idx - lo
+    if not (
+        offset == 0
+        or (
+            offset + 1 < len(block)
+            and _is_table_separator(
+                chunk_text[block[offset + 1][0] : block[offset + 1][1]]
+            )
+        )
+    ):
+        return None
+    matches = [
+        (s, e)
+        for j, (s, e, _cells) in enumerate(block)
+        if j != offset
+        and _verify.literal_supported(
+            literal,
+            chunk_text[s:e],
+            chunk_text,
+            (s, e),
+            numeric_required=not categorical,
+        )
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def build_runs(
     reply: dict[str, Any],
     *,
@@ -358,14 +429,26 @@ def build_runs(
             (start, end),
             numeric_required=not categorical,
         ):
-            out.dropped.append(
-                {
-                    "location": location,
-                    "reason": "literal_not_in_span",
-                    "detail": f"{literal!r} vs span {span_text[:120]!r}",
-                }
+            # gr514627: a pipe-table chunk splits one sentence span per
+            # line, so anchor '0' names the header — a literal quoted
+            # from a data row reads as out-of-span. Only an anchored
+            # header retries, against the unique row of that one table;
+            # a wrong data-row anchor keeps dropping (the literal can't
+            # move evidence between rows it didn't come from).
+            row_span = _literal_table_row(
+                literal, chunk_text, start, table_rows, categorical=categorical
             )
-            continue
+            if row_span is None:
+                out.dropped.append(
+                    {
+                        "location": location,
+                        "reason": "literal_not_in_span",
+                        "detail": f"{literal!r} vs span {span_text[:120]!r}",
+                    }
+                )
+                continue
+            start, end = row_span
+            span_text = chunk_text[start:end]
         # A value the sentence frames as a design target or a comparator
         # ('such that', 'intended to produce', 'targets of') is context,
         # not an outcome — it drops as cited_context whatever attribution

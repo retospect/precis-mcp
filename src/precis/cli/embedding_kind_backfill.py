@@ -184,7 +184,11 @@ def _mark_filled_kinds(
     invisible to every route. Each ``_ANN_PARTIAL_KINDS`` kind with no
     unfilled row gets a ``_KIND_READY_TABLE`` row (upsert — markers are
     never deleted; a ref re-kinded while it still has unfilled rows can
-    leave one stale, follow-up). Returns ``(unfilled_by_kind, marked)``.
+    leave one stale — gr515083: the one re-kind site,
+    ``scripts/_conventions_findings_to_memory.py``, fills its stragglers
+    in the re-kind transaction, and a ratchet in
+    ``tests/test_kind_scoped_ann.py`` bars a new ``UPDATE refs`` site
+    from assigning ``kind``). Returns ``(unfilled_by_kind, marked)``.
     On a pre-0242 database (no marker table) both come back empty.
     """
     present = conn.execute(

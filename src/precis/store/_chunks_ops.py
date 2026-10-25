@@ -257,7 +257,12 @@ class _AnnState:
       exists / exists and is valid+ready (from the index predicates).
     * ``marked``: kinds the backfill marked fill-complete in
       ``chunk_embeddings_kind_ready`` — the per-kind gate that lets a kind
-      route before the CHECK validates.
+      route before the CHECK validates. Almost monotone (upsert, never
+      deleted): the one edge that can stale a marker is a ref re-kinded
+      while it still has unfilled rows — gr515083 keeps the only re-kind
+      site filling its stragglers in the re-kind transaction, and a
+      ratchet test bars a new ``UPDATE refs`` site from assigning
+      ``kind`` without the same handling.
     """
 
     filled: bool

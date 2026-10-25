@@ -285,6 +285,16 @@ See also the `test_leak_hardfail` / `docker_wedge_test_creds` /
 `test_db_shared_singleton` gotchas for specific failure modes this harness
 guards against or can trip on.
 
+## `monkeypatch.undo()` drops the autouse stubs too
+
+`monkeypatch.undo()` inside a test restores **every** stub the shared
+monkeypatch instance applied — including autouse fixtures such as a
+shared rate-limiter grant — not just the test's own `setattr` calls. A
+test that undoes must re-stub whatever the autouse fixtures provided
+afterwards (`tests/workers/test_fetch_oa.py::_shared_limiter_grants`
+documents the shape, gr514128). To drop only one stub, scope it on a
+local `pytest.MonkeyPatch()` context instead of the shared fixture.
+
 ## Adding a kind (or changing its `placement`): the ratchet checklist
 
 The pinning tests live in files the change never touches, so `--impacted`

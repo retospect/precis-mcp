@@ -115,6 +115,62 @@ class TestConventionsFindingsToMemory:
         # Outside the selection: no source key, and the retired row.
         assert _ref_row(store, outsider.id)[0] == "finding"
 
+    def test_apply_fills_straggler_embeddings_under_the_new_kind(
+        self, store: Any
+    ) -> None:
+        """gr515083: a ref re-kinded while a ``chunk_embeddings`` row is
+        still unfilled would hand that straggler to 'memory' at backfill
+        time — under an already-marked ``kind_ready`` row, invisible to
+        the (ref_id, kind) cascade and to the partial route. The re-kind
+        transaction now fills it with the new kind."""
+        mod = _load("_conventions_findings_to_memory")
+        a = _seed_conventions_finding(store, title="rule one")
+        with store.pool.connection() as conn:
+            cid = int(
+                conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE ref_id = %s", (a,)
+                ).fetchone()[0]
+            )
+            # A pre-0226 legacy row: trigger off and the CHECK dropped
+            # for the INSERT, both restored before the apply.
+            conn.execute(
+                "ALTER TABLE chunk_embeddings "
+                "DROP CONSTRAINT chunk_embeddings_ref_kind_filled"
+            )
+            conn.execute(
+                "ALTER TABLE chunk_embeddings "
+                "DISABLE TRIGGER chunk_embeddings_fill_ref_kind"
+            )
+            conn.execute(
+                "INSERT INTO chunk_embeddings "
+                "(chunk_id, embedder, vector, status, attempts) "
+                "VALUES (%s, 'bge-m3', %s, 'ok', 1)",
+                (cid, [0.5] * 1024),
+            )
+            conn.execute(
+                "ALTER TABLE chunk_embeddings "
+                "ENABLE TRIGGER chunk_embeddings_fill_ref_kind"
+            )
+            conn.execute(
+                "ALTER TABLE chunk_embeddings "
+                "ADD CONSTRAINT chunk_embeddings_ref_kind_filled "
+                "CHECK (ref_id IS NOT NULL AND kind IS NOT NULL) NOT VALID"
+            )
+            conn.execute(
+                "INSERT INTO chunk_embeddings_kind_ready (kind) VALUES ('memory')"
+            )
+            conn.commit()
+
+        mod.run(store, apply=True)
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id, kind FROM chunk_embeddings WHERE chunk_id = %s",
+                (cid,),
+            ).fetchone()
+        assert row is not None
+        assert (int(row[0]), str(row[1])) == (a, "memory")
+
 
 # ── _taproot_review_orphans_rehome ────────────────────────────────────
 

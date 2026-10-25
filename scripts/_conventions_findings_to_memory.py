@@ -12,6 +12,15 @@ only the agent-facing handle prefix changes ``fi<N>`` -> ``me<N>``.
 Anything still pointing at ``fi<N>`` keeps resolving (handles are
 kind-prefix + ref_id, and the ref itself is not retired).
 
+gr515083: a re-kind while ``chunk_embeddings`` still has unfilled rows
+(ref_id/kind NULL) hands those stragglers to the new kind at backfill
+time and leaves that kind's ``chunk_embeddings_kind_ready`` marker
+stale — the (ref_id, kind) FK cascade cannot match a NULL key, and the
+partial-HNSW route filters on ``ce.kind`` with no fallback. So the same
+transaction that re-kinds the ref also re-fires the 0226 fill trigger
+over its chunks: any straggler copies the NEW kind instead of
+inheriting it later under an already-marked marker.
+
 Selection is deliberately narrow: ``kind='finding'`` AND
 ``meta->>'source' = 'conventions-import'`` AND live. A hand-made finding
 carrying the same key is included (it is the same import convention);
@@ -59,6 +68,19 @@ def run(store: Any, *, apply: bool) -> list[str]:
             conn.execute(
                 "UPDATE refs SET kind = 'memory' WHERE ref_id = %s "
                 "AND kind = 'finding' AND retired_at IS NULL",
+                (r["ref_id"],),
+            )
+            # gr515083: fill the ref's unfilled chunk_embeddings rows in
+            # the same transaction — the ``ref_id = NULL, kind = NULL``
+            # write re-fires the 0226 trigger, which copies the ref's
+            # CURRENT (new) kind, so 'memory' never gets stragglers
+            # under an already-marked kind_ready row. Both columns go
+            # NULL: a row with kind already set would otherwise keep a
+            # stale pre-re-kind kind and violate the (ref_id, kind) FK.
+            conn.execute(
+                "UPDATE chunk_embeddings ce SET ref_id = NULL, kind = NULL "
+                "FROM chunks c WHERE c.chunk_id = ce.chunk_id "
+                "AND c.ref_id = %s AND (ce.ref_id IS NULL OR ce.kind IS NULL)",
                 (r["ref_id"],),
             )
             conn.execute(

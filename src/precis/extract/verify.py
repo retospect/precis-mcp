@@ -48,9 +48,13 @@ def literal_normalize(value: str) -> str:
 
 
 def _ws_free(value: str) -> str:
-    """``literal_normalize`` with spaces and brackets removed — a quantity
-    split across table cells or lines ('-1.91 ( ± | 0.63)') still contains
-    itself (gr512368)."""
+    """``literal_normalize`` with whitespace and ``()[]{}`` removed — the
+    containment alphabet of the verbatim check. Layout drops, value
+    stays: ``'− 1.91 ( ± | 0.63)'`` reads ``-1.91±0.63`` after the fold
+    (U+2212 → ``-``, ``|`` cell boundary → space, brackets and spaces
+    removed; ``±`` survives — it is a printed sign, not layout), so a
+    quantity split across table cells or lines still contains itself
+    (gr512368, gr514630)."""
     return re.sub(r"[\s()\[\]{}]+", "", value)
 
 
@@ -209,11 +213,27 @@ def literal_supported(
     """The literal is verbatim in the span AND every numeric region it
     carries is a complete source expression inside that span.
 
+    "Verbatim" compares folded surfaces, not raw bytes: both sides run
+    through :func:`literal_normalize` (markup folded to the printed
+    reading — ``\\pm`` → ``±``, ``<sup>``/``<sub>`` unwrapped, U+2212 and
+    dash glyphs → ``-``, ``|`` cell separators → space) and then
+    :func:`_ws_free`, which additionally drops whitespace and brackets.
+    ``'-1.91 ± 0.63'`` therefore passes verbatim on the span
+    ``'− 1.91 ( ± | 0.63)'``, and so does ``'-1.91'`` — containment, not
+    equality.
+
     The second clause is the boundary check that refuses "505.9" cited
     from "1,505.9 mg" or "2" cited from "2 \\times 10^{-3}" — the
     literal's number must appear as a *complete* region, not a prefix of
-    a longer one. ``numeric_required=False`` is the categorical form: a
-    literal like "NH3" is verbatim-checked only.
+    a longer one. It is also what refuses ``'-1.91'`` on that same span:
+    a sign separated from its digits by whitespace is not part of the
+    number, so ``'− 1.91 ( ± | 0.63)'`` scans as unsigned ``1.91`` and
+    ``0.63`` and the literal's signed ``-1.91`` region has no complete
+    counterpart (the sign-cell merge only covers ``'− | 1.91'`` and
+    ``'<sup>−</sup>1.9'`` forms, gr511461 — verbatim containment is
+    deliberately more permissive than region completeness).
+    ``numeric_required=False`` is the categorical form: a literal like
+    "NH3" is verbatim-checked only.
     """
     lit = literal_normalize(literal)
     if not lit or _ws_free(lit) not in _ws_free(literal_normalize(span_text)):

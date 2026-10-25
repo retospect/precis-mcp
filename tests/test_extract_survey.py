@@ -448,6 +448,120 @@ class TestProposals:
         assert not out.proposals
         assert out.dropped[0]["reason"] == "literal_not_in_span"
 
+    def test_header_anchor_reresolves_to_the_literal_row(self, world: dict) -> None:
+        """gr514627: a '| header |\\n| row |' chunk splits one sentence
+        span per line, so '0' names the header. A literal quoted from
+        the data row re-resolves against the row it was quoted from
+        instead of dropping literal_not_in_span (the canned reply that
+        cost the gf-survey run)."""
+        text = "| Model | dT (eV) |\n| mod-a | -1.93 |"
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "-1.93",
+                    "unit": "eV",
+                    "anchor": "0",
+                    "attribution": "own_work",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.literal == "-1.93"
+        anchor = prop.output.anchor
+        assert anchor is not None
+        assert text[anchor.span[1] : anchor.span[2]] == "| mod-a | -1.93 |"
+
+    def test_wrong_data_row_anchor_still_drops(self, world: dict) -> None:
+        """Only the header retries: a reader that anchors mod-a's row
+        while quoting mod-b's literal must not re-anchor — the literal
+        cannot move evidence between rows it didn't come from."""
+        text = "| Model | dT |\n| mod-a | -1.90 |\n| mod-b | -1.93 |"
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "-1.93",
+                    "unit": "eV",
+                    "anchor": "1",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "literal_not_in_span"
+
+    def test_table_literal_in_two_rows_still_drops(self, world: dict) -> None:
+        """The re-resolution needs a unique row: the same literal in two
+        data rows stays a drop — picking one would store the wrong
+        evidence span."""
+        text = "| Model | dT |\n| mod-a | -1.93 |\n| mod-b | -1.93 |"
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "-1.93",
+                    "unit": "eV",
+                    "anchor": "0",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "literal_not_in_span"
+
+    def test_prose_anchor_does_not_reresolve_into_a_table(self, world: dict) -> None:
+        """The retry is scoped to an anchored table line: a prose span
+        anchored next to a table quoting a table literal stays a drop —
+        the anchor was genuinely wrong, not a header/row miscount."""
+        text = "Run A reports no figures.\n\n| Model | dT |\n| mod-a | -1.93 |"
+        reply = {
+            "results": [
+                {
+                    "measurand": "adsorption-energy",
+                    "literal": "-1.93",
+                    "unit": "eV",
+                    "anchor": "0",
+                }
+            ]
+        }
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        assert not out.proposals
+        assert out.dropped[0]["reason"] == "literal_not_in_span"
+
     def test_decrease_cue_signs_the_value(self, world: dict) -> None:
         text = "Run B cools the cell by 0.9 eV relative to the base case."
         reply = {

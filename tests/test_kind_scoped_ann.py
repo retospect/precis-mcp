@@ -14,6 +14,7 @@ import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -323,6 +324,64 @@ def test_mark_filled_kinds_on_an_empty_unfilled_set(store: Store) -> None:
         assert by_kind == {}
         assert marked == frozenset(_ANN_PARTIAL_KINDS)
         conn.rollback()
+
+
+_ROOT = Path(__file__).resolve().parents[1]
+#: The one audited re-kind site — fills the ref's unfilled
+#: ``chunk_embeddings`` rows in the re-kind transaction (gr515083).
+_KNOWN_REKIND = "scripts/_conventions_findings_to_memory.py"
+
+
+_UPDATE_REFS = re.compile(r"UPDATE\s+(?:public\.)?\"?refs\"?\b", re.IGNORECASE)
+_UPSERT_REFS = re.compile(
+    r"INSERT\s+INTO\s+(?:public\.)?\"?refs\"?.{0,1200}?\bDO\s+UPDATE\s+SET\b",
+    re.IGNORECASE | re.DOTALL,
+)
+#: ``kind =`` readings that are comparisons, not SET targets: a CASE
+#: branch (``WHEN kind =``), a join predicate (``ON kind =`` /
+#: ``ON x.kind =``), a filter in a subquery the clause scan can't see
+#: around (``AND/OR/IN/IS/NOT/BETWEEN/LIKE kind``).
+_CMP_WORDS = frozenset(
+    {"WHEN", "ON", "AND", "OR", "THEN", "ELSE", "IN", "IS", "NOT", "BETWEEN", "LIKE"}
+)
+
+
+def _set_clause_assigns_kind(clause: str) -> bool:
+    """A bare ``kind =`` column assignment in a SET clause — not
+    ``x.kind =`` (``ON u.kind =``), not a call/docstring ``(kind=``,
+    not a ``WHEN kind =`` comparison."""
+    for m in re.finditer(r"(?<![\w.('\"`])kind\s*=", clause, re.IGNORECASE):
+        before = re.search(r"(\w+)\s*$", clause[: m.start()])
+        if before is None or before.group(1).upper() not in _CMP_WORDS:
+            return True
+    return False
+
+
+def test_no_runtime_code_rekinds_refs_beyond_the_audited_site() -> None:
+    """gr515083: an ``UPDATE refs`` (any schema/quote spelling) or an
+    ``INSERT INTO refs … ON CONFLICT DO UPDATE`` assigning ``kind``
+    re-homes the ref's unfilled ``chunk_embeddings`` rows under the NEW
+    kind's ``chunk_embeddings_kind_ready`` marker — the (ref_id, kind)
+    FK cascade cannot match a NULL key and the partial route filters on
+    ``ce.kind``, so the marker goes stale silently. Any new re-kind site
+    must fill the stragglers in the same transaction (the audited one
+    does) or delete ``NEW.kind``'s marker — register it here after
+    adding that handling."""
+    offenders: set[str] = set()
+    for root in (_ROOT / "src", _ROOT / "scripts"):
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for pattern in (_UPDATE_REFS, _UPSERT_REFS):
+                for m in pattern.finditer(text):
+                    set_clause = re.split(
+                        r"\bWHERE\b|\bRETURNING\b",
+                        text[m.end() : m.end() + 800],
+                        maxsplit=1,
+                        flags=re.IGNORECASE,
+                    )[0]
+                    if _set_clause_assigns_kind(set_clause):
+                        offenders.add(str(path.relative_to(_ROOT)))
+    assert sorted(offenders) == [_KNOWN_REKIND]
 
 
 def test_reindex_global_drops_an_invalid_ccnew_leftover(store: Store) -> None:
