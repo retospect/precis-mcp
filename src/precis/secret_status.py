@@ -334,6 +334,14 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group=None,
     ),
     SecretSpec(
+        name="PRECIS_FILE_LINK_KEY",
+        purpose="Signing key for creating and verifying PDF download links.",
+        get_url=None,
+        get_blurb="Auto-minted into the vault on first PDF-link creation — "
+        "there's nothing to obtain. Rotation invalidates existing download links.",
+        probe_group=None,
+    ),
+    SecretSpec(
         name="JLCPCB_APP_ID",
         purpose="pcb kind — JLCPCB Open API triple (app ID); live stock/price.",
         get_url=None,

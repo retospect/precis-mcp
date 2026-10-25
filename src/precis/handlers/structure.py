@@ -120,6 +120,7 @@ from precis.structure.relax import (
 )
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 
 log = logging.getLogger(__name__)
@@ -2910,13 +2911,20 @@ class StructureHandler(Handler):
         runs = self.store.struct_neb_runs_for(ref.id)
         if not runs:
             return Response(
-                body=(
-                    f"# {ref.slug}: no NEB runs\n\n"
-                    "Next: gate the pair first — "
-                    f"get(kind='structure', id={ref.slug!r}, view='pair', "
-                    "args={'other': '<fs-slug>'}), then "
-                    "put(kind='structure', id='<is-slug>', mode='neb', "
-                    "args={'final': '<fs-slug>'})."
+                body=f"# {ref.slug}: no NEB runs\n\n"
+                + render_next_section(
+                    [
+                        (
+                            f"get(kind='structure', id={ref.slug!r}, view='pair', "
+                            "args={'other': '<fs-slug>'})",
+                            "gate the pair first",
+                        ),
+                        (
+                            "put(kind='structure', id='<is-slug>', mode='neb', "
+                            "args={'final': '<fs-slug>'})",
+                            "queue the CI-NEB edge",
+                        ),
+                    ]
                 )
             )
         ids = {

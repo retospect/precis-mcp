@@ -220,11 +220,10 @@ picks the declared-bonded atom nearest `to` (an equidistant tie refuses
 naming both — pick with `atom:`); `move_group` carries the whole
 declared-bond fragment rigidly and refuses when it holds a fixed or slab
 atom (slab = the largest connected metal cluster — a dopant inside it
-counts as slab). Site anchor labels come from the design TOC — the
-`aCu*` above are just top-layer atoms. Both land starting-guess geometry —
-`relax` each endpoint at `fidelity:"ml"` before the pair means anything.
+counts as slab). Site labels come from the design TOC. Both land
+starting-guess geometry — `relax` each endpoint at `fidelity:"ml"` first.
 
-Then check the pair — read-only, zero compute:
+Then check the pair (read-only, no compute):
 
 ```python
 get(kind="structure", id="cu_is", view="pair", args={"other": "cu_fs"})
@@ -236,6 +235,9 @@ slab atom) · validator-clean · a converged `ml` run at one model on
 · ≤2 bond changes · no >5 Å drag — each `fail` row's `next` is the
 working fix; `warn` never blocks. `relaxed` fails until both endpoints
 have relaxed at `ml`.
+
+Clean pair → `put(mode="neb", args={"final": <slug>})` queues a
+`struct_neb` job (`ml` rung, deduped); `view="neb"` reads it.
 
 ## Edit — `edit(id=<slug>, ops=[…])`
 

@@ -54,7 +54,7 @@ def neb_engine_token() -> str:
     hatch). Strict-engine ruling (Reto 2026-10-25, gr517804): only
     current-engine results count, so an engine bump re-keys every edge
     and an older run is never a cache hit."""
-    from precis.quest.compute import _autocatpath_engine_token
+    from precis.structure.engine_token import _autocatpath_engine_token
 
     return _autocatpath_engine_token()
 

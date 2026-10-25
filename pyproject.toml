@@ -970,6 +970,7 @@ extend-exclude = [
     "scripts/memory-lint",
     "scripts/migration-check",
     "scripts/mutate-diff",
+    "scripts/neb-seed-trust-drylist",
     "scripts/nightly",
     "scripts/onto-groups",
     "scripts/onto-repoint",

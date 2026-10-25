@@ -170,7 +170,7 @@ the canonical list:
 | `DENSITY:` | `dense` / `medium` / `sparse` | chunk pipeline (chunk-level — not applied to refs) |
 | `AUDIT:` | `missing-citation` / `empty-stub` / `unsupported-claim` / `citation-drift` / `missing-data` / `ungrounded-number` | content-QA audit (on the anchored change-request `todo`/`finding`); on a `memory`, `ungrounded-number` is derived: a number beside a citation is not in the cited text (write-time gate; a clean rewrite clears it) |
 | `ATTEMPT:` | `open` / `active` / `tried` / `ruled-out` / `idea` | quest tick (chunk-level — on a dossier's ledger-node chunks, not refs) |
-| `SPACE:` | `research` / `repo-dev` / `personal` — which corpus a node belongs to; `memory` defaults to `research`, `repo-dev` is dev-harness memory (`personal` is reserved, nothing writes it) | agent |
+| `SPACE:` | `research` / `repo-dev` / `personal` — which corpus a node belongs to; `memory` defaults to `research`, `repo-dev` is dev-harness memory (`personal` is reserved, nothing writes it; `design-conventions` is the design-tree knowledge-graph corpus, loaded by `precis conventions`) | agent |
 | `TAPROOT:` | `claim` / `review` | `axis:taproot` classifier — `finding`-ref hub discriminator; agent add/remove allowed (legacy rows grandfathered) |
 
 Any UPPERCASE prefix outside that table, the categorizer table below,
