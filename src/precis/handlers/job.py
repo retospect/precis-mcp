@@ -2034,15 +2034,24 @@ class JobHandler(NumericRefHandler):
                 # job_types that have one. For fix_gripe the
                 # parent is the gripe; bump it to ready_for_fix
                 # so the lifecycle reads cleanly even when the
-                # human skipped the explicit triage step.
+                # human skipped the explicit triage step. Never
+                # bump a ``verify`` (or terminal) gripe back down:
+                # its fix already shipped and the pending probe
+                # verdict is the only way out (pipeline v2).
                 if spec.name == "fix_gripe":
-                    self.store.add_tag(
-                        target.ref_id,
-                        Tag.parse_strict("STATUS:ready_for_fix"),
-                        set_by="agent",
-                        replace_prefix=True,
-                        conn=conn,
+                    from precis.workers.job_types.fix_gripe import (
+                        _NO_DOWNGRADE_GRIPE_STATUSES,
                     )
+
+                    current = _status_of(self.store.tags_for(target.ref_id, conn=conn))
+                    if current not in _NO_DOWNGRADE_GRIPE_STATUSES:
+                        self.store.add_tag(
+                            target.ref_id,
+                            Tag.parse_strict("STATUS:ready_for_fix"),
+                            set_by="agent",
+                            replace_prefix=True,
+                            conn=conn,
+                        )
 
         return Response(
             body=(

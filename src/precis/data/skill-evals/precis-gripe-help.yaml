@@ -45,7 +45,7 @@ cases:
         get(kind='gripe', id=488897, view='comments') renders the body
         plus the comment timeline; 'full' is an alert view, not gripe's.
 
-  # source: tool_calls search|gripe status='open|triaged|ready_for_fix|in_review'
+  # source: tool_calls search|gripe status='open|triaged|ready_for_fix|in_review|verify'
   # BadInput x8 in one session (calls 406900-406907) — status= takes ONE
   # value; open is already the gripe default, so plain search suffices.
   - id: status-single-value

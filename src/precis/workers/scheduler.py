@@ -154,6 +154,25 @@ def _run_draft_refresh_scan(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_gripe_parents(store: Store, batch_size: int) -> None:
+    """Fill ``meta.dup_parents`` on freshly embedded gripes — pipeline
+    v2 slice 2 (``docs/backlog/gripe-pipeline-v2.md`` §Intake). Host-
+    agnostic like ``materialize``: the lease is the fleet-singleton
+    throttle, and the pass itself is one indexed ANN query per claimed
+    gripe — ``spends`` stays False, no LLM and no embedder call."""
+    from precis.workers.gripe_parents import run_gripe_parents_pass
+
+    result = run_gripe_parents_pass(store, batch_size)
+    log.info(
+        "scheduler: gripe_parents inner result claimed=%d written=%d "
+        "no_hits=%d failed=%d",
+        result.claimed,
+        result.written,
+        result.no_hits,
+        result.failed,
+    )
+
+
 def _doctor_tick_window(now: datetime) -> str:
     """The ``<UTC date>/<window>`` idem_key half for the current 8h slice
     of the day — ``window`` = ``hour // 8`` (``0``, ``1``, ``2``), so
@@ -773,6 +792,12 @@ CADENCES: tuple[Cadence, ...] = (
     # opts out (workers/materialize.py::_materialize_enabled); this cadence
     # firing every 5 min is itself harmless — the pass no-ops when disabled.
     Cadence(name="materialize", interval_s=300, run=_run_materialize),
+    # docs/backlog/gripe-pipeline-v2.md §Intake: the duplicate-parent
+    # backfill. Same 300 s as materialize — a filed gripe's embedding
+    # lands inside that pass's window, so this rides the same latency
+    # band the spec budgets (~5 min busy). Host-agnostic; spends=False
+    # (one ANN query per gripe, zero model/embedder calls).
+    Cadence(name="gripe_parents", interval_s=300, run=_run_gripe_parents),
     # gr192752: the two opus reviewers, migrated off the agent-profile
     # default rotation. Under `--profile all` a long `chase` pass
     # (PassPriority.BACKGROUND, registered first) can monopolize the strictly-

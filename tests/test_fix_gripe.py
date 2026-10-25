@@ -1243,7 +1243,7 @@ class TestTerminalGripeSkip:
 
         return _Store()
 
-    @pytest.mark.parametrize("status", ["done", "wontfix"])
+    @pytest.mark.parametrize("status", ["done", "wontfix", "verify"])
     def test_skips_before_any_repo_or_agent_work(
         self, monkeypatch: pytest.MonkeyPatch, status: str
     ) -> None:
@@ -2058,3 +2058,114 @@ def test_run_fix_gripe_already_fixed_leaves_a_closed_gripe_closed(
     )
 
     assert "STATUS:done" in _open_tag_values(store, gripe_id)
+
+
+# ── pipeline v2 slice 1: writers never downgrade a ``verify`` gripe ──
+#
+# ``verify`` means "fix deployed, probe verdict pending" (migration
+# 0247). It is not terminal — the probe can still reopen — but no
+# fix-lane writer may move it backward: a stale job succeeding, judging
+# already_fixed or crashing must all leave the gripe at ``verify``.
+
+
+def _verify_gripe(store: Store, gripe_id: int) -> None:
+    store.add_tag(
+        gripe_id, Tag.closed("STATUS", "verify"), set_by="system", replace_prefix=True
+    )
+
+
+def test_succeeded_outcome_leaves_a_verify_gripe_at_verify(store: Store) -> None:
+    todo_id, gripe_id, job_id = _mk_parked_fix_gripe_job(store)
+    _verify_gripe(store, gripe_id)
+    outcome = RunOutcome(
+        status="succeeded",
+        summary_text="ok",
+        gripe_comment_text="[worker:job] fixed",
+        branch="gripe_1",
+        sha="deadbeef",
+        wall_seconds=1.0,
+    )
+
+    claude_inproc._run_fix_gripe(store, job_id, _FakeFixGripeSpec(outcome))
+
+    assert "STATUS:succeeded" in _open_tag_values(store, job_id)
+    assert "STATUS:verify" in _open_tag_values(store, gripe_id)  # NOT in_review
+
+
+def test_already_fixed_outcome_leaves_a_verify_gripe_at_verify(
+    store: Store,
+) -> None:
+    todo_id, gripe_id, job_id = _mk_parked_fix_gripe_job(store)
+    _verify_gripe(store, gripe_id)
+
+    claude_inproc._run_fix_gripe(
+        store, job_id, _FakeFixGripeSpec(_already_fixed_outcome())
+    )
+
+    assert "STATUS:verify" in _open_tag_values(store, gripe_id)
+
+
+def test_failed_outcome_does_not_reopen_a_verify_gripe(store: Store) -> None:
+    """The failure rollback reopens ``open``/``in_review`` gripes; a
+    ``verify`` gripe must survive it — only the probe sends it back."""
+    todo_id, gripe_id, job_id = _mk_parked_fix_gripe_job(store)
+    _verify_gripe(store, gripe_id)
+    outcome = RunOutcome(
+        status="failed",
+        summary_text="failed",
+        gripe_comment_text="[worker:job] fix attempt failed: no commits",
+        branch="gripe_1",
+        sha=None,
+        wall_seconds=1.0,
+    )
+
+    claude_inproc._run_fix_gripe(store, job_id, _FakeFixGripeSpec(outcome))
+
+    assert "STATUS:verify" in _open_tag_values(store, gripe_id)
+
+
+def test_put_fix_gripe_job_does_not_downgrade_a_verify_gripe(
+    store: Store, hub: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fix_gripe mint bumps its linked gripe to ``ready_for_fix``;
+    on a ``verify`` gripe that bump is a downgrade and must be skipped."""
+    from precis.handlers.job import JobHandler
+
+    monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+    monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/precis-mcp")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    todo = store.insert_ref(kind="todo", slug=None, title="parent leaf", meta={})
+    gripe = insert_gripe(store, "the bug", status="verify")
+
+    resp = JobHandler(hub=hub).put(
+        job_type="fix_gripe",
+        parent_id=todo.id,
+        link=f"gripe:{gripe.id}",
+        rel="fixes",
+    )
+
+    assert resp is not None
+    assert "STATUS:verify" in _open_tag_values(store, gripe.id)
+
+
+def test_put_fix_gripe_job_still_bumps_a_live_gripe(
+    store: Store, hub: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mint's ``ready_for_fix`` bump is unchanged for a live gripe —
+    only the verify/terminal guard is new."""
+    from precis.handlers.job import JobHandler
+
+    monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+    monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/precis-mcp")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    todo = store.insert_ref(kind="todo", slug=None, title="parent leaf", meta={})
+    gripe = insert_gripe(store, "the bug", status="triaged")
+
+    JobHandler(hub=hub).put(
+        job_type="fix_gripe",
+        parent_id=todo.id,
+        link=f"gripe:{gripe.id}",
+        rel="fixes",
+    )
+
+    assert "STATUS:ready_for_fix" in _open_tag_values(store, gripe.id)

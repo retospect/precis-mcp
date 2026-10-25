@@ -1,8 +1,8 @@
 """Gripe STATUS vocabulary: app-level check + web live count.
 
-Gripe STATUS is one of open, triaged, ready_for_fix, in_review, done,
-wontfix. ``refuted`` is a finding status and must not land on a gripe; a
-gripe with no STATUS tag lists and counts as open.
+Gripe STATUS is one of open, triaged, ready_for_fix, in_review, verify,
+done, wontfix. ``refuted`` is a finding status and must not land on a
+gripe; a gripe with no STATUS tag lists and counts as open.
 """
 
 from __future__ import annotations
@@ -105,6 +105,18 @@ def test_parse_strict_accepts_refuted_on_finding_and_in_review_on_gripe() -> Non
     assert Tag.parse_strict("STATUS:in_review", kind="gripe").value == "in_review"
 
 
+def test_parse_strict_accepts_verify_on_gripe_and_full_vocab() -> None:
+    """pipeline v2 slice 1: ``verify`` joins the gripe vocabulary
+    (migration 0247) — accepted on gripe and on kinds that take the
+    full STATUS union (``finding``, like ``in_review`` today), refused
+    on the kinds carrying their own subset."""
+    assert Tag.parse_strict("STATUS:verify", kind="gripe").value == "verify"
+    assert Tag.parse_strict("STATUS:verify", kind="finding").value == "verify"
+    for kind in ("todo", "job", "quest"):
+        with pytest.raises(BadInput, match=f"invalid STATUS value for kind '{kind}'"):
+            Tag.parse_strict("STATUS:verify", kind=kind)
+
+
 def test_web_ranked_values_match_gripe_vocab() -> None:
     from precis.store.types import _KIND_STATUS_VALUES
     from precis_web.routes.gripes import _RANKED_VALUES
@@ -136,6 +148,20 @@ def test_web_count_and_rows_treat_untagged_gripe_as_open(store: Store) -> None:
     rows = _rows(store, status_filter="live")
     assert len(rows) == 2
     assert {r["status"] for r in rows} == {"open"}
+
+
+def test_live_lists_include_verify(store: Store) -> None:
+    """``verify`` is non-terminal: the web live queue and the nav badge
+    count a verify gripe the same as open."""
+    from precis_web.nav import _gripes_count
+    from precis_web.routes.gripes import _rows
+
+    with store.tx() as conn:
+        _insert_gripe(store, conn, status="verify")
+        _insert_gripe(store, conn, status="done")
+    assert _gripes_count(store) == 1
+    rows = _rows(store, status_filter="live")
+    assert [r["status"] for r in rows] == ["verify"]
 
 
 # ── status='!v' exclusion (gr496191) ────────────────────────────────

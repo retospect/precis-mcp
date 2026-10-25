@@ -118,7 +118,7 @@ search(kind="gripe", q="X", status="*")  # every status, no filter
 `status=` takes ONE value — a gripe carries exactly one `STATUS:` tag, so
 `status='open|triaged'` (or a comma list) is an error naming the valid
 values, not a union filter. Run one search per value, or `status='*'`.
-Valid: `open`, `triaged`, `ready_for_fix`, `in_review`, `done`, `wontfix`.
+Valid: `open`, `triaged`, `ready_for_fix`, `in_review`, `verify`, `done`, `wontfix`.
 
 **Enumerating vs. searching — a trap.** Adding `q=` to a status/tag
 filter turns a *complete enumeration* into a *ranked filter*: a gripe
@@ -173,10 +173,16 @@ that combination is refused.
 search(kind="gripe", tags=["STATUS:ready_for_fix"])
 ```
 
-## Find gripes that have a candidate fix in review
+## Find gripes with a fix in flight (claimed through landing and deploy)
 
 ```python
 search(kind="gripe", tags=["STATUS:in_review"])
+```
+
+## Find gripes deployed and awaiting the probe verdict
+
+```python
+search(kind="gripe", tags=["STATUS:verify"])
 ```
 
 ## Find gripes marked won't-fix
@@ -566,7 +572,8 @@ citation audit emits findings and todos, not gripes.
 | `STATUS:open`          | Just filed, untriaged                   |
 | `STATUS:triaged`       | Human reviewed; real; not yet ready     |
 | `STATUS:ready_for_fix` | Ready for its thread's session to fix   |
-| `STATUS:in_review`     | A fix landed on a branch; awaits merge  |
+| `STATUS:in_review`     | A fix is in flight (claimed through landing and deploy) |
+| `STATUS:verify`        | Fix deployed; awaiting the probe verdict — non-terminal |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
 | (deleted)              | `delete` — duplicates, spam and gripes filed in error only. A *fixed* gripe is a `resolved: <sha> (r<N>) — <how verified>` comment + `STATUS:done` |

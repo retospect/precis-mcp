@@ -66,7 +66,7 @@ No new table. Tags, links and `refs.meta` (`jsonb NOT NULL DEFAULT '{}'`;
 | cluster / thread | tag `cluster:<slug>` (free-form `ns:value` works on gripes), plus `thread:<slug>` when it maps |
 | priority | existing `PRIO` column, 1..10, lower is hotter (written by the tick) |
 | dup candidates | `refs.meta.dup_parents`: `[{id, sim, status}]`, once, by `gripe_parents`; the title card shows `potential duplicate parents: gr1(0.91) gr2(0.84)` |
-| dup count | `supersedes` links onto the keeper, shown as `x N`. Theme folds are only `+1` comments, so `x N` would undercount: the fold also writes a `supersedes` link (recommended) |
+| dup count | `supersedes` links FROM the keeper TO each parked dup — source supersedes target, so slices 4/5 write `keeper --supersedes--> dup` — shown as `x N`. Theme folds are only `+1` comments, so `x N` would undercount: the fold also writes a `supersedes` link (recommended) |
 | timestamps | `refs.meta.pipeline`: `triaged_at, fix_claimed_at, deployed_at, verified_at, reopened_at, claimed_at` (UTC `Z`) |
 | fix sha | comment `fix-sha: <sha>` by the builder |
 | recurrence answer | comment `prevents: skill\|check\|test <path>` or `prevents: none - <reason>` |
@@ -98,8 +98,9 @@ quiet trickle.
 2. **Query shape.** The ANN returns chunks, not gripes, and gripes carry
    comment chunks too: `chunk_kinds=['gripe_body']`, oversample 3x
    (`LIMIT 3k`), dedupe per ref keeping the best chunk, cut to k. Candidate
-   statuses are pre-filtered with `tags=` on `STATUS:*` (a post-filter
-   under-fills), after `_prepare_filtered_ann(conn, limit)`
+   statuses are pre-filtered with `exclude_tags=[STATUS:done, STATUS:wontfix]`
+   (a post-filter under-fills; `build_tag_filter`'s `tags=` is strict AND so
+   cannot match one-of-several statuses), after `_prepare_filtered_ann(conn, limit)`
    (`store/_chunks_ops.py`: iterative scan so the filtered LIMIT fills;
    `gripe` routes to its partial index). Exclude self and gripes already
    linked by `supersedes`.
@@ -284,7 +285,8 @@ From `rg 'ready_for_fix|in_review'`; re-run at build. Paths under `src/precis/`:
   Once the embedding exists (up to ~35 minutes in a quiet trickle), the next
   `gripe_parents` run writes `meta.dup_parents`: non-terminal gripes only,
   `gripe_body` chunks only, one entry per gripe, at or above the floor.
-- `STATUS:verify` is accepted on gripes only. A tick over 40 seeded gripes
+- `STATUS:verify` is accepted on gripes (and kinds with the full
+  vocabulary — todo/job/quest refuse it; `finding` takes the union). A tick over 40 seeded gripes
   writes `fix:`, `cluster:`, `size:`, PRIO and `STATUS:triaged`; a second
   run changes nothing. No transaction is held across the LLM call; an
   expired `claimed_at` is re-claimed.

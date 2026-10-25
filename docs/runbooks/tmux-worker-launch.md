@@ -73,7 +73,7 @@ launcher is `scripts/fleet-codex` (`codex-fleet.md`); Devin launch is
   and `cut --abandon`; round numbers are global on origin (Reto renamed
   the dir aside to unblock).
 - Gripe STATUS values: `done`, `in_review`, `open`, `ready_for_fix`,
-  `triaged`, `wontfix`. psql backslash commands trip the prod-write
+  `triaged`, `verify`, `wontfix`. psql backslash commands trip the prod-write
   hook even under `--ro`; use information_schema SQL.
 - A sibling session's `reap-worktrees` SessionStart hook deletes any
   tree that is clean + sessionless + merged, branch included; write

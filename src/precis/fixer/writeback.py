@@ -5,7 +5,9 @@ counterpart until this module: a promoted gripe got built, gated, maybe
 shipped — and the gripe record itself never learned any of that. This is
 the sink half: one ``gripe_comment`` chunk summarising the outcome, and
 (build outcomes only) a ``STATUS:`` flip to ``in_review`` so a human
-knows there is something to look at. Diagnosis failures leave the gripe
+knows there is something to look at — skipped when the gripe already
+sits at ``verify`` or a terminal status (pipeline v2: only the probe
+verdict or a human retag moves those). Diagnosis failures leave the gripe
 ``STATUS:open`` — the local ``fix/grN`` branch surviving the tick is
 what stops a re-pick, not a status change.
 
@@ -90,12 +92,29 @@ def gripe_writeback(
                     set_by="agent",
                 )
             if status is not None:
-                store.add_tag(
-                    ref_id,
-                    Tag.parse_strict(f"STATUS:{status}"),
-                    set_by="agent",
-                    replace_prefix=True,
+                from precis.workers.job_types.fix_gripe import (
+                    _NO_DOWNGRADE_GRIPE_STATUSES,
                 )
+
+                current = next(
+                    (
+                        str(t).split(":", 1)[1]
+                        for t in store.tags_for(ref_id)
+                        if str(t).startswith("STATUS:")
+                    ),
+                    None,
+                )
+                # A ``verify`` gripe's fix already shipped; only its probe
+                # verdict (or a human retag) moves it — a late write-back
+                # must not bump it back to ``in_review``. Same for the
+                # terminal pair.
+                if current not in _NO_DOWNGRADE_GRIPE_STATUSES:
+                    store.add_tag(
+                        ref_id,
+                        Tag.parse_strict(f"STATUS:{status}"),
+                        set_by="agent",
+                        replace_prefix=True,
+                    )
         finally:
             store.close()
         return True

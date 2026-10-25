@@ -410,7 +410,10 @@ def _gripe_outcome(
     (never cleaned up on a NEEDS_YOU return — see ``run_tick``) is what
     stops a re-pick, not a status flip. Every ``OK`` path flips to
     ``in_review``: even a full-autonomy ship+deploy still wants a human
-    look before the gripe is closed to done.
+    look before the gripe is closed to done. The flip itself is
+    conditional — ``gripe_writeback`` skips it when the gripe already
+    sits at ``verify`` or a terminal status (only its probe verdict or
+    a human retag moves those).
 
     ``shipped`` (threaded from ``run_tick``'s local of the same name)
     distinguishes a ``NEEDS_YOU`` that happened *before* ``scripts/ship``

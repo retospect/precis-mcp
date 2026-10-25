@@ -75,6 +75,9 @@ def test_gripe_writeback_success_appends_comment_and_flips_status(
         def add_tag(self, ref_id: int, tag: Any, **kwargs: Any) -> None:
             calls["add_tag"] = (ref_id, tag, kwargs)
 
+        def tags_for(self, ref_id: int) -> list[Any]:
+            return []
+
         def close(self) -> None:
             self.closed = True
 
@@ -234,6 +237,7 @@ def _run_writeback(
     *,
     status: str | None,
     escalate_skill: bool,
+    prior_status: str | None = None,
 ) -> dict[str, Any]:
     calls: dict[str, Any] = {"appended": [], "tags": []}
 
@@ -252,6 +256,11 @@ def _run_writeback(
             calls["tags"].append(
                 tag.value if tag.prefix is None else f"{tag.prefix}:{tag.value}"
             )
+
+        def tags_for(self, ref_id: int) -> list[Any]:
+            from precis.store.types import Tag
+
+            return [Tag.closed("STATUS", prior_status)] if prior_status else []
 
         def close(self) -> None:
             pass
@@ -297,6 +306,24 @@ def test_first_failure_and_non_skill_gripes_do_not_escalate(
         escalate_skill=True,
     )
     assert "waiting-for:reto" not in landed["tags"]
+
+
+def test_writeback_does_not_downgrade_a_verify_gripe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pipeline v2: a ``STATUS:verify`` gripe (fix deployed, probe
+    pending) keeps its status when a late write-back lands — the comment
+    still appends, only the flip is skipped."""
+    calls = _run_writeback(
+        monkeypatch,
+        [],
+        "FIXER (auto): fix shipped to main (branch fix/gr7)",
+        status="in_review",
+        escalate_skill=False,
+        prior_status="verify",
+    )
+    assert len(calls["appended"]) == 1
+    assert calls["tags"] == []
 
 
 def test_work_item_carries_linked_skills() -> None:

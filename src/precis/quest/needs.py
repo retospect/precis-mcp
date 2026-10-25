@@ -78,6 +78,7 @@ _LIVE_GRIPE_STATUSES: tuple[str, ...] = (
     "triaged",
     "ready_for_fix",
     "in_review",
+    "verify",
 )
 
 

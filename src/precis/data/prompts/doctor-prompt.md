@@ -190,9 +190,10 @@ Your only write this tick is `put(kind='gripe', ...)`.
   someone else's gripe. Searching alerts for
   siblings is NOT dedup; the tracker you must not duplicate is a gripe.
   A match in ANY non-terminal status counts as covering it — open,
-  triaged, ready_for_fix, AND in_review (in_review means a fix shipped
-  and is awaiting verification: annotate it with your fresh sighting,
-  don't re-file). Only `done`/`wontfix` don't block a new filing.
+  triaged, ready_for_fix, in_review, AND verify (in_review means a fix
+  is in flight; verify means it deployed and the probe's verdict is
+  pending: annotate it with your fresh sighting, don't re-file). Only
+  `done`/`wontfix` don't block a new filing.
   Annotate instead of duplicating: `put(kind="gripe", id=<id>,
   text="<what you found this tick>")`. Annotate only when the sighting
   adds something the gripe's comments don't already say (a new cause, a

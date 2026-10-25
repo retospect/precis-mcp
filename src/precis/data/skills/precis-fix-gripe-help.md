@@ -126,8 +126,10 @@ search(kind="job", link="gripe:42")
 # most recent first; check STATUS on the top result
 ```
 
-Or look at the gripe — it transitions to `STATUS:in_review`
-once a fix has landed on main (landed, not yet verified).
+Or look at the gripe — it sits at `STATUS:in_review` while a fix is
+in flight (claimed through landing and deploy). Once a confirmed
+deploy carries the fix it moves to `STATUS:verify`, where the probe
+verdict closes it `done` or reopens it `open`.
 
 An agent that finds the defect already gone makes no commit and
 ends on an `ALREADY FIXED: <evidence>` line. The job then succeeds

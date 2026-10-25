@@ -1382,17 +1382,20 @@ def _reopen_gripe_unless_terminal(
     store: Store, gripe_id: int, conn: Connection
 ) -> None:
     """Roll a gripe back to ``STATUS:open`` after a failed/skipped fix
-    attempt — UNLESS it's already terminal (``done``/``wontfix``).
+    attempt — UNLESS it's terminal (``done``/``wontfix``) or ``verify``.
 
     gr451170: a fix attempt that fails (or is skipped) after the gripe
     was independently resolved — by a human, or by an earlier attempt —
-    while this one was still running must not resurrect it. Read the
-    CURRENT status (not a snapshot from job start) so this always sees
-    whatever landed most recently.
+    while this one was still running must not resurrect it. ``verify``
+    gets the same protection (pipeline v2): a deployed fix awaiting its
+    probe is left only by the probe's verdict, so a stale job's failure
+    must not bounce it back to ``open``. Read the CURRENT status (not a
+    snapshot from job start) so this always sees whatever landed most
+    recently.
     """
-    from precis.workers.job_types.fix_gripe import _TERMINAL_GRIPE_STATUSES
+    from precis.workers.job_types.fix_gripe import _NO_DOWNGRADE_GRIPE_STATUSES
 
-    if _current_status(conn, gripe_id) in _TERMINAL_GRIPE_STATUSES:
+    if _current_status(conn, gripe_id) in _NO_DOWNGRADE_GRIPE_STATUSES:
         return
     _set_status(store, gripe_id, "open", conn=conn)
 
@@ -1475,19 +1478,29 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             sha=outcome.sha,
         )
         if outcome.status == "succeeded":
+            from precis.workers.job_types.fix_gripe import (
+                _NO_DOWNGRADE_GRIPE_STATUSES,
+            )
+
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
-            _set_status(store, gripe_id, "in_review", conn=conn)
+            # Never move a ``verify`` (or already-terminal) gripe back to
+            # in_review: verify exits only via its probe's verdict.
+            if _current_status(conn, gripe_id) not in _NO_DOWNGRADE_GRIPE_STATUSES:
+                _set_status(store, gripe_id, "in_review", conn=conn)
         elif outcome.status == "already_fixed":
             # gr454480: the agent verified the defect is already gone. The
             # job did its work, so no failure bubble; the gripe goes to
             # in_review for a human to confirm and close. Never reopen it —
             # the groomer re-mints only STATUS:open gripes, so reopening is
             # what made an already-fixed gripe loop. A gripe that went
-            # terminal meanwhile is left as it is.
-            from precis.workers.job_types.fix_gripe import _TERMINAL_GRIPE_STATUSES
+            # terminal meanwhile is left as it is — and a ``verify`` gripe
+            # keeps its pending probe verdict.
+            from precis.workers.job_types.fix_gripe import (
+                _NO_DOWNGRADE_GRIPE_STATUSES,
+            )
 
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
-            if _current_status(conn, gripe_id) not in _TERMINAL_GRIPE_STATUSES:
+            if _current_status(conn, gripe_id) not in _NO_DOWNGRADE_GRIPE_STATUSES:
                 _set_status(store, gripe_id, "in_review", conn=conn)
         elif outcome.status == "skipped":
             # GLM/OpenRouter fleet-flip safety gate (backend=openai), the

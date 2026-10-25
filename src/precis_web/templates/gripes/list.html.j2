@@ -69,7 +69,8 @@
 
 {# One collapsible panel per status. The live view starts collapsed so
    every status header (and its count) sits at the top of the page — a
-   long open section used to push triaged/in_review below the fold. A
+   long open section used to push triaged/in_review/verify below the
+   fold. A
    single-status view has one panel, so it starts open. #}
 {% for g in groups %}
 <details class="mb-3 group" data-status="{{ g.status }}"{% if status != 'live' %} open{% endif %}>

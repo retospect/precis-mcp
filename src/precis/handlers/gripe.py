@@ -325,7 +325,7 @@ class GripeHandler(NumericRefHandler):
             "The project's bug tracker. Numeric id assigned on "
             "create. Body + append-only comment timeline live as "
             "chunks. Status tracked via the STATUS: tag (one of: open, "
-            "triaged, ready_for_fix, in_review, done, wontfix)."
+            "triaged, ready_for_fix, in_review, verify, done, wontfix)."
         ),
         supports_get=True,
         supports_search=True,
@@ -1598,6 +1598,7 @@ class GripeHandler(NumericRefHandler):
         lines = [
             *self._header_lines(ref, tags),
             f"title: {title}",
+            *self._dup_lines(ref),
             f"comments: {len(comments)} · body: view='body' · "
             "timeline: view='comments'",
         ]
@@ -1642,6 +1643,34 @@ class GripeHandler(NumericRefHandler):
             ),
         ]
         return "\n".join(lines)
+
+    def _dup_lines(self, ref: Ref) -> list[str]:
+        """Pipeline v2 slice 2 card lines (``docs/backlog/
+        gripe-pipeline-v2.md`` §Data model): ``duplicates: x N`` =
+        OUTBOUND ``supersedes`` links — this keeper supersedes N parked
+        duplicates (the repo convention is source supersedes target) —
+        and ``potential duplicate parents: gr<id>(<sim>)`` off
+        ``meta.dup_parents`` (written by ``workers/gripe_parents``;
+        absent/empty/malformed shows nothing — a bad entry never takes
+        the card down)."""
+        out: list[str] = []
+        n = len(self.store.links_for(ref.id, direction="out", relation="supersedes"))
+        if n:
+            out.append(f"duplicates: x {n}")
+        parents = (ref.meta or {}).get("dup_parents")
+        if isinstance(parents, list) and parents:
+            from precis.utils.handle_registry import try_format
+
+            shown: list[str] = []
+            for p in parents:
+                try:
+                    handle = try_format("gripe", int(p["id"])) or str(p["id"])
+                    shown.append(f"{handle}({float(p['sim']):.2f})")
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if shown:
+                out.append(f"potential duplicate parents: {' '.join(shown)}")
+        return out
 
     def _header_lines(self, ref: Ref, tags: list[Tag]) -> list[str]:
         lines = [f"# {self._sense()} {ref.id}"]

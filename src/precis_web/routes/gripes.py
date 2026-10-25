@@ -63,6 +63,7 @@ STATUS_VALUES: tuple[str, ...] = (
     "triaged",
     "ready_for_fix",
     "in_review",
+    "verify",
     "wontfix",
 )
 
@@ -81,6 +82,7 @@ _RANKED_VALUES: tuple[str, ...] = (
     "triaged",
     "ready_for_fix",
     "in_review",
+    "verify",
     "done",
     "wontfix",
 )
@@ -98,6 +100,7 @@ _STATUS_BADGE: dict[str, str] = {
     "triaged": "bg-info-muted text-info-deep border-info-strong",
     "ready_for_fix": "bg-warning-muted text-warning-deep border-warning-strong",
     "in_review": "bg-accent-muted text-accent-deep border-accent-strong",
+    "verify": "bg-teal-muted text-teal-deep border-teal-strong",
     "done": "bg-success-muted text-success-deep border-success-strong",
     "wontfix": "bg-danger-muted text-danger-deep border-danger-strong",
 }

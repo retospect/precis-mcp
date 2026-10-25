@@ -94,7 +94,10 @@ docstring for the lease mechanism. ``CADENCES``: ``cron_tick`` (60s),
 ``watch_poll`` (1h), ``health_digest`` (1h), ``materialize`` (300s),
 ``draft_refresh_scan`` (~4h — stalest-section pick over
 ``meta.draft_refresh``-opted drafts, one bounded ``draft_refresh`` job/draft;
-clock = min ``created_at`` over live direct paragraphs), ``structural``/
+clock = min ``created_at`` over live direct paragraphs), ``gripe_parents``
+(300s — pipeline v2 dup-parent backfill: one ANN query per embedded gripe,
+``meta.dup_parents`` marker write, ``meta.pipeline.claimed_at`` lease;
+``gripe_parents.py``), ``structural``/
 ``deep_review`` (dark-switched eligibility, fleet-wide — a wedged rotation on
 one host can't starve a review), ``dream_agent``/``anki_sync``
 (host-pinned + ``eligible()``-gated — a pinned cadence stalls while its

@@ -167,7 +167,8 @@ cards + live-routing header, budget cap/pause controls, and **Now**
 routes unchanged.
 
 **Gripes (`/gripes`)** — ``routes/gripes.py``: list by ``STATUS``
-(``open → triaged → ready_for_fix → in_review → wontfix``), filing,
+(``open → triaged → ready_for_fix → in_review → verify → done/wontfix``),
+filing,
 detail/comment timeline, and ``retire`` (soft-delete, "fix landed", distinct
 from ``wontfix``). Filing appends ``— filed by <login> …``; body is the record.
 

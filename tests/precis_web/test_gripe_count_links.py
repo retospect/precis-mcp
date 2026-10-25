@@ -10,28 +10,45 @@ from tests._refs import insert_gripe
 
 
 @pytest.mark.parametrize(
-    "status", ["open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"]
+    "status",
+    ["open", "triaged", "ready_for_fix", "in_review", "verify", "done", "wontfix"],
 )
 def test_status_count_navigation(
     store: Any, client: Any, monkeypatch: Any, status: str
 ) -> None:
     from precis_web.routes import gripes
 
-    for state in ["open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"]:
+    for state in [
+        "open",
+        "triaged",
+        "ready_for_fix",
+        "in_review",
+        "verify",
+        "done",
+        "wontfix",
+    ]:
         insert_gripe(store, f"fixture-count-{state}", status=state)
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
     live = client.get("/gripes")
     assert live.status_code == 200
     assert 'href="/gripes?status=live"' in live.text
-    for state in ["open", "triaged", "ready_for_fix", "in_review"]:
+    for state in ["open", "triaged", "ready_for_fix", "in_review", "verify"]:
         assert f'href="/gripes?status={state}"' in live.text
     filtered = client.get(f"/gripes?status={status}")
     assert filtered.status_code == 200
     assert f"fixture-count-{status}" in filtered.text
-    for state in ["open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"]:
+    for state in [
+        "open",
+        "triaged",
+        "ready_for_fix",
+        "in_review",
+        "verify",
+        "done",
+        "wontfix",
+    ]:
         if state != status:
             assert f"fixture-count-{state}" not in filtered.text
-    assert len(_rows(store, status_filter="live")) == 4
+    assert len(_rows(store, status_filter="live")) == 5
     invalid = client.get("/gripes?status=not-a-status")
     assert "fixture-count-open" in invalid.text
     assert "fixture-count-done" not in invalid.text
@@ -65,7 +82,7 @@ def test_live_view_renders_each_status_as_a_collapsible_panel(
     opens its one panel."""
     from precis_web.routes import gripes
 
-    for state in ["open", "triaged", "in_review"]:
+    for state in ["open", "triaged", "in_review", "verify"]:
         with store.tx() as conn:
             ref = store.insert_ref(
                 kind="gripe", slug=None, title=f"fixture-panel-{state}", conn=conn
@@ -74,7 +91,7 @@ def test_live_view_renders_each_status_as_a_collapsible_panel(
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
 
     live = client.get("/gripes").text
-    for state in ["open", "triaged", "in_review"]:
+    for state in ["open", "triaged", "in_review", "verify"]:
         assert f'<details class="mb-3 group" data-status="{state}">' in live
         assert f"fixture-panel-{state}" in live
 

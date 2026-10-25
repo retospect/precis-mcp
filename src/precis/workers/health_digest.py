@@ -2549,6 +2549,7 @@ _MARKER_GRIPE_LIVE_STATUSES: tuple[str, ...] = (
     "triaged",
     "ready_for_fix",
     "in_review",
+    "verify",
 )
 
 

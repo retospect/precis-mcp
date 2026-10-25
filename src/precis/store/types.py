@@ -1110,7 +1110,15 @@ class Tag:
 # incl. commit. Revisit only if a bulk tag sweep shows it.
 _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
     "gripe": frozenset(
-        {"open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"}
+        {
+            "open",
+            "triaged",
+            "ready_for_fix",
+            "in_review",
+            "verify",
+            "done",
+            "wontfix",
+        }
     ),
     # Todo lifecycle (migration 0013): ``paused`` parks a subtree,
     # ``auto-timeout`` is written by the auto-check worker. Terminals —
@@ -1204,11 +1212,17 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # `established`).
             "canonical",
             # gripe lifecycle (migration 0005 / handler rewrite).
-            # ``open`` is shared with todo above; the rest are
-            # gripe-only.
+            # ``open`` is shared with todo above; the rest are the
+            # gripe lifecycle (accepted on gripe and on kinds that
+            # take the full union — todo/job/quest carry their own
+            # subsets).
             "triaged",
             "ready_for_fix",
             "in_review",
+            # ``verify`` (pipeline v2, migration 0247): fix deployed,
+            # awaiting the probe verdict — non-terminal, sits between
+            # ``in_review`` and ``done``.
+            "verify",
             "wontfix",
             # job lifecycle (migration 0005 / fix_gripe substrate).
             # ``submitted`` is reserved for future cluster

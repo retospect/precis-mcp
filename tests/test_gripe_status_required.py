@@ -1,8 +1,9 @@
 """Gripe STATUS invariant: migration 0176 deferred triggers.
 
 Every gripe carries exactly one STATUS tag from the gripe vocabulary
-(open, triaged, ready_for_fix, in_review, done, wontfix). ``refuted`` is a
-finding status and must not land on a gripe.
+(open, triaged, ready_for_fix, in_review, verify, done, wontfix —
+``verify`` joined under migration 0247). ``refuted`` is a finding status
+and must not land on a gripe.
 """
 
 from __future__ import annotations
@@ -35,6 +36,14 @@ def test_ref_then_tag_in_one_tx_commits(store: Store) -> None:
     with store.tx() as conn:
         rid = _insert_gripe(store, conn, status="open")
     assert any("STATUS:open" in str(t) for t in store.tags_for(rid))
+
+
+def test_verify_status_commits(store: Store) -> None:
+    """0247 widened the trigger vocabulary: STATUS:verify is a valid sole
+    STATUS on a gripe."""
+    with store.tx() as conn:
+        rid = _insert_gripe(store, conn, status="verify")
+    assert any("STATUS:verify" in str(t) for t in store.tags_for(rid))
 
 
 def test_replace_prefix_status_change_succeeds(store: Store) -> None:

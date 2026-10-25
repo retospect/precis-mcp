@@ -71,12 +71,21 @@ _REPO_TAG_NAMESPACE = "repo"
 
 #: gripe ``STATUS:`` values that mean "resolved, don't touch it" (mirrors
 #: ``handlers/gripe.py``'s documented status vocabulary's terminal end —
-#: ``open|triaged|ready_for_fix|in_review`` are all still live). Read by
-#: :func:`run` (gr451170 fix 1) and by ``executors.claude_inproc`` (fix 2,
-#: the failure-rollback guard) so a stale/duplicate job — or a failure
-#: racing a human/earlier-attempt resolution — can never resurrect a
-#: gripe that's already ``done``/``wontfix``.
+#: ``open|triaged|ready_for_fix|in_review|verify`` are all still live).
+#: Read by :func:`run` (gr451170 fix 1) and by ``executors.claude_inproc``
+#: (fix 2, the failure-rollback guard) so a stale/duplicate job — or a
+#: failure racing a human/earlier-attempt resolution — can never
+#: resurrect a gripe that's already ``done``/``wontfix``.
 _TERMINAL_GRIPE_STATUSES = frozenset({"done", "wontfix"})
+
+#: ``STATUS:`` values no fix-lane writer may move a gripe OUT of: the
+#: terminal pair plus ``verify`` (pipeline v2, migration 0247). ``verify``
+#: is not terminal — the probe can still send the gripe back to ``open``
+#: — but it is left ONLY by that probe verdict (or a human retag): a
+#: stale job flipping it to ``in_review``/``open`` would silently cancel
+#: the pending verification. Guards the executor's status writes, the
+#: fix_gripe-job mint bump, and the fixer's write-back.
+_NO_DOWNGRADE_GRIPE_STATUSES = _TERMINAL_GRIPE_STATUSES | frozenset({"verify"})
 
 
 def _gripe_status(store: Any, gripe_id: int) -> str | None:
@@ -543,9 +552,11 @@ def run(
     # resolved (by a human, or by an earlier fix attempt) while this one
     # sat queued must not attempt a fix, and — critically — must not let
     # a subsequent failure re-open a closed gripe. Skip clean, before any
-    # clone/agent effort, and leave the gripe's status untouched.
+    # clone/agent effort, and leave the gripe's status untouched. A
+    # ``verify`` gripe is past fixing too — its fix is deployed awaiting
+    # the probe, so this job has nothing left to do.
     gripe_status = _gripe_status(store, gripe_id)
-    if gripe_status in _TERMINAL_GRIPE_STATUSES:
+    if gripe_status in _NO_DOWNGRADE_GRIPE_STATUSES:
         wall = time.perf_counter() - t0
         log.info(
             "fix_gripe: gripe:%d is already STATUS:%s — skipping fix attempt "

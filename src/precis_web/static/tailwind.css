@@ -1895,6 +1895,11 @@ video {
   border-color: rgb(var(--border-success-strong) / var(--tw-border-opacity, 1));
 }
 
+.border-teal-strong {
+  --tw-border-opacity: 1;
+  border-color: rgb(var(--border-teal-strong) / var(--tw-border-opacity, 1));
+}
+
 .border-transparent {
   border-color: transparent;
 }
@@ -2773,6 +2778,11 @@ video {
 .text-success-strong {
   --tw-text-opacity: 1;
   color: rgb(var(--text-success-strong) / var(--tw-text-opacity, 1));
+}
+
+.text-teal-deep {
+  --tw-text-opacity: 1;
+  color: rgb(var(--text-teal-deep) / var(--tw-text-opacity, 1));
 }
 
 .text-teal-strong {
