@@ -487,13 +487,15 @@ def test_drc_pads_real_for_cached_parts_synthesized_for_the_rest(pcb):
 
 
 # ── args={'dir'} confinement (docs/backlog/pcb-export-dir-confinement.md) ──
-# Five renderers used to take the raw path as given; all now go through
+# Four renderers used to take the raw path as given; all now go through
 # _export_dir(slug, args), which resolves it and refuses anything outside
-# the corpus pcb/ root or the system temp dir.
+# the corpus pcb/ root or the system temp dir. (The fifth write site —
+# the Freerouting round-trip behind view='route' — was deleted
+# 2026-10-25 with the legacy routers; nothing left there to confine.)
 def test_export_dir_refuses_paths_outside_the_export_root(
     pcb, tmp_path, monkeypatch
 ) -> None:
-    """``view='bom'|'gerber'|'fab'|'epro'|'route'`` — one per write site —
+    """``view='bom'|'gerber'|'fab'|'epro'`` — one per write site —
     each with ``dir`` set to an absolute out-of-root path, a ``..`` escape
     and a symlink pointing out of the root: every one raises BadInput and
     writes nothing. ``cwd`` (the checkout — writable, outside both roots)
@@ -510,7 +512,7 @@ def test_export_dir_refuses_paths_outside_the_export_root(
 
     slug = _seed(pcb)
     before = set(outside.iterdir())
-    for view in ("bom", "gerber", "fab", "epro", "route"):
+    for view in ("bom", "gerber", "fab", "epro"):
         for bad in bad_dirs:
             with pytest.raises(BadInput, match="outside the export root"):
                 pcb.get(id=slug, view=view, args={"dir": bad})
