@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/autocatpath-wheel.sh — pure helpers for matching this repo's
 # declared `autocatpath` version floor against the wheels a controller has
 # actually built. Sourced by scripts/deploy; no side effects, so the version

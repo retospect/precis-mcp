@@ -10,7 +10,7 @@
 # recorded tree and branch. Never copy an agent's diff by hand — a copied
 # branch looks unmerged forever and nothing reaps it.
 # Rebase conflicts stop in the agent's tree: resolve there,
-# 'git add -A && git rebase --continue', then re-run.
+# 'git add -A && GIT_EDITOR=true git rebase --continue', then re-run.
 set -euo pipefail
 
 discard=0
@@ -67,7 +67,7 @@ fi
 
 [[ -z "$(git status --porcelain)" ]] || die "this tree is dirty — commit first"
 git -C "$tree" rebase -q "$ours" \
-    || die "rebase conflict in $tree — resolve there, 'git add -A && git rebase --continue', re-run"
+    || die "rebase conflict in $tree — resolve there, 'git add -A && GIT_EDITOR=true git rebase --continue', re-run"
 before="$(git rev-parse HEAD)"
 git merge -q --ff-only "$branch"
 printf '%s %s\n' "$branch" "$(git rev-parse "$branch")" >> "$(git rev-parse --git-path taken-agents)"

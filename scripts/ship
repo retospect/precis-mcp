@@ -28,7 +28,7 @@
 #                             then `git rebase origin/main` (Git-Town style; the
 #                             branch stays linear, no merge commit). A conflict
 #                             leaves the rebase IN PROGRESS for a human to
-#                             resolve (`git rebase --continue`, re-run).
+#                             resolve (`GIT_EDITOR=true git rebase --continue`, re-run).
 #                    · gate   in the precis-dev container over THIS worktree:
 #                             auto-fix ruff (amended) then ruff/format/mypy/pytest
 #                             (a docs/config-only diff runs a light ruff + doc-
@@ -468,7 +468,7 @@ _relock() {
 
 # ── 1. sanity ───────────────────────────────────────────────────────────
 if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
-    die "a rebase is in progress — finish it ('git rebase --continue') or abort it, then re-run scripts/ship."
+    die "a rebase is in progress — finish it ('GIT_EDITOR=true git rebase --continue') or abort it, then re-run scripts/ship."
 fi
 [[ -n "$BRANCH" ]] || die "detached HEAD — check out a feature branch first."
 [[ "$BRANCH" != "main" ]] || die "on main — nothing to ship."
@@ -1893,7 +1893,7 @@ ${CO_AUTHOR}" \
             || die "could not squash ${BRANCH} onto its merge-base."
     fi
     git rebase -q origin/main \
-        || die "rebase conflict onto origin/main — resolve in ${WORKTREE}, then 'git add -A && git rebase --continue' and re-run scripts/ship (or 'git rebase --abort' to back out)."
+        || die "rebase conflict onto origin/main — resolve in ${WORKTREE}, then 'git add -A && GIT_EDITOR=true git rebase --continue' and re-run scripts/ship (or 'git rebase --abort' to back out)."
 }
 
 # True unless the pid is certainly gone (EPERM counts as live).

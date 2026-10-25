@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/lock-holder.sh — who holds a mkdir-mutex, when it may be
 # stolen, how to steal it atomically, and how to release only your own.
 # Sourced by scripts/ship (the ship lock), scripts/lib/ship-lock.sh (the

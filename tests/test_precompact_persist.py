@@ -37,6 +37,27 @@ HOOK = (
 REPO = Path(__file__).resolve().parents[1]
 SETTINGS = REPO / ".claude" / "settings.json"
 
+
+@pytest.fixture(scope="module")
+def stub_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A fake project dir whose ``scripts/`` stubs out the hook's lint
+    calls. The real ``scripts/memory-lint``/``scripts/backlog-lint`` cost
+    ~6 s each inside the hook — multiplied across these runs they made the
+    file ~43 s (gr515493). The stdout contract under test is the hook's
+    own, so cheap stubs exercise it identically; memory-lint still emits a
+    ``DUE`` line so the hook's filter path runs too."""
+    proj = tmp_path_factory.mktemp("precompact-proj")
+    sdir = proj / "scripts"
+    sdir.mkdir(parents=True)
+    mem = sdir / "memory-lint"
+    mem.write_text("#!/bin/sh\necho '1 DUE item'\n", encoding="utf-8")
+    mem.chmod(0o755)
+    bl = sdir / "backlog-lint"
+    bl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    bl.chmod(0o755)
+    return proj
+
+
 CLAUDE_PAYLOAD = {
     "session_id": "s1",
     "transcript_path": "/tmp/t.jsonl",
@@ -61,8 +82,10 @@ def _clean_env() -> dict[str, str]:
     }
 
 
-def _run(payload: dict, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    env = {**env, "CLAUDE_PROJECT_DIR": str(REPO)}
+def _run(
+    payload: dict, env: dict[str, str], project: Path = REPO
+) -> subprocess.CompletedProcess[str]:
+    env = {**env, "CLAUDE_PROJECT_DIR": str(project)}
     return subprocess.run(
         ["bash", str(HOOK)],
         input=json.dumps(payload),
@@ -73,38 +96,42 @@ def _run(payload: dict, env: dict[str, str]) -> subprocess.CompletedProcess[str]
     )
 
 
-def test_claude_payload_prints_the_advisory_on_stdout() -> None:
-    res = _run(CLAUDE_PAYLOAD, _clean_env())
+def test_claude_payload_prints_the_advisory_on_stdout(
+    stub_project: Path,
+) -> None:
+    res = _run(CLAUDE_PAYLOAD, _clean_env(), stub_project)
     assert res.returncode == 0
     assert "PreCompact" in res.stdout
 
 
-def test_devin_payload_leaves_stdout_empty() -> None:
-    res = _run(DEVIN_PAYLOAD, _clean_env())
+def test_devin_payload_leaves_stdout_empty(stub_project: Path) -> None:
+    res = _run(DEVIN_PAYLOAD, _clean_env(), stub_project)
     assert res.returncode == 0
     assert res.stdout == ""
     assert "PreCompact" in res.stderr
 
 
-def test_devin_env_marker_alone_selects_the_devin_path() -> None:
+def test_devin_env_marker_alone_selects_the_devin_path(stub_project: Path) -> None:
     env = {**_clean_env(), "AI_AGENT": "devin_3000-11-205_agent"}
-    res = _run(CLAUDE_PAYLOAD, env)
+    res = _run(CLAUDE_PAYLOAD, env, stub_project)
     assert res.returncode == 0
     assert res.stdout == ""
 
 
-def test_claude_env_marker_does_not_trigger_the_devin_path() -> None:
+def test_claude_env_marker_does_not_trigger_the_devin_path(
+    stub_project: Path,
+) -> None:
     env = {**_clean_env(), "AI_AGENT": "claude"}
-    res = _run(CLAUDE_PAYLOAD, env)
+    res = _run(CLAUDE_PAYLOAD, env, stub_project)
     assert res.returncode == 0
     assert "PreCompact" in res.stdout
 
 
-def test_devin_project_dir_alone_selects_the_devin_path() -> None:
+def test_devin_project_dir_alone_selects_the_devin_path(stub_project: Path) -> None:
     """gr514171: a Devin payload without prompt_id/turn_id (they are
     per-turn ids, absent before the first user prompt) and no AI_AGENT
     must still keep stdout empty — DEVIN_PROJECT_DIR is always set."""
-    env = {**_clean_env(), "DEVIN_PROJECT_DIR": str(REPO)}
+    env = {**_clean_env(), "DEVIN_PROJECT_DIR": str(stub_project)}
     res = _run(DEVIN_PAYLOAD_NO_IDS, env)
     assert res.returncode == 0
     assert res.stdout == ""
@@ -134,14 +161,16 @@ def _repo_scripts(commands: list[str]) -> list[Path]:
     return scripts
 
 
-def test_every_precompact_script_stdout_is_empty_or_json_under_devin() -> None:
+def test_every_precompact_script_stdout_is_empty_or_json_under_devin(
+    stub_project: Path,
+) -> None:
     """Devin's pre_compact contract: stdout is EMPTY or valid JSON, for each
     repo script any PreCompact command in .claude/settings.json can run —
     including payloads that lack the per-turn ids."""
     scripts = _repo_scripts(_precompact_commands())
     assert scripts, "no repo PreCompact scripts found in .claude/settings.json"
-    env = {**_clean_env(), "DEVIN_PROJECT_DIR": str(REPO)}
-    env["CLAUDE_PROJECT_DIR"] = str(REPO)
+    env = {**_clean_env(), "DEVIN_PROJECT_DIR": str(stub_project)}
+    env["CLAUDE_PROJECT_DIR"] = str(stub_project)
     for script in scripts:
         res = subprocess.run(
             ["bash", str(script)],
@@ -155,12 +184,14 @@ def test_every_precompact_script_stdout_is_empty_or_json_under_devin() -> None:
             json.loads(res.stdout)  # raises unless it is valid JSON
 
 
-def test_every_precompact_script_claude_behaviour_unchanged() -> None:
+def test_every_precompact_script_claude_behaviour_unchanged(
+    stub_project: Path,
+) -> None:
     """Under Claude the advisory still reaches the compaction context via
     plain stdout."""
     scripts = _repo_scripts(_precompact_commands())
     assert scripts
-    env = {**_clean_env(), "CLAUDE_PROJECT_DIR": str(REPO)}
+    env = {**_clean_env(), "CLAUDE_PROJECT_DIR": str(stub_project)}
     for script in scripts:
         res = subprocess.run(
             ["bash", str(script)],

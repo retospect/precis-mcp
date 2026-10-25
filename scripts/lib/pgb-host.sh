@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/pgb-host.sh — resolve the prod pgbouncer address without ever
 # committing it.
 #

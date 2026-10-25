@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/session-lock.sh — shared helpers for identifying the durable
 # Claude session process behind a hook invocation, and for reading/comparing
 # against whatever pid a worktree's `git worktree lock` currently names.

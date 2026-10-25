@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # Release lifecycle only. Main ships do not take this lock. fd 9 stays open
 # in the shell: flock attaches to its shared open-file description, so the
 # Python child's exit does not unlock it; shell exit/crash does. Never unlink

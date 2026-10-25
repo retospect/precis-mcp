@@ -21,7 +21,10 @@ fi
 
 # Build the list of files (host paths). Translate to container paths (/app/...).
 if [[ $# -eq 0 ]]; then
-    mapfile -t puml_files < <(find docs/reference -name '*.puml' -type f | sort)
+    puml_files=()
+    while IFS= read -r _puml; do
+        puml_files+=("$_puml")
+    done < <(find docs/reference -name '*.puml' -type f | sort)
 else
     puml_files=()
     for f in "$@"; do

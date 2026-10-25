@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/testmon-retry.sh — run a `pytest --testmon` step; when (and only
 # when) it dies with an INTERNALERROR naming testmon, drop the stale map so the
 # NEXT --checked run uses the plain (non-testmon) selection.

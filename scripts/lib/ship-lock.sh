@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/ship-lock.sh — per-WORKTREE "one scripts/ship at a time here"
 # guard (gr335894). Sourced by scripts/ship only.
 #

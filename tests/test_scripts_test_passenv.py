@@ -164,7 +164,8 @@ def test_passenv_unset_leaves_argv_byte_identical(tmp_path: Path) -> None:
     on_argv = _run_argv(on_calls)
     # The on-run argv is the unset-run argv plus exactly `-e FOO -e BAR`,
     # inserted next to ARTIFACT_ENV right before the `-v` mount.
-    i = off_argv.index("-v")
+    # The worktree mount is the last `-v` (a git-dir mount may precede it).
+    i = len(off_argv) - 1 - off_argv[::-1].index("-v")
     assert on_argv == off_argv[:i] + ["-e", "FOO", "-e", "BAR"] + off_argv[i:]
 
 

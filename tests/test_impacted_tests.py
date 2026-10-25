@@ -354,3 +354,44 @@ def test_verify_file_matches_base_blob_hash(mod: ModuleType, toy_repo: Path) -> 
     assert mod.verify_file(cdb, toy_repo, head, "src/pkg/core.py") == "src/pkg/core.py"
     assert mod.verify_file(cdb, toy_repo, head, "src/pkg/other.py") is None
     assert mod.verify_file(cdb, toy_repo, head, "src/pkg/absent.py") is None
+
+
+def test_helper_modules_are_not_offered_as_targets(
+    mod: ModuleType, toy_repo: Path
+) -> None:
+    """gr515323: the affected-importers tier offered non-collectable helper
+    modules (tests/_*.py) as pytest targets — dead weight in the arg list.
+    They may still count as affected, they just cannot be targets."""
+    _write(toy_repo, "tests/_helper.py", "import pkg.core\n")
+    _git(toy_repo, "add", "-A")
+    _git(toy_repo, "commit", "-qm", "helper")
+    head = _commit(
+        toy_repo,
+        {
+            "src/pkg/core.py": "def compute(x):\n    return x + 5\n\n\ndef other(y):\n    return y\n"
+        },
+    )
+    res = _sel(mod, toy_repo, f"{head}^", head)
+    assert "tests/_helper.py" not in res["files"]
+    assert "tests/test_core.py" in res["files"]
+
+
+def test_absent_coverage_db_names_fetch_db(mod: ModuleType, toy_repo: Path) -> None:
+    """gr515323: a static-only selection must say WHY it is wide and name
+    the narrowing path — the notes are the only place a caller learns
+    --fetch-db exists."""
+    head = _commit(toy_repo, {"src/pkg/data/blob2.bin": "\x02"})
+    res = _sel(mod, toy_repo, f"{head}^", head)
+    assert any("--fetch-db" in n for n in res["notes"]), res["notes"]
+
+
+def test_near_suite_selection_is_flagged(
+    mod: ModuleType, toy_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr515323: a selection that IS most of the suite is still emitted
+    (unsure widens) but must say so — it is not a usable selector."""
+    monkeypatch.setattr(mod, "NEAR_SUITE_MIN", 1)
+    monkeypatch.setattr(mod, "NEAR_SUITE_FRAC", 0.5)
+    head = _commit(toy_repo, {"src/pkg/data/blob3.bin": "\x03"})
+    res = _sel(mod, toy_repo, f"{head}^", head)
+    assert any("near the whole suite" in n for n in res["notes"]), res["notes"]

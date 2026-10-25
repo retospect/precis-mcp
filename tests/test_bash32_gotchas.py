@@ -28,13 +28,30 @@ Either failure means a NEW unsafe site landed: fix it, or add a
 ``(file, count)`` allowlist entry after auditing every field/expansion
 for the empty case. Convention: docs/conventions/container-ops.md
 "bash 3.2 gotchas".
+
+gr513892 adds the third ratchet: bash >=4 constructs that fail LOUDLY on
+3.2 (``declare -A``, ``mapfile``, ``${x,,}``, ``&>``, ``|&``, ``coproc``,
+``globstar``, negative array indexes, namerefs) — the two above fail
+silently, these just die with ``command not found``/``bad substitution``.
+A ``bash -n`` parse over every bash-shebang script comes along: a syntax
+error ships red anyway, but running the check on the STOCK bash matters
+when the file is fine on 5.x. Python files are skipped — a ``.py`` under
+scripts/ never sees a bash parser.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: parses and runs bash scripts"
+)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO_ROOT / "scripts"
@@ -136,6 +153,94 @@ def test_no_new_bare_empty_array_expansion() -> None:
         "'unbound variable'. Guard with ${arr[@]+\"${arr[@]}\"} or audit "
         "and allowlist in tests/test_bash32_gotchas.py: " + str(new)
     )
+
+
+#: bash >=4 constructs that must not appear anywhere under scripts/ —
+#: pattern -> the 3.2-safe shape to write instead (gr513892).
+_BASH4_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(r"\b(?:declare|typeset|local|export|readonly)\s+-[A-Za-z]*A\b"),
+        "declare -A (assoc array) — use parallel plain arrays or a delimited string",
+    ),
+    (
+        re.compile(r"\b(?:declare|typeset|local|readonly)\s+-n\b"),
+        "nameref (declare/local -n) — use indirect expansion ${!var}",
+    ),
+    (
+        re.compile(r"\b(?:mapfile|readarray)\b"),
+        'mapfile/readarray — while IFS= read -r x; do arr+=("$x"); done < <(…)',
+    ),
+    (
+        re.compile(r"\$\{[^}]*,,|\$\{[^}]*\^\^|\$\{[A-Za-z_][A-Za-z0-9_]*[,^]\}"),
+        "${x,,}/${x^^}/${x,}/${x^} case ops — use tr or printf",
+    ),
+    (
+        re.compile(r"\$\{[^}\[]*\[\s*-[0-9]"),
+        "negative array index ${a[-1]} — use ${a[${#a[@]}-1]}",
+    ),
+    (
+        re.compile(r"(?<![\w|&])&>{1,2}(?![=&])"),
+        "&> combined redirect — use >file 2>&1",
+    ),
+    (
+        re.compile(r"(?<![\w|&])\|&(?![=&|;])"),
+        "|& stderr pipe — use 2>&1 |",
+    ),
+    (re.compile(r"\bwait\s+-n\b"), "wait -n — poll 'jobs -p' instead"),
+    (re.compile(r"\bcoproc\b"), "coproc — use a fifo + background process"),
+    (re.compile(r"\bglobstar\b"), "shopt -s globstar (**) — use find"),
+]
+
+#: Audited bash-4 sites, ``file -> expected total count`` — same allowlist
+#: convention as the two ratchets above. Empty today: keep it that way.
+_BASH4_ALLOW: dict[str, int] = {}
+
+
+def test_no_bash4_constructs() -> None:
+    """``scripts/test`` and every other shell entry point must run on the
+    bash 3.2 macOS ships (gr513892) — flag bash >=4 syntax anywhere under
+    scripts/ except .py files, which never meet a bash parser."""
+    flagged: Counter[str] = Counter()
+    for path in _script_files():
+        if path.suffix == ".py":
+            continue
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue
+        for line in text.splitlines():
+            code = _strip_comment(line)
+            for rx, _hint in _BASH4_PATTERNS:
+                if rx.search(code):
+                    flagged[rel] += 1
+    new = {k: n for k, n in flagged.items() if n != _BASH4_ALLOW.get(k)}
+    assert not new, (
+        "bash >=4 construct(s) under scripts/ — macOS /bin/bash is 3.2 "
+        "and these fail loudly there; rewrite 3.2-safe (the "
+        "_BASH4_PATTERNS table in tests/test_bash32_gotchas.py names the "
+        "safe shape per construct) or audit and allowlist there: " + str(new)
+    )
+
+
+def test_bash_scripts_parse_under_bash_n() -> None:
+    """Every bash-shebang script under scripts/ passes ``bash -n`` — the
+    floor is only meaningful if the files actually parse."""
+    bad: list[str] = []
+    for path in _script_files():
+        with path.open("rb") as f:
+            head = f.read(200)
+        if not (head.startswith(b"#!") and b"bash" in head.split(b"\n", 1)[0]):
+            continue
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        if (
+            subprocess.run(
+                ["bash", "-n", str(path)], capture_output=True, check=False
+            ).returncode
+            != 0
+        ):
+            bad.append(rel)
+    assert not bad, f"bash -n fails under scripts/: {bad}"
 
 
 def test_no_new_multi_var_tab_read() -> None:

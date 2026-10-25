@@ -49,6 +49,8 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #   FAKE_PS_SERVICES  newline-separated service names `docker ps` reports
 #   FAKE_RUN_STDOUT   file whose contents `compose run` prints to stdout
 #   FAKE_RUN_RC       exit status of `compose run` (default 0)
+#   FAKE_RUN_RC_FILE  file of exit statuses, one per line — each `compose
+#                     run` pops the first; overrides FAKE_RUN_RC
 # A plain `docker run ... df` is the free-disk preflight probe: it answers
 # with 100 GB free so the preflight passes and never reaches the log.
 set -u
@@ -78,6 +80,12 @@ case "${args[0]:-}" in
       run)
         echo "run|$proj|${args[*]}" >> "$FAKE_DOCKER_LOG"
         [ -n "${FAKE_RUN_STDOUT:-}" ] && cat "$FAKE_RUN_STDOUT"
+        if [ -n "${FAKE_RUN_RC_FILE:-}" ] && [ -s "$FAKE_RUN_RC_FILE" ]; then
+          rc="$(head -n1 "$FAKE_RUN_RC_FILE")"
+          tail -n +2 "$FAKE_RUN_RC_FILE" > "$FAKE_RUN_RC_FILE.tmp"
+          mv "$FAKE_RUN_RC_FILE.tmp" "$FAKE_RUN_RC_FILE"
+          exit "$rc"
+        fi
         exit "${FAKE_RUN_RC:-0}"
         ;;
       down) echo "down|$proj" >> "$FAKE_DOCKER_LOG" ;;
@@ -137,6 +145,7 @@ def _run(
     env["PATH"] = f"{fakebin}{os.pathsep}{os.environ['PATH']}"
     env["FAKE_DOCKER_LOG"] = str(log)
     env["TMPDIR"] = str(tmp_path)
+    env.pop("FAKE_RUN_RC_FILE", None)
     env.update(extra_env or {})
     proc = subprocess.run(
         ["bash", str(tree / "scripts" / "test"), *args],
@@ -290,3 +299,63 @@ def test_caller_qq_is_respected(tmp_path: Path) -> None:
     tail = _pytest_args(_run_line(log)).split()
     assert tail.count("-qq") == 1
     assert "-q" not in tail
+
+
+# --- gr515155 / gr515188 / gr515811: compose quiet, git mount, OOM retry --
+
+
+def test_compose_run_uses_quiet_progress(tmp_path: Path) -> None:
+    """gr515155: compose's "Container … Creating/Started" lifecycle chatter
+    is switched off at the source — --progress quiet on the compose call,
+    not another output filter."""
+    rc, _, log, stderr = _run(tmp_path)
+    assert rc == 0, stderr
+    assert "--progress quiet" in _run_line(log)
+
+
+def test_git_common_dir_is_mounted(tmp_path: Path) -> None:
+    """gr515188: the worktree's .git file points at the host git-common
+    dir, which /app doesn't cover — it must be mounted at its own absolute
+    path so repo-git tests run in-container."""
+    rc, _, log, stderr = _run(tmp_path)
+    assert rc == 0, stderr
+    common = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=tmp_path / "outtest",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    assert f"-v {common}:{common}" in _run_line(log)
+
+
+def test_typecheck_retries_once_on_oom_137(tmp_path: Path) -> None:
+    """gr515811: the first --typecheck run OOM-killed (137) under sibling
+    pressure — retry once in-call rather than making the caller re-run."""
+    rc_file = tmp_path / "rcs"
+    rc_file.write_text("137\n0\n", encoding="utf-8")
+    rc, _, log, stderr = _run(
+        tmp_path,
+        args=("--typecheck",),
+        extra_env={"FAKE_RUN_RC_FILE": str(rc_file)},
+    )
+    assert rc == 0
+    runs = [line for line in log if line.startswith("run|")]
+    assert len(runs) == 2, f"expected the one retry, got {runs}"
+    assert "mypy" in runs[0]
+    assert "retrying --typecheck once" in stderr
+
+
+def test_typecheck_no_retry_on_plain_failure(tmp_path: Path) -> None:
+    """Only 137 retries — a real mypy red must not double its run."""
+    rc_file = tmp_path / "rcs"
+    rc_file.write_text("1\n0\n", encoding="utf-8")
+    rc, _, log, _ = _run(
+        tmp_path,
+        args=("--typecheck",),
+        extra_env={"FAKE_RUN_RC_FILE": str(rc_file)},
+    )
+    assert rc == 1
+    runs = [line for line in log if line.startswith("run|")]
+    assert len(runs) == 1

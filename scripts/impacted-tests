@@ -156,6 +156,12 @@ _DOC_PATH = re.compile(
 # is stale: static evidence + widening only.
 MAX_DB_AGE_HOURS = 48.0
 
+# A selection at least this big and this fraction of the collectable suite
+# gets a near-suite note — it is still emitted (unsure widens, never
+# narrows), just flagged as not-a-selector.
+NEAR_SUITE_FRAC = 0.6
+NEAR_SUITE_MIN = 100
+
 # Reverse-call depth for the static ladder (helpers/fixtures between the
 # test and the changed symbol).
 _DEPTH = 3
@@ -949,11 +955,15 @@ class Selector:
     def __init__(self, repo: Path = REPO):
         self.repo = repo
         self.mod2file: dict[str, Path] = {}
+        self.n_test_files = 0
         for root in ("src", "tests"):
             for p in (repo / root).rglob("*.py"):
-                m = _module_name(str(p.relative_to(repo)))
+                rel = str(p.relative_to(repo))
+                m = _module_name(rel)
                 if m:
                     self.mod2file[m] = p
+                if _collectable(rel):
+                    self.n_test_files += 1
         self._corpus_built = False
         self.src_refs: dict[str, set[str]] = {}
         self.test_refs: dict[Path, set[str]] = {}
@@ -1110,6 +1120,12 @@ def _select(
         else CoverageDB("absent", "no base rev — measured tier off")
     )
     notes.append(f"coverage: {cdb.state} — {cdb.note}")
+    if cdb.state == "absent":
+        notes.append(
+            "coverage: no measured DB, so this is a static-only (wide) "
+            "selection — `scripts/impacted-tests --fetch-db` downloads the "
+            "nightly map once (cache dir: PRECIS_COVERAGE_DB_DIR)"
+        )
 
     # Corpus maps: a .py file can be a *literal* pin in a test (safe_fetch.py
     # in the qgo guard) as well as a module, and literal pins only show up in
@@ -1209,11 +1225,18 @@ def _select(
 
     # Corpus-coupled or changed src modules: their direct test importers
     # (testmon's static stand-in — transitive reachability is ~all tests).
+    # _collectable keeps helpers (tests/_*.py, conftest.py) out: they can be
+    # OFFERED here — importing a changed module is not restricted to
+    # test_* files — but a non-collectable target is dead weight in a
+    # pytest arg list (gr515323).
     if affected:
         maps.build_imports()
         for p, imps in maps.test_imports.items():
+            rel = str(p.relative_to(root))
+            if not _collectable(rel):
+                continue
             if any(i == a or i.startswith(a + ".") for a in affected for i in imps):
-                offer(str(p.relative_to(root)), "imports an affected module")
+                offer(rel, "imports an affected module")
 
     if docs_only:
         notes.append("docs-only diff")
@@ -1223,6 +1246,19 @@ def _select(
         for f, r in sorted(sel.items())
         if (root / f.split("::", 1)[0]).is_file()
     }
+    # Near-suite honesty (gr515323): when static evidence widens the answer
+    # to most of the suite the selection stops being a selector — say so and
+    # name the narrowing path rather than silently emitting ~400 targets.
+    if (
+        len(files) >= NEAR_SUITE_MIN
+        and maps.n_test_files
+        and len(files) >= NEAR_SUITE_FRAC * maps.n_test_files
+    ):
+        notes.append(
+            f"selection is {len(files)} of ~{maps.n_test_files} test files — "
+            "near the whole suite; a fresh measured DB narrows it "
+            "(scripts/impacted-tests --fetch-db)"
+        )
     # testmon hint: a python-ish change is affected and this worktree carries
     # a map — the caller should additionally run `pytest --testmon`.
     testmon = bool(affected) and (root / ".testmondata").exists()

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/node-host.sh — resolve a cluster node's address from the
 # gitignored overlay (deploy/inventory/hosts.yml), never from a literal.
 # Mirrors scripts/lib/pgb-host.sh, including its worktree → main-checkout

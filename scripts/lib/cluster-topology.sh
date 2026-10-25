@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/cluster-topology.sh — read `precis_capabilities` out of the
 # gitignored overlay (deploy/inventory/group_vars/all/*.yml) and render the
 # kind-surface env the web gateway gets from

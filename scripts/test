@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Must run under stock macOS bash 3.2 — no declare -A, mapfile, ${x,,},
+# &>, |&, coproc or globstar (tests/test_bash32_gotchas.py ratchets this).
 # scripts/test — run the suite (or a subset) in the precis-dev container
 # against THIS worktree, with the RAM test DB wired, and terse "token-killer"
 # output (warnings suppressed, short tracebacks). The canonical way to check
@@ -156,6 +158,8 @@ Env — every knob is documented here, and only here (gr514431):
   PRECIS_DOCKER_DISK_CHECK=0      skip that disk preflight.
   PRECIS_GATE_SLOTS=<n>           fleet-wide concurrent container cap
         (default 3; queued runs wait).
+  PRECIS_GATE_WAIT_MAX_S=<s>      gate-queue wait bound (default 1800;
+        0 waits unbounded). On expiry the run refuses, naming the holders.
   PRECIS_COMPOSE=<path>           alternate compose file (default
         docker/dev/compose.yaml).
   KEEP_TESTMON_LOG=1              keep the captured --impacted run log.
@@ -421,6 +425,17 @@ INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 # (gr176375). See scripts/lib/compose-project.sh.
 source "${WORKTREE}/scripts/lib/compose-project.sh"
 COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+# Repo-git inside the container (gr515188): a linked worktree's .git FILE
+# points at the host git-common dir, which the /app bind-mount does not
+# cover — every `git` call in-container then dies "not a git repository"
+# and repo-git tests (check-ignore, ls-files) can't run. Mounting the
+# common dir at its own absolute path makes the .git file's `gitdir:`
+# resolve unchanged inside the container. Absent git metadata (the gate
+# container) just adds no mount.
+GIT_DIR_MOUNT=()
+_git_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+[[ -n "$_git_common" && -d "$_git_common" ]] \
+    && GIT_DIR_MOUNT=(-v "${_git_common}:${_git_common}")
 # Gate-slot admission (gr202193): the test container runs on one shared
 # Docker VM with every sibling worktree's — cap concurrency so runs queue
 # briefly instead of OOM-killing each other at random. A runaway's own
@@ -524,7 +539,11 @@ cleanup() {
     exit "$rc"
 }
 trap cleanup EXIT
-compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
+# --progress quiet (gr515155): compose otherwise prints its "Container …
+# Creating/Created/Started" lifecycle lines above every result, which the
+# terse-output contract promises away. Errors still print; this only drops
+# the progress reporter.
+compose() { env UID="$(id -u)" GID="$(id -g)" docker compose --progress quiet -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
 # Heartbeat (gr514502): a run that goes quiet — xdist's ~25 s "bringing up
 # nodes", a congested gate queue — reads as wedged and gets backgrounded or
@@ -565,9 +584,19 @@ if [[ "${1:-}" == "--typecheck" ]]; then
     # tests/ were included and re-ran host mypy on the new test file to
     # satisfy the gate rule. Default target list covers BOTH src/ and tests/.
     echo "scripts/test --typecheck: uv run mypy ${MYPY_ARGS[*]} (the gate's mypy — BOTH src/ and tests/ by default)" >&2
+    # One retry on 137 (gr515811): the first-run OOM is sibling pressure on
+    # the shared VM, not the diff — the gripe's "first run SIGKILLed, re-run
+    # green" should not cost the caller a second invocation.
     rc=0
-    compose run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}" || rc=$?
+    for _tc_attempt in 1 2; do
+        rc=0
+        compose run --rm --no-deps "${GIT_DIR_MOUNT[@]+"${GIT_DIR_MOUNT[@]}"}" \
+            -v "${WORKTREE}":/app precis-dev \
+            bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}" || rc=$?
+        [[ "$rc" == 137 ]] || break
+        gate_oom_note "$rc" "the mypy container"
+        echo "scripts/test: retrying --typecheck once — a lone 137 is usually a sibling OOM spike" >&2
+    done
     gate_oom_note "$rc" "the mypy container"
     exit "$rc"
 fi
@@ -905,6 +934,7 @@ run_pytest() {
         -e PRECIS_TEST_AUTOBRIDGE="$AUTOBRIDGE" \
         -e PRECIS_AUTO_N="$AUTO_N" \
         -e PRECIS_PREFLIGHT_KEY="$PRECIS_PREFLIGHT_KEY" \
+        "${GIT_DIR_MOUNT[@]+"${GIT_DIR_MOUNT[@]}"}" \
         "${THREAD_CAP_ENV[@]}" \
         "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \

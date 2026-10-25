@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/quiet-log.sh — quiet-mode epilogue for scripts/ship and
 # scripts/rebase (gr497896). Their transcripts are too heavy for desk and
 # coordinator panes, so by default the full run goes to a /tmp log and the

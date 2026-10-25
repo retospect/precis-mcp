@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # Squash-commit message resolution + lint for scripts/ship (sourced).
 #
 # The landed subject is what `git log` shows forever, so it must say WHAT

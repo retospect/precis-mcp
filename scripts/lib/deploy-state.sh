@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/deploy-state.sh — where the "what is the cluster running" marker
 # lives, for scripts/deploy (writer) and scripts/ship (reader).
 #

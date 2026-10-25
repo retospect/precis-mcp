@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/gate-slot.sh — N-slot admission semaphore for heavyweight gate
 # containers (gr202193). Sourced by scripts/test and scripts/ship.
 #
@@ -53,16 +54,25 @@
 
 GATE_SLOT_DIR=""
 GATE_SLOT_TICKET=""
+GATE_SLOT_COMMON=""
 
 # shellcheck source=scripts/lib/lock-holder.sh
 source "${BASH_SOURCE[0]%/*}/lock-holder.sh"
 
+# mtime probe for the age display and the hold-time stats. GNU must come
+# first: on Linux `stat -f %m <dir>` prints the whole FILESYSTEM dump for
+# <dir> to stdout and only then fails on the '%m' arg (rc 1), so a
+# BSD-first `a || b` captures dump+answer together and nothing numeric
+# survives. BSD stat errors on `-c` with clean stdout, so this order is
+# portable both ways.
+_gate_mtime() { # <dir> -> epoch seconds, or nothing
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
 # Age of a lock dir from its mtime, for the waiting message (gr513773).
-# `stat -f %m` is macOS/BSD, `stat -c %Y` is GNU — the first to succeed wins,
-# matching the find -mmin portability constraint of _lock_older_than.
 _gate_dir_age() { # <dir> -> "45s" | "12m" | "3h" | "?"
     local mt now s
-    mt="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "")"
+    mt="$(_gate_mtime "$1")"
     [[ "$mt" =~ ^[0-9]+$ ]] || { printf '?'; return; }
     now="$(date +%s)"
     s=$((now - mt))
@@ -148,6 +158,52 @@ gate_slot_default() { # the derived default cap
     printf '%s\n' "$slots"
 }
 
+# Hold-time history for the wait banner's rough ETA (gr515328): each release
+# appends its hold seconds to <common>/precis-gate-stats, one integer per
+# line, trimmed to the last 50 — enough for a median that tracks the fleet's
+# current gate cost instead of last quarter's.
+GATE_STATS_FILE() { printf '%s\n' "${GATE_SLOT_COMMON}/precis-gate-stats"; }
+
+_gate_stats_record() { # <hold seconds> — best effort, never fails the run
+    local f
+    [[ -n "${GATE_SLOT_COMMON:-}" && "${1:-}" =~ ^[0-9]+$ ]] || return 0
+    f="$(GATE_STATS_FILE)"
+    { printf '%s\n' "$1" >>"$f"; } 2>/dev/null || return 0
+    # Bound the file: past 100 lines keep the freshest 50.
+    if [[ "$(wc -l <"$f" 2>/dev/null || echo 0)" -gt 100 ]]; then
+        tail -n 50 "$f" >"${f}.tmp" 2>/dev/null && mv "${f}.tmp" "$f" 2>/dev/null || true
+    fi
+    return 0
+}
+
+_gate_stats_median() { # <file> -> median hold seconds, or nothing
+    [[ -f "$1" ]] || return 0
+    sort -n "$1" 2>/dev/null | awk '{a[NR]=$1} END { if (NR >= 3) print a[int((NR+1)/2)] }'
+}
+
+_gate_fmt_secs() { # <s> -> "45s" | "12m" | "3h" — same buckets as _gate_dir_age
+    local s="$1"
+    if ((s < 120)); then
+        printf '%ss' "$s"
+    elif ((s < 7200)); then
+        printf '%sm' "$((s / 60))"
+    else
+        printf '%sh' "$((s / 3600))"
+    fi
+}
+
+# One "median recent hold ~Ym, a slot frees ~every Zm" suffix for the wait
+# banner, or "" when there is no history yet. Zm is median/slots: with S
+# slots each running a median-length gate, a slot frees about that often —
+# coarse, and labelled rough rather than a promise.
+_gate_eta_hint() { # <common> <slots>
+    local med
+    med="$(_gate_stats_median "$1/precis-gate-stats")"
+    [[ -n "${med:-}" ]] || return 0
+    printf 'median recent hold ~%s, a slot frees ~every %s' \
+        "$(_gate_fmt_secs "$med")" "$(_gate_fmt_secs $((med / $2)))"
+}
+
 _gate_queue_prune() { # <qdir> <max_age_min>
     local qdir="$1" max="$2" t base rest pid host me
     me="$(lock_holder_hostname)"
@@ -170,7 +226,15 @@ gate_slot_acquire() {
     local slots="${PRECIS_GATE_SLOTS:-$(gate_slot_default)}"
     local common i d holder reason host name my_rank depth other seen_self
     local waited=0 last_rank=-1 last_announce=0
+    # Bounded wait (gr515704): the queue is fair but unbounded in time — a
+    # builder once sat 40+ min at position 1 of 5 behind three sibling gates.
+    # PRECIS_GATE_WAIT_MAX_S caps the wait (default 1800 s, 0 = the old
+    # unbounded wait); on expiry the acquire refuses with the holder dump
+    # instead of quietly queueing forever.
+    local wait_cap="${PRECIS_GATE_WAIT_MAX_S:-1800}"
+    local wait_start=$SECONDS
     common="$(git rev-parse --git-common-dir)"
+    GATE_SLOT_COMMON="$common"
     host="$(lock_holder_hostname)"
     local qdir="${common}/precis-gate-queue.d"
     mkdir -p "$qdir" 2>/dev/null || true
@@ -243,14 +307,25 @@ gate_slot_acquire() {
         # ages advance and a constant-rank wait otherwise prints nothing while
         # the status stream buries the first "waiting" reason.
         if ((my_rank != last_rank || SECONDS - last_announce >= 60)); then
+            local _eta=""
+            _eta="$(_gate_eta_hint "$common" "$slots")"
+            [[ -n "$_eta" ]] && _eta=" (${_eta})"
             if ((my_rank < slots)); then
-                echo "gate slot: next up (position $((my_rank + 1)) of ${depth} waiting, ${slots} slots) — trying each freed slot" >&2
+                echo "gate slot: next up (position $((my_rank + 1)) of ${depth} waiting, ${slots} slots)${_eta} — trying each freed slot" >&2
             else
-                echo "gate slot: waiting at position $((my_rank + 1)) of ${depth} (${slots} slots ahead are busy)" >&2
+                echo "gate slot: waiting at position $((my_rank + 1)) of ${depth} (${slots} slots ahead are busy${_eta})" >&2
             fi
             _gate_slot_holders "$common" "$slots"
             last_rank="$my_rank"
             last_announce=$SECONDS
+        fi
+        if ((wait_cap > 0 && SECONDS - wait_start >= wait_cap)); then
+            echo "gate slot: gave up after ${wait_cap}s at position $((my_rank + 1)) of ${depth} — the queue is draining but too slowly for this wait" >&2
+            _gate_slot_holders "$common" "$slots"
+            echo "gate slot: PRECIS_GATE_WAIT_MAX_S=<s> raises the bound (0 = unbounded); the run re-queues at the back on retry" >&2
+            rm -f "$GATE_SLOT_TICKET" 2>/dev/null || true
+            GATE_SLOT_TICKET=""
+            return 4
         fi
         waited=1
         sleep 3
@@ -267,6 +342,11 @@ gate_slot_release() {
         GATE_SLOT_TICKET=""
     fi
     if [[ -n "${GATE_SLOT_DIR:-}" ]]; then
+        # Feed the wait banner's rough ETA: the slot dir's mtime is our
+        # acquire time, so now-mtime is the hold this release ends.
+        local _mt
+        _mt="$(_gate_mtime "$GATE_SLOT_DIR")"
+        [[ "$_mt" =~ ^[0-9]+$ ]] && _gate_stats_record "$(($(date +%s) - _mt))"
         # lock_release removes ONLY on a positive ownership match (holder
         # pid == $$): a missing/unparseable holder is ambiguous — ours with
         # a failed best-effort write, or a sibling mid-acquire that hasn't

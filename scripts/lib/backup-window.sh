@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
 # scripts/lib/backup-window.sh — the nightly-backup no-go windows for
 # scripts/deploy: refuse a MIGRATION deploy while a prod pg_dump may be
 # running, warn-and-proceed for a code-only deploy.
