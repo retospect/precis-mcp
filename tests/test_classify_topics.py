@@ -760,3 +760,140 @@ class TestFindingKinds:
         ref_id = _seed_claim(store, "Pd/C is active", {"temp": "RT", "empty": ""})
         with store.pool.connection() as conn:
             assert _context_text(conn, ref_id) == "Pd/C is active\nScope: temp: RT"
+
+
+# ── gr515633 backfill priority bands (shared ``_claim.claim_batch``) ──
+
+
+class TestClaimBands:
+    def _paper(self, store: Any, title: str) -> int:
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        ref_id = seed_ref(store, title=title)
+        seed_chunk(store, ref_id=ref_id, ord=0, text="body text " * 30)
+        return ref_id
+
+    def _claim_order(self, store: Any) -> list[int]:
+        from precis.workers import classify_topics as ct
+
+        with store.pool.connection() as conn:
+            rows = ct._claim(conn, limit=10, marker_values=["v-none"])
+            conn.rollback()
+        return [int(r[0]) for r in rows]
+
+    def test_claim_orders_refs_by_priority_band(self, store: Any) -> None:
+        """Band order: quest-linked first (whatever the body state), then
+        usable body, then an unusable-body ref that was recently touched,
+        then the untouched tail."""
+        from tests.workers._helpers import seed_ref
+
+        band1 = self._paper(store, "quest paper")
+        quest = seed_ref(store, kind="quest", title="q")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)"
+                " VALUES (%s,%s,'serves','system')",
+                (band1, quest),
+            )
+            conn.commit()
+        band2 = self._paper(store, "plain paper")
+        band3 = self._paper(store, "partial paper, touched")
+        store.add_tag(band3, Tag.open("body:partial"), set_by="system")
+        band4 = self._paper(store, "partial paper, stale")
+        store.add_tag(band4, Tag.open("body:partial"), set_by="system")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at = now() - interval '90 days' "
+                "WHERE ref_id = %s",
+                (band4,),
+            )
+            conn.commit()
+
+        assert self._claim_order(store) == [band1, band2, band3, band4]
+
+    def test_quest_open_tag_also_marks_band_1(self, store: Any) -> None:
+        """The tag half of "linked to or tagged in a quest": a ref stamped
+        ``quest:<id>`` (what ``quest.tagging.tag_serving_papers`` writes)
+        ranks with the serves-linked band-1 refs — provided the named
+        quest is live."""
+        from tests.workers._helpers import seed_ref
+
+        tagged = self._paper(store, "tagged into a quest")
+        quest = seed_ref(store, kind="quest", title="q")
+        store.add_tag(tagged, Tag.open(f"quest:{quest}"), set_by="system")
+        plain = self._paper(store, "plain paper")
+
+        assert self._claim_order(store) == [tagged, plain]
+
+    def test_quest_link_with_unusable_body_is_still_band_1(self, store: Any) -> None:
+        """Band 1 is every quest-linked ref, whatever the body state —
+        "papers with a body OR in a quest" first (gr515633 review
+        ruling). A body:partial quest paper still outranks a plain
+        usable-body ref."""
+        from tests.workers._helpers import seed_ref
+
+        quest_partial = self._paper(store, "quest paper, partial body")
+        store.add_tag(quest_partial, Tag.open("body:partial"), set_by="system")
+        quest = seed_ref(store, kind="quest", title="q")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)"
+                " VALUES (%s,%s,'serves','system')",
+                (quest_partial, quest),
+            )
+            conn.commit()
+        plain = self._paper(store, "plain paper")
+
+        assert self._claim_order(store) == [quest_partial, plain]
+
+    def test_tag_naming_retired_quest_is_not_band_1(self, store: Any) -> None:
+        """A ``quest:<id>`` OPEN tag counts only while the named quest is
+        live — a partial-body ref tagged with a retired quest's id falls
+        to the touched tail, not band 1."""
+        from tests.workers._helpers import seed_ref
+
+        tagged = self._paper(store, "tagged a dead quest")
+        store.add_tag(tagged, Tag.open("body:partial"), set_by="system")
+        quest = seed_ref(store, kind="quest", title="dead quest")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET retired_at = now() WHERE ref_id = %s",
+                (quest,),
+            )
+            conn.commit()
+        store.add_tag(tagged, Tag.open(f"quest:{quest}"), set_by="system")
+        plain = self._paper(store, "plain paper")
+
+        assert self._claim_order(store) == [plain, tagged]
+
+    def test_banded_slices_order_by_ref_id_no_case(self) -> None:
+        """Every banded claim slice is a PK early-stop — ``ORDER BY
+        r.ref_id``, never a whole-candidate ``CASE`` sort (the CASE had
+        to evaluate all ~39k papers' bands before LIMIT; 666ms per claim
+        on prod, gr515633 review)."""
+        import re
+        from types import SimpleNamespace
+
+        from precis.workers._claim import claim_batch
+
+        seen: list[str] = []
+
+        class _Rec:
+            def execute(self, sql: str, params: Any = None) -> Any:
+                seen.append(sql)
+                return SimpleNamespace(fetchall=lambda: [])
+
+        claim_batch(
+            _Rec(),
+            kinds=["paper"],
+            not_done_sql="TRUE",
+            params={},
+            limit=8,
+            banded=True,
+        )
+        claim_sql = [s for s in seen if "SELECT r.ref_id" in s]
+        # band-1 slice plus every band 2-4 slice the empty pool let run.
+        assert len(claim_sql) == 4
+        for sql in claim_sql:
+            assert "ORDER BY r.ref_id" in sql
+            assert not re.search(r"\bCASE\b", sql)

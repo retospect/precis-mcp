@@ -69,6 +69,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from precis.store._body_predicate import unusable_body_tag_sql
 from precis.store.types import Tag
 from precis.utils import rate_limit
 from precis.utils.http import is_internal_host, netloc_provider
@@ -82,6 +83,14 @@ from precis.utils.llm.router import (
     select_transport,
 )
 from precis.utils.rate_limit import RateLimited
+from precis.workers._claim import (
+    band_batches,
+    band_predicates,
+    band_ref_ids,
+    drop_band_ids,
+)
+from precis.workers._claim import random_chunk_anchor as _random_chunk_anchor
+from precis.workers._claim import random_ref_anchor as _random_ref_anchor
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -404,15 +413,17 @@ def _classify_row(
 # ---- DB: claim + enrich (gold-parity context) -------------------------
 
 
-def _random_chunk_anchor(conn) -> int | None:
-    """A random ``chunk_id`` in ``[0, max]`` — the fair-claim scan anchor
-    (Slice 3, ``docs/backlog/small-llm-derived-drain-band.md``). One cheap
-    scalar (``max(chunk_id)`` is an index lookup); ``None`` on an empty corpus.
-    """
-    row = conn.execute(
-        "SELECT floor(random() * (max(chunk_id) + 1))::bigint FROM chunks"
-    ).fetchone()
-    return int(row[0]) if row and row[0] is not None else None
+def _claim_rows(rows: Any) -> list[dict]:
+    return [
+        {
+            "chunk_id": r[0],
+            "ref_id": r[1],
+            "ord": r[2],
+            "text": r[3],
+            "section_path": list(r[4] or []),
+        }
+        for r in rows
+    ]
 
 
 def _claim_slice(
@@ -420,16 +431,12 @@ def _claim_slice(
     *,
     limit: int,
     ref_ids: list[int] | None,
-    floor: int | None,
-    floor_cmp: str,
 ) -> list[dict]:
-    """One claim scan: chunks needing a ROLE3 tag, ``ORDER BY chunk_id`` from an
-    optional ``floor`` (``floor_cmp`` = ``>=`` or ``<``), leased in the same
-    statement. Kept index-friendly (a forward PK-index walk that stops at LIMIT,
-    the property the ``NOT EXISTS`` predicates preserve) — the ``floor`` only
-    moves the *start* of that walk, it does not force a sort."""
+    """One targeted claim scan: chunks needing a ROLE3 tag on the named
+    refs, ``ORDER BY chunk_id``, leased in the same statement. Corpus
+    sweeps take the banded slices instead — a scoped run wants
+    reproducible order, so no band or anchor applies here."""
     ref_filter = "AND c.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
-    floor_filter = f"AND c.chunk_id {floor_cmp} %(floor)s" if floor is not None else ""
     sql = f"""
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
@@ -437,7 +444,6 @@ def _claim_slice(
       WHERE r.kind = 'paper' AND r.retired_at IS NULL
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
         {ref_filter}
-        {floor_filter}
         AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
                         WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(ns)s)
         AND NOT EXISTS (SELECT 1 FROM chunk_claims cl
@@ -453,19 +459,130 @@ def _claim_slice(
     params: dict[str, Any] = {"ns": OUTPUT_NAMESPACE, "art": ARTIFACT, "limit": limit}
     if ref_ids:
         params["ref_ids"] = list(ref_ids)
+    return _claim_rows(conn.execute(sql, params).fetchall())
+
+
+def _claim_band_slice(
+    conn,
+    *,
+    limit: int,
+    ref_pred: str | None = None,
+    ref_ids: list[int] | None = None,
+    floor: int | None,
+) -> list[dict]:
+    """Ref-driven slice of a small priority band (gr515633): claim the
+    band's eligible chunks ordered by the wrapping ref anchor. Two ways
+    to name the band's refs, exactly one required:
+
+    * ``ref_ids`` — one pre-wrapped batch of the band's refs (the set
+      resolved up front by
+      :func:`precis.workers._claim.band_ref_ids`, split and anchored by
+      :func:`precis.workers._claim.band_batches` — bands 1/3, the small
+      sets). The chunk scan drives from ``c.ref_id = ANY(...)`` on
+      ``chunks_ref_id_idx``; a batch sits on one side of the anchor, so
+      plain ``c.ref_id`` order IS the wrapped order and ``floor`` does
+      not apply. The resolved set can be TTL-stale, so the slice still
+      joins ``refs`` and re-checks kind/retirement — a ref retired after
+      resolution must never be claimed.
+    * ``ref_pred`` — a ``WHERE`` fragment on alias ``r`` inlined in the
+      ``bs`` CTE (band 4, the tail — large enough that ANY-ing it costs
+      more than the join). The single slice keeps the
+      ``(ref_id < floor)`` wrap term. Left as the CTE for that reason,
+      NOT for band 1/3: inlining it let the planner index-scan all ~3.5M
+      paragraph chunks probing refs per chunk (7.7s on prod).
+
+    A whole-candidate ``ORDER BY band`` sort is refused here for the
+    same reason as the old ``ORDER BY random()`` — on a 1M-chunk pool it
+    seqscans+sorts per claim."""
+    if ref_ids is not None:
+        from_clause = "chunks c JOIN refs r ON r.ref_id = c.ref_id"
+        id_cond = (
+            "AND c.ref_id = ANY(%(band_ids)s) "
+            "AND r.kind = 'paper' AND r.retired_at IS NULL"
+        )
+        order = "c.ref_id, c.chunk_id"
+    else:
+        assert ref_pred is not None
+        from_clause = "bs b JOIN chunks c ON c.ref_id = b.ref_id"
+        id_cond = ""
+        wrap = "(b.ref_id < %(floor)s)," if floor is not None else ""
+        order = f"{wrap} b.ref_id, c.chunk_id"
+    bs_cte = (
+        "bs AS (\n"
+        "      SELECT r.ref_id FROM refs r\n"
+        "      WHERE r.kind = 'paper' AND r.retired_at IS NULL AND "
+        f"{ref_pred}\n"
+        "    ), "
+        if ref_ids is None
+        else ""
+    )
+    sql = f"""
+    WITH {bs_cte}cand AS (
+      SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
+      FROM {from_clause}
+      WHERE c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
+        {id_cond}
+        AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
+                        WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(ns)s)
+        AND NOT EXISTS (SELECT 1 FROM chunk_claims cl
+                        WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(art)s)
+      ORDER BY {order}
+      LIMIT %(limit)s
+      FOR UPDATE OF c SKIP LOCKED
+    ), leased AS (
+      INSERT INTO chunk_claims (chunk_id, artifact)
+      SELECT chunk_id, %(art)s FROM cand ON CONFLICT DO NOTHING
+    )
+    SELECT chunk_id, ref_id, ord, text, section_path FROM cand
+    """
+    params: dict[str, Any] = {"ns": OUTPUT_NAMESPACE, "art": ARTIFACT, "limit": limit}
+    if ref_ids is not None:
+        params["band_ids"] = list(ref_ids)
+    elif floor is not None:
+        params["floor"] = floor
+    return _claim_rows(conn.execute(sql, params).fetchall())
+
+
+def _claim_walk_slice(
+    conn,
+    *,
+    limit: int,
+    floor: int | None,
+    floor_cmp: str,
+) -> list[dict]:
+    """Band-2 sweep slice — the original chunk-PK walk (``ORDER BY
+    chunk_id`` from an optional ``floor``), plus the one predicate that
+    keeps it inside band 2: the ref must have a *usable* body (no
+    ``body:partial`` / ``body:needs_ocr`` tag). Kept index-friendly: a
+    forward PK-index walk that stops at LIMIT, with one extra memoized
+    ``NOT EXISTS`` probe per scanned row. The anchor wraps the walk inside
+    band 2 only — the anchor's job (concurrent workers spread out) is
+    unchanged, it just can't jump a higher band's refs."""
+    floor_filter = f"AND c.chunk_id {floor_cmp} %(floor)s" if floor is not None else ""
+    sql = f"""
+    WITH cand AS (
+      SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
+      FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
+      WHERE r.kind = 'paper' AND r.retired_at IS NULL
+        AND NOT ({unusable_body_tag_sql("r")})
+        AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
+        {floor_filter}
+        AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
+                        WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(ns)s)
+        AND NOT EXISTS (SELECT 1 FROM chunk_claims cl
+                        WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(art)s)
+      ORDER BY c.chunk_id LIMIT %(limit)s
+      FOR UPDATE OF c SKIP LOCKED
+    ), leased AS (
+      INSERT INTO chunk_claims (chunk_id, artifact)
+      SELECT chunk_id, %(art)s FROM cand ON CONFLICT DO NOTHING
+    )
+    SELECT chunk_id, ref_id, ord, text, section_path FROM cand
+    """
+    params: dict[str, Any] = {"ns": OUTPUT_NAMESPACE, "art": ARTIFACT, "limit": limit}
     if floor is not None:
         params["floor"] = floor
-    rows = conn.execute(sql, params).fetchall()
-    return [
-        {
-            "chunk_id": r[0],
-            "ref_id": r[1],
-            "ord": r[2],
-            "text": r[3],
-            "section_path": list(r[4] or []),
-        }
-        for r in rows
-    ]
+    return _claim_rows(conn.execute(sql, params).fetchall())
 
 
 def _reclaim_slice(
@@ -538,17 +655,18 @@ def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
     ``ref_ids`` restricts to specific refs (targeted backfill / tests) and keeps
     the deterministic ``chunk_id`` order — a scoped run wants reproducibility.
 
-    A corpus sweep (``ref_ids=None``) instead starts the ``chunk_id`` scan at a
-    RANDOM anchor, then tops up from below it (Slice 3 fair-claim ordering,
-    ``docs/backlog/small-llm-derived-drain-band.md``). Because a paper's chunks
-    are contiguous in ``chunk_id`` (ingested together), a fixed ``ORDER BY
-    chunk_id`` drains one big paper to completion before touching any other —
-    starving newest papers behind the whole backfill. A random per-claim anchor
-    makes consecutive claims start at different papers, so coverage is uniform
-    without the seqscan+sort that a naive ``ORDER BY random()`` would force on a
-    1M-row candidate set. The head top-up (``chunk_id < floor``) keeps a
-    high-anchor claim from returning short; the first slice's in-statement lease
-    INSERT is visible to the second (same txn), so no chunk is double-claimed.
+    A corpus sweep (``ref_ids=None``) instead claims in backfill priority
+    band order (gr515633, :func:`precis.workers._claim.priority_band_sql`):
+    quest-linked refs first (whatever the body state), then usable-body
+    refs, then recently touched refs, then the tail. Because a paper's
+    chunks are contiguous, a fixed ``ORDER BY ref_id`` inside a band would
+    drain one big paper to completion before touching any other — starving
+    the rest of the band behind it. So each claim starts the *ref* scan at
+    a RANDOM anchor that wraps around inside each band only (Slice 3
+    fair-claim ordering, ``docs/backlog/small-llm-derived-drain-band.md``):
+    consecutive claims still start at different papers and concurrent
+    workers still spread out, but a band-1 ref is never jumped by a
+    lower-band one however far below the anchor it sits.
 
     (``llm_summarize`` deliberately does NOT do this — its ``ref_id, ord``
     contiguity is a llama.cpp prefix-cache optimization; see that module.)
@@ -560,23 +678,57 @@ def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
     worker that crashed mid-batch must not permanently orphan its lease).
     """
     if ref_ids:
-        rows = _claim_slice(
-            conn, limit=limit, ref_ids=ref_ids, floor=None, floor_cmp=">="
-        )
+        rows = _claim_slice(conn, limit=limit, ref_ids=ref_ids)
         if len(rows) < limit:
             rows += _reclaim_slice(conn, limit=limit - len(rows), ref_ids=ref_ids)
         return rows
-    floor = _random_chunk_anchor(conn)
-    if floor is None:  # empty corpus
-        rows = _claim_slice(conn, limit=limit, ref_ids=None, floor=None, floor_cmp=">=")
-    else:
-        rows = _claim_slice(
-            conn, limit=limit, ref_ids=None, floor=floor, floor_cmp=">="
+    band1, _band2, band3, band4 = band_predicates("r")
+    ref_anchor = _random_ref_anchor(conn)
+    chunk_anchor = _random_chunk_anchor(conn)
+    rows = []
+    # Bands 1/3 are small sets — resolve their refs in one scan and claim
+    # in BAND_REF_BATCH-sized pre-wrapped runs: each slice reads only its
+    # batch's chunks via chunks_ref_id_idx instead of sorting the whole
+    # band's chunks (918ms + 190MB disk spill per claim on prod); an
+    # inlined CTE was worse — the planner walked the paragraph-chunk
+    # index probing refs per chunk (7.7s).
+    for batch in band_batches(
+        band_ref_ids(conn, kinds=["paper"], ref_pred=band1), ref_anchor
+    ):
+        got = _claim_band_slice(
+            conn, limit=limit - len(rows), ref_ids=batch, floor=None
         )
-        if len(rows) < limit:
-            rows += _claim_slice(
-                conn, limit=limit - len(rows), ref_ids=None, floor=floor, floor_cmp="<"
+        rows += got
+        if not got:
+            # Drained batch — drop its refs from the cached set so later
+            # claims don't re-probe it (ceil(N/32) dead slices/claim).
+            drop_band_ids(kinds=["paper"], ref_pred=band1, done=batch)
+        if len(rows) >= limit:
+            break
+    if len(rows) < limit:
+        rows += _claim_walk_slice(
+            conn, limit=limit - len(rows), floor=chunk_anchor, floor_cmp=">="
+        )
+    if len(rows) < limit:
+        rows += _claim_walk_slice(
+            conn, limit=limit - len(rows), floor=chunk_anchor, floor_cmp="<"
+        )
+    if len(rows) < limit:
+        for batch in band_batches(
+            band_ref_ids(conn, kinds=["paper"], ref_pred=band3), ref_anchor
+        ):
+            got = _claim_band_slice(
+                conn, limit=limit - len(rows), ref_ids=batch, floor=None
             )
+            rows += got
+            if not got:
+                drop_band_ids(kinds=["paper"], ref_pred=band3, done=batch)
+            if len(rows) >= limit:
+                break
+    if len(rows) < limit:
+        rows += _claim_band_slice(
+            conn, limit=limit - len(rows), ref_pred=band4, floor=ref_anchor
+        )
     if len(rows) < limit:
         rows += _reclaim_slice(conn, limit=limit - len(rows), ref_ids=None)
     return rows

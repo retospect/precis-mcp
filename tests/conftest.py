@@ -929,6 +929,7 @@ def store() -> Iterator[Store]:
     from precis import secrets as _secrets
     from precis import settings as _settings
     from precis.budget import meter as _budget_meter
+    from precis.workers import _claim as _claim_queries
 
     _budget_meter.bind_store(None)
     _settings.invalidate()
@@ -936,6 +937,10 @@ def store() -> Iterator[Store]:
     # Store, so a resolved secret would otherwise answer across the per-test
     # TRUNCATE for the rest of the process (gr451657).
     _secrets.invalidate()
+    # And the band-ref sets (gr515633): 300s TTL keyed by (predicate,
+    # kinds), not by Store — a resolved set would otherwise hand the next
+    # test's claim sweep ref_ids the TRUNCATE already deleted.
+    _claim_queries.invalidate_band_ids()
     s = Store.connect(_active_dsn())
     dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
     # Every pre-existing client backend, idle or not: one opened by an earlier

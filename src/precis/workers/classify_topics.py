@@ -270,6 +270,7 @@ def _claim(
         limit=limit,
         ref_ids=ref_ids,
         lease_ns=ref_lease.attempt_ns(MARKER_NAMESPACE),
+        banded=True,
     )
 
 

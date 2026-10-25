@@ -782,3 +782,174 @@ def test_opt_in_does_not_gate_taproot_axis_or_review_notes(store: Any) -> None:
         opt_in_kinds=["finding"],
     )
     assert res["claimed"] == 0
+
+
+# ── gr515633 backfill priority bands ────────────────────────────────────
+
+
+def _band_papers(store: Any, kind: str = "paper") -> list[int]:
+    """One seed per band, all claimable: ``[quest+body, body, partial+touched,
+    partial+stale]`` in band order."""
+    band1 = seed_ref(store, title="quest paper", kind=kind)
+    seed_chunk(store, ref_id=band1, text=_LONG_PARA, ord=0)
+    quest = seed_ref(store, kind="quest", title="q")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)"
+            " VALUES (%s,%s,'serves','system')",
+            (band1, quest),
+        )
+        conn.commit()
+    band2 = seed_ref(store, title="plain paper", kind=kind)
+    seed_chunk(store, ref_id=band2, text=_LONG_PARA, ord=0)
+    band3 = seed_ref(store, title="partial paper, touched", kind=kind)
+    seed_chunk(store, ref_id=band3, text=_LONG_PARA, ord=0)
+    store.add_tag(band3, Tag.open("body:partial"), set_by="system")
+    band4 = seed_ref(store, title="partial paper, stale", kind=kind)
+    seed_chunk(store, ref_id=band4, text=_LONG_PARA, ord=0)
+    store.add_tag(band4, Tag.open("body:partial"), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '90 days' WHERE ref_id = %s",
+            (band4,),
+        )
+        conn.commit()
+    return [band1, band2, band3, band4]
+
+
+def test_claim_ref_orders_by_priority_band(store: Any) -> None:
+    """The ref-level axis claim drains band 1 (quest-linked usable body)
+    before band 2, then the recently touched unusable-body ref, then the
+    tail — ordering only, eligibility unchanged."""
+    from precis.workers.axis_pass import _claim_ref, _load_axis
+
+    bands = _band_papers(store)
+    axis = _load_axis("domain")
+
+    with store.pool.connection() as conn:
+        rows = _claim_ref(conn, "domain", axis, version="1", limit=10, ref_ids=None)
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == bands
+
+
+def test_claim_chunk_orders_by_ref_priority_band(store: Any) -> None:
+    """The chunk-level axis claim walks chunks in their parent ref's band
+    order — same bands as the ref-level claim, no anchor (deterministic
+    ``ref_id`` inside a band)."""
+    from precis.workers.axis_pass import _claim_chunk, _load_axis
+
+    bands = _band_papers(store, kind="patent")
+    axis = _load_axis("patent_example")
+
+    with store.pool.connection() as conn:
+        rows = _claim_chunk(
+            conn, "patent_example", axis, version="1", limit=10, ref_ids=None
+        )
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == bands
+
+
+def test_claim_chunk_skips_ref_retired_after_resolution(store: Any) -> None:
+    """Mirror of the classify-side pin: the resolved band-1 set can be
+    TTL-stale, so the ANY slice re-checks kind/retirement on ``refs`` —
+    a patent retired after resolution is never claimed."""
+    from precis.workers.axis_pass import _claim_chunk, _load_axis
+
+    quest_patent = seed_ref(store, title="quest patent", kind="patent")
+    seed_chunk(store, ref_id=quest_patent, text=_LONG_PARA, ord=0)
+    quest = seed_ref(store, kind="quest", title="q")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)"
+            " VALUES (%s,%s,'serves','system')",
+            (quest_patent, quest),
+        )
+        conn.commit()
+    axis = _load_axis("patent_example")
+    # First claim resolves + caches the band-1 set.
+    with store.pool.connection() as conn:
+        rows = _claim_chunk(
+            conn, "patent_example", axis, version="1", limit=1, ref_ids=None
+        )
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [quest_patent]
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (quest_patent,)
+        )
+        conn.commit()
+    plain = seed_ref(store, title="plain patent", kind="patent")
+    seed_chunk(store, ref_id=plain, text=_LONG_PARA, ord=0)
+
+    with store.pool.connection() as conn:
+        rows = _claim_chunk(
+            conn, "patent_example", axis, version="1", limit=1, ref_ids=None
+        )
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == [plain]
+
+
+def test_claim_chunk_anchor_varies_start_within_band(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two band-2 patent refs: the chunk anchor still picks which ref's
+    chunks are claimed first — the spread the anchor exists for survives,
+    only confined to the band."""
+    from precis.workers import axis_pass as ap
+
+    first = seed_ref(store, title="patent A", kind="patent")
+    first_chunk = seed_chunk(store, ref_id=first, text=_LONG_PARA, ord=0)
+    second = seed_ref(store, title="patent B", kind="patent")
+    second_chunk = seed_chunk(store, ref_id=second, text=_LONG_PARA, ord=0)
+    axis = ap._load_axis("patent_example")
+
+    # Roll back after each claim so both anchored runs see the same
+    # candidate pool — the difference must be the anchor, not the leases.
+    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn: first_chunk)
+    with store.pool.connection() as conn:
+        rows = ap._claim_chunk(
+            conn, "patent_example", axis, version="1", limit=2, ref_ids=None
+        )
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [first, second]
+
+    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn: second_chunk)
+    with store.pool.connection() as conn:
+        rows = ap._claim_chunk(
+            conn, "patent_example", axis, version="1", limit=2, ref_ids=None
+        )
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [second, first]
+
+
+def test_claim_ref_anchor_varies_start_within_band(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two band-2 papers: the ref-level band-2 walk anchors on
+    ``r.ref_id`` (the bulk set can't ANY-batch), so the anchor picks
+    which ref is claimed first — same worker spread, confined to the
+    band."""
+    from precis.workers import axis_pass as ap
+
+    first = seed_ref(store, title="paper A", kind="paper")
+    seed_chunk(store, ref_id=first, text=_LONG_PARA, ord=0)
+    second = seed_ref(store, title="paper B", kind="paper")
+    seed_chunk(store, ref_id=second, text=_LONG_PARA, ord=0)
+    axis = ap._load_axis("domain")
+
+    # Roll back after each claim so both anchored runs see the same
+    # candidate pool — the difference must be the anchor, not the leases.
+    monkeypatch.setattr(ap, "random_ref_anchor", lambda _conn: first)
+    with store.pool.connection() as conn:
+        rows = ap._claim_ref(conn, "domain", axis, version="1", limit=2, ref_ids=None)
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [first, second]
+
+    monkeypatch.setattr(ap, "random_ref_anchor", lambda _conn: second)
+    with store.pool.connection() as conn:
+        rows = ap._claim_ref(conn, "domain", axis, version="1", limit=2, ref_ids=None)
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [second, first]

@@ -13,6 +13,12 @@ axis definition:
   ``["paper"]``), no lease table (mirrors ``classify_topics.py``), writes
   ``Tag.closed(NS, value)`` with no ``pos`` -> ``ref_tags``.
 
+Both levels claim in the shared backfill priority band order
+(:func:`precis.workers._claim.priority_band_sql`, gr515633): quest-linked
+refs first (whatever the body state), then usable-body refs, then
+recently touched refs, then the tail — ordering only; eligibility is
+unchanged.
+
 **Prerequisite enforcement** (the new piece controlled chunk tagging asked for and
 neither existing pass implements): an item is eligible for axis X only if
 it already carries a tag in the namespace of every axis in X's
@@ -98,7 +104,18 @@ from precis.store.types import Tag
 from precis.utils.llm.json_reply import extract_json_object
 from precis.utils.llm.router import Backend, Transport, resolve_backend, resolve_chain
 from precis.workers import ref_lease
-from precis.workers._claim import NOT_REVIEW_NOTE_SQL, effective_kinds, finding_text
+from precis.workers._claim import (
+    NOT_REVIEW_NOTE_SQL,
+    band_batches,
+    band_predicates,
+    band_ref_ids,
+    drop_band_ids,
+    effective_kinds,
+    finding_text,
+    priority_band_sql,
+    random_chunk_anchor,
+    random_ref_anchor,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -375,35 +392,199 @@ def _applies_when_clauses(
 # ── DB: claim + enrich, chunk level (mirrors classify.py) ──────────────
 
 
-def _claim_chunk(
+def _claim_chunk_rows(rows: Any) -> list[dict[str, Any]]:
+    return [
+        {
+            "chunk_id": r[0],
+            "ref_id": r[1],
+            "ord": r[2],
+            "text": r[3],
+            "section_path": list(r[4] or []),
+        }
+        for r in rows
+    ]
+
+
+def _claim_chunk_targeted(
     conn: Any,
     axis_id: str,
-    axis: dict[str, Any],
     *,
     version: str,
     limit: int,
-    ref_ids: list[int] | None,
+    ref_ids: list[int],
+    kinds: list[str],
+    extra_sql: str,
+    extra_params: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    """One targeted claim scan: eligible chunks on the named refs, leased
+    in the same statement. A scoped run wants reproducible order, so the
+    band ``CASE`` + ``ref_id`` order applies with no anchor."""
     ns = axis_id.upper()
     marker_ns = f"{ns}CASCADE"
     artifact = f"axis:{axis_id}-v{version}"
-    kinds = axis.get("applies_to_kinds") or ["paper"]
-    ref_filter = "AND c.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
-    prereq_sql, prereq_params = _prereq_clauses(
-        axis, ref_col="c.ref_id", chunk_col="c.chunk_id"
+    band = priority_band_sql("r")
+    sql = f"""
+    WITH banded AS (
+      SELECT r.ref_id, {band} AS band
+      FROM refs r
+      WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL
+    ), cand AS (
+      SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
+      FROM banded b JOIN chunks c ON c.ref_id = b.ref_id
+      WHERE c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
+        AND c.ref_id = ANY(%(ref_ids)s)
+        {extra_sql}
+        AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
+                        WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(marker_ns)s
+                        AND t.value = %(version)s)
+        AND NOT EXISTS (SELECT 1 FROM chunk_claims cl
+                        WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(art)s)
+      ORDER BY b.band, b.ref_id, c.chunk_id LIMIT %(limit)s
+      FOR UPDATE OF c SKIP LOCKED
+    ), leased AS (
+      INSERT INTO chunk_claims (chunk_id, artifact)
+      SELECT chunk_id, %(art)s FROM cand ON CONFLICT DO NOTHING
     )
-    applies_sql, applies_params = _applies_when_clauses(
-        axis, ref_col="c.ref_id", chunk_col="c.chunk_id"
+    SELECT chunk_id, ref_id, ord, text, section_path FROM cand
+    """
+    params: dict[str, Any] = {
+        "kinds": kinds,
+        "marker_ns": marker_ns,
+        "version": version,
+        "art": artifact,
+        "limit": limit,
+        "ref_ids": list(ref_ids),
+        **extra_params,
+    }
+    return _claim_chunk_rows(conn.execute(sql, params).fetchall())
+
+
+def _claim_chunk_band_slice(
+    conn: Any,
+    axis_id: str,
+    *,
+    version: str,
+    limit: int,
+    kinds: list[str],
+    ref_pred: str | None = None,
+    ref_ids: list[int] | None = None,
+    floor: int | None,
+    extra_sql: str,
+    extra_params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Ref-driven slice of a small priority band (gr515633), mirroring
+    ``classify._claim_band_slice``: claim the band's eligible chunks
+    ordered by the wrapping ref anchor. Exactly one ref source:
+
+    * ``ref_ids`` — one pre-wrapped ``band_batches`` run of the set
+      resolved by ``band_ref_ids`` (bands 1/3, the small sets); the
+      chunk scan drives from ``c.ref_id = ANY(...)`` on
+      ``chunks_ref_id_idx``. A batch sits on one side of the anchor, so
+      plain ``c.ref_id`` order IS the wrapped order and ``floor`` does
+      not apply. The resolved set can be TTL-stale, so the slice still
+      joins ``refs`` and re-checks kind/retirement — a ref retired after
+      resolution must never be claimed.
+    * ``ref_pred`` — a ``WHERE`` fragment inlined in the ``bs`` CTE
+      (band 4, the tail); the single slice keeps the
+      ``(ref_id < floor)`` wrap term. NOT for bands 1/3 — inlining let
+      the planner walk the whole paragraph-chunk index probing refs per
+      chunk.
+
+    A whole-candidate ``ORDER BY band`` sort is refused for the same
+    reason as the old ``ORDER BY random()`` — it seqscans+sorts per
+    claim."""
+    ns = axis_id.upper()
+    marker_ns = f"{ns}CASCADE"
+    artifact = f"axis:{axis_id}-v{version}"
+    if ref_ids is not None:
+        from_clause = "chunks c JOIN refs r ON r.ref_id = c.ref_id"
+        id_cond = (
+            "AND c.ref_id = ANY(%(band_ids)s) "
+            "AND r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL"
+        )
+        order = "c.ref_id, c.chunk_id"
+    else:
+        assert ref_pred is not None
+        from_clause = "bs b JOIN chunks c ON c.ref_id = b.ref_id"
+        id_cond = ""
+        wrap = "(b.ref_id < %(floor)s)," if floor is not None else ""
+        order = f"{wrap} b.ref_id, c.chunk_id"
+    bs_cte = (
+        "bs AS (\n"
+        "      SELECT r.ref_id FROM refs r\n"
+        "      WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL AND "
+        f"{ref_pred}\n"
+        "    ), "
+        if ref_ids is None
+        else ""
     )
+    sql = f"""
+    WITH {bs_cte}cand AS (
+      SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
+      FROM {from_clause}
+      WHERE c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
+        {id_cond}
+        {extra_sql}
+        AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
+                        WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(marker_ns)s
+                        AND t.value = %(version)s)
+        AND NOT EXISTS (SELECT 1 FROM chunk_claims cl
+                        WHERE cl.chunk_id = c.chunk_id AND cl.artifact = %(art)s)
+      ORDER BY {order}
+      LIMIT %(limit)s
+      FOR UPDATE OF c SKIP LOCKED
+    ), leased AS (
+      INSERT INTO chunk_claims (chunk_id, artifact)
+      SELECT chunk_id, %(art)s FROM cand ON CONFLICT DO NOTHING
+    )
+    SELECT chunk_id, ref_id, ord, text, section_path FROM cand
+    """
+    params: dict[str, Any] = {
+        "kinds": kinds,
+        "marker_ns": marker_ns,
+        "version": version,
+        "art": artifact,
+        "limit": limit,
+        **extra_params,
+    }
+    if ref_ids is not None:
+        params["band_ids"] = list(ref_ids)
+    elif floor is not None:
+        params["floor"] = floor
+    return _claim_chunk_rows(conn.execute(sql, params).fetchall())
+
+
+def _claim_chunk_walk_slice(
+    conn: Any,
+    axis_id: str,
+    *,
+    version: str,
+    limit: int,
+    kinds: list[str],
+    usable_pred: str,
+    floor: int | None,
+    floor_cmp: str,
+    extra_sql: str,
+    extra_params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Band-2 sweep slice, mirroring ``classify._claim_walk_slice`` — a
+    forward ``chunk_id`` PK-index walk from an optional ``floor``, held
+    inside band 2 by ``usable_pred`` ("ref has a usable body"). The anchor
+    wraps the walk inside band 2 only: concurrent workers still spread
+    out, but the anchor can't jump a higher band's refs."""
+    ns = axis_id.upper()
+    marker_ns = f"{ns}CASCADE"
+    artifact = f"axis:{axis_id}-v{version}"
+    floor_filter = f"AND c.chunk_id {floor_cmp} %(floor)s" if floor is not None else ""
     sql = f"""
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
       FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
       WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL
+        AND {usable_pred}
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
-        {ref_filter}
-        {prereq_sql}
-        {applies_sql}
+        {floor_filter}
+        {extra_sql}
         AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
                         WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(marker_ns)s
                         AND t.value = %(version)s)
@@ -423,22 +604,134 @@ def _claim_chunk(
         "version": version,
         "art": artifact,
         "limit": limit,
-        **applies_params,
-        **prereq_params,
+        **extra_params,
     }
+    if floor is not None:
+        params["floor"] = floor
+    return _claim_chunk_rows(conn.execute(sql, params).fetchall())
+
+
+def _claim_chunk(
+    conn: Any,
+    axis_id: str,
+    axis: dict[str, Any],
+    *,
+    version: str,
+    limit: int,
+    ref_ids: list[int] | None,
+) -> list[dict[str, Any]]:
+    """Lease up to ``limit`` body chunks needing this axis's marker.
+
+    ``ref_ids`` restricts to specific refs (targeted backfill / tests) —
+    the deterministic single-scan claim. A corpus sweep (``ref_ids=None``)
+    claims in backfill priority band order (gr515633,
+    :func:`precis.workers._claim.band_predicates`) with the same slice
+    structure as :func:`precis.workers.classify._claim`: ref-driven slices
+    for the small bands (1, 3, 4 — quest-linked whatever the body state,
+    recently touched unusable body, the tail) and a chunk-PK walk for
+    band 2 (the bulk usable-body pool). Anchors wrap inside each band only, so
+    concurrent workers still spread out but a lower band never jumps a
+    higher one. Eligibility is unchanged — only the claim order."""
+    kinds = axis.get("applies_to_kinds") or ["paper"]
+    prereq_sql, prereq_params = _prereq_clauses(
+        axis, ref_col="c.ref_id", chunk_col="c.chunk_id"
+    )
+    applies_sql, applies_params = _applies_when_clauses(
+        axis, ref_col="c.ref_id", chunk_col="c.chunk_id"
+    )
+    extra_sql = "\n        ".join(s for s in (prereq_sql, applies_sql) if s)
+    extra_params = {**applies_params, **prereq_params}
     if ref_ids:
-        params["ref_ids"] = list(ref_ids)
-    rows = conn.execute(sql, params).fetchall()
-    return [
-        {
-            "chunk_id": r[0],
-            "ref_id": r[1],
-            "ord": r[2],
-            "text": r[3],
-            "section_path": list(r[4] or []),
-        }
-        for r in rows
-    ]
+        return _claim_chunk_targeted(
+            conn,
+            axis_id,
+            version=version,
+            limit=limit,
+            ref_ids=ref_ids,
+            kinds=kinds,
+            extra_sql=extra_sql,
+            extra_params=extra_params,
+        )
+    band1, band2, band3, band4 = band_predicates("r")
+    ref_anchor = random_ref_anchor(conn)
+    chunk_anchor = random_chunk_anchor(conn)
+    shared: dict[str, Any] = {
+        "version": version,
+        "kinds": kinds,
+        "extra_sql": extra_sql,
+        "extra_params": extra_params,
+    }
+    rows: list[dict[str, Any]] = []
+    # Bands 1/3 are small sets — resolve their refs in one scan and claim
+    # in BAND_REF_BATCH-sized pre-wrapped runs: each slice reads only its
+    # batch's chunks via chunks_ref_id_idx instead of sorting the whole
+    # band's chunks; an inlined CTE let the planner walk the whole
+    # paragraph-chunk index probing refs per chunk.
+    for batch in band_batches(
+        band_ref_ids(conn, kinds=kinds, ref_pred=band1), ref_anchor
+    ):
+        got = _claim_chunk_band_slice(
+            conn,
+            axis_id,
+            limit=limit - len(rows),
+            ref_ids=batch,
+            floor=None,
+            **shared,
+        )
+        rows += got
+        if not got:
+            # Drained batch — drop its refs from the cached set so later
+            # claims don't re-probe it (ceil(N/32) dead slices/claim).
+            drop_band_ids(kinds=kinds, ref_pred=band1, done=batch)
+        if len(rows) >= limit:
+            break
+    if len(rows) < limit:
+        rows += _claim_chunk_walk_slice(
+            conn,
+            axis_id,
+            limit=limit - len(rows),
+            usable_pred=band2,
+            floor=chunk_anchor,
+            floor_cmp=">=",
+            **shared,
+        )
+    if len(rows) < limit:
+        rows += _claim_chunk_walk_slice(
+            conn,
+            axis_id,
+            limit=limit - len(rows),
+            usable_pred=band2,
+            floor=chunk_anchor,
+            floor_cmp="<",
+            **shared,
+        )
+    if len(rows) < limit:
+        for batch in band_batches(
+            band_ref_ids(conn, kinds=kinds, ref_pred=band3), ref_anchor
+        ):
+            got = _claim_chunk_band_slice(
+                conn,
+                axis_id,
+                limit=limit - len(rows),
+                ref_ids=batch,
+                floor=None,
+                **shared,
+            )
+            rows += got
+            if not got:
+                drop_band_ids(kinds=kinds, ref_pred=band3, done=batch)
+            if len(rows) >= limit:
+                break
+    if len(rows) < limit:
+        rows += _claim_chunk_band_slice(
+            conn,
+            axis_id,
+            limit=limit - len(rows),
+            ref_pred=band4,
+            floor=ref_anchor,
+            **shared,
+        )
+    return rows
 
 
 def _enrich_chunk(conn: Any, rows: list[dict[str, Any]]) -> None:
@@ -483,6 +776,19 @@ def _claim_ref(
     ref_ids: list[int] | None,
     opt_in_kinds: Any = (),
 ) -> list[dict[str, Any]]:
+    """Lease up to ``limit`` live refs needing this axis's cascade tag.
+
+    Claims in backfill-priority band order (gr515633) with the same
+    slice structure as the chunk claims: the small quest-linked and
+    touched sets resolve once via ``band_ref_ids`` (300s cache) and
+    claim in ``BAND_REF_BATCH``-sized pre-wrapped ``r.ref_id = ANY(...)``
+    runs; band 2 (the bulk set) walks the ref PK from the random anchor;
+    band 4 keeps one PK-ordered slice. The ``bs``-CTE band-1 and
+    bare-predicate band-2 slices this replaces let the planner scan and
+    filter every live ref through the DOMAIN subplans before the LIMIT —
+    1764ms and 993ms per claim on prod EXPLAIN ANALYZE. ``ref_ids``
+    scopes the same slices (targeted backfill / tests). Ordering only;
+    eligibility is the unchanged WHERE below."""
     ns = axis_id.upper()
     marker_ns = f"{ns}CASCADE"
     kinds = effective_kinds(
@@ -495,9 +801,7 @@ def _claim_ref(
         axis, ref_col="r.ref_id", chunk_col=None
     )
     applies_sql, applies_params = _applies_when_clauses(axis, ref_col="r.ref_id")
-    sql = f"""
-        SELECT r.ref_id, r.title, r.kind
-        FROM refs r
+    elig = f"""
         WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL
           AND (r.kind <> 'finding' OR {NOT_REVIEW_NOTE_SQL})
           {ref_filter}
@@ -507,9 +811,18 @@ def _claim_ref(
             SELECT 1 FROM chunks c
             WHERE c.ref_id = r.ref_id AND c.ord >= 0 AND c.retired_at IS NULL
           )
-          AND NOT EXISTS (
-            SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-            WHERE rt.ref_id = r.ref_id AND t.namespace = %(marker_ns)s AND t.value = %(version)s
+          -- NOT IN, deliberately: Postgres flattens NOT EXISTS (and the
+          -- tag_id IN (SELECT ...) variant) back into a nested-loop
+          -- anti-join, which on the band-2 walk materialized the marker
+          -- tag set and scanned it per outer row (23.3M join-filter
+          -- rows, ~1s on the gr515633 round-6/7 prod probes). NOT IN
+          -- stays a hashed SubPlan — built once, probed per row.
+          -- Semantics identical: ref_tags.ref_id is NOT NULL
+          -- (migrations/baseline/schema.sql), so the three-valued-logic
+          -- NULL trap can't fire.
+          AND r.ref_id NOT IN (
+            SELECT rt.ref_id FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+            WHERE t.namespace = %(marker_ns)s AND t.value = %(version)s
           )
           {ref_lease.exclude_clause("r.ref_id", "attempt_ns")}
           -- An axis pass backfills unclassified refs — it must never claim
@@ -534,8 +847,6 @@ def _claim_ref(
               WHERE rt3.ref_id = r.ref_id AND t3.namespace = %(marker_ns)s
             )
           )
-        ORDER BY r.ref_id
-        LIMIT %(limit)s
     """
     params: dict[str, Any] = {
         "kinds": kinds,
@@ -543,16 +854,107 @@ def _claim_ref(
         "marker_ns": marker_ns,
         "version": version,
         "attempt_ns": ref_lease.attempt_ns(marker_ns),
-        "limit": limit,
         **applies_params,
         **prereq_params,
     }
     if ref_ids:
         params["ref_ids"] = list(ref_ids)
-    rows = conn.execute(sql, params).fetchall()
-    return [
-        {"ref_id": int(r[0]), "title": str(r[1] or ""), "kind": str(r[2])} for r in rows
-    ]
+    band1, band2, band3, band4 = band_predicates("r")
+    ref_anchor = random_ref_anchor(conn)
+    target = set(ref_ids) if ref_ids else None
+    out: list[tuple[int, str, str]] = []
+
+    def _id_batch_claims(band_pred: str) -> None:
+        # Bands 1/3 are small sets — resolve once (300s cache), claim in
+        # BAND_REF_BATCH-sized pre-wrapped runs of r.ref_id = ANY(batch):
+        # each slice reads ~32 refs' eligibility instead of filtering the
+        # quest/touch predicate per live ref. The cached set can be
+        # TTL-stale, so elig still re-checks kind/retirement and the
+        # DOMAIN/DOMAINCASCADE predicates per row.
+        ids = band_ref_ids(conn, kinds=kinds, ref_pred=band_pred)
+        if target is not None:
+            ids = [i for i in ids if i in target]
+        for batch in band_batches(ids, ref_anchor):
+            sql = f"""
+            SELECT r.ref_id, r.title, r.kind
+            FROM refs r
+            {elig}
+              AND r.ref_id = ANY(%(band_ids)s)
+              AND r.ref_id <> ALL(%(got_ids)s)
+            ORDER BY r.ref_id
+            LIMIT %(limit)s
+            """
+            rows = conn.execute(
+                sql,
+                {
+                    **params,
+                    "band_ids": batch,
+                    "got_ids": [rid for rid, _, _ in out],
+                    "limit": limit - len(out),
+                },
+            ).fetchall()
+            got = [(int(r[0]), str(r[1] or ""), str(r[2])) for r in rows]
+            out.extend(got)
+            if not got:
+                drop_band_ids(kinds=kinds, ref_pred=band_pred, done=batch)
+            if len(out) >= limit:
+                return
+
+    _id_batch_claims(band1)
+    if len(out) < limit:
+        # Band 2 is the bulk set — too large to ANY-batch. Walk the ref
+        # PK from the random anchor (wrapping at the table edge), the
+        # same fix the band-2 chunk walk applies on chunk_id: a bare
+        # predicate filter + ORDER BY r.ref_id let the planner filter
+        # every live ref through the DOMAIN subplans before the LIMIT
+        # (993ms probe-12 on prod, gr515633 round-5).
+        cmps: list[str | None] = [">=", "<"] if ref_anchor is not None else [None]
+        for cmp_ in cmps:
+            floor_sql = f"AND r.ref_id {cmp_} %(floor)s" if cmp_ else ""
+            sql = f"""
+            SELECT r.ref_id, r.title, r.kind
+            FROM refs r
+            {elig}
+              AND {band2}
+              {floor_sql}
+              AND r.ref_id <> ALL(%(got_ids)s)
+            ORDER BY r.ref_id
+            LIMIT %(limit)s
+            """
+            rows = conn.execute(
+                sql,
+                {
+                    **params,
+                    "floor": ref_anchor,
+                    "got_ids": [rid for rid, _, _ in out],
+                    "limit": limit - len(out),
+                },
+            ).fetchall()
+            out += [(int(r[0]), str(r[1] or ""), str(r[2])) for r in rows]
+            if len(out) >= limit:
+                break
+    if len(out) < limit:
+        _id_batch_claims(band3)
+    if len(out) < limit:
+        sql = f"""
+        SELECT r.ref_id, r.title, r.kind
+        FROM refs r
+        {elig}
+          AND {band4}
+          AND r.ref_id <> ALL(%(got_ids)s)
+        ORDER BY r.ref_id
+        LIMIT %(limit)s
+        """
+        rows = conn.execute(
+            sql,
+            {
+                **params,
+                "got_ids": [rid for rid, _, _ in out],
+                "limit": limit - len(out),
+            },
+        ).fetchall()
+        out += [(int(r[0]), str(r[1] or ""), str(r[2])) for r in rows]
+    return [{"ref_id": rid, "title": t, "kind": k} for rid, t, k in out]
 
 
 def _abstract(conn: Any, ref_id: int) -> str:

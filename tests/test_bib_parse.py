@@ -618,6 +618,43 @@ class TestClaimLease:
         assert _meta_version(store, ref_id) == BIB_PARSE_VERSION
 
 
+def test_claim_keeps_plain_ref_id_order(store: Any) -> None:
+    """bib_parse's claim is NOT banded — it keeps the plain ``ref_id`` PK
+    order (the early-stop the pass relies on), even when a later ref is
+    quest-linked. The gr515633 backfill bands are opt-in
+    (``claim_batch(banded=True)``) for the categorizer sweeps only."""
+    first = seed_ref(store, title="first paper")
+    seed_chunk(
+        store,
+        ref_id=first,
+        ord=0,
+        chunk_kind="paragraph",
+        text="Just an ordinary paragraph with no citations in it at all.",
+    )
+    second = seed_ref(store, title="quest paper")
+    seed_chunk(
+        store,
+        ref_id=second,
+        ord=0,
+        chunk_kind="paragraph",
+        text="Another ordinary paragraph, still without a single citation.",
+    )
+    quest = seed_ref(store, kind="quest", title="q")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)"
+            " VALUES (%s,%s,'serves','system')",
+            (second, quest),
+        )
+        conn.commit()
+
+    with store.pool.connection() as conn:
+        rows = _claim(conn, limit=10)
+        conn.rollback()
+
+    assert [r[0] for r in rows] == [first, second]
+
+
 # ── matcher (AC 3 — mocked Crossref, memoization, safe_get-only) ───────
 
 

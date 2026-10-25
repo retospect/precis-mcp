@@ -262,48 +262,61 @@ def _seeded_ids(store: Any, ref_id: int) -> list[int]:
         ]
 
 
+def _seed_claim_papers(
+    store: Any, n_refs: int, chunks_per_ref: int = 2
+) -> tuple[list[int], dict[int, list[int]]]:
+    """``n_refs`` plain-body papers (all band 2 — no quest link, no
+    unusable-body tag) with ``chunks_per_ref`` eligible chunks each."""
+    refs, ids = [], {}
+    for i in range(n_refs):
+        ref = seed_ref(store)
+        refs.append(ref)
+        ids[ref] = [
+            seed_chunk(store, ref_id=ref, text=f"MARK{i}.{j} {_PROSE}", ord=j)
+            for j in range(chunks_per_ref)
+        ]
+    return refs, ids
+
+
 def test_fair_claim_scan_starts_at_random_anchor(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Slice 3 fair-claim: a corpus sweep starts the chunk_id scan at the random
-    anchor, so it does NOT always drain the lowest chunk_ids (the old
-    one-paper monopoly). Anchor pinned to the 4th id + limit 2 → claims the two
-    lowest ids >= the anchor, not ids[0..1]."""
+    """Slice 3 fair-claim, banded (gr515633): a corpus sweep starts the
+    band-2 *chunk-PK* walk at the random chunk anchor, so it does NOT
+    always drain the lowest chunk_ids (the old one-paper monopoly). The
+    anchor is pinned to the 2nd ref's first chunk → its chunks come
+    first, then the wrap covers the rest of the band."""
     from precis.workers import classify as c
 
-    ref = seed_ref(store)
-    for i in range(6):
-        seed_chunk(store, ref_id=ref, text=f"MARK{i} {_PROSE}", ord=i)
-    ids = _seeded_ids(store, ref)
-    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[3])
+    refs, ids = _seed_claim_papers(store, 3)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[refs[1]][0])
 
     with store.pool.connection() as conn:
-        rows = c._claim(conn, limit=2)
+        rows = c._claim(conn, limit=4)
         conn.commit()
 
-    assert sorted(r["chunk_id"] for r in rows) == [ids[3], ids[4]]
+    # refs[1] at the anchor first, then refs[2] — the wrap to refs[0] is
+    # cut off by the limit.
+    assert [r["ref_id"] for r in rows] == [refs[1], refs[1], refs[2], refs[2]]
 
 
 def test_fair_claim_head_fallback_covers_everything(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A high anchor's forward slice runs short → the head top-up (< anchor)
-    covers the rest, so every chunk is still claimed exactly once (no chunk
-    left behind, no double-claim)."""
+    """A high anchor wraps inside the band (``ref_id < anchor`` claims
+    last), so every chunk is still claimed exactly once (no chunk left
+    behind, no double-claim)."""
     from precis.workers import classify as c
 
-    ref = seed_ref(store)
-    for i in range(6):
-        seed_chunk(store, ref_id=ref, text=f"MARK{i} {_PROSE}", ord=i)
-    ids = _seeded_ids(store, ref)
-    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[4])
+    refs, ids = _seed_claim_papers(store, 3)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[refs[2]][0])
 
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=10)
         conn.commit()
 
     claimed = sorted(r["chunk_id"] for r in rows)
-    assert claimed == ids  # all 6, exactly once
+    assert claimed == sorted(cid for ref_ids in ids.values() for cid in ref_ids)
 
 
 def test_ref_ids_claim_ignores_anchor_stays_ordered(
@@ -326,6 +339,309 @@ def test_ref_ids_claim_ignores_anchor_stays_ordered(
         conn.commit()
 
     assert [r["chunk_id"] for r in rows] == ids[:3]  # lowest three, in order
+
+
+# ---------------------------------------------------------------------------
+# gr515633 backfill priority bands: quest+body > body > recently touched >
+# tail — the random anchor wraps inside a band only.
+# ---------------------------------------------------------------------------
+
+
+def _quest_link(store: Any, ref_id: int) -> None:
+    """``ref_id`` serves a live quest (the band-1 link signal)."""
+    quest = seed_ref(store, kind="quest", title="quest")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)"
+            " VALUES (%s,%s,'serves','system')",
+            (ref_id, quest),
+        )
+        conn.commit()
+
+
+def _backdate(store: Any, ref_id: int, days: int) -> None:
+    """Move a ref outside the recently-touched window (band 4)."""
+    from precis.workers._claim import RECENT_TOUCH_DAYS
+
+    assert days > RECENT_TOUCH_DAYS
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - (%s * interval '1 day') "
+            "WHERE ref_id = %s",
+            (days, ref_id),
+        )
+        conn.commit()
+
+
+def test_claim_orders_refs_by_priority_band(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep claim drains band 1 (quest-linked usable body) before
+    band 2 (usable body) before band 3 (unusable body, recently touched)
+    before band 4 (unusable body, untouched) — one claim, in order."""
+    from precis.store.types import Tag
+    from precis.workers import classify as c
+
+    band1 = seed_ref(store, title="quest paper")
+    seed_chunk(store, ref_id=band1, text=_PROSE, ord=0)
+    _quest_link(store, band1)
+    band2 = seed_ref(store, title="plain paper")
+    seed_chunk(store, ref_id=band2, text=_PROSE, ord=0)
+    band3 = seed_ref(store, title="partial paper, touched")
+    seed_chunk(store, ref_id=band3, text=_PROSE, ord=0)
+    store.add_tag(band3, Tag.open("body:partial"), set_by="system")
+    band4 = seed_ref(store, title="partial paper, stale")
+    seed_chunk(store, ref_id=band4, text=_PROSE, ord=0)
+    store.add_tag(band4, Tag.open("body:partial"), set_by="system")
+    _backdate(store, band4, 90)
+    # Anchor above every ref — band order still beats the wrap position.
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: band4 + 1)
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=4)
+        conn.commit()
+
+    assert [r["ref_id"] for r in rows] == [band1, band2, band3, band4]
+
+
+def test_random_anchor_varies_the_start_within_a_band(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two band-1 refs: the anchor still picks which is claimed first —
+    the spread the anchor exists for survives, only confined to the band."""
+    from precis.workers import classify as c
+
+    first = seed_ref(store, title="quest paper A")
+    seed_chunk(store, ref_id=first, text=_PROSE, ord=0)
+    _quest_link(store, first)
+    second = seed_ref(store, title="quest paper B")
+    seed_chunk(store, ref_id=second, text=_PROSE, ord=0)
+    _quest_link(store, second)
+
+    # Roll the lease back after each claim so both anchored runs see the
+    # same candidate pool — the difference must be the anchor, not leases.
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: first)
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=1)
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [first]
+
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: second)
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=1)
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [second]
+
+
+def test_band1_claim_wraps_across_ref_batch_boundary(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """More than ``BAND_REF_BATCH`` band-1 refs: the claim takes several
+    pre-wrapped batches, and the wrap order holds across every slice —
+    refs at/above the anchor first, then the wrap, each batch internally
+    ref_id-ascending. A batch that spanned the wrap point (its low and
+    high sides merged into one ANY slice) would emit the low ids first
+    and fail this."""
+    from precis.workers import classify as c
+    from precis.workers._claim import BAND_REF_BATCH
+
+    # One segment above the batch size on EACH side of the anchor:
+    # batches = [anchor..] (2 runs) + [..anchor) (1 run).
+    n = 2 * BAND_REF_BATCH + 4
+    anchor_ix = BAND_REF_BATCH + 2
+    refs = []
+    for i in range(n):
+        ref = seed_ref(store, title=f"quest paper {i}")
+        seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+        _quest_link(store, ref)
+        refs.append(ref)
+    assert refs == sorted(refs)
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: refs[anchor_ix])
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=n)
+        conn.commit()
+
+    assert [r["ref_id"] for r in rows] == refs[anchor_ix:] + refs[:anchor_ix]
+
+
+def test_ref_retired_after_band_resolution_is_not_claimed(
+    store: Any,
+) -> None:
+    """The resolved band set can be up to TTL-stale: a ref retired AFTER
+    ``band_ref_ids`` cached it must still not be claimed — the ANY slice
+    joins ``refs`` and re-checks kind/retirement, it does not trust the
+    resolved ids."""
+    from precis.workers import classify as c
+
+    quest_paper = seed_ref(store, title="quest paper")
+    seed_chunk(store, ref_id=quest_paper, text=_PROSE, ord=0)
+    _quest_link(store, quest_paper)
+    # First claim resolves + caches the band-1 set (rollback keeps the
+    # cache, drops only this txn's lease rows).
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=1)
+        conn.rollback()
+    assert [r["ref_id"] for r in rows] == [quest_paper]
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (quest_paper,)
+        )
+        conn.commit()
+    plain = seed_ref(store, title="plain paper")
+    seed_chunk(store, ref_id=plain, text=_PROSE, ord=0)
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=1)
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == [plain]
+
+
+def test_drained_band1_batches_drop_out_of_the_cached_set(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fully drained band must not re-probe every batch per claim
+    (~96 dead slices at 3050 refs on prod): a batch whose slice returns
+    nothing is dropped from the cached set, so the next claim runs ZERO
+    band-1 chunk slices — O(1) queries, not ceil(N/32)."""
+    from precis.workers import classify as c
+    from precis.workers._claim import BAND_REF_BATCH
+
+    for i in range(BAND_REF_BATCH + 1):
+        ref = seed_ref(store, title=f"quest paper {i}")
+        seed_chunk(store, ref_id=ref, text=_PROSE, ord=0)
+        _quest_link(store, ref)
+    # Pass 1 claims every chunk (committed — the leases persist), pass 2
+    # finds each batch empty and drops it.
+    with store.pool.connection() as conn:
+        c._claim(conn, limit=BAND_REF_BATCH + 1)
+        conn.commit()
+    with store.pool.connection() as conn:
+        assert c._claim(conn, limit=BAND_REF_BATCH + 1) == []
+        conn.commit()
+
+    slices: list[dict] = []
+    orig = c._claim_band_slice
+
+    def spy(conn: Any, **kw: Any) -> list[dict]:
+        slices.append(kw)
+        return orig(conn, **kw)
+
+    monkeypatch.setattr(c, "_claim_band_slice", spy)
+    with store.pool.connection() as conn:
+        c._claim(conn, limit=BAND_REF_BATCH + 1)
+        conn.rollback()
+
+    # Only band 4's single CTE slice remains — no resolved-ids slice ran.
+    assert not [kw for kw in slices if kw.get("ref_ids") is not None]
+
+
+def test_quest_link_with_unusable_body_is_still_band_1(store: Any) -> None:
+    """Reto's ruling on ask 3: "papers with a body OR in a quest" first —
+    a quest-linked ref ranks band 1 whatever its body state, so a
+    body:partial quest paper still precedes a plain usable-body ref."""
+    from precis.store.types import Tag
+    from precis.workers import classify as c
+
+    quest_partial = seed_ref(store, title="quest paper, partial body")
+    seed_chunk(store, ref_id=quest_partial, text=_PROSE, ord=0)
+    store.add_tag(quest_partial, Tag.open("body:partial"), set_by="system")
+    _quest_link(store, quest_partial)
+    usable = seed_ref(store, title="plain paper")
+    seed_chunk(store, ref_id=usable, text=_PROSE, ord=0)
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=2)
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == [quest_partial, usable]
+
+
+def test_fully_leased_band_1_falls_through_to_later_bands(store: Any) -> None:
+    """Every band-1 chunk already leased → the band-1 slice is empty, so
+    the same claim call fills from bands 2, 3 and 4 in order."""
+    from precis.store.types import Tag
+    from precis.workers import classify as c
+
+    band1 = seed_ref(store, title="quest paper")
+    b1_chunk = seed_chunk(store, ref_id=band1, text=_PROSE, ord=0)
+    _quest_link(store, band1)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact) VALUES (%s, %s)",
+            (b1_chunk, c.ARTIFACT),
+        )
+        conn.commit()
+    band2 = seed_ref(store, title="plain paper")
+    seed_chunk(store, ref_id=band2, text=_PROSE, ord=0)
+    band3 = seed_ref(store, title="partial paper, touched")
+    seed_chunk(store, ref_id=band3, text=_PROSE, ord=0)
+    store.add_tag(band3, Tag.open("body:partial"), set_by="system")
+    band4 = seed_ref(store, title="partial paper, stale")
+    seed_chunk(store, ref_id=band4, text=_PROSE, ord=0)
+    store.add_tag(band4, Tag.open("body:partial"), set_by="system")
+    _backdate(store, band4, 90)
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=4)
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == [band2, band3, band4]
+
+
+def test_serves_link_to_retired_quest_is_not_band_1(store: Any) -> None:
+    """A ``serves`` edge into a RETIRED quest must not promote the ref —
+    the link half's ``qq.retired_at IS NULL`` holds, so a partial-body
+    ref lands in the touched tail (band 3), behind usable body."""
+    from precis.store.types import Tag
+    from precis.workers import classify as c
+
+    linked = seed_ref(store, title="serves a dead quest")
+    seed_chunk(store, ref_id=linked, text=_PROSE, ord=0)
+    store.add_tag(linked, Tag.open("body:partial"), set_by="system")
+    quest = seed_ref(store, kind="quest", title="dead quest")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)"
+            " VALUES (%s,%s,'serves','system')",
+            (linked, quest),
+        )
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (quest,))
+        conn.commit()
+    usable = seed_ref(store, title="plain paper")
+    seed_chunk(store, ref_id=usable, text=_PROSE, ord=0)
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=2)
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == [usable, linked]
+
+
+def test_tag_naming_retired_quest_is_not_band_1(store: Any) -> None:
+    """A ``quest:<id>`` OPEN tag counts only while the named quest is
+    live — tagging a partial-body ref with a retired quest's id leaves it
+    in the touched tail, not band 1."""
+    from precis.store.types import Tag
+    from precis.workers import classify as c
+
+    tagged = seed_ref(store, title="tagged a dead quest")
+    seed_chunk(store, ref_id=tagged, text=_PROSE, ord=0)
+    store.add_tag(tagged, Tag.open("body:partial"), set_by="system")
+    quest = seed_ref(store, kind="quest", title="dead quest")
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (quest,))
+        conn.commit()
+    store.add_tag(tagged, Tag.open(f"quest:{quest}"), set_by="system")
+    usable = seed_ref(store, title="plain paper")
+    seed_chunk(store, ref_id=usable, text=_PROSE, ord=0)
+
+    with store.pool.connection() as conn:
+        rows = c._claim(conn, limit=2)
+        conn.rollback()
+
+    assert [r["ref_id"] for r in rows] == [usable, tagged]
 
 
 def test_ref_ids_none_matches_global_unscoped_behaviour(store: Any) -> None:
