@@ -23,7 +23,7 @@ run's failure, refused naming the key)::
                  "measures"?: [{"name", "value"?|"min"?/"max"?, "unit"?,
                                 "strength"?, "reason"?, "relation"?,
                                 "datum"?, "origin"?}],
-                 "loads"?, "template"?}],
+                 "loads"?, "template"?, "findings"?, "census"?}],
      "instances"?: [{"name", "template", "parent"?, "pose"?, "rot"?,
                      "pose_unit"?, "rot_unit"?, "frame"?}],
      "connects"?: [{"a": "blk.port", "b": "blk.port", "kind"?, "joint"?,
@@ -60,6 +60,10 @@ run's failure, refused naming the key)::
   file's bytes — stamped back onto the bound ref as
   ``meta.generated.sha`` so the next import can answer
   changed/unchanged without re-diffing geometry (gr514249).
+* ``census`` on a block (gr514059): a hexfold Net's structural census
+  ``out.block`` stamps — junction/seam/port atom sets and the
+  degree/valence summary in the block's ``a<El><n>`` label space.
+  Run-record only: vetted to be an object, never imported.
 
 * atomic ``file``: ``blocks/<name>.extxyz``
   (:func:`precis.structure.importers.extxyz.extxyz_to_scene`); bonds ride
@@ -202,6 +206,7 @@ _BLOCK_KEYS = frozenset(
         "loads",
         "template",
         "findings",
+        "census",
         "sha",
     }
 )
@@ -445,6 +450,14 @@ def _vet_manifest(
                 f"manifest {where}: 'findings' must be a list of strings — "
                 "the Geom findings out.block stamps "
                 "(chirality.flipped &c., gr514205)"
+            )
+        census = raw.get("census")
+        if census is not None and not isinstance(census, dict):
+            raise BadInput(
+                f"manifest {where}: 'census' must be an object — the "
+                "junction/seam/valence summary out.block stamps for a "
+                "hexfold Net (gr514059); run-record only, the importer "
+                "does not read it"
             )
         frame = raw.get("frame")
         bonds_path = raw.get("bonds")

@@ -149,7 +149,8 @@ def block(
     ``frame`` defaults to the calling trace frame. A
     :class:`precis_geom.assembly.Geom` flattens to geometry here and
     carries its declared ports and findings (``chirality.flipped`` &c.)
-    into the manifest entry (gr514205). A
+    into the manifest entry (gr514205) — a hexfold Net's structural
+    census rides as ``census`` (gr514059). A
     :class:`precis_geom.pcb.Board` routes to :func:`board` — the run's
     whole ``kind='pcb'`` manifest, not a block file (gr513754)."""
     from precis_geom import pcb as _pcb
@@ -162,7 +163,7 @@ def block(
         board(obj)
         return
     _vet_not_board("block")
-    obj, gports, gfindings = _geom_parts(obj)
+    obj, gports, gfindings, gcensus = _geom_parts(obj)
     if ports is None:
         ports = gports
     fname, payload, inferred = _block_file(name, obj)
@@ -176,6 +177,8 @@ def block(
         entry["ports"] = list(ports)
     if gfindings:
         entry["findings"] = gfindings
+    if gcensus is not None:
+        entry["census"] = gcensus
     if relax is not None:
         entry["relax"] = relax
     if desc is not None:

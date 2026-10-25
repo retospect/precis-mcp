@@ -14,12 +14,14 @@ from __future__ import annotations
 import json
 import math
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
+from precis.errors import BadInput
 from precis.structure.cache import structure_sha
 from precis.structure.cell import Cell
 from precis.structure.scene import Atom, Scene
@@ -322,6 +324,89 @@ def test_geom_findings_ride_the_manifest_block_row(store: Any, tmp_path: Path) -
         requested_by="agent:test",
     )
     assert any("chirality.flipped" in f and "'m'" in f for f in result.findings)
+
+
+def test_net_census_rides_the_manifest_block_row(tmp_path: Path) -> None:
+    """gr514059 — a hexfold Net's ``out.block`` row carries ``census``:
+    the junction/seam/port atom sets and a degree/valence summary in
+    the exported ``a<El><n>`` label space — the numbers a script
+    otherwise recomputes by hand joining extxyz labels to bonds.json.
+    The importer accepts the row (vetted, never imported)."""
+    from hexfold.prism import prism_tube
+    from precis_se.workspace_import import _vet_manifest
+
+    net, _ = prism_tube(4, 4, 2, "++++++")
+    with pytest.warns(UserWarning, match="unrelaxed seed3"):
+        g = pga.geom(net)
+    with geom_out.run(tmp_path / "run", check=False) as o:
+        o.block("p", g)
+    manifest = json.loads(
+        (tmp_path / "run" / "manifest.json").read_text(encoding="utf-8")
+    )
+    census = manifest["blocks"][0]["census"]
+    assert census["atoms"] == len(net.atoms)
+    assert census["bonds"] == len(net.bonds)
+    flat_labels = set(g.scene.atoms)
+
+    def _labels() -> Iterator[str]:
+        for j in census["junctions"]:
+            yield from j["atoms"]
+            for pair in j["fused"]:
+                yield from pair
+            for face in j["faces"]:
+                yield from face
+        for s in census["seams"]:
+            yield from s["atoms"]
+        for atoms in census["ports"].values():
+            yield from atoms
+        yield from census["rim"]
+        for key in ("stubs", "open", "over"):
+            yield from census["valence"][key]
+
+    census_labels = set(_labels())
+    assert census_labels and census_labels <= flat_labels
+
+    # independently recomputed over the same net
+    deg = {a.ord: 0 for a in net.atoms}
+    for i, j, _o in net.bonds:
+        deg[i] += 1
+        deg[j] += 1
+    hist: dict[str, int] = {}
+    for a in net.atoms:
+        hist[str(deg[a.ord])] = hist.get(str(deg[a.ord]), 0) + 1
+    assert census["valence"]["histogram"] == hist
+    assert len(census["valence"]["stubs"]) == hist.get("1", 0)
+    rim_ords = (
+        {o for _, p in net.ports for o in p.atoms}
+        | {o for rim, _b, _be in net.term_rims for o in rim}
+        | {o for rim, _b, _be in net.seam_rims for o in rim}
+    )
+    assert len(census["rim"]) == len(rim_ords)
+    assert [j["name"] for j in census["junctions"]] == [j.name for j in net.junctions]
+    assert [s["name"] for s in census["seams"]] == [s.name for s in net.seams]
+    assert sorted(census["ports"]) == sorted(n for n, _p in net.ports)
+
+    _vet_manifest(manifest)  # census is an accepted run-record key
+    bad = json.loads(json.dumps(manifest))
+    bad["blocks"][0]["census"] = ["not", "a", "dict"]
+    with pytest.raises(BadInput, match="'census' must be an object"):
+        _vet_manifest(bad)
+
+    # a transform keeps atom count and labels — the census still
+    # describes the block; a packed tile triples the atoms, so one
+    # net's census would be stale and the row drops it (meta
+    # propagates through tile/transform)
+    with _trace.run():
+        moved = pga.translate(g, [0.0, 0.0, 1.0])
+        tiled = pga.tile(g, 3, period=[0.0, 0.0, 30.0])
+    with geom_out.run(tmp_path / "run2", check=False) as o:
+        o.block("m", moved)
+        o.block("t", tiled)
+    manifest2 = json.loads(
+        (tmp_path / "run2" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest2["blocks"][0]["census"]["atoms"] == len(net.atoms)
+    assert "census" not in manifest2["blocks"][1]
 
 
 def test_ws_out_block_carries_geom_findings(

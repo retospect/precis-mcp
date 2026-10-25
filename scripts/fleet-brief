@@ -1,0 +1,321 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/fleet-brief — emit the census + builder briefs for a builder wave.
+
+The coordinator-side half of ``gripe-fleet``: turns a batches file into
+the two artifacts a builder consumes — ``census/batch-<name>.md`` (the
+verbatim gripe texts) and ``briefs/<name>.md`` (the builder brief).
+This used to live as coordinator scratch outside the repo (gr515822);
+the stages are editable here.
+
+    fleet-brief bodies --batches FILE [--state DIR] [--psql PATH] [--ids N...]
+    fleet-brief census --batches FILE [--bodies FILE] [--state DIR]
+    fleet-brief briefs --batches FILE [--state DIR] [--friction FILE] [--force]
+    fleet-brief all    --batches FILE [--state DIR] [stage flags…]
+
+Batches file rows are ``name|gripe ids|key files|lane|notes`` — blank
+lines and ``#`` comments ignored; an id field of ``BRIEF-WRITTEN``
+skips the row (the wave's mark that a batch is already briefed).
+``lane`` is ``quick``/``checked``/``remote``.
+
+State root resolves ``--state`` > ``$FLEET_STATE`` >
+``~/.claude/fleet-wave`` (the same env scripts/fleet-wave reads).
+Outputs under it:
+
+    census/bodies.md         every batch's gripe sections, one dump
+    census/batch-<name>.md   that batch's verbatim gripe texts
+    briefs/<name>.md         the builder brief (never overwritten
+                             without --force)
+
+``bodies`` is the only stage that touches prod, and only through
+``scripts/prod-psql --ro`` (the agent_ro role); it dumps
+``### gr<id>: title`` sections — body plus comments — for every id in
+the batches file (or the explicit ``--ids``). ``census`` is offline:
+it slices a bodies file per batch and reports ids the dump missed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent
+PROD_PSQL = SCRIPTS / "prod-psql"
+
+LANES = {
+    "quick": "--quick",
+    "checked": "--checked",
+    "remote": "--remote",
+}
+
+_BODIES_SQL = """\
+\\pset format unaligned
+\\pset tuples_only on
+SELECT '### gr' || r.ref_id || ': ' || replace(r.title, E'\\n', ' ') || E'\\n' ||
+  coalesce(
+    (SELECT string_agg(c.text, E'\\n-- comment: ' ORDER BY c.ord)
+     FROM chunks c
+     WHERE c.ref_id = r.ref_id
+       AND c.chunk_kind IN ('gripe_body', 'gripe_comment')),
+    '') || E'\\n'
+FROM refs r
+WHERE r.ref_id IN ({ids})
+ORDER BY r.ref_id;
+"""
+
+_SECTION_RE = re.compile(r"^### gr(\d+):.*?(?=^### gr|\Z)", re.S | re.M)
+
+
+@dataclass(frozen=True)
+class Batch:
+    """One ``name|ids|files|lane|notes`` row of a batches file."""
+
+    name: str
+    ids: list[int]
+    files: str
+    lane: str
+    notes: str
+
+
+def _parse_batches(path: Path) -> list[Batch]:
+    """The batches file → rows. ``BRIEF-WRITTEN`` in the id field marks
+    a batch already briefed and skips it."""
+    out: list[Batch] = []
+    for lineno, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, ids, files, lane, notes = (line.split("|") + [""] * 5)[:5]
+        if ids.strip() == "BRIEF-WRITTEN":
+            continue
+        try:
+            id_list = [int(i) for i in ids.split()]
+        except ValueError:
+            raise SystemExit(
+                f"fleet-brief: {path}:{lineno}: bad gripe ids {ids!r} — "
+                "want space-separated numbers, or BRIEF-WRITTEN"
+            ) from None
+        if lane.strip() and lane.strip() not in LANES:
+            raise SystemExit(
+                f"fleet-brief: {path}:{lineno}: lane {lane.strip()!r} — "
+                f"want one of {sorted(LANES)}"
+            )
+        out.append(
+            Batch(
+                name=name.strip(),
+                ids=id_list,
+                files=files.strip(),
+                lane=lane.strip() or "checked",
+                notes=notes.strip(),
+            )
+        )
+    return out
+
+
+def _state_dir(args: argparse.Namespace) -> Path:
+    """``--state`` > ``$FLEET_STATE`` > ``~/.claude/fleet-wave`` — the
+    same root fleet-wave's watchers/approvals live under."""
+    state = args.state or os.environ.get("FLEET_STATE", "")
+    return Path(state) if state else Path.home() / ".claude" / "fleet-wave"
+
+
+def _split_bodies(text: str) -> dict[int, str]:
+    """``bodies.md`` → ``{gripe id: its '### gr<id>:' section}``."""
+    return {
+        int(m.group(1)): m.group(0).rstrip() + "\n" for m in _SECTION_RE.finditer(text)
+    }
+
+
+def _write_census(batches: list[Batch], bodies: dict[int, str], out_dir: Path) -> int:
+    """One ``batch-<name>.md`` per batch — verbatim gripe sections in
+    the batches-file order. Returns a count of ids the dump missed."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    missing = 0
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    for b in batches:
+        parts = [f"# Gripe texts for batch {b.name} (verbatim from prod, {today})\n"]
+        for i in b.ids:
+            if i in bodies:
+                parts.append(bodies[i])
+            else:
+                missing += 1
+                parts.append(f"### gr{i}: MISSING FROM bodies.md\n")
+        (out_dir / f"batch-{b.name}.md").write_text(
+            "\n".join(p.rstrip("\n") for p in parts) + "\n", encoding="utf-8"
+        )
+    return missing
+
+
+def _brief(b: Batch, state: Path, friction: str, goal: str | None) -> str:
+    """The builder brief for one batch — the boilerplate every wave's
+    briefs share, with the batch's ids/files/lane/notes filled. Edit
+    the rules here, not in generated files (gr515822)."""
+    ids = ", ".join(f"gr{i}" for i in b.ids)
+    census = state / "census" / f"batch-{b.name}.md"
+    lane = LANES.get(b.lane, f"--{b.lane}")
+    goal_line = goal if goal is not None else f"fix {ids} per the gripe texts."
+    lines = [
+        f"Batch: {b.name}. Tier R: commit only; BUILDER lands it {lane}. "
+        "Work in your own tree from origin/main; do not touch the main checkout.",
+        "",
+        f"Gripe texts, verbatim with comments: {census}. Read it first. "
+        "You can't query prod, so that file is your source.",
+        "",
+        f"Goal: {goal_line}",
+        f"Key files (starting points, not limits): {b.files or 'per gripe'}",
+        f"Notes: {b.notes or 'none'}",
+        "",
+        "First, check every gripe id for an existing fix: "
+        'git log origin/main --oneline -E --grep="gr<id>" '
+        "(and a git log -S on the key symbol).",
+        "Per gripe: fix it, or report it as already fixed on origin/main "
+        "(cite the sha or file:line), or skip it with a one-line reason "
+        "(for example, it needs a design call). Do not stretch scope "
+        "beyond what each gripe asks. Group the commits sensibly: one "
+        "per gripe, or one per tight cluster. Put each fixed gripe's id "
+        "in its commit subject or body as gr<id>.",
+        "Tests: add or extend tests for code changes; docs-only changes "
+        "need none. Run scripts/test on the touched test files, plus "
+        "ruff check and ruff format --check.",
+        "Commit each piece as soon as it is green. Use scripts/test, "
+        "never bare pytest.",
+        "Finish message: head sha, a per-gripe table (id, "
+        "fixed/already-fixed/skipped, sha, one line), test counts, "
+        "then FRICTION.",
+        "",
+        "Context ceiling: when your context passes 70%, stop feature "
+        "work. Commit what you have (use a real type(scope): subject), "
+        f"write {state}/handoff-{b.name}.md listing shas, what is done "
+        "and tested, what remains, and failing tests with causes, then "
+        "post your finish message and stop.",
+    ]
+    if friction:
+        lines += ["", friction]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_bodies(args: argparse.Namespace) -> int:
+    """Dump the gripe sections from prod — ``prod-psql --ro`` only —
+    into ``<state>/census/bodies.md``."""
+    state = _state_dir(args)
+    if args.ids:
+        ids = args.ids
+    else:
+        ids = sorted({i for b in _parse_batches(Path(args.batches)) for i in b.ids})
+    if not ids:
+        raise SystemExit("fleet-brief bodies: no gripe ids (empty batches file)")
+    sql = _BODIES_SQL.format(ids=", ".join(str(i) for i in ids))
+    res = subprocess.run(
+        [str(args.psql), "--ro"],
+        input=sql,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if res.returncode:
+        raise SystemExit(
+            f"fleet-brief: prod-psql --ro failed ({res.returncode}): "
+            f"{res.stderr.strip()[:500]}"
+        )
+    out = state / "census" / "bodies.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(res.stdout, encoding="utf-8")
+    found = len(_split_bodies(res.stdout))
+    print(f"wrote {out} ({found}/{len(ids)} sections)")
+    return 0
+
+
+def cmd_census(args: argparse.Namespace) -> int:
+    """Slice a bodies file into ``<state>/census/batch-<name>.md`` per
+    batch; ids the dump missed are reported and marked MISSING in the
+    batch file."""
+    state = _state_dir(args)
+    batches = _parse_batches(Path(args.batches))
+    bodies_path = Path(args.bodies) if args.bodies else state / "census" / "bodies.md"
+    bodies = _split_bodies(bodies_path.read_text(encoding="utf-8"))
+    missing = _write_census(batches, bodies, state / "census")
+    for b in batches:
+        absent = [i for i in b.ids if i not in bodies]
+        print(
+            f"batch-{b.name}: {len(b.ids) - len(absent)} sections"
+            + (f", missing {absent}" if absent else "")
+        )
+    return 1 if missing else 0
+
+
+def cmd_briefs(args: argparse.Namespace) -> int:
+    """Emit ``<state>/briefs/<name>.md`` per batch — skips a brief that
+    already exists unless ``--force``."""
+    state = _state_dir(args)
+    batches = _parse_batches(Path(args.batches))
+    friction = ""
+    fr = args.friction or (state / "briefs" / "_friction.md")
+    if Path(fr).is_file():
+        friction = Path(fr).read_text(encoding="utf-8").strip()
+    goal = args.goal
+    if goal is not None and goal.startswith("@"):
+        goal = Path(goal[1:]).read_text(encoding="utf-8").strip()
+    out_dir = state / "briefs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for b in batches:
+        out = out_dir / f"{b.name}.md"
+        if out.exists() and not args.force:
+            print(f"skip {out} (exists — --force to overwrite)")
+            continue
+        out.write_text(_brief(b, state, friction, goal), encoding="utf-8")
+        print(f"wrote {out}")
+    return 0
+
+
+def cmd_all(args: argparse.Namespace) -> int:
+    """``bodies`` + ``census`` + ``briefs`` in one pass."""
+    cmd_bodies(args)
+    rc = cmd_census(args)
+    cmd_briefs(args)
+    return rc
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="fleet-brief", description=__doc__)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    for name in ("bodies", "census", "briefs", "all"):
+        s = sub.add_parser(name)
+        s.add_argument(
+            "--batches", required=True, help="name|ids|files|lane|notes file"
+        )
+        s.add_argument(
+            "--state", help="state root (default $FLEET_STATE or ~/.claude/fleet-wave)"
+        )
+        if name in ("bodies", "all"):
+            s.add_argument(
+                "--psql", type=Path, default=PROD_PSQL, help="prod-psql path"
+            )
+            s.add_argument("--ids", type=int, nargs="*", help="explicit gripe ids")
+        if name in ("census", "all"):
+            s.add_argument(
+                "--bodies", help="bodies.md (default <state>/census/bodies.md)"
+            )
+        if name in ("briefs", "all"):
+            s.add_argument("--friction", help="friction appendix file")
+            s.add_argument("--goal", help="brief Goal: line (@FILE reads a file)")
+            s.add_argument(
+                "--force", action="store_true", help="overwrite existing briefs"
+            )
+        s.set_defaults(func=globals()[f"cmd_{name}"])
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,14 +1,16 @@
-"""``get``/``tag``/``link`` with ``id=[...]`` on gripe, alert, todo, memory,
-finding (get/tag only there — link stays the single-id Taproot door).
+"""``get``/``tag``/``link``/``edit`` with ``id=[...]`` on gripe, alert,
+todo, memory, finding (get/tag only there — link stays the single-id
+Taproot door, and alert/job have no ``edit``).
 
 Batch ``get`` is summary-shaped by default (one block per id, order
 kept, missing ids are a one-line block); a ``view=`` maps the kind's own
 single-id view over the batch. Batch ``tag`` is one transaction (one bad
 id rolls every id back); batch ``link`` fans one target/rel across every
-source id, also in one transaction. All share the ``_coerce_ids``
-normaliser and its cap; every other verb and every other kind still
-refuses a list with a ``BadInput`` naming the batch form, never an
-``Internal``.
+source id, also in one transaction; batch ``edit`` applies the same edit
+to every id, again all-or-nothing (gr514482). All share the
+``_coerce_ids`` normaliser and its cap; every other verb and every other
+kind still refuses a list with a ``BadInput`` naming the batch form,
+never an ``Internal``.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from precis.handlers.anki import AnkiHandler
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.job import JobHandler
 from precis.handlers.memory import MemoryHandler
+from precis.handlers.quest import QuestHandler
 from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
@@ -485,6 +488,88 @@ def test_link_batch_through_dispatch(
     assert "linked 2 memory" in body and "[error" not in body
     for rid in ids:
         assert _out_links(handler.store, rid) == [(target, "related-to")]
+
+
+# ── edit ───────────────────────────────────────────────────────────
+
+
+def test_edit_batch_gripe_retitles_all(hub: Hub) -> None:
+    # gr514482: edit took id=[...] as a refusal while get/tag/link
+    # already batched — now the same one-transaction shape.
+    handler, ids = _gripes(hub, 3)
+    body = handler.edit(id=_batch(*ids), title="Area: one retitle").body
+    assert body.startswith("edited 3 gripe in one transaction")
+    lines = body.splitlines()[1:]
+    assert [ln.split(":")[0] for ln in lines] == [f"gr{i}" for i in ids]
+    for rid in ids:
+        ref = handler.store.get_ref(kind="gripe", id=rid)
+        assert ref is not None and ref.title == "Area: one retitle"
+
+
+def test_edit_batch_one_bad_id_rolls_back_all(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 2)
+    missing = max(ids) + 100_000
+    with pytest.raises(NotFound, match="rolled back, nothing applied"):
+        handler.edit(id=_batch(*ids, missing), title="Area: retitle")
+    for rid in ids:
+        ref = handler.store.get_ref(kind="gripe", id=rid)
+        assert ref is not None and "batch gripe" in (ref.title or "")
+
+
+def test_edit_batch_memory_replaces_bodies(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    ids = [id_of(handler.put(text=f"old body {i}").body) for i in range(2)]
+    body = handler.edit(id=_batch(*ids), mode="replace", text="the new body").body
+    assert body.startswith("edited 2 memory in one transaction")
+    for rid in ids:
+        assert "the new body" in handler.get(id=rid).body
+
+
+def test_edit_batch_todo_retitles_all(hub: Hub) -> None:
+    handler = TodoHandler(hub=hub)
+    ids = [rid for i in range(2) if (rid := handler.put(text=f"batch todo {i}").ref_id)]
+    body = handler.edit(id=_batch(*ids), mode="replace", text="one new title").body
+    assert body.startswith("edited 2 todo in one transaction")
+    for rid in ids:
+        ref = handler.store.get_ref(kind="todo", id=rid)
+        assert ref is not None and ref.title == "one new title"
+
+
+def test_edit_batch_finding_rewrites_bodies(store: Store, hub: Hub) -> None:
+    handler, ids = _findings(store, hub, 2)
+    body = handler.edit(
+        id=_batch(*ids), mode="replace", text="the corrected claim"
+    ).body
+    assert body.startswith("edited 2 finding in one transaction")
+    for rid in ids:
+        assert "the corrected claim" in handler.get(id=rid).body
+
+
+def test_edit_batch_refusals(hub: Hub) -> None:
+    handler, _ids = _gripes(hub, 1)
+    with pytest.raises(BadInput, match="empty"):
+        handler.edit(id=[], title="x")
+    with pytest.raises(BadInput, match=f"at most {BATCH_ID_CAP}"):
+        handler.edit(id=_batch(*range(1, BATCH_ID_CAP + 2)), title="x")
+    # batch_ids doesn't grant the verb — alert has no edit at all.
+    with pytest.raises(Unsupported, match="does not support edit"):
+        AlertHandler(hub=hub).edit(id=_batch(1, 2))
+    # A non-batch numeric kind with edit refuses the list cleanly.
+    list_id: Any = _batch(
+        1, 2
+    )  # quest's edit signature has no list arm — that's the point
+    with pytest.raises(BadInput, match="got list"):
+        QuestHandler(hub=hub).edit(id=list_id, text="x")
+
+
+def test_edit_batch_through_dispatch(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    _handler, ids = _gripes(hub, 2)
+    body = runtime_with_store.dispatch(
+        "edit", {"kind": "gripe", "id": ids, "title": "Area: via dispatch"}
+    )
+    assert "edited 2 gripe" in body and "[error" not in body
 
 
 # ── store.atomic ───────────────────────────────────────────────────

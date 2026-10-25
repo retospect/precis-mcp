@@ -20,10 +20,14 @@
  *     cluster (re-cluster its ord range, /toc?lo=&hi=). A breadcrumb +
  *     ↑ climb back out — papers have no heading tree, so hierarchy is
  *     recursive keyword clustering.
- *   - raw: the verbatim chunk-text listing (/rawchunks), no search box —
- *     for a chunks-only doc (no PDF, e.g. a stub-free ingest with nothing
+ *   - raw: the verbatim chunk-text listing (/rawchunks) — for a
+ *     chunks-only doc (no PDF, e.g. a stub-free ingest with nothing
  *     to render on the right) this is the only in-UI way to read the
  *     source text. Click = jump + highlight, same as the other modes.
+ *
+ * All four modes share the one search box (gr517287): semantic/keyword
+ * hit /search, while raw/toc filter their already-loaded lists
+ * client-side (rawRows/tocRows) — no server round-trip.
  *
  * Defined as a plain global so Alpine's `x-data="paperDoc(...)"` can
  * call it (mirrors the classic /drafts reader's draftDoc, since retired).
@@ -314,15 +318,18 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab, inPane) {
     // ── navigate: search + rapid-nav list + toc ─────────────────────
     setMode(m) {
       this.mode = m;
-      if (m === 'toc') { if (!this.tocLoaded) this.loadToc(); return; }
-      if (m === 'raw') { if (!this.rawLoaded) this.loadRaw(); return; }
-      if (!this.chunksLoaded) this.loadChunks();
+      if (m === 'toc') { if (!this.tocLoaded) this.loadToc(); }
+      else if (m === 'raw') { if (!this.rawLoaded) this.loadRaw(); }
+      else if (!this.chunksLoaded) this.loadChunks();
       this.$nextTick(() => this.$refs.qbox && this.$refs.qbox.focus());
       if (this.q.trim()) this.runSearch();
     },
     // Clearing the box drops back to the rapid-nav gloss list.
     onQueryInput() {
-      if (!this.q.trim()) { this.searched = false; this.results = []; this.activeIdx = -1; }
+      if (!this.q.trim()) {
+        this.searched = false; this.results = [];
+        this.activeIdx = -1; this.activeRawIdx = -1; this.activeSeg = -1;
+      }
     },
     async loadChunks() {
       try {
@@ -353,7 +360,22 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab, inPane) {
     async runSearch() {
       const q = this.q.trim();
       this.activeIdx = -1;
+      this.activeRawIdx = -1;
+      this.activeSeg = -1;
       if (!q) { this.results = []; this.searched = false; return; }
+      if (this.mode === 'raw' || this.mode === 'toc') {
+        // Client-side filter (gr517287): rawChunks/toc already hold the
+        // whole list, so the query just narrows the rendered rows —
+        // jump the PDF to the first match like a semantic top hit.
+        if (this.mode === 'raw' && !this.rawLoaded) await this.loadRaw();
+        if (this.mode === 'toc' && !this.tocLoaded) await this.loadToc();
+        this.searched = true;
+        const rows = this.mode === 'raw' ? this.rawRows() : this.tocRows();
+        if (!rows.length) return;
+        if (this.mode === 'raw') this.gotoRaw(rows[0], 0);
+        else this.gotoSeg(rows[0], 0);
+        return;
+      }
       this.loading = true;
       try {
         const url = `/papers/${this.paperId}/search?q=${encodeURIComponent(q)}&mode=${this.mode}`;
@@ -371,6 +393,25 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab, inPane) {
     // search, else the whole-paper gloss list for rapid nav.
     navRows() {
       return this.searched ? this.results : this.chunks;
+    },
+    // The raw/toc lists after a query: a case-insensitive substring
+    // filter over fields the row already shows (raw: chunk text +
+    // chunk_kind; toc: handle + keywords), else the full list. The
+    // template's x-for reads these so a non-match hides the row rather
+    // than just not jumping.
+    rawRows() {
+      if (!this.searched) return this.rawChunks;
+      const q = this.q.trim().toLowerCase();
+      return this.rawChunks.filter((r) =>
+        (r.text || '').toLowerCase().includes(q)
+        || (r.chunk_kind || '').toLowerCase().includes(q));
+    },
+    tocRows() {
+      if (!this.searched) return this.toc;
+      const q = this.q.trim().toLowerCase();
+      return this.toc.filter((s) =>
+        (s.handle || '').toLowerCase().includes(q)
+        || (s.keywords || []).some((k) => (k || '').toLowerCase().includes(q)));
     },
     // The one line each row shows: the summary in semantic mode, the
     // keyword string in keyword mode, each falling back to the other

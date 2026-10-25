@@ -964,7 +964,7 @@ class MemoryHandler(NumericRefHandler):
     def edit(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         mode: str = "replace",
         text: str | None = None,
         title: str | None = None,
@@ -1044,7 +1044,30 @@ class MemoryHandler(NumericRefHandler):
         Distinct from ``supersede`` (the consolidate-into-new verb): edit
         keeps the same id and every inbound link — the "polish the wording"
         affordance.
+
+        ``id=[...]`` (``batch_ids``) applies the same edit to every id in
+        one transaction — :meth:`_edit_batch` (gr514482).
         """
+        if isinstance(id, list):
+            return self._edit_batch(
+                id,
+                mode=mode,
+                text=text,
+                title=title,
+                rule=rule,
+                warrant=warrant,
+                meta=meta,
+                find=find,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                ops=ops,
+                dry_run=dry_run,
+                reason=reason,
+                **_kw,
+            )
         if id is None:
             raise BadInput(
                 "edit(kind='memory') requires id=",

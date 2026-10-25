@@ -293,6 +293,18 @@ def _bounds_cell(carts: np.ndarray) -> Any:
     return Cell(lat, (False, False, False))
 
 
+def _mint_labels(elements: list[str]) -> list[str]:
+    """The ``a<El><n>`` atom labels minted in input order — factored out
+    of :func:`_scene_from_parts` so a Net census can speak in the
+    exported label space (gr514059)."""
+    counters: dict[str, int] = {}
+    labels: list[str] = []
+    for el in elements:
+        counters[el] = counters.get(el, 0) + 1
+        labels.append(f"a{el}{counters[el]}")
+    return labels
+
+
 def _scene_from_parts(
     elements: list[str],
     carts: np.ndarray,
@@ -308,17 +320,11 @@ def _scene_from_parts(
     cell = cell if cell is not None else _bounds_cell(carts)
     inv = np.linalg.inv(np.asarray(cell.lattice, dtype=float))
     fracs = np.asarray(carts, dtype=float) @ inv if len(carts) else np.zeros((0, 3))
-    atoms: dict[str, Atom] = {}
-    counters: dict[str, int] = {}
-    for i, el in enumerate(elements):
-        counters[el] = counters.get(el, 0) + 1
-        atoms[f"a{el}{counters[el]}"] = Atom(
-            label=f"a{el}{counters[el]}",
-            element=el,
-            frac=fracs[i],
-            maker=maker,
-        )
-    labels = list(atoms)
+    labels = _mint_labels(list(elements))
+    atoms: dict[str, Atom] = {
+        la: Atom(label=la, element=el, frac=fracs[i], maker=maker)
+        for i, (la, el) in enumerate(zip(labels, elements))
+    }
     return Scene(
         cell=cell,
         atoms=atoms,
@@ -360,6 +366,74 @@ def _is_net(obj: Any) -> bool:
     return hasattr(obj, "atoms") and hasattr(obj, "seed3")
 
 
+def _net_census(net: Any, ordered: list[Any], elements: list[str]) -> dict[str, Any]:
+    """A hexfold ``Net``'s structural census in the exported ``a<El><n>``
+    label space (gr514059): junction/seam/port atom sets and a
+    degree/valence summary — the numbers a script otherwise recomputes
+    by hand joining the extxyz labels to bonds.json. Valence semantics
+    mirror ``hexfold.check._findings_from_net``: only lattice elements
+    carry a lattice valence (termination atoms like H are skipped),
+    ``over`` is degree > 4 for sp3 else > 3, ``open`` is degree < 3 off
+    a rim, ``stubs`` is degree ≤ 1 (rim or not)."""
+    labels = _mint_labels(list(elements))
+    la = {a.ord: labels[k] for k, a in enumerate(ordered)}
+    deg = {a.ord: 0 for a in ordered}
+    for i, j, _o in net.bonds:
+        deg[i] += 1
+        deg[j] += 1
+    rim_ords = (
+        {o for _, p in net.ports for o in p.atoms}
+        | {o for rim, _b, _be in net.term_rims for o in rim}
+        | {o for rim, _b, _be in net.seam_rims for o in rim}
+    )
+    lat_el = set(getattr(net.lattice, "elements", ()) or ())
+    hist: dict[str, int] = {}
+    stubs: list[str] = []
+    open_: list[str] = []
+    over: list[str] = []
+    for a in ordered:
+        if a.element not in lat_el:
+            continue
+        d = deg[a.ord]
+        hist[str(d)] = hist.get(str(d), 0) + 1
+        if d > (4 if a.hyb == "sp3" else 3):
+            over.append(la[a.ord])
+        elif d <= 1:
+            stubs.append(la[a.ord])
+        if d < 3 and a.ord not in rim_ords:
+            open_.append(la[a.ord])
+    return {
+        "atoms": len(ordered),
+        "bonds": len(net.bonds),
+        "junctions": [
+            {
+                "name": j.name,
+                "atoms": [la[o] for o in j.atoms],
+                "fused": [[la[i_], la[j_]] for i_, j_ in j.fused],
+                "faces": [[la[o] for o in f] for f in j.faces],
+            }
+            for j in net.junctions
+        ],
+        "seams": [
+            {
+                "name": s.name,
+                "k": s.k,
+                "rims": list(s.rims),
+                "atoms": [la[o] for o in s.atoms],
+            }
+            for s in net.seams
+        ],
+        "ports": {name: [la[o] for o in p.atoms] for name, p in net.ports},
+        "rim": [la[o] for o in sorted(rim_ords)],
+        "valence": {
+            "histogram": hist,
+            "stubs": stubs,
+            "open": open_,
+            "over": over,
+        },
+    }
+
+
 def _caller_stacklevel() -> int:
     """The ``warnings.warn`` level that lands on the caller outside the
     wrapper chain — ``translate``/``mirror``/``tile``/``place`` reach
@@ -393,7 +467,9 @@ def geom(
     A ``Net`` exports ``net.seed3`` — the *unrelaxed* seed (gr514053).
     ``coords`` overrides it with an ``(n, 3)`` array in ``Net.atoms``
     ordinal order, e.g. ``pga.geom(net, coords=stick(net))``; ``meta``
-    records ``coords="relaxed"`` or ``"seed"`` either way."""
+    records ``coords="relaxed"`` or ``"seed"`` either way, and carries
+    ``census`` — the junction/seam/port/valence summary ``out.block``
+    stamps on the manifest row (gr514059)."""
     ports_d: dict[str, Port] = {}
     for name, p in (ports or {}).items():
         if isinstance(p, Port):
@@ -426,12 +502,14 @@ def geom(
     xyz = getattr(block, "coords", None)
     bonds = getattr(block, "bonds", None)
     coord_kind = "seed"
+    census: dict[str, Any] | None = None
     if elements is None:
         atoms = getattr(obj, "atoms", None)
         if atoms is not None and hasattr(obj, "seed3"):  # a Net
             ordered = sorted(atoms, key=lambda a: a.ord)
             elements = [a.element for a in ordered]
             bonds = list(getattr(obj, "bonds", ()))
+            census = _net_census(obj, ordered, elements)
             if coords is not None:
                 try:
                     xyz = np.asarray(coords, dtype=np.float64)
@@ -475,6 +553,8 @@ def geom(
             [(int(b_[0]), int(b_[1]), float(b_[2])) for b_ in (bonds or ())],
         )
         m = {"units": "A", "coords": coord_kind, **dict(meta or {})}
+        if census is not None:
+            m["census"] = census
         return Geom(scene=scene, ports=ports_d, meta=m)
     raise BadInput(
         f"pga: unrecognised geometry {type(obj).__name__} — want a "

@@ -13,7 +13,8 @@ Subclass contract:
 
     Optional overrides
         corpus_slug: ClassVar[str]                     — default 'default'
-        batch_ids: ClassVar[bool]                      — get/tag/link take id=[...] (default False)
+        batch_ids: ClassVar[bool]                      — get/tag/link take id=[...], edit too where the
+                                                         kind has one (default False)
         default_tags_on_create: ClassVar[tuple[str,…]] — applied to every put-create
         sense:                                         — singular noun for messages
 
@@ -3231,7 +3232,8 @@ class NumericRefHandler(Handler):
                 f"got {type(id).__name__}",
                 next=(
                     "pass one call per ref here; id=[...] is accepted only by "
-                    f"get, tag and link on {cls.kind}"
+                    f"get, tag, link{' and edit' if cls.spec.supports_edit else ''} "
+                    f"on {cls.kind}"
                     if cls.batch_ids
                     else "pass one call per ref (id= is not a list)"
                 ),
@@ -3507,6 +3509,36 @@ class NumericRefHandler(Handler):
                     raise
                 lines.append(f"{handle}: {resp.body.splitlines()[0]}")
         head = f"tagged {len(ref_ids)} {self._sense()} in one transaction"
+        return Response(body=head + "\n" + "\n".join(lines))
+
+    def _edit_batch(self, ids: list[Any], **kw: Any) -> Response:
+        """``edit(id=[...])``: the same edit on every id, all or nothing.
+
+        The batch door the other verbs already had (gr514482 — list ids
+        used to refuse here while get/tag/link batched, and paper had to
+        grow its own one-off batch path). Runs the kind's full per-id
+        ``edit`` — every guard, refusal and ``dry_run`` preview included —
+        once per id inside ``store.atomic()``, so the per-id writes that
+        open their own connection join one transaction and the first
+        per-id error rolls every id back. One outcome line per id, like
+        :meth:`_tag_batch`.
+        """
+        ref_ids = self._coerce_ids(ids)
+        lines: list[str] = []
+        with self.store.atomic():
+            for rid in ref_ids:
+                handle = handle_registry.try_format(self.kind, rid) or str(rid)
+                try:
+                    resp = self.edit(id=rid, **kw)
+                except PrecisError as exc:
+                    exc.cause = (
+                        f"{handle}: {exc.cause} — batch of {len(ref_ids)} "
+                        "rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+                lines.append(f"{handle}: {resp.body.splitlines()[0]}")
+        head = f"edited {len(ref_ids)} {self._sense()} in one transaction"
         return Response(body=head + "\n" + "\n".join(lines))
 
     # ── rendering hooks (subclasses may override) ─────────────────

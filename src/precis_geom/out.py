@@ -99,10 +99,33 @@ def _geom_findings(g: Any) -> list[str]:
     return seen
 
 
-def _geom_parts(obj: Any) -> tuple[Any, list[dict[str, Any]] | None, list[str]]:
+def _census_labels(census: dict[str, Any]) -> set[str]:
+    """Every atom label a Net census references — the set that must
+    survive ``flatten`` for the census to keep naming real atoms."""
+    labels: set[str] = set()
+    for j in census.get("junctions", ()):
+        labels.update(j.get("atoms", ()))
+        for pair in j.get("fused", ()):
+            labels.update(pair)
+        for face in j.get("faces", ()):
+            labels.update(face)
+    for s in census.get("seams", ()):
+        labels.update(s.get("atoms", ()))
+    for atoms in census.get("ports", {}).values():
+        labels.update(atoms)
+    labels.update(census.get("rim", ()))
+    v = census.get("valence", {})
+    for key in ("stubs", "open", "over"):
+        labels.update(v.get(key, ()))
+    return labels
+
+
+def _geom_parts(
+    obj: Any,
+) -> tuple[Any, list[dict[str, Any]] | None, list[str], dict[str, Any] | None]:
     """Unwrap a :class:`precis_geom.assembly.Geom` → ``(geometry,
-    manifest ports, findings)``; anything else passes through with
-    ``None`` ports and no findings.
+    manifest ports, findings, census)``; anything else passes through
+    with ``None`` ports, no findings and ``None`` census.
 
     A pga object flattens to its merged geometry (the ``out`` boundary
     writes bytes, not the object graph); its declared ports become
@@ -110,11 +133,18 @@ def _geom_parts(obj: Any) -> tuple[Any, list[dict[str, Any]] | None, list[str]]:
     flattened scene (kept by flatten while unique), ``direction`` is
     the block-frame direction vector. Its findings (``chirality.flipped``
     and the like) ride the block's manifest row so a mirrored hand is
-    visible in the run record, not only on ``geom.findings`` (gr514205)."""
+    visible in the run record, not only on ``geom.findings`` (gr514205).
+    A hexfold Net's ``meta['census']`` (gr514059) rides the row too —
+    but only while it still describes the flattened scene: ``meta``
+    propagates through ``tile``/``transform``, so a packed or fused
+    tile would otherwise stamp one net's census on a block holding
+    n copies' atoms. The census is kept iff its atom count matches and
+    every label it names survived the flatten re-mint; otherwise it is
+    dropped rather than stamped stale."""
     from precis_geom import assembly as _pga
 
     if not isinstance(obj, _pga.Geom):
-        return obj, None, []
+        return obj, None, [], None
     flat = obj.flatten()
     ports: list[dict[str, Any]] = []
     flat_labels = set(getattr(flat, "atoms", {}) or {})
@@ -132,7 +162,13 @@ def _geom_parts(obj: Any) -> tuple[Any, list[dict[str, Any]] | None, list[str]]:
         if p.direction is not None:
             row["direction"] = [float(v) for v in p.direction]
         ports.append(row)
-    return flat, ports or None, _geom_findings(obj)
+    census = obj.meta.get("census")
+    if census is not None and (
+        census.get("atoms") != len(flat_labels)
+        or not _census_labels(census) <= flat_labels
+    ):
+        census = None
+    return flat, ports or None, _geom_findings(obj), census
 
 
 def _array_fields(spec: dict[str, Any]) -> dict[str, Any]:
@@ -395,7 +431,10 @@ class Run:
         the block's manufacturing mode, named measures and load
         declarations (gr514245) — and a Geom's findings
         (``chirality.flipped`` &c.) ride the row as ``findings``
-        (gr514205). ``template=True`` marks a library part:
+        (gr514205). A hexfold Net's structural census rides as
+        ``census`` — junction/seam/port atom sets plus the
+        degree/valence summary, run-record only (gr514059).
+        ``template=True`` marks a library part:
         instanced by :meth:`instance`, never itself placed in the
         assembly (gr514241). ``frame`` defaults to this call's own
         trace-frame id."""
@@ -403,7 +442,7 @@ class Run:
         if n in self._names:
             raise ValueError(f"out.block: duplicate block name {n!r}")
         self._vet_not_board("block")
-        geom, gports, gfindings = _geom_parts(geom)
+        geom, gports, gfindings, gcensus = _geom_parts(geom)
         if ports is None:
             ports = gports
         kind = _block_kind(geom, n, scale)
@@ -424,6 +463,8 @@ class Run:
             entry["ports"] = [dict(p) for p in ports]
         if gfindings:
             entry["findings"] = gfindings
+        if gcensus is not None:
+            entry["census"] = gcensus
         if relax is not None:
             entry["relax"] = dict(relax)
         if desc is not None:

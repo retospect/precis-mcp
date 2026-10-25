@@ -952,7 +952,7 @@ class TodoHandler(NumericRefHandler):
     def edit(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         mode: str = "replace",
         text: str | None = None,
         body: str | None = None,
@@ -1008,7 +1008,26 @@ class TodoHandler(NumericRefHandler):
         ``dry_run=True`` previews the replacement without writing — the
         tool-level contract every editable kind must honour (a silent
         write on ``dry_run`` is data loss).
+
+        ``id=[...]`` (``batch_ids``) applies the same edit to every id in
+        one transaction — :meth:`_edit_batch` (gr514482).
         """
+        if isinstance(id, list):
+            return self._edit_batch(
+                id,
+                mode=mode,
+                text=text,
+                body=body,
+                meta=meta,
+                dry_run=dry_run,
+                find=find,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                **_kw,
+            )
         text, body = mask_secrets(text), mask_secrets(body)
         if id is None:
             raise BadInput(

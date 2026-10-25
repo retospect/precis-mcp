@@ -1349,7 +1349,7 @@ class GripeHandler(NumericRefHandler):
     def edit(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         title: str | None = None,
         text: str | None = None,
         body: str | None = None,
@@ -1359,7 +1359,13 @@ class GripeHandler(NumericRefHandler):
         """Rewrite a gripe's title (``refs.title``) only. The body and the
         comment timeline are append-only: add context with
         ``put(id=N, text=...)``. ``text=``/``body=`` are declared only so
-        they are refused here, with that recovery named."""
+        they are refused here, with that recovery named. ``id=[...]``
+        (``batch_ids``) applies the same retitle to every id in one
+        transaction — :meth:`_edit_batch` (gr514482)."""
+        if isinstance(id, list):
+            return self._edit_batch(
+                id, title=title, text=text, body=body, dry_run=dry_run, **kw
+            )
         # The edit verb injects ``verdict='approved'`` on every call
         # (``_WRAPPER_DEFAULTED_KWARGS``); drop that default so the
         # refusal below doesn't fire on a kwarg the caller never sent

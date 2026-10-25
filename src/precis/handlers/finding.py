@@ -1619,7 +1619,7 @@ class FindingHandler(NumericRefHandler):
     def edit(
         self,
         *,
-        id: int | str | None = None,
+        id: int | str | list[str | int] | None = None,
         mode: str | None = None,
         find: str | None = None,
         text: str | None = None,
@@ -1674,7 +1674,33 @@ class FindingHandler(NumericRefHandler):
         ``dry_run``) runs the hub_refine pass over that one hub synchronously
         (:func:`precis.workers.hub_refine.refine_hub_now`) and reports the
         pass counters; the attempt lease and regrounding gates apply.
+
+        ``id=[...]`` (``batch_ids``) applies the same edit to every id in
+        one transaction — :meth:`_edit_batch` (gr514482).
         """
+        if isinstance(id, list):
+            return self._edit_batch(
+                id,
+                mode=mode,
+                find=find,
+                text=text,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                pick_candidate=pick_candidate,
+                title=title,
+                unacquirable_note=unacquirable_note,
+                unacquirable_mode=unacquirable_mode,
+                testable_by=testable_by,
+                motivation=motivation,
+                reason=reason,
+                meta=meta,
+                dry_run=dry_run,
+                refine=refine,
+                **_kw,
+            )
         if refine is not None:
             if any(
                 v is not None

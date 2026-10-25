@@ -1594,9 +1594,10 @@ def edit(
     # ``kind`` and ``id`` are functionally required; see ``search`` for
     # the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    # paper's args={'clear_stamp': ...} door accepts id=[...] — a worker
-    # re-arm for a whole cohort in one call (gr514347). Every other edit
-    # field stays one-ref-per-call.
+    # id=[...] batches the one edit across refs in a single transaction:
+    # paper's args={'clear_stamp': ...} cohort re-arm (gr514347) and the
+    # numeric-ref kinds with batch_ids + edit (memory/todo/gripe/finding,
+    # gr514482). Every other kind stays one-ref-per-call.
     id: str | int | list[str | int] | None = None,
     mode: str = "find-replace",
     # str is the documented contract every handler parses against; dict/
