@@ -158,6 +158,28 @@ and the next `git commit` silently takes part of the diff (gr514868) — or
 a tagged `git stash push -u -m "<tag>"` restored with `git stash apply`,
 never `pop`.
 
+Hand-run sync has three wrong-base traps:
+
+- **Sync fetches are `git fetch origin`, never `git fetch origin
+  main`.** The single-branch form fills `FETCH_HEAD` and updates
+  `origin/main` only when `remote.origin.fetch` maps the branch (a
+  stock clone's does); under a narrower refspec the tracking ref
+  silently stays stale and the next `git rebase origin/main` works off
+  the old tip. `git fetch origin` refreshes every tracking ref and is
+  the habit (gr515809).
+- **Part of the branch already landed squashed? Don't replay it.** A
+  plain `git rebase origin/main` replays the landed commits too, and
+  they conflict against their own squash. Replay only the unlanded
+  tail: `git rebase --onto origin/main <sha of the last landed
+  commit>`. When the branch's content all landed, skip the rebase and
+  `git reset --hard origin/main` (gr515474).
+- **A fresh tree taking over an existing branch resets, never
+  rebases.** `git rebase <branch>` from a tree cut at `origin/main`
+  replays every upstream commit the branch is missing — 46 commits and
+  a conflict chain in the gr515502 case, silently wrong if no conflict
+  had surfaced. `git reset --hard <branch>` puts the tree on the tip;
+  a fresh tree has no commits of its own to replay.
+
 `scripts/ship` and `scripts/rebase` are quiet by default (gr497896): the
 full transcript goes to a `/tmp` log whose path is printed, and the terminal
 sees only the ✖ lines, a conflict's file list, and the final
@@ -369,7 +391,10 @@ never in a message: `scripts/board post <window> <one line>` appends a
 stamped line to the shared gitignored `.claude/fleet/board.log` in the
 main checkout; the coordinator reads it each sweep with
 `scripts/board read [--since <ts>]`. SendMessage is only for things that
-need action now.
+need action now. `scripts/board` is a repo script, so a tree stacked on
+an old base can predate it — run the main checkout's copy by absolute
+path, or rebase the tree first (gr515501). Post lines over 120 chars are
+refused: keep the line short, put detail in a handoff or gripe.
 
 When a coordinator has a peer round open (`scripts/round status`), end your
 land by marking it from your own tree — `scripts/round in <sha>`,

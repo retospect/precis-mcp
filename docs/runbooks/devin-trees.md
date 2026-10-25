@@ -32,6 +32,18 @@ same bearer header as `~/.claude.json`. That server is PROD. The first call to
 each tool asks for permission: allow `get`/`search`/`more` for read-only work.
 Never choose "all tools" unless the task writes to precis.
 
+## Non-tty shell: prefix editor-spawning git with `GIT_EDITOR=true`
+
+Devin's shell is not a tty. A git command that opens an editor —
+`git rebase --continue` after a resolved conflict, `git commit
+--amend`, a merge — spawns vim on non-tty stdin and hangs, and
+`write_to_process` cannot send `:wq` to it ("Failed to write to
+shell"), so a hung editor means killing the shell (gr515810, gr515813).
+Prefix the command with `GIT_EDITOR=true` to accept the recorded
+message non-interactively — `GIT_EDITOR=true git rebase --continue` is
+the standard conflict-resolution step (the rebase recipe in
+`docs/conventions/shipping.md` §Sync, gr514728).
+
 ## Models
 
 `devin models list` shows the ids. Every SWE-2 tier (`swe-2-medium`,

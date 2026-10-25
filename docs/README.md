@@ -50,7 +50,10 @@ package docstrings (present truth + rationale), or git history (past).
   buildable, add `status: ready` front-matter (the fixer's pick signal;
   branch `fix/<slug>`, optional `model:` and `blocked-by:` as before). On
   ship: fold any surviving truth into the owning docstring, **delete the
-  file** in the same commit.
+  file** in the same commit — the commit that completes the work, not an
+  early slice: a spec deleted mid-branch is unreadable to the sessions
+  still building it (read it back with `git show
+  <merge-base>:docs/backlog/<slug>.md`, gr515639).
 - **Delete on ship.** Applies to everything: backlog items, scratch notes,
   superseded prose. A doc that describes shipped work is a lie waiting to
   happen.
