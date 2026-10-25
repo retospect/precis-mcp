@@ -1120,7 +1120,6 @@ _require_name = blocktree._require_name
 _opt_str = blocktree._opt_str
 _as_vec3 = blocktree._as_vec3
 _unit_vec = blocktree._unit_vec
-_no_block_msg = blocktree._no_block_msg
 _validate_envelope = blocktree._validate_envelope
 _descendants = blocktree._descendants
 _split_endpoint = blocktree._split_endpoint

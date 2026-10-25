@@ -109,7 +109,7 @@ import numpy as np
 from numpy.typing import NDArray
 from psycopg.types.json import Jsonb
 
-from precis.blocktree.types import parse_template_ref
+from precis.blocktree.types import no_block_msg, parse_template_ref
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.export import ExportError, needs_field_backend
@@ -1935,7 +1935,7 @@ class SeHandler(Handler):
             except AmbiguousLabel as exc:
                 raise BadInput(str(exc)) from exc
             if node is None:
-                raise NotFound(_block_not_found(tree, block_name))
+                raise NotFound(no_block_msg(tree, block_name))
             if v == "surface_deviation":
                 from precis_se.atomic.surface_deviation import render_surface_deviation
 
@@ -2012,7 +2012,7 @@ class SeHandler(Handler):
             block_arg = (args or {}).get("block")
             lit_block: str | None = str(block_arg).strip() if block_arg else None
             if lit_block and lit_block not in tree.blocks:
-                raise NotFound(_block_not_found(tree, lit_block))
+                raise NotFound(no_block_msg(tree, lit_block))
             return se_atomic_render.render_literature(
                 self.hub, self.store, tree, ref, block_name=lit_block
             )
@@ -2043,7 +2043,7 @@ class SeHandler(Handler):
             except AmbiguousLabel as exc:
                 raise BadInput(str(exc)) from exc
             if node is None:
-                raise NotFound(_block_not_found(tree, str(name).strip()))
+                raise NotFound(no_block_msg(tree, str(name).strip()))
             return Response(body=render_surface(self.store, node, args or {}))
         if v == "flow":
             from precis_se.flow import render_flow
@@ -2238,7 +2238,7 @@ class SeHandler(Handler):
                     ) from exc
                 if bnode is None:
                     raise NotFound(
-                        _block_not_found(tree, block),
+                        no_block_msg(tree, block),
                         next=f"get(kind='se', id={slug!r}) lists the blocks",
                     )
                 block = bnode.name
@@ -2981,7 +2981,7 @@ class SeHandler(Handler):
             return Response(body=self._render_print_all(tree))
         node = tree.blocks.get(block)
         if node is None:
-            raise NotFound(_block_not_found(tree, block))
+            raise NotFound(no_block_msg(tree, block))
         if node.template is not None:
             raise BadInput(
                 f"block {block!r} is an instance (of {node.template!r}) — print "
@@ -4515,7 +4515,7 @@ def _render_report(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str
         except AmbiguousLabel as exc:
             raise BadInput(str(exc)) from exc
         if node is None:
-            raise NotFound(_block_not_found(tree, selector))
+            raise NotFound(no_block_msg(tree, selector))
         nodes = [node]
     else:
         nodes = [tree.blocks[name] for name in sorted(tree.blocks)]
@@ -4677,7 +4677,7 @@ def _render_catalogue(store: Any, tree: SeTree, args: dict[str, Any] | None) -> 
         except AmbiguousLabel as exc:
             raise BadInput(str(exc)) from exc
         if node is None:
-            raise NotFound(_block_not_found(tree, selector))
+            raise NotFound(no_block_msg(tree, selector))
         nodes = [node]
     else:
         nodes = [tree.blocks[name] for name in sorted(tree.blocks)]
@@ -8196,10 +8196,10 @@ def _pair_clearance(
     from running at all (see that class's docstring)."""
     a_node = tree.blocks.get(a_name)
     if a_node is None:
-        raise NotFound(_block_not_found(tree, a_name))
+        raise NotFound(no_block_msg(tree, a_name))
     b_node = tree.blocks.get(b_name)
     if b_node is None:
-        raise NotFound(_block_not_found(tree, b_name))
+        raise NotFound(no_block_msg(tree, b_name))
 
     # gr514241: a template is a library part, never placed — its stored
     # pose (usually the origin) would measure a phantom part. Its
@@ -8330,9 +8330,9 @@ def _render_clearance(store: Store, tree: SeTree, args: dict[str, Any] | None) -
         raise BadInput("get(kind='se', view='clearance'): 'a' and 'b' must differ")
     a_node, b_node = tree.blocks.get(a_name), tree.blocks.get(b_name)
     if a_node is None:
-        raise NotFound(_block_not_found(tree, a_name))
+        raise NotFound(no_block_msg(tree, a_name))
     if b_node is None:
-        raise NotFound(_block_not_found(tree, b_name))
+        raise NotFound(no_block_msg(tree, b_name))
     if se_atomic_clearance.is_atomic_pair(a_node, b_node):
         with se_atomic_clearance.atomic_help_hint():
             return se_atomic_clearance.render_atomic_clearance(
@@ -8544,7 +8544,7 @@ def pick_levels(
             ref = None
             node = resolve_block(tree, block)
             if node is None:
-                raise NotFound(_block_not_found(tree, block))
+                raise NotFound(no_block_msg(tree, block))
         labels, record = (
             se_atomic_render.bound_pick_inputs(store, node)
             if node is not None
@@ -8627,7 +8627,7 @@ def _render_stations(
         )
     node = tree.blocks.get(walker)
     if node is None:
-        raise NotFound(_block_not_found(tree, walker))
+        raise NotFound(no_block_msg(tree, walker))
     if node.uid is None:
         raise BadInput(f"view='stations': block {walker!r} is not saved yet")
     states = design_states.states_for(store, ref_id, node.uid)
@@ -8660,7 +8660,7 @@ def _render_stations(
         t_block, t_port = text.rsplit(".", 1)
         t_node = tree.blocks.get(t_block)
         if t_node is None:
-            raise NotFound(_block_not_found(tree, t_block))
+            raise NotFound(no_block_msg(tree, t_block))
         if t_port not in t_node.ports:
             raise BadInput(
                 f"view='stations': {t_block!r} has no port {t_port!r} — its ports: "
@@ -9151,12 +9151,3 @@ def _unknown_view_next(v: str) -> str:
     if nearest:
         return f"did you mean view={nearest[0]!r}?\n{roster}"
     return roster
-
-
-def _block_not_found(tree: SeTree, name: str) -> str:
-    base = f"no such block: {name!r}"
-    if not tree.blocks:
-        return f"{base} — the design has no blocks yet"
-    roster = ", ".join(sorted(tree.blocks)[:8])
-    more = "" if len(tree.blocks) <= 8 else f", … ({len(tree.blocks) - 8} more)"
-    return f"{base}. Available blocks: {roster}{more}"

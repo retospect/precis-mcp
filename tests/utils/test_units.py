@@ -15,9 +15,11 @@ import pytest
 
 from precis.cad.dsl import _NUM
 from precis.errors import BadInput
+from precis.utils import units as units_mod
 from precis.utils.units import (
     Dimension,
     UnitRequiredError,
+    capture_used_units,
     format_dsl_number,
     format_quantity,
     parse_quantity,
@@ -169,6 +171,33 @@ def test_parse_quantity_unknown_unit_rejected() -> None:
 def test_parse_quantity_empty_string_rejected() -> None:
     with pytest.raises(BadInput):
         parse_quantity("   ", "length")
+
+
+def test_parse_quantity_repeated_text_costs_one_pint_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr515315: a fit check re-parses the same handful of unit strings
+    hundreds of times (238 parses for 82 unique texts, ~47 ms) — the
+    pint ``parse_expression`` behind :func:`parse_quantity` is memoised,
+    so N calls on one text cost ONE parse, and the used-units record
+    still replays on every cache hit."""
+    ureg = units_mod._registry()
+    calls: list[str] = []
+    real = ureg.parse_expression
+
+    def _spy(text: str) -> object:
+        calls.append(text)
+        return real(text)
+
+    monkeypatch.setattr(ureg, "parse_expression", _spy)
+    units_mod._parse_text.cache_clear()
+    text = "2.71828e-4 m"
+    used: dict[Dimension, str | None] = {}
+    with capture_used_units(used):
+        for _ in range(5):
+            assert parse_quantity(text, "length") == pytest.approx(2.71828e-4)
+    assert calls == [text]
+    assert used == {"length": "m"}
 
 
 # ── neat formatter goldens ───────────────────────────────────────────

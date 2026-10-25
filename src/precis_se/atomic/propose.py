@@ -70,6 +70,7 @@ from typing import Any
 
 import numpy as np
 
+from precis.blocktree.types import no_block_msg
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
@@ -148,15 +149,6 @@ _OP_VOCAB = (
 #: between the two is the POSE (propose time has none — see
 #: :func:`_envelope_fit_warnings`), not the allowance.
 _ENVELOPE_FIT_MARGIN_A = VDW_MARGIN_A
-
-
-def _block_not_found(tree: SeTree, name: str) -> str:
-    base = f"no such block: {name!r}"
-    if not tree.blocks:
-        return f"{base} — the design has no blocks yet"
-    roster = ", ".join(sorted(tree.blocks)[:8])
-    more = "" if len(tree.blocks) <= 8 else f", … ({len(tree.blocks) - 8} more)"
-    return f"{base}. Available blocks: {roster}{more}"
 
 
 def _fmt_vec(v: list[float]) -> str:
@@ -449,7 +441,7 @@ def dry_run(
     ``valid``."""
     node = tree.blocks.get(block_name)
     if node is None:
-        return _block_not_found(tree, block_name), []
+        return no_block_msg(tree, block_name), []
     if node.template is not None:
         return (
             f"block {block_name!r} is an instance (of {node.template!r}) — "
@@ -575,7 +567,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     node = tree.blocks.get(block_name)
     if node is None:
-        ctx.record_failure(f"se_propose_atomic: {_block_not_found(tree, block_name)}")
+        ctx.record_failure(f"se_propose_atomic: {no_block_msg(tree, block_name)}")
         return
     if node.template is not None:
         ctx.record_failure(

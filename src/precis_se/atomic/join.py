@@ -87,6 +87,7 @@ from hexfold.join import (
 from hexfold.report import Finding as HxFinding
 from hexfold.report import Report as HxReport
 from hexfold.report import Severity as HxSeverity
+from precis.blocktree.types import no_block_msg
 from precis.cad.vec import euler_rad_from_matrix
 from precis.errors import BadInput, NotFound
 from precis.structure import Atom as StructAtom
@@ -288,10 +289,7 @@ def _resolve_join_endpoint(
         raise BadInput(f"join {side} must be 'block.port', got {raw!r}")
     key = tree.resolve_key(block_token)
     if key is None:
-        roster = ", ".join(sorted(tree.blocks)) or "(none)"
-        raise NotFound(
-            f"no such block: {block_token!r}. Blocks in this design: {roster}"
-        )
+        raise NotFound(no_block_msg(tree, block_token))
     node = tree.blocks[key]
     ports = _effective_ports(tree, node)
     port = ports.get(port_name)

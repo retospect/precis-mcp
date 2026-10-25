@@ -41,7 +41,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from precis.blocktree.types import OpError
+from precis.blocktree.types import OpError, no_block_msg
 from precis.errors import BadInput, NotFound
 from precis.structure import Scene as StructScene
 from precis.utils.units import format_quantity
@@ -65,14 +65,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
 
 
-def _block_not_found(tree: SeTree, name: str) -> str:
-    """The ``no such block`` message with the live roster — the handler's
-    own :func:`precis_se.handler._block_not_found` restated here so this
-    module doesn't import the handler it is called from."""
-    roster = ", ".join(sorted(tree.blocks)) or "(none)"
-    return f"no such block: {name!r}. Blocks in this design: {roster}"
-
-
 def _block_named(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[str, Any]:
     """``op['block']`` → ``(label, node)``. These two ops are dispatched by
     the HANDLER (they need the store), not by ``apply_ops``, so they
@@ -88,7 +80,7 @@ def _block_named(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[str,
     except OpError as exc:  # an ambiguous label, with its uid list
         raise BadInput(str(exc)) from exc
     if key is None:
-        raise NotFound(_block_not_found(tree, token))
+        raise NotFound(no_block_msg(tree, token))
     return key, tree.blocks[key]
 
 

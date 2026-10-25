@@ -112,7 +112,7 @@ def resolve_block(tree: Any, token: Any) -> Any | None:
 
     Raises :class:`AmbiguousLabel` when the token is a label two blocks
     share — the one case that is neither a hit nor a miss. Callers keep
-    their own "no such block" message (``_block_not_found`` lists the
+    their own "no such block" message (``no_block_msg`` lists the
     design's labels), so the miss is a plain ``None`` here.
     """
     uid = parse_uid(token)

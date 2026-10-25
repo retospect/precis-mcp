@@ -92,6 +92,7 @@ from precis.blocktree.types import (
     OpError,
     Port,
     Tree,
+    no_block_msg,
     parse_template_ref,
 )
 from precis.cad import dsl as cad_dsl
@@ -199,7 +200,7 @@ def _block_key(tree: Tree[Any, Any], token: Any, *, what: str) -> str:
     nothing yet."""
     key = tree.resolve_key(token)
     if key is None:
-        raise OpError(_no_block_msg(tree, str(token).strip(), what=what))
+        raise OpError(no_block_msg(tree, str(token).strip(), what=what))
     return key
 
 
@@ -299,27 +300,6 @@ def _port_pose_args(
     pose = _pose_vec(op, "pose", f"{opname} pose for {what}")
     rot = None if rot_raw is None else _pose_vec(op, "rot", f"{opname} rot for {what}")
     return pose, rot
-
-
-def _no_block_msg(tree: Tree[Any, Any], name: str, *, what: str) -> str:
-    base = f"no such block ({what}): {name!r}"
-    if what.startswith("template"):
-        # A template only ever resolves an ordinary block — instancing an
-        # instance is refused — so the roster lists template-able blocks,
-        # not every node; naming the omitted count keeps the truncation
-        # honest (gr514247: listing instances as "available blocks" sent
-        # callers hunting the wrong namespace).
-        pool = sorted(n for n, b in tree.blocks.items() if b.template is None)
-        if not pool:
-            return f"{base} — the design has no ordinary blocks to instance"
-        roster = ", ".join(pool[:8])
-        more = "" if len(pool) <= 8 else f", … ({len(pool) - 8} more)"
-        return f"{base}. Available templates: {roster}{more}"
-    if not tree.blocks:
-        return f"{base} — the design has no blocks yet"
-    roster = ", ".join(sorted(tree.blocks)[:8])
-    more = "" if len(tree.blocks) <= 8 else f", … ({len(tree.blocks) - 8} more)"
-    return f"{base}. Available blocks: {roster}{more}"
 
 
 def _validate_envelope(config: str) -> None:
@@ -611,7 +591,7 @@ def _foreign_template_node(
     node = owner.blocks.get(block_name)
     if node is None:
         raise OpError(
-            _no_block_msg(owner, block_name, what=f"template in design {design_slug!r}")
+            no_block_msg(owner, block_name, what=f"template in design {design_slug!r}")
         )
     return node
 

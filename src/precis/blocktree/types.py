@@ -262,3 +262,34 @@ class Tree[TBlock: BlockNode, TConnect: Connect]:
         stays on the shared implementation (one that adds no extra
         per-connect field, unlike ``se``'s ``joint``)."""
         return Connect(**kwargs)  # type: ignore[return-value]
+
+
+def no_block_msg(tree: Tree[Any, Any], name: str, *, what: str | None = None) -> str:
+    """The "no such block" roster message — the ONE helper every failed
+    block-name lookup goes through (gr515108: three copies had drifted
+    into place, so a message fix had to be applied three times).
+
+    ``what`` names the role being resolved (``"template in design
+    'x'"``, an op operand) and lands in the base as ``no such block
+    (<what>):``; a ``what`` starting with ``"template"`` rosters only
+    template-able blocks. Without ``what`` the base is the bare ``no
+    such block:`` form the se handlers raise. The roster lists up to 8
+    sorted names with the omitted count named."""
+    base = f"no such block ({what}): {name!r}" if what else f"no such block: {name!r}"
+    if what is not None and what.startswith("template"):
+        # A template only ever resolves an ordinary block — instancing an
+        # instance is refused — so the roster lists template-able blocks,
+        # not every node; naming the omitted count keeps the truncation
+        # honest (gr514247: listing instances as "available blocks" sent
+        # callers hunting the wrong namespace).
+        pool = sorted(n for n, b in tree.blocks.items() if b.template is None)
+        if not pool:
+            return f"{base} — the design has no ordinary blocks to instance"
+        roster = ", ".join(pool[:8])
+        more = "" if len(pool) <= 8 else f", … ({len(pool) - 8} more)"
+        return f"{base}. Available templates: {roster}{more}"
+    if not tree.blocks:
+        return f"{base} — the design has no blocks yet"
+    roster = ", ".join(sorted(tree.blocks)[:8])
+    more = "" if len(tree.blocks) <= 8 else f", … ({len(tree.blocks) - 8} more)"
+    return f"{base}. Available blocks: {roster}{more}"

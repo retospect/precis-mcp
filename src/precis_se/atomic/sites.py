@@ -69,6 +69,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy.typing import NDArray
 
+from precis.blocktree.types import no_block_msg
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.structure import Scene as StructScene
@@ -78,14 +79,6 @@ from precis_se.ops import SeTree
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
-
-
-def _block_not_found(tree: SeTree, name: str) -> str:
-    """The ``no such block`` message with the live roster — the handler's
-    own :func:`precis_se.handler._block_not_found` restated here so this
-    module doesn't import the handler it is called from."""
-    roster = ", ".join(sorted(tree.blocks)) or "(none)"
-    return f"no such block: {name!r}. Blocks in this design: {roster}"
 
 
 #: Carbon–carbon bond cutoff used only when a bound structure carries no
@@ -613,7 +606,7 @@ def _require_atomic(
 ) -> tuple[Any, AtomCloud, StructScene]:
     node = tree.blocks.get(name)
     if node is None:
-        raise NotFound(_block_not_found(tree, name))
+        raise NotFound(no_block_msg(tree, name))
     if not (node.bound_kind == "structure" and node.bound):
         raise BadInput(
             f"view='sites' needs structure-bound blocks; {name!r} is not "
