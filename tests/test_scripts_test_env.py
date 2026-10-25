@@ -118,6 +118,7 @@ def _run(
     args: tuple[str, ...] = ("-n0", "tests/x.py"),
     extra_env: dict[str, str] | None = None,
     files: tuple[str, ...] = (),
+    selector: str | None = None,
 ) -> tuple[int, list[str], str]:
     """Run staged scripts/test; return (rc, docker log lines, stderr)."""
     tree = _stage(tmp_path)
@@ -125,6 +126,11 @@ def _run(
         p = tree / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("", encoding="utf-8")
+    if selector is not None:
+        # --selected computes the selection host-side via scripts/impacted-tests
+        sel = tree / "scripts" / "impacted-tests"
+        sel.write_text(selector, encoding="utf-8")
+        sel.chmod(0o755)
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
     docker = fakebin / "docker"
@@ -320,3 +326,112 @@ def test_random_combines_with_later_flags(tmp_path: Path) -> None:
     line = _run_line(log)
     assert "pytest-randomly==3.16.0" in line
     assert "not db and not slow" in line
+
+
+# --- --selected --list: host-side preview, nothing runs (gr515640) ---------
+# --selected RUNS the computed selection; --list prints it and exits before
+# any docker call, so a harness-diff "FULL" answer is cheap information, not
+# an accidental 70-minute suite.
+
+
+def test_selected_list_prints_selection_without_running(tmp_path: Path) -> None:
+    rc, log, stderr = _run(
+        tmp_path,
+        args=("--selected", "--list"),
+        selector="#!/usr/bin/env bash\nprintf 'testmon=0\\ntests/test_a.py\\ntests/test_b.py\\n'\n",
+    )
+    assert rc == 0, stderr
+    assert "checked selection" in stderr
+    assert not log  # no container, no gate slot — the preview is host-side
+
+
+def test_selected_list_surfaces_full_without_running(tmp_path: Path) -> None:
+    """A harness/schema diff answers FULL — the gripe's worst case was that
+    'previewing' ran the whole suite. --list prints FULL and exits."""
+    rc, log, stderr = _run(
+        tmp_path,
+        args=("--selected", "--list"),
+        selector="#!/usr/bin/env bash\nprintf 'FULL\\n'\n",
+    )
+    assert rc == 0, stderr
+    assert not log
+
+
+def test_list_without_selected_is_a_named_error(tmp_path: Path) -> None:
+    rc, log, stderr = _run(
+        tmp_path, args=("--list", "tests/x.py"), files=("tests/x.py",)
+    )
+    assert rc == 2
+    assert "--selected --list" in stderr
+    assert not log
+
+
+# --- --co/--collect-only fast path (gr515705) ------------------------------
+# A collection probe runs no tests: the run used to pay the gate-slot wait,
+# the test-db bring-up AND the auto -n0 count pass (a second, hidden
+# collection) before the list the caller asked for ever printed.
+
+
+def test_collect_only_skips_db_and_runs_serial(tmp_path: Path) -> None:
+    rc, log, stderr = _run(tmp_path, args=("--co", "tests/x.py"), files=("tests/x.py",))
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert not [l for l in log if l.startswith("up|")], f"db was started: {log}"
+    assert " --co " in f" {line} "
+    assert " -n0 " in f" {line} "
+    assert " -n6 " not in f" {line} "
+    # the auto -n0 count pass is off — it would repeat the collection --co IS
+    assert " -e PRECIS_AUTO_N=0 " in f" {line} "
+
+
+def test_collect_only_long_form_matches(tmp_path: Path) -> None:
+    rc, log, _ = _run(
+        tmp_path, args=("--collect-only", "tests/x.py"), files=("tests/x.py",)
+    )
+    assert rc == 0
+    assert not [l for l in log if l.startswith("up|")]
+
+
+def test_normal_run_still_brings_db_up(tmp_path: Path) -> None:
+    """Guard against over-matching: a plain run keeps its test DB."""
+    rc, log, _ = _run(tmp_path, args=("-n0", "tests/x.py"), files=("tests/x.py",))
+    assert rc == 0
+    assert [l for l in log if l.startswith("up|")]
+
+
+# --- --typecheck names its scope (gr515825) ---------------------------------
+
+
+def test_typecheck_says_tests_are_included(tmp_path: Path) -> None:
+    """The gripe: the run reported only "N source files" — a builder could
+    not tell whether tests/ were checked and re-ran host mypy to be sure.
+    The run now names the target set before mypy starts."""
+    rc, _, stderr = _run(tmp_path, args=("--typecheck",))
+    assert rc == 0, stderr
+    assert "uv run mypy src tests" in stderr
+    assert "BOTH src/ and tests/" in stderr
+
+
+def test_typecheck_custom_targets_are_named(tmp_path: Path) -> None:
+    rc, _, stderr = _run(tmp_path, args=("--typecheck", "src/precis"))
+    assert rc == 0, stderr
+    assert "uv run mypy src/precis" in stderr
+
+
+# --- full-suite runs point at --bg (gr515646) -------------------------------
+# A bare `scripts/test` (or a --selected that resolved FULL) is the run that
+# outlives the ~10 min foreground shell cap; the run names the --bg/--await
+# escape once, before the gate/db wait starts.
+
+
+def test_full_suite_run_points_at_bg(tmp_path: Path) -> None:
+    rc, _, stderr = _run(tmp_path, args=())
+    assert rc == 0, stderr
+    assert "scripts/test --bg" in stderr
+    assert "--await" in stderr
+
+
+def test_targeted_run_has_no_bg_hint(tmp_path: Path) -> None:
+    rc, _, stderr = _run(tmp_path, args=("-n0", "tests/x.py"), files=("tests/x.py",))
+    assert rc == 0, stderr
+    assert "--bg" not in stderr

@@ -28,6 +28,8 @@
 #   scripts/test --selected                   # the --checked selection: contract
 #                                             # invariants + corpus/import map
 #                                             # (testmon when a map exists)
+#   scripts/test --selected --list            # preview only: prints the computed
+#                                             # selection (or FULL), runs nothing
 #   scripts/test --typecheck                  # `uv run mypy src tests` in the container
 #   scripts/test --random [pytest args…]      # order-dependence probe: bridges
 #                                             # pytest-randomly on the fly; the
@@ -48,7 +50,10 @@
 # the collected items first and runs -n0 at ≤500 (PRECIS_AUTO_N_MAX), because
 # xdist worker bring-up (~4.8 s no-DB, ~24 s DB) outweighs the tests at that
 # size. Directories and bare -k/-m selections keep -n6 with no count pass;
-# a caller-supplied -nN always wins.
+# a caller-supplied -nN always wins. ``--serial`` is the documented
+# single-process mode (-n0 — for pdb/-s debugging, gr514400); a caller's
+# ``-p no:xdist`` works too: the script withholds its -n6 and conftest's
+# xdist-shim swallows addopts' -n auto so the run parses and goes serial.
 #
 # The three stale-baked-venv preflight checks (see below) are cached
 # per-worktree: a stamp at ./.precis-preflight keyed on the image id +
@@ -99,12 +104,18 @@ Usage:
   scripts/test tests/test_foo.py            # one file
   scripts/test -k "registry or env"         # a -k expression
   scripts/test tests/test_foo.py::test_bar -x
+  scripts/test --serial tests/test_foo.py   # single process (-n0), for pdb/-s
+  scripts/test --co tests/test_foo.py       # collection list only: serial, no
+                                            # test DB, no gate slot (gr515705)
   scripts/test --fast | -f                  # no-DB fast set (-m 'not db and not slow')
   scripts/test --coverage [pytest args…]    # per-test .coverage + manifest
   scripts/test --impacted | -i              # ONLY tests your changes affect (testmon)
   scripts/test --selected                   # the ship --checked selection locally:
                                             # contract invariants + corpus/map +
                                             # import-scan (testmon if a map exists)
+  scripts/test --selected --list            # preview only: prints the computed
+                                            # selection (or FULL), runs nothing —
+                                            # no container, no gate slot
   scripts/test --random [pytest args…]      # shuffled order (pytest-randomly,
                                             # seed printed); PRECIS_RANDOM_SEED=N
                                             # reproduces an order, implies --random
@@ -118,7 +129,9 @@ Usage:
 
 Everything after the script name (other than the flags above) is passed
 straight to pytest. Default parallelism is -n6; pass your own -n0/-nN to
-override for a single fast test. A positional arg naming a path that does
+override for a single fast test, or --serial for the documented
+single-process mode (-p no:xdist also works — the conftest shim absorbs
+addopts' -n). A positional arg naming a path that does
 not exist is refused up front, before any container starts (gr514948).
 
 Env — every knob is documented here, and only here (gr514431):
@@ -270,6 +283,8 @@ SELECTED=0
 # `tests` view verifies against indexed bytes before trusting the DB.
 COVERAGE=0
 RANDOM_ORDER=0
+SERIAL=0
+LIST_ONLY=0
 # Leading flags combine in any order (a loop, not a single pass): with
 # single-pass ifs `scripts/test --random --fast` would hand `--fast` to
 # pytest unparsed.
@@ -279,12 +294,33 @@ while :; do
         --impacted|-i) IMPACTED=1; shift ;;
         --fast|-f) FAST=1; shift ;;
         --selected) SELECTED=1; shift ;;
+        # --serial : the documented single-process mode (gr514400) — -n0,
+        # for pdb/-s debugging where xdist workers swallow output. A
+        # caller's -p no:xdist works too (NO_XDIST below).
+        --serial) SERIAL=1; shift ;;
         # --random : order-dependence probe (test-loop-speed Decision 6).
         # Bridges pytest-randomly through UV_WITH below (same on-the-fly
         # shape as testmon — no image rebuild); the plugin prints its seed.
         --random) RANDOM_ORDER=1; shift ;;
+        # --list : --selected's preview (gr515640): print the computed
+        # selection host-side and exit — no container, no gate slot, no
+        # accidental full-suite run when the diff answers FULL.
+        --list) LIST_ONLY=1; shift ;;
         *) break ;;
     esac
+done
+if [[ "$LIST_ONLY" == 1 && "$SELECTED" != 1 ]]; then
+    echo "ERR: --list only previews the --selected selection — usage: scripts/test --selected --list" >&2
+    exit 2
+fi
+
+# --co/--collect-only is a pure collection probe (gr515705): no test runs,
+# so no test DB and no gate slot are needed, and the auto -n0 count pass
+# would only repeat the collection the caller asked to see. Runs serial so
+# the printed order is the order pytest will use.
+COLLECT_ONLY=0
+for _a in "$@"; do
+    [[ "$_a" == "--co" || "$_a" == "--collect-only" ]] && COLLECT_ONLY=1
 done
 # PRECIS_RANDOM_SEED=N pins the order via --randomly-seed=N and implies
 # --random on its own — that is the reproduce-an-order path.
@@ -338,6 +374,11 @@ fi
 SEL_ARGS=()
 if [[ "$SELECTED" == 1 ]]; then
     _sel_out="$(scripts/impacted-tests)" || { echo "ERR: scripts/impacted-tests failed" >&2; exit 1; }
+    if [[ "$LIST_ONLY" == 1 ]]; then
+        echo "checked selection (preview — nothing runs; drop --list to run it):" >&2
+        echo "$_sel_out"
+        exit 0
+    fi
     if [[ "$_sel_out" == "FULL" ]]; then
         # Harness/schema touched — the honest selection IS the suite.
         echo "checked selection: FULL (harness/schema change) — running the whole suite" >&2
@@ -444,7 +485,7 @@ other_run_alive() {
 }
 agent_db_teardown() {
     [[ -n "$RUN_MARKER" ]] && rm -f "$RUN_MARKER"
-    [[ "$FAST" == "1" ]] && return 0
+    [[ "$FAST" == "1" || "$COLLECT_ONLY" == "1" ]] && return 0
     [[ -n "${PRECIS_TEST_KEEP_DB:-}" ]] && return 0
     case "${WORKTREE##*/}" in agent-*) ;; *) return 0 ;; esac
     local svc services
@@ -520,6 +561,10 @@ if [[ "${1:-}" == "--typecheck" ]]; then
     shift
     MYPY_ARGS=("$@")
     [[ ${#MYPY_ARGS[@]} -eq 0 ]] && MYPY_ARGS=(src tests)
+    # Say what is being checked (gr515825): a builder couldn't tell whether
+    # tests/ were included and re-ran host mypy on the new test file to
+    # satisfy the gate rule. Default target list covers BOTH src/ and tests/.
+    echo "scripts/test --typecheck: uv run mypy ${MYPY_ARGS[*]} (the gate's mypy — BOTH src/ and tests/ by default)" >&2
     rc=0
     compose run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
         bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}" || rc=$?
@@ -549,14 +594,22 @@ THREAD_CAP_ENV=(
 # holding a live Postgres for the length of its wait (gr514466). --fast
 # selected only no-DB tests (`-m 'not db and not slow'`), so it skips the
 # queue too — no Postgres, no slot.
-if [[ "$FAST" != "1" ]]; then
+#
+# The whole suite (or a --selected that resolved FULL above) is the run that
+# outlives a ~10 min foreground shell cap — point at --bg once, before the
+# wait starts (gr515646). A chained `scripts/test --typecheck && scripts/test`
+# hits the cap the same way; --bg is the documented escape.
+if [[ $# -eq 0 && "$IMPACTED" != 1 && "$SELECTED" != 1 && "$FAST" != 1 && "$COLLECT_ONLY" != 1 ]]; then
+    echo "scripts/test: full suite — a foreground shell capped ~10 min should detach: scripts/test --bg, then poll with scripts/test --await <run-id>" >&2
+fi
+if [[ "$FAST" != "1" && "$COLLECT_ONLY" != "1" ]]; then
     hb_start "gate-slot wait"
     gate_slot_acquire
     hb_stop
 fi
 
 TEST_DB_ENV=()
-if [[ "$FAST" == "1" ]]; then
+if [[ "$FAST" == "1" || "$COLLECT_ONLY" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
 elif hb_start "test db up" && run_marker_write && DB_UP_OUT="$(compose up -d --wait precis-test-db 2>&1)"; then
     TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
@@ -581,9 +634,25 @@ hb_stop
 AUTO_N=0
 CALLER_N=0
 for a in "$@"; do [[ "$a" == -n* ]] && CALLER_N=1; done
+# -p no:xdist unloads the plugin, so the script must not inject its own -n6
+# either (gr514400): conftest's shim swallows addopts' -n auto and the run
+# goes serial. -p no:xdist / -pno:xdist are the two disable spellings.
+NO_XDIST=0
+_prev_p=0
+for a in "$@"; do
+    if [[ "$_prev_p" == 1 ]]; then
+        _prev_p=0
+        [[ "$a" == "no:xdist" ]] && NO_XDIST=1
+        continue
+    fi
+    [[ "$a" == "-p" ]] && _prev_p=1
+    [[ "$a" == "-pno:xdist" ]] && NO_XDIST=1
+done
 NPROC=(-n6)
-if [[ "$CALLER_N" == 1 ]]; then
+if [[ "$CALLER_N" == 1 || "$NO_XDIST" == 1 ]]; then
     NPROC=()
+elif [[ "$SERIAL" == 1 || "$COLLECT_ONLY" == 1 ]]; then
+    NPROC=(-n0)
 elif [[ "$IMPACTED" != "1" && "$SELECTED" != "1" ]]; then
     _auto_any=0
     _auto_files=1

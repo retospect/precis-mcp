@@ -440,7 +440,40 @@ def _pg_available() -> bool:
     return _PG_AVAILABLE
 
 
-def pytest_addoption(parser: pytest.Parser) -> None:
+def pytest_addoption(
+    parser: pytest.Parser, pluginmanager: pytest.PytestPluginManager
+) -> None:
+    # gr514909 + gr514400: ``-p no:xdist`` unloads pytest-xdist, but addopts'
+    # ``-n auto --max-worker-restart=0`` (pyproject) and any injected ``-nN``
+    # (scripts/test's default -n6) then fail the arg parse — "unrecognized
+    # arguments: -n" — before a single test could run serially. Options
+    # added here register before the final parse, so no-op stand-ins for
+    # the xdist names let the args parse and the run just goes single-process.
+    # A blocked ``-p no:xdist`` leaves no plugin registered under "xdist"
+    # when initial conftests load; when xdist IS active its real options
+    # exist already and these are never added (a duplicate -n would raise).
+    if pluginmanager.get_plugin("xdist") is None:
+        shim = parser.getgroup(
+            "xdist-shim",
+            "no-op stand-ins for pytest-xdist options when the plugin is "
+            "disabled (-p no:xdist) — the run is serial either way",
+        )
+        # _addoption, not addoption: lowercase short options are reserved
+        # for pytest core and plugins, and -n is exactly the plugin flag
+        # being stood in for — public addoption() refuses it on purpose.
+        shim._addoption(
+            "-n",
+            "--numprocesses",
+            metavar="N",
+            default=None,
+            help="pytest-xdist is disabled; accepted and ignored (serial run)",
+        )
+        shim.addoption(
+            "--max-worker-restart",
+            metavar="N",
+            default=None,
+            help="pytest-xdist is disabled; accepted and ignored",
+        )
     parser.addoption(
         "--shard",
         default=None,
