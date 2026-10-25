@@ -614,24 +614,24 @@ def leaf_id() -> int | None:
     return tr.stack[-1].id if tr is not None else None
 
 
-_ARGNAMES_CACHE: dict[int, tuple[str, ...]] = {}
+def _argnames(f: Callable[..., Any]) -> tuple[str, ...]:
+    """Positional/keyword parameter names of ``f`` (``co_varnames`` slice)."""
+    try:
+        code = f.__code__
+    except AttributeError:
+        return ()
+    return code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
 
 
 def _call_args(
-    f: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+    names: tuple[str, ...], args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> dict[str, Any]:
     """Parameter-name → digest. ``co_varnames`` positional mapping instead
     of ``inspect.signature().bind`` — bind is ~10 µs/call, the dominant
-    per-call cost after arg digests."""
-    key = id(f)
-    names = _ARGNAMES_CACHE.get(key)
-    if names is None:
-        try:
-            code = f.__code__
-            names = code.co_varnames[: code.co_argcount + code.co_kwonlyargcount]
-        except AttributeError:
-            names = ()
-        _ARGNAMES_CACHE[key] = names
+    per-call cost after arg digests. ``names`` is resolved once per
+    decorated function (``traced``), not cached in a module-level dict
+    keyed by ``id(f)``: a freed function's id is reused, so a global
+    cache hands a later function the earlier one's parameter names."""
     out: dict[str, Any] = {}
     for i, a in enumerate(args):
         name = names[i] if i < len(names) else f"_{i}"
@@ -655,6 +655,7 @@ def traced(
 
     def deco(f: Callable[..., Any]) -> Callable[..., Any]:
         qual = name or _core_qual(f)
+        argnames = _argnames(f)
 
         @functools.wraps(f)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -664,7 +665,7 @@ def traced(
             fr = tr._enter(
                 qual,
                 kind,
-                _call_args(f, args, kwargs),
+                _call_args(argnames, args, kwargs),
                 sys._getframe(1),
                 sys._getframe(0),
             )
