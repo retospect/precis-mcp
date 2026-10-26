@@ -1035,6 +1035,55 @@ class TestBom:
             h.get(id="enclosure", view="bom", spec="totally-unregistered-spec")
 
 
+# ── store-level BOM walker (component_bom_lines) ───────────────────────────
+
+
+class TestBomWalker:
+    """``component_bom_lines`` yields one line per root→leaf path: the shared
+    flattening the BOM rollup, the nudge and (later) BOM tables all sit on."""
+
+    def test_root_leaf_is_a_single_line_with_no_link(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "washer")
+        root = store.get_ref(kind="component", id="washer")
+        lines = list(store.component_bom_lines(root.id))
+        assert len(lines) == 1
+        line = lines[0]
+        assert line.path == [root.id]
+        assert line.leaf_ref_id == root.id
+        assert line.link is None
+        assert line.effective_qty == 1
+        assert line.designator is None
+
+    def test_one_line_per_path_with_multiplied_qty_and_designator(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "sub-assembly")
+        _mint(h, "m6-bolt")
+        h.put(id="enclosure", contains="component:sub-assembly", qty=2)
+        h.put(
+            id="sub-assembly",
+            contains="component:m6-bolt",
+            qty=3,
+            ref_designator="R1,R4",
+        )
+        h.put(id="enclosure", contains="component:m6-bolt", qty=1)
+        root = store.get_ref(kind="component", id="enclosure")
+        sub = store.get_ref(kind="component", id="sub-assembly")
+        bolt = store.get_ref(kind="component", id="m6-bolt")
+        lines = list(store.component_bom_lines(root.id))
+        # two distinct paths reach m6-bolt: via sub-assembly (2*3=6) and direct (1)
+        assert len(lines) == 2
+        via_sub = next(x for x in lines if x.path == [root.id, sub.id, bolt.id])
+        assert via_sub.effective_qty == 6
+        assert via_sub.designator == "R1,R4"
+        direct = next(x for x in lines if x.path == [root.id, bolt.id])
+        assert direct.effective_qty == 1
+        assert direct.designator is None
+
+
 # ── gr494831 M3: raises carry next= (one representative per pinned site) ──
 
 

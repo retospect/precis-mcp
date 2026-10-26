@@ -1292,22 +1292,15 @@ class ComponentHandler(ValueEntityHandler):
     def _flatten_bom(
         self, ref_id: int, *, multiplier: int = 1
     ) -> list[tuple[int, int]]:
-        """Recursively flatten the assembly tree rooted at ``ref_id`` to
-        ``(leaf_ref_id, effective qty)`` pairs, multiplying qty down each
-        path. A component with no ``contains`` children is a leaf by
-        definition — the PCB-leaf boundary: a PCBA is one line
-        item here, the rollup never descends into its internals."""
-        children = self.store.component_contains_children(ref_id)
-        if not children:
-            return [(ref_id, multiplier)]
-        pairs: list[tuple[int, int]] = []
-        for child in children:
-            pairs.extend(
-                self._flatten_bom(
-                    child["child_ref_id"], multiplier=multiplier * child["qty"]
-                )
-            )
-        return pairs
+        """Flatten the assembly tree rooted at ``ref_id`` to
+        ``(leaf_ref_id, effective qty)`` pairs — a thin wrapper over the
+        store-level walker (:meth:`Store.component_bom_lines`), which owns
+        the depth-first order and the PCB-leaf boundary. ``multiplier``
+        scales every path (1 at the BOM root)."""
+        return [
+            (line.leaf_ref_id, multiplier * line.effective_qty)
+            for line in self.store.component_bom_lines(ref_id)
+        ]
 
     def _bom_leaves(self, ref_id: int) -> dict[int, int]:
         """``{leaf_ref_id: summed qty}`` — the flat BOM, one entry per

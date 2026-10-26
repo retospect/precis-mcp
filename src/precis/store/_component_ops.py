@@ -26,7 +26,8 @@ otherwise silently mis-assign a field), then ``cast`` to the matching
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, cast
+from collections.abc import Iterator
+from typing import Any, NamedTuple, TypedDict, cast
 
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -125,6 +126,27 @@ class ComponentValueSearchRow(ComponentValueRowWithSource):
     component's title (``component_search_values``)."""
 
     component_title: str
+
+
+class BomLine(NamedTuple):
+    """One flattened BOM line — a single root→leaf path through the
+    ``contains`` assembly tree (:meth:`ComponentMixin.component_bom_lines`).
+
+    ``path`` is the ref-id chain from the root (index 0) to the leaf
+    (``path[-1]`` / :attr:`leaf_ref_id`); ``link`` is the leaf's incoming
+    ``contains`` child record (``{child_ref_id, qty, ref}``), or ``None``
+    when the root is itself a leaf; ``effective_qty`` is the product of
+    every edge ``qty`` down the path; ``designator`` is the leaf edge's
+    ``ref`` meta (comma-joined board positions, or ``None``)."""
+
+    path: list[int]
+    link: dict[str, Any] | None
+    effective_qty: int
+    designator: str | None
+
+    @property
+    def leaf_ref_id(self) -> int:
+        return self.path[-1]
 
 
 def _fetchone(conn: Connection, sql: str, params: Any = ()) -> dict[str, Any] | None:
@@ -501,6 +523,42 @@ class ComponentMixin:
             )
         return out
 
+    def component_bom_lines(self, root_ref_id: int) -> Iterator[BomLine]:
+        """THE assembly-tree flattening walker: yield one :class:`BomLine`
+        per distinct root→leaf path through the ``contains`` edges, depth-first
+        in link-creation order (the order and path-multiplied qty the BOM
+        rollup and the consolidation nudge consume).
+
+        A component with no ``contains`` children is a leaf — the PCB-leaf
+        boundary: a PCBA is one line item, the walk never descends into its
+        internals. ``view='bom'`` / ``view='tree'`` and the BOM-table row
+        source all sit on this one walker so they cannot disagree."""
+
+        def walk(
+            ref_id: int,
+            path: list[int],
+            link: dict[str, Any] | None,
+            multiplier: int,
+        ) -> Iterator[BomLine]:
+            children = self.component_contains_children(ref_id)
+            if not children:
+                yield BomLine(
+                    path=path,
+                    link=link,
+                    effective_qty=multiplier,
+                    designator=(link or {}).get("ref"),
+                )
+                return
+            for child in children:
+                yield from walk(
+                    child["child_ref_id"],
+                    [*path, child["child_ref_id"]],
+                    child,
+                    multiplier * child["qty"],
+                )
+
+        yield from walk(root_ref_id, [root_ref_id], None, 1)
+
     def component_current_spec_value(
         self, ref_id: int, spec_id: str
     ) -> ComponentValueRow | None:
@@ -713,6 +771,7 @@ class ComponentMixin:
 
 
 __all__ = [
+    "BomLine",
     "ComponentCategoryRow",
     "ComponentMixin",
     "ComponentSpecRow",
