@@ -400,7 +400,12 @@ from precis_se.measures import (
     validate_relation,
 )
 from precis_se.modes import ModeError, parse_mode
-from precis_se.notes import NOTE_KINDS, NoteError, NoteSpec, validate_about
+from precis_se.notes import (
+    SE_NOTE_KINDS,
+    NoteError,
+    NoteSpec,
+    validate_about,
+)
 from precis_se.pockets import HULL, PocketSpec, stamp_class_hashes
 from precis_se.properties.measurand import Measurand, MeasurandResolver
 from precis_se.rays import RayError, RaySpec
@@ -3221,11 +3226,14 @@ def _find_note(tree: SeTree, name: str) -> NoteSpec | None:
 
 def _op_add_note(tree: SeTree, op: dict[str, Any]) -> None:
     """Append to the interrogation ledger (:mod:`precis_se.notes`) —
-    ``name`` (unique), ``kind`` (question | answer | decision), ``text``
+    ``name`` (unique), ``kind`` (question | answer | decision |
+    principles — one per part: each DOF intended or stopped both ways,
+    fail-safe, load path, insertion path; S4, gr516957), ``text``
     (the body), optional ``re`` (the note this answers/decides — must
     already exist; earlier ops in the same batch count), ``about``
     (anchor names, 'block' or 'block.measure' — dangling is legal, the
-    interview view annotates it), ``origin`` (user | proposed)."""
+    interview view annotates it; REQUIRED on a principles note), and
+    ``origin`` (user | proposed)."""
     name = _require_name(op, "name", "add_note")
     if _find_note(tree, name) is not None:
         raise OpError(
@@ -3234,9 +3242,9 @@ def _op_add_note(tree: SeTree, op: dict[str, Any]) -> None:
             "remove_note to retract)"
         )
     kind = str(op.get("kind") or "").strip().lower()
-    if kind not in NOTE_KINDS:
+    if kind not in SE_NOTE_KINDS:
         raise OpError(
-            f"add_note 'kind' must be one of {' | '.join(NOTE_KINDS)}, "
+            f"add_note 'kind' must be one of {' | '.join(SE_NOTE_KINDS)}, "
             f"got {op.get('kind')!r}"
         )
     body = _opt_str(op.get("text"))
@@ -3244,9 +3252,9 @@ def _op_add_note(tree: SeTree, op: dict[str, Any]) -> None:
         raise OpError("add_note needs 'text' (the note body)")
     re_name = _opt_str(op.get("re"))
     if re_name is not None:
-        if kind == "question":
+        if kind in ("question", "principles"):
             raise OpError(
-                "add_note: a question takes no 're' — only answers/"
+                f"add_note: a {kind} takes no 're' — only answers/"
                 "decisions respond to another note"
             )
         target = _find_note(tree, re_name)
@@ -3271,6 +3279,12 @@ def _op_add_note(tree: SeTree, op: dict[str, Any]) -> None:
         about = validate_about(op.get("about"))
     except NoteError as exc:
         raise OpError(f"add_note: {exc}") from exc
+    if kind == "principles" and not about:
+        raise OpError(
+            "add_note: a principles note needs 'about' — the part(s) it "
+            "covers ('block' or 'block.measure' names); the finish gate "
+            "reads coverage from it"
+        )
     tree.notes.append(
         NoteSpec(
             name=name,

@@ -34,8 +34,15 @@ from precis.utils.notes import (
     validate_about as validate_about,
 )
 
+#: se's ledger kinds — the shared three plus ``principles`` (one per
+#: part: each DOF intended or stopped both ways, fail-safe, load path,
+#: insertion path; S4, gr516957). Se-local by design — ``checklist``
+#: reuses :data:`NOTE_KINDS` and must not see the se-only kind.
+SE_NOTE_KINDS = (*NOTE_KINDS, "principles")
+
 __all__ = [
     "NOTE_KINDS",
+    "SE_NOTE_KINDS",
     "NoteError",
     "NoteSpec",
     "dangling_anchors",

@@ -99,7 +99,7 @@ import re
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC
 from difflib import get_close_matches
 from pathlib import Path
@@ -128,6 +128,7 @@ from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
+from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 from precis.utils.text import slugify
 from precis.utils.units import (
@@ -144,6 +145,7 @@ from precis_se import bom as se_bom
 from precis_se import contracts as se_contracts
 from precis_se import datums as se_datums
 from precis_se import drc as se_drc
+from precis_se import dtree_hints as se_dtree_hints
 from precis_se import fasten as se_fasten
 from precis_se import finding_id as se_finding_id
 from precis_se import freedom as se_freedom
@@ -487,7 +489,7 @@ class SeHandler(Handler):
             "view='measures' shows the stack-up evaluation; "
             "view='freedom' lists what is still undecided and by whom. "
             "add_note keeps the design interview durable (kind=question|"
-            "answer|decision, re= links a response to its question, "
+            "answer|decision|principles, re= links a response to its question, "
             "about= anchors blocks/measures); view='interview' renders "
             "it, open questions first. "
             "view='validate' leads with filled-fraction honesty and "
@@ -1259,6 +1261,15 @@ class SeHandler(Handler):
             if pending_jobs:
                 body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
             body += "\n\n" + self._reply_digest(tree, ref.id)
+        try:
+            leaf_rows = se_dtree_hints.leaf_hint_rows(self.store, op_list)
+        except Exception as exc:
+            # the edit already landed — a hint-path fault must not turn
+            # the ack into a raised call (:meth:`_reply_digest` posture).
+            log.warning("se: leaf hints failed for %s: %s", ref.id, exc)
+            leaf_rows = []
+        if leaf_rows:
+            body += render_next_section(leaf_rows)
         return Response(body=body)
 
     def _join_dry_run(self, ref: Any, op_list: list[dict[str, Any]]) -> Response:
@@ -3479,6 +3490,35 @@ class SeHandler(Handler):
                 f"  {s} ({why})" for s, why in sorted(kept.items())
             )
         return Response(body=body)
+
+    # ── tag ──────────────────────────────────────────────────────────
+    def tag(
+        self,
+        *,
+        id: Any = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """The shared ref-level tag op, plus the ``STATUS:done`` soft
+        finish gate (S4, gr516957): marking a design done appends the
+        finish check — parts with no ``principles`` note, connects with
+        no ``params.leaf`` — to the ack. Warnings, never a refusal; a
+        gate crash must not turn a landed tag into a raised call
+        (:meth:`_reply_digest`'s posture)."""
+        resp = super().tag(id=id, add=add, remove=remove, **_kw)
+        if not any(str(t).strip().upper() == "STATUS:DONE" for t in add or []):
+            return resp
+        try:
+            from precis.utils.slug_ref import resolve_live_slug_ref
+
+            ref = resolve_live_slug_ref(self.store, kind="se", id=id)
+            warn = se_dtree_hints.finish_warnings(persist.load_tree(self.store, ref.id))
+            if warn:
+                resp = replace(resp, body=resp.body + "\n\n" + warn)
+        except Exception as exc:
+            log.warning("se: finish gate failed for %r: %s", id, exc)
+        return resp
 
     # ── link ─────────────────────────────────────────────────────────
     def link(  # type: ignore[override]

@@ -234,8 +234,9 @@ lines below count purchasable LINES — and a `total: ≥ … (partial, N of
 P)` line whenever not every purchasable line's price AND quantity both
 resolved; `part` lines never price (no store record exists for a
 C-number).
-- `add_note` — `name`, `kind` `question|answer|decision`, `text` ·
-  `re` · `about` [anchors] · `origin`
+- `add_note` — `name`, `kind` `question|answer|decision|principles`, `text` ·
+  `re` · `about` [anchors] · `origin` (`principles` = one per part, needs
+  `about`; `STATUS:done` lists parts without one)
 - `formfind` — force-density form-finding over the axial subgraph:
   `q` per-member overrides · `q_tie`(+1)/`q_strut`(−1)/`q_rod`(+1) ·
   `move` (`'all'` | block list; default: only `origin='proposed'`
