@@ -26,7 +26,7 @@ from precis.structure.scene import Atom as StructAtom
 from precis.structure.scene import Scene as StructScene
 from precis_se.handler import SeHandler
 from precis_se.properties.surface import (
-    PROVISIONAL_SETTINGS,
+    SURFACE_SETTINGS,
     classify_atoms,
     paint_surface,
     vdw_radii,
@@ -48,7 +48,7 @@ def _water_surface(scale: float = 1.0) -> Any:
         _WATER,
         _WATER_Q,
         [0, 0, 0],
-        replace(PROVISIONAL_SETTINGS, scale=scale),
+        replace(SURFACE_SETTINGS, scale=scale),
     )
 
 
@@ -195,7 +195,7 @@ def test_surface_view_records_no_as_a_doublet(
     se = _design(store, "no-surface", ["N", "O"], _NO)
     body = se.get(id="no-surface", view="surface", args={"block": "mol"}).body
     assert "multiplicity: 2 (default: lowest spin for 15 electrons" in body
-    assert "PROVISIONAL" in body and "spin population: not returned" in body
+    assert "spin population: not returned" in body
     payload = json.loads(
         se.get(
             id="no-surface",
@@ -213,7 +213,7 @@ def test_surface_view_records_no_as_a_doublet(
     owner = np.array([p["atom"] for p in payload["points"]])
     # stored at the 20 Å box centre, then the block pose adds x = 1 nm
     centres = _NO + 10.0 + np.array([10.0, 0.0, 0.0])
-    radii = vdw_radii(["N", "O"], PROVISIONAL_SETTINGS.scale)
+    radii = vdw_radii(["N", "O"], SURFACE_SETTINGS.scale)
     off = np.linalg.norm(pts - centres[owner], axis=1) - radii[owner]
     assert np.abs(off).max() < 0.05
 

@@ -14,13 +14,13 @@ this region?" for the four measurands the slice-1 painter can score:
   own surface points.
 
 The painter (:func:`~precis_se.properties.surface.paint_surface`, GFN2
-charges, :data:`~precis_se.properties.surface.PROVISIONAL_SETTINGS`) runs
+charges, :data:`~precis_se.properties.surface.SURFACE_SETTINGS`) runs
 on the wall atoms within ``clearance + 3 Å`` of the region — the cluster a
 dangling-bond wall fragment gives meaningful charges for. The region's
 atoms come from :func:`precis_se.datums.resolve` (``atoms:``/``sites:``/
 ``mpatch:`` on the bound structure); the clearance is read off the pocket
 shape that claims the region (``mol:<block>@<clearance>``, Å in the token
-text), 0 when no pocket claims it — the provisional default (spec Q4).
+text), 0 when no pocket claims it — the official default (spec Q4).
 
 Every entry has the ``(tree, measure) -> float | None`` signature and
 carries a ``reason`` attribute refreshed on each call: why a ``None`` was

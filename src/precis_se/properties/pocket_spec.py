@@ -194,7 +194,7 @@ def _replace_id(p: Patch, i: int) -> Patch:
 
 def painted_molecule(tree: SeTree, name: str, without: str | None = None) -> Any | str:
     """The posed molecule block's painted surface (GFN2 charges,
-    :data:`~precis_se.properties.surface.PROVISIONAL_SETTINGS`), or an
+    :data:`~precis_se.properties.surface.SURFACE_SETTINGS`), or an
     error string when it cannot load/paint — the shared source behind
     ``mpatch:`` resolution and the ``pocket_from_molecule`` op.
     ``without`` drops that atom label first (the held fragment,
@@ -745,7 +745,7 @@ def op_pocket_from_molecule(store: Any, tree: SeTree, op: dict[str, Any]) -> str
 
     Args: ``molecule`` (block), ``wall`` (block), ``z_window`` ``[z0,
     z1]`` in nm (the station window the pocket serves; Q1 keeps stations
-    themselves open), ``clearance_A`` (Å, provisional 0 — Q4).
+    themselves open), ``clearance_A`` (Å, default 0 — Q4).
 
     The pocket is named by :func:`pocket_name`:
     ``<wall>-<molecule>@z<z0>-<z1>[r<a>-<b>-<c>]`` — window in integer Å

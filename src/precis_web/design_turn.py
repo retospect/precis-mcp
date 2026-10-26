@@ -722,6 +722,10 @@ _SE_DRY_RUN_SKIPPED: frozenset[str] = frozenset(
         # the pure add_pocket/add_measure paths only, so the dry-run has
         # nothing pure to prepare.
         "pocket_from_molecule",
+        # pocket-from-molecule slice 4: a GFN2 relax per candidate wall —
+        # the whole cost IS the work, and it writes nothing (its answer
+        # is the echoed ranking).
+        "pocket_realize",
         # se-multiphysics slice 1: reads trusted catpath solves off the
         # store (and may run the apparent-order probe solves) to write a
         # proposed wall-rate-constant measure — nothing pure to prepare.

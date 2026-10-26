@@ -108,6 +108,11 @@ HANDLER_LEVEL_OPS = (
     # slice 2b): store-read for the bound structures, GFN2 for the ESP
     # — it emits add_pocket/add_measure through the pure paths.
     "pocket_from_molecule",
+    # The realize loop's pick → join → check ranking
+    # (:mod:`precis_se.pocket_realize`, pocket-from-molecule slice 4):
+    # store-read for the candidate structures, GFN2 for the join — it
+    # writes nothing, its answer is the echoed ranking.
+    "pocket_realize",
     # The catpath TOF → wall-rate-constant binding
     # (:mod:`precis_se.wall_rate`, se-multiphysics.md slice 1): store-read
     # for the quest's trusted solve record, then an add/set_measure
@@ -397,6 +402,11 @@ def apply_ops_with_atomic(
                 continue
             if name == "pocket_from_molecule":
                 echoes.append(pocket_spec.op_pocket_from_molecule(store, tree, op))
+                continue
+            if name == "pocket_realize":
+                from precis_se import pocket_realize as se_pocket_realize
+
+                echoes.append(se_pocket_realize.op_pocket_realize(store, tree, op))
                 continue
             if name == "wall_rate":
                 from precis_se.wall_rate import op_wall_rate

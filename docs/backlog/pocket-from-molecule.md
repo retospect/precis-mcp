@@ -13,10 +13,8 @@ Reto, 2026-10-17. First concrete driver of the intent-to-realize loop
 (slice 4) and the delivery of the region property layer's slices B and C
 (slices 1–2 below); both former specs are folded in here. Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
 
-**Status (2026-10-21):** slices 1–3 are built (slices 1 and 3 say
-what below; slice 2 under What exists); slice 1's surface settings are
-provisional until open question 4 is answered, slice 3's spin default
-until question 12 is. Next is slice 4.
+**Status (2026-10-26):** slices 1–4 are built (slice 2 under What
+exists); slice 4's rulings are recorded in Open questions.
 
 ## Use case — the nanoreactor tunnel
 
@@ -193,7 +191,20 @@ compared with the free case). Exact form open pending literature
 (papers queued 2026-10-17); the binding-energy measure above is a
 placeholder until then.
 
-### 4. The realize loop
+### 4. The realize loop — built 2026-10-26
+
+What it does is in the module docstring of
+`src/precis_se/pocket_realize.py` (pick/join/check, the score, the
+ranking), the `pocket_realize` op in
+`src/precis_se/atomic/apply.py`, the cluster helpers in
+`src/precis_se/atomic/clearance.py` (`cluster_cut`, `cap_dangling`),
+and skill `precis-se-regions-help` §pocket_realize. In short: each
+candidate is a `structure` design posed by the wall block's transform;
+the loop cuts the cluster, H-caps it, relaxes the complex at GFN2 with
+the far wall pinned, scores binding energy + per-region measures + held
+RMSD, ranks greedily, and echoes the ranked list with provenance. It
+writes nothing. A `dft` mapping (catpath's `dft` config, the Q5/Q7
+seam) rides verbatim into provenance.
 
 **Owning code:** new `src/precis_se/pocket_realize.py`, the first
 implementation of the intent-to-realize pick → join → check
@@ -214,10 +225,11 @@ radius of the pocket, dangling bonds H-capped), place the molecule in
 the pocket, relax at GFN2 with the far wall pinned, then score:
 binding energy, each region's computed value against its band (slice 1
 computers), and for case b the RMSD of the held fragment from its
-frozen shape after the relax. Rank, keep the best, adjust the candidate
-and repeat until the score stops improving or the cap is hit. A run
-that ends without a candidate inside every band reports which regions
-failed.
+frozen shape after the relax. Rank; the cap bounds the evaluations.
+v1 evaluates the fixed candidate list once — accepted (GRIPE_FIX
+ruling, 2026-10-26); there is no adjust step, it is an open item at
+the top of slice 5. A run that ends without a candidate inside every
+band reports which regions failed.
 
 **Output:** a ranked candidate list with per-region mismatch, the
 energies, and provenance per pick (candidate source, spec class hash,
@@ -234,20 +246,27 @@ provenance.
 **From se-intent-to-realize-loop (folded 2026-10-21).** v1 is a greedy
 loop (pick, join, check, re-pick on failure), not a global search that
 backtracks over the whole design; a failing check triggers a re-pick,
-never a silent placement. Open: whether the loop is an MCP op or a
-workbench chat-turn affordance (`design-workbench-realize.md`, which turns
-an already-picked candidate into a bound structure); slice 4 decides. When
-a second driver needs the loop, extract it from `pocket_realize.py` into a
-general intent → realize surface.
+never a silent placement. Decided (GRIPE_FIX ruling, 2026-10-26): the
+loop is an MCP op (`pocket_realize`); `design-workbench-realize.md`
+(which turns an already-picked candidate into a bound structure) stays
+the chat-turn surface. When a second driver needs the loop, extract it
+from `pocket_realize.py` into a general intent → realize surface.
 
 ### 5. Refinement ladder ("it'll be wrong first")
 
+**Open (carried from slice 4):** adjust the candidate and repeat until
+the score stops improving — v1 evaluates the fixed candidate list once
+(GRIPE_FIX ruling, 2026-10-26).
+
 **Owning code:** `src/precis_se/pocket_realize.py`; MLIP through the
 `ml` rung of `src/precis/structure/relax.py::relax` with the quest
-`reaction_config.mlip` block's backend/model fields; DFT through GPAW
-(path in open question 5).
+`reaction_config.mlip` block's backend/model fields — UMA (OMol25),
+not MACE, because it takes charge and spin (open question 6); DFT
+through GPAW via autocatpath's `dft` config — RPBE-D3, spin-polarised
+for the NO/NH2 doublets, a hybrid spot check on the final winner
+(open question 5).
 
-**Steps:** GFN2 screens and ranks all candidates. MACE relaxes and
+**Steps:** GFN2 screens and ranks all candidates. UMA relaxes and
 re-scores the top N. GPAW checks the best few. Where a level disagrees
 with the level below (a rank swap, or an energy gap above a threshold),
 the disagreement corrects the pocket spec and the loop re-runs at GFN2.
@@ -297,9 +316,9 @@ tube frame from the product's exit-station pose.
 - GFN2 is a screen. Any claim about energies, N–H bond formation or
   radical behaviour needs DFT.
 - Slice 4 is a research loop. It can end without a candidate.
-- MACE has no spin or charge input. Its accuracy on radicals and on
-  strained carbon must be checked against DFT on a few cases before it
-  ranks anything.
+- UMA (the Q6 MLIP rung — it replaced MACE, which takes neither spin
+  nor charge) is unverified on radicals and strained carbon: check it
+  against DFT on a few cases before it ranks anything.
 
 ## Explicitly NOT in scope
 
@@ -332,6 +351,9 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
 1. **Stations.** Reuse the walker's `declare_states` (one state per
    station, tube as track) or name pockets by station z-window only?
    The walker ops assume DNA footholds and leg occupancy.
+   **Decided (Reto, 2026-10-25):** stations are named by z-window on
+   the tube (slices 2–3's `@z<z0>-<z1>` naming); they move to the
+   walker's `declare_states` when the T3 ring stack arrives.
 2. **Candidate set for slice 4.** The seam catalogue and pattern groups
    carry geometry, not chemistry; hexfold has no per-atom chemistry
    channel. The wall's charge and H-bond partners must come from
@@ -357,10 +379,12 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    its station. This item feeds T3/T4 rather than replacing them.
 4. **Surface parameters.** vdW versus SES, the radius scale, probe
    radius, point density, and the default clearance.
-   **PROVISIONAL (builder pick 2026-10-17, not Reto's answer).** Slice 1
-   runs on these until Reto rules; the surface values live in one
-   place, `src/precis_se/properties/surface.py::PROVISIONAL_SETTINGS`,
-   and `scale`/`density` can be overridden per read.
+   **Decided (Reto, 2026-10-25):** the provisional settings are
+   official — union of scaled vdW spheres, no SES, Bondi radii,
+   scale 1.0, no probe, 3 points/Å², clearance 0 Å. The code constant
+   `src/precis_se/properties/surface.py::SURFACE_SETTINGS` (formerly
+   `PROVISIONAL_SETTINGS`); `scale`/`density` stay overridable
+   per read.
    - Surface: union of scaled vdW spheres, no SES. It needs no probe,
      every point sits on one atom's sphere (so its owning atom, and the
      classes copied from it, are unambiguous), and the slice-1 test is
@@ -383,14 +407,26 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    autocatpath's `dft` config; functional (station-path-finder names a
    range-separated hybrid; GPAW's hybrid support is limited), spin
    polarisation for doublets, cluster size.
+   **Decided (Reto, 2026-10-25):** autocatpath's `dft` config, not
+   precis `struct_relax` `dft-*`. Functional RPBE-D3, with a hybrid
+   spot check on the final winner only. Spin-polarised on for NO and
+   NH2 (doublets). Cluster: ring scaffold plus tethers plus the first
+   wall shell, ~100–150 atoms, dangling bonds H-capped.
 6. **MLIP choice.** Reto named MACE (autocatpath's `mlip` config);
    station-path-finder names UMA (OMol25) for this chemistry because it
    takes charge and spin. MACE-OFF, MACE-MP or UMA for the
    molecule-in-wall complex?
+   **Decided (Reto, 2026-10-25):** UMA — it replaces MACE in slice 5's
+   MLIP rung, because MACE takes neither spin nor charge.
 7. **Spec correction rule.** How a level disagreement changes the spec
    (shift a band, change the clearance, add a per-term offset fitted
    from the pairs), and the thresholds for "disagrees" and for loop
    convergence.
+   **Decided (Reto, 2026-10-25):** option 3 — a per-term offset fitted
+   from the paired level results, applied to the GFN2 scores before
+   the next round. A disagreement is a rank swap in the top 3 OR an
+   energy gap > 0.1 eV; converged = 2 consecutive rounds in which the
+   spec moves less than that.
 8. **Shape grammar.** `PocketSpec.shape` accepts a cad envelope string
    or `hull`; an offset molecular surface is neither. Regions facing a
    molecule patch have no selector form either (`patch:` is on a cad
@@ -414,6 +450,8 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
 10. **Viewer payload.** Whether the vendored three-cad-viewer colours
     per vertex, or the surface needs the shared molecule renderer
     ([se-structure-shared-molecule-viewer](se-structure-shared-molecule-viewer.md)).
+    **Decided (Reto, 2026-10-25):** the vendored three-cad-viewer with
+    per-vertex colours now; move to the shared molecule viewer later.
 11. **Case b stabilisation.** Is "at least the strain energy" measured
     as binding of the held fragment, or as the margin between held and
     relaxed NH2 in the same pocket (ts-stabilizing-pocket's differential
@@ -429,7 +467,8 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     spin-polarised GFN2 gives a spin density and different energies.
     Turn it on for NO and NH2 in slices 3–5's strain and binding
     energies, or leave open-shell energetics to the DFT rung?
-    **Default taken (builder, 2026-10-21, not Reto's answer):** off.
+    **Decided (Reto, 2026-10-25):** off — open-shell energetics go to
+    the DFT rung.
     Slice 3 makes it the explicit `spin_polarization` arg of the
     held-shape op (`relax.py::_xtb_calculator` passes tblite
     `spin_polarization=1.0` only when on). Recommendation: keep it off by
@@ -442,6 +481,12 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     in the MCP image; dispatch the single point as a job and read the
     stored result; or a cheaper charge model (Gasteiger, EEQ) as a
     labelled fallback. Deploy-side, so it is Reto's call.
+    **Decided (Reto, 2026-10-25):** both — run the surface read as a
+    job (the stored result serves reads too big for inline) AND add
+    the tblite wheel to the MCP image so small reads run inline.
+    Filed as gr519389. Until it ships, `pocket_realize` cannot run on
+    the prod MCP image — the op runs its GFN2 join inline and the
+    image has no tblite.
 
 - **Decided (Reto, 2026-10-18), from the readiness judge's proposal:**
   Q8 and Q9 as above. Slice 2 fixes the migration number (next free core

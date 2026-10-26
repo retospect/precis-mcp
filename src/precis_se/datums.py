@@ -1323,7 +1323,7 @@ def _resolve_mol(
     if isinstance(got, ResolvedDatum):
         return got
     _labels, elements, mol_A, _formal, _meta = got
-    settings = se_surface.PROVISIONAL_SETTINGS
+    settings = se_surface.SURFACE_SETTINGS
     points_A, _normals, _owner = se_surface.sample_surface(
         np.asarray(mol_A, dtype=float),
         se_surface.vdw_radii(list(elements), settings.scale),

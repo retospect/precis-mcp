@@ -75,6 +75,11 @@ _ALLOWED: dict[str, str] = {
         "patch centroids are ranked in the wall frame: painted-surface Å "
         "crosses the block pose's metres both ways — the enclave crossing"
     ),
+    "pocket_realize.py": (
+        "realizing a pocket poses the bound molecule's Å atoms into the "
+        "block's metre frame and back (clearance Å→m too) — the structure-"
+        "enclave crossing"
+    ),
 }
 
 #: One legal param set per registered generator, cheapest realization of

@@ -263,6 +263,85 @@ def gap_report(field: GapField) -> GapReport:
 # ── pockets ───────────────────────────────────────────────────────────
 
 
+def cluster_cut(
+    atom_pts_A: NDArray[np.float64],
+    pocket_pts_A: NDArray[np.float64],
+    radius_A: float,
+) -> NDArray[np.int64]:
+    """Ordinals of ``atom_pts_A`` within ``radius_A`` of any
+    ``pocket_pts_A`` point — the cluster-cut helper of
+    pocket-from-molecule slice 4 (docs/backlog/pocket-from-molecule.md):
+    which wall atoms sit close enough to the pocket to carry into the
+    relax cluster. Pairwise over points (a pocket surface is ~10³
+    points, a wall patch ~10² atoms — no tree needed at this size)."""
+    pts = np.asarray(atom_pts_A, dtype=float).reshape(-1, 3)
+    pocket = np.asarray(pocket_pts_A, dtype=float).reshape(-1, 3)
+    if not len(pts) or not len(pocket):
+        return np.zeros(0, dtype=np.int64)
+    dist = np.linalg.norm(pts[:, None, :] - pocket[None, :, :], axis=2)
+    return np.nonzero(dist.min(axis=1) <= float(radius_A))[0].astype(np.int64)
+
+
+#: X–H distance for an H cap standing in for a cut bond, in Å — the
+#: covalent-radius sum with NO bond_cutoff slack (a cap sits at the
+#: chemical bond length, not the detection cutoff).
+def _cap_distance_A(element: str) -> float:
+    from precis.structure.elements import covalent_radius
+
+    return covalent_radius(element) + covalent_radius("H")
+
+
+def cap_dangling(
+    elements: list[str],
+    coords_A: NDArray[np.float64],
+    keep: Any,
+) -> tuple[list[str], NDArray[np.float64], list[int]]:
+    """``(elements, coords, cap_anchor_ordinals)`` — ``elements`` and
+    ``coords_A`` grown by one H per bond that crosses the cut boundary
+    (pocket-from-molecule slice 4).
+
+    A cluster cut through a bonded wall leaves dangling bonds that GFN2
+    would read as radicals. For every kept atom bonded (``bond_cutoff``,
+    1.2× the covalent-radius sum over the FULL cloud) to a dropped
+    neighbour, an H is placed on the kept→dropped direction at the X–H
+    distance (:func:`_cap_distance_A`). ``cap_anchor_ordinals[i]`` is the
+    kept-cloud ordinal of cap ``i``'s anchor, so a caller can pin a cap
+    with its wall atom. Bonds are detected on the full cloud, not the
+    cut — a sheet cut at a pore rim caps once per severed bond, not per
+    dangling valence a narrower graph would invent. Only the kept × all
+    matrix is computed: kept–kept and dropped–dropped pairs can never
+    feed a cap, and a whole-candidate wall is a several-thousand-atom
+    cloud where an O(N²) all-pairs loop would grind before the caller's
+    atom bound refuses it.
+    """
+    from precis.structure.elements import covalent_radius
+
+    coords = np.asarray(coords_A, dtype=float).reshape(-1, 3)
+    keep_idx = np.asarray(keep, dtype=np.int64)
+    kept = np.zeros(len(elements), dtype=bool)
+    kept[keep_idx] = True
+    cov = np.asarray([covalent_radius(e) for e in elements], dtype=float)
+    delta = coords[None, :, :] - coords[keep_idx][:, None, :]
+    dist = np.linalg.norm(delta, axis=2)
+    cutoffs = 1.2 * (cov[keep_idx][:, None] + cov[None, :])
+    crossing = (dist < cutoffs) & ~kept[None, :]
+    out_elements = [elements[int(i)] for i in keep_idx]
+    out_coords = [coords[int(i)] for i in keep_idx]
+    anchors: list[int] = []
+    for k, o in enumerate(keep_idx):
+        i = int(o)
+        for j in np.nonzero(crossing[k])[0]:
+            norm = float(dist[k, j])
+            if norm < 1e-9:
+                continue
+            out_elements.append("H")
+            out_coords.append(
+                coords[i] + delta[k, j] / norm * _cap_distance_A(elements[i])
+            )
+            anchors.append(k)
+    return out_elements, np.asarray(out_coords, dtype=float), anchors
+
+
 class _UnionFind:
     def __init__(self) -> None:
         self._parent: dict[Any, Any] = {}

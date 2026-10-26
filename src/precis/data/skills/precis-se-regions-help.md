@@ -81,7 +81,7 @@ search(kind='taxon', under='measurand', q='charge')
 (`nh3!aH3`, the held fragment of pocket_from_molecule's `remove=`).
 
 A pocket's `shape` also accepts `mol:<mol>@<clearance Å>` — the
-molecule's surface offset outward by the clearance (provisional 0;
+molecule's surface offset outward by the clearance (default 0;
 clearance < 0 is refused, 0 allowed).
 
 - `u` runs along the face's first in-plane axis: the block's local +x
@@ -240,6 +240,34 @@ of the fragment's patch regions it carries:
 Cone sizes are provisional. GFN2 is a screen: on NH2 frozen at GFN2's
 own NH3 geometry the strain is 0.006 eV.
 
+## pocket_realize
+
+`{'op': 'pocket_realize', 'wall': '<block>', 'pocket'?: '<name>',
+'candidates': ['<structure slug>', …], 'cap'?: <int>, 'dft'?: {…}}` — a
+handler-level op (needs the store and GFN2): the intent→realize pick →
+join → check loop (pocket-from-molecule slice 4). `pocket` is optional
+when the wall has exactly one. Each candidate is a `structure` design
+posed by the wall block's transform. For each, the loop cuts the wall
+atoms within `clearance + 4 Å` of the pocket's molecule surface, H-caps
+the severed bonds, places the molecule at its spec pose, relaxes the
+complex at GFN2 (wall atoms beyond `clearance + 3 Å` of the surface
+pinned), then scores: binding energy (E_complex − E_wall − E_mol), each
+region measure against its band on the relaxed wall, and for a
+held-shape pocket the fragment's Kabsch-aligned RMSD from its frozen
+shape. Ranking: fewer unmet hard measures, then fewer unmet of any
+strength, then stronger binding; `cap` bounds the evaluations.
+
+The op writes nothing — the echo is the ranked list: per candidate the
+unmet counts, binding energy, relax verdict, cluster/pin counts and
+drift, the failing regions of every loser, and whether the best met
+every hard band. Every result carries provenance (candidate source,
+pocket `class_hash`, iteration); a `dft` mapping (autocatpath's `dft`
+config block) rides verbatim into provenance for the slice-5 refinement
+ladder. A candidate that cannot even join (no wall atoms in the cut, a
+complex over the 160-atom bound) is reported, never silent. It is a
+research loop, not a solver: a run can end with no candidate inside
+every band.
+
 ## Read regions back
 
 ```python
@@ -284,9 +312,9 @@ viewer.
   allows: NO (15 electrons) reads as a doublet. Pass it for a high-spin
   ground state (O2 is a triplet). A multiplicity that does not fit the
   electron count is refused.
-- Surface settings are **provisional**: Bondi radii × 1.0, 3 points/Å²,
-  no probe. `scale` (0.5–3) and `density` (points/Å², up to 20)
-  override them for one read.
+- Surface settings are fixed (decided 2026-10-25): Bondi radii × 1.0,
+  3 points/Å², no probe. `scale` (0.5–3) and `density` (points/Å², up
+  to 20) override them for one read.
 - No per-atom spin population: the GFN2 run is not spin-polarised, and
   the read says so.
 - Needs tblite in the serving process. Without it the read is

@@ -15,9 +15,10 @@ table :mod:`precis_se.atomic.clearance` measures gaps with), sampled per
 atom on a Fibonacci sphere and kept where no other sphere covers the
 point. "Nearest atom" is the owning sphere — the atom minimising
 distance minus radius — not the Euclidean nearest centre, which on a
-small sphere beside a large one can differ. The settings are
-**provisional** (spec open question 4; :data:`PROVISIONAL_SETTINGS`):
-change them there, and per read through ``args.scale``/``args.density``.
+small sphere beside a large one can differ. The settings are Reto's
+2026-10-25 ruling (spec open question 4;
+:data:`SURFACE_SETTINGS`): change them there, and per read through
+``args.scale``/``args.density``.
 
 **Charge and spin.** ``charge`` (e) and ``multiplicity`` (2S+1) go to
 tblite through :func:`precis.structure.relax._xtb_calculator`. When the
@@ -86,24 +87,22 @@ class SurfaceSettings:
     scale: float = 1.0
     density_per_A2: float = 3.0
     probe_A: float | None = None
-    provisional: bool = True
 
     def describe(self) -> str:
-        tag = " — PROVISIONAL (pocket-from-molecule open question 4)"
         return (
             f"{self.radii} vdW spheres × {self.scale:g}, "
             f"{self.density_per_A2:g} points/Å², no probe"
-            + (tag if self.provisional else "")
         )
 
 
-#: Provisional answer to spec open question 4 (2026-10-17; reasoning in
+#: The surface settings, official since Reto's 2026-10-25 ruling (spec
+#: open question 4, decided; reasoning in
 #: docs/backlog/pocket-from-molecule.md): the contact surface itself
 #: (scale 1.0, so slice 2's clearance is the only offset), no probe, and
 #: 3 points/Å² (about 0.6 Å spacing, finer than H-bond geometry; 123
 #: points on NO, 110 on water). Change these values here; nothing else
 #: hard-codes them.
-PROVISIONAL_SETTINGS = SurfaceSettings()
+SURFACE_SETTINGS = SurfaceSettings()
 
 
 @dataclass(frozen=True)
@@ -252,7 +251,7 @@ def paint_surface(
     coords: NDArray[np.float64],
     atom_charges: NDArray[np.float64],
     formal_charges: list[int],
-    settings: SurfaceSettings = PROVISIONAL_SETTINGS,
+    settings: SurfaceSettings = SURFACE_SETTINGS,
 ) -> PaintedSurface:
     """The surface of a molecule whose per-atom charges are already known
     (no backend needed — :func:`gfn2_single_point` supplies them on read)."""
@@ -400,7 +399,7 @@ def render_surface(store: Any, node: Any, args: dict[str, Any]) -> str:
         )
     elements = [scene.atoms[la].element for la in labels]
     formal = [int(scene.atoms[la].charge or 0) for la in labels]
-    settings = PROVISIONAL_SETTINGS
+    settings = SURFACE_SETTINGS
     scale = _float_arg(args, "scale", 0.5, 3.0)
     density = _float_arg(args, "density", 0.0, 20.0)
     if scale is not None:
@@ -472,7 +471,6 @@ def render_surface(store: Any, node: Any, args: dict[str, Any]) -> str:
                     "scale": settings.scale,
                     "density_per_A2": settings.density_per_A2,
                     "probe_A": settings.probe_A,
-                    "provisional": settings.provisional,
                 },
                 "atoms": [
                     {

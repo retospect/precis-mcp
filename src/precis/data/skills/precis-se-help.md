@@ -187,7 +187,9 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
   (`patch:`/`ring:`/`sites:`/`atoms:`/`mpatch:`), `mol:` pocket shapes
   and `add_pocket`/`set_pocket`/`remove_pocket` + `view='pockets'` — see
   `precis-se-regions-help`. `pocket_from_molecule` inverts a posed
-  molecule's painted surface into a wall pocket spec (same skill).
+  molecule's painted surface into a wall pocket spec, and
+  `pocket_realize` ranks posed candidate walls against it at GFN2
+  (same skill).
 
 ## Ops — modes, binding, fabrication
 
