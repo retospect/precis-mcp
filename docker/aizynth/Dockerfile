@@ -29,10 +29,10 @@ RUN apt-get update \
 FROM python:3.11-slim-bookworm
 
 # AiZynth pulls rdkit + onnxruntime; the slim base needs a couple of shared
-# libs for rdkit's drawing/IO. tini reaps the aizynthcli child cleanly.
+# libs for rdkit's drawing/IO (libexpat1: rdkit.Chem.Draw, imported by linchemin). tini reaps the aizynthcli child cleanly.
 ARG AIZYNTH_VERSION=4.3.2
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libxrender1 libxext6 tini \
+ && apt-get install -y --no-install-recommends libxrender1 libxext6 libexpat1 tini \
  && rm -rf /var/lib/apt/lists/* \
  && pip install --no-cache-dir "aizynthfinder==${AIZYNTH_VERSION}"
 
