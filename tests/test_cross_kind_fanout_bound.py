@@ -41,6 +41,59 @@ def test_fan_out_concurrency_never_exceeds_cap(
     assert 1 < state["peak"] <= search_mod.CROSS_KIND_MAX_WORKERS
 
 
+def test_fan_out_shares_the_dispatch_query_embedding(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr519679: the vector the dispatcher computed once must serve every
+    kind. A per-kind re-embed inside a worker is a remote call on the
+    fan-out deadline — a slow/at-capacity embed service turns ~14 kinds
+    into stragglers and starves every kind queued behind them."""
+    from precis.embedder import MockEmbedder
+
+    rt = runtime_with_store
+
+    class _CountingEmbedder(MockEmbedder):
+        def __init__(self, dim: int) -> None:
+            super().__init__(dim=dim)
+            self.calls = 0
+
+        def embed_one(self, text: str) -> list[float]:
+            self.calls += 1
+            return super().embed_one(text)
+
+    store = rt.hub.store
+    assert store is not None
+    emb = _CountingEmbedder(dim=store.embedding_dim())
+    monkeypatch.setattr(rt.hub, "embedder", emb)
+    rt._dispatch_cross_kind("*", {"q": "zebra quoll sensor"})
+    assert emb.calls == 1
+
+
+def test_per_kind_statement_timeout_caps_a_straggler(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr519679: a kind may not hold a pooled worker for the whole
+    deadline — its server-side statement timeout is capped, so Postgres
+    cancels a runaway query early and the queue drains to the cheap
+    kinds waiting behind it."""
+    from precis.store._chunks_ops import ANN_STATEMENT_TIMEOUT_MS
+
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:3]
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PER_KIND_S", 2.0)
+    seen: dict[str, int | None] = {}
+
+    def fake(k: str) -> list:
+        seen[k] = ANN_STATEMENT_TIMEOUT_MS.get()
+        return []
+
+    _patch_invoke(monkeypatch, rt, fake)
+    rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
+    for k in kinds:
+        timeout = seen[k]
+        assert timeout is not None and timeout <= 2000
+
+
 def test_fan_out_deadline_names_stragglers_and_keeps_fast_kinds(
     runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

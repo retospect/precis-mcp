@@ -71,6 +71,15 @@ CROSS_KIND_MIN_START_MS = 1_500
 _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
 #: Wall-clock budget for the whole fan-out, not per kind.
 CROSS_KIND_DEADLINE_S = 30.0
+#: Per-kind server-side statement cap inside the fan-out (gr519679).
+#: Without it one kind's runaway query (a global-route ANN scan over the
+#: paper-dominated index measures 10-30 s on prod) can hold a pooled
+#: worker for the entire deadline while cheap kinds starve behind it.
+#: Postgres cancels the statement at this bound, the kind lands in the
+#: errored footer by name, and the worker moves on. Sized well above any
+#: healthy kind's latency (a ready partial-index kind answers in <1 s)
+#: and well below the whole-fan-out deadline.
+CROSS_KIND_PER_KIND_S = 8.0
 
 _cross_kind_pool: ThreadPoolExecutor | None = None
 _cross_kind_pool_lock = threading.Lock()
@@ -1589,8 +1598,12 @@ class SearchMixin(RuntimeShape):
                     f"fan-out deadline left {remaining_ms}ms — too late to start"
                 )
             # Postgres cancels the ANN scan at the deadline; the client-side
-            # wait alone would leave it running.
-            ANN_STATEMENT_TIMEOUT_MS.set(remaining_ms)
+            # wait alone would leave it running. The per-kind cap (gr519679)
+            # stops a single runaway query from holding its worker for the
+            # whole deadline while the rest of the queue starves.
+            ANN_STATEMENT_TIMEOUT_MS.set(
+                min(remaining_ms, int(CROSS_KIND_PER_KIND_S * 1000))
+            )
             return self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
 
         deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S

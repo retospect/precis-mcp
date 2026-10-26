@@ -1236,6 +1236,7 @@ class FindingHandler(NumericRefHandler):
         # now that this kind reaches the cross-kind fan-out.
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Claim-hub-only cross-kind stream, posture-annotated.
@@ -1285,6 +1286,7 @@ class FindingHandler(NumericRefHandler):
             chunk_kinds=["finding_body"],
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            query_vec=query_vec,
         )
         if not refs:
             return []

@@ -144,6 +144,7 @@ def fused_ref_hits(
     exclude_ref_ids: list[int] | None = None,
     include_ref_ids: list[int] | None = None,
     card_kinds: tuple[str, ...] | None = None,
+    query_vec: list[float] | None = None,
 ) -> list[Ref]:
     """Hybrid ref-level search: title lexical + block hybrid + notation leg.
 
@@ -181,7 +182,17 @@ def fused_ref_hits(
     if not (q and q.strip()):
         return []
 
-    query_vec = query_vec_for(embedder, q, mode)
+    # ``query_vec=`` may be pre-supplied by the runtime cross-kind
+    # dispatcher, which embeds the query once for all kinds (gr519679):
+    # without it every kind on this path paid its own ``embed_one`` —
+    # a remote call inside a deadline-bounded fan-out worker. Lexical
+    # modes take no vector; an unsupplied ``query_vec`` falls back to
+    # the per-kind embed exactly as the dispatcher's degrade path
+    # intends.
+    if (mode or "").strip().lower() in ("lexical", "verbatim", "literal"):
+        query_vec = None
+    elif query_vec is None:
+        query_vec = query_vec_for(embedder, q, mode)
     semantic_only = (mode or "").strip().lower() == "semantic"
     exclude_set = set(exclude_ref_ids) if exclude_ref_ids else None
     include_set = set(include_ref_ids) if include_ref_ids is not None else None

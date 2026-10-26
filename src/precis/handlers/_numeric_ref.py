@@ -2024,6 +2024,7 @@ class NumericRefHandler(Handler):
         # the ``_invoke_handler`` strictness gate entirely).
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Ref-level hybrid search returned as ``SearchHit``s.
@@ -2043,6 +2044,11 @@ class NumericRefHandler(Handler):
         default hybrid stream for every kind built on this base. Declared
         explicitly and forwarded into both branches, mirroring
         ``PaperHandler.search_hits``.
+
+        ``query_vec=`` is the dispatcher's once-per-call query embedding
+        (gr519679); swallowed by ``**_kw`` before, it left every kind on
+        this path paying its own remote ``embed_one`` inside the
+        deadline-bounded fan-out.
         """
         if not (q and q.strip()):
             return []
@@ -2054,6 +2060,7 @@ class NumericRefHandler(Handler):
                 mode=mode,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
+                query_vec=query_vec,
             )
         normalized_tags = Tag.normalize_filter(
             tags, kind=self.kind, axis_in_use=self._axis_in_use
@@ -2069,6 +2076,7 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=self.search_card_kinds,
+            query_vec=query_vec,
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
         self.store.chunks.bump_salience(
@@ -2113,6 +2121,7 @@ class NumericRefHandler(Handler):
         include_ref_ids: list[int] | None = None,
         chunk_scope: str | None = None,
         hard_cut: bool = False,
+        query_vec: list[float] | None = None,
     ) -> tuple[
         list[tuple[Any, Ref, float]],
         int,
@@ -2179,7 +2188,11 @@ class NumericRefHandler(Handler):
         fold_info: dict[int, tuple[float | None, bool]] = {}
         raw = self.store.chunks.search_chunks(
             q=q,
-            query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, mode),
+            query_vec=(
+                query_vec
+                if query_vec is not None
+                else query_vec_for(getattr(self.hub, "embedder", None), q, mode)
+            ),
             mode=mode,
             kind=self.kind,
             tags=tags,
@@ -2445,6 +2458,7 @@ class NumericRefHandler(Handler):
         mode: str | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        query_vec: list[float] | None = None,
     ) -> list[SearchHit]:
         """Ref-grouped chunk-level hits as ``SearchHit`` for cross-kind merge.
 
@@ -2466,6 +2480,7 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             hard_cut=True,
+            query_vec=query_vec,
         )
         chip_map = tag_chips.chips_bulk(
             self.store, {int(ref.id): self.kind for _, ref, _ in ordered}

@@ -402,17 +402,36 @@ class OrcidHandler(Handler):
             lines.append(f"\n## {_oi(ref.id)}  {ref.slug}  (score={score:.2f})\n{name}")
         return Response(body="\n".join(lines))
 
-    def search_hits(self, *, q: str | None = None, page_size: int = 10, **_kw: Any):
-        """Cross-kind merge entry point (``kind='*'`` fan-out)."""
+    def search_hits(
+        self,
+        *,
+        q: str | None = None,
+        page_size: int = 10,
+        query_vec: list[float] | None = None,
+        **_kw: Any,
+    ):
+        """Cross-kind merge entry point (``kind='*'`` fan-out).
+
+        ``query_vec=`` is the dispatcher's shared query embedding —
+        without it this kind paid its own remote ``embed_one`` inside
+        the deadline-bounded fan-out worker (gr519679)."""
         from precis.utils.search_merge import block_hits_to_search_hits
 
         if not (q and q.strip()):
             return []
-        hits = self._card_hits(q, limit=page_size, mode=None)
+        hits = self._card_hits(q, limit=page_size, mode=None, query_vec=query_vec)
         return block_hits_to_search_hits(hits, kind="orcid")
 
-    def _card_hits(self, q: str, *, limit: int, mode: str | None):
-        query_vec = embed_query(self.embedder, q)
+    def _card_hits(
+        self,
+        q: str,
+        *,
+        limit: int,
+        mode: str | None,
+        query_vec: list[float] | None = None,
+    ):
+        if query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
