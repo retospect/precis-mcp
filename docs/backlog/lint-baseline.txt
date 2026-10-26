@@ -5,7 +5,7 @@
 # or after it shrinks.
 draft 11
 hexfold 15
-pcb 44
+pcb 45
 quest 10
 se 27
 taproot 10

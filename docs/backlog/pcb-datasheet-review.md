@@ -341,6 +341,9 @@ recency); a stored sibling order is YAGNI until a reader needs it.
    shipped: recomputing derived facts (slice 6 owns them); the I²C fold
    into `precis-i2c-help` (slice 6).
 8. Lifecycle attribute + the shortlist and recorded selection (9, 11).
+   The record's shape, rels and skill are owned by
+   [pcb-design-flow](pcb-design-flow.md); this slice keeps lifecycle,
+   ranking and staleness and consumes that record.
 9. Design from facts — required externals and straps (10).
 10. Provenance reverse query + adversarial re-check (12).
 11. Human review state + queue on the board page (13).

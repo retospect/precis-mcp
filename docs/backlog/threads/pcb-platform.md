@@ -88,6 +88,11 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
     what "fatten traces by net property" already has (current→width
     via IPC-2221) and lacks (impedance→width, return-path→geometry,
     per-edge widths). Do not build without a further ruling.
+12. **backlog/pcb-design-flow.md** — `draft/high`, filed 2026-10-26 from
+    gr519925 + gr519924 (TAZ leaf dogfood): the requirements-to-fab
+    skill, selection record, budget convention, consigned BOM lines,
+    mech/coating checklist. Slice 1 is a skill with no code and can go
+    as soon as Q1/Q2 are ruled; it is independent of items 1–11.
 
 ## Horizon
 
