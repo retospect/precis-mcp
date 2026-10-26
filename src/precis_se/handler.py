@@ -355,6 +355,7 @@ class SeHandler(Handler):
                 "molecular_d",
                 "mean_free_path",
                 "prefunits",
+                "recompute",
             }
         ),
         "put": ArgsSpec({"description", "ops", "scenario", "prefunits"}),
@@ -680,6 +681,7 @@ class SeHandler(Handler):
             "assembly_check",
             "trace",
             "joints",
+            "fit",
             "ops",
             "links",
         ),

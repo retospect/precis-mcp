@@ -16,23 +16,62 @@ values are never split) — finds each free-form action arg given as a
 string, and runs ansible's own splitter over it. A fixture playbook
 carrying the r109 shape proves the gate fires. Skips with a reason when
 ansible-core is not installed in the test env.
+
+ansible monkeypatches ``sys.intern`` when imported, and torch dynamo later
+chokes on the patched object (it surfaced as a bogus ``sentence-transformers
+ERROR`` in precis-status and a TypeError in the structure-kernel tests). So
+the splitter runs in a child interpreter: the test process never imports
+ansible.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-pytest.importorskip(
-    "ansible.parsing.splitter",
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("ansible") is None,
     reason="ansible-core is not installed in the test env",
 )
 
+# Child-interpreter body: JSON list of arg strings in, JSON list out holding
+# the first error line per arg (None when the arg splits cleanly).
+_SPLIT_CHILD = """
+import json, sys
 from ansible.errors import AnsibleParserError
 from ansible.parsing.splitter import split_args
+out = []
+for arg in json.load(sys.stdin):
+    try:
+        split_args(arg)
+        out.append(None)
+    except AnsibleParserError as e:
+        out.append(str(e).splitlines()[0])
+json.dump(out, sys.stdout)
+"""
+
+
+def _split_errors(args: list[str]) -> list[str | None]:
+    """Run ansible's ``split_args`` over *args* in a child interpreter;
+    one entry per arg: the parser error's first line, or None if clean."""
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", _SPLIT_CHILD],
+        input=json.dumps(args),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=120,
+    )
+    return json.loads(proc.stdout)
+
 
 _DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 _FIXTURE = (
@@ -92,18 +131,17 @@ def test_deploy_tree_has_task_files() -> None:
 def test_every_freeform_arg_splits_cleanly() -> None:
     """The r109 gate: split_args must accept every string-form shell/command
     arg in the deploy tree, comments included."""
-    failures: list[str] = []
-    scanned = 0
+    located: list[tuple[str, str]] = []
     for path in _task_files():
         rel = path.relative_to(_DEPLOY.parent)
         for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")):
             for where, arg in _freeform_args(doc):
-                scanned += 1
-                try:
-                    split_args(arg)
-                except AnsibleParserError as e:
-                    failures.append(f"{rel}:{where} — {str(e).splitlines()[0]}")
-    assert scanned, "no free-form string args found — the gate is vacuous"
+                located.append((f"{rel}:{where}", arg))
+    assert located, "no free-form string args found — the gate is vacuous"
+    errors = _split_errors([arg for _, arg in located])
+    failures = [
+        f"{at} — {err}" for (at, _), err in zip(located, errors, strict=True) if err
+    ]
     assert not failures, "unbalanced quote/jinja2 in a free-form arg:\n" + "\n".join(
         failures
     )
@@ -115,5 +153,5 @@ def test_the_r109_fixture_playbook_fails_the_gate() -> None:
     (doc,) = yaml.safe_load_all(_FIXTURE.read_text(encoding="utf-8"))
     found = _freeform_args(doc)
     assert len(found) == 1
-    with pytest.raises(AnsibleParserError, match="unbalanced"):
-        split_args(found[0][1])
+    (err,) = _split_errors([found[0][1]])
+    assert err is not None and "unbalanced" in err
