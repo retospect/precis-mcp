@@ -12,7 +12,11 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -42,6 +46,10 @@ _rule_a = _mod._rule_a
 _rule_b = _mod._rule_b
 _rule_c = _mod._rule_c
 main = _mod.main
+
+# Loading the hook ran its ``sys.path.insert`` for the sibling helpers, so
+# ``_pykind_hits`` is importable the same way the hook imports it.
+_pykind = importlib.import_module("_pykind_hits")
 
 _WT = "/repo/.claude/worktrees/wt1"
 
@@ -557,3 +565,289 @@ def test_main_dedup_silent_falls_through_to_rules(
     f.write_text("hello\n", encoding="utf-8")
     rc, out = _run_main(monkeypatch, _bash_payload(f"cat {f}", session="s-ft"), capsys)
     assert rc == 0 and out is None
+
+
+# ── Rule A hits: the hook runs the bounded lookup itself (gr520146 c4) ────
+
+
+def _recorder(calls: list):
+    """A ``pykind_hits`` double that records invocations and returns no hits."""
+
+    def fake(*a, **kw):
+        calls.append(a)
+        return []
+
+    return fake
+
+
+def _fake_popen(stdout: str = "", returncode: int = 0, hang: bool = False, record=None):
+    """A ``subprocess.Popen`` double: canned stdout/rc (or a communicate
+    that always times out), recording spawn argv/kwargs for assertions."""
+
+    class _P:
+        def __init__(self, argv, **kw):
+            if record is not None:
+                record.append({"argv": argv, "kw": kw})
+            # an impossible pid — a getpgid/killpg aimed at it must fail,
+            # never land on pytest's own process group.
+            self.pid = 0x5EAD000
+            self.returncode = returncode
+            self.stdout = None
+            self.killed = False
+
+        def communicate(self, timeout=None):
+            if hang:
+                raise subprocess.TimeoutExpired("coderef", timeout)
+            return stdout, ""
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+
+    return _P
+
+
+def test_rule_a_appends_top_hits(monkeypatch, tmp_path) -> None:
+    (tmp_path / "src").mkdir()  # a missing target is not src-scoped
+    canned = [
+        "precis.store::Store.get  src/precis/store.py:12",
+        "precis.store::Store.get_many  src/precis/store.py:40",
+    ]
+    monkeypatch.setattr(_mod, "pykind_hits", lambda tok, cwd, **kw: canned)
+    note = _rule_a("grep Store src/", str(tmp_path))
+    assert note is not None
+    assert "Top hits" in note
+    for h in canned:
+        assert h in note
+
+
+def test_main_appends_hits(monkeypatch, capsys, tmp_path) -> None:
+    (tmp_path / "src").mkdir()  # a missing target is not src-scoped
+    monkeypatch.setattr(
+        _mod, "pykind_hits", lambda tok, cwd, **kw: ["m::f  src/m.py:1"]
+    )
+    payload = {
+        "tool_name": "Bash",
+        "cwd": str(tmp_path),
+        "tool_input": {"command": "grep Foo src/"},
+    }
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "Top hits" in ctx
+    assert "m::f  src/m.py:1" in ctx
+
+
+def test_rule_a_no_lookup_on_non_src_target(monkeypatch, tmp_path) -> None:
+    """A pythonish target OUTSIDE src/ (``tests/``) still gets the nudge but
+    no lookup — the ruling's trigger is a src-scoped grep."""
+    calls: list = []
+    monkeypatch.setattr(_mod, "pykind_hits", _recorder(calls))
+    tdir = tmp_path / "tests"
+    tdir.mkdir()
+    (tdir / "test_x.py").write_text("x = 1\n", encoding="utf-8")
+    note = _rule_a("grep Foo tests", str(tmp_path))
+    assert note is not None
+    assert "Top hits" not in note
+    assert calls == []
+
+
+def test_rule_a_no_lookup_on_literal_grep(monkeypatch, tmp_path) -> None:
+    calls: list = []
+    monkeypatch.setattr(_mod, "pykind_hits", _recorder(calls))
+    assert _rule_a('grep "some text" src/', str(tmp_path)) is None
+    assert calls == []
+
+
+def test_rule_a_falls_back_to_plain_nudge(monkeypatch, tmp_path) -> None:
+    """Empty/timeout/error in the lookup leaves today's nudge text."""
+    (tmp_path / "src").mkdir()  # src-scoped: the lookup runs and returns []
+    monkeypatch.setattr(_mod, "pykind_hits", lambda tok, cwd, **kw: [])
+    note = _rule_a("grep Store src/", str(tmp_path))
+    assert note is not None
+    assert "search(kind='python'" in note
+    assert "Top hits" not in note
+
+
+def test_pykind_hits_timeout_returns_empty(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(_pykind.subprocess, "Popen", _fake_popen(hang=True))
+    monkeypatch.setattr(_pykind, "_coderef", lambda cwd: tmp_path / "coderef")
+    assert _pykind.pykind_hits("Foo", str(tmp_path)) == []
+
+
+def test_pykind_hits_kills_within_budget(monkeypatch, tmp_path) -> None:
+    """A subprocess that overruns is killed at the timeout — the hook never
+    waits past the budget."""
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    monkeypatch.setattr(_pykind, "_coderef", lambda cwd: sleeper)
+    monkeypatch.setattr(_pykind, "TIMEOUT_S", 0.2)
+    t0 = time.monotonic()
+    assert _pykind.pykind_hits("Foo", str(tmp_path)) == []
+    assert time.monotonic() - t0 < 5
+
+
+def test_pykind_hits_bad_rc_returns_empty(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        _pykind.subprocess, "Popen", _fake_popen(stdout="boom\n", returncode=2)
+    )
+    monkeypatch.setattr(_pykind, "_coderef", lambda cwd: tmp_path / "coderef")
+    assert _pykind.pykind_hits("Foo", str(tmp_path)) == []
+
+
+def test_pykind_hits_filters_and_caps(monkeypatch, tmp_path) -> None:
+    fake = _fake_popen(
+        stdout=(
+            "mod.a::f  src/a.py:1\n"
+            "tok: no lexical hits\n"
+            "not a hit line\n"
+            "mod.b::g  src/b.py:2\n"
+        )
+    )
+    monkeypatch.setattr(_pykind.subprocess, "Popen", fake)
+    monkeypatch.setattr(_pykind, "_coderef", lambda cwd: tmp_path / "coderef")
+    assert _pykind.pykind_hits("Foo", str(tmp_path)) == [
+        "mod.a::f  src/a.py:1",
+        "mod.b::g  src/b.py:2",
+    ]
+
+
+def test_pykind_hits_budget_is_bounded() -> None:
+    assert _pykind.TIMEOUT_S <= 1.0
+
+
+def test_pykind_hits_invokes_python_directly(monkeypatch, tmp_path) -> None:
+    """The child is ``sys.executable <script>`` — never ``uv run``: the
+    script's project-mode shebang could sync the venv (a network reach)
+    inside a per-grep hook. coderef is stdlib-only, so this interpreter
+    runs it."""
+    record: list = []
+    monkeypatch.setattr(
+        _pykind.subprocess,
+        "Popen",
+        _fake_popen(stdout="m::f  src/m.py:1\n", record=record),
+    )
+    monkeypatch.setattr(_pykind, "_coderef", lambda cwd: tmp_path / "coderef")
+    assert _pykind.pykind_hits("Foo", str(tmp_path)) == ["m::f  src/m.py:1"]
+    assert len(record) == 1
+    argv = record[0]["argv"]
+    assert argv[0] == sys.executable
+    assert "uv" not in Path(argv[0]).name
+    assert argv[1:] == [
+        str(tmp_path / "coderef"),
+        "find",
+        "Foo",
+        "--limit",
+        "3",
+    ]
+    # its own session -> the timeout path can killpg the git-grep child too
+    assert record[0]["kw"]["start_new_session"] == (os.name == "posix")
+
+
+def test_pykind_hits_kills_the_process_group(monkeypatch, tmp_path) -> None:
+    """On timeout the whole process group dies — a plain ``proc.kill()``
+    would orphan the ``git grep`` grandchild coderef spawned."""
+    if os.name != "posix":
+        pytest.skip("process-group kill is POSIX-only")
+    killed: list = []
+    monkeypatch.setattr(_pykind.os, "getpgid", lambda pid: 4242)
+    monkeypatch.setattr(
+        _pykind.os, "killpg", lambda pgid, sig: killed.append((pgid, sig))
+    )
+    monkeypatch.setattr(_pykind.subprocess, "Popen", _fake_popen(hang=True))
+    monkeypatch.setattr(_pykind, "_coderef", lambda cwd: tmp_path / "coderef")
+    assert _pykind.pykind_hits("Foo", str(tmp_path)) == []
+    assert killed == [(4242, signal.SIGKILL)]
+
+
+def test_src_scoped_missing_target_is_no_lookup(tmp_path) -> None:
+    """A missing target can't be classified — NOT src-scoped, no lookup
+    (guessing would index the wrong tree)."""
+    assert _pykind.src_scoped(["gone/"], str(tmp_path)) is False
+    src = tmp_path / "src"
+    src.mkdir()
+    assert _pykind.src_scoped(["src"], str(tmp_path)) is True
+    assert _pykind.src_scoped(["src/notthere.py"], str(tmp_path)) is False
+    assert _pykind.src_scoped([], str(tmp_path)) is True
+
+
+def test_src_scoped_resolves_the_tree_root(tmp_path) -> None:
+    """cwd a tree subdir: the src/ check resolves against the tree root,
+    so ``grep Foo .`` from inside src/ stays src-scoped."""
+    (tmp_path / ".git").mkdir()
+    inner = tmp_path / "src" / "precis"
+    inner.mkdir(parents=True)
+    assert _pykind.src_scoped(["."], str(inner)) is True
+    outside = tmp_path / "docs"
+    outside.mkdir()
+    assert _pykind.src_scoped(["."], str(outside)) is False
+
+
+def test_coderef_resolves_the_payload_tree(tmp_path, tmp_path_factory) -> None:
+    """cwd inside a git tree -> that tree's scripts/coderef; a git tree
+    without one -> no lookup; no git tree -> the hook's own copy."""
+    (tmp_path / ".git").mkdir()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    coderef = scripts / "coderef"
+    coderef.write_text("# py\n", encoding="utf-8")
+    sub = tmp_path / "src" / "pkg"
+    sub.mkdir(parents=True)
+    assert _pykind._coderef(str(sub)) == coderef
+    coderef.unlink()
+    assert _pykind._coderef(str(sub)) is None
+    plain = tmp_path_factory.mktemp("nogit")
+    fallback = _pykind._coderef(str(plain))
+    assert _pykind.__file__ is not None
+    assert fallback == Path(_pykind.__file__).resolve().parent.parent / "coderef"
+
+
+# ── coderef-nudge.py attaches the same hits on a src-scoped Grep ──────────
+
+
+def test_coderef_nudge_appends_hits_on_src_path(monkeypatch, capsys, tmp_path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "x.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        _coderef_mod, "pykind_hits", lambda tok, cwd, **kw: ["m::f  src/m.py:1"]
+    )
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "tool_input": {"pattern": "Foo", "path": "src"},
+                    "cwd": str(tmp_path),
+                }
+            )
+        ),
+    )
+    assert _coderef_mod.main() == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "m::f  src/m.py:1" in ctx
+
+
+def test_coderef_nudge_no_lookup_outside_src(monkeypatch, capsys, tmp_path) -> None:
+    tdir = tmp_path / "tests"
+    tdir.mkdir()
+    (tdir / "test_x.py").write_text("x = 1\n", encoding="utf-8")
+    calls: list = []
+    monkeypatch.setattr(_coderef_mod, "pykind_hits", _recorder(calls))
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "tool_input": {"pattern": "Foo", "path": "tests"},
+                    "cwd": str(tmp_path),
+                }
+            )
+        ),
+    )
+    assert _coderef_mod.main() == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "Top hits" not in ctx
+    assert calls == []

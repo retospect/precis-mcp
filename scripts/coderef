@@ -42,6 +42,20 @@ module-granularity and need the real import graph, so they lazy-import `grimp`
 (dev dependency-group) rather than pulling it into every invocation — absent,
 they print a one-line install nudge and exit 1 instead of failing the script.
 
+One more verb is the bounded LEXICAL half of `search(kind='python',
+mode='lexical')` — discovery, not resolution:
+
+    coderef find <name> [--limit N]   # top hits as `module::qualname  path:line`
+
+`find` answers "where does this symbol live" cheaply enough for a PreToolUse
+hook: `git grep` narrows to the files containing the needle, then the same
+stdlib `ast` symbol pass indexes just those — the repo-wide index walk is the
+python kind's job (a cold full index won't fit the ~1s hook budget). It
+exists for `scripts/hooks/_pykind_hits.py` (gr520146, comment 4): a hook can't
+call the session MCP, so the nudge shells out here and appends the top hits.
+Scoring mirrors the python kind's lexical needle paths (exact-name > qualname
+> signature/docstring) with the same test-path demotion.
+
 Python-only (the repo is ~all Python); stdlib ``ast``, no deps, no running index —
 deterministic, exact, fast. The precis python kind (``search(kind='python',
 mode='pattern', ...)``, ``get(kind='python', id='main::<qualname>')``) is for
@@ -67,7 +81,8 @@ def repo_root() -> Path:
         out = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
-            text=True, encoding="utf-8",
+            text=True,
+            encoding="utf-8",
             check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
@@ -523,7 +538,8 @@ def _grep_candidates(root: Path, leaf: str) -> list[Path]:
             ["git", "grep", "-l", "-w", "--untracked", leaf, "--", "*.py"],
             cwd=root,
             capture_output=True,
-            text=True, encoding="utf-8",
+            text=True,
+            encoding="utf-8",
             check=False,
         )
         if out.returncode in (0, 1):
@@ -594,6 +610,148 @@ def cmd_callers(root: Path, tokens: list[str]) -> int:
                 total += 1
         print(f"{tok}: {total} caller site(s) across {len(hits)} file(s)")
     return rc
+
+
+# --- find: bounded lexical symbol search (the hook nudge's lookup) -----------
+#
+# `search(kind='python', mode='lexical')` walks the python kind's whole index —
+# right for a warm MCP server, too big for a ~1s PreToolUse hook budget.
+# `find` keeps the same question bounded: `git grep` narrows to files whose
+# text contains the needle (a lexical hit always does — name, qualname,
+# signature and docstring all live in the file), then the same stdlib `ast`
+# pass indexes just those. Scoring mirrors the python kind's `_score_symbol`
+# needle paths (src/precis/handlers/python.py) so the top hits look like the
+# kind's own. Consumer: scripts/hooks/_pykind_hits.py (gr520146, comment 4).
+
+#: Candidate files indexed per query — the outer time bound (each is one
+#: read + one `ast` pass).
+_FIND_FILE_CAP = 100
+
+
+def _find_candidates(root: Path, needle: str) -> list[Path]:
+    """Repo `.py` files whose text contains ``needle`` (case-insensitive,
+    fixed-string — needles are identifiers, but -F keeps any input safe)."""
+    try:
+        out = subprocess.run(
+            ["git", "grep", "-F", "-i", "-l", "--untracked", needle, "--", "*.py"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if out.returncode in (0, 1):
+            return [root / line for line in out.stdout.splitlines() if line]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # git unavailable or not a repo (test fixture) — scan directly.
+    base = root / "src" if (root / "src").is_dir() else root
+    return sorted(p for p in base.rglob("*.py") if ".git" not in p.parts)
+
+
+def _find_score(
+    full_qn: str, name: str, sig: str | None, doc: str | None, needle: str
+) -> float:
+    """Mirror of the python kind's lexical ``_score_symbol`` needle paths:
+    exact qualname 10 > needle-in-qualname 5 (+2 on the short name) >
+    signature 2 > docstring 1."""
+    score = 0.0
+    qn = full_qn.lower()
+    if qn == needle:
+        score += 10
+    elif needle in qn:
+        score += 5
+        if needle in name.lower():
+            score += 2
+    if sig and needle in sig.lower():
+        score += 2
+    if doc and needle in doc.lower():
+        score += 1
+    return score
+
+
+def _is_test_rel(file: str) -> bool:
+    """Same test-path rule as the python kind's demotion: a ``tests/`` root
+    or a ``test_*.py`` / ``*_test.py`` basename."""
+    parts = file.split("/")
+    if parts and parts[0] == "tests":
+        return True
+    base = parts[-1] if parts else file
+    return base.startswith("test_") or base.endswith("_test.py")
+
+
+def cmd_find(root: Path, tokens: list[str]) -> int:
+    limit = 3
+    names: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "--limit" and i + 1 < len(tokens):
+            try:
+                limit = int(tokens[i + 1])
+            except ValueError:
+                limit = 3
+            i += 2
+        else:
+            names.append(tokens[i])
+            i += 1
+    if not names:
+        print("usage: coderef find <name> [--limit N]")
+        return 2
+    for tok in names:
+        needle = tok.lower()
+        pairs: list[tuple[str, Path]] = []
+        for cand in _find_candidates(root, tok):
+            try:
+                pairs.append((cand.relative_to(root).as_posix(), cand))
+            except ValueError:
+                continue
+        # src/ first: the consumer's grep is src-scoped, so the prod hit is
+        # the one worth indexing when the cap truncates.
+        pairs.sort(key=lambda rp: (not rp[0].startswith("src/"), rp[0]))
+        scored: list[tuple[float, str, str, str, int]] = []
+        for rel, cand in pairs[:_FIND_FILE_CAP]:
+            try:
+                src = cand.read_text(encoding="utf-8", errors="ignore")
+                nodes = _symbol_nodes(src)
+            except (OSError, UnicodeError, SyntaxError, ValueError):
+                continue
+            mod = _path_to_module(root, cand) or rel
+            demote = 0.5 if _is_test_rel(rel) else 1.0
+            if needle in mod.lower():
+                # The module itself is a symbol in the python kind's index.
+                scored.append((5.0 * demote, mod, mod, rel, 1))
+            for qual, node in nodes.items():
+                name = qual.rsplit(".", 1)[-1]
+                sig = (
+                    ast.unparse(node.args)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    else None
+                )
+                doc = (
+                    ast.get_docstring(node)
+                    if isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                    else None
+                )
+                sc = _find_score(f"{mod}.{qual}", name, sig, doc, needle)
+                if sc > 0:
+                    scored.append((sc * demote, mod, qual, rel, node.lineno))
+        scored.sort(key=lambda h: (-h[0], h[1], h[2], h[3], h[4]))
+        seen: set[str] = set()
+        shown = 0
+        for _sc, mod, qual, rel, line in scored:
+            loc = f"{mod}::{qual}"
+            if loc in seen:
+                continue
+            seen.add(loc)
+            print(f"{loc}  {rel}:{line}")
+            shown += 1
+            if shown >= limit:
+                break
+        if not shown:
+            print(f"{tok}: no lexical hits")
+    return 0
 
 
 def _to_module(root: Path, token: str) -> str | None:
@@ -783,9 +941,11 @@ def main(argv: list[str]) -> int:
         return cmd_imports(root, rest)
     if cmd == "importers":
         return cmd_importers(root, rest)
+    if cmd == "find":
+        return cmd_find(root, rest)
     print(
         f"unknown command: {cmd} "
-        "(resolve | anchor | check | deps | callers | refs | imports | importers)"
+        "(resolve | anchor | check | deps | callers | refs | imports | importers | find)"
     )
     return 2
 

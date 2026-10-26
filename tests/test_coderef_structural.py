@@ -197,6 +197,92 @@ class TestCallers:
         assert "user.py:" in capsys.readouterr().out
 
 
+class TestFind:
+    """`coderef find` — the bounded lexical lookup the pykind hooks call
+    (gr520146, comment 4). tmp_path fixtures aren't git repos, so these
+    exercise the rglob fallback of ``_find_candidates``."""
+
+    def test_reports_module_qualname_and_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "mod.py").write_text(
+            "def target_func():\n    return 1\n", encoding="utf-8"
+        )
+        out = _run(capsys, coderef.cmd_find, tmp_path, "target_func")
+        assert "pkg.mod::target_func  src/pkg/mod.py:1" in out
+
+    def test_exact_name_outranks_substring(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "a.py").write_text(
+            "def target_func_helper():\n    return 1\n\n\n"
+            "def target_func():\n    return 2\n",
+            encoding="utf-8",
+        )
+        out = _run(capsys, coderef.cmd_find, tmp_path, "target_func")
+        first = out.splitlines()[0]
+        assert "pkg.a::target_func  src/pkg/a.py:" in first
+
+    def test_signature_and_docstring_hits(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "s.py").write_text(
+            'def run(lock_timeout: int) -> int:\n    """Handles the widget."""\n'
+            "    return lock_timeout\n",
+            encoding="utf-8",
+        )
+        out = _run(capsys, coderef.cmd_find, tmp_path, "lock_timeout")
+        assert "pkg.s::run" in out
+        out = _run(capsys, coderef.cmd_find, tmp_path, "widget")
+        assert "pkg.s::run" in out
+
+    def test_no_hits_reports_and_exits_0(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        out = _run(capsys, coderef.cmd_find, tmp_path, "zzzznotthere")
+        assert "no lexical hits" in out
+
+    def test_limit_caps_output(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "mod.py").write_text(
+            "def thing_a():\n    pass\n\n\n"
+            "def thing_b():\n    pass\n\n\n"
+            "def thing_c():\n    pass\n",
+            encoding="utf-8",
+        )
+        out = _run(capsys, coderef.cmd_find, tmp_path, "thing", "--limit", "2")
+        hits = [ln for ln in out.splitlines() if "::" in ln]
+        assert len(hits) == 2
+
+    def test_dispatches_through_main(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "mod.py").write_text(
+            "def target_func():\n    return 1\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(coderef, "repo_root", lambda: tmp_path)
+        rc = coderef.main(["coderef", "find", "target_func"])
+        assert rc == 0
+        assert "pkg.mod::target_func" in capsys.readouterr().out
+
+
 class TestGrimpVerbs:
     def test_imports_over_a_real_package(
         self,

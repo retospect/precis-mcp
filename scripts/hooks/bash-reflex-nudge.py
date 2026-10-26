@@ -24,7 +24,10 @@ ambiguous, both rules stay silent rather than guess.
   it too — the index can't see those, gr520146). The nudge names the right
   tool per intent: ``search(kind='python', mode='lexical'|'semantic')`` for
   where/concept, ``mode='literal'`` for a string VALUE, ``coderef callers``
-  for who-calls.
+  for who-calls. On a src-scoped grep it also runs the bounded lookup
+  itself (``_pykind_hits.py`` → ``scripts/coderef find``, hard 1s) and
+  appends the top 3 ``module::qualname  path:line`` hits — silent fallback
+  to the plain nudge on any failure (gr520146, comment 4).
 
 - **Rule F (grep -c).** A GNU ``grep``/``egrep``/``fgrep`` run with a count
   flag (``-c``/``--count``) across a directory — recursive flag or a
@@ -73,6 +76,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pykind_hits import pykind_hits, src_scoped
 from _symbol_heuristic import (
     is_symbol_candidate,
     path_arg_is_pythonish,
@@ -182,7 +186,7 @@ def _rule_a(command: str, cwd: str = "") -> str | None:
     tok = pattern.strip("\"'")
     if not is_symbol_candidate(tok):
         return None
-    return (
+    note = (
         f"[pykind] grepping (via Bash) for the symbol `{tok}` — the "
         "python kind usually answers in one call: "
         f"search(kind='python', mode='lexical'|'semantic', q='{tok}') "
@@ -192,6 +196,21 @@ def _rule_a(command: str, cwd: str = "") -> str | None:
         "Grep stays right for text, non-Python files and targets "
         "outside this repo."
     )
+    # gr520146 ruling (comment 4): on a src-scoped symbol/concept grep the
+    # hook runs the lexical lookup itself and appends the top hits — the
+    # agent sees the answer, not just the pointer. Bounded inside
+    # pykind_hits; a miss/timeout leaves the plain nudge.
+    if src_scoped(positional[1:], cwd):
+        try:
+            hits = pykind_hits(tok, cwd)
+        except Exception:
+            hits = []
+        if hits:
+            note += (
+                "\nTop hits (the python kind's lexical answer, already run):\n"
+                + "\n".join(f"  {h}" for h in hits)
+            )
+    return note
 
 
 def _rule_b(command: str) -> str | None:

@@ -8,7 +8,11 @@ better first call — lexical/semantic finds where the symbol lives,
 ``scripts/coderef callers <file.py::Sym>`` is the exact who-calls once the
 symbol is named. This injects a one-line, NON-BLOCKING reminder naming the
 right tool per intent (gr520146: a nudge that only points at coderef's
-who-calls loses to grep on where/concept questions).
+who-calls loses to grep on where/concept questions). On a src-scoped grep
+it also runs the bounded lookup itself (``_pykind_hits.py`` →
+``scripts/coderef find``, hard 1s) and appends the top 3
+``module::qualname  path:line`` hits — silent fallback to the plain nudge
+on any failure (gr520146, comment 4).
 
 Grep stays correct for text — strings, comments, config, non-Python, or a
 symbol you can't yet name — and for anything outside this repo
@@ -27,6 +31,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pykind_hits import pykind_hits, src_scoped
 from _symbol_heuristic import (
     is_symbol_candidate,
     path_arg_is_pythonish,
@@ -64,7 +69,8 @@ def main() -> int:
     tok = pattern.strip()
     if not is_symbol_candidate(tok):
         return 0
-    if not _python_target(ti, str(payload.get("cwd") or "")):
+    cwd = str(payload.get("cwd") or "")
+    if not _python_target(ti, cwd):
         return 0
 
     note = (
@@ -77,6 +83,19 @@ def main() -> int:
         "Grep stays right for text, non-Python files and targets "
         "outside this repo."
     )
+    # gr520146 ruling (comment 4): on a src-scoped grep the hook runs the
+    # bounded lexical lookup itself and appends the top hits.
+    path = str(ti.get("path") or "")
+    if src_scoped([path] if path else [], cwd):
+        try:
+            hits = pykind_hits(tok, cwd)
+        except Exception:
+            hits = []
+        if hits:
+            note += (
+                "\nTop hits (the python kind's lexical answer, already run):\n"
+                + "\n".join(f"  {h}" for h in hits)
+            )
     print(
         json.dumps(
             {
