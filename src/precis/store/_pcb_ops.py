@@ -1200,6 +1200,56 @@ class PcbMixin:
                     totals[k] += v
         return totals
 
+    def pcb_backfill_part_lcscs(
+        self,
+        ref_id: int,
+        components: list[dict[str, Any]],
+        *,
+        conn: Connection,
+    ) -> int:
+        """gr519747: the ``import_epro --update`` backfill for boards
+        imported before the C-number became importable (a7863eda3).
+
+        Each dict is a source component already run through the import's
+        catalog lookup; ``part_lcsc``/``label``/``part_meta`` are written
+        onto the stored component ONLY while that row's ``part_lcsc IS
+        NULL``, matched by live instance ``refdes`` on this board — and
+        each under the same never-overwrite rule: ``label`` fills only
+        when the stored label is the import's own fallback (NULL, or the
+        refdes verbatim — ``_pcb_insert_component`` never writes NULL),
+        ``meta.part`` only when the key is absent. A resolved C-number
+        fills the join column; a source with none still fills a missing
+        label/part blob. Poses, pins and nets are never touched. Returns
+        the number of component rows written."""
+        n = 0
+        for c in components:
+            lcsc = str(c.get("part_lcsc") or "").strip().upper() or None
+            label = str(c["label"]) if c.get("label") else None
+            part_meta = c.get("part_meta")
+            if lcsc is None and label is None and not part_meta:
+                continue
+            n += conn.execute(
+                "UPDATE pcb_components c SET "
+                "  part_lcsc = COALESCE(%s, c.part_lcsc), "
+                "  label = CASE WHEN c.label IS NULL OR c.label = i.refdes "
+                "          THEN COALESCE(%s, c.label) ELSE c.label END, "
+                "  meta = CASE WHEN c.meta ? 'part' THEN c.meta "
+                "          ELSE c.meta || %s END "
+                "FROM pcb_instances i "
+                "WHERE i.component_id = c.component_id "
+                "  AND c.ref_id = %s AND i.ref_id = c.ref_id "
+                "  AND i.refdes = %s AND i.retired_at IS NULL "
+                "  AND c.retired_at IS NULL AND c.part_lcsc IS NULL",
+                (
+                    lcsc,
+                    label,
+                    Jsonb({"part": dict(part_meta)} if part_meta else {}),
+                    ref_id,
+                    str(c["refdes"]),
+                ),
+            ).rowcount
+        return n
+
     def _pcb_card_text(self, conn: Connection, ref_id: int, title: str) -> str:
         """The one embeddable summary per design — built from the current graph
         (component labels + a few net names) so search lands on intent."""

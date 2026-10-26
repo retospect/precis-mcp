@@ -249,6 +249,22 @@ class UpdatePlan:
     #: ``"GND: board Power, source Default"`` — a class set on the board
     #: is kept, as a rewired pin is.
     class_differs: list[str] = field(default_factory=list)
+    #: Surviving parts whose stored ``part_lcsc`` was NULL — boards
+    #: imported before a7863eda3 dropped it on purpose (gr519747) — and
+    #: that the source can now name: filled in place, with ``label`` and
+    #: ``part_meta`` along. A part already carrying a number is never
+    #: touched.
+    parts_lcsc_filled: list[str] = field(default_factory=list)
+    #: Surviving parts that already carried a number (counted, untouched).
+    parts_lcsc_kept: int = 0
+    #: Surviving NULL-``part_lcsc`` parts the source names no number for
+    #: (``label``/``part_meta`` still fill; the join column stays NULL).
+    parts_lcsc_missing: list[str] = field(default_factory=list)
+    #: Labels / ``meta.part`` blobs the same backfill writes onto the
+    #: stale rows — only where the stored value is the importer's
+    #: refdes-fallback label / absent (never an authored value).
+    parts_label_filled: int = 0
+    parts_meta_filled: int = 0
 
     def lines(self) -> list[str]:
         out = [
@@ -286,6 +302,15 @@ class UpdatePlan:
                 f"source's rule table"
             )
         out += [f"  net class {w} (kept)" for w in self.class_differs]
+        if self.parts_lcsc_filled or self.parts_lcsc_missing:
+            out.append(
+                f"  part_lcsc: {len(self.parts_lcsc_filled)} part(s) "
+                f"filled from the source, {self.parts_lcsc_kept} already "
+                f"had one, {len(self.parts_lcsc_missing)} name none; "
+                f"{self.parts_label_filled} label(s) and "
+                f"{self.parts_meta_filled} part-meta blob(s) filled on "
+                f"the same rows"
+            )
         if self.features_added or self.features_missing:
             out.append(
                 f"  features: {self.features_added} in the source but not on "
@@ -1398,6 +1423,37 @@ def _update(
         plan.legacy_hole_measures = _legacy_hole_measure_warnings(
             plan.legacy_hole_features, features, store.pcb_measures_list(ref_id)
         )
+    # gr519747: boards imported before a7863eda3 have part_lcsc NULL on
+    # every part (the importer of that era dropped it on purpose). A
+    # surviving part still NULL takes the source's identity — resolved
+    # through the same catalog lookup a fresh import runs, so claimed
+    # C-number, MPN and parametric all apply — plus its label and
+    # part_meta. A part already carrying a number is never overwritten;
+    # poses and nets are not this backfill's business.
+    board_parts = {str(i["refdes"]): i for i in graph["instances"]}
+    source_parts = {str(c["refdes"]): c for c in design.components}
+    surviving = board_parts.keys() & source_parts.keys()
+    plan.parts_lcsc_kept = sum(1 for r in surviving if board_parts[r]["part_lcsc"])
+    stale = [
+        source_parts[r] for r in sorted(surviving) if not board_parts[r]["part_lcsc"]
+    ]
+    # The per-refdes report assumes the import's own 1:1 shape — one
+    # pcb_components row per live instance (_pcb_apply inserts a fresh
+    # row per refdes). Two live instances sharing a component_id would
+    # each be reported while the UPDATE fills the shared row once.
+    warnings.extend(_resolve_catalog_lcscs(store, stale))
+    for c in stale:
+        r = str(c["refdes"])
+        if str(c.get("part_lcsc") or "").strip():
+            plan.parts_lcsc_filled.append(r)
+        else:
+            plan.parts_lcsc_missing.append(r)
+        # The same never-overwrite rule the UPDATE applies: a label fills
+        # only the importer's refdes fallback, meta.part only when absent.
+        if c.get("label") and board_parts[r]["label"] in (None, r):
+            plan.parts_label_filled += 1
+        if c.get("part_meta") and not board_parts[r].get("part"):
+            plan.parts_meta_filled += 1
     result = ImportResult(
         slug=slug,
         ref_id=ref_id,
@@ -1443,6 +1499,14 @@ def _update(
         # One transaction: a half-applied update leaves a board that
         # matches neither the old import nor the new source.
         with store.tx() as conn:
+            # The backfill runs BEFORE pcb_apply: the apply's card text
+            # and _pcb_reconcile_part_edges read pcb_components, so a
+            # backfill written after it would miss the board's contains
+            # edges and card until some later apply. The dropped_fp
+            # deletion below already reads the backfilled part_lcsc.
+            backfilled = (
+                store.pcb_backfill_part_lcscs(ref_id, stale, conn=conn) if stale else 0
+            )
             _ref, _created, counts = store.pcb_apply(
                 slug=slug,
                 title=existing.title,
@@ -1465,6 +1529,7 @@ def _update(
             )
             if design.net_classes:
                 store.pcb_upsert_net_classes(ref_id, design.net_classes, conn=conn)
+            counts["parts_backfilled"] = backfilled
             if dropped_fp:
                 # Truly drop the copy: a row a PRE-this-slice import wrote
                 # would otherwise keep winning the local-first join. A row

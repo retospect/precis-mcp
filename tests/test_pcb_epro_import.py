@@ -1151,6 +1151,138 @@ def test_update_keeps_the_first_import_date_and_stamps_the_update(
     assert meta["updated_at"]
 
 
+def test_update_backfills_a_null_part_lcsc(store) -> None:
+    """gr519747: boards imported before a7863eda3 (heater-base-test,
+    taz15-blank) dropped ``part_lcsc`` on purpose — every part is NULL.
+    A re-import with --update fills the join column, ``label`` and
+    ``part_meta`` from the source's ATTRs, on the SAME board, without
+    moving a pose; a part that already has a number is never touched."""
+    first = pcb_epro.import_epro(store, _zip(), slug="epro-bf-1")
+    insts = {i["refdes"]: i for i in store.pcb_graph(first.ref_id)["instances"]}
+    assert insts["R1"]["part_lcsc"] is None  # the pre-a7863eda3 state
+    before = _pose(store, first.ref_id)
+    # Catalog rows so _pcb_reconcile_part_edges can mint the part refs a
+    # 'contains' edge needs; MPNs differ from the source's on purpose so
+    # the claimed C-number wins and no lcsc_source is stamped.
+    store.parts_import(
+        [
+            {"lcsc": "C1525", "mfr": "UNI-ROYAL", "mfr_part": "OTHER-1"},
+            {"lcsc": "C2892", "mfr": "TI", "mfr_part": "OTHER-2"},
+        ]
+    )
+
+    dry = pcb_epro.import_epro(
+        store, _catalog_stream(), slug="epro-bf-1", update=True, dry_run=True
+    )
+    assert dry.update is not None
+    assert sorted(dry.update.parts_lcsc_filled) == ["R1", "U1"]
+    insts = {i["refdes"]: i for i in store.pcb_graph(first.ref_id)["instances"]}
+    assert insts["R1"]["part_lcsc"] is None, "a dry run wrote nothing"
+
+    result = pcb_epro.import_epro(
+        store, _catalog_stream(), slug="epro-bf-1", update=True
+    )
+    assert result.ref_id == first.ref_id  # no new board
+    plan = result.update
+    assert plan is not None
+    assert sorted(plan.parts_lcsc_filled) == ["R1", "U1"]
+    assert plan.parts_lcsc_kept == 0 and plan.parts_lcsc_missing == []
+    assert (
+        "  part_lcsc: 2 part(s) filled from the source, 0 already had one, "
+        "0 name none; 2 label(s) and 2 part-meta blob(s) filled on the "
+        "same rows" in plan.lines()
+    )
+    assert _pose(store, first.ref_id) == before  # poses unchanged
+    insts = {i["refdes"]: i for i in store.pcb_graph(first.ref_id)["instances"]}
+    assert insts["R1"]["part_lcsc"] == "C1525"
+    assert insts["R1"]["label"] == "10K"
+    assert insts["R1"]["part"] == {
+        "value": "10K",
+        "mpn": "0402WGF1002TCE",
+        "mfr": "UNI-ROYAL",
+        "supplier": "LCSC",
+        "supplier_part": "C1525",
+    }
+    assert insts["U1"]["part_lcsc"] == "C2892"
+    assert insts["U1"]["label"] == "NE555N"
+    # The same apply pass saw the filled numbers: the board's contains
+    # edges (and card) are current without a second apply.
+    with store.pool.connection() as conn:
+        edges = {
+            tuple(r[0]["refdes"]): int(r[1])
+            for r in conn.execute(
+                "SELECT l.meta, l.dst_ref_id FROM links l "
+                "JOIN refs r ON r.ref_id = l.dst_ref_id "
+                "WHERE l.src_ref_id = %s AND l.relation = 'contains' "
+                "AND r.kind = 'part'",
+                (first.ref_id,),
+            ).fetchall()
+        }
+    assert set(edges) == {("R1",), ("U1",)}
+
+    # A non-NULL part_lcsc survives a re-update, even when the source now
+    # claims a different number.
+    second = pcb_epro.import_epro(
+        store,
+        _attr_stream(
+            (500, "c1", "Supplier Part", "C999999"),
+            (501, "c2", "Supplier Part", "C999998"),
+        ),
+        slug="epro-bf-1",
+        update=True,
+    )
+    assert second.update is not None
+    assert second.update.parts_lcsc_kept == 2
+    assert second.update.parts_lcsc_filled == []
+    insts = {i["refdes"]: i for i in store.pcb_graph(first.ref_id)["instances"]}
+    assert insts["R1"]["part_lcsc"] == "C1525"
+    assert insts["U1"]["part_lcsc"] == "C2892"
+
+
+def test_update_backfill_never_overwrites_authored_identity(store) -> None:
+    """The fill applies the same never-overwrite rule as ``part_lcsc``:
+    a label or ``meta.part`` already on the row is kept — only the
+    refdes-fallback label and an absent ``meta.part`` take the source's.
+    A part the source names no C-number for keeps NULL (``lcsc_source``
+    resolution found nothing) and is counted as missing."""
+    first = pcb_epro.import_epro(store, _zip(), slug="epro-bf-2")
+    # R1 carries a user-edited label and part blob on a still-NULL
+    # part_lcsc — the state a hand-corrected stale board is in.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pcb_components SET label = 'hand-set', "
+            "meta = meta || %s::jsonb WHERE component_id = ("
+            "  SELECT component_id FROM pcb_instances "
+            "  WHERE ref_id = %s AND refdes = 'R1' AND retired_at IS NULL)",
+            (json.dumps({"part": {"note": "kept"}}), first.ref_id),
+        )
+        conn.commit()
+    # R1's source ATTRs claim a C-number; U1's carry only an MPN that
+    # resolves to nothing on this catalog — no lcsc anywhere.
+    result = pcb_epro.import_epro(
+        store,
+        _attr_stream(
+            (500, "c1", "Supplier Part", "C1525"),
+            (501, "c1", "Resistance (Ohms)", "10k"),
+            (502, "c2", "Manufacturer Part", "NE555N"),
+        ),
+        slug="epro-bf-2",
+        update=True,
+    )
+    plan = result.update
+    assert plan is not None
+    assert plan.parts_lcsc_filled == ["R1"]
+    assert plan.parts_lcsc_missing == ["U1"]
+    assert plan.parts_lcsc_kept == 0
+    insts = {i["refdes"]: i for i in store.pcb_graph(first.ref_id)["instances"]}
+    assert insts["R1"]["part_lcsc"] == "C1525"  # the join column fills
+    assert insts["R1"]["label"] == "hand-set"  # user label kept
+    assert insts["R1"]["part"] == {"note": "kept"}  # user part blob kept
+    assert insts["U1"]["part_lcsc"] is None
+    assert insts["U1"]["label"] == "NE555N"  # fallback label fills
+    assert insts["U1"]["part"] == {"mpn": "NE555N"}  # absent part blob fills
+
+
 def test_update_onto_a_missing_slug_is_refused(store) -> None:
     """A typo'd slug must not quietly become a second board."""
     with pytest.raises(pcb_epro.EproImportError, match="without --update"):
