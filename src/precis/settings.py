@@ -100,6 +100,37 @@ REGISTRY: dict[str, SettingSpec] = {
     spec.key: spec
     for spec in (
         SettingSpec(
+            key="llm.local_first.enabled",
+            type="bool",
+            env_var="PRECIS_LOCAL_FIRST",
+            default=False,
+            doc="Master switch for local-first LLM attempts; off preserves callers.",
+        ),
+        *(
+            SettingSpec(
+                key=f"llm.local_first.set.{name}.mode",
+                type="str",
+                env_var=f"PRECIS_LOCAL_FIRST_SET_{name.upper()}",
+                default="off",
+                doc="Named job-set mode: off|shadow|on; requires the master switch.",
+            )
+            for name in ("triage", "tables", "claims")
+        ),
+        *(
+            SettingSpec(
+                key=f"llm.local_first.{name}.escalate_usd_day",
+                type="float",
+                env_var=f"PRECIS_LOCAL_FIRST_{name.upper()}_ESCALATE_USD_DAY",
+                default=budget,
+                doc="UTC-day cap on recorded escalated cost_usd for this op.",
+            )
+            for name, budget in (
+                ("triage", 3.0),
+                ("table_recipe", 10.0),
+                ("dtree", 10.0),
+            )
+        ),
+        SettingSpec(
             key="budget.hourly_usd",
             type="float",
             env_var="PRECIS_BUDGET_HOURLY_USD",

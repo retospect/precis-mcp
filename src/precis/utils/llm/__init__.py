@@ -161,6 +161,26 @@ no row ⇒ byte-identical to env-only routing. Two call sites whose
 ``sandbox_run``/``claude_docker`` — read :func:`resolve_backend` and skip
 clean under ``backend=openai`` instead of folding through :func:`route`.
 
+``local_first.run`` adds an opt-in acceptance seam for selected operations
+(``operations.LOCAL_FIRST_OPS``); no product call site uses it yet. Master
+and named job-set modes default off, preserving the caller's exact request.
+``LOCAL_FIRST_SETS`` maps triage, tables and claims to their operations; an op
+needs the master and at least one containing set on. Budgets remain per op. On
+uses a registered ``:local`` source with strict local placement and clears
+the caller's completion cap so the rung owns its reasoning budget. Such a
+source requires an explicit local-transport op chain; tier/keyword fallbacks cannot
+silently run it elsewhere. Acceptance callbacks stay outside ``LlmRequest``
+because requests are serialized; only JSON ``features.local_first`` crosses
+the logging seam. Escalation admits against recorded UTC-day cost_usd per
+op (all transports), failing closed without accounting. Per-process local
+caps and a shared ten-minute skip after five consecutive timeout/transport
+failures bound outage load. Paid checks serialize per op in a process, but
+do not reserve unknown future cost across hosts. ``LocalFirstOp.park`` defers
+table recipes and claim checks on saturation, timeout, transport failure or
+missing local configuration. Their result is paused with a ``deferred`` reason;
+triage still escalates. Shadow pairing remains a later slice; shadow currently
+preserves the paid path.
+
 The ``llm`` model catalog (ships dark) layers on this seam — facts/writer in
 :mod:`precis.llm_catalog`, handler in :mod:`precis.handlers.llm`:
 

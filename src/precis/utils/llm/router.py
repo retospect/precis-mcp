@@ -1292,6 +1292,9 @@ class LlmRequest:
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
     #: categorical feature the route-log keys on. Free-form; empty if unset.
     source: str = ""
+    #: Caller-owned JSON telemetry, merged into the call-log features. Omitted
+    #: from serialized requests when unset, preserving existing request hashes.
+    features: dict[str, Any] | None = None
     #: The ref this call is *for* (a quest/paper/todo id), stamped onto
     #: ``llm_call_log.ref_id`` for entity-level attribution. ``None`` ⇒
     #: pass-level only. Cannot be back-filled — an inproc pass with a natural
@@ -2174,13 +2177,44 @@ def _served_local_rung(req: LlmRequest) -> list[Rung]:
     return [Rung(transport, label="local")]
 
 
+_LOCAL_FIRST_REFUSAL = (
+    "placement_refusal: local-first requires a local transport op chain"
+)
+
+
+def _local_first_chain(req: LlmRequest, *, backend: Backend) -> list[Rung] | None:
+    """Dedicated local arm: ``None`` for other sources, empty on refusal.
+
+    Shared by preflight and dispatch so a missing row cannot pass preview by
+    inheriting a tier chain. A placement label alone cannot authorize a hosted
+    wire: these arms require the local completion transport.
+    """
+    from precis.utils.llm import operations
+
+    if (
+        not req.source.endswith(":local")
+        or req.source.removesuffix(":local") not in operations.LOCAL_FIRST_OPS
+    ):
+        return None
+    chain = operations.resolve_op_chain(
+        req.source, tools_needed=req.tools_needed, backend=backend
+    )
+    return [
+        rung
+        for rung in _apply_placement(chain or [], "local")
+        if rung.transport is Transport.LOCAL
+    ]
+
+
 def placement_refusal(req: LlmRequest) -> str | None:
     """The error :func:`route` would return at ``req``'s placement gate,
     without dispatching — a caller's up-front fail-closed check
     (``survey_extract`` refuses the whole paper here rather than logging
     the same "no local rung" error once per chunk, gr502793).
 
-    Mirrors the resolution prefix of :func:`route`: backend → the op's
+    Dedicated local-first sources share :func:`_local_first_chain` with
+    dispatch and never fall back to a tier chain. Other sources mirror the
+    resolution prefix of :func:`route`: backend → the op's
     tier remap and ``chain`` override for a registered ``req.source`` →
     the tier chain → :func:`_apply_placement` with the
     :func:`_served_local_rung` escape — so the reason it returns is the
@@ -2195,6 +2229,9 @@ def placement_refusal(req: LlmRequest) -> str | None:
     from precis.utils.llm import operations as _operations
 
     op = _operations.resolve_op(req.source) if req.source else None
+    local_chain = _local_first_chain(req, backend=backend)
+    if local_chain is not None:
+        return None if local_chain else _LOCAL_FIRST_REFUSAL
     if op is not None:
         req = _replace(req, tier=op[0])
     op_chain = (
@@ -2728,6 +2765,28 @@ def route(req: LlmRequest) -> LlmResult:
     from precis.utils.llm import operations as _operations
 
     _op = _operations.resolve_op(req.source) if req.source else None
+    local_chain = _local_first_chain(req, backend=backend)
+    _local_first = local_chain is not None
+    if _local_first:
+        # A local-first source must never inherit a tier/keyword chain or buy
+        # a hosted retry. A missing/malformed op row is a visible refusal.
+        req = _replace(req, placement="local")
+        if not local_chain:
+            return _gate_result(
+                req,
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model="",
+                    tier=req.tier,
+                    placement="local",
+                    error=_LOCAL_FIRST_REFUSAL,
+                ),
+                entered=entered,
+                transport=None,
+                routed="local",
+            )
     if _op is not None:
         _op_tier, _op_model = _op
         if _op_tier != req.tier:
@@ -2741,7 +2800,11 @@ def route(req: LlmRequest) -> LlmResult:
     # so an unavailable/over-limiter target keeps the normal resolution.
     # A call-site `req.model` pin is never routed (functional pins).
     _kw_ladder: list[Rung] | None = None
-    _kw_rule = _keyword_route.match_request(req) if req.model is None else None
+    _kw_rule = (
+        _keyword_route.match_request(req)
+        if req.model is None and not _local_first
+        else None
+    )
     if _kw_rule is not None:
         try:
             _kw_plan = _keyword_plan(_kw_rule, req, backend=backend)
@@ -2778,11 +2841,15 @@ def route(req: LlmRequest) -> LlmResult:
     # An allow-listed source's `llm.op.<source>` `chain` replaces the tier chain
     # for that source only (operations.resolve_op_chain; None ⇒ tier chain).
     _op_chain = (
-        _operations.resolve_op_chain(
-            req.source, tools_needed=req.tools_needed, backend=backend
+        local_chain
+        if _local_first
+        else (
+            _operations.resolve_op_chain(
+                req.source, tools_needed=req.tools_needed, backend=backend
+            )
+            if req.source and _kw_ladder is None
+            else None
         )
-        if req.source and _kw_ladder is None
-        else None
     )
     ladder = (
         _kw_ladder
@@ -3612,6 +3679,7 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
             len(_content_text(m.get("content", ""))) for m in req.messages
         )
     feats: dict[str, Any] = {
+        **(req.features or {}),
         "prompt_chars": prompt_chars,
         "tier": req.tier.value,
         "tools_needed": req.tools_needed,
@@ -3678,6 +3746,7 @@ def _serialize_request(req: LlmRequest) -> str:
             "temperature": req.temperature,
             "output_format": req.output_format,
             "disallowed_tools": list(req.disallowed_tools),
+            **({"features": req.features} if req.features else {}),
         },
         ensure_ascii=False,
     )

@@ -84,6 +84,51 @@ class ExcludedOp:
     reason: str
 
 
+@dataclass(frozen=True)
+class LocalFirstOp:
+    """Local-first identity and process limits; switches live in settings."""
+
+    name: str
+    op: str
+    paid_source: str
+    cap: int
+    default_budget: float
+    park: frozenset[str] = frozenset()
+
+
+# Table recipes already run one chunk at a time per job; a process slot keeps
+# that bound here too. No paid source is re-registered merely to add a local arm.
+LOCAL_FIRST_OPS: dict[str, LocalFirstOp] = {
+    entry.op: entry
+    for entry in (
+        LocalFirstOp("triage", "gripe_triage:tick", "gripe_triage:tick", 6, 3.0),
+        LocalFirstOp(
+            "table_recipe",
+            "survey_extract:table_recipe",
+            "survey_extract:table_recipe",
+            1,
+            10.0,
+            frozenset({"saturated", "timeout", "transport", "no_local_rung"}),
+        ),
+        LocalFirstOp(
+            "dtree",
+            "dtree:claim_check",
+            "dtree:claim_check",
+            6,
+            10.0,
+            frozenset({"saturated", "timeout", "transport", "no_local_rung"}),
+        ),
+    )
+}
+
+# Operators enable sets of jobs; membership is independent of each op's budget.
+LOCAL_FIRST_SETS: dict[str, tuple[str, ...]] = {
+    "triage": ("gripe_triage:tick",),
+    "tables": ("survey_extract:table_recipe",),
+    "claims": ("dtree:claim_check",),
+}
+
+
 #: The steerable allow-list — one entry per operation whose model the operator
 #: may retune at runtime. Phase 1 seeded the two daily casts (their former
 #: ``model="claude-sonnet-5"`` call-site literals migrated here, so the default
@@ -381,6 +426,20 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
     ),
 }
 
+LLM_OPERATIONS["dtree:claim_check"] = OpDefault(
+    tier=Tier.BIG,
+    model=None,
+    label="Design-tree claim checker",
+    description="Paid review of a design-tree claim against its source windows.",
+)
+for _local_first in LOCAL_FIRST_OPS.values():
+    LLM_OPERATIONS[f"{_local_first.op}:local"] = OpDefault(
+        tier=Tier.MEDIUM if _local_first.name == "table_recipe" else Tier.BIG,
+        model=None,
+        label=f"Local-first {_local_first.name}",
+        description="Local acceptance attempt; requires an explicit local op chain.",
+    )
+
 #: Observed operations deliberately NOT steerable, with why. The override layer
 #: never reaches these; the UI shows them read-only with the reason.
 EXCLUDED_OPERATIONS: dict[str, ExcludedOp] = {
@@ -537,8 +596,11 @@ def resolve_op_chain(
 __all__ = [
     "EXCLUDED_OPERATIONS",
     "LLM_OPERATIONS",
+    "LOCAL_FIRST_OPS",
+    "LOCAL_FIRST_SETS",
     "OP_KEY_PREFIX",
     "ExcludedOp",
+    "LocalFirstOp",
     "OpDefault",
     "excluded_reason",
     "is_steerable",
