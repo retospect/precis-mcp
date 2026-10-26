@@ -22,7 +22,12 @@ import numpy as np
 from shapely.geometry import Polygon
 
 from precis.pcb.topoplace.design import TopoDesign, TopoZone
-from precis.pcb.topoplace.proxy import _EPS, _ring_geom, through_hole_parts
+from precis.pcb.topoplace.proxy import (
+    _EPS,
+    _ring_geom,
+    through_hole_parts,
+    zone_world_ring,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +134,7 @@ def _legalize_zones(
     geoms: list[Any],
     sides: np.ndarray,
     th: np.ndarray,
-    zone_geoms: list[tuple[int, Any]],
+    zone_geoms: dict[int, Any],
     part_nets: list[set[str]],
 ) -> tuple[float, tuple[int, int, float] | None]:
     """One zone sweep: the worst part-on-zone overlap (mounting hole,
@@ -143,9 +148,9 @@ def _legalize_zones(
         if gi is None:
             continue
         x0, y0, x1, y1 = gi.bounds
-        for z_i, zg in zone_geoms:
+        for z_i, zg in zone_geoms.items():
             z = d.zones[z_i]
-            if z.net and z.net in part_nets[i]:
+            if z.part == i or (z.net and z.net in part_nets[i]):
                 continue
             if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                 continue
@@ -161,7 +166,7 @@ def _legalize_zones(
     if d.fixed[i]:
         return 0.0, (i, len(d.parts) + z_i, worst_area)
     vec, _depth = _mtv(
-        np.asarray(zone_geoms[z_i][1].exterior.coords),
+        np.asarray(zone_geoms[z_i].exterior.coords),
         np.asarray(geoms[i].exterior.coords),
     )
     vec = vec + np.sign(vec + 1e-12) * 1e-3
@@ -169,6 +174,7 @@ def _legalize_zones(
     pose[i, 0] += vec[0]
     pose[i, 1] += vec[1]
     geoms[i] = _ring_geom(d, pose[i], i)
+    _refresh_owned_zones(d, pose, zone_geoms, i)
     return moved, None
 
 
@@ -232,6 +238,32 @@ def _legalize_once(
     return moved, None
 
 
+def _zone_geoms(d: TopoDesign, pose: np.ndarray) -> dict[int, Any]:
+    """Zone polygons at ``pose``, keyed by zone index — part-owned hole
+    rings follow their owner's pose row, so the sweep re-derives them
+    each round rather than keeping the entry-pose snapshot."""
+    return {
+        z_i: Polygon(np.asarray(zone_world_ring(d, z, pose), dtype=np.float64)[:-1])
+        for z_i, z in enumerate(d.zones)
+        if len(z.ring) >= 4
+    }
+
+
+def _refresh_owned_zones(
+    d: TopoDesign, pose: np.ndarray, zgs: dict[int, Any], part: int
+) -> None:
+    """Re-derive the hole rings ``part`` owns at its NEW pose, in place —
+    the round checks other parts against zone rings snapshotted at its
+    start, but a moved owner's own ring rides it within the same sweep
+    (a connector pushed off one hole must not leave its standoff ring
+    behind for the pull-back to test against)."""
+    for z_i, z in enumerate(d.zones):
+        if z.part == part and z_i in zgs:
+            zgs[z_i] = Polygon(
+                np.asarray(zone_world_ring(d, z, pose), dtype=np.float64)[:-1]
+            )
+
+
 def legalize_pose(
     d: TopoDesign, pose: np.ndarray, *, rounds: int = 2000
 ) -> LegalizeResult:
@@ -245,21 +277,17 @@ def legalize_pose(
     sides = pose[:, 3] >= 0.5
     th = through_hole_parts(d)
     geoms = [_ring_geom(d, pose[i], i) for i in range(n)]
-    zone_geoms = [
-        (z_i, Polygon(np.asarray(z.ring, dtype=np.float64)[:-1]))
-        for z_i, z in enumerate(d.zones)
-        if len(z.ring) >= 4
-    ]
+    zone_geoms = _zone_geoms(d, pose)
     part_nets = [_part_nets(d, i) for i in range(n)] if zone_geoms else []
     n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
 
-    def _zone_hit(geom, part: int) -> bool:
+    def _zone_hit(geom, part: int, zgs: dict[int, Any]) -> bool:
         """Whether ``geom`` intrudes on any blocking zone — the pull-back
         must not land a part on a hole/keepout while fixing its outline
         escape (the loop-8 residual: R11 on the mounting hole)."""
-        for z_i, zg in zone_geoms:
+        for z_i, zg in zgs.items():
             z = d.zones[z_i]
-            if z.net and z.net in part_nets[part]:
+            if z.part == part or (z.net and z.net in part_nets[part]):
                 continue
             if not _zone_blocks_part(z, bool(sides[part]), bool(th[part]), n_layers):
                 continue
@@ -285,14 +313,17 @@ def legalize_pose(
     dead: set[tuple[int, int]] = set()
     total_moved = 0.0
     spent = 0
+    zgs = zone_geoms
     for _ in range(rounds):
         moved, _skipped = _legalize_once(d, pose, geoms, sides, th, dead)
         # zone sweeps run every round — a pull or a pair fix can land a
         # part on a zone at ANY point, not only when pairs are settled.
         if zone_geoms:
-            zmoved, _zskip = _legalize_zones(
-                d, pose, geoms, sides, th, zone_geoms, part_nets
-            )
+            # round-start snapshot: covers the pair sweep's moves; the
+            # zone sweep and the pull-back refresh a moved owner's own
+            # ring in place as they go.
+            zgs = _zone_geoms(d, pose)
+            zmoved, _zskip = _legalize_zones(d, pose, geoms, sides, th, zgs, part_nets)
             moved += zmoved
         spent += 1
         # outline pull-back runs every round escapees exist — a
@@ -314,7 +345,7 @@ def legalize_pose(
                         if (
                             tg is not None
                             and outline_geom.covers(tg)
-                            and not _zone_hit(tg, i)
+                            and not _zone_hit(tg, i, zgs)
                         ):
                             hit = float(t)
                             break
@@ -322,6 +353,7 @@ def legalize_pose(
                         pose[i, 0] += target[0] * hit
                         pose[i, 1] += target[1] * hit
                         geoms[i] = _ring_geom(d, pose[i], i)
+                        _refresh_owned_zones(d, pose, zgs, i)
                         moved += hit * float(np.hypot(*target))
                         break
         if moved == 0.0:
@@ -350,9 +382,9 @@ def legalize_pose(
         if gi is None:
             continue
         x0, y0, x1, y1 = gi.bounds
-        for z_i, zg in zone_geoms:
+        for z_i, zg in _zone_geoms(d, pose).items():
             z = d.zones[z_i]
-            if z.net and z.net in part_nets[i]:
+            if z.part == i or (z.net and z.net in part_nets[i]):
                 continue
             if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                 continue

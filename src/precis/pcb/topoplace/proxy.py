@@ -71,6 +71,16 @@ def pin_world(d: TopoDesign, pose: np.ndarray, part: int) -> np.ndarray:
     return local_to_world(d.pin_xy[d.pin_part == part], pose)
 
 
+def zone_world_ring(d: TopoDesign, z, pose: np.ndarray) -> np.ndarray:
+    """The zone's ring in world mm at ``pose`` — a part-owned mounting
+    hole's ring is stored in the owner's footprint frame and rides its
+    pose (the DRC recomputes the keep-out from the owner's current
+    pose); every other zone is already world mm."""
+    if z.part_local and 0 <= z.part < len(d.parts):
+        return local_to_world(np.asarray(z.ring, dtype=np.float64), pose[z.part])
+    return np.asarray(z.ring, dtype=np.float64)
+
+
 def _ring_geom(d: TopoDesign, row: np.ndarray, part: int):
     """The part's courtyard in board space as a shapely polygon —
     ``None`` for a part with no ring (synthetic designs)."""

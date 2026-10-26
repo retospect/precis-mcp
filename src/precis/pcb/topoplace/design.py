@@ -152,6 +152,16 @@ class TopoZone:
     layers: tuple[int, ...] = ()
     net: str = ""
     name: str = ""
+    #: Index into ``parts`` of the instance this zone belongs to — a
+    #: mounting hole cut from a connector's footprint. The owner's
+    #: courtyard covers its own hole by design (``courtyard_hole``'s
+    #: owner exemption); -1 = a board-level zone nobody owns.
+    part: int = -1
+    #: True when ``ring`` is in the OWNER's footprint frame and must be
+    #: pose-transformed per evaluation (:func:`proxy.zone_world_ring`) —
+    #: a part-owned hole moves with its part, matching the DRC, which
+    #: recomputes the keep-out from the owner's current pose.
+    part_local: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,11 +349,31 @@ def _circle_ring(x: float, y: float, r: float, n: int = 12) -> np.ndarray:
     return np.vstack([ring, ring[:1]])
 
 
+def _world_to_local(x: float, y: float, row: np.ndarray) -> tuple[float, float]:
+    """A world point read back into the part frame under pose ``row`` —
+    the exact inverse of ``proxy.local_to_world`` (untranslate,
+    un-rotate, un-mirror). Lives here, not in proxy: ``_zones`` runs at
+    design-build time and proxy imports this module."""
+    px, py, rot_q, side = (float(v) for v in row[:4])
+    rx, ry = x - px, y - py
+    r = round(rot_q) % 4
+    if r == 0:
+        mx, ly = rx, ry
+    elif r == 1:  # forward (a, b) -> (b, -a)
+        mx, ly = -ry, rx
+    elif r == 2:
+        mx, ly = -rx, -ry
+    else:  # r == 3, forward (a, b) -> (-b, a)
+        mx, ly = ry, -rx
+    return (-mx if side >= 0.5 else mx), ly
+
+
 def _zones(
     ir: PcbIR,
     features: Iterable[Mapping[str, Any]] | None,
     fixed_copper: Iterable[Mapping[str, Any]] | None,
     name_to_idx: Mapping[str, int],
+    pose0: np.ndarray,
 ) -> tuple[TopoZone, ...]:
     """Every non-part constrained region (Decision 17's keepouts plus the
     board-config bodies the router claims — slice-2a seam item 8):
@@ -354,15 +384,50 @@ def _zones(
     DRC's one shape function. ``ctype='via'`` rows are skipped: the same
     rows already arrived as :attr:`PcbIR.fixed_vias`."""
     zones: list[TopoZone] = []
+    part_of = {str(r): i for i, r in enumerate(ir.instance_refdes)}
+    # The placement-DRC keep-out verbatim (hardware envelope plus
+    # courtyard clearance) — a smaller ring lets shove/legalize pass a
+    # pose the gate still flags courtyard_hole (gr515107 r4: taz15/
+    # heater's residuals sat inside the keep-out but off the
+    # drill/annulus ring). The owner part is exempt like the DRC's — a
+    # connector's courtyard covers its own standoff holes by design.
+    # A hole with footprint-local coords rides its owner's pose like
+    # the DRC's keep-out does; a legacy part-owned hole without them
+    # gets local coords derived from the owner's pose AT IMPORT, so it
+    # rides the owner too — only an unplaced owner (no pose to invert)
+    # keeps the authored world position as a static zone.
+    from precis.pcb.optimize import (
+        _hole_keepout_radius_mm,
+        _hole_polygon,
+        mounting_hole_keepout_polygon,
+    )
+
     for h in ir.mounting_holes:
-        r = max(float(h.drill_mm), float(h.ring_dia_mm)) / 2.0
-        if r <= 0.0:
+        if max(float(h.drill_mm), float(h.ring_dia_mm), float(h.head_dia_mm)) <= 0.0:
             continue
+        owner = part_of.get(str(h.part), -1) if h.part else -1
+        local: tuple[float, float] | None = None
+        if owner >= 0:
+            if h.local_x is not None and h.local_y is not None:
+                local = (float(h.local_x), float(h.local_y))
+            elif np.isfinite(pose0[owner, :2]).all():
+                local = _world_to_local(float(h.x), float(h.y), pose0[owner])
+        if local is not None:
+            ring = np.asarray(
+                _hole_polygon(local[0], local[1], _hole_keepout_radius_mm(h)),
+                dtype=np.float64,
+            )
+            part_local = True
+        else:
+            ring = np.asarray(mounting_hole_keepout_polygon(h), dtype=np.float64)
+            part_local = False
         zones.append(
             TopoZone(
                 kind="mounting_hole",
-                ring=_circle_ring(float(h.x), float(h.y), r),
+                ring=ring,
+                part=owner,
                 name=f"mounting hole {h.x:g},{h.y:g}",
+                part_local=part_local,
             )
         )
     for v in ir.fixed_vias:
@@ -566,7 +631,7 @@ def design_from_ir(
         part_outline=part_outline,
         net_layer_force=_net_layer_force(ir, route_of, net_classes, names),
         net_pin_force=_net_pin_force(tuple(net_pins), pin_side, ir.n_layers),
-        zones=_zones(ir, features, fixed_copper, names),
+        zones=_zones(ir, features, fixed_copper, names, pose0),
         net_name=tuple(net_names),
         pin_wh=np.column_stack(
             [

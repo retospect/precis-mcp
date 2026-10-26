@@ -5,15 +5,26 @@ singleton nets are dropped, so the two index spaces drift apart on any
 board that has them (e22b945d6's IndexError on nano/ewod, and the
 silent wrong-name reads on id-aligned boards). Plane-net pins keep
 their exemption through the decl tables: GND and power are normal
-nets, there are no pours (Reto 2026-10-26)."""
+nets, there are no pours (Reto 2026-10-26).
+
+Plus the hole-zone coverage the r4 review asked for: a part-owned
+hole's ring rides its owner's pose (``zone_world_ring``, incl. a
+rotated + side-flipped owner), the owner exemption (a part is not
+shoved off its own hole), plated-vs-bare keep-out widths, part-owned
+vs board holes on ``design._zones``, and the in-sweep refresh of a
+moved owner's ring."""
 
 from __future__ import annotations
 
 import numpy as np
+from shapely.geometry import Polygon
 
+from precis.pcb.ir import MountingHole, from_graph
+from precis.pcb.pose import point_to_world
 from precis.pcb.topoplace import legalize
-from precis.pcb.topoplace.design import TopoDesign, TopoZone
+from precis.pcb.topoplace.design import TopoDesign, TopoZone, design_from_ir
 from precis.pcb.topoplace.legalize import legalize_pose
+from precis.pcb.topoplace.proxy import zone_world_ring
 
 _RING = np.asarray([[-0.4, -0.4], [0.4, -0.4], [0.4, 0.4], [-0.4, 0.4], [-0.4, -0.4]])
 
@@ -134,3 +145,161 @@ def test_plane_pin_keeps_the_same_net_zone_exemption() -> None:
     np.testing.assert_allclose(res.pose[0], d.pose0[0])
     assert not np.allclose(res.pose[1], d.pose0[1])
     assert not any(a == 0 for a, _b, _area in res.remaining)
+
+
+# ── hole zones (9bfd62c9f / 5f11d9e79 coverage) ─────────────────────
+
+_HOLE = np.asarray([[-0.8, -0.8], [0.8, -0.8], [0.8, 0.8], [-0.8, 0.8], [-0.8, -0.8]])
+
+
+def test_zone_world_ring_rides_a_rotated_flipped_owner() -> None:
+    """A part_local ring is stored in the owner's footprint frame: a
+    90°-cw bottom-side pose must place it exactly as
+    ``pose.point_to_world`` does — mirror then rotate."""
+    zone = TopoZone(kind="mounting_hole", ring=_HOLE, part=0, part_local=True)
+    d = _design(parts=("J1",), pin_part=[], pin_net=[], pose0=[[3.0, 2.0, 0.0, 0.0]])
+    pose = np.asarray([[3.0, 2.0, 1.0, 1.0]])  # rot 90° cw, bottom side
+    np.testing.assert_allclose(
+        zone_world_ring(d, zone, pose),
+        np.asarray(
+            [point_to_world(x, y, 3.0, 2.0, 90.0, mirrored=True) for x, y in _HOLE]
+        ),
+        atol=1e-12,
+    )
+    # and it MOVES with the pose — a second pose re-places it, 270° cw
+    # on the top side
+    np.testing.assert_allclose(
+        zone_world_ring(d, zone, np.asarray([[8.0, 2.0, 3.0, 0.0]])),
+        np.asarray(
+            [point_to_world(x, y, 8.0, 2.0, 270.0, mirrored=False) for x, y in _HOLE]
+        ),
+        atol=1e-12,
+    )
+
+
+def test_owner_not_shoved_off_its_own_hole() -> None:
+    """A connector's courtyard may cover its own standoff hole: the
+    zone sweep exempts the owner (``z.part``), while a neighbour parked
+    on the same hole takes the full MTV off it."""
+    zone = TopoZone(
+        kind="mounting_hole",
+        ring=_HOLE,
+        part=0,
+        part_local=True,
+        name="J1 standoff",
+    )
+    # J1 at (5,5) sits on its own hole (world 5,5); U1 at (6.0,5) has
+    # its courtyard (5.6..6.4) on the hole's west rim (..5.8) but clear
+    # of J1's courtyard (..5.4) — the hole blocks U1, never J1.
+    d = _design(
+        parts=("J1", "U1"),
+        pin_part=[],
+        pin_net=[],
+        part_outline=(_RING, _RING),
+        zones=(zone,),
+        pose0=[[5.0, 5.0, 0, 0], [6.0, 5.0, 0, 0]],
+    )
+    res = legalize_pose(d, d.pose0)
+    np.testing.assert_allclose(res.pose[0], d.pose0[0])
+    assert res.pose[1, 0] > 6.1  # pushed +x, off the hole's rim
+    assert not any(a == 0 and b >= len(d.parts) for a, b, _ in res.remaining)
+
+
+def test_zone_sweep_refreshes_a_moved_owners_ring() -> None:
+    """``_legalize_zones`` mutates ``pose`` and the part-owned rings in
+    the dict it was handed: a moved owner's hole must not stay
+    registered at its pre-move spot for the rest of the round."""
+    keepout = np.asarray([[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]])
+    zones = (
+        TopoZone(kind="mounting_hole", ring=_HOLE, part=0, part_local=True),
+        TopoZone(kind="keepout", ring=keepout),
+    )
+    # J1 at (1,1): inside the keepout (the blocking conflict) AND on
+    # its own hole (exempt — it moves off the keepout, not the hole).
+    d = _design(
+        parts=("J1",),
+        pin_part=[],
+        pin_net=[],
+        part_outline=(_RING,),
+        zones=zones,
+        pose0=[[1.0, 1.0, 0, 0]],
+    )
+    pose = d.pose0.copy()
+    geoms = [legalize._ring_geom(d, pose[i], i) for i in range(len(d.parts))]
+    zgs = legalize._zone_geoms(d, pose)
+    moved, _ = legalize._legalize_zones(
+        d,
+        pose,
+        geoms,
+        pose[:, 3] >= 0.5,
+        legalize.through_hole_parts(d),
+        zgs,
+        [set()],
+    )
+    assert moved > 0.0
+    np.testing.assert_allclose(
+        np.asarray(zgs[0].exterior.coords),
+        np.asarray(zone_world_ring(d, d.zones[0], pose), dtype=np.float64),
+    )
+
+
+def test_zones_plated_part_owned_vs_bare_board_hole() -> None:
+    """A plated annulus (``ring_dia_mm``) widens the keep-out past the
+    drill; a part-owned hole stores an owner-local ring
+    (``part_local``), a board hole a static world ring at its authored
+    position."""
+    ir = from_graph(
+        {"instances": [{"refdes": "CN1"}], "nets": []},
+        mounting_holes=(
+            MountingHole(
+                x=15.0,
+                y=10.0,
+                drill_mm=3.0,
+                ring_dia_mm=8.0,
+                plated=True,
+                part="CN1",
+                local_x=5.0,
+                local_y=0.0,
+            ),
+            MountingHole(x=10.0, y=20.0, drill_mm=3.0),
+        ),
+    )
+    ir.inst_x[0], ir.inst_y[0] = 10.0, 10.0
+    td = design_from_ir(ir, {})
+    owned, board = td.zones
+    assert owned.part == 0 and owned.part_local
+    assert board.part == -1 and not board.part_local
+    assert Polygon(owned.ring).area > Polygon(board.ring).area
+    np.testing.assert_allclose(
+        np.asarray(zone_world_ring(td, owned, td.pose0))[:-1].mean(axis=0),
+        [15.0, 10.0],
+        atol=1e-9,
+    )
+    np.testing.assert_allclose(np.asarray(board.ring)[:-1].mean(axis=0), [10.0, 20.0])
+
+
+def test_zones_derives_local_xy_for_a_legacy_part_owned_hole() -> None:
+    """A part-owned feature hole carrying no local_x/local_y still
+    rides its owner: the ring is derived in the owner's frame at
+    import — authored (14,10) under owner (10,10) rot 90° cw is local
+    (0,4) — and re-placed under the owner's CURRENT pose."""
+    ir = from_graph(
+        {"instances": [{"refdes": "CN1"}], "nets": []},
+        mounting_holes=(MountingHole(x=14.0, y=10.0, drill_mm=3.0, part="CN1"),),
+    )
+    ir.inst_x[0], ir.inst_y[0], ir.inst_rot[0] = 10.0, 10.0, 90.0
+    td = design_from_ir(ir, {})
+    (z,) = td.zones
+    assert z.part == 0 and z.part_local
+    np.testing.assert_allclose(
+        np.asarray(zone_world_ring(td, z, td.pose0))[:-1].mean(axis=0),
+        [14.0, 10.0],
+        atol=1e-9,
+    )
+    moved = td.pose0.copy()
+    moved[0] = [20.0, 10.0, 0.0, 0.0]
+    np.testing.assert_allclose(
+        np.asarray(zone_world_ring(td, z, moved))[:-1].mean(axis=0),
+        [20.0, 14.0],
+        atol=1e-9,
+    )

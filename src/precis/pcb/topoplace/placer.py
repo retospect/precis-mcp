@@ -106,6 +106,13 @@ def _domain(d: TopoDesign) -> tuple[np.ndarray, np.ndarray]:
 #: role in ``optimize``; no courtyard extent exists on ``TopoDesign``).
 _EDGE_MM = 0.5
 
+#: Shove↔legalize post-pass ceiling — a CAP, not the mechanism the loop
+#: relies on: ``_settle_pose`` exits on a no-movement pass, on a pass
+#: whose residual conflict count did not improve (a shove↔legalize
+#: fight, not progress), or on a pose hash already seen (oscillation).
+#: The bound only stops a runaway between the two movers.
+_POST_PASSES = 50
+
 
 def _legal_xy(
     d: TopoDesign, lo: np.ndarray, hi: np.ndarray
@@ -351,23 +358,8 @@ def topo_place(
         best_rank = (final.crossings, final.cost)
 
     assert best_pose is not None
-    # Shove then legalize: the overlap share pulls the anneal toward
-    # legal poses, but the commit gate counts hard collisions as
-    # pre-route DRC errors — on a dense real board the best pose is
-    # still illegal (taz15: 147 errors, pcb-loop handoff). The phase-3
-    # LP separates every pair at once at min |Δ| under the mesh's
-    # no-inversion guard; legalize's exact MTV + pull-back mops up what
-    # the linearisation can't reach. A shoved pose re-enters the
-    # archive as an elite (spec §4).
-    from precis.pcb.topoplace.legalize import legalize_pose
-    from precis.pcb.topoplace.shove import shove_pose
-
-    shoved = shove_pose(d, best_pose)
-    if shoved.moved_mm > 0:
-        best_pose = shoved.pose
-    legal = legalize_pose(d, best_pose)
-    if legal.moved_mm > 0:
-        best_pose = legal.pose
+    # A shoved pose re-enters the archive as an elite (spec §4).
+    best_pose, shoved, legal = _settle_pose(d, best_pose)
     final = ProxyState(d, best_pose, objective)
     if shoved.moved_mm > 0:
         archive.admit(best_pose, final.cost)
@@ -386,6 +378,84 @@ def topo_place(
         legalize=legal,
         shove=shoved,
     )
+
+
+def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]:
+    """The shove↔legalize post-pass loop, factored out of
+    :func:`topo_place` so its exit conditions are testable.
+
+    Why the loop exists: the overlap share pulls the anneal toward legal
+    poses, but the commit gate counts hard collisions as pre-route DRC
+    errors — on a dense real board the best pose is still illegal
+    (taz15: 147 errors, pcb-loop handoff). A raw anneal pose can be too
+    overlapped for the CDT (``build_mesh`` raises ``MeshConflictError``
+    and the LP exits ``reason="mesh"`` with 0 rounds — taz15/heater r4),
+    so each pass lets legalize's ring-level MTV separate the worst
+    first; once the mesh builds, the LP separates every pair at once at
+    min |Δ| under the no-inversion guard and legalize mops up what the
+    linearisation can't reach.
+
+    Exits on the FIRST of: a pass that moved nothing (fixed point); a
+    pass that moved but whose combined residual count did not shrink —
+    movement without progress is a fight, not work; a pose hash already
+    seen (a 2+-cycle the conflict count can't see); or the
+    ``_POST_PASSES`` ceiling — a cap, not a runaway guard.
+
+    Returns ``(pose, merged ShoveResult, merged LegalizeResult)``:
+    ``moved_mm``/``rounds`` summed over every pass, ``lp_optimum_mm``
+    the first pass's objective (the spec's displacement-bound
+    reference), ``reason`` the first non-empty stop reason any shove
+    pass reported, ``min_tri_area_mm2`` the worst audit any pass saw,
+    and ``resolved``/``remaining`` from the LAST pass — the state the
+    returned pose is actually in."""
+    import dataclasses
+
+    from precis.pcb.topoplace.legalize import legalize_pose
+    from precis.pcb.topoplace.shove import shove_pose
+
+    shove_mm = legalize_mm = 0.0
+    shove_rounds = legalize_rounds = 0
+    min_tri = math.inf
+    lp_optimum = 0.0
+    reason = ""
+    seen: set[bytes] = set()
+    prev_conflicts: int | None = None
+    shoved = legal = None
+    for _pass in range(_POST_PASSES):
+        key = pose.tobytes()
+        if key in seen:
+            break
+        seen.add(key)
+        s = shove_pose(d, pose)
+        lp_optimum = lp_optimum or s.lp_optimum_mm
+        reason = reason or s.reason
+        if s.moved_mm > 0:
+            pose = s.pose
+        l = legalize_pose(d, pose)
+        pose = l.pose
+        shove_mm += s.moved_mm
+        legalize_mm += l.moved_mm
+        shove_rounds += s.rounds
+        legalize_rounds += l.rounds
+        min_tri = min(min_tri, s.min_tri_area_mm2)
+        shoved, legal = s, l
+        if s.moved_mm == 0.0 and l.moved_mm == 0.0:
+            break
+        conflicts = len(s.remaining) + len(l.remaining)
+        if prev_conflicts is not None and conflicts >= prev_conflicts:
+            break
+        prev_conflicts = conflicts
+    assert shoved is not None and legal is not None
+    shoved = dataclasses.replace(
+        shoved,
+        rounds=shove_rounds,
+        moved_mm=shove_mm,
+        lp_optimum_mm=lp_optimum,
+        min_tri_area_mm2=min_tri,
+        reason=reason,
+    )
+    legal = dataclasses.replace(legal, rounds=legalize_rounds, moved_mm=legalize_mm)
+    return pose, shoved, legal
 
 
 __all__ = ["Ladder", "TopoPlaceResult", "topo_place"]

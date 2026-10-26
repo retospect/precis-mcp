@@ -52,7 +52,12 @@ from shapely.geometry import Point, Polygon
 from precis.pcb.topoplace.design import TopoDesign
 from precis.pcb.topoplace.legalize import _mtv, _part_nets, _zone_blocks_part
 from precis.pcb.topoplace.mesh import MeshConflictError, TopoMesh, build_mesh
-from precis.pcb.topoplace.proxy import _EPS, _ring_geom, through_hole_parts
+from precis.pcb.topoplace.proxy import (
+    _EPS,
+    _ring_geom,
+    through_hole_parts,
+    zone_world_ring,
+)
 
 _CLR_MM = 1e-3  # separation margin past the MTV depth (legalize's epsilon)
 _TRI_FLOOR_MM2 = 1e-3  # a reference triangle's signed-area floor
@@ -150,12 +155,8 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
     hi = d.outline.max(axis=0) if len(d.outline) >= 3 else pose[:, :2].max(axis=0)
     cx_lo, cx_hi = _legal_xy(d, np.asarray(lo, float), np.asarray(hi, float))
 
-    zone_geoms = [
-        (z_i, Polygon(np.asarray(z.ring, dtype=np.float64)[:-1]))
-        for z_i, z in enumerate(d.zones)
-        if len(z.ring) >= 4
-    ]
-    part_nets = [_part_nets(d, i) for i in range(n)] if zone_geoms else []
+    n_zones = sum(1 for z in d.zones if len(z.ring) >= 4)
+    part_nets = [_part_nets(d, i) for i in range(n)] if n_zones else []
     n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
 
     moved_mm = 0.0
@@ -168,6 +169,16 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         sides = pose[:, 3] >= 0.5
         th = through_hole_parts(d)
         geoms = [_ring_geom(d, pose[i], i) for i in range(n)]
+        # re-derived each round — a part-owned hole's ring rides its
+        # owner's pose, which the last step may have moved
+        zone_geoms = [
+            (
+                z_i,
+                Polygon(np.asarray(zone_world_ring(d, z, pose), dtype=np.float64)[:-1]),
+            )
+            for z_i, z in enumerate(d.zones)
+            if len(z.ring) >= 4
+        ]
         try:
             ref = build_mesh(d, pose)
         except MeshConflictError:
@@ -209,7 +220,7 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
             if zone_geoms:
                 for z_i, zg in zone_geoms:
                     z = d.zones[z_i]
-                    if z.net and z.net in part_nets[i]:
+                    if z.part == i or (z.net and z.net in part_nets[i]):
                         continue
                     if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                         continue
@@ -368,7 +379,7 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         th = through_hole_parts(d)
         for part, z_i, area in end.zone_conflicts:
             z = d.zones[z_i]
-            if z.net and part_nets and z.net in part_nets[part]:
+            if z.part == part or (z.net and part_nets and z.net in part_nets[part]):
                 continue
             if _zone_blocks_part(z, bool(sides[part]), bool(th[part]), n_layers):
                 remaining.append((int(part), n + int(z_i), float(area)))

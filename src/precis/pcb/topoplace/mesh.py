@@ -58,6 +58,7 @@ from scipy.spatial import Delaunay, QhullError
 
 from precis.errors import BadInput
 from precis.pcb.topoplace.design import TopoDesign
+from precis.pcb.topoplace.proxy import zone_world_ring
 
 #: Orientation epsilon (mm²). Courtyard coordinates carry transform dust
 #: at ~1e-13; 1e-9 keeps true collinearities (shared pad rows) exact while
@@ -627,7 +628,7 @@ def _conflict_data(
     outline_conflicts: list[tuple[int, float]] = []
     zone_conflicts: list[tuple[int, int, float]] = []
     ogeom = _poly(np.vstack([outline, outline[:1]])) if len(outline) >= 3 else None
-    zgeoms = [_poly(z.ring) for z in d.zones]
+    zgeoms = [_poly(zone_world_ring(d, z, pose)) for z in d.zones]
     for i, gi in enumerate(parts):
         if gi is None:
             continue
@@ -639,6 +640,11 @@ def _conflict_data(
             if zg is None:
                 continue
             area = float(gi.intersection(zg).area)
+            # the hole's owner covers it by design — courtyard_hole's
+            # exemption, so the placement passes do not shove a
+            # connector off its own standoff
+            if d.zones[z].part == i:
+                continue
             if area > _EPS:
                 zone_conflicts.append((i, z, area))
     return (
@@ -758,7 +764,9 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
     # Non-part constrained regions (keepouts, mounting holes, fixed
     # copper) — world-frame already; owner ``n + zone_index``.
     for z, zone in enumerate(d.zones):
-        zpts = np.asarray(zone.ring, dtype=np.float64).reshape(-1, 2)
+        zpts = np.asarray(zone_world_ring(d, zone, pose), dtype=np.float64).reshape(
+            -1, 2
+        )
         if len(zpts) < 4:
             continue
         vids = _ring_vids(zpts, add_vert)

@@ -14,9 +14,13 @@ from precis.pcb.topoplace import (
     ObjectiveShares,
     ProxyState,
     evaluate,
+    placer,
     topo_place,
 )
 from precis.pcb.topoplace.archive import mean_displacement, rotations_differ
+from precis.pcb.topoplace.legalize import LegalizeResult
+from precis.pcb.topoplace.shove import ShoveResult
+from tests.fixtures.pcb.topo_example_a import example_a
 from tests.fixtures.pcb.topo_synth import synth_design
 
 W = ObjectiveShares()
@@ -157,3 +161,140 @@ def test_determinism_same_seed_identical_elites_json() -> None:
     b = topo_place(d, objective=W, effort=3000, seed=7)
     assert a.elites_json() == b.elites_json()
     assert (a.best_pose == b.best_pose).all()
+
+
+# ── the shove↔legalize post-pass loop (_settle_pose) ────────────────
+
+
+def test_settle_pose_zero_move_pass_exits_immediately() -> None:
+    """example_a's authored pose is legal: one violation-free shove (0
+    rounds) plus one no-movement legalize sweep and the loop is done —
+    its normal exit is the fixed point, nowhere near the cap."""
+    d = example_a()
+    pose, shoved, legal = placer._settle_pose(d, d.pose0)
+    np.testing.assert_array_equal(pose, d.pose0)
+    assert shoved.rounds == 0 and shoved.moved_mm == 0.0
+    assert legal.rounds == 1 and legal.resolved
+
+
+def test_settle_pose_capped_at_post_passes_on_a_fight(monkeypatch) -> None:
+    """Movement that keeps shrinking the residual count but never
+    finishes runs the full ``_POST_PASSES`` — the cap is the only thing
+    that stops an endless shove↔legalize fight (a cap, not a runaway
+    guard: it is 50, not 4)."""
+    calls = {"s": 0}
+
+    def fake_shove(d, pose):
+        calls["s"] += 1
+        p = pose.copy()
+        p[0, 0] += 0.01
+        return ShoveResult(
+            pose=p,
+            resolved=False,
+            rounds=1,
+            moved_mm=0.01,
+            lp_optimum_mm=0.01,
+            min_tri_area_mm2=1.0,
+            remaining=((0, 1, 0.5),) * max(1, 60 - calls["s"]),
+        )
+
+    def fake_legalize(d, pose):
+        p = pose.copy()
+        p[0, 1] += 0.01
+        return LegalizeResult(
+            pose=p, resolved=False, rounds=1, moved_mm=0.01, remaining=()
+        )
+
+    monkeypatch.setattr("precis.pcb.topoplace.shove.shove_pose", fake_shove)
+    monkeypatch.setattr("precis.pcb.topoplace.legalize.legalize_pose", fake_legalize)
+    d = example_a()
+    placer._settle_pose(d, d.pose0)
+    assert calls["s"] == placer._POST_PASSES == 50
+
+
+def test_settle_pose_stops_when_conflicts_stop_improving(monkeypatch) -> None:
+    """A pass that moves parts but leaves the residual count unchanged
+    is a fight, not progress — the loop breaks after it, far under the
+    cap, and the merged result still accumulates every pass's fields."""
+    calls = {"s": 0}
+
+    def fake_shove(d, pose):
+        calls["s"] += 1
+        p = pose.copy()
+        p[0, 0] += 0.01
+        return ShoveResult(
+            pose=p,
+            resolved=False,
+            rounds=1,
+            moved_mm=0.01,
+            lp_optimum_mm=0.01,
+            min_tri_area_mm2=1.0,
+            reason="infeasible" if calls["s"] == 1 else "",
+            remaining=((0, 1, 0.5),),
+        )
+
+    def fake_legalize(d, pose):
+        p = pose.copy()
+        p[0, 1] += 0.01
+        return LegalizeResult(
+            pose=p, resolved=False, rounds=1, moved_mm=0.01, remaining=()
+        )
+
+    monkeypatch.setattr("precis.pcb.topoplace.shove.shove_pose", fake_shove)
+    monkeypatch.setattr("precis.pcb.topoplace.legalize.legalize_pose", fake_legalize)
+    d = example_a()
+    _pose, shoved, legal = placer._settle_pose(d, d.pose0)
+    assert calls["s"] == 2
+    # accumulation: two passes, not the last one alone
+    assert shoved.rounds == 2 and shoved.moved_mm == pytest.approx(0.02)
+    assert shoved.reason == "infeasible"
+    assert legal.rounds == 2 and legal.moved_mm == pytest.approx(0.02)
+
+
+def test_settle_pose_pose_hash_breaks_an_oscillation(monkeypatch) -> None:
+    """shove pushes +x, legalize undoes it: the pose revisits a seen
+    hash and the loop breaks BEFORE the next shove — a 2-cycle the
+    conflict count alone would miss (the residuals here keep
+    shrinking)."""
+    calls = {"s": 0}
+
+    def fake_shove(d, pose):
+        calls["s"] += 1
+        p = pose.copy()
+        p[0, 0] += 0.5
+        return ShoveResult(
+            pose=p,
+            resolved=False,
+            rounds=1,
+            moved_mm=0.5,
+            lp_optimum_mm=0.5,
+            min_tri_area_mm2=1.0,
+            remaining=((0, 1, 0.5),) * (5 - calls["s"]),
+        )
+
+    def fake_legalize(d, pose):
+        p = pose.copy()
+        p[0, 0] -= 0.5
+        return LegalizeResult(
+            pose=p, resolved=False, rounds=1, moved_mm=0.5, remaining=()
+        )
+
+    monkeypatch.setattr("precis.pcb.topoplace.shove.shove_pose", fake_shove)
+    monkeypatch.setattr("precis.pcb.topoplace.legalize.legalize_pose", fake_legalize)
+    d = example_a()
+    placer._settle_pose(d, d.pose0)
+    assert calls["s"] == 1
+
+
+def test_settle_pose_is_deterministic() -> None:
+    """Same input pose → identical output: the stacked-pair example-A
+    board settles to a byte-identical pose with identical accumulated
+    fields on a repeat run."""
+    d = example_a()
+    pose = d.pose0.copy()
+    pose[1] = pose[0].copy()
+    a = placer._settle_pose(d, pose)
+    b = placer._settle_pose(d, pose)
+    np.testing.assert_array_equal(a[0], b[0])
+    assert a[1].moved_mm == b[1].moved_mm
+    assert a[2].moved_mm == b[2].moved_mm
