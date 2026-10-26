@@ -81,6 +81,12 @@ class ChunkToWrite:
     #: the ingest pipeline via :func:`precis.utils.numerics.extract_numerics`.
     #: Empty for cards and structural blocks.
     numerics: list[str] = field(default_factory=list)
+    #: ``(bytes, mime)`` of the figure's pixels — Marker hands the block's
+    #: extracted image over base64 (``image_base64``/``image_mime``) and
+    #: ``_blocks_to_chunks`` decodes it here. Written to ``chunk_blobs``
+    #: keyed on the inserted chunk's id (gr520326: the crop the
+    #: ``page_image`` view prefers over a whole-page render).
+    image: tuple[bytes, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -507,12 +513,14 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     seen_text_hashes: set[str] = set()
     chunks_skipped_dup = 0
     chunk_rows: list[tuple[Any, ...]] = []
+    written_chunks: list[ChunkToWrite] = []
     for chunk in paper.chunks:
         text_hash = hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
         if text_hash in seen_text_hashes:
             chunks_skipped_dup += 1
             continue
         seen_text_hashes.add(text_hash)
+        written_chunks.append(chunk)
         chunk_rows.append(
             (
                 ref_id,
@@ -540,6 +548,7 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 chunk_rows,
             )
+        _write_chunk_images(ref_id, written_chunks, conn=conn)
     chunks_written = len(chunk_rows)
 
     return WriteResult(
@@ -548,6 +557,51 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
         chunks_written=chunks_written,
         identifiers_written=identifiers,
     )
+
+
+def _write_chunk_images(
+    ref_id: int, chunks: list[ChunkToWrite], *, conn: Connection
+) -> None:
+    """``INSERT INTO chunk_blobs`` for chunks carrying Marker's figure
+    pixels (``ChunkToWrite.image``, gr520326).
+
+    Runs *after* the batch ``INSERT INTO chunks`` at both call sites —
+    ``executemany`` gives no RETURNING, so chunk ids come back via one
+    ``(ref_id, ord)`` lookup. An ord that lost its insert (write_paper's
+    text-hash dedup, or the upgrade path's ``ON CONFLICT DO NOTHING``)
+    simply has no row to bind and is skipped; ``ON CONFLICT (chunk_id)``
+    keeps a re-run idempotent.
+    """
+    import hashlib
+
+    imaged = [c for c in chunks if c.image is not None]
+    if not imaged:
+        return
+    rows = conn.execute(
+        "SELECT chunk_id, ord FROM chunks WHERE ref_id = %s AND ord = ANY(%s)",
+        (ref_id, [c.ord for c in imaged]),
+    ).fetchall()
+    chunk_id_by_ord = {int(r[1]): int(r[0]) for r in rows}
+    blob_rows = [
+        (
+            chunk_id_by_ord[c.ord],
+            c.image[0],
+            c.image[1],
+            hashlib.sha256(c.image[0]).hexdigest(),
+            len(c.image[0]),
+        )
+        for c in imaged
+        if c.ord in chunk_id_by_ord and c.image is not None
+    ]
+    if blob_rows:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO chunk_blobs "
+                "(chunk_id, bytes, mime, sha256, size_bytes) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (chunk_id) DO NOTHING",
+                blob_rows,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -929,6 +983,7 @@ def register_aliases_and_maybe_upgrade(
                 "ON CONFLICT (ref_id, ord) DO NOTHING",
                 chunk_rows,
             )
+        _write_chunk_images(existing_ref_id, paper.chunks, conn=conn)
     n_body = sum(1 for c in paper.chunks if c.ord >= 0)
     n_cards = len(chunk_rows) - n_body
     # A pinned ref that was bodiless (the td461154 bodiless re-fetch pins

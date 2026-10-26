@@ -46,6 +46,66 @@ _CAPTION_LEAD_RE = re.compile(
 )
 
 
+# Caption-lead line for the "caption-only" detector, two shapes:
+# a *numbered* legend — ``Figure 3:``, ``Fig. 16.``, ``Table 93:``,
+# ``Scheme 2:`` — or a line fully wrapped in emphasis (``*Mechanical
+# drawing*``, ``*Figure 211: Circuit configuration no. 6*``), the
+# Marker caption style for unnumbered legends. The ``[.:]`` after the
+# number is the discriminator: ``Figure 3 shows …`` is prose quoting a
+# figure, not a caption. The wide keyword net this replaced
+# (``layout|mechanical|pinout|…`` unanchored) fired on normal prose and
+# headings — every journal read grew spurious pointer lines and extra
+# queries (gr520326 review).
+_CAPTION_NUMBERED_RE = re.compile(
+    r"^[*_]*\s*(?:fig(?:ure)?s?\.?|scheme|table)\s*\d+\s*[.:]",
+    re.IGNORECASE,
+)
+_CAPTION_WRAPPED_RE = re.compile(r"^\*{1,2}.+\*{1,2}$")
+
+# A lead line longer than this is a paragraph, not a legend.
+_CAPTION_LEAD_MAX_CHARS = 200
+
+# Marker ``<span id="page-N-M">`` anchors carry the true 0-based PDF page
+# a block came from — ``page_first`` is a TOC-anchor interpolation that
+# drifts on image-heavy datasheets (gr520326: 835 vs. the real ~857).
+_PAGE_SPAN_RE = re.compile(r"<span\s+id=\"page-(\d+)-\d+\"\s*>")
+
+
+def _is_caption_lead(line: str) -> bool:
+    """One non-blank line reads as a figure/table legend: a numbered
+    legend (``Figure 3:`` — not ``Figure 3 shows …``) or a fully
+    emphasis-wrapped line. Headings, ``Table of Contents`` and long
+    lines never count."""
+    if line.startswith("#") or len(line) > _CAPTION_LEAD_MAX_CHARS:
+        return False
+    core = line.strip("#* \t_").rstrip("*.").strip()
+    if core.lower() == "table of contents":
+        return False
+    return bool(_CAPTION_NUMBERED_RE.match(line) or _CAPTION_WRAPPED_RE.match(line))
+
+
+def _is_caption_only_block(text: str) -> bool:
+    """True when a block is captions/labels with no prose body —
+    the datasheet failure mode of gr520326 (a figure or table whose
+    pixels never made it into a chunk leaves just the legend lines).
+
+    At least one caption-lead line, and caption leads are at least half
+    the non-blank lines (the rest tolerate a short ``**Note:**``-style
+    tag along). A 500-line paragraph that happens to quote one caption
+    stays prose."""
+    text = _PAGE_ANCHOR_RE.sub("", text)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines or len(lines) > 12:
+        return False
+    leads = sum(1 for ln in lines if _is_caption_lead(ln))
+    return leads >= 1 and leads * 2 >= len(lines)
+
+
+def _page_spans(text: str) -> list[int]:
+    """All Marker page-anchor page numbers embedded in a block's text."""
+    return [int(m) for m in _PAGE_SPAN_RE.findall(text)]
+
+
 def _is_image_only_block(text: str) -> bool:
     """True when the block consists solely of image markers + page anchors.
 
@@ -166,8 +226,10 @@ def _scrub_block_text(text: str) -> str:
 
 __all__ = [
     "_chunk_keywords_or_caption",
+    "_is_caption_only_block",
     "_is_image_only_block",
     "_looks_like_caption",
+    "_page_spans",
     "_render_block_body",
     "_scrub_block_text",
 ]

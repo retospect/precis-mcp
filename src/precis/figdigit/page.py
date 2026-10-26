@@ -18,7 +18,14 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-__all__ = ["load_image", "png_bytes", "render_pdf"]
+__all__ = ["load_image", "png_bytes", "render_page_png", "render_pdf"]
+
+# Hard cap on a rendered page's longest side (gr520326 review): the
+# ``/files/pdf_page`` door renders whatever ``pdf_url`` pulled in, and a
+# hostile 14400 pt MediaBox at 200 dpi is a ~4.8 GB pixmap — one reusable
+# token then OOMs the gateway on every hit. 4000 px at the default zoom
+# still serves any real paper page at full resolution.
+_MAX_PAGE_EDGE_PX = 4000
 
 
 def load_image(source: str | Path | np.ndarray) -> NDArray[np.uint8]:
@@ -75,3 +82,39 @@ def png_bytes(rgb: np.ndarray) -> bytes:
     buf = io.BytesIO()
     Image.fromarray(np.asarray(rgb, dtype=np.uint8)).save(buf, format="PNG")
     return buf.getvalue()
+
+
+def render_page_png(
+    path: str | Path,
+    *,
+    page: int,
+    dpi: float = 200.0,
+) -> tuple[bytes, int]:
+    """One whole PDF page → ``(PNG bytes, page_count)``.
+
+    The page-image door's renderer (gr520326): unlike :func:`render_pdf`
+    this emits the wire format directly — ``pixmap.tobytes("png")`` — so
+    the web route needs no PIL/numpy, only ``fitz`` (lazy; the install
+    hint names ``[web]`` because the gateway venv is ``[web,estimate]``,
+    not ``[paper]``). The zoom is clamped so the longest rendered side
+    stays under ``_MAX_PAGE_EDGE_PX`` — the token is reusable until
+    expiry, so an oversize MediaBox must not turn every hit into a
+    multi-GB pixmap. ``page`` is the 0-based fitz index — the same
+    numbering Marker ``page-N`` spans and ``chunks.page_first`` carry.
+    ``doc[page]`` raises ``IndexError`` out of range; the caller maps
+    that to its not-found semantics.
+    """
+    from precis.utils.optional_deps import require_optional
+
+    fitz = require_optional("fitz", extra="web")
+    zoom = dpi / 72.0
+    doc = fitz.open(path)
+    try:
+        pg = doc[page]
+        edge = max(pg.rect.width, pg.rect.height)
+        if edge * zoom > _MAX_PAGE_EDGE_PX:
+            zoom = _MAX_PAGE_EDGE_PX / edge
+        pix = pg.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        return pix.tobytes("png"), doc.page_count
+    finally:
+        doc.close()

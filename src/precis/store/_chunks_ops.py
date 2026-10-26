@@ -3543,6 +3543,46 @@ class ChunkStore:
             ).fetchall()
         return {int(r[0]): int(r[1]) for r in rows}
 
+    def image_blobs_for_ords(
+        self, ref_id: int, ords: list[int]
+    ) -> dict[int, tuple[int, str, str]]:
+        """``ord → (chunk_id, sha256, mime)`` for chunks carrying an image
+        blob — a ``chunk_blobs`` row with an ``image/*`` mime.
+
+        The figure-pointer read (gr520326): a caption-only chunk links to
+        the image stored on its own or an adjacent figure block. Sha +
+        mime only, never ``bytes`` — the blob itself is fetched by the
+        ``/files/blob/<sha>`` route via :meth:`chunk_blob_for_ref`.
+        """
+        wanted = sorted({int(o) for o in ords})
+        if not wanted:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT c.ord, c.chunk_id, b.sha256, b.mime FROM chunks c "
+                "JOIN chunk_blobs b ON b.chunk_id = c.chunk_id "
+                "WHERE c.ref_id = %s AND c.ord = ANY(%s) "
+                "AND b.mime LIKE 'image/%%'",
+                (ref_id, wanted),
+            ).fetchall()
+        return {int(r[0]): (int(r[1]), str(r[2]), str(r[3])) for r in rows}
+
+    def chunk_blob_for_ref(self, sha256: str, ref_id: int) -> tuple[bytes, str] | None:
+        """``(bytes, mime)`` for a ``chunk_blobs`` row, bound to the ref —
+        the ``/files/blob/<sha>`` route's fetch. ``None`` when no blob
+        under that sha belongs to that ref (a valid token for a *paper's*
+        sha never widens to another ref's chunks)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT b.bytes, b.mime FROM chunk_blobs b "
+                "JOIN chunks c ON c.chunk_id = b.chunk_id "
+                "WHERE b.sha256 = %s AND c.ref_id = %s LIMIT 1",
+                (sha256, ref_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return bytes(row[0]), str(row[1])
+
     def chunk_llm_summaries_for_ref(
         self, ref_id: int, *, pos_range: tuple[int, int] | None = None
     ) -> list[dict[str, Any]]:

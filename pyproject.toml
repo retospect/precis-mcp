@@ -406,6 +406,12 @@ web = [
     # another package's dependency choices.
     "markdown-it-py>=3.0",
     "pygments>=2.18",
+    # ``fitz`` — the /files/pdf_page route renders a held PDF page to PNG
+    # (gr520326 ``page_image`` view). The gateway venv installs
+    # ``[web,estimate]`` only, so without this the route's
+    # ``require_optional("fitz")`` refuses on prod. Same floor as
+    # ``[paper]`` (the heap-corruption fixes note lives there).
+    "pymupdf>=1.24.10",
 ]
 # CAD STEP interchange (ADR 0041 §10). The lightweight printable path
 # (``manifold3d`` CSG kernel → STL/3MF) is now core — see the "Deterministic,

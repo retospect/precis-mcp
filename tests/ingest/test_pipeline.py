@@ -118,6 +118,38 @@ class TestBlocksToChunks:
         chunks = _blocks_to_chunks(blocks)
         assert chunks[0].numerics == []
 
+    def test_figure_block_decodes_image_base64(self):
+        """gr520326: Marker's extracted figure pixels ride the chunk as
+        ``image=(bytes, mime)`` for db_writer's ``chunk_blobs`` insert —
+        the block used to drop them silently."""
+        import base64
+
+        payload = base64.b64encode(b"\x89PNG fake-crop").decode("ascii")
+        blocks = [
+            {
+                "type": "figure",
+                "text": "![](_page_3_Figure_1.png)",
+                "page": 3,
+                "image_base64": payload,
+                "image_mime": "image/png",
+            }
+        ]
+        chunks = _blocks_to_chunks(blocks)
+        assert chunks[0].chunk_kind == "figure"
+        assert chunks[0].image == (b"\x89PNG fake-crop", "image/png")
+
+    def test_block_without_image_gets_none(self):
+        chunks = _blocks_to_chunks([{"type": "paragraph", "text": "prose"}])
+        assert chunks[0].image is None
+
+    def test_bad_base64_drops_the_image_not_the_chunk(self):
+        blocks = [
+            {"type": "figure", "text": "![](x.png)", "image_base64": "!!!not-b64!!!"}
+        ]
+        chunks = _blocks_to_chunks(blocks)
+        assert chunks[0].text == "![](x.png)"
+        assert chunks[0].image is None
+
 
 # ---------------------------------------------------------------------------
 # _retag_references — references-section promotion

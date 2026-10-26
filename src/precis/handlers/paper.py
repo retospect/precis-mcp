@@ -69,8 +69,10 @@ from precis.handlers._paper_search import (
     _dedup_card_hits,
 )
 from precis.handlers._paper_text import (
+    _is_caption_only_block,
     _is_image_only_block,
     _looks_like_caption,
+    _page_spans,
     _render_block_body,
 )
 from precis.handlers._slug_ref_shared import (
@@ -267,7 +269,18 @@ _SUPPORTED_VIEWS = (
     "pdf_link",
     "tables",
     "measures",
+    "page_image",
 )
+
+#: Chunk kinds that always get a figure pointer on read (gr520326).
+_FIGURE_CHUNK_KINDS: frozenset[str] = frozenset({"figure", "caption"})
+
+#: How far (in ords) a figure pointer may reach for a Marker ``page-N``
+#: span when the chunk's own text carries none — ``page_first`` is a
+#: TOC-anchor interpolation that drifts badly on image-heavy datasheets
+#: (gr520326: 835 claimed vs. ~857 actual), the nearest real span
+#: brackets much tighter.
+_PAGE_SPAN_WINDOW = 6
 
 
 # Tunable knobs for the nearest-match suggester. The cutoff (0.6 of
@@ -500,7 +513,10 @@ class PaperHandler(Handler):
         # renders one table, ``args={'match': 'w1 w2'}`` keeps tables
         # whose header/caption/row labels hold any word.
         "get": ArgsSpec(
-            {"page", "page_size", "offset", "limit", "ttl_s", "match", "table"}
+            # ``ord`` is ``view='page_image'``'s chunk selector
+            # (gr520326): resolve the figure crop / page for the chunk
+            # at that ord.
+            {"page", "page_size", "offset", "limit", "ttl_s", "match", "table", "ord"}
         ),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
         # spelling the slim schema pushes (kind-specific fields ride
@@ -6421,6 +6437,282 @@ class PaperHandler(Handler):
         ]
         return Response(body="\n".join(lines))
 
+    def _render_page_image_view(
+        self, ref: Ref, args: dict[str, Any] | None = None
+    ) -> Response:
+        """``view='page_image'`` — a signed link to a figure's pixels
+        (gr520326): a stored figure crop when the named chunk carries
+        one, else one page of the ref's held PDF rendered to PNG.
+
+        Bytes never ride an MCP result — the ``file_links`` contract of
+        ``pdf_link``: precis_web streams ``GET /files/blob/<sha>`` for a
+        ``chunk_blobs`` crop, ``GET /files/pdf_page/<sha>/<page>`` for a
+        page render (fitz). ``args={'page': N}`` is the 0-based PDF page
+        — the numbering ``chunks.page_first`` and Marker ``page-N``
+        spans share. ``args={'ord': N}`` names a body chunk: a stored
+        crop wins, else the chunk's page resolves server-side (own
+        ``page-N`` span → nearest neighbour span → ``page_first``).
+        ``ttl_s`` rides like ``pdf_link``'s.
+        """
+        from precis import file_links
+        from precis import secrets as vault
+
+        handle = _pa(ref)
+        a = args or {}
+        page_raw: Any = a.get("page")
+        ord_raw: Any = a.get("ord")
+        if (page_raw is None) == (ord_raw is None):
+            raise BadInput(
+                "page_image wants exactly one of args={'page': N} "
+                "(0-based PDF page) or args={'ord': N} (a body chunk)",
+                next=(
+                    f"get(id='{handle}', view='page_image', "
+                    "args={'ord': <ord from a caption/figure chunk>})"
+                ),
+            )
+        ttl_raw = a.get("ttl_s", file_links.DEFAULT_TTL_S)
+        try:
+            ttl_s = int(ttl_raw)
+        except (TypeError, ValueError, OverflowError):
+            raise BadInput(
+                f"args['ttl_s'] must be seconds, got {ttl_raw!r}",
+                next=f"get(id='{handle}', view='page_image')",
+            ) from None
+        ttl_s = max(1, min(ttl_s, file_links.MAX_TTL_S))
+
+        base = (
+            vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=self.store) or ""
+        ).rstrip("/")
+
+        def _mint_url(sha: str, path: str) -> tuple[str, str]:
+            token = file_links.mint("get", sha, ref.id, ttl_s, store=self.store)
+            exp = file_links.parse(token).exp
+            expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return f"{base}{path}?t={token}", expires
+
+        stem = ref.slug or handle
+        banner = (
+            []
+            if base
+            else [
+                "PRECIS_WEB_BASE_URL is not set — the link below is "
+                "path-only; prepend the precis_web origin to fetch it "
+                "(the operator sets it via the vault)."
+            ]
+        )
+
+        blob_sha: str | None = None
+        blob_ord: int | None = None
+        if ord_raw is not None:
+            try:
+                ord_i = int(ord_raw)
+            except (TypeError, ValueError, OverflowError):
+                raise BadInput(
+                    f"args['ord'] must be a chunk ord, got {ord_raw!r}",
+                    next=f"get(id='{handle}', view='page_image', args={{'page': 0}})",
+                ) from None
+            chunk = self.store.chunks.get_chunk(ref.id, pos=ord_i)
+            if chunk is None:
+                raise NotFound(
+                    f"no body chunk at ~{ord_i} in {handle}",
+                    next=f"get(id='{handle}', view='toc')",
+                )
+            hit = self.store.chunks.image_blobs_for_ords(ref.id, [ord_i]).get(ord_i)
+            if hit is not None:
+                _cid, blob_sha, _mime = hit
+                blob_ord = ord_i
+            else:
+                page, _exact = self._chunk_page_hint(ref.id, chunk)
+                if page is None:
+                    raise NotFound(
+                        f"~{ord_i} in {handle} has no stored figure image "
+                        "and no page can be derived for it",
+                        next=f"get(id='{handle}', view='pdf_link')",
+                    )
+                page_raw = page
+
+        if blob_sha is not None:
+            url, expires = _mint_url(blob_sha, f"/files/blob/{blob_sha}")
+            lines = [
+                *banner,
+                f"# {handle} — figure image link (chunk ~{blob_ord})",
+                f"url: {url}",
+                f"expires: {expires} (reusable until then)",
+                f"sha256: {blob_sha}",
+                "",
+                f"curl -fo {shlex.quote(stem + f'-c{blob_ord}.img')} '{url}'",
+            ]
+            return Response(body="\n".join(lines))
+
+        try:
+            page = int(page_raw)
+        except (TypeError, ValueError, OverflowError):
+            raise BadInput(
+                f"args['page'] must be a 0-based PDF page, got {page_raw!r}",
+                next=f"get(id='{handle}', view='page_image', args={{'page': 0}})",
+            ) from None
+        if page < 0:
+            raise BadInput(
+                f"args['page'] must be >= 0, got {page}",
+                next=f"get(id='{handle}', view='page_image', args={{'page': 0}})",
+            )
+        sha = getattr(ref, "pdf_sha256", None)
+        if not sha:
+            raise BadInput(
+                f"{handle} holds no PDF — no page to render",
+                next=(
+                    f"put(kind='{ref.kind}', id='{handle}', "
+                    "args={'pdf_url': 'https://…/x.pdf'})"
+                ),
+            )
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT page_count FROM pdfs WHERE pdf_sha256 = %s", (sha,)
+            ).fetchone()
+        if row and row[0] is not None and page >= int(row[0]):
+            raise BadInput(
+                f"page {page} is past the end — {handle}'s PDF has {int(row[0])} pages",
+                next=f"get(id='{handle}', view='page_image', args={{'page': {int(row[0]) - 1}}})",
+            )
+        url, expires = _mint_url(sha, f"/files/pdf_page/{sha}/{page}")
+        lines = [
+            *banner,
+            f"# {handle} — page {page} image link",
+            f"url: {url}",
+            f"expires: {expires} (reusable until then)",
+            f"page: {page} (0-based PDF index)",
+            "",
+            f"curl -fo {shlex.quote(stem + f'-p{page}.png')} '{url}'",
+        ]
+        return Response(body="\n".join(lines))
+
+    def _chunk_page_hint(
+        self,
+        ref_id: int,
+        chunk: Any,
+        *,
+        window: list[Any] | None = None,
+        pages: dict[int, int] | None = None,
+    ) -> tuple[int | None, bool]:
+        """``(page, exact)`` — the 0-based PDF page a chunk's content sits
+        on. Exact when a Marker ``page-N`` span inside the chunk's own
+        text says so; approximate off the nearest neighbour span (within
+        ``_PAGE_SPAN_WINDOW`` ords) or the TOC-anchor ``page_first``
+        interpolation, in that order. ``pages`` is the precomputed
+        ord→page_first map — passing it skips the per-chunk
+        ``chunk_pages`` query on the fallback leg."""
+        own = _page_spans(chunk.text)
+        if own:
+            return own[0], True
+        if window is None:
+            window = self.store.chunks.list_chunks_for_ref(
+                ref_id,
+                pos_range=(
+                    max(0, chunk.ord - _PAGE_SPAN_WINDOW),
+                    chunk.ord + _PAGE_SPAN_WINDOW,
+                ),
+            )
+        nearest: tuple[int, int] | None = None  # (ord distance, page)
+        for n in window:
+            if n.ord == chunk.ord:
+                continue
+            spans = _page_spans(n.text)
+            if not spans:
+                continue
+            # A *preceding* neighbour's closest span to this chunk is its
+            # last; a following neighbour's is its first. Tuple order
+            # prefers the lower page on a distance tie.
+            cand = (
+                abs(n.ord - chunk.ord),
+                spans[-1] if n.ord < chunk.ord else spans[0],
+            )
+            if nearest is None or cand < nearest:
+                nearest = cand
+        if nearest is not None:
+            return nearest[1], False
+        if pages is not None:
+            page = pages.get(chunk.ord)
+        else:
+            page = self.store.chunks.chunk_pages(ref_id, [chunk.ord]).get(chunk.ord)
+        return (page, False) if page is not None else (None, False)
+
+    def _figure_pointer_lines(
+        self, ref: Ref, blocks: list[Any]
+    ) -> dict[int, list[str]]:
+        """Per-ord extra render lines giving a figure-ish chunk's pixels
+        a door (gr520326): a ``figure image:`` crop link when the chunk —
+        or the figure block next to a caption-only one — has an image in
+        ``chunk_blobs``, else a ``page N of <pa>:`` pointer naming the
+        ``page_image`` call.
+
+        Qualifying chunks are ``figure``/``caption`` kinds and
+        caption-only blocks (a legend with no body — the datasheet
+        failure where a figure's pixels never landed). A read with no
+        qualifying block pays nothing: the blob/page probes only run
+        then.
+        """
+        qual = [
+            b
+            for b in blocks
+            if b.chunk_kind in _FIGURE_CHUNK_KINDS or _is_caption_only_block(b.text)
+        ]
+        if not qual:
+            return {}
+        reach = sorted({o for b in qual for o in (b.ord - 1, b.ord, b.ord + 1)})
+        blobs = self.store.chunks.image_blobs_for_ords(ref.id, reach)
+        pages = self.store.chunks.chunk_pages(ref.id, [b.ord for b in qual])
+        handle = _pa(ref)
+        window: list[Any] | None = None
+        out: dict[int, list[str]] = {}
+        for b in qual:
+            blob_ord = next(
+                (o for o in (b.ord, b.ord - 1, b.ord + 1) if o in blobs),
+                None,
+            )
+            if blob_ord is not None:
+                cid, _sha, _mime = blobs[blob_ord]
+                img_handle = (
+                    handle_registry.try_format(ref.kind, cid, chunk=True)
+                    or f"{ref.slug or handle}~{blob_ord}"
+                )
+                out[b.ord] = [
+                    f"figure image: {img_handle} — "
+                    f"get(id='{handle}', view='page_image', "
+                    f"args={{'ord': {blob_ord}}})"
+                ]
+                continue
+            page: int | None
+            approx: bool
+            if _page_spans(b.text):
+                page, approx = _page_spans(b.text)[0], False
+            else:
+                if window is None:
+                    lo = max(0, min(b.ord for b in qual) - _PAGE_SPAN_WINDOW)
+                    hi = max(b.ord for b in qual) + _PAGE_SPAN_WINDOW
+                    # When the read's own block list already covers the
+                    # window (a whole-doc read with qualifiers at both
+                    # ends), reuse it — a fresh range query would just
+                    # refetch what ``blocks`` holds.
+                    have = {blk.ord for blk in blocks}
+                    if all(o in have for o in range(lo, hi + 1)):
+                        window = [blk for blk in blocks if lo <= blk.ord <= hi]
+                    else:
+                        window = self.store.chunks.list_chunks_for_ref(
+                            ref.id, pos_range=(lo, hi)
+                        )
+                page, exact = self._chunk_page_hint(
+                    ref.id, b, window=window, pages=pages
+                )
+                approx = not exact
+            if page is None:
+                continue
+            out[b.ord] = [
+                f"page {'≈' if approx else ''}{page} of {handle}: "
+                f"get(id='{handle}', view='page_image', "
+                f"args={{'page': {page}}})"
+            ]
+        return out
+
     def _render_view(
         self, ref: Ref, view: str, *, args: dict[str, Any] | None = None
     ) -> Response:
@@ -6428,6 +6720,8 @@ class PaperHandler(Handler):
             return self._render_ops_view(ref, args)
         if view == "pdf_link":
             return self._render_pdf_link_view(ref, args)
+        if view == "page_image":
+            return self._render_page_image_view(ref, args)
         if view == "log":
             # Per-ref chronological event log across every subsystem
             # that writes to ref_events (chase, fetcher, provenance,
@@ -7012,6 +7306,7 @@ class PaperHandler(Handler):
         if banner:
             lines.append(banner)
             lines.append("")
+        pointers = self._figure_pointer_lines(ref, blocks)
         for b in blocks:
             # head each chunk with its computed handle plus the ~ord it
             # hides (``pc<id> ~<ord>``, gr520328); the legacy ``slug~pos``
@@ -7020,6 +7315,7 @@ class PaperHandler(Handler):
                 f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
             )
             lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
+            lines.extend(pointers.get(b.ord, ()))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
             # sidecars of this chunk's verified `cites` verdicts, when any
             # exist — outbound ("this chunk cites …", src_pos) and inbound

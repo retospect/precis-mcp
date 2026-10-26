@@ -31,7 +31,13 @@ search(kind='datasheet', q='I2C address timing', ...)
 ```
 
 Paper addressing applies (`<slug>~N`, `/toc`, per-chunk search). Datasheets
-are scoped out of `search(kind='paper')` and vice-versa.
+are scoped out of `search(kind='paper')` and vice-versa. A figure or
+caption-only chunk (a `*Figure 211: …*` legend whose pixels never became
+text) renders a pointer line after its body — `figure image: <dk…>` when
+the crop was stored, else `page N of <da>` — naming the
+`get(view='page_image', args={'ord': N})` / `args={'page': N}` call that
+mints a signed URL to the image, which is how a schematic or land pattern
+that ingested caption-only stays retrievable.
 
 ## What to pull (and where it goes)
 

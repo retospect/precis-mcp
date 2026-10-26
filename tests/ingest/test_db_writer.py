@@ -340,6 +340,43 @@ class TestWritePaper:
         assert chunk_count is not None and chunk_count[0] == 3
         assert card_count is not None and card_count[0] == 1
 
+    def test_chunk_image_writes_chunk_blobs(self, store):
+        """gr520326: a chunk carrying ``image=(bytes, mime)`` lands a
+        ``chunk_blobs`` row keyed on its inserted chunk_id — the figure
+        crop the ``page_image`` view's ``/files/blob`` door serves."""
+        import hashlib
+
+        img = b"\x89PNG crop-bytes"
+        paper = PaperToWrite(
+            title="Crop Carrier",
+            authors=[{"name": "Doe, Jane"}],
+            year=2024,
+            paper_id="b1o2b3s4",
+            pub_id=None,
+            cite_key_prefix="doe24",
+            chunks=[
+                ChunkToWrite(
+                    ord=0,
+                    chunk_kind="figure",
+                    text="![](_page_3_Figure_1.png)",
+                    image=(img, "image/png"),
+                ),
+                ChunkToWrite(ord=1, chunk_kind="paragraph", text="no image here"),
+            ],
+        )
+        with store.pool.connection() as conn:
+            result = write_paper(paper, conn=conn)
+            conn.commit()
+
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT c.ord, b.mime, b.sha256, b.size_bytes "
+                "FROM chunk_blobs b JOIN chunks c ON c.chunk_id = b.chunk_id "
+                "WHERE c.ref_id = %s ORDER BY c.ord",
+                (result.ref_id,),
+            ).fetchall()
+        assert rows == [(0, "image/png", hashlib.sha256(img).hexdigest(), len(img))]
+
     def test_unknown_page_zero_writes_null_pdf_pages(self, store):
         """gr510135: page 0 is Marker's "no page number" sentinel — the
         old ``[0,1)`` write made every unpaged full paper read as a

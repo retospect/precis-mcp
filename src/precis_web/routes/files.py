@@ -6,6 +6,12 @@ is the whole credential: ``get(kind='paper', view='pdf_link')`` mints it
 over ``(op='get', sha, ref_id, exp)`` — see :mod:`precis.file_links` —
 reusable until expiry (default 600 s, cap 3600 s).
 
+``GET /files/blob/{sha}`` and ``GET /files/pdf_page/{sha}/{page}`` are the
+``page_image`` view's two doors (gr520326): a ``chunk_blobs`` figure crop
+and one PDF page rendered to PNG. Same token shape, same ref-bound rule —
+``op='get'`` signed over the sha, and the fetch refuses when the token's
+ref doesn't own it.
+
 ``POST /files/upload/{ref_id}?t=<token>`` is the slice-6 ingress half —
 ``put(kind='paper', args={'pdf_upload_link': True})`` mints it over
 ``(op='put', sha='upload', ref_id, exp)``. The body is the raw PDF
@@ -42,16 +48,19 @@ import asyncio
 import hashlib
 import os
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from precis import file_links
 from precis.corpus_layout import rebase_onto_local, resolve_local_pdf
 from precis.ingest import pdf_upload
 from precis_web.config import WebConfig
 from precis_web.deps import get_store, get_web_config
+
+if TYPE_CHECKING:
+    from precis.store.types import Ref
 
 router = APIRouter(tags=["files"])
 
@@ -168,18 +177,21 @@ async def upload_pdf(ref_id: int, request: Request):
     }
 
 
-@router.get("/files/pdf/{sha}")
-def pdf_by_token(
-    sha: str,
-    request: Request,
-    cfg: WebConfig = Depends(get_web_config),
-) -> FileResponse:
-    store = get_store(request)
-    claims = _verify(request, op="get", sha=sha)
+def _resolve_ref_pdf(store, cfg: WebConfig, ref_id: int, sha: str) -> tuple[Ref, Path]:
+    """Token-verified ref → the on-disk path of the PDF it owns.
 
-    ref = store.get_ref(kind="paper", id=claims.ref_id)
+    Shared by ``/files/pdf`` and ``/files/pdf_page``. Kind-agnostic on
+    purpose (``fetch_refs_by_ids``, not ``get_ref(kind='paper')``) — the
+    datasheet kind that motivated ``page_image`` is not a paper, so a
+    kind-scoped lookup would 404 the ref a token was minted for. A valid
+    token whose ref moved/dropped/retired the sha is a 404, and a
+    cite_key-convention hit is corroborated against the recorded byte
+    size before it may serve — a replace can leave an older PDF under
+    the same convention name.
+    """
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
     if ref is None or getattr(ref, "pdf_sha256", None) != sha:
-        # Valid token, but the paper no longer owns this sha — it was
+        # Valid token, but the ref no longer owns this sha — it was
         # moved to another ref, dropped, or the ref retired since the
         # link was minted.
         raise HTTPException(status_code=404, detail="no such file")
@@ -203,10 +215,84 @@ def pdf_by_token(
             raise HTTPException(
                 status_code=404, detail="stored bytes no longer match the record"
             )
+    return ref, path
+
+
+@router.get("/files/pdf/{sha}")
+def pdf_by_token(
+    sha: str,
+    request: Request,
+    cfg: WebConfig = Depends(get_web_config),
+) -> FileResponse:
+    store = get_store(request)
+    claims = _verify(request, op="get", sha=sha)
+    ref, path = _resolve_ref_pdf(store, cfg, claims.ref_id, sha)
     stem = ref.slug or f"pa{ref.id}"
     return FileResponse(
         path,
         media_type="application/pdf",
         filename=f"{stem}.pdf",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+# The blob door serves only raster images — the DB ``mime`` is a claim,
+# not a truth, and ``image/svg+xml`` verbatim would be a same-origin
+# script context. Today only PIL-written png/jpeg land here anyway.
+_BLOB_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
+@router.get("/files/blob/{sha}")
+def blob_by_token(sha: str, request: Request) -> Response:
+    """A stored figure crop — the ``page_image`` view's blob half
+    (gr520326). The token signs ``(op='get', sha, ref_id)`` and the
+    fetch is ref-bound: :meth:`chunk_blob_for_ref` resolves the sha only
+    under the ref that owns the chunk, so a valid token for *this* sha
+    still 404s when it names another ref's blob. The mime is served only
+    when it's an allowlisted raster image, always with ``nosniff``."""
+    store = get_store(request)
+    claims = _verify(request, op="get", sha=sha)
+    hit = store.chunks.chunk_blob_for_ref(sha, claims.ref_id)
+    if hit is None or hit[1] not in _BLOB_IMAGE_MIMES:
+        raise HTTPException(status_code=404, detail="no such blob")
+    data, mime = hit
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/files/pdf_page/{sha}/{page}")
+def pdf_page_by_token(
+    sha: str,
+    page: int,
+    request: Request,
+    cfg: WebConfig = Depends(get_web_config),
+) -> Response:
+    """One page of a held PDF rendered to PNG — the ``page_image``
+    view's page half (gr520326). Same ref-bound resolve+verify as
+    ``/files/pdf`` (:func:`_resolve_ref_pdf`, kind-agnostic, with the
+    stale-bytes size check on the cite_key leg). The page index rides
+    the path unsigned, so ``< 0`` and out-of-range refuse here (fitz's
+    ``doc[-1]`` would happily render the last page)."""
+    store = get_store(request)
+    claims = _verify(request, op="get", sha=sha)
+    if page < 0:
+        raise HTTPException(status_code=404, detail="page out of range")
+
+    _ref, path = _resolve_ref_pdf(store, cfg, claims.ref_id, sha)
+    from precis.figdigit import render_page_png
+
+    try:
+        png, _page_count = render_page_png(path, page=page)
+    except IndexError:
+        raise HTTPException(status_code=404, detail="page out of range") from None
+    return Response(
+        content=png,
+        media_type="image/png",
         headers={"Cache-Control": "private, no-store"},
     )

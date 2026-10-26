@@ -48,6 +48,9 @@ def test_datasheet_put_is_a_url_pull_and_has_no_citation_export_views(
     # …but the reading views carry over.
     assert "toc" in views
     assert "abstract" in views
+    # gr520326: the figure-crop / page-render door — datasheet is the
+    # kind that motivated it, so it must accept the view.
+    assert "page_image" in views
 
 
 def test_datasheet_handle_codes_registered() -> None:

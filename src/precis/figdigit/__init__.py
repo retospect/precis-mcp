@@ -40,7 +40,12 @@ from precis.figdigit.axis import (
     fit_axis,
     tick_positions,
 )
-from precis.figdigit.page import load_image, png_bytes, render_pdf
+from precis.figdigit.page import (
+    load_image,
+    png_bytes,
+    render_page_png,
+    render_pdf,
+)
 from precis.figdigit.propose import (
     AxisSpec,
     DigitiseResult,
@@ -98,6 +103,7 @@ __all__ = [
     "load_image",
     "png_bytes",
     "polyline",
+    "render_page_png",
     "render_pdf",
     "tick_positions",
 ]

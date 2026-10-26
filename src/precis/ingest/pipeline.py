@@ -243,6 +243,30 @@ def datasheet_slug_base(
     return None
 
 
+#: Decoded figure-image cap — past this the "crop" is a parse accident,
+#: not a figure: keep the chunk's text, drop the pixels (gr520326).
+_IMAGE_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _block_image(block: dict[str, Any]) -> tuple[bytes, str] | None:
+    """``(bytes, mime)`` for a block's ``image_base64``/``image_mime``
+    pair — the figure crop Marker extracted (``marker.py``). ``None``
+    when the pair is absent, undecodable, empty or over
+    :data:`_IMAGE_MAX_BYTES`."""
+    import base64
+
+    raw = block.get("image_base64")
+    if not raw:
+        return None
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (TypeError, ValueError):
+        return None
+    if not data or len(data) > _IMAGE_MAX_BYTES:
+        return None
+    return data, str(block.get("image_mime") or "image/png")
+
+
 def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
     """Map Marker blocks → :class:`ChunkToWrite` body chunks.
 
@@ -276,6 +300,7 @@ def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
                 page_first=page,
                 page_last=page,
                 numerics=numerics,
+                image=_block_image(block),
             )
         )
         ord_counter += 1

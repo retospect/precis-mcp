@@ -151,6 +151,10 @@ class FakeStore(_FakeStoreBase):
         #: ``pdf_size_bytes`` fake reports (the /files route's
         #: cite_key-fallback corroboration).
         self.pdf_sizes: dict[str, int] = {}
+        #: {(sha256, ref_id): (bytes, mime)} — the ``chunk_blobs`` rows the
+        #: ``chunk_blob_for_ref`` fake serves (the /files/blob route's
+        #: ref-bound fetch).
+        self.chunk_blob_seed: dict[tuple[str, int], tuple[bytes, str]] = {}
         #: Canned sidebar-nav hits per scope_ref_id: lists of
         #: (block, ref, score) for the search_blocks_* fakes.
         self.nav_hits: dict[int, list[Any]] = {}
@@ -594,6 +598,19 @@ class FakeStore(_FakeStoreBase):
     # overrides for its blob-backed figure fixtures.
     def chunk_blob_version(self, chunk_id) -> str | None:
         return None
+
+    def chunk_blob_for_ref(self, sha256: str, ref_id: int):
+        """``(bytes, mime)`` for a chunk_blobs row, ref-bound — the
+        /files/blob route's fetch. Tests seed ``self.chunk_blob_seed``
+        with ``{(sha, ref_id): (bytes, mime)}``; the ref binding is part
+        of the key because it IS the contract under test."""
+        return self.chunk_blob_seed.get((sha256, ref_id))
+
+    def image_blobs_for_ords(self, ref_id: int, ords):
+        """``ord → (chunk_id, sha256, mime)`` for blob-carrying chunks —
+        empty under the fake corpus; the page_image view's crop probe
+        degrades to the page-pointer path."""
+        return {}
 
     def figure_canvas_ref(self, chunk_id):
         return None
