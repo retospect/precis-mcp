@@ -1511,6 +1511,42 @@ class StructureMixin:
                 row = cur.fetchone()
         return dict(row) if row is not None else None
 
+    def struct_neb_attempted(
+        self, cache_key: str, *, conn: Connection | None = None
+    ) -> dict[str, Any] | None:
+        """The newest run row for ``cache_key`` that counts as a consumed
+        attempt — the stale-edge rerun's at-most-once probe (gr518351
+        ruling, 2026-10-26): any TERMINAL status, or a genuinely-live
+        ``queued``/``running`` row under :meth:`struct_neb_inflight`'s
+        job-liveness join. A dead-job live-status row is a zombie and
+        does NOT count — the mint's :meth:`struct_neb_reap_dead` clears
+        it, so a crashed rerun never wedges the edge the way a failed
+        one must (a failed rerun IS the one attempt: it must stop the
+        daily re-mint loop the succeeded/inflight probes can't see)."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            with c.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT r.* FROM struct_neb_runs r "
+                    "WHERE r.cache_key = %s AND ("
+                    "  r.status NOT IN ('queued','running') "
+                    "  OR r.job_ref_id IS NULL "
+                    "  OR ("
+                    "    EXISTS (SELECT 1 FROM refs j "
+                    "      WHERE j.ref_id = r.job_ref_id "
+                    "      AND j.retired_at IS NULL) "
+                    "    AND NOT EXISTS ("
+                    "    SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                    "    WHERE rt.ref_id = r.job_ref_id "
+                    "      AND t.namespace = 'STATUS' "
+                    "      AND t.value = ANY(%s) "
+                    "      AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+                    "    ))) "
+                    "ORDER BY r.id DESC LIMIT 1",
+                    (cache_key, ["succeeded", "failed", "cancelled"]),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
     def struct_neb_reap_dead(
         self, cache_key: str, *, conn: Connection | None = None
     ) -> list[int]:

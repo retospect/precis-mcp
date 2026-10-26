@@ -1852,13 +1852,18 @@ def apply_network_demotion(
     What counts as a mismatch is per key kind (gr510764): a competitor-set
     measure (:data:`NETWORK_DEPENDENT_KEYS`) demotes on ANY
     :func:`same_network_basis` failure, as before. Every other stamped key
-    demotes only on an engine-VERSION difference from ``current``: a
-    main-route span/barrier/U_L from the same engine on a wider network is
-    still an upper bound (a newer network can only add steps, which can
-    only lower it — bias, not corruption), but a value measured by a
-    DIFFERENT engine has no such bound (corrections reprice energies), so
-    it is pending re-measurement, never a final result. Mutates ``cands``;
-    returns the current basis used."""
+    demotes only on an engine-version difference from ``current`` —
+    read through :func:`precis.utils.trust_gate.engine_version_stale`
+    (gr518351 ruling, 2026-10-26): a value minted on an OLDER engine is
+    pending re-measurement (corrections reprice energies, so an old value
+    has no bound), a NEWER one is not stale and keeps ranking — trust
+    and restale ranking share the one comparison. A main-route
+    span/barrier/U_L from the same engine on a wider network is still an
+    upper bound (a newer network can only add steps, which can only lower
+    it — bias, not corruption). Mutates ``cands``; returns the current
+    basis used."""
+    from precis.utils.trust_gate import engine_version_stale
+
     if current is None:
         current = current_network_basis(cands)
     if current is None:
@@ -1869,7 +1874,9 @@ def apply_network_demotion(
         for k, basis in _key_bases(c).items():
             if same_network_basis(basis, current):
                 continue
-            if basis.get("version") == cur_v and k not in NETWORK_DEPENDENT_KEYS:
+            if k not in NETWORK_DEPENDENT_KEYS and not engine_version_stale(
+                basis.get("version"), cur_v
+            ):
                 continue
             v = c.measures.pop(k, None)
             if v is not None:

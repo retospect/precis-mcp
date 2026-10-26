@@ -578,18 +578,18 @@ required for a meta-only patch.
 `barrier_trusted` (behind the confirmed/provisional split above) goes
 `False` on: adsorbate detached, wrong binding site, NEB not converged,
 `|barrier| > 8 eV` (nonphysical), relax converged in 0 steps (the geometry
-never actually moved), symmetry-identical structures disagreeing
-(re-measure both — neither is trusted until they agree), and fewer than 2
-independent seeds at neb tier (`barrier_seed_blocker`: `seeds:
-<n>-independent` — fewer than 2 distinct seeds across the run and its
-ready sibling pathways, pooling over the union so a rerun re-using a
-seed number re-verifies rather than wastes it — or `seeds:unknown` when
-no seed evidence exists at all; `barrier_independent_seeds` carries the
-count). Pooled seeds must agree too: `endpoint:union-disagree` /
-`endpoint:union-not-run`. **A barrier near
-0 eV carries none of these flags** — it's usually a broken/degenerate NEB
-(both endpoints collapsing to the same state), not a record-low. Treat any
-~0 eV read as invalid until checked, never as a leaderboard entry.
+never actually moved), symmetry-twin disagreement (re-measure both),
+fewer than 2 independent seeds at neb tier (`barrier_seed_blocker`:
+`seeds:<n>-independent` — pooled across the run and its ready siblings
+so a rerun re-using a seed re-verifies — or `seeds:unknown` without
+evidence; `barrier_independent_seeds` carries the count), and an older
+engine stamp (`engine:stale`; `engine:unknown` on an unstamped trusted
+edge). A stale edge re-runs on current — struct_neb self-queues,
+autocatpath via restale (opt-in ladder, `fidelity_restale_cap` > 0,
+frontier/top provisional band). Seeds must agree:
+`endpoint:union-disagree` / `endpoint:union-not-run`. **A barrier near
+0 eV carries none of these flags** — a broken/degenerate NEB, not a
+record-low — treat as invalid until checked.
 
 A single **low** trusted barrier is strong evidence — an upper bound, since
 a path that cheap exists. A single **high** barrier rules nothing out — the

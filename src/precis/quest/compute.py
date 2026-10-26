@@ -50,6 +50,7 @@ from precis.structure.engine_token import (  # noqa: F401  (re-exported: tests/c
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
+from precis.utils import trust_gate
 from precis.workers.executors import suspended_job_types
 
 if TYPE_CHECKING:
@@ -1226,6 +1227,18 @@ def _autocatpath_wall_seconds(tier: str | None = None) -> int:
 #: pre-s3 aggregate job carries none of these keys, so it must re-key for
 #: harvest to pick them up.
 _AUTOCATPATH_SUMMARY_REV = "s3"
+
+
+def _autocatpath_current_version() -> str | None:
+    """The version floor trust reads: the ``PRECIS_AUTOCATPATH_VERSION``
+    env override, else the dist pin — and NO epoch fallback. The epoch is
+    a re-key constant, never a real version (see
+    :func:`_pinned_network_basis`), so it must not answer "is this
+    evidence stale" the way :func:`_autocatpath_engine_token` answers
+    "does this idem key still match". The one expression the harvest,
+    the restale lane and ``view='trust'`` share — paired with
+    :func:`precis.utils.trust_gate.engine_version_stale`."""
+    return os.environ.get(_AUTOCATPATH_VERSION_ENV) or _autocatpath_pinned_version()
 
 
 def _autocatpath_content_key(
@@ -2745,8 +2758,21 @@ def _flag_few_independent_seeds(
     never resets a ``False`` back to ``True``.
     Returns the blocker id or ``None``.
     """
-    from precis.utils import trust_gate
-
+    engine = pw_meta.get("autocatpath_version")
+    engine = engine if isinstance(engine, str) and engine else None
+    # gr518351 ruling (2026-10-26): a run minted on an engine OLDER than
+    # the fleet's env-or-pin floor is stale — every seed/agreement number
+    # below was computed off evidence the current engine never produced.
+    # The check runs wherever trust is read, at EVERY tier (a stale
+    # screening or verify barrier demotes exactly like a stale neb one);
+    # a NEWER engine is not stale, and an unparseable re-key token
+    # compares by equality (:func:`trust_gate.engine_version_stale`).
+    current_version = _autocatpath_current_version()
+    stale_engine = bool(
+        engine
+        and current_version
+        and trust_gate.engine_version_stale(engine, current_version)
+    )
     tier = _pathway_tier(pw_meta)
     if tier != _TIER_NEB:
         # A barrier landing at another tier must not carry a stale
@@ -2754,15 +2780,18 @@ def _flag_few_independent_seeds(
         # harvest actually replaces the canonical barrier (round-2
         # review: a barrierless screening harvest must not wipe the
         # untrusted neb verdict still on the candidate).
-        if "barrier" in measures:
+        if "barrier" not in measures:
+            return None
+        measures["barrier_independent_seeds"] = None
+        if not stale_engine:
             measures["barrier_seed_blocker"] = None
-            measures["barrier_independent_seeds"] = None
-        return None
+            return None
+        measures["barrier_trusted"] = False
+        measures["barrier_seed_blocker"] = "engine:stale"
+        return "engine:stale"
     results = pw_meta.get("results")
     results = results if isinstance(results, dict) else {}
     records = [r for r in results.get("trust") or [] if isinstance(r, dict)]
-    engine = pw_meta.get("autocatpath_version")
-    engine = engine if isinstance(engine, str) and engine else None
     pooled, pooled_identity = trust_gate.sibling_evidence(
         store, meta=pw_meta, exclude_ref_id=pathway_ref
     )
@@ -2792,6 +2821,13 @@ def _flag_few_independent_seeds(
                 records, pw_meta.get("config")
             ).endpoint_tol_ev,
         )[0]
+    # gr518351: a run minted on an engine older than the fleet's pin is
+    # stale — every seed/agreement number above was computed off
+    # evidence the current engine never produced, so it names
+    # ``engine:stale`` (the dominant reason) rather than a seed count.
+    # The restale pass re-dispatches it on the current token.
+    if stale_engine:
+        blk = "engine:stale"
     if blk is None:
         if "barrier" in measures:
             measures["barrier_seed_blocker"] = None
@@ -3009,10 +3045,16 @@ def _struct_neb_measures_from_run(
 
     trusted = bool(run.get("trusted"))
     engine, current = run.get("engine"), neb_engine_token()
-    if trusted and isinstance(engine, str) and engine != current:
+    stale_demoted = False
+    if (
+        trusted
+        and isinstance(engine, str)
+        and trust_gate.engine_version_stale(engine, current)
+    ):
         trusted = False
+        stale_demoted = True  # names the blocker id ``engine:stale`` below
         warnings.append(
-            f"engine: stale — run minted on {engine}, current is {current}; "
+            f"engine:stale — run minted on {engine}, current is {current}; "
             "re-run on current to trust"
         )
     # Slice 5 made a first-order-saddle proof a trust requirement, but a
@@ -3112,7 +3154,8 @@ def _struct_neb_measures_from_run(
             if union is not None
             else (len(own_seeds) if own_seeds is not None else None)
         ),
-        "barrier_seed_blocker": seed_blocker,
+        "barrier_seed_blocker": seed_blocker
+        or ("engine:stale" if stale_demoted else None),
     }
     barrier = _num_measure(run.get("barrier_fwd_ev"))
     if barrier is not None:
@@ -3180,9 +3223,28 @@ def _neb_candidate_stamp(
     from precis.structure.neb import neb_engine_token
 
     current = neb_engine_token()
+
+    def _engine(e: Mapping[str, Any]) -> str | None:
+        v = e.get("engine")
+        return v if isinstance(v, str) and v else None
+
+    # gr518351 ruling: stale means minted on an OLDER engine (ordering
+    # when both sides parse); a newer edge keeps its trust, a re-key
+    # token still compares by equality.
     trusted_edges = [
-        e for e in entries if e.get("trusted") and e.get("engine") == current
+        e
+        for e in entries
+        if e.get("trusted")
+        and (en := _engine(e)) is not None
+        and not trust_gate.engine_version_stale(en, current)
     ]
+    stale = {
+        en
+        for e in entries
+        if e.get("trusted")
+        and (en := _engine(e)) is not None
+        and trust_gate.engine_version_stale(en, current)
+    }
     if trusted_edges:
         pick = max(trusted_edges, key=lambda e: float(e["barrier"]))
     else:
@@ -3193,19 +3255,15 @@ def _neb_candidate_stamp(
             return None  # the trusted autocatpath barrier stands
         pick = max(entries, key=lambda e: int(e.get("neb_run_id") or 0))
     warnings = list(pick.get("warnings") or [])
+    unknown_engine = any(e.get("trusted") and _engine(e) is None for e in entries)
     if not trusted_edges:
-        stale = {
-            str(e.get("engine"))
-            for e in entries
-            if e.get("trusted") and e.get("engine") not in (None, current)
-        }
         if stale:
             warnings.append(
                 f"engine:stale — trusted edge(s) minted on "
                 f"{', '.join(sorted(stale))}, current is {current}; "
                 "re-run on current to trust"
             )
-        elif any(e.get("trusted") and e.get("engine") is None for e in entries):
+        elif unknown_engine:
             # A pre-stamp trusted edge carries no engine at all — never
             # demote it silently either (neb-s7): ``engine:unknown``
             # names why it lost the pick.
@@ -3214,6 +3272,13 @@ def _neb_candidate_stamp(
                 f"(minted pre-stamp), current is {current}; "
                 "re-run on current to trust"
             )
+    blocked_by: list[str] = []
+    if not trusted_edges and stale:
+        blocked_by.append("engine:stale")
+    elif not trusted_edges and unknown_engine:
+        blocked_by.append("engine:unknown")
+    if pick.get("barrier_seed_blocker"):
+        blocked_by.append(str(pick["barrier_seed_blocker"]))
     stamp: dict[str, Any] = {
         "barrier": float(pick["barrier"]),
         "barrier_trusted": bool(trusted_edges),
@@ -3227,6 +3292,7 @@ def _neb_candidate_stamp(
         "barrier_wrong_site": int(pick.get("barrier_wrong_site") or 0),
         "barrier_independent_seeds": pick.get("barrier_independent_seeds"),
         "barrier_seed_blocker": pick.get("barrier_seed_blocker"),
+        "barrier_blocked_by": blocked_by or None,
     }
     for flag in ("barrier_absurd", "barrier_unrelaxed_geometry"):
         stamp[flag] = True if pick.get(flag) else None
@@ -3404,7 +3470,7 @@ def _pinned_network_basis(store: Store, quest_id: int) -> dict[str, Any] | None:
     has landed on the pinned engine yet, which the observed-newest rule
     could never see (an all-stale quest's newest basis IS the stale one).
     """
-    version = os.environ.get(_AUTOCATPATH_VERSION_ENV) or _autocatpath_pinned_version()
+    version = _autocatpath_current_version()
     if not version:
         return None
     reaction = _quest_reaction_config(store, quest_id)
@@ -4465,6 +4531,11 @@ def harvest_measures(
                         "seed set unknowable — no record seed fields "
                         "and no declared seeds"
                     )
+                elif seed_blk == "engine:stale":
+                    detail = (
+                        "run minted on an engine older than the fleet "
+                        "pin — restale re-measures on current"
+                    )
                 elif seed_blk == "endpoint:union-disagree":
                     detail = "pooled sibling endpoints disagree across seeds"
                 elif seed_blk == "endpoint:union-not-run":
@@ -4477,13 +4548,17 @@ def harvest_measures(
                         "fewer than 2 distinct same-engine seeds across "
                         "the run and its ready siblings"
                     )
+                tail = (
+                    ""
+                    if seed_blk == "engine:stale"
+                    else " (rerun with fresh seed numbers)"
+                )
                 append_entry(
                     store,
                     quest_id,
                     text=(
                         f"seed-independence gate for [{handle}] ({name}): "
-                        f"{seed_blk} — {detail}; auto-untrusted (rerun "
-                        "with fresh seed numbers)"
+                        f"{seed_blk} — {detail}; auto-untrusted{tail}"
                     ),
                     entry_type="result",
                     by=MEASURED_BY,
@@ -4562,8 +4637,13 @@ def harvest_measures(
             entry = _neb_edge_entry(run, measures)
             edge_key = str(entry["fs_ref_id"])
             prev = neb_edges.get(edge_key)
+            prev_engine = prev.get("engine") if prev else None
             prev_live_trusted = bool(
-                prev and prev.get("trusted") and prev.get("engine") == neb_engine_now
+                prev
+                and prev.get("trusted")
+                and isinstance(prev_engine, str)
+                and prev_engine
+                and not trust_gate.engine_version_stale(prev_engine, neb_engine_now)
             )
             if not (prev_live_trusted and not entry["trusted"]):
                 neb_edges[edge_key] = entry
@@ -4653,6 +4733,121 @@ def harvest_measures(
                     s.id,
                     exc_info=True,
                 )
+
+        # Stale-engine rerun (gr518351): an edge whose evidence the
+        # engine bump stranded — stored ``trusted`` on an old token,
+        # demoted to ``engine:stale`` at write time, or carrying no
+        # engine stamp at all (``engine:unknown``, ruling 2026-10-26:
+        # it too re-queues once rather than staying untrusted forever)
+        # — re-queues on the current engine by itself: the handler mint
+        # counts against the quest lane's daily cap and dedupes on the
+        # recomputed cache key (a queued rerun collapses, a landed one
+        # is a cache hit). A genuinely-failed edge does not re-run —
+        # the engine is new, the measurement verdict is not in
+        # question. ``hub=None`` keeps the note-only behaviour the
+        # rest of this function honours.
+        #
+        # AT-MOST-ONCE per (edge, engine version): ``meta.neb_edges``
+        # carries ``rerun_attempted_engine`` once an attempt settles
+        # (any note but a cap refusal — the mint's own row is the
+        # authoritative record anyway, ``struct_neb_attempted`` covers
+        # attempts minted before the stamp existed or a stamp write
+        # that raced). A failed rerun leaves a terminal row under the
+        # recomputed key: without this it re-minted every daily pass
+        # and burned the whole quest NEB cap forever. The quest cap is
+        # checked ONCE, up front — a full lane costs one count query,
+        # not a ``struct_neb_get`` + four loads per edge per pass.
+        if hub is not None and neb_edges:
+            eligible: list[tuple[str, dict[str, Any], str | None, int]] = []
+            for edge_key, edge in neb_edges.items():
+                if not isinstance(edge, dict):
+                    continue
+                if edge.get("rerun_attempted_engine") == neb_engine_now:
+                    continue  # already attempted on this engine version
+                e_engine = edge.get("engine")
+                e_engine = e_engine if isinstance(e_engine, str) and e_engine else None
+                if e_engine is None:
+                    stale_edge = bool(edge.get("trusted"))
+                else:
+                    stale_edge = trust_gate.engine_version_stale(
+                        e_engine, neb_engine_now
+                    )
+                if not stale_edge:
+                    continue
+                if not (
+                    edge.get("trusted")
+                    or edge.get("barrier_seed_blocker") == "engine:stale"
+                ):
+                    continue
+                run_id = edge.get("neb_run_id")
+                if not isinstance(run_id, int) or isinstance(run_id, bool):
+                    continue
+                eligible.append((edge_key, edge, e_engine, run_id))
+            if eligible:
+                from precis.handlers.structure import (
+                    StructureHandler,
+                    _neb_quest_daily,
+                )
+
+                remaining = _neb_quest_daily() - store.struct_neb_quest_mints_24h(
+                    quest_id
+                )
+                neb_handler = None
+                rerun_stamps: dict[str, dict[str, Any]] = {}
+                for edge_key, edge, e_engine, run_id in eligible:
+                    if remaining <= 0:
+                        notes.append(
+                            f"{handle}: {len(eligible)} stale neb edge(s) "
+                            "await rerun — quest daily NEB cap reached"
+                        )
+                        break
+                    try:
+                        run_row = store.struct_neb_get(run_id)
+                        if run_row is None:
+                            continue
+                        if neb_handler is None:
+                            neb_handler = StructureHandler(hub=hub)
+                        note = neb_handler.enqueue_stale_neb_rerun(
+                            run=run_row, quest_ref_id=quest_id
+                        )
+                    except Exception:
+                        log.debug(
+                            "harvest_measures: stale neb rerun failed for %s",
+                            s.id,
+                            exc_info=True,
+                        )
+                        continue
+                    if note.startswith("queued"):
+                        remaining -= 1
+                        append_entry(
+                            store,
+                            quest_id,
+                            text=(
+                                f"neb edge for [{handle}] ({name}) re-queued on "
+                                f"the current engine (was minted on "
+                                f"{e_engine or 'an unstamped engine'}): {note}"
+                            ),
+                            entry_type="observation",
+                            by=MEASURED_BY,
+                        )
+                    elif note.startswith("not queued"):
+                        notes.append(f"{handle}: neb rerun {note}")
+                        if "cap reached" in note:
+                            break  # the mint refused on a full lane
+                    # Settled attempts stamp the edge: something ran, is
+                    # running, or already holds a row under the recomputed
+                    # key (``struct_neb_attempted`` enforces at-most-once
+                    # for those). A ``not queued`` refusal minted nothing —
+                    # transient (a full lane, no eligible node, no
+                    # converged ml endpoint on the current version) or
+                    # permanent (a retired endpoint) — so the edge stays
+                    # eligible rather than locking until the next engine
+                    # bump (gr518351 ruling).
+                    if not note.startswith("not queued"):
+                        edge["rerun_attempted_engine"] = neb_engine_now
+                        rerun_stamps[edge_key] = dict(edge)
+                if rerun_stamps:
+                    store.struct_neb_stamp_harvest(s.id, rerun_stamps)
 
         # Rule out a candidate whose relax job failed for a genuine physical
         # reason (once) — but NOT an infra failure (container/executor died),
@@ -5744,8 +5939,22 @@ def promote_tiers(
                     if pw.get("status") == "computing":
                         continue
                     pw_basis = _network_basis(pw)
-                    if pw_basis is not None and same_network_basis(
-                        pw_basis, current_basis
+                    if pw_basis is not None and (
+                        same_network_basis(pw_basis, current_basis)
+                        # …or a basis that is simply not stale: a pathway
+                        # minted on a NEWER engine than the pin never
+                        # re-dispatches onto the older token (gr518351).
+                        # EQUAL versions are not this case — same engine,
+                        # different digest (environment_basis/tpd_basis)
+                        # is network-stale, not engine-stale, and must
+                        # still re-dispatch.
+                        or (
+                            pw_basis.get("version") != current_basis.get("version")
+                            and not trust_gate.engine_version_stale(
+                                pw_basis.get("version"),
+                                current_basis.get("version"),
+                            )
+                        )
                     ):
                         continue
                 stale.append((_merged_key(c), c, str(tier)))

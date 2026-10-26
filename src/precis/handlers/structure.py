@@ -2097,6 +2097,115 @@ class StructureHandler(Handler):
             )
         )
 
+    def enqueue_stale_neb_rerun(
+        self, *, run: Mapping[str, Any], quest_ref_id: int | None
+    ) -> str:
+        """Re-mint a ``struct_neb`` edge whose evidence went engine-stale
+        (gr518351 — the strict-gate rerun ruling).
+
+        Faithful replay of the stored ``struct_neb_runs`` row: the same
+        edge (IS/FS refs), model and engine knobs, re-resolved against
+        CURRENT endpoint versions like a fresh mint — an endpoint that
+        no longer carries a converged ml run at the stored model refuses
+        rather than minting a job that cannot run. The cache key is
+        recomputed, so under a bumped :func:`neb_engine_token` it MISSES
+        (the stored row's key folds the old token): the mint's own
+        locked probes dedupe a rerun already queued
+        (``struct_neb_inflight``) or landed (``struct_neb_cached``), and
+        ``quest_ref_id`` counts the mint against the quest lane's daily
+        cap (:data:`_NEB_QUEST_DAILY_ENV`).
+
+        At most ONE rerun per (edge, engine version): a prior attempt
+        that left a row under the recomputed key — terminal or live,
+        :meth:`Store.struct_neb_attempted` — refuses as ``already
+        attempted …``, so a failed rerun never re-mints on every
+        harvest pass (it used to burn the whole quest NEB cap daily,
+        forever). A bumped token changes the key and allows exactly
+        one more attempt.
+
+        Returns a one-line note — ``queued …`` / ``collapsed onto …`` /
+        ``already priced …`` / ``already attempted …`` /
+        ``not queued: <reason>`` — for the harvest's logbook; cap and
+        node refusals are notes, never raises. PrecisErrors other than a
+        refusal propagate (a mint bug must not masquerade as a note).
+        """
+        from precis.errors import PrecisError
+        from precis.structure.neb import (
+            NEB_DEFAULTS,
+            neb_cache_key,
+            normalize_neb_params,
+        )
+
+        is_id, fs_id = run.get("is_ref_id"), run.get("fs_ref_id")
+        refs = self.store.fetch_refs_by_ids(
+            {
+                int(i)
+                for i in (is_id, fs_id)
+                if isinstance(i, int) and not isinstance(i, bool)
+            }
+        )
+        is_ref = refs.get(is_id) if isinstance(is_id, int) else None
+        fs_ref = refs.get(fs_id) if isinstance(fs_id, int) else None
+        if is_ref is None or fs_ref is None:
+            return f"not queued: an endpoint of run {run.get('id')} is retired"
+        raw_params = run.get("params")
+        raw_params = raw_params if isinstance(raw_params, dict) else {}
+        engine_params = normalize_neb_params(
+            {k: raw_params[k] for k in NEB_DEFAULTS if k in raw_params}
+        )
+        model = str(run["model"]) if run.get("model") else None
+        is_version = int((is_ref.meta or {}).get("version", 0))
+        fs_version = int((fs_ref.meta or {}).get("version", 0))
+        is_run = _neb_conv_run(self.store.structure_runs(is_ref.id), is_version, model)
+        fs_run = _neb_conv_run(self.store.structure_runs(fs_ref.id), fs_version, model)
+        if is_run is None or fs_run is None:
+            missing = "IS" if is_run is None else "FS"
+            ref = is_ref if is_run is None else fs_ref
+            return (
+                f"not queued: {missing} endpoint "
+                f"{ref.slug or ref.id} has no converged "
+                f"{model or '?'} ml run on its current version"
+            )
+        is_scene, _ = self.store.structure_load(is_ref.id)
+        fs_scene, _ = self.store.structure_load(fs_ref.id)
+        cache_key = neb_cache_key(
+            is_scene, fs_scene, fidelity="ml", model=model, params=engine_params
+        )
+        is_slug = str(is_ref.slug or is_ref.id)
+        fs_slug = str(fs_ref.slug or fs_ref.id)
+        hit = self.store.struct_neb_cached(cache_key)
+        if hit is not None:
+            return f"already priced on the current engine (run {hit['id']})"
+        inflight = self.store.struct_neb_inflight(cache_key)
+        if inflight is not None:
+            return f"collapsed onto in-flight run {inflight['id']}"
+        attempted = self.store.struct_neb_attempted(cache_key)
+        if attempted is not None:
+            return (
+                f"already attempted on this engine (run {attempted['id']} "
+                f"{attempted['status']}) — at most one rerun per engine version"
+            )
+        try:
+            resp = self._dispatch_neb(
+                is_ref,
+                fs_ref,
+                is_version=is_version,
+                fs_version=fs_version,
+                is_run=is_run,
+                fs_run=fs_run,
+                model=model,
+                engine_params=engine_params,
+                cache_key=cache_key,
+                requester_id=None,
+                quest_ref_id=quest_ref_id,
+                warns=[],
+                is_slug=is_slug,
+                fs_slug=fs_slug,
+            )
+        except PrecisError as exc:
+            return f"not queued: {exc}"
+        return str(resp.body).splitlines()[0].lstrip("# ").strip()
+
     @staticmethod
     def _neb_inflight_response(
         inflight: Mapping[str, Any], is_slug: str, fs_slug: str

@@ -33,6 +33,7 @@ from precis.structure.neb import (
     NEB_DEFAULTS,
     neb_atoms,
     neb_cache_key,
+    neb_engine_token,
     normalize_neb_params,
     slab_first_order,
     slab_labels,
@@ -1734,3 +1735,187 @@ def test_put_neb_dedupe_collapse_skips_the_daily_cap(
     resp = _neb(structure, images=9)
     assert "queued struct_neb" in resp.body
     assert store.struct_neb_nonquest_mints_today() == 2
+
+
+# -- stale-engine rerun enqueue (gr518351) ------------------------------------
+
+
+def _stale_run(store: Any, is_ref_id: int, fs_ref_id: int, **over: Any) -> int:
+    """A priced ``struct_neb_runs`` row stamped to an old engine token —
+    the stored shape the harvest's auto-rerun lane replays
+    (:meth:`StructureHandler.enqueue_stale_neb_rerun`)."""
+    run_id = store.struct_neb_record_run(
+        is_ref_id=is_ref_id,
+        fs_ref_id=fs_ref_id,
+        fidelity="ml",
+        model="mace_mp",
+        params=over.pop("params", None),
+        cache_key=over.pop("cache_key", "stale-ck"),
+        job_ref_id=None,
+        engine="0.0.0-old",
+    )
+    store.struct_neb_update_run(
+        run_id, status="succeeded", barrier_fwd_ev=0.9, trusted=True
+    )
+    return run_id
+
+
+def test_enqueue_stale_rerun_mints_on_current_engine(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stored edge replays like a fresh mint — recomputed cache key
+    under the CURRENT engine token, fresh queued run + job."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    is_ref, fs_ref = _ref(store, "ch_is"), _ref(store, "ch_fs")
+    stale_id = _stale_run(store, is_ref.id, fs_ref.id)
+    note = structure.enqueue_stale_neb_rerun(
+        run=store.struct_neb_get(stale_id), quest_ref_id=None
+    )
+    assert note.startswith("queued")
+    new = next(r for r in store.struct_neb_runs_for(is_ref.id) if r["id"] != stale_id)
+    assert new["status"] == "queued"
+    assert new["engine"] == neb_engine_token()
+    assert new["cache_key"] != "stale-ck"
+    assert new["job_ref_id"] is not None
+
+
+def test_enqueue_stale_rerun_collapses_onto_inflight(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rerun already queued under the recomputed key collapses — no
+    duplicate mint, no cap draw."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    is_ref, fs_ref = _ref(store, "ch_is"), _ref(store, "ch_fs")
+    stale_id = _stale_run(store, is_ref.id, fs_ref.id)
+    run = store.struct_neb_get(stale_id)
+    assert structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None).startswith(
+        "queued"
+    )
+    note = structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None)
+    assert note.startswith("collapsed onto in-flight run")
+    assert len(store.struct_neb_runs_for(is_ref.id)) == 2
+    assert len(_child_jobs2(store, is_ref.id)) == 1
+
+
+def test_enqueue_stale_rerun_cached_edge_is_already_priced(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rerun that already landed on the current engine is a cache hit —
+    the note names the priced run."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    is_ref, fs_ref = _ref(store, "ch_is"), _ref(store, "ch_fs")
+    stale_id = _stale_run(store, is_ref.id, fs_ref.id)
+    run = store.struct_neb_get(stale_id)
+    structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None)
+    new = next(r for r in store.struct_neb_runs_for(is_ref.id) if r["id"] != stale_id)
+    store.struct_neb_update_run(
+        new["id"], status="succeeded", barrier_fwd_ev=0.8, trusted=True
+    )
+    note = structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None)
+    assert note.startswith("already priced on the current engine")
+    assert len(store.struct_neb_runs_for(is_ref.id)) == 2
+
+
+def test_enqueue_stale_rerun_counts_against_the_quest_cap(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``quest_ref_id`` charges the mint to the quest lane's rolling-24h
+    cap — a full cap refuses as a note, never a raise."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    monkeypatch.setenv("PRECIS_STRUCT_NEB_QUEST_DAILY", "1")
+    is_ref, fs_ref = _ref(store, "ch_is"), _ref(store, "ch_fs")
+    qid = int(store.insert_ref(kind="quest", slug=None, title="q").id)
+    # charge the lane's one slot with an attributed mint
+    store.struct_neb_record_run(
+        is_ref_id=is_ref.id,
+        fs_ref_id=fs_ref.id,
+        fidelity="ml",
+        model="mace_mp",
+        params={"quest_ref_id": str(qid)},
+        cache_key="cap-ck",
+        job_ref_id=None,
+        engine=neb_engine_token(),
+    )
+    # a DIFFERENT edge (images=9 → a different recomputed address)
+    stale_id = _stale_run(store, is_ref.id, fs_ref.id, params={"images": 9})
+    note = structure.enqueue_stale_neb_rerun(
+        run=store.struct_neb_get(stale_id), quest_ref_id=qid
+    )
+    assert note.startswith("not queued") and "cap" in note
+
+
+def test_failed_rerun_never_remints_until_the_engine_moves(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr518351 MUST-1: a rerun that FAILS leaves a terminal row under
+    the recomputed cache key — ``struct_neb_attempted`` reads it, so the
+    next call refuses ``already attempted`` and mints nothing (the old
+    loop re-minted every harvest pass and burned the whole quest NEB
+    cap). A bumped engine token re-keys the edge and allows exactly one
+    more attempt — itself at most once."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    is_ref, fs_ref = _ref(store, "ch_is"), _ref(store, "ch_fs")
+    stale_id = _stale_run(store, is_ref.id, fs_ref.id)
+    run = store.struct_neb_get(stale_id)
+    assert structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None).startswith(
+        "queued"
+    )
+    new = next(r for r in store.struct_neb_runs_for(is_ref.id) if r["id"] != stale_id)
+    # the rerun dies — a terminal row the cached/inflight probes can't see
+    store.struct_neb_update_run(new["id"], status="failed")
+    note = structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None)
+    assert note.startswith("already attempted on this engine")
+    assert len(store.struct_neb_runs_for(is_ref.id)) == 2
+    assert len(_child_jobs2(store, is_ref.id)) == 1
+    # an engine bump re-keys the edge — exactly one more attempt, then
+    # the same at-most-once rule (here the in-flight collapse probe)
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_VERSION", "9.9.9-rerun")
+    assert structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None).startswith(
+        "queued"
+    )
+    note = structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None)
+    assert note.startswith("collapsed onto in-flight run")
+    assert len(store.struct_neb_runs_for(is_ref.id)) == 3
+    assert len(_child_jobs2(store, is_ref.id)) == 2
+
+
+def test_crashed_rerun_zombie_is_not_the_consumed_attempt(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The at-most-once probe excludes dead-job zombies: a rerun whose
+    JOB died before writing back (the row still reads ``queued``) is not
+    the consumed attempt — the mint reaps the zombie and queues the real
+    one, which then dedupes like any other live attempt."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    is_ref, fs_ref = _ref(store, "ch_is"), _ref(store, "ch_fs")
+    stale_id = _stale_run(store, is_ref.id, fs_ref.id)
+    run = store.struct_neb_get(stale_id)
+    assert structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None).startswith(
+        "queued"
+    )
+    zombie = next(
+        r for r in store.struct_neb_runs_for(is_ref.id) if r["id"] != stale_id
+    )
+    store.add_tag(zombie["job_ref_id"], Tag.closed("STATUS", "failed"), set_by="system")
+    # the row still reads queued — neither live probe counts it, so the
+    # mint reaps it and queues the real attempt
+    note = structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None)
+    assert note.startswith("queued")
+    runs = {r["id"]: r for r in store.struct_neb_runs_for(is_ref.id)}
+    assert len(runs) == 3
+    assert runs[zombie["id"]]["status"] == "failed"
+    assert len(_child_jobs2(store, is_ref.id)) == 2
+    note = structure.enqueue_stale_neb_rerun(run=run, quest_ref_id=None)
+    assert note.startswith("collapsed onto in-flight run")

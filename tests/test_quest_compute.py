@@ -4302,6 +4302,15 @@ def test_measures_from_job_lifts_selectivity_scalars_and_context_uncoerced() -> 
 
 
 class TestAutocatpathHarvest:
+    @pytest.fixture(autouse=True)
+    def _pin_engine_version(self, monkeypatch: Any) -> None:
+        """gr518351: the harvest demotes a pathway minted on an engine
+        older than the current pin to ``engine:stale``. These fixtures
+        stamp ``0.39.0`` — pin the env override to match so the
+        seed-independence blockers under test stay reachable (the real
+        dist pin sits above every fixture stamp here)."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.39.0")
+
     def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": name, "structure": _SPEC}
@@ -4693,6 +4702,39 @@ class TestAutocatpathHarvest:
         assert meta["barrier_seed_blocker"] == "seeds:1-independent"
         assert meta["barrier_independent_seeds"] == 1
 
+    def test_stale_screening_tier_barrier_demotes_engine_stale(
+        self, store: Any
+    ) -> None:
+        """gr518351 (stale wherever trust is read): a screening-tier
+        pathway minted on an engine OLDER than the env-or-pin demotes
+        with ``engine:stale`` exactly like a neb-tier one — and a NEWER
+        stamp is not stale, so ordering decides, never bare equality."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(
+            store, sid, seeds=[0, 1], engine="0.37.0", tier="screening"
+        )
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "engine:stale"
+        assert meta["barrier_independent_seeds"] is None
+        # a newer-engine barrier clears the blocker and stands
+        pw2 = self._trust_pathway(
+            store, sid, seeds=[0, 1], engine="0.40.0", tier="screening"
+        )
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": pw2}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.5
+        assert meta["barrier_trusted"] is True
+        assert meta.get("barrier_seed_blocker") is None
+
     def test_same_seed_union_shortfall_is_untrusted(self, store: Any) -> None:
         """Sibling and run both sampled only seed 0 — the union is one
         seed → seeds:1-independent."""
@@ -4818,6 +4860,22 @@ class TestAutocatpathHarvest:
         assert meta["barrier_trusted"] is True
         assert meta.get("barrier_seed_blocker") is None
         assert meta["barrier_independent_seeds"] == 2
+
+    def test_stale_engine_pathway_is_untrusted(self, store: Any) -> None:
+        """gr518351: a pathway minted on an engine older than the
+        env-or-pin is untrusted wherever trust is read — the blocker is
+        ``engine:stale`` even with a full seed union (the dominant
+        reason, never a seed count)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(store, sid, seeds=[0, 1], engine="0.37.0")
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "engine:stale"
 
     def test_adsorption_barrier_harvested_as_diagnostic(self, store: Any) -> None:
         """The tether's reseat adsorption barrier is harvested onto the candidate
@@ -5645,6 +5703,259 @@ class TestStructNebHarvest:
             for k in cand.measures
         )
         assert cand.flags.get("barrier_untrusted_value") == 0.2
+
+    def test_stale_engine_run_demotes_with_named_blocker(self, store: Any) -> None:
+        """gr518351: a trusted edge minted on an old engine demotes at
+        harvest with the named ``engine:stale`` blocker — never a silent
+        untrusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(store, sid, barrier_fwd_ev=0.9, engine="0.0.0-old")
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "engine:stale"
+        assert "engine:stale" in (meta["barrier_blocked_by"] or [])
+        assert any("engine:stale" in w for w in meta["warnings"])
+
+    def test_missing_engine_stamp_demotes_engine_unknown(self, store: Any) -> None:
+        """neb-s7: a pre-stamp trusted edge carries no engine at all —
+        the re-selection names ``engine:unknown``, never demotes
+        silently."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(
+            store.insert_ref(kind="structure", slug="neb-fs-nostamp", title="fs").id
+        )
+        run_id = store.struct_neb_record_run(
+            is_ref_id=sid,
+            fs_ref_id=fs_id,
+            fidelity="ml",
+            model="mace",
+            params=None,
+            cache_key="ck-nostamp",
+            job_ref_id=None,
+            engine=None,
+        )
+        ts_id = int(
+            store.insert_ref(kind="structure", slug="neb-ts-nostamp", title="ts").id
+        )
+        store.struct_neb_update_run(
+            run_id,
+            status="succeeded",
+            barrier_fwd_ev=0.9,
+            ts_ref_id=ts_id,
+            trust=[
+                {"check": "saddle", "verdict": "pass"},
+                {"check": "frequency", "verdict": "pass"},
+            ],
+            trusted=True,
+            multistart=self._ms_starts({0: 0.9, 1: 0.91}, {}),
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert "engine:unknown" in (meta["barrier_blocked_by"] or [])
+        assert any("engine:unknown" in w for w in meta["warnings"])
+
+    def test_stale_edge_enqueues_a_rerun_on_the_current_engine(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr518351: the harvest re-queues a stale edge itself — the mint
+        is the handler's (stubbed here); under test is the edge filter
+        (old token + trusted-or-``engine:stale`` blocker), the logbook
+        note, and the no-rerun rule for a genuinely-failed edge."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        run_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9, engine="0.0.0-old")
+        calls: list[int] = []
+
+        def _fake_enqueue(self: Any, *, run: Any, quest_ref_id: Any) -> str:
+            calls.append(run["id"])
+            return "queued x"
+
+        monkeypatch.setattr(StructureHandler, "enqueue_stale_neb_rerun", _fake_enqueue)
+        compute_mod.harvest_measures(store, qid, hub=Hub(store=store))
+        assert calls == [run_id]
+        logs = [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("re-queued on the current engine" in b.text for b in logs)
+        # a genuinely-failed stale edge does not re-run — the engine is
+        # new, the measurement verdict is not in question. The stale
+        # trusted edge IS re-offered every pass (the mint's own probes
+        # dedupe a queued rerun), the failed one never is.
+        run2_id, _ = self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.5,
+            engine="0.0.0-old",
+            trusted=False,
+            trust=[{"check": "neb_convergence", "verdict": "fail"}],
+        )
+        compute_mod.harvest_measures(store, qid, hub=Hub(store=store))
+        assert run2_id not in calls
+
+    def test_stale_edge_rerun_is_at_most_once_per_engine(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr518351 MUST-1: once a rerun attempt settles the edge carries
+        ``rerun_attempted_engine=<token>`` and later passes skip it
+        before the mint is even probed — a failed rerun used to re-mint
+        every daily pass and burn the whole quest NEB cap. Bumping the
+        engine token re-keys the edge: exactly one more attempt, then
+        the same at-most-once rule on the new stamp."""
+        from precis.structure.neb import neb_engine_token
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        run_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9, engine="0.0.0-old")
+        calls: list[int] = []
+
+        def _fake_enqueue(self: Any, *, run: Any, quest_ref_id: Any) -> str:
+            calls.append(run["id"])
+            return "queued x"
+
+        monkeypatch.setattr(StructureHandler, "enqueue_stale_neb_rerun", _fake_enqueue)
+        hub = Hub(store=store)
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        edge = next(iter(meta["neb_edges"].values()))
+        assert edge["rerun_attempted_engine"] == neb_engine_token()
+        # second pass on the same token: the stamp skips the edge
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id]
+        # engine bump: one more attempt, restamped on the new token —
+        # then at-most-once again
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "9.9.9")
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id, run_id]
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id, run_id]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        edge = next(iter(meta["neb_edges"].values()))
+        assert edge["rerun_attempted_engine"] == "9.9.9"
+
+    def test_unknown_engine_edge_requeues_once(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr518351 ruling 8: a pre-stamp edge (``engine`` NULL →
+        ``engine:unknown``) re-queues ONCE under the same at-most-once
+        rule — it does not stay untrusted forever with no path out."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-un", title="fs").id)
+        run_id = store.struct_neb_record_run(
+            is_ref_id=sid,
+            fs_ref_id=fs_id,
+            fidelity="ml",
+            model="mace",
+            params=None,
+            cache_key="ck-un",
+            job_ref_id=None,
+            engine=None,
+        )
+        ts_id = int(store.insert_ref(kind="structure", slug="neb-ts-un", title="ts").id)
+        store.struct_neb_update_run(
+            run_id,
+            status="succeeded",
+            barrier_fwd_ev=0.9,
+            ts_ref_id=ts_id,
+            trust=[
+                {"check": "saddle", "verdict": "pass"},
+                {"check": "frequency", "verdict": "pass"},
+            ],
+            trusted=True,
+            multistart=self._ms_starts({0: 0.9, 1: 0.91}, {}),
+        )
+        calls: list[int] = []
+
+        def _fake_enqueue(self: Any, *, run: Any, quest_ref_id: Any) -> str:
+            calls.append(run["id"])
+            return "queued x"
+
+        monkeypatch.setattr(StructureHandler, "enqueue_stale_neb_rerun", _fake_enqueue)
+        hub = Hub(store=store)
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id]
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id]
+        logs = [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("an unstamped engine" in b.text for b in logs)
+
+    def test_transient_rerun_refusal_keeps_the_one_attempt(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr518351 ruling (fix r2): a ``not queued:`` refusal minted
+        nothing, so it must not consume the edge's one attempt — no
+        ``rerun_attempted_engine`` stamp — and a later pass with capacity
+        still gets exactly one attempt (which does stamp)."""
+        from precis.structure.neb import neb_engine_token
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        run_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9, engine="0.0.0-old")
+        calls: list[int] = []
+        lane_open = {"ok": False}
+
+        def _fake_enqueue(self: Any, *, run: Any, quest_ref_id: Any) -> str:
+            calls.append(run["id"])
+            if lane_open["ok"]:
+                return "queued struct_neb jo1 run 1"
+            return (
+                "not queued: IS endpoint fs has no converged mace ml run "
+                "on its current version"
+            )
+
+        def _edge() -> dict[str, Any]:
+            meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+            return next(iter(meta["neb_edges"].values()))
+
+        monkeypatch.setattr(StructureHandler, "enqueue_stale_neb_rerun", _fake_enqueue)
+        hub = Hub(store=store)
+        # transient refusal: offered, refused, still unstamped
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id]
+        assert "rerun_attempted_engine" not in _edge()
+        # capacity arrives: the edge's one attempt happens — and stamps
+        lane_open["ok"] = True
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id, run_id]
+        assert _edge()["rerun_attempted_engine"] == neb_engine_token()
+        compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == [run_id, run_id]
+
+    def test_rerun_refusal_that_is_not_the_cap_does_not_stop_the_lane(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Only a real cap refusal (``cap reached``) stops the edge loop —
+        a refusal whose text merely contains ``capable``/``capacity``
+        (a node-refusal shape) must not break before later eligible edges
+        are offered."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        r1, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9, engine="0.0.0-old")
+        r2, _ = self._neb_run(store, sid, barrier_fwd_ev=0.8, engine="0.0.0-old")
+        calls: list[int] = []
+
+        def _fake_enqueue(self: Any, *, run: Any, quest_ref_id: Any) -> str:
+            calls.append(run["id"])
+            return "not queued: no capable compute node has capacity now"
+
+        monkeypatch.setattr(StructureHandler, "enqueue_stale_neb_rerun", _fake_enqueue)
+        compute_mod.harvest_measures(store, qid, hub=Hub(store=store))
+        assert sorted(calls) == sorted([r1, r2])
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert all(
+            "rerun_attempted_engine" not in e for e in meta["neb_edges"].values()
+        )
 
     def test_untrusted_autocatpath_overwrites_without_neb_evidence(
         self, store: Any
@@ -9684,6 +9995,39 @@ class TestTierPromotion:
         notes = compute_mod.promote_tiers(store, qid)
         assert calls == [(stale, compute_mod._TIER_NEB)]
         assert "U_L" in notes[0] and "U_opt" in notes[0]
+
+    def test_restale_same_version_different_basis_still_redispatches(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr518351 fix-r2: a pathway minted on the SAME engine version as
+        the pin but a different network basis (the quest's network config
+        moved under it — another template/digest/environment_basis) is
+        network-stale, not engine-stale, and still re-dispatches. The
+        newer-engine guard must skip only when the versions DIFFER;
+        equality used to swallow this case and park the candidate
+        forever."""
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        stale = self._stale_candidate(store, qid, "a", 0.1)
+        # minted on the pinned engine (0.23.0) against the quest's
+        # PREVIOUS network config — resolves another template, so its
+        # basis is not the current one even though the versions equal
+        store.insert_ref(
+            kind="pathway",
+            slug=f"pw-samev-{stale}",
+            title="pw",
+            meta={
+                "candidate_ref": stale,
+                "tier": "neb",
+                "status": "ready",
+                "config": {"network": "pre-change"},
+                "autocatpath_version": "0.23.0",
+            },
+            parent_id=stale,
+        )
+        notes = compute_mod.promote_tiers(store, qid)
+        assert calls == [(stale, compute_mod._TIER_NEB)]
+        assert len(notes) == 1 and "re-dispatched" in notes[0]
 
     def test_restale_pinned_rerun_while_in_flight_does_nothing(
         self, store: Any, monkeypatch: Any

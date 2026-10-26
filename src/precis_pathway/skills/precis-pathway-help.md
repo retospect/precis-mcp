@@ -310,17 +310,24 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 - `view='intermediates'` / `view='steps'` — the states / elementary steps as tables.
 - `view='trust'` — the barrier trust gate, replayed from the stored trust
   records: a `gate × verdict × input × threshold × blocking` table (the
-  engine checks, then the precis-side `seed independence`, absurd-magnitude
-  and twin-disagreement guards and the never-gating spread readout), the
-  recomputed `blocked_by` checked against the stored `trust_summary`
-  (`replay DISAGREES` names the difference), then `## endpoint agreement` —
+  engine checks, then the precis-side `seed independence`, absurd-magnitude,
+  twin-disagreement and engine-staleness guards and the never-gating
+  spread readout), the recomputed `blocked_by` checked against the stored
+  `trust_summary` (`replay DISAGREES` names the difference), then `## endpoint agreement` —
   one row per route state and seed with `delta_meV` next to the `tol_eV` it
   was judged against. A check that never ran reads `not-run`, never `pass`.
-  The seed-independence row is a real gate: a neb-tier run needs ≥2
-  distinct same-engine seeds in the union pooled across its ready
-  siblings — 1 seed (`seeds:1-independent`) or no provable seed evidence
-  (`seeds:unknown`) block as `BLOCKED`, and the `next:` footer names a
-  rerun with fresh seed numbers. When pooling makes the union, the
+  The `engine staleness` row compares the pathway's stamped engine against
+  the env-or-pinned current version — the same check the harvest's seed
+  gate demotes on: an OLDER stamp fails with `engine:stale` in `blocked_by`
+  (BLOCKED — a newer stamp is not stale), and the pathway re-measures on
+  the current engine when the quest opted into the tier ladder
+  (`fidelity_restale_cap` > 0, frontier or top provisional band only),
+  while a pathway with no engine stamp reads `not-run`. The seed-independence row
+  is a real gate: a neb-tier run needs ≥2 distinct same-engine seeds in
+  the union pooled across its ready siblings — 1 seed
+  (`seeds:1-independent`) or no provable seed evidence (`seeds:unknown`)
+  block as `BLOCKED`, and the `next:` footer names a rerun with fresh
+  seed numbers. When pooling makes the union, the
   `endpoint_agreement` row replays agreement over the merged
   `endpoint_identity` records across seeds: a spread beyond `tol_eV`
   reads `fail` with `endpoint:union-disagree` in `blocked_by`, and no

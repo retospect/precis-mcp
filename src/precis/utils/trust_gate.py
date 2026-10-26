@@ -111,6 +111,30 @@ def record_engine(rec: dict[str, Any]) -> str | None:
     return None
 
 
+def engine_version_stale(reported: Any, floor: Any) -> bool:
+    """Whether evidence minted on ``reported`` reads stale against the
+    fleet's current ``floor`` (the env override or dist pin — gr518351
+    ruling, 2026-10-26):
+
+    * Both parse as versions (``packaging.version``) → ordering decides:
+      ``reported < floor`` is stale, **newer is not** — a fleet running
+      ahead of the pin keeps its verdicts.
+    * Either is unparseable (an env override used as a re-key token, not
+      a version — or a missing stamp) → exact equality, the pre-ruling
+      behaviour, so a re-key still re-mints.
+
+    This is the one comparison restale ranking
+    (:func:`precis.quest.frontier.apply_network_demotion`), the harvest
+    seed gate and ``view='trust'`` share — they must answer
+    ``engine:stale`` identically."""
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        return Version(str(reported)) < Version(str(floor))
+    except InvalidVersion:
+        return str(reported) != str(floor)
+
+
 def is_stale(rec: dict[str, Any], current_engine: str | None) -> bool:
     """``True`` when the record carries an engine stamp that differs from
     the pathway's current engine — it does not count toward the gate."""
@@ -786,11 +810,17 @@ def precis_guard_rows(
     rate_limit_std: float | None,
     low_confidence: bool,
     thresholds: Thresholds,
+    engine: str | None = None,
+    current_engine: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The three precis-side rows: the absurd-magnitude guard and the
+    """The precis-side rows: the absurd-magnitude guard and the
     twin-disagreement guard (both read from the candidate's stamped meta —
-    ``meta.candidate_ref``), and the seed-spread readout that rides along
-    for information and never gates."""
+    ``meta.candidate_ref``), the engine-staleness guard (the pathway's
+    ``autocatpath_version`` vs the env-or-pinned current version — the
+    same comparison the harvest's seed gate demotes on, so view='trust'
+    answers ``engine:stale`` exactly when the harvest does), and the
+    seed-spread readout that rides along for information and never
+    gates."""
     cand = candidate_meta or {}
     rows: list[dict[str, Any]] = []
     if barrier_ea is None:
@@ -842,6 +872,31 @@ def precis_guard_rows(
                 "blocking": 0,
             }
         )
+    if engine is None:
+        eng_v, eng_in = "not-run", "no autocatpath_version stamp"
+    elif current_engine is None:
+        eng_v, eng_in = "not-run", "no env override or dist pin to compare"
+    elif engine_version_stale(engine, current_engine):
+        eng_v, eng_in = (
+            "fail",
+            f"engine {engine}, current is {current_engine} — rerun to trust",
+        )
+    else:
+        eng_v, eng_in = (
+            "pass",
+            f"engine {engine} not older than current {current_engine}",
+        )
+    rows.append(
+        {
+            "gate": "engine staleness (precis)",
+            "verdict": eng_v,
+            "input": eng_in,
+            "threshold": (
+                "engine not older than env-or-pin (non-version token: ≠ ⇒ stale)"
+            ),
+            "blocking": 1 if eng_v == "fail" else 0,
+        }
+    )
     spread_v = "warn" if low_confidence else "pass"
     if rate_limit_std is None:
         spread_v, spread_in = "not-run", "no spread recorded"

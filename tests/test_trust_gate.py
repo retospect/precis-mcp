@@ -15,8 +15,21 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from precis.utils import trust_gate
 from precis_pathway.toon_views import trust_toon
+
+
+@pytest.fixture(autouse=True)
+def _pin_engine_version(monkeypatch: Any) -> None:
+    """gr518351: view='trust' demotes a pathway minted on an engine older
+    than the env-or-pin to ``engine:stale``. Every ``_meta`` here stamps
+    ``0.39.0`` — pin the env override to match so the gates under test
+    stay reachable (the real dist pin sits above it)."""
+    from precis.quest import compute as compute_mod
+
+    monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.39.0")
 
 
 def _rec(
@@ -693,6 +706,38 @@ def test_trust_toon_lookup_failed_never_renders_pass() -> None:
     assert "next:" not in body
 
 
+def test_trust_toon_stale_engine_row_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr518351 ruling 2: view='trust' answers like the harvest — a
+    pathway whose ``autocatpath_version`` sits under the env-or-pin
+    renders the ``engine staleness (precis)`` row failed, names
+    ``engine:stale`` in blocked_by, and the verdict is BLOCKED even on
+    clean records."""
+    from precis.quest import compute as compute_mod
+
+    monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.40.0")
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    body = trust_toon(_meta(_results(records, [0, 1])), pw_handle="pw1")
+    assert "verdict: BLOCKED" in body
+    assert "blocked_by: engine:stale" in body
+    row = next(ln for ln in body.splitlines() if ln.startswith("engine staleness"))
+    assert "fail" in row and "0.39.0" in row and "0.40.0" in row
+
+
+def test_trust_toon_missing_engine_stamp_is_notrun() -> None:
+    """A pre-stamp pathway carries no ``autocatpath_version`` — the row
+    reads not-run (harvest parity: absence is not stale) and never
+    blocks on its own."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]))
+    del meta["autocatpath_version"]
+    body = trust_toon(meta, pw_handle="pw1")
+    row = next(ln for ln in body.splitlines() if ln.startswith("engine staleness"))
+    assert "not-run" in row
+    assert "engine:stale" not in body
+
+
 def _ident(
     state: str, seed: int, e_ev: float, *, engine: str | None = None
 ) -> dict[str, Any]:
@@ -829,3 +874,35 @@ def test_trust_toon_union_not_run_blocks() -> None:
     body = trust_toon(meta, pw_handle="pw1", pooled_seeds={1}, pooled_identity=[])
     assert "verdict: BLOCKED" in body
     assert "endpoint:union-not-run" in body
+
+
+def test_engine_version_stale_orders_versions_and_rekeys_by_equality() -> None:
+    """gr518351 ruling 7: both sides parse → ordering decides (an OLDER
+    stamp is stale, a NEWER one keeps its verdicts); either side
+    unparseable — an env override used as a re-key token, not a version —
+    falls back to the pre-ruling equality compare so a re-key still
+    re-mints."""
+    stale = trust_gate.engine_version_stale
+    assert stale("0.37.0", "0.39.0") is True
+    assert stale("0.39.0", "0.39.0") is False
+    assert stale("0.40.0", "0.39.0") is False
+    assert stale("rekey-a", "rekey-b") is True
+    assert stale("rekey-a", "rekey-a") is False
+    # mixed shapes fall back to equality too — never an ordering guess
+    assert stale("0.37.0", "rekey-b") is True
+    assert stale("rekey-a", "0.39.0") is True
+
+
+def test_trust_toon_newer_engine_row_passes() -> None:
+    """Ruling 7, the other half: a pathway minted on an engine NEWER
+    than the env-or-pin floor is not stale — the row passes
+    ('not older than'), nothing names ``engine:stale``, and the verdict
+    stays PASS."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]))
+    meta["autocatpath_version"] = "0.40.0"  # fleet ahead of the 0.39.0 pin
+    body = trust_toon(meta, pw_handle="pw1")
+    row = next(ln for ln in body.splitlines() if ln.startswith("engine staleness"))
+    assert "pass" in row and "not older than" in row
+    assert "engine:stale" not in body
+    assert "verdict: PASS" in body

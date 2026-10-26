@@ -374,10 +374,16 @@ def trust_toon(
     if not records:
         return f"trust_schema={schema} but no trust records on this pathway."
 
-    from precis.quest.compute import _pathway_tier
+    from precis.quest.compute import _autocatpath_current_version, _pathway_tier
 
     engine = meta.get("autocatpath_version")
     engine = engine if isinstance(engine, str) and engine else None
+    current_engine = _autocatpath_current_version()
+    stale_engine = bool(
+        engine
+        and current_engine
+        and trust_gate.engine_version_stale(engine, current_engine)
+    )
     tier = _pathway_tier(meta)
     pooled = pooled_seeds or set()
     scope = trust_gate.route_scope(results)
@@ -421,6 +427,7 @@ def trust_toon(
         record_blocked
         + ([seed_blk] if seed_blk else [])
         + ([union_blk] if union_blk else [])
+        + (["engine:stale"] if stale_engine else [])
     )
     rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
     rows.append(
@@ -459,6 +466,8 @@ def trust_toon(
         ),
         low_confidence=low_conf,
         thresholds=thresholds,
+        engine=engine,
+        current_engine=current_engine,
     )
 
     head = [

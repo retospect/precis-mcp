@@ -1394,6 +1394,10 @@ _GENERIC_NEB_CONTEXT = (
     "id='<is>', view='neb') for E_a, ΔE, the TS design and the trust "
     "verdict; a succeeded run's barrier lands on the IS candidate and the "
     "frontier by itself.\n"
+    "Trust: a barrier ranks only on evidence from the CURRENT engine — "
+    "engine:stale / engine:unknown / seeds:<n>-independent verdicts mean "
+    "it doesn't count yet; the harvest re-queues stale edges on the "
+    "current engine by itself, so never re-mint one by hand.\n"
 )
 
 

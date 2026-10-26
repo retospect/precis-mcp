@@ -116,6 +116,19 @@ Package-level invariants (detail lives on the named module):
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token, so new results never dedupe onto stale jobs;
   ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.
+  Evidence minted on an older token demotes to a *named* blocker —
+  ``engine:stale`` (or ``engine:unknown`` when a trusted edge carries no
+  stamp) in ``barrier_seed_blocker``/``barrier_blocked_by``, never a
+  silent flip — and self-heals: the harvest re-queues a stale-trusted
+  struct_neb edge on the current engine
+  (``StructureHandler.enqueue_stale_neb_rerun`` through the
+  ``_dispatch_neb`` mint under the recomputed cache key, daily-capped),
+  while an autocatpath pathway re-measures through the restale lane —
+  and only when the quest opted into the tier ladder with
+  ``fidelity_restale_cap`` > 0, for candidates in the frontier or the
+  top provisional band. ``view='trust'``'s "engine staleness
+  (precis)" row answers ``engine:stale`` exactly when the harvest does;
+  an unstamped engine reads ``not-run``.
 - **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``
   (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps dispatch/tick; extras
   stay ``hypothesis`` leads until the in-flight one's sims land.
