@@ -31,6 +31,7 @@ at ``+2hop``; per-section char budgets in ``_python_eye`` (gr498663).
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import difflib
 import logging
@@ -106,7 +107,10 @@ _SUPPORTED_VIEWS = (
     "placed",
 )
 _REVERSE_VIEWS = ("callers", "importers", "imports")
-_SEARCH_MODES = ("pattern", "lexical", "semantic")
+_SEARCH_MODES = ("pattern", "lexical", "semantic", "literal")
+#: Names that normalize to a canonical mode before validation —
+#: ``verbatim`` is the first word agents reach for (gr520148).
+_SEARCH_MODE_ALIASES = {"verbatim": "literal"}
 _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
 # After the seven-verb cutover, ``put`` on a file kind is creation-only.
 # Region edits live on ``edit`` (mode='find-replace'|'append'|'insert'|
@@ -688,6 +692,12 @@ class PythonHandler(Handler):
         over indexed fields: ``async``, ``@decorator-regex``, or a regex
         on qualname / signature (see ``_python_reverse.compile_pattern``).
 
+        ``mode='literal'`` (alias ``verbatim``) answers "every use of
+        this string value": it matches ``ast.Constant`` strings by their
+        whole VALUE inside function/class/module bodies — enum tags,
+        status strings, config keys — and reports the enclosing symbol
+        and file:line.
+
         Scores each symbol by where the query matched:
         qualname > signature > docstring. Returns up to `page_size` hits,
         deduped by qualname.
@@ -720,16 +730,26 @@ class PythonHandler(Handler):
                 next="search(kind='python', q='...') to search all repos",
             )
 
+        if mode in _SEARCH_MODE_ALIASES:
+            mode = _SEARCH_MODE_ALIASES[mode]
         if mode not in (None, "hybrid", *_SEARCH_MODES):
             raise BadInput(
                 f"unknown python search mode {mode!r}",
                 options=list(_SEARCH_MODES),
                 next="search(kind='python', mode='pattern', q='async @property')",
             )
+        scope_qn_prefix, scope_file = _split_scope(scope)
+        if mode == "literal":
+            return self._search_literal(
+                q=q,
+                roots=roots,
+                scope_qn_prefix=scope_qn_prefix,
+                scope_file=scope_file,
+                page_size=page_size,
+            )
         preds = reverse.compile_pattern(q) if mode == "pattern" else None
         needle = q.lower()
         terms = _query_terms(q) if mode != "pattern" else []
-        scope_qn_prefix, scope_file = _split_scope(scope)
 
         use_lex = mode != "semantic"
         # Tests and nested helpers are demoted unless the query is about tests.
@@ -812,6 +832,18 @@ class PythonHandler(Handler):
                     (
                         f"search(kind='python', q={q!r})",
                         "widen to all repos (drop scope=)",
+                    )
+                )
+            # A bare token or a quoted string that missed as a symbol may
+            # be a string VALUE living inside a function body — a question
+            # grep otherwise owns (gr520146/8). Multi-word unquoted queries
+            # read as concepts, not values, and don't get the hint.
+            stripped = _strip_literal_quotes(q.strip())
+            if stripped and (stripped != q.strip() or " " not in stripped):
+                hints.append(
+                    (
+                        f"search(kind='python', mode='literal', q={stripped!r})",
+                        "match it as a string constant's value",
                     )
                 )
             hints.append(
@@ -935,6 +967,124 @@ class PythonHandler(Handler):
             alias, sym = scoped[i]
             out.append((lex[i][0] if i in lex else 0.0, alias, sym))
         return out
+
+    def _search_literal(
+        self,
+        *,
+        q: str,
+        roots: dict[str, Path],
+        scope_qn_prefix: str | None,
+        scope_file: str | None,
+        page_size: int,
+    ) -> Response:
+        """``mode='literal'`` — every string constant whose VALUE equals ``q``.
+
+        The symbol-centric modes can't answer "every reader of this enum
+        value" ('keepout', 'STATUS:open'): the literal lives inside
+        function bodies the index scores but never returns (gr520148).
+        This walks each in-scope module's stored source for
+        ``ast.Constant`` str nodes and reports the enclosing symbol with
+        its file:line. Matching is on the constant's value, not its
+        source spelling — ``q`` may arrive bare or quoted (one layer of
+        matching outer quotes is stripped). Modules that never parsed
+        are skipped; a token-shaped needle takes a substring prefilter
+        so the corpus isn't re-parsed on every call.
+        """
+        needle = _strip_literal_quotes(q.strip())
+        if not needle:
+            raise BadInput(
+                "mode='literal' needs a non-empty string value",
+                next="search(kind='python', mode='literal', q='keepout')",
+            )
+        prefilter = _LITERAL_PREFILTER_SAFE.match(needle) is not None
+        hits: list[tuple[str, ModuleIndex, Symbol, int]] = []
+        unparsed = 0
+        for alias, root in sorted(roots.items()):
+            idx = self._index(alias, root)
+            for mod in idx.modules.values():
+                if scope_file and mod.file != scope_file:
+                    continue
+                if mod.source is None:
+                    continue
+                if mod.parse_error:
+                    unparsed += 1
+                    continue
+                if prefilter and needle not in mod.source:
+                    continue
+                try:
+                    tree = ast.parse(mod.source)
+                except SyntaxError:
+                    unparsed += 1
+                    continue
+                seen_lines: set[int] = set()
+                for node in ast.walk(tree):
+                    if not (
+                        isinstance(node, ast.Constant)
+                        and isinstance(node.value, str)
+                        and node.value == needle
+                    ):
+                        continue
+                    if node.lineno in seen_lines:
+                        continue
+                    seen_lines.add(node.lineno)
+                    sym = _enclosing_symbol(mod, node.lineno)
+                    if scope_qn_prefix and not (
+                        sym.qualname == scope_qn_prefix
+                        or sym.qualname.startswith(scope_qn_prefix + ".")
+                    ):
+                        continue
+                    hits.append((alias, mod, sym, node.lineno))
+        hits.sort(key=lambda h: (h[0], h[1].file, h[3]))
+
+        if not hits:
+            body = f"no python string literal equals {needle!r}\n"
+            if unparsed:
+                body += f"({unparsed} unparsed module(s) skipped)\n"
+            hints: list[tuple[str, str]] = []
+            if scope_qn_prefix is not None or scope_file is not None:
+                hints.append(
+                    (
+                        f"search(kind='python', mode='literal', q={needle!r})",
+                        "widen to all repos/symbols (drop scope=)",
+                    )
+                )
+            first_alias = sorted(roots.keys())[0]
+            hints.append(
+                (
+                    f"get(kind='python', id={first_alias!r})",
+                    "list files in this repo",
+                )
+            )
+            body += "\n" + render_next_section(hints)
+            body += (
+                "\n\nNote: literal matches the constant's whole value — "
+                "a fragment inside a longer string is a text search "
+                "(Grep/ripgrep stays the right tool there)."
+            )
+            return Response(body=body)
+
+        total = len(hits)
+        page = hits[:page_size]
+        lines = [
+            format_search_headline(
+                n_returned=len(page),
+                total=total,
+                noun="python literal hit",
+                query=q,
+            )
+        ]
+        if unparsed:
+            lines.append(f"({unparsed} unparsed module(s) skipped)")
+        for alias, mod, sym, lineno in page:
+            indexed = indexed_file(alias, mod.file)
+            if indexed is not None:
+                note_file(indexed[0], indexed[1])
+            handle = f"{alias}::{sym.qualname}"
+            sig = sym.signature or sym.kind
+            lines.append(f"\n## {handle}  ({mod.file}:{lineno})")
+            lines.append(f"  {sig}")
+            lines.append(f"  {needle!r}")
+        return Response(body="\n".join(lines))
 
     # ── put: create a new file (creation-only) ─────────────────────
 
@@ -2511,6 +2661,44 @@ class PythonHandler(Handler):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+#: Needle shape safe for the mode='literal' source prefilter: no
+#: whitespace, quote or backslash, so the constant's VALUE must appear
+#: verbatim in the source text. Anything else re-parses every scoped
+#: module (still correct, just slower) — the decoded value of
+#: ``'it\'s'`` or ``"a\nb"`` doesn't occur in the source as written.
+_LITERAL_PREFILTER_SAFE = re.compile(r"^[^\s'\"\\]+$")
+
+
+def _strip_literal_quotes(q: str) -> str:
+    """Drop one layer of matching outer quotes from a literal needle.
+
+    ``q='"keepout"'`` and ``q='keepout'`` name the same constant value —
+    callers arrive from grep habits where the quotes are part of the
+    pattern (gr520148). Only an exactly-matching pair at both ends is
+    stripped; ``"don't"`` keeps its apostrophe.
+    """
+    if len(q) >= 2 and q[0] == q[-1] and q[0] in ("'", '"'):
+        return q[1:-1]
+    return q
+
+
+def _enclosing_symbol(mod: ModuleIndex, lineno: int) -> Symbol:
+    """Innermost indexed symbol whose range covers ``lineno``.
+
+    Module-scope constants (top-level dicts, assignments between defs)
+    land on the module symbol, which always spans the whole file; a
+    class attribute lands on the class, a body constant on its function.
+    """
+    best = mod.module_symbol
+    best_span = best.line_count
+    for s in mod.symbols[1:]:
+        if s.start_line <= lineno <= s.end_line:
+            span = s.line_count
+            if span < best_span:
+                best, best_span = s, span
+    return best
 
 
 def _split_scope(scope: str | None) -> tuple[str | None, str | None]:

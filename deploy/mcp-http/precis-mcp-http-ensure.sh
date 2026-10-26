@@ -541,6 +541,45 @@ if [ -f "${STATE_DIR}/python-roots" ]; then
     done < "${STATE_DIR}/python-roots"
 fi
 
+# The installed `precis` CLI is a third copy of the code (gr520147): `precis`
+# serves the image and `main` the checkout, but neither is the venv this
+# host's console script runs. Resolve its package dir by asking the console
+# script's own shebang interpreter (never PATH alone — `command -v precis`
+# can hit a shim or a stale symlink) and mount it read-only at
+# /roots/cli/precis. The extra path level keeps qualnames `precis.*` —
+# _qualname_for_file names the top package after its directory, so
+# `cli::precis.<mod>.<sym>` lines up with `main::precis.<mod>.<sym>`.
+# A `cli` line in python-roots wins; PRECIS_MCP_CLI_PYTHON=<interpreter>
+# overrides discovery, =off disables.
+case ",${PY_ROOTS}," in
+    *,cli:*) : ;; # operator-defined cli root wins
+    *)
+        cli_setting="${PRECIS_MCP_CLI_PYTHON:-auto}"
+        if [ "${cli_setting}" != off ]; then
+            cli_py=""
+            if [ "${cli_setting}" = auto ]; then
+                cli_bin="$(command -v precis 2>/dev/null || true)"
+                if [ -n "${cli_bin}" ]; then
+                    cli_py="$(head -n 1 "${cli_bin}" 2>/dev/null | sed -n 's|^#!\([^[:space:]]*\).*|\1|p')"
+                fi
+            else
+                cli_py="${cli_setting}"
+            fi
+            cli_pkg=""
+            if [ -n "${cli_py}" ] && [ -x "${cli_py}" ]; then
+                cli_pkg="$("${cli_py}" -c 'import os, precis; print(os.path.dirname(precis.__file__))' 2>/dev/null || true)"
+            fi
+            if [ -n "${cli_pkg}" ] && [ -d "${cli_pkg}" ]; then
+                PY_ROOTS="${PY_ROOTS},cli:/roots/cli"
+                EXTRA_MOUNTS+=(-v "${cli_pkg}:/roots/cli/precis:ro")
+                log "python-roots: cli -> ${cli_pkg} (installed precis CLI)"
+            elif [ "${cli_setting}" != auto ]; then
+                note "PRECIS_MCP_CLI_PYTHON: no importable precis at '${cli_py}'"
+            fi
+        fi
+        ;;
+esac
+
 # Kind-surface env from cluster topology (gr489468): this container is the
 # same `route`/`protein`/`pathway` mint surface as the gateway's precis-web,
 # but its env was hand-listed — so put(kind='route', engine='aizynth') was

@@ -589,3 +589,122 @@ def test_is_test_path_implementation_file() -> None:
 def test_is_test_path_basename_rule_without_tests_dir() -> None:
     """A `test_*.py` basename counts even without a `tests/` root dir."""
     assert _is_test_path("src/foo/test_helper.py") is True
+
+
+# ---------------------------------------------------------------------------
+# search — mode='literal' (gr520148)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def lit_repo(tmp_path: Path) -> Path:
+    """String constants at module, class, function and nested-def scope."""
+    _write(tmp_path, "pkg/__init__.py", '"""pkg root."""\n')
+    _write(
+        tmp_path,
+        "pkg/consts.py",
+        '''
+        """Constants module."""
+
+        FEATURE_TYPES = {"keepout": "a routing block", "route": "a trace"}
+
+
+        class Reader:
+            FTYPE = "keepout"
+
+            def read(self, row: dict) -> str:
+                if row.get("ftype") == "keepout":
+                    return "blocked"
+                return "other"
+        ''',
+    )
+    _write(
+        tmp_path,
+        "pkg/other.py",
+        '''
+        """Other."""
+
+        def describe() -> str:
+            return "keepout zone"
+        ''',
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def lit_handler(lit_repo: Path) -> PythonHandler:
+    return PythonHandler(hub=Hub(), roots={"r": lit_repo})
+
+
+def test_literal_finds_every_use_of_a_value(lit_handler: PythonHandler) -> None:
+    """'keepout' sits in a module-scope dict, a class attribute and a
+    function body — all three, with file:line and enclosing qualname,
+    and NOT the different value 'keepout zone'."""
+    out = lit_handler.search(q="keepout", mode="literal")
+    assert "r::pkg.consts" in out.body
+    assert "r::pkg.consts.Reader" in out.body
+    assert "r::pkg.consts.Reader.read" in out.body
+    assert "pkg/consts.py:" in out.body
+    assert "pkg.other" not in out.body
+
+
+def test_literal_accepts_a_quoted_query(lit_handler: PythonHandler) -> None:
+    """Grep habit passes the quotes along — they strip to the value."""
+    out = lit_handler.search(q='"keepout"', mode="literal")
+    assert "r::pkg.consts.Reader.read" in out.body
+
+
+def test_literal_verbatim_alias(lit_handler: PythonHandler) -> None:
+    out = lit_handler.search(q="keepout", mode="verbatim")
+    assert "r::pkg.consts.Reader.read" in out.body
+
+
+def test_literal_matches_the_whole_value_not_a_fragment(
+    lit_handler: PythonHandler,
+) -> None:
+    """'keepout zone' is its own constant — a search for 'keepout' must
+    not return it, and vice versa."""
+    out = lit_handler.search(q="keepout zone", mode="literal")
+    assert "r::pkg.other.describe" in out.body
+    assert "pkg.consts" not in out.body
+
+
+def test_literal_scope_to_qualname(lit_handler: PythonHandler) -> None:
+    out = lit_handler.search(
+        q="keepout", mode="literal", scope="r::pkg.consts.Reader.read"
+    )
+    assert "r::pkg.consts.Reader.read" in out.body
+    assert "r::pkg.consts.Reader\n" not in out.body
+    assert "FEATURE_TYPES" not in out.body
+
+
+def test_literal_scope_to_file(lit_handler: PythonHandler) -> None:
+    out = lit_handler.search(q="keepout zone", mode="literal", scope="r/pkg/other.py")
+    assert "r::pkg.other.describe" in out.body
+
+
+def test_literal_no_match_names_whole_value_semantics(
+    lit_handler: PythonHandler,
+) -> None:
+    out = lit_handler.search(q="no-such-value", mode="literal")
+    assert "no python string literal equals" in out.body
+    assert "whole value" in out.body
+
+
+def test_literal_empty_needle_raises(lit_handler: PythonHandler) -> None:
+    with pytest.raises(BadInput, match="non-empty"):
+        lit_handler.search(q='""', mode="literal")
+
+
+def test_search_no_match_bare_token_suggests_literal_mode(
+    handler: PythonHandler,
+) -> None:
+    """gr520146: a token that missed as a symbol may be a string VALUE —
+    the recovery trailer names mode='literal'."""
+    out = handler.search(q="zzzfrobnicate")
+    assert "mode='literal'" in out.body
+
+
+def test_search_no_match_phrase_skips_literal_hint(handler: PythonHandler) -> None:
+    out = handler.search(q="some concept phrase zzznothing")
+    assert "mode='literal'" not in out.body

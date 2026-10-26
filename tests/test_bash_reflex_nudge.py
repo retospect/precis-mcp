@@ -162,6 +162,85 @@ def test_coderef_nudge_silent_on_sql_path(monkeypatch, capsys, tmp_path) -> None
     assert capsys.readouterr().out == ""
 
 
+# ── Rule A outside-the-tree silence (gr520146) ──────────────────────────────
+
+
+def test_absolute_outside_target_stays_silent(tmp_path) -> None:
+    """A symbol grep of a path outside the session tree is grep's domain —
+    the python kind can't see it, so the nudge must not fire (it did on a
+    lock_timeout grep of the CLI's own venv)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rule_a(f"grep lock_timeout {outside}", str(repo)) is None
+
+
+def test_venv_and_site_packages_targets_stay_silent(tmp_path) -> None:
+    """site-packages/venv under the tree is still grep's domain — the
+    index deliberately skips those dirs."""
+    repo = tmp_path / "repo"
+    sp = repo / "lib" / "site-packages"
+    sp.mkdir(parents=True)
+    (sp / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rule_a("grep lock_timeout lib/site-packages", str(repo)) is None
+    assert _rule_a("rg lock_timeout /opt/mcps/venv", str(repo)) is None
+
+
+def test_coderef_nudge_silent_on_outside_path(monkeypatch, capsys, tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "tool_input": {"pattern": "lock_timeout", "path": str(outside)},
+                    "cwd": str(repo),
+                }
+            )
+        ),
+    )
+    assert _coderef_mod.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+# ── Rule F: recursive grep -c -> -l ─────────────────────────────────────────
+
+_rule_f = _mod._rule_f
+
+
+def test_recursive_grep_count_nudges_to_l(tmp_path) -> None:
+    note = _rule_f("grep -rc keepout src/", str(tmp_path))
+    assert note is not None
+    assert "-l" in note
+
+
+def test_grep_count_on_dir_target_fires(tmp_path) -> None:
+    (tmp_path / "src").mkdir()
+    note = _rule_f("grep -c keepout src", str(tmp_path))
+    assert note is not None
+
+
+def test_grep_count_single_file_stays_silent(tmp_path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rule_f("grep -c keepout a.py", str(tmp_path)) is None
+
+
+def test_rg_count_stays_silent(tmp_path) -> None:
+    """`rg -c` already omits zero-count files — no nudge."""
+    (tmp_path / "src").mkdir()
+    assert _rule_f("rg -c keepout src", str(tmp_path)) is None
+
+
+def test_grep_without_count_stays_silent(tmp_path) -> None:
+    (tmp_path / "src").mkdir()
+    assert _rule_f("grep -rn keepout src/", str(tmp_path)) is None
+
+
 # ── Rule B: ssh cluster hosts / prod-psql -> cluster-ops ────────────────────
 
 

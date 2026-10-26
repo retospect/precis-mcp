@@ -57,6 +57,13 @@ search; name one with `scope='wt-x'` (or `wt-x::pkg.mod`). Semantic vectors
 are not warmed for them (cached vectors from main still hit). If the alias does
 not resolve, fall back to Grep.
 
+A `cli` root, when the deployment mounts one, is the host's *installed*
+`precis` package — the code `precis <cmd>` actually runs, which can be
+older or newer than `main` (checkout) and `precis` (server image)
+(gr520147). `cli::precis.<mod>.<sym>` keeps the same qualnames as `main::`;
+file ids sit one level shallower (`cli/precis/handlers/x.py`). It is
+read-only and searched only when named (`scope='cli'`).
+
 ## Which checkout did this result use?
 
 Every successful Python read/search carries ONE summary line per consulted
@@ -377,6 +384,27 @@ search(kind="python", mode="pattern", q="async @router\\.get")
 `mode='pattern'` ANDs whitespace-separated terms: `async`, `@regex`
 (matches a decorator), or a regex on qualname / signature. Same
 `scope=` and `page_size=` as the lexical search.
+
+## Find every use of a string value
+## Who reads this enum/kind/status string?
+
+```python
+search(kind="python", mode="literal", q="keepout")
+```
+
+`mode='literal'` (alias `verbatim`) matches `ast` string constants by
+their whole VALUE inside function, class and module bodies — enum tags
+(`'keepout'`, `'STATUS:open'`), config keys, dispatch strings — and
+returns each hit's enclosing symbol with `file:line`. The question
+"every reader of this enum value" is exhaustive here: quotes on `q`
+are optional (`'"keepout"'` == `'keepout'`), a fragment inside a longer
+string is NOT a match (that is a text search — grep stays right), and
+docstrings/values that merely contain the needle don't hit.
+
+Pick the mode by the question: a name you can half-type → `lexical`;
+a concept or paraphrase → `semantic` (or default hybrid); a structural
+predicate (`async`, `@deco`, qualname regex) → `pattern`; a string
+VALUE → `literal`.
 
 ## Edit a symbol by qualname
 ## Replace a function body — preferred edit form

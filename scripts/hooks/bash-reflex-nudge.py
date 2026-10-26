@@ -14,12 +14,24 @@ deliberately narrow — a nudge that fires too often gets tuned out, same
 rationale as ``coderef-nudge.py``'s own docstring. When extraction is
 ambiguous, both rules stay silent rather than guess.
 
-- **Rule A (coderef).** An ``rg``/``grep``/``egrep`` invocation (optionally
-  after a single leading ``cd <path> &&``) whose search pattern is a bare
-  Python identifier — same ``is_symbol_candidate`` heuristic as
+- **Rule A (python kind).** An ``rg``/``grep``/``egrep`` invocation
+  (optionally after a single leading ``cd <path> &&``) whose search pattern
+  is a bare Python identifier — same ``is_symbol_candidate`` heuristic as
   ``coderef-nudge.py`` (shared via ``_symbol_heuristic.py``), plus a light
   Python-target check (an explicit non-Python ``--include``/``--type``/``-g``
-  glob silences it; unscoped defaults to code-ish, mirroring the Grep hook).
+  glob silences it; unscoped defaults to code-ish, mirroring the Grep hook;
+  a target outside the session tree or inside a venv/site-packages silences
+  it too — the index can't see those, gr520146). The nudge names the right
+  tool per intent: ``search(kind='python', mode='lexical'|'semantic')`` for
+  where/concept, ``mode='literal'`` for a string VALUE, ``coderef callers``
+  for who-calls.
+
+- **Rule F (grep -c).** A GNU ``grep``/``egrep``/``fgrep`` run with a count
+  flag (``-c``/``--count``) across a directory — recursive flag or a
+  directory target — prints one line per file touched, zero-counts
+  included. ``grep -rl``/``rg -l`` prints only matching files. ``rg`` is
+  excluded (``rg -c`` already skips zeros); single-file counts stay silent.
+
 - **Rule B (cluster-ops).** The command starts with (or contains, after a
   leading ``cd``) ``ssh melchior|caspar|balthazar`` or invokes
   ``scripts/prod-psql`` — nudges toward the read-only ``cluster-ops`` agent
@@ -61,7 +73,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _symbol_heuristic import is_symbol_candidate, path_arg_is_pythonish
+from _symbol_heuristic import (
+    is_symbol_candidate,
+    path_arg_is_pythonish,
+    path_leaves_project,
+)
 
 
 def _load_read_dedup():
@@ -159,19 +175,22 @@ def _rule_a(command: str, cwd: str = "") -> str | None:
     # clearly non-Python (a ``.sql`` file, a migrations dir of pure SQL)
     # silences the nudge — coderef only answers over Python (gr514328).
     for arg in positional[1:]:
+        if path_leaves_project(arg, cwd):
+            return None
         if path_arg_is_pythonish(arg, cwd) is False:
             return None
     tok = pattern.strip("\"'")
     if not is_symbol_candidate(tok):
         return None
     return (
-        f"[coderef] grepping (via Bash) for the symbol `{tok}` — for "
-        f"who-calls / what-depends-on over Python, `scripts/coderef callers "
-        f"<file.py::{tok}>` (or `deps`) is exact: no same-named false "
-        "positives, and it returns the connected code, not every text hit. "
-        "`search(kind='python', mode='pattern', q='<qualname regex>')` is the "
-        "fuzzy complement for where-is/how-does. Grep "
-        "stays right for text/strings/non-Python or a symbol you can't yet name."
+        f"[pykind] grepping (via Bash) for the symbol `{tok}` — the "
+        "python kind usually answers in one call: "
+        f"search(kind='python', mode='lexical'|'semantic', q='{tok}') "
+        f"finds where it lives, mode='literal' finds every use of "
+        f"'{tok}' as a string VALUE, and `scripts/coderef callers "
+        f"<file.py::{tok}>` is the exact who-calls once it's named. "
+        "Grep stays right for text, non-Python files and targets "
+        "outside this repo."
     )
 
 
@@ -243,6 +262,59 @@ def _rule_d(command: str) -> str | None:
     )
 
 
+# GNU grep/egrep/fgrep only — `rg -c` already omits zero-count files, only
+# the grep family prints every touched path (gr520146).
+_GREP_COUNT_CMD = re.compile(
+    r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*"
+    r"(?:\S*/)?(?:grep|egrep|fgrep)\b(?P<rest>.*)$"
+)
+_SHORT_FLAG = re.compile(r"^-[a-zA-Z]+$")
+
+
+def _rule_f(command: str, cwd: str) -> str | None:
+    """Nudge a recursive ``grep -c`` toward ``-l``.
+
+    GNU ``grep -rc`` prints one line per file it touched — every
+    zero-count included — so a corpus-wide count mostly prints noise
+    (a coordinator's ``grep -c`` over the skills dir dumped ~300
+    zero-count lines into context, gr520146). ``-l`` prints only the
+    files that matched. Single-file counts stay silent; ``rg`` is
+    excluded because ``rg -c`` already skips zeros.
+    """
+    body = _CD_PREFIX.sub("", command, count=1)
+    m = _GREP_COUNT_CMD.match(body)
+    if not m:
+        return None
+    try:
+        tokens = shlex.split(m.group("rest"))
+    except ValueError:
+        return None
+    short_flags = [t[1:] for t in tokens if _SHORT_FLAG.match(t)]
+    has_count = "--count" in tokens or any("c" in f for f in short_flags)
+    if not has_count:
+        return None
+    has_recursive = (
+        "--recursive" in tokens
+        or any(t.startswith("--directories") for t in tokens)
+        or any("r" in f or "R" in f for f in short_flags)
+    )
+    if not has_recursive:
+        positional = [
+            t for t in tokens if not t.startswith("-") and t not in _SHELL_BREAK
+        ]
+        has_recursive = any(
+            os.path.isdir(t if os.path.isabs(t) else os.path.join(cwd or ".", t))
+            for t in positional[1:]
+        )
+    if not has_recursive:
+        return None
+    return (
+        "[grep] `grep -c` over a directory prints a line per file it "
+        "touched — every zero-count included. `grep -rl` (or `rg -l`) "
+        "prints only the files that matched."
+    )
+
+
 def _rule_c(command: str, cwd: str) -> str | None:
     """Nudge a redundant ``cd <own-worktree>; …`` prefix.
 
@@ -292,6 +364,7 @@ def main() -> int:
     if out is None:
         note = (
             _rule_e(command)
+            or _rule_f(command, cwd)
             or _rule_a(command, cwd)
             or _rule_b(command)
             or _rule_c(command, cwd)

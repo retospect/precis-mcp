@@ -39,6 +39,14 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   read-only at `/roots/<name>` and appended to `PRECIS_PYTHON_ROOTS`; editing
   the file changes the container spec, so the next ensure run swaps in a new
   backend (blue-green). Invalid or missing entries are skipped with a note.
+- The installed `precis` CLI on the host is a third copy of the code —
+  `precis` serves the image, `main` the checkout, neither is the venv the
+  console script runs. The ensure script resolves the console script's
+  shebang interpreter (`import precis; dirname(__file__)`) and mounts that
+  package dir read-only at `/roots/cli/precis`, so `cli::precis.<mod>.<sym>`
+  answers "what is my CLI actually running" (gr520147). A `cli` line in
+  `python-roots` wins; `PRECIS_MCP_CLI_PYTHON=<interpreter>` overrides
+  discovery, `=off` disables it.
 - Git worktrees of the main checkout (mounted at `/main`) appear dynamically
   as `wt-<tree name>` roots in the python and md kinds, discovered from
   `/main/.git/worktrees`

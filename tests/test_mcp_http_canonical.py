@@ -23,8 +23,10 @@ vars reaching the container spec — is covered by the proxy rig
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
+import textwrap
 import uuid
 from pathlib import Path
 
@@ -218,6 +220,127 @@ def test_marker_naming_a_missing_path_refuses_then_recovers(
     assert (state / "main-checkout").read_text(encoding="utf-8").strip() == want
     # … so the next run resolves a real checkout and reaches the image check.
     assert _ensure(env, cwd=Path(want)).returncode == 2
+
+
+# --- the cli python-kind root (gr520147) --------------------------------------
+#
+# The image check exits (2) before the PY_ROOTS assembly runs, so these
+# exercise the resolution block directly: lifted verbatim out of the script
+# and run with stub log/note and a fake installed CLI on PATH.
+
+
+def _cli_block() -> str:
+    text = _ENSURE.read_text(encoding="utf-8")
+    m = re.search(r'^case ",\$\{PY_ROOTS\}," in.*?^esac\n', text, re.S | re.M)
+    assert m, "cli-root resolution block not found in ensure script"
+    return m.group(0)
+
+
+def _fake_cli(tmp_path: Path) -> tuple[Path, Path]:
+    """A minimal installed-CLI rig: console script + site-packages package.
+
+    The console script's shebang names THIS python so the resolver's
+    `import precis` runs under PYTHONPATH against the fake site-packages.
+    """
+    site = tmp_path / "site-packages"
+    pkg = site / "precis"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    console = bindir / "precis"
+    console.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    console.chmod(0o755)
+    return bindir, pkg
+
+
+def _run_cli_block(tmp_path: Path, env_extra: dict[str, str]) -> str:
+    block = tmp_path / "block.sh"
+    block.write_text(_cli_block(), encoding="utf-8")
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/bash
+            set -euo pipefail
+            STATE_DIR="{tmp_path}/state"
+            LOG="$STATE_DIR/ensure.log"
+            log() {{ mkdir -p "$STATE_DIR"; printf '%s\\n' "$*" >> "$LOG"; }}
+            note() {{ log "$*"; printf 'precis-mcp: %s\\n' "$*" >&2; }}
+            PY_ROOTS="${{PY_ROOTS:-precis:/app,main:/main}}"
+            EXTRA_MOUNTS=()
+            . "{block}"
+            printf 'PY_ROOTS=%s\\n' "$PY_ROOTS"
+            printf 'MOUNT=%s\\n' "${{EXTRA_MOUNTS[@]+"${{EXTRA_MOUNTS[@]}}"}}"
+            """
+        ),
+        encoding="utf-8",
+    )
+    env = {"PATH": os.environ["PATH"], **env_extra}
+    r = subprocess.run(
+        ["bash", str(runner)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_cli_root_resolves_the_installed_package(tmp_path: Path) -> None:
+    """Discovery asks the console script's shebang interpreter for the
+    package dir and mounts it one level down so qualnames stay precis.*."""
+    bindir, pkg = _fake_cli(tmp_path)
+    out = _run_cli_block(
+        tmp_path,
+        {"PATH": f"{bindir}:{os.environ['PATH']}", "PYTHONPATH": str(pkg.parent)},
+    )
+    assert ",cli:/roots/cli" in out
+    assert f"{pkg}:/roots/cli/precis:ro" in out
+
+
+def test_cli_root_off_disables_discovery(tmp_path: Path) -> None:
+    bindir, _pkg = _fake_cli(tmp_path)
+    out = _run_cli_block(
+        tmp_path,
+        {
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "PRECIS_MCP_CLI_PYTHON": "off",
+        },
+    )
+    assert ",cli:" not in out
+
+
+def test_cli_root_override_names_the_interpreter(tmp_path: Path) -> None:
+    """PRECIS_MCP_CLI_PYTHON=<python> resolves without `precis` on PATH."""
+    _bindir, pkg = _fake_cli(tmp_path)
+    out = _run_cli_block(
+        tmp_path,
+        {
+            "PRECIS_MCP_CLI_PYTHON": sys.executable,
+            "PYTHONPATH": str(pkg.parent),
+        },
+    )
+    assert ",cli:/roots/cli" in out
+    assert f"{pkg}:/roots/cli/precis:ro" in out
+
+
+def test_cli_root_operator_entry_wins(tmp_path: Path) -> None:
+    """A `cli` line in python-roots is never shadowed by auto-discovery."""
+    bindir, pkg = _fake_cli(tmp_path)
+    out = _run_cli_block(
+        tmp_path,
+        {
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "PYTHONPATH": str(pkg.parent),
+            "PY_ROOTS": "precis:/app,main:/main,cli:/roots/cli",
+        },
+    )
+    assert out.count(",cli:") == 1
+    assert "MOUNT=" not in out or f"{pkg}:/roots" not in out
 
 
 # --- scripts/mcp-http-install --apply ------------------------------------------
