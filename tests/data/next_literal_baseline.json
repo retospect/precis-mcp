@@ -13,7 +13,7 @@
   "src/precis/handlers/component.py": 9,
   "src/precis/handlers/draft.py": 5,
   "src/precis/handlers/material.py": 3,
-  "src/precis/handlers/pcb.py": 25,
+  "src/precis/handlers/pcb.py": 23,
   "src/precis/handlers/rxn.py": 2,
   "src/precis/handlers/structure.py": 9,
   "src/precis/pcb/generators.py": 1,
