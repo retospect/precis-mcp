@@ -10,15 +10,18 @@ The renderer is **chronological oldest → newest** so a glance at
 the bottom shows "where we are now" without scrolling up. Each
 event line is:
 
-    HH:MM:SS  source       event           summary
+    YYYY-MM-DDTHH:MM:SSZ  source       event           summary
 
-with a one-line summary that pulls the most relevant payload fields
-for the (source, event) pair (the chase's frontier→next, the
-fetcher's url, etc.).
+— ISO-8601 UTC with the date, so before/after a deploy is legible
+from the log alone (gr517627: a bare ``HH:MM:SS`` couldn't say
+which day an event ran). The one-line summary pulls the most
+relevant payload fields for the (source, event) pair (the chase's
+frontier→next, the fetcher's url, etc.).
 """
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import Unsupported
@@ -86,9 +89,12 @@ def render_event_log(
         header += f" (source={source!r})"
     lines.append(header)
     for ev in events:
-        hms = ev.ts.strftime("%H:%M:%S")
+        ts = ev.ts
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(UTC)
+        stamp = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
         summary = _summarise(ev.source, ev.event, ev.payload, ev.cost_usd)
-        line = f"  {hms}  {ev.source:<18}  {ev.event:<14}  {summary}"
+        line = f"  {stamp}  {ev.source:<18}  {ev.event:<14}  {summary}"
         if ev.duration_ms is not None:
             line += f"  ({ev.duration_ms} ms)"
         lines.append(line)

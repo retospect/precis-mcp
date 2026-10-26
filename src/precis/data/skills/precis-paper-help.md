@@ -299,6 +299,20 @@ search(kind="paper", q="sticking prefactor", args={"chunk_kind": "table"})
 `figure`, …), implies the per-chunk hit shape like `scope=`, and
 refuses an unknown slug with the valid list.
 
+To list or count the papers carrying a worker/enrichment stamp —
+the `refs.meta` keys a pass writes to stop re-claiming a paper
+(`context_sentence_failed`, `s2_enriched_at`, …):
+
+```python
+search(kind="paper", args={"stamp": "context_sentence_failed"})
+```
+
+With no `q=` this is a paged listing — handle, truncated stamp value,
+title — with the cohort total in the headline; with `q=` it restricts
+the hits to stamped papers. `edit(kind='paper', id=…,
+args={'clear_stamp': '<key>'})` (precis-paper-ref-help) removes the
+stamp to re-open the pass.
+
 ## Filter papers by publication year
 ## Find recent papers / papers from a date range
 ## Only papers published after / before a year

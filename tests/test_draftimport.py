@@ -179,9 +179,214 @@ def test_resolve_key_matches_cite_key_alias(monkeypatch) -> None:
     import precis.draftimport.resolve as R
 
     monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "zhao2024pdinco")
-    slug, via, ref_id = resolve_key(store, "zhao2024PdInCo", None)
+    slug, via, ref_id, quarantine = resolve_key(store, "zhao2024PdInCo", None)
     assert ref_id == 5155 and via == "cite_key"
+    assert quarantine is None
     assert ("cite_key", "zhao2024PdInCo", "paper") in calls["cite_key"]
+
+
+def _resolve_store(**over):
+    """A SimpleNamespace store landing ref 5155 via DOI for resolve_key
+    tests — ``_ref_cite_key``/``_ref_author_year`` are monkeypatched by
+    each test (same pattern as the cite_key-alias test above)."""
+    import types
+
+    base = {
+        "find_paper_ref_by_identifier": lambda value: (
+            5155 if value == "10.9/wrong" else None
+        ),
+        "find_ref_by_identifier": lambda *a, **k: None,
+        "insert_ref_identifiers": lambda *a, **k: None,
+        "upsert_stub_paper": lambda **k: (5155, "stub-slug"),
+        "pool": types.SimpleNamespace(),
+    }
+    base.update(over)
+    return types.SimpleNamespace(**base)
+
+
+def _entry(**kw):
+    from precis.draftimport.tex import BibEntry
+
+    fields = {
+        "key": "kochetov17",
+        "doi": "10.9/wrong",
+        "author": "Kochetov, B. A. and Someone, E.",
+        "year": "2017",
+    }
+    fields.update(kw)
+    return BibEntry(**fields)
+
+
+def test_resolve_key_quarantines_author_mismatch(monkeypatch) -> None:
+    """gr517275: the entry's DOI lands ref 5155, but its first author
+    disagrees — the bib key must NOT be written as a cite_key alias."""
+    import precis.draftimport.resolve as R
+
+    written: list = []
+    store = _resolve_store(
+        insert_ref_identifiers=lambda *a, **k: written.append((a, k))
+    )
+    monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "wood2017isambard")
+    monkeypatch.setattr(
+        R, "_ref_author_year", lambda s, rid: ([{"family": "Wood"}], 2017)
+    )
+    slug, via, ref_id, quarantine = R.resolve_key(store, "kochetov17", _entry())
+    assert (slug, via, ref_id) == ("wood2017isambard", "doi", 5155)
+    assert quarantine is not None and "kochetov" in quarantine
+    assert written == []
+
+
+def test_resolve_key_quarantines_year_mismatch(monkeypatch) -> None:
+    """``eddaoudi10`` vs a 2001 paper — 2-digit years compare mod 100."""
+    import precis.draftimport.resolve as R
+
+    written: list = []
+    store = _resolve_store(
+        insert_ref_identifiers=lambda *a, **k: written.append((a, k))
+    )
+    monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "eddaoudi2001")
+    monkeypatch.setattr(
+        R, "_ref_author_year", lambda s, rid: ([{"family": "Eddaoudi"}], 2001)
+    )
+    slug, via, ref_id, quarantine = R.resolve_key(
+        store, "eddaoudi10", _entry(author="Eddaoudi, M.", year="2010")
+    )
+    assert quarantine is not None and "year" in quarantine
+    assert written == []
+
+
+def test_resolve_key_writes_alias_on_agreement(monkeypatch) -> None:
+    import precis.draftimport.resolve as R
+
+    written: list = []
+    store = _resolve_store(
+        insert_ref_identifiers=lambda *a, **k: written.append((a, k))
+    )
+    monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "kochetov2017")
+    monkeypatch.setattr(
+        R,
+        "_ref_author_year",
+        lambda s, rid: ([{"family": "Kochetov"}], 2017),
+    )
+    slug, via, ref_id, quarantine = R.resolve_key(store, "kochetov17", _entry())
+    assert quarantine is None
+    assert written == [((5155, [("cite_key", "kochetov17", "tex-import")]), {})]
+
+
+def test_resolve_key_writes_alias_when_side_missing(monkeypatch) -> None:
+    """Missing author or year on either side is no evidence of mismatch —
+    the alias write proceeds as today."""
+    import precis.draftimport.resolve as R
+
+    for authors, year, entry_kw in (
+        (None, 2017, {}),
+        ([{"family": "Kochetov"}], None, {}),
+        ([{"family": "Kochetov"}], 2017, {"author": None}),
+        ([{"family": "Kochetov"}], 2017, {"year": None}),
+    ):
+        written: list = []
+        store = _resolve_store(
+            insert_ref_identifiers=lambda *a, _w=written, **k: _w.append((a, k))
+        )
+        monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "kochetov2017")
+        monkeypatch.setattr(
+            R, "_ref_author_year", lambda s, rid, a=authors, y=year: (a, y)
+        )
+        slug, via, ref_id, quarantine = R.resolve_key(
+            store, "kochetov17", _entry(**entry_kw)
+        )
+        assert quarantine is None and written, (authors, year, entry_kw)
+
+
+def test_resolve_key_year_off_by_one_accepted(monkeypatch) -> None:
+    """Ruling: |bib_year - ref_year| <= 1 agrees — the .bib's online-first
+    year and the ref's issue year legitimately differ by one."""
+    import precis.draftimport.resolve as R
+
+    for bib_year, ref_year in (("2016", 2017), ("2018", 2017), ("2000", 1999)):
+        written: list = []
+        store = _resolve_store(
+            insert_ref_identifiers=lambda *a, _w=written, **k: _w.append((a, k))
+        )
+        monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "kochetov2017")
+        monkeypatch.setattr(
+            R,
+            "_ref_author_year",
+            lambda s, rid, y=ref_year: ([{"family": "Kochetov"}], y),
+        )
+        slug, via, ref_id, quarantine = R.resolve_key(
+            store, "kochetov17", _entry(year=bib_year)
+        )
+        assert quarantine is None and written, (bib_year, ref_year)
+
+
+def test_resolve_key_year_off_by_two_quarantined(monkeypatch) -> None:
+    """Two years apart is real disagreement, not an epub/issue drift."""
+    import precis.draftimport.resolve as R
+
+    written: list = []
+    store = _resolve_store(
+        insert_ref_identifiers=lambda *a, **k: written.append((a, k))
+    )
+    monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "kochetov2017")
+    monkeypatch.setattr(
+        R, "_ref_author_year", lambda s, rid: ([{"family": "Kochetov"}], 2017)
+    )
+    slug, via, ref_id, quarantine = R.resolve_key(
+        store, "kochetov17", _entry(year="2015")
+    )
+    assert quarantine is not None and "year" in quarantine
+    assert written == []
+
+
+def test_resolve_key_full_year_century_off_quarantined(monkeypatch) -> None:
+    """r2 S1: mod-100 compares a 2-digit bib year only — a full bib year
+    a century off the ref must quarantine (1920 vs 2020 read as d=0
+    under the old rule)."""
+    import precis.draftimport.resolve as R
+
+    for bib_year in ("1920", "1919"):
+        written: list = []
+        store = _resolve_store(
+            insert_ref_identifiers=lambda *a, _w=written, **k: _w.append((a, k))
+        )
+        monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "kochetov2020")
+        monkeypatch.setattr(
+            R, "_ref_author_year", lambda s, rid: ([{"family": "Kochetov"}], 2020)
+        )
+        slug, via, ref_id, quarantine = R.resolve_key(
+            store, "kochetov17", _entry(year=bib_year)
+        )
+        assert quarantine is not None and "year" in quarantine, bib_year
+        assert written == []
+
+
+def test_resolve_key_latex_accented_surname_matches(monkeypatch) -> None:
+    """Ruling: LaTeX accent commands in the bib author field decode to
+    the letter before comparing — ``Ko{\\v{c}}i`` equals ``Kočí``/``Koci``."""
+    import precis.draftimport.resolve as R
+
+    for ref_family, bib_author in (
+        ("Kočí", "Ko{\\v{c}}i, J."),
+        ("Koci", "Ko{\\v{c}}i, J."),
+        ("Müller", 'M{\\"u}ller, A.'),
+        ("Muller", 'M{\\"u}ller, A.'),
+        ("Martinez", "Mart{\\'i}nez, B."),
+    ):
+        written: list = []
+        store = _resolve_store(
+            insert_ref_identifiers=lambda *a, _w=written, **k: _w.append((a, k))
+        )
+        monkeypatch.setattr(R, "_ref_cite_key", lambda s, rid: "k2017")
+        monkeypatch.setattr(
+            R,
+            "_ref_author_year",
+            lambda s, rid, f=ref_family: ([{"family": f}], 2017),
+        )
+        slug, via, ref_id, quarantine = R.resolve_key(
+            store, "k2017x", _entry(author=bib_author)
+        )
+        assert quarantine is None and written, (ref_family, bib_author, quarantine)
 
 
 def test_demacro_cite_uses_keymap() -> None:

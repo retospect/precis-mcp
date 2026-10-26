@@ -1024,3 +1024,57 @@ def _make_paper(
         pdf_page_count=1 if pdf_sha256 else None,
         pdf_size_bytes=100 if pdf_sha256 else None,
     )
+
+
+class TestDroppedIdentifierSuppression:
+    """gr517591: ``register_aliases_and_maybe_upgrade``'s ingest-time
+    alias writes honour ``meta.dropped_identifiers`` — a pdf_sha256 /
+    content_hash pair the operator dropped is not re-registered."""
+
+    def _idents(self, store, ref_id: int) -> set[tuple[str, str]]:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchall()
+        return {(str(k), str(v)) for k, v in rows}
+
+    def test_dropped_pdf_and_content_hash_not_readded(self, store):
+        sha = "ab" * 32
+        chash = "cd" * 32
+        paper = PaperToWrite(
+            title="Suppressed Alias",
+            authors=[{"name": "A, B"}],
+            year=2024,
+            paper_id="sp555555",
+            cite_key_prefix="supp24",
+            doi="10.9/suppressed",
+            provider="s2",
+            pdf_sha256=sha,
+            content_hash=chash,
+            pdf_storage_path="/corpus/s/supp24.pdf",
+            pdf_page_count=3,
+            pdf_size_bytes=111,
+            pdf_role="main",
+            pdf_sha256_aliases=["ef" * 32],
+            chunks=_body_chunks(),
+        )
+        with store.pool.connection() as conn:
+            ref_id = write_paper(paper, conn=conn).ref_id
+            conn.commit()
+        assert ("pdf_sha256", sha) in self._idents(store, ref_id)
+        assert ("content_hash", chash) in self._idents(store, ref_id)
+
+        store.drop_ref_identifier(ref_id, "pdf_sha256", sha)
+        store.drop_ref_identifier(ref_id, "pdf_sha256", "ef" * 32)
+        store.drop_ref_identifier(ref_id, "content_hash", chash)
+
+        # A later ingest of the same file re-derives every alias — none
+        # of the suppressed pairs may come back.
+        with store.pool.connection() as conn:
+            register_aliases_and_maybe_upgrade(ref_id, paper, conn=conn)
+            conn.commit()
+        idents = self._idents(store, ref_id)
+        assert ("pdf_sha256", sha) not in idents
+        assert ("pdf_sha256", "ef" * 32) not in idents
+        assert ("content_hash", chash) not in idents

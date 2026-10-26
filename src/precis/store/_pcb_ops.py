@@ -43,7 +43,7 @@ from psycopg import Connection, sql
 from psycopg.errors import DeadlockDetected, LockNotAvailable, UniqueViolation
 from psycopg.types.json import Jsonb
 
-from precis.errors import BadInput, NotFound, Upstream
+from precis.errors import BadInput, Conflict, NotFound, Upstream
 from precis.pcb import (
     CAP_DIELECTRIC_RANK,
     DEFAULT_STACKUP,
@@ -1335,18 +1335,9 @@ class PcbMixin:
                 meta=meta,
                 conn=conn,
             )
-            if ref.slug != slug:
-                # ``insert_ref``'s cite_key insert no-opped: a LIVE ref —
-                # any kind, cite_key is a global namespace — already holds
-                # the slug and only a retired owner's slug is stolen. The
-                # handler's pre-check can race, so re-check what actually
-                # landed: without this the copy would report success on a
-                # board no slug resolves to (gr517405's orphan shape).
-                raise BadInput(
-                    f"op='fork' writes a NEW board; slug {slug!r} is taken",
-                    next=f"put(kind='pcb', id='{slug}-2', args={{'op':'fork', "
-                    f"'from':'{src.slug or src.id}'}})",
-                )
+            # ``insert_ref`` now raises ``Conflict`` when the slug is held
+            # by a live ref of any kind (gr517405) — reaching here means
+            # the cite_key landed, so no re-check of ``ref.slug``.
             maps: dict[str, dict[int, int]] = {"ref_id": {int(src.id): int(ref.id)}}
             counts: dict[str, int] = {}
             try:
@@ -5992,10 +5983,15 @@ class PcbMixin:
                     if claimed is None:
                         raise _Lost
                     return int(ref.id)
-            except _Lost:
+            except (Conflict, _Lost):
+                # ``insert_ref`` refused the cite_key or the ``lcsc``
+                # claim lost: a live part ref holding the ``lcsc``
+                # identifier is the race winner — return it; a holder of
+                # a different kind is a real conflict and re-raises.
                 won = self.part_ref_id(key, conn=c)
-                assert won is not None, f"lcsc {key} claimed by no live part ref"
-                return won
+                if won is not None:
+                    return won
+                raise
 
         if conn is not None:
             return _do(conn)

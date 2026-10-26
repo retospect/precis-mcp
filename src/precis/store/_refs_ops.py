@@ -38,7 +38,7 @@ from psycopg import Connection, errors
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Conflict, NotFound
 from precis.hints import Hint, converted_redirect_hint, merged_redirect_hint
 from precis.store._body_predicate import has_body_sql, unusable_body_tag_sql
 from precis.store._mappers import (
@@ -439,6 +439,14 @@ class RefsMixin:
         (when ``slug is not None``) a ``ref_identifiers`` row
         (``id_kind='cite_key'``). Pass a shared ``conn`` for both to join
         an outer transaction.
+
+        Raises :class:`~precis.errors.Conflict` when ``slug`` is held by
+        a *live* ref of any kind — cite_key is a global namespace, so the
+        caller's kind-scoped probe cannot see the holder. A retired
+        owner's slug is reclaimed silently. Raising lets the caller's
+        transaction roll the new ``refs`` row back: returning it would
+        leave a live slugless orphan while the handler reports success
+        (gr517405).
         """
         self._validate_slug_for_kind(kind, slug, conn=conn)
 
@@ -530,6 +538,32 @@ class RefsMixin:
                     "  )",
                     ("cite_key", slug, ref_id, provider),
                 )
+                holder = c.execute(
+                    "SELECT ref_id FROM ref_identifiers "
+                    "WHERE id_kind = 'cite_key' AND id_value = %s",
+                    (slug,),
+                ).fetchone()
+                # The ON CONFLICT only fires on an existing row, so
+                # ``holder`` is never None: either it now points at this
+                # ref, or the WHERE refused the steal because a LIVE ref
+                # (any kind — cite_key is a global namespace) holds the
+                # slug. Returning the new ref there would leave a live
+                # slugless orphan while the handler reports success
+                # (gr517405) — raise so the caller's transaction rolls
+                # the refs row back with it.
+                assert holder is not None
+                if int(holder[0]) != ref_id:
+                    holder_row = c.execute(
+                        "SELECT kind FROM refs WHERE ref_id = %s",
+                        (int(holder[0]),),
+                    ).fetchone()
+                    holder_kind = str(holder_row[0]) if holder_row else "ref"
+                    raise Conflict(
+                        f"slug {slug!r} is held by a live "
+                        f"{holder_kind}:{slug} ref — the new {kind!r} ref "
+                        "cannot take it",
+                        next=f"get(kind='{holder_kind}', id='{slug}')",
+                    )
             if kind == "paper" and authors:
                 self.set_paper_authors(
                     ref_id, authors, source=authors_source or "pdf", conn=c
@@ -2835,11 +2869,9 @@ class RefsMixin:
         Chunkless, so the embed/summary cascade never sees it. The CALLER
         validates ``slug`` against the skill index — an unknown id must never
         mint. Race: two first uses both miss the probe and both insert; the
-        loser's ``cite_key`` claim no-ops, its savepoint rolls back and it
-        re-probes onto the winner (as :meth:`ensure_part_ref`)."""
-
-        class _Lost(Exception):
-            pass
+        loser's ``cite_key`` claim is refused (:meth:`insert_ref`'s
+        ``Conflict``), its savepoint rolls back and it re-probes onto the
+        winner (as :meth:`ensure_part_ref`)."""
 
         with self.pool.connection() as conn:
             hit = self.get_ref(kind="skill", id=slug)
@@ -2854,18 +2886,15 @@ class RefsMixin:
                         meta={"set_by": "system"},
                         conn=conn,
                     )
-                    owner = conn.execute(
-                        "SELECT ref_id FROM ref_identifiers "
-                        "WHERE id_kind = 'cite_key' AND id_value = %s",
-                        (slug,),
-                    ).fetchone()
-                    if owner is None or int(owner[0]) != int(ref.id):
-                        raise _Lost
                     return int(ref.id)
-            except _Lost:
+            except Conflict:
+                # A live ref holds the slug: a skill ref means we lost the
+                # race — return the winner; a foreign-kind holder is a
+                # real conflict and re-raises.
                 won = self.get_ref(kind="skill", id=slug)
-                assert won is not None, f"skill {slug} claimed by no live ref"
-                return int(won.id)
+                if won is not None:
+                    return int(won.id)
+                raise
 
     def _open_gripe_sql(self) -> tuple[str, list[Any]]:
         """WHERE fragment (alias ``g``) for a gripe that is not yet closed."""
@@ -3019,6 +3048,12 @@ class RefsMixin:
         unowned: bool = False,
         id_min: int | None = None,
         id_max: int | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
         order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
@@ -3079,6 +3114,24 @@ class RefsMixin:
         if id_max is not None:
             params.append(id_max)
             clauses.append("r.ref_id <= %s")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("r.ref_id = ANY(%s)")
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("NOT (r.ref_id = ANY(%s))")
+        if year_from is not None:
+            params.append(year_from)
+            clauses.append("r.year >= %s")
+        if year_to is not None:
+            params.append(year_to)
+            clauses.append("r.year <= %s")
+        if created_after is not None:
+            params.append(created_after)
+            clauses.append("r.created_at >= %s")
+        if created_before is not None:
+            params.append(created_before)
+            clauses.append("r.created_at < %s")
 
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
@@ -3725,8 +3778,13 @@ class RefsMixin:
         tags: list[str] | None = None,
         exclude_tags: list[str] | None = None,
         created_before: datetime | None = None,
+        created_after: datetime | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
     ) -> int:
         """Count active (not soft-deleted) refs, optionally filtered.
 
@@ -3751,12 +3809,27 @@ class RefsMixin:
         if created_before is not None:
             params.append(created_before)
             clauses.append("r.created_at < %s")
+        if created_after is not None:
+            params.append(created_after)
+            clauses.append("r.created_at >= %s")
         if id_min is not None:
             params.append(id_min)
             clauses.append("r.ref_id >= %s")
         if id_max is not None:
             params.append(id_max)
             clauses.append("r.ref_id <= %s")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("r.ref_id = ANY(%s)")
+        if exclude_ref_ids:
+            params.append(list(exclude_ref_ids))
+            clauses.append("NOT (r.ref_id = ANY(%s))")
+        if year_from is not None:
+            params.append(year_from)
+            clauses.append("r.year >= %s")
+        if year_to is not None:
+            params.append(year_to)
+            clauses.append("r.year <= %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)

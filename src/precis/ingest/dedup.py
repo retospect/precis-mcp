@@ -39,6 +39,7 @@ from psycopg.types.json import Jsonb
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store, Tag
 from precis.store._body_predicate import has_body_sql
+from precis.store._identifiers_ops import _dropped_pairs
 from precis.store.revision_context import trust_door
 from precis.utils.title_merge import _first_family, title_merge_refusal
 
@@ -344,6 +345,65 @@ def _drop_cleared_loser_rows(
             )
 
 
+def _drop_dropped_loser_rows(
+    conn: Any, *, survivor_ref_id: int, loser_ref_id: int
+) -> None:
+    """Delete the loser's migratable-kind identifier rows whose
+    ``(scheme, value)`` pair the survivor suppressed via
+    ``drop_identifier`` — run BEFORE the identifier migration, so a
+    deliberately dropped value can't ride across (gr517591; same
+    anti-resurrection rule as :func:`_drop_cleared_loser_rows`, keyed
+    per value). Values compare lowercase for EVERY scheme, not just
+    doi: the marker records the normalised form while a legacy
+    non-canonical row (a mixed-case ``W…`` openalex id — only doi has
+    the 0049 lowercasing trigger) can still sit in the table."""
+    dropped = _dropped_pairs(conn, survivor_ref_id)
+    for scheme, values in dropped.items():
+        if scheme not in _MIGRATABLE_ID_KINDS or not values:
+            continue
+        conn.execute(
+            "DELETE FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = %s "
+            "  AND lower(id_value) = ANY(%s)",
+            (loser_ref_id, scheme, list(values)),
+        )
+
+
+def _merge_dropped_markers(
+    conn: Any, *, survivor_ref_id: int, loser_ref_id: int
+) -> None:
+    """Union the loser's ``meta.dropped_identifiers`` onto the survivor
+    (gr517591): a value the loser's operator dropped stays suppressed on
+    the merged ref — keep the survivor's own stamp where both dropped
+    the same pair."""
+    row = conn.execute(
+        "SELECT meta->'dropped_identifiers' FROM refs WHERE ref_id = %s",
+        (loser_ref_id,),
+    ).fetchone()
+    loser_mark = row[0] if row else None
+    if not isinstance(loser_mark, dict) or not loser_mark:
+        return
+    own_row = conn.execute(
+        "SELECT meta->'dropped_identifiers' FROM refs WHERE ref_id = %s",
+        (survivor_ref_id,),
+    ).fetchone()
+    own_mark = own_row[0] if own_row else None
+    merged: dict[str, Any] = dict(own_mark) if isinstance(own_mark, dict) else {}
+    for scheme, vals in loser_mark.items():
+        if not isinstance(vals, dict):
+            continue
+        own_vals = merged.get(scheme)
+        # Per-value union, the survivor's stamp winning a shared pair —
+        # a top-level ``||`` would drop the survivor's other values
+        # under a scheme the loser also marked.
+        merged[scheme] = {**vals, **(own_vals if isinstance(own_vals, dict) else {})}
+    conn.execute(
+        "UPDATE refs SET meta = jsonb_set(coalesce(meta, '{}'::jsonb), "
+        "  '{dropped_identifiers}', %s::jsonb) WHERE ref_id = %s",
+        (Jsonb(merged), survivor_ref_id),
+    )
+
+
 def _union_cleared_entry(own: Any, loser: Any) -> Any:
     """Merge the loser's marker entry into the survivor's own entry for
     the same scheme: keep the survivor's record (``by``/``at``), union
@@ -494,12 +554,18 @@ def merge_duplicate(
     _drop_cleared_loser_rows(
         conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
     )
+    _drop_dropped_loser_rows(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
+    )
     conn.execute(
         "UPDATE ref_identifiers SET ref_id = %s "
         "WHERE ref_id = %s AND id_kind = ANY(%s)",
         (survivor_ref_id, duplicate_ref_id, list(_MIGRATABLE_ID_KINDS)),
     )
     _merge_cleared_markers(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
+    )
+    _merge_dropped_markers(
         conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
     )
     # (a2) Body / PDF → a survivor that lacks them (gr479362).

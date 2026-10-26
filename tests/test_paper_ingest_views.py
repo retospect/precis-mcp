@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -175,3 +176,220 @@ class TestIngestRate:
         with pytest.raises(BadInput) as ei:
             papers.search(view="ingest", days=0)
         assert "days" in str(ei.value)
+
+
+class TestStampSearch:
+    """gr517627: ``args={'stamp': '<meta key>'}`` lists the live papers
+    carrying that ``refs.meta`` worker/enrichment stamp — ids + count,
+    so a stamp cohort is verifiable without SQL."""
+
+    def _stamped(self, store: Store, slug: str, stamp: str) -> int:
+        return store.insert_ref(
+            kind="paper",
+            slug=slug,
+            title=slug,
+            meta={stamp: {"v": 3, "at": "2026-10-25"}},
+        ).id
+
+    def test_ids_and_count(self, papers: PaperHandler, store: Store) -> None:
+        a = self._stamped(store, "markeda2024", "context_sentence_failed")
+        _paper(store, "unstamped2024", body=1)
+        body = papers.search(stamp="context_sentence_failed").body
+        assert body.startswith("# 1 paper entry stamped 'context_sentence_failed'"), (
+            body
+        )
+        assert handle_registry.format_handle("paper", a) in body
+
+    def test_cohort_total_in_headline(self, papers: PaperHandler, store: Store) -> None:
+        a = self._stamped(store, "cohort-one", "s2_enriched_at")
+        b = self._stamped(store, "cohort-two", "s2_enriched_at")
+        _paper(store, "unstamped2024", body=1)
+        body = papers.search(stamp="s2_enriched_at", page_size=1).body
+        assert " of 2" in body, body
+        assert "page=2" in body
+        page2 = papers.search(stamp="s2_enriched_at", page_size=1, page=2).body
+        handles = {handle_registry.format_handle("paper", i) for i in (a, b)}
+        assert sum(h in body for h in handles) == 1
+        assert sum(h in page2 for h in handles) == 1
+        assert {h for h in handles if h in body or h in page2} == handles
+
+    def test_unstamped_ref_excluded_and_retired_excluded(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        a = self._stamped(store, "markedlive2024", "context_sentence_no_abstract")
+        dead = self._stamped(store, "markeddead2024", "context_sentence_no_abstract")
+        store.retire_ref(dead)
+        _paper(store, "unstamped2024", body=1)
+        body = papers.search(stamp="context_sentence_no_abstract").body
+        assert body.startswith(
+            "# 1 paper entry stamped 'context_sentence_no_abstract'"
+        ), body
+        assert handle_registry.format_handle("paper", a) in body
+        assert handle_registry.format_handle("paper", dead) not in body
+
+    def test_no_cohort(self, papers: PaperHandler, store: Store) -> None:
+        _paper(store, "plain2024", body=1)
+        body = papers.search(stamp="never_stamped").body
+        assert "no live paper entries stamped 'never_stamped'" in body
+
+    def test_no_q_filters_apply(self, papers: PaperHandler, store: Store) -> None:
+        """Ruling: a no-q stamp listing is not an early return —
+        tags=/serves=/record_type= still narrow the cohort, and the
+        headline count is the filtered total."""
+        tagged = self._stamped(store, "stagged2024", "context_sentence_failed")
+        untagged = self._stamped(store, "stuntagged2024", "context_sentence_failed")
+        store.add_tag(tagged, Tag.open("studytype:review"), set_by="agent")
+
+        body = papers.search(
+            stamp="context_sentence_failed", tags=["studytype:review"]
+        ).body
+        assert body.startswith("# 1 paper entry"), body
+        assert handle_registry.format_handle("paper", tagged) in body
+        assert handle_registry.format_handle("paper", untagged) not in body
+
+        # record_type= narrows the same cohort.
+        ds = store.insert_ref(
+            kind="paper",
+            slug="styped2024",
+            title="styped2024",
+            meta={"context_sentence_failed": True, "record_type": "dataset"},
+        ).id
+        body = papers.search(
+            stamp="context_sentence_failed", record_type="dataset"
+        ).body
+        assert body.startswith("# 1 paper entry"), body
+        assert handle_registry.format_handle("paper", ds) in body
+        assert handle_registry.format_handle("paper", tagged) not in body
+
+        # serves= narrows to the quest's inbound serves edges.
+        quest = store.insert_ref(kind="quest", slug=None, title="q1")
+        store.add_link(
+            src_ref_id=untagged,
+            dst_ref_id=quest.id,
+            relation="serves",
+            set_by="agent",
+        )
+        body = papers.search(
+            stamp="context_sentence_failed", serves=f"quest:{quest.id}"
+        ).body
+        assert body.startswith("# 1 paper entry"), body
+        assert handle_registry.format_handle("paper", untagged) in body
+        assert handle_registry.format_handle("paper", tagged) not in body
+
+    def test_no_q_has_fulltext_filter(self, papers: PaperHandler, store: Store) -> None:
+        full = _paper(store, "stfull2024", body=1)
+        stub = self._stamped(store, "ststub2024", "context_sentence_failed")
+        store.stamp_ref_meta(full, {"context_sentence_failed": True})
+        body = papers.search(stamp="context_sentence_failed", has_fulltext=True).body
+        assert body.startswith("# 1 paper entry"), body
+        assert handle_registry.format_handle("paper", full) in body
+        assert handle_registry.format_handle("paper", stub) not in body
+
+    def test_empty_stamp_refused(self, papers: PaperHandler) -> None:
+        with pytest.raises(BadInput):
+            papers.search(stamp="  ")
+        non_str: Any = True  # args= can carry a non-str over JSON
+        with pytest.raises(BadInput):
+            papers.search(stamp=non_str)
+
+    def test_no_q_id_channels_and_date_bounds(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        """r2 S2: the no-q stamp listing applies the include/exclude id
+        channels, exclude=, after=/before= and since=/until= rather than
+        dropping them — an empty include list means zero hits."""
+        a = self._stamped(store, "stina2024", "context_sentence_failed")
+        b = self._stamped(store, "stinb2024", "context_sentence_failed")
+        h_a = handle_registry.format_handle("paper", a)
+        h_b = handle_registry.format_handle("paper", b)
+
+        body = papers.search(stamp="context_sentence_failed", include_ref_ids=[a]).body
+        assert h_a in body and h_b not in body, body
+        empty = papers.search(stamp="context_sentence_failed", include_ref_ids=[]).body
+        assert "no live paper entries stamped" in empty, empty
+
+        dropped = papers.search(
+            stamp="context_sentence_failed", exclude_ref_ids=[a]
+        ).body
+        assert h_a not in dropped and h_b in dropped, dropped
+        by_slug = papers.search(
+            stamp="context_sentence_failed", exclude=["stinb2024"]
+        ).body
+        assert h_b not in by_slug and h_a in by_slug, by_slug
+
+        # after=/before= bound refs.year; since=/until= bound created_at.
+        _backdate(store, a, datetime(2020, 1, 1, tzinfo=UTC))
+        body = papers.search(stamp="context_sentence_failed", after=2025).body
+        assert "no live paper entries stamped" in body, body  # year is NULL here
+        old = store.insert_ref(
+            kind="paper",
+            slug="stold2010",
+            title="stold2010",
+            year=2010,
+            meta={"context_sentence_failed": True},
+        ).id
+        h_old = handle_registry.format_handle("paper", old)
+        body = papers.search(stamp="context_sentence_failed", after=2020).body
+        assert h_old not in body, body
+        body = papers.search(stamp="context_sentence_failed", before=2015).body
+        assert h_old in body and h_a not in body and h_b not in body, body
+        body = papers.search(stamp="context_sentence_failed", since="2021-01-01").body
+        assert h_a not in body and h_b in body, body
+        body = papers.search(stamp="context_sentence_failed", until="2021-01-01").body
+        assert h_a in body and h_b not in body, body
+        with pytest.raises(BadInput):
+            papers.search(stamp="context_sentence_failed", after=2030, before=2010)
+
+
+class TestTagsOnlyFilters:
+    """r2 S2: the tags-only listing (no q=) honours the same id channels
+    and date bounds — previously every one was silently dropped."""
+
+    def test_include_exclude_ids_and_dates(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        a = _paper(store, "tagonly-a")
+        b = _paper(store, "tagonly-b")
+        for rid in (a, b):
+            store.add_tag(rid, Tag.open("studytype:review"), set_by="agent")
+        h_a = handle_registry.format_handle("paper", a)
+        h_b = handle_registry.format_handle("paper", b)
+
+        body = papers.search(tags=["studytype:review"], include_ref_ids=[a]).body
+        assert h_a in body and h_b not in body, body
+        empty = papers.search(tags=["studytype:review"], include_ref_ids=[]).body
+        assert "no paper entries" in empty, empty
+
+        dropped = papers.search(tags=["studytype:review"], exclude_ref_ids=[a]).body
+        assert h_a not in dropped and h_b in dropped, dropped
+        by_slug = papers.search(tags=["studytype:review"], exclude=["tagonly-b"]).body
+        assert h_b not in by_slug and h_a in by_slug, by_slug
+
+        _backdate(store, a, datetime(2020, 1, 1, tzinfo=UTC))
+        body = papers.search(tags=["studytype:review"], after=2025).body
+        assert "no paper entries" in body, body
+        body = papers.search(tags=["studytype:review"], since="2021-01-01").body
+        assert h_a not in body and h_b in body, body
+        body = papers.search(tags=["studytype:review"], until="2021-01-01").body
+        assert h_a in body and h_b not in body, body
+        with pytest.raises(BadInput):
+            papers.search(tags=["studytype:review"], after=2030, before=2010)
+
+
+class TestLogViewIsoUtc:
+    """gr517627: ``get(kind='paper', view='log')`` event times carry the
+    date — ISO-8601 UTC — so before/after a deploy reads off the log."""
+
+    def test_event_line_has_iso_utc_stamp(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        rid = _paper(store, "logts2024")
+        _event(
+            store,
+            rid,
+            "fetcher:oa",
+            "fetch_ok",
+            datetime(2026, 10, 25, 17, 3, 42, tzinfo=UTC),
+        )
+        body = papers.get(id=rid, view="log").body
+        assert "2026-10-25T17:03:42Z" in body, body

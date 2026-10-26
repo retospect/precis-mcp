@@ -756,6 +756,56 @@ class TestReconcileOrphanStub:
             ).fetchone()
         assert held_row is not None and held_row[0] is None
 
+    def test_fold_respects_survivors_dropped_identifier(self, store):
+        """gr517591: the survivor dropped a DOI at the ``drop_identifier``
+        door; a stub still carrying it must fold WITHOUT that value
+        riding across — the suppression is the survivor's, not the
+        stub's."""
+        survivor = store.insert_ref(
+            kind="paper", slug="lee24c", title="Atomic evolution of hydrogen"
+        )
+        store.set_ref_identifier(survivor.id, "doi", "10.9/dropped", source="test")
+        store.drop_ref_identifier(survivor.id, "doi", "10.9/dropped")
+        stub = store.insert_ref(
+            kind="paper", slug="atomic24b", title="Atomic evolution (stub)"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.9/dropped', 'manual'), "
+                "(%s, 'arxiv', '2404.02417', 'manual')",
+                (stub.id, stub.id),
+            )
+            conn.commit()
+
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="atomic24b",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+        with store.pool.connection() as conn:
+            doi_rows = conn.execute(
+                "SELECT ref_id, id_value FROM ref_identifiers WHERE id_kind = 'doi'"
+            ).fetchall()
+            arxiv_owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind='arxiv' AND id_value='2404.02417'"
+            ).fetchone()
+            mark = conn.execute(
+                "SELECT meta->'dropped_identifiers' FROM refs WHERE ref_id=%s",
+                (survivor.id,),
+            ).fetchone()
+        # The suppressed DOI stayed dropped — on neither ref — while the
+        # stub's other identifiers folded as usual.
+        assert list(doi_rows) == []
+        assert arxiv_owner is not None and arxiv_owner[0] == survivor.id
+        assert mark is not None and set(mark[0]["doi"]) == {"10.9/dropped"}
+
 
 class TestStubIdentityGate:
     """gr512169: a *series sibling's* PDF must not reconcile into a DOI stub.

@@ -101,8 +101,11 @@ ids on the survivor — the surgical door is
 `args={'drop_identifier': {'scheme': 'pubmed', 'value': '24970080'},
 'reason': …}` (any scheme but cite_key; the value normalises like the
 identifier lookups, so `'PMID:…'` forms work). One row goes, the rest of
-the scheme stays, no cleared marker is stamped — a sweep can still land
-the *correct* value later — and an `identifier_dropped` ref_event carries
+the scheme stays, no cleared marker is stamped — instead the pair is
+suppressed under `meta.dropped_identifiers`, so enrichment can't re-add
+*that* value while a sweep can still land the *correct* one (an explicit
+re-add of the same pair lifts it) — and an `identifier_dropped`
+ref_event carries
 the reason. It refuses with the ref's actual rows when the named pair
 isn't held. A
 mis-filed record's year and venue repair the same way — `year=2007`,

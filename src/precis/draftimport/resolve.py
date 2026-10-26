@@ -25,10 +25,33 @@ second import in the book's vocabulary resolves directly next time.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from precis.draftimport.tex import BibEntry
+from precis.identity import _first_author_surname, _surname_from_string
+
+_L2T: Any = None
+
+
+def _latex_plain(text: str) -> str:
+    """Decode LaTeX accent commands to their letters (``Ko{\\v{c}}i`` →
+    ``Koči``, ``{\\ss}`` → ``ß``, ``\\'e`` → ``é``). BibTeX author fields
+    carry these; a TeX-spelled name must compare equal to the stored
+    unicode/ASCII form (gr517275). Identity on malformed input — a name
+    the decoder chokes on compares raw, same as before."""
+    global _L2T
+    if not text or "\\" not in text:
+        return text
+    if _L2T is None:
+        from pylatexenc.latex2text import LatexNodes2Text
+
+        _L2T = LatexNodes2Text()
+    try:
+        return _L2T.latex_to_text(text)
+    except Exception:
+        return text
 
 
 @dataclass
@@ -40,6 +63,10 @@ class KeyMap:
     via: dict[str, str] = field(default_factory=dict)  # key -> alias|doi|arxiv|stub
     stubbed: list[str] = field(default_factory=list)  # keys minted as stubs
     unresolved: list[str] = field(default_factory=list)  # keys with no landing
+    #: key -> note, bib keys whose cite_key-alias write was held back
+    #: because the entry's author/year positively disagreed with the ref
+    #: landed by its DOI/arXiv (gr517275). The cite still resolves.
+    quarantined: dict[str, str] = field(default_factory=dict)
 
 
 def _ref_cite_key(store: Any, ref_id: int) -> str | None:
@@ -50,6 +77,60 @@ def _ref_cite_key(store: Any, ref_id: int) -> str | None:
             (ref_id,),
         ).fetchone()
     return row[0] if row else None
+
+
+def _ref_author_year(store: Any, ref_id: int) -> tuple[Any, Any]:
+    """``(authors, year)`` of the ref — fetched like :func:`_ref_cite_key`."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT authors, year FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def _bib_first_surname(entry: BibEntry) -> str:
+    """First-author surname of a BibTeX ``author`` field (``and``-joined),
+    LaTeX accents decoded first (``Ko{\\v{c}}i`` compares as ``koci``)."""
+    first = re.split(
+        r"\s+and\s+", _latex_plain((entry.author or "").strip()), maxsplit=1
+    )[0]
+    return _surname_from_string(first)
+
+
+def _alias_mismatch(store: Any, ref_id: int, entry: BibEntry | None) -> str | None:
+    """Positive evidence the .bib entry and the landed ref are different
+    works (gr517275) — checked before the bib key is written as a
+    ``cite_key`` alias on a ref found via the entry's DOI/arXiv, where a
+    wrong/stale identifier would pin the key on the wrong paper for good.
+
+    Compares the entry's first-author surname (casefolded, ASCII-folded,
+    LaTeX accents decoded) and year against the ref's ``authors[0].family``
+    / ``year``. Years AGREE when within ±1 — the bib's online-first year
+    and the ref's issue year legitimately differ by one (ruling); 2-digit
+    years compare mod 100, in any century. A missing side is no evidence —
+    ``None`` lets the write proceed as today. Returns a short note naming
+    the disagreement otherwise.
+    """
+    if entry is None:
+        return None
+    authors, ref_year = _ref_author_year(store, ref_id)
+    ref_sur = _first_author_surname(authors)
+    bib_sur = _bib_first_surname(entry)
+    bad: list[str] = []
+    if bib_sur and ref_sur and bib_sur != ref_sur:
+        bad.append(f"first author {bib_sur!r} vs ref {ref_sur!r}")
+    by = (entry.year or "").strip()
+    if by.isdigit() and ref_year is not None:
+        # ±1 year is agreement (epub vs issue year). The mod-100 compare
+        # is for a 2-digit bib year only ('99 vs 2000 wraps the century);
+        # between two full years it would accept 1920 vs 2020.
+        if len(by) <= 2:
+            d = abs(int(by) % 100 - int(ref_year) % 100)
+            if min(d, 100 - d) > 1:
+                bad.append(f"year {by} vs ref {ref_year}")
+        elif abs(int(by) - int(ref_year)) > 1:
+            bad.append(f"year {by} vs ref {ref_year}")
+    return "; ".join(bad) if bad else None
 
 
 def _try_identifier(store: Any, value: str | None) -> int | None:
@@ -88,8 +169,9 @@ def resolve_key(
     create_stubs: bool = False,
     set_by: str = "tex-import",
     register_alias: bool = True,
-) -> tuple[str | None, str, int | None]:
-    """Resolve one cite key -> (precis_slug | None, via, ref_id | None)."""
+) -> tuple[str | None, str, int | None, str | None]:
+    """Resolve one cite key -> (precis_slug | None, via, ref_id | None,
+    quarantine note | None)."""
     ref_id = _try_identifier(store, key)
     via = "alias"
     if ref_id is None:
@@ -117,17 +199,31 @@ def resolve_key(
         )
         via = "stub"
     if ref_id is None:
-        return None, "unresolved", None
+        return None, "unresolved", None, None
     slug = _ref_cite_key(store, ref_id)
     if slug is None:
-        return None, "unresolved", None
+        return None, "unresolved", None, None
+    quarantine: str | None = None
     if register_alias and key != slug:
-        # additively register the book's key as another cite_key alias
-        try:
-            store.insert_ref_identifiers(ref_id, [("cite_key", key, set_by)])
-        except Exception:
-            pass
-    return slug, via, ref_id
+        # additively register the book's key as another cite_key alias —
+        # unless the landing came from the .bib's identifiers and the
+        # entry's author/year disagree with the ref's (gr517275). The
+        # cite_key and stub landings need no check: the key already is
+        # an alias of the ref, or the ref was minted from this entry.
+        if via in ("alias", "doi", "arxiv"):
+            why = _alias_mismatch(store, ref_id, entry)
+            if why is not None:
+                quarantine = (
+                    f"{key} -> {slug} (pa{ref_id}): {why}; next= fix the "
+                    ".bib entry's author/year or its DOI/arXiv, then "
+                    "re-import"
+                )
+        if quarantine is None:
+            try:
+                store.insert_ref_identifiers(ref_id, [("cite_key", key, set_by)])
+            except Exception:
+                pass
+    return slug, via, ref_id, quarantine
 
 
 @dataclass
@@ -205,7 +301,7 @@ def build_keymap(
     """Resolve every used key, minting stubs when asked. Idempotent."""
     km = KeyMap()
     for key in used_keys:
-        slug, via, ref_id = resolve_key(
+        slug, via, ref_id, quarantine = resolve_key(
             store, key, bib.get(key), create_stubs=create_stubs
         )
         if slug is None:
@@ -217,4 +313,6 @@ def build_keymap(
         km.via[key] = via
         if via == "stub":
             km.stubbed.append(key)
+        if quarantine is not None:
+            km.quarantined[key] = quarantine
     return km

@@ -2130,3 +2130,179 @@ class TestDropIdentifier:
         )
         assert "doi" not in _id_kinds(store, ref)
         assert "doi" not in _meta(store, ref)
+
+
+class TestDroppedIdentifierSuppression:
+    """gr517591: ``drop_identifier`` stamps
+    ``refs.meta.dropped_identifiers.<scheme>.<value>`` — a machine-sourced
+    write of the suppressed pair is skipped, an explicit human/agent add
+    of the same pair lands and lifts it."""
+
+    def _dropped(self, store: Store, ref_id: int) -> dict[str, Any]:
+        return dict(_meta(store, ref_id).get("dropped_identifiers") or {})
+
+    def _drop(self, handler: PaperHandler, ref: int, scheme: str, value: str) -> None:
+        _edit(
+            handler,
+            ref,
+            {
+                "drop_identifier": {"scheme": scheme, "value": value},
+                "reason": "x",
+            },
+        )
+
+    def test_drop_stamps_marker(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropmark2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        self._drop(handler, ref, "pubmed", "24970080")
+        mark = self._dropped(store, ref)
+        assert set(mark) == {"pubmed"}
+        entry = mark["pubmed"]["24970080"]
+        assert entry["by"] == "drop_identifier"
+        assert entry["at"]
+
+    def test_machine_insert_skipped(self, store: Store, handler: PaperHandler) -> None:
+        """The gripe's bug: an enrichment pass re-writing the dropped
+        value must not resurrect it."""
+        ref = _seed(store, "dropskip2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        self._drop(handler, ref, "pubmed", "24970080")
+        written = store.insert_ref_identifiers(
+            ref, [("pubmed", "24970080", "s2-enrich")]
+        )
+        assert written == 0
+        assert "pubmed" not in _id_kinds(store, ref)
+        assert set(self._dropped(store, ref)["pubmed"]) == {"24970080"}
+
+    def test_machine_set_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropsetref2020", year=2020)
+        s2v = "a" * 40
+        store.set_ref_identifier(ref, "s2", s2v, source="test")
+        self._drop(handler, ref, "s2", s2v)
+        assert (
+            store.set_ref_identifier(ref, "s2", s2v, source="openalex-enrich") is False
+        )
+        assert ("s2", s2v) not in _id_pairs(store, ref)
+
+    def test_explicit_set_lifts(self, store: Store, handler: PaperHandler) -> None:
+        """An agent-sourced re-add of the same pair lands and clears the
+        suppression (the ``_HUMAN_EDIT_SOURCES`` rule)."""
+        ref = _seed(store, "droplift2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        self._drop(handler, ref, "pubmed", "24970080")
+        assert (
+            store.set_ref_identifier(ref, "pubmed", "24970080", source="mcp-edit")
+            is True
+        )
+        assert ("pubmed", "24970080") in _id_pairs(store, ref)
+        assert "dropped_identifiers" not in _meta(store, ref)
+
+    def test_explicit_insert_lifts(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "dropinslift2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        self._drop(handler, ref, "pubmed", "24970080")
+        written = store.insert_ref_identifiers(ref, [("pubmed", "24970080", "edit")])
+        assert written == 1
+        assert ("pubmed", "24970080") in _id_pairs(store, ref)
+        assert "dropped_identifiers" not in _meta(store, ref)
+
+    def test_other_value_same_scheme_lands(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Suppression is per-VALUE: the scheme stays open for a later
+        correct write."""
+        ref = _seed(store, "dropother2020", year=2020)
+        store.set_ref_identifier(ref, "pubmed", "24970080", source="test")
+        self._drop(handler, ref, "pubmed", "24970080")
+        assert store.set_ref_identifier(ref, "pubmed", "11111111", source="s2") is True
+        assert ("pubmed", "11111111") in _id_pairs(store, ref)
+        assert set(self._dropped(store, ref)["pubmed"]) == {"24970080"}
+
+    def test_merge_skips_suppressed_loser_row_and_unions_markers(
+        self, store: Store
+    ) -> None:
+        """merge_duplicate: a loser row the survivor suppressed can't
+        ride across, and the loser's own dropped markers union onto the
+        survivor."""
+        from precis.ingest.dedup import merge_duplicate
+
+        survivor = _seed(store, "dropsurv2020", year=2020)
+        loser = _seed(store, "droploser2020", year=2020)
+        store.set_ref_identifier(survivor, "doi", "10.9/bad", source="test")
+        store.drop_ref_identifier(survivor, "doi", "10.9/bad")
+        store.set_ref_identifier(survivor, "doi", "10.9/other", source="test")
+        store.drop_ref_identifier(survivor, "doi", "10.9/other")
+        store.set_ref_identifier(loser, "doi", "10.9/bad", source="test")
+        store.set_ref_identifier(loser, "pubmed", "24970080", source="test")
+        store.set_ref_identifier(loser, "doi", "10.9/loser", source="test")
+        store.drop_ref_identifier(loser, "doi", "10.9/loser")
+        s2v = "c" * 40
+        store.set_ref_identifier(loser, "s2", s2v, source="test")
+        store.drop_ref_identifier(loser, "s2", s2v)
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=survivor,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="unit-test",
+                conn=conn,
+            )
+        pairs = _id_pairs(store, survivor)
+        assert ("doi", "10.9/bad") not in pairs
+        assert ("pubmed", "24970080") in pairs
+        mark = self._dropped(store, survivor)
+        # Same-scheme union keeps BOTH sides' suppressed values — a
+        # shallow ``||`` would lose the survivor's "10.9/other".
+        assert set(mark["doi"]) == {"10.9/bad", "10.9/other", "10.9/loser"}
+        assert set(mark["s2"]) == {s2v}
+
+    def test_legacy_mixed_case_row_suppresses_normalised(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A legacy non-canonical row (``W…`` openalex — only doi has the
+        lowercasing trigger) drops fine, but the marker must record the
+        NORMALISED value: a machine write of ``w…`` would miss a
+        ``W…``-cased stamp and resurrect the pair."""
+        ref = _seed(store, "dropcase2020", year=2020)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('openalex', 'W2741809807', %s, 'legacy')",
+                (ref,),
+            )
+        self._drop(handler, ref, "openalex", "W2741809807")
+        assert set(self._dropped(store, ref)["openalex"]) == {"w2741809807"}
+        written = store.insert_ref_identifiers(
+            ref, [("openalex", "w2741809807", "openalex-enrich")]
+        )
+        assert written == 0
+        assert "openalex" not in _id_kinds(store, ref)
+
+    def test_merge_skips_mixed_case_suppressed_loser_row(self, store: Store) -> None:
+        """The merge-side twin of the case bug: the loser's mixed-case
+        row must be deleted BEFORE migration even outside doi — a
+        case-sensitive compare lets it ride across."""
+        from precis.ingest.dedup import merge_duplicate
+
+        survivor = _seed(store, "dropcasesurv2020", year=2020)
+        loser = _seed(store, "dropcaseloser2020", year=2020)
+        store.set_ref_identifier(survivor, "openalex", "w555", source="test")
+        store.drop_ref_identifier(survivor, "openalex", "w555")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('openalex', 'W555', %s, 'legacy')",
+                (loser,),
+            )
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=survivor,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="unit-test",
+                conn=conn,
+            )
+        assert "openalex" not in _id_kinds(store, survivor)
+        assert set(self._dropped(store, survivor)["openalex"]) == {"w555"}

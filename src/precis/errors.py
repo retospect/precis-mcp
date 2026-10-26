@@ -93,6 +93,18 @@ class BadInput(PrecisError, ValueError):
     """
 
 
+class Conflict(BadInput):
+    """The write collides with live state another ref already owns.
+
+    Distinct from plain :class:`BadInput` (a malformed parameter): the
+    call was well-formed but cannot land without stealing something a
+    live ref holds — e.g. a ``cite_key`` slug claimed by another ref,
+    where the silent outcome would be a slugless orphan (gr517405).
+    Subclasses ``BadInput`` so callers catching parameter errors keep
+    working, and the envelope renders ``[error:Conflict]``.
+    """
+
+
 class Gone(PrecisError):
     """Ref existed and was soft-deleted.
 

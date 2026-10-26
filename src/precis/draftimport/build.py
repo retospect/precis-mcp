@@ -94,6 +94,10 @@ class ImportResult:
     #: reference in the corpus or any declared bib) + the distinct keys.
     missing_cite_blocks: int = 0
     missing_cite_keys: list[str] = field(default_factory=list)
+    #: bib key -> note for cite_key-alias writes held back on an
+    #: author/year mismatch with the ref the entry's DOI/arXiv landed
+    #: (gr517275). The cite itself still resolved.
+    quarantined_aliases: dict[str, str] = field(default_factory=dict)
 
 
 def _id_of(body: str) -> int:
@@ -587,6 +591,7 @@ def run_import(
         cites_pa=out["pa"],
         missing_cite_blocks=out["missing_cite_blocks"],
         missing_cite_keys=out["missing_cite_keys"],
+        quarantined_aliases=dict(km.quarantined),
     )
 
 
@@ -760,6 +765,8 @@ def main(argv: list[str] | None = None) -> int:
         f"(flag:issue/note:missing-citation), {len(res.missing_cite_keys)} keys "
         f"with no backing reference: {res.missing_cite_keys[:8]}"
     )
+    for note in res.quarantined_aliases.values():
+        print(f"  quarantined alias: {note}")
     return 0
 
 

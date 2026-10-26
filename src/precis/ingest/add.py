@@ -42,7 +42,9 @@ from precis.ingest.db_writer import (
 )
 from precis.ingest.dedup import (
     _drop_cleared_loser_rows,
+    _drop_dropped_loser_rows,
     _merge_cleared_markers,
+    _merge_dropped_markers,
     inherit_missing_identity,
 )
 from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
@@ -2013,8 +2015,12 @@ def _reconcile_orphan_stub(
     # filters soft-deleted refs so they can't resurrect it.
     # A value the survivor's operator deliberately cleared must not ride
     # across on the stub's rows — the fold would resurrect the very
-    # identifier the human removed (gr515246).
+    # identifier the human removed (gr515246). Same per-value for a pair
+    # dropped at the drop_identifier door (gr517591).
     _drop_cleared_loser_rows(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id
+    )
+    _drop_dropped_loser_rows(
         conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id
     )
     conn.execute(
@@ -2026,6 +2032,7 @@ def _reconcile_orphan_stub(
         (survivor_ref_id, stub_id),
     )
     _merge_cleared_markers(conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id)
+    _merge_dropped_markers(conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id)
 
     inherit_missing_identity(
         store,

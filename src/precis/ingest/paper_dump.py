@@ -59,6 +59,7 @@ from precis.handlers._slice_args import slice_window
 from precis.store._identifiers_ops import (
     _HUMAN_EDIT_SOURCES,
     _cleared_schemes,
+    _dropped_pairs,
     _normalise_identifier,
     _unstamp_cleared,
 )
@@ -1564,6 +1565,7 @@ def _restore_identifiers(
     if not idents:
         return
     cleared = _cleared_schemes(conn, target_id)
+    dropped = _dropped_pairs(conn, target_id)
     own_cite_keys: set[str] | None = None
     for ident in idents:
         s = str(ident.get("id_kind") or "").strip().lower()
@@ -1579,6 +1581,22 @@ def _restore_identifiers(
             continue
         source = str(ident.get("source") or "").strip().lower()
         if s in cleared and source not in _HUMAN_EDIT_SOURCES:
+            continue
+        if v in dropped.get(s, ()):
+            # The pair was deliberately dropped at the drop_identifier
+            # door (gr517591) — a dump restore must not resurrect it,
+            # whatever source the dumped row carries: a restore is not
+            # an edit. Only a live edit/mcp-edit/web-edit on the ref
+            # lifts the pair (ruling: the dump predates the drop, its
+            # recorded source describes the ORIGINAL add, not this one).
+            report.skipped_identifiers.append(
+                {
+                    "id_kind": s,
+                    "id_value": v,
+                    "reason": "suppressed in meta.dropped_identifiers "
+                    "— an explicit add lifts the pair",
+                }
+            )
             continue
         if s == "cite_key" and not minted:
             if own_cite_keys is None:

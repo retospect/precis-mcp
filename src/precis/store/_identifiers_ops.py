@@ -51,6 +51,15 @@ their mind). Machine clears (e.g. ``park_mismatch``'s
 registry-title-zero-overlap DOI drop, ``source='resolve-metadata'``)
 never stamp it — a parked ref is still allowed to auto-recover the
 *correct* identifier under review.
+
+Dropped-identifier marker (gr517591): the ``drop_identifier`` edit door
+removes one wrong ``(scheme, value)`` row and stamps
+``refs.meta.dropped_identifiers.<scheme>.<value> = {"at", "by"}`` —
+per-VALUE suppression where ``cleared_identifiers`` is per-SCHEME
+(the wrong value must stay dropped while the scheme stays open for a
+later correct one). Writers consult it the same way: a machine-sourced
+write of a suppressed pair is skipped, an explicit human/agent add of
+the same pair lands and lifts it.
 """
 
 from __future__ import annotations
@@ -71,6 +80,13 @@ log = logging.getLogger(__name__)
 #: ``refs.meta`` key recording identifiers a human deliberately cleared:
 #: ``{scheme: {"at": <ts>, "by": <source>}}``. See the module docstring.
 CLEARED_IDENTIFIERS_META_KEY = "cleared_identifiers"
+
+#: ``refs.meta`` key recording ``(scheme, value)`` pairs removed at the
+#: ``drop_identifier`` door (gr517591): ``{scheme: {value: {"at", "by"}}}``
+#: — per-VALUE suppression where ``cleared_identifiers`` is per-SCHEME. A
+#: machine-sourced write of a suppressed pair is skipped; an explicit
+#: human/agent add of the same pair lands and lifts the pair.
+DROPPED_IDENTIFIERS_META_KEY = "dropped_identifiers"
 
 #: ``source`` values that mean a person made the change — the same set
 #: :func:`precis.store._refs_ops._default_author_source` maps to the
@@ -313,6 +329,84 @@ def _unstamp_cleared(c: Connection, ref_id: int, scheme: str) -> None:
     )
 
 
+def _dropped_pairs(c: Connection, ref_id: int) -> dict[str, set[str]]:
+    """``{scheme: {dropped values}}`` suppressed on the ref (empty if none).
+
+    Same ``FOR NO KEY UPDATE`` row lock :func:`_cleared_schemes` takes —
+    check-then-write callers hold it so a concurrent drop can't race the
+    check. Values are the ``_normalise_identifier`` form (lowercased).
+    """
+    row = c.execute(
+        "SELECT meta->%s FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+        (DROPPED_IDENTIFIERS_META_KEY, ref_id),
+    ).fetchone()
+    marked = row[0] if row else None
+    if not isinstance(marked, dict):
+        return {}
+    return {
+        str(s): {str(v) for v in vals}
+        for s, vals in marked.items()
+        if isinstance(vals, dict)
+    }
+
+
+def _stamp_dropped(
+    c: Connection,
+    ref_id: int,
+    scheme: str,
+    value: str,
+    source: str,
+) -> None:
+    """Record ``(scheme, value)`` as dropped on ``refs.meta`` (gr517591).
+
+    Unlike :func:`_stamp_cleared` this touches no ``meta.<scheme>``
+    ghost — :meth:`IdentifiersMixin.drop_ref_identifier` already
+    handles the displayed copy (it knows WHICH value was shown).
+    """
+    c.execute(
+        "UPDATE refs SET meta = jsonb_set(coalesce(meta, '{}'::jsonb), "
+        "  '{dropped_identifiers}', "
+        "  coalesce(meta->'dropped_identifiers', '{}'::jsonb) "
+        "  || jsonb_build_object(%s::text, "
+        "      coalesce(meta->'dropped_identifiers'->%s::text, '{}'::jsonb) "
+        "      || jsonb_build_object(%s::text, "
+        "          jsonb_build_object('at', now(), 'by', %s::text)))) "
+        "WHERE ref_id = %s "
+        "  AND (meta->'dropped_identifiers' IS NULL "
+        "       OR jsonb_typeof(meta->'dropped_identifiers') = 'object')",
+        (scheme, scheme, value, source, ref_id),
+    )
+
+
+def _unstamp_dropped(c: Connection, ref_id: int, scheme: str, value: str) -> None:
+    """Lift one suppressed ``(scheme, value)`` pair — an explicit re-add
+    of it landed (the ``_HUMAN_EDIT_SOURCES`` rule, same as
+    :func:`_unstamp_cleared`)."""
+    c.execute(
+        "UPDATE refs SET meta = jsonb_set(meta, '{dropped_identifiers}', "
+        "  (meta->'dropped_identifiers'->%s::text) - %s::text) "
+        "WHERE ref_id = %s "
+        "  AND jsonb_typeof(meta->'dropped_identifiers') = 'object' "
+        "  AND jsonb_typeof(meta->'dropped_identifiers'->%s::text) = 'object' "
+        "  AND meta->'dropped_identifiers'->%s::text ? %s::text",
+        (scheme, value, ref_id, scheme, scheme, value),
+    )
+    # Prune the empty scheme shell, then the empty marker object itself.
+    c.execute(
+        "UPDATE refs SET meta = jsonb_set(meta, '{dropped_identifiers}', "
+        "  (meta->'dropped_identifiers') - %s::text) "
+        "WHERE ref_id = %s "
+        "  AND jsonb_typeof(meta->'dropped_identifiers') = 'object' "
+        "  AND meta->'dropped_identifiers'->%s::text = '{}'::jsonb",
+        (scheme, ref_id, scheme),
+    )
+    c.execute(
+        "UPDATE refs SET meta = meta - 'dropped_identifiers' "
+        "WHERE ref_id = %s AND meta->'dropped_identifiers' = '{}'::jsonb",
+        (ref_id,),
+    )
+
+
 class IdentifiersMixin:
     """Cross-scheme alias lookup over the ``ref_identifiers`` table."""
 
@@ -448,7 +542,11 @@ class IdentifiersMixin:
         A scheme the operator deliberately cleared
         (:data:`CLEARED_IDENTIFIERS_META_KEY`, gr515246) is skipped for
         machine-sourced rows — bulk sweeps may not resurrect it; a
-        human-sourced row both lands and lifts the mark.
+        human-sourced row both lands and lifts the mark. The same rule
+        applies per-VALUE to ``(scheme, value)`` pairs dropped at the
+        ``drop_identifier`` door (:data:`DROPPED_IDENTIFIERS_META_KEY`,
+        gr517591): a machine write of a suppressed pair is skipped, an
+        explicit human/agent add lands and lifts the pair.
         """
         rows: list[tuple[str, str, int, str]] = []
         for scheme, value, source in identifiers:
@@ -466,7 +564,9 @@ class IdentifiersMixin:
 
         def _do(c: Connection) -> int:
             marked = _cleared_schemes(c, ref_id)
+            dropped = _dropped_pairs(c, ref_id)
             human: set[str] = set()
+            re_added: set[tuple[str, str]] = set()
             kept: list[tuple[str, str, int, str]] = []
             for row in rows:
                 if row[0] in marked and row[3] not in _HUMAN_EDIT_SOURCES:
@@ -478,6 +578,17 @@ class IdentifiersMixin:
                         ref_id,
                     )
                     continue
+                if row[1] in dropped.get(row[0], ()):
+                    if row[3] not in _HUMAN_EDIT_SOURCES:
+                        log.info(
+                            "ref_identifiers: skipping %s=%s on #%s — "
+                            "dropped at the drop_identifier door (gr517591)",
+                            row[0],
+                            row[1],
+                            ref_id,
+                        )
+                        continue
+                    re_added.add((row[0], row[1]))
                 if row[0] in marked:
                     human.add(row[0])
                 kept.append(row)
@@ -497,6 +608,17 @@ class IdentifiersMixin:
                 ).fetchone()
                 if landed is not None:
                     _unstamp_cleared(c, ref_id, s)
+            for s, v in re_added:
+                # Same landed-check as the scheme mark above: an explicit
+                # add only lifts the pair's suppression when the row is
+                # now this ref's.
+                landed = c.execute(
+                    "SELECT 1 FROM ref_identifiers "
+                    "WHERE ref_id = %s AND id_kind = %s AND id_value = %s",
+                    (ref_id, s, v),
+                ).fetchone()
+                if landed is not None:
+                    _unstamp_dropped(c, ref_id, s, v)
             return written
 
         if conn is not None:
@@ -539,7 +661,9 @@ class IdentifiersMixin:
         *machine*-sourced writes — ``False`` with a log line, so a
         backfill/enrich pass leaves the clear alone instead of
         re-deriving the identifier the operator removed. A human-sourced
-        set lands and lifts the mark.
+        set lands and lifts the mark. Per-value the same holds for a
+        pair dropped at ``drop_identifier``
+        (:data:`DROPPED_IDENTIFIERS_META_KEY`, gr517591).
         """
         from precis.errors import BadInput
 
@@ -551,10 +675,20 @@ class IdentifiersMixin:
 
         def _do(c: Connection) -> bool:
             marked = _cleared_schemes(c, ref_id)
+            dropped = _dropped_pairs(c, ref_id)
             if s in marked and src not in _HUMAN_EDIT_SOURCES:
                 log.info(
                     "set_ref_identifier: refusing %s=%s on #%s — "
                     "cleared by a human edit (gr515246)",
+                    s,
+                    v,
+                    ref_id,
+                )
+                return False
+            if v in dropped.get(s, ()) and src not in _HUMAN_EDIT_SOURCES:
+                log.info(
+                    "set_ref_identifier: refusing %s=%s on #%s — "
+                    "dropped at the drop_identifier door (gr517591)",
                     s,
                     v,
                     ref_id,
@@ -602,6 +736,11 @@ class IdentifiersMixin:
                 # branch returned above) — an explicit re-add lifts the
                 # clear mark so automated sweeps manage it again.
                 _unstamp_cleared(c, ref_id, s)
+            if v in dropped.get(s, ()):
+                # Same lift for the pair dropped at ``drop_identifier``:
+                # only a human-sourced write reaches here with the pair
+                # suppressed, and the INSERT above already landed it.
+                _unstamp_dropped(c, ref_id, s, v)
             return True
 
         if conn is not None:
@@ -701,9 +840,12 @@ class IdentifiersMixin:
         marker (gr515246); this one removes exactly one value — the
         repair for a ref carrying a wrong id next to correct ones
         (gr513878: a merge left the donor's pubmed/openalex/s2 rows on
-        the survivor). No ``cleared_identifiers`` marker is stamped: the
-        scheme stays open so a sweep can still derive the *correct*
-        value later; ``clear_ref_identifier`` (``edit``'s ``doi=''``)
+        the survivor). The dropped ``(scheme, value)`` pair is stamped
+        into ``meta.dropped_identifiers`` (gr517591): every identifier
+        writer skips a suppressed pair for machine-sourced writes, and
+        an explicit re-add of the same pair lifts it — so the scheme
+        stays open for a later *correct* value while the dropped one
+        stays dropped. ``clear_ref_identifier`` (``edit``'s ``doi=''``)
         remains the "never re-derive this scheme" door.
 
         Returns the stored value removed, or ``None`` when the ref
@@ -742,6 +884,11 @@ class IdentifiersMixin:
             ]
             if not deleted:
                 return None
+            # Stamp the NORMALISED value, not the stored row's casing —
+            # the marker is what machine writers compare their
+            # (normalised) write against, so a legacy mixed-case row
+            # (``W2741809807``) must suppress as ``w2741809807``.
+            _stamp_dropped(c, ref_id, s, v, "drop_identifier")
             if s in ("doi", "arxiv"):
                 ghost = c.execute(
                     "SELECT meta->>%s::text FROM refs WHERE ref_id = %s "

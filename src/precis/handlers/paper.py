@@ -57,6 +57,7 @@ from precis.handlers._paper_search import (
     BylineSearch,
     FusedBlockSearch,
     PaperSearchResultRenderer,
+    _coerce_search_year,
     _dedup_card_hits,
 )
 from precis.handlers._paper_text import (
@@ -73,12 +74,15 @@ from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.store._body_predicate import has_body_sql
+from precis.store._chunks_ops import _year_range_clauses
 from precis.store._identifiers_ops import (
     _normalise_identifier,
     detect_identifier_scheme,
 )
 from precis.store._review_ops import trust_refusal
 from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
+from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE
 from precis.utils import handle_registry
 from precis.utils.authors import (
@@ -2068,6 +2072,13 @@ class PaperHandler(Handler):
         # parsed-grid read. Validated against ``chunk_kinds.slug``;
         # implies the per-chunk drill shape like ``scope=``.
         chunk_kind: str | list[str] | None = None,
+        # ``args={'stamp': '<meta key>'}`` (gr517627): the live refs
+        # carrying that ``refs.meta`` worker/enrichment stamp —
+        # ``context_sentence_failed``, ``s2_enriched_at``, … With no
+        # ``q=`` this is a paged ids+count listing (verifying a stamp
+        # cohort without SQL); with ``q=`` it restricts hits via the
+        # include channel like ``record_type=``.
+        stamp: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -2137,6 +2148,45 @@ class PaperHandler(Handler):
                 kind=kind,
             )
 
+        # ``args={'stamp': '<meta key>'}`` (gr517627): alone, a paged
+        # ids+count listing of the live refs carrying that meta stamp —
+        # tags=/serves=/record_type=/has_fulltext= still narrow it (the
+        # cohort filter is SQL-side, not an id-array round trip); with
+        # q= it restricts hits through the same include channel
+        # serves=/record_type= use.
+        stamp_norm = (
+            str(stamp).strip() if isinstance(stamp, str) and stamp.strip() else None
+        )
+        if stamp is not None and stamp_norm is None:
+            raise BadInput(
+                f"args={{'stamp': …}} takes a non-empty meta key, got {stamp!r}",
+                next="search(kind='paper', args={'stamp': 'context_sentence_failed'})",
+            )
+        if stamp_norm is not None:
+            if q is None or not q.strip():
+                return self._render_stamp_search(
+                    stamp=stamp_norm,
+                    tags=tags,
+                    serves=serves,
+                    has_fulltext=has_fulltext,
+                    record_type=record_type,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    exclude=exclude,
+                    after=after,
+                    before=before,
+                    since=since,
+                    until=until,
+                    page=page,
+                    page_size=page_size if page_size is not None else 25,
+                )
+            stamped = self._resolve_stamp_scope(stamp_norm)
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & stamped)
+                if include_ref_ids is not None
+                else stamped
+            )
+
         if q is None or not q.strip():
             # ``tags=`` alone is a valid call — precis-paper-tag-axes
             # documents ``search(kind='paper', tags=['studytype:review'])``
@@ -2153,6 +2203,13 @@ class PaperHandler(Handler):
                     tags=tags,
                     page=page,
                     page_size=page_size if page_size is not None else 10,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    exclude=exclude,
+                    after=after,
+                    before=before,
+                    since=since,
+                    until=until,
                 )
             raise BadInput(
                 "search requires q= or tags=",
@@ -2384,6 +2441,15 @@ class PaperHandler(Handler):
         renders. Raises ``NotFound`` when the quest doesn't resolve
         (a named target must never degrade to an unfiltered search).
         """
+        links = self.store.links_for(
+            self._serves_quest_id(serves), direction="in", relation="serves"
+        )
+        return {int(ln.src_ref_id) for ln in links}
+
+    def _serves_quest_id(self, serves: Any) -> int:
+        """The ref_id of the quest ``serves=`` names — the parse +
+        existence check :meth:`_resolve_serves_scope` shares with the
+        SQL-side ``serves`` filters."""
         token = str(serves).strip()
         if token.startswith("quest:"):
             token = token[len("quest:") :].strip()
@@ -2403,8 +2469,202 @@ class PaperHandler(Handler):
                 f"quest id={qid} not found",
                 next="search(kind='quest', q='...') to find the quest",
             )
-        links = self.store.links_for(qref.id, direction="in", relation="serves")
-        return {int(ln.src_ref_id) for ln in links}
+        return qref.id
+
+    def _resolve_stamp_scope(self, stamp: str) -> set[int]:
+        """``args={'stamp': '<meta key>'}`` → the live refs of this kind
+        carrying that ``refs.meta`` key — the worker/enrichment stamps
+        (``context_sentence_failed``, ``s2_enriched_at``, …; gr517627)."""
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = %s "
+                "AND retired_at IS NULL AND meta ? %s",
+                (self.spec.kind, stamp),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def _resolve_browse_filters(
+        self,
+        *,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        exclude: list[str] | None,
+        after: int | str | None,
+        before: int | str | None,
+        since: str | None,
+        until: str | None,
+    ) -> dict[str, Any]:
+        """Resolve the raw search kwargs a queryless listing must honour
+        (r2 S2 — never drop one silently) into store/clause-ready values:
+        the ``include_ref_ids`` channel passed through (``None`` = no
+        restriction, an empty list = zero hits), ``uncited=`` +
+        ``exclude=`` merged into one drop set, ``after=``/``before=`` as
+        publish-year bounds, and ``since=``/``until=`` as a created_at
+        window (until exclusive). Both no-q doors resolve here so the
+        two can't drift."""
+        kind = self.spec.kind
+        drop_ids = set(exclude_ref_ids or ())
+        if exclude:
+            drop_ids |= set(
+                resolve_exclude_paper_ids(
+                    [str(e) for e in exclude], store=self.store, kind=kind
+                )
+            )
+        year_from = _coerce_search_year(after, "after")
+        year_to = _coerce_search_year(before, "before")
+        if year_from is not None and year_to is not None and year_from > year_to:
+            raise BadInput(
+                f"after={year_from} is later than before={year_to}",
+                next=f"search(kind='{kind}', q='…', after=2019, before=2023)",
+            )
+        from precis.handlers._numeric_ref import _parse_window_bound
+
+        return {
+            "include_ref_ids": include_ref_ids,
+            "exclude_ref_ids": sorted(drop_ids) or None,
+            "year_from": year_from,
+            "year_to": year_to,
+            "since": _parse_window_bound(since, "since"),
+            "until": _parse_window_bound(until, "until"),
+        }
+
+    def _render_stamp_search(
+        self,
+        *,
+        stamp: str,
+        tags: list[str] | None,
+        serves: str | None,
+        has_fulltext: bool | None,
+        record_type: str | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        exclude: list[str] | None,
+        after: int | str | None,
+        before: int | str | None,
+        since: str | None,
+        until: str | None,
+        page: int,
+        page_size: int,
+    ) -> Response:
+        """The no-``q=`` ``args={'stamp': …}`` door (gr517627): a paged
+        ids+count listing of the stamp cohort — the verifier's "which
+        papers carry this stamp" question without SQL. Each row shows
+        the handle, the (truncated) stamp value, and the title.
+
+        The cohort filter lives in SQL (``meta ? %s``), not a Python id
+        array, and the other filter args still apply — a stamp cohort
+        intersected by ``tags=`` / ``serves=`` / ``record_type=`` /
+        ``has_fulltext=`` / the include+exclude id channels /
+        ``exclude=`` / ``after=``/``before=`` / ``since=``/``until=``
+        lists the *filtered* cohort with an honest total (ruling: no
+        early return that drops them)."""
+        kind = self.spec.kind
+        clauses = ["r.retired_at IS NULL", "r.kind = %s", "r.meta ? %s"]
+        params: list[Any] = [kind, stamp]
+        normalized_tags = Tag.normalize_filter(tags, kind=kind) if tags else None
+        if normalized_tags:
+            tag_frag, tag_params = build_tag_filter(normalized_tags, ref_alias="r")
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        if serves is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM links l WHERE l.dst_ref_id = %s "
+                "AND l.relation = 'serves' AND l.src_ref_id = r.ref_id)"
+            )
+            params.append(self._serves_quest_id(serves))
+        if has_fulltext is not None:
+            if not isinstance(has_fulltext, bool):
+                raise BadInput(
+                    f"has_fulltext must be a boolean, got {has_fulltext!r}",
+                    next="args={'has_fulltext': true} keeps only refs with body chunks",
+                )
+            clauses.append(
+                has_body_sql("r") if has_fulltext else f"NOT {has_body_sql('r')}"
+            )
+        if record_type is not None:
+            rt = str(record_type).strip().lower()
+            if rt not in RECORD_TYPES:
+                raise BadInput(
+                    f"record_type= takes 'software' or 'dataset', got {record_type!r}",
+                    options=sorted(RECORD_TYPES),
+                    next="search(kind='paper', args={'record_type': 'software'})",
+                )
+            clauses.append("r.meta->>'record_type' = %s")
+            params.append(rt)
+        bf = self._resolve_browse_filters(
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            exclude=exclude,
+            after=after,
+            before=before,
+            since=since,
+            until=until,
+        )
+        if bf["include_ref_ids"] is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(bf["include_ref_ids"]))
+        if bf["exclude_ref_ids"]:
+            clauses.append("NOT (r.ref_id = ANY(%s))")
+            params.append(bf["exclude_ref_ids"])
+        clauses.extend(_year_range_clauses(bf["year_from"], bf["year_to"]))
+        if bf["since"] is not None:
+            clauses.append("r.created_at >= %s")
+            params.append(bf["since"])
+        if bf["until"] is not None:
+            clauses.append("r.created_at < %s")
+            params.append(bf["until"])
+        where = " AND ".join(clauses)
+        page_size = max(1, int(page_size))
+        offset = max(0, (int(page) - 1) * page_size)
+        with self.store.pool.connection() as conn:
+            total_row = conn.execute(
+                f"SELECT count(*) FROM refs r WHERE {where}", params
+            ).fetchone()
+            total = int((total_row or (0,))[0])
+            rows = conn.execute(
+                "SELECT r.ref_id, r.title, left(coalesce(r.meta->>%s, ''), 40) "
+                f"FROM refs r WHERE {where} "
+                "ORDER BY r.updated_at DESC, r.ref_id LIMIT %s OFFSET %s",
+                [stamp, *params, page_size, offset],
+            ).fetchall()
+        if not rows:
+            body = f"no live {kind} entries stamped {stamp!r}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='{kind}', view='count', "
+                        "args={'group_by': 'meta.<key>'})",
+                        "facet the corpus on a meta key instead",
+                    ),
+                ]
+            )
+            return Response(body=body, result_count=0)
+        suffix = "" if total <= len(rows) and page == 1 else f" of {total}"
+        noun = "entry" if len(rows) == 1 else "entries"
+        lines = [f"# {len(rows)} {kind} {noun} stamped {stamp!r}{suffix}"]
+        for ref_id, title, stamp_val in rows:
+            handle = handle_registry.format_handle(kind, int(ref_id))
+            preview = _excerpt(title_md(title or ""), limit=80)
+            value = f"  = {stamp_val}" if stamp_val else ""
+            lines.append(f"  {handle:<30}{value}  {preview}")
+        body = "\n".join(lines)
+        next_ops: list[tuple[str, str]] = []
+        if offset + len(rows) < total:
+            next_ops.append(
+                (
+                    f"search(kind='{kind}', args={{'stamp': {stamp!r}}}, "
+                    f"page={page + 1})",
+                    "next page",
+                )
+            )
+        next_ops.append(
+            (
+                f"get(id='{handle_registry.format_handle(kind, int(rows[0][0]))}')",
+                "open one paper from the list (paste any handle above)",
+            )
+        )
+        body += render_next_section(next_ops)
+        return Response(body=body, result_count=len(rows))
 
     # -- count / ingest-state views (gr500649 / gr500651 / gr500643) ---------
 
@@ -4893,7 +5153,9 @@ class PaperHandler(Handler):
                         else f"no {scheme} rows left afterwards; "
                     )
                     + "no cleared_identifiers marker — the scheme stays "
-                    "open for a later correct write; an "
+                    "open for a later correct write; the pair is "
+                    "suppressed in meta.dropped_identifiers so "
+                    "enrichment can't re-add it; an "
                     "'identifier_dropped' ref_event logged."
                 )
             )
@@ -4921,7 +5183,9 @@ class PaperHandler(Handler):
                     if remaining
                     else f"(no {scheme} rows left); "
                 )
-                + "ref_event 'identifier_dropped' logged."
+                + "ref_event 'identifier_dropped' logged; the pair is "
+                "suppressed in meta.dropped_identifiers (an explicit "
+                "re-add lifts it)."
             )
         )
 
@@ -6493,6 +6757,13 @@ class PaperHandler(Handler):
         page: int,
         page_size: int,
         sort: str | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        exclude: list[str] | None = None,
+        after: int | str | None = None,
+        before: int | str | None = None,
+        since: str | None = None,
+        until: str | None = None,
     ) -> Response:
         """Filter-only enumeration for ``search(kind=..., tags=[...])``.
 
@@ -6504,6 +6775,13 @@ class PaperHandler(Handler):
         exact — this refs.count(*) doesn't share the unfiltered path's
         chunk-count callout, which isn't tag-scoped.
 
+        The dispatch-injected id channels and the date bounds are
+        honoured too (r2 S2 — a queryless listing must never drop a
+        filter silently): ``include_ref_ids``/``exclude_ref_ids``
+        (cited=/hubbed=/uncited=), ``exclude=``, publish-year
+        ``after=``/``before=`` and the ``since=``/``until=`` created
+        window all intersect the listing with an honest total.
+
         ``sort`` names a :attr:`_BROWSE_SORTS` key; a date sort annotates
         each row with that ``meta`` date and a missing date reads
         ``(no <key>)`` (undated rows sort last). ``tags=None`` enumerates
@@ -6512,19 +6790,37 @@ class PaperHandler(Handler):
         """
         kind = self.spec.kind
         normalized_tags = Tag.normalize_filter(tags, kind=kind)
+        bf = self._resolve_browse_filters(
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            exclude=exclude,
+            after=after,
+            before=before,
+            since=since,
+            until=until,
+        )
         order_by, date_key = self._BROWSE_SORTS.get(
             sort or "recency", self._BROWSE_SORTS["recency"]
         )
         page_size = max(1, int(page_size))
         offset = max(0, (int(page) - 1) * page_size)
+        filters: dict[str, Any] = {
+            "include_ref_ids": bf["include_ref_ids"],
+            "exclude_ref_ids": bf["exclude_ref_ids"],
+            "year_from": bf["year_from"],
+            "year_to": bf["year_to"],
+            "created_after": bf["since"],
+            "created_before": bf["until"],
+        }
         refs = self.store.list_refs(
             kind=kind,
             tags=normalized_tags,
             limit=page_size,
             offset=offset,
             order_by=order_by,
+            **filters,
         )
-        total = self.store.count_refs(kind=kind, tags=normalized_tags)
+        total = self.store.count_refs(kind=kind, tags=normalized_tags, **filters)
         if not refs:
             scope = f" tagged {normalized_tags}" if normalized_tags else ""
             body = f"no {kind} entries{scope}"

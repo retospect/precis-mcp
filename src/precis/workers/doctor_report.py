@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import Conflict
 from precis.store.types import TODO_BODY_KIND as _BODY_KIND
 from precis.store.types import ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
@@ -598,19 +599,21 @@ def find_or_create_report(
     if existing is not None:
         return existing, False
     full_title = title or f"Doctor report — {date_tag}"
-    ref = store.insert_ref(
-        kind="draft",
-        slug=slug,
-        title=full_title,
-        meta={"author": AUTHOR, "date": date_tag},
-    )
-    # The ``cite_key`` identifier is inserted ON CONFLICT DO NOTHING (same
-    # race cast_common.create_cast_draft documents), so under a race
-    # another ref may already own the slug — resolve by slug and adopt
-    # the canonical owner rather than leaving ``ref`` an orphan.
-    canonical = store.get_ref(kind="draft", id=slug)
-    if canonical is not None and int(canonical.id) != int(ref.id):
-        return canonical, False
+    try:
+        ref = store.insert_ref(
+            kind="draft",
+            slug=slug,
+            title=full_title,
+            meta={"author": AUTHOR, "date": date_tag},
+        )
+    except Conflict:
+        # ``insert_ref`` refuses a slug a live ref already holds
+        # (gr517405): a same-kind holder is a raced create — adopt it;
+        # a foreign-kind holder is a real conflict and re-raises.
+        canonical = store.get_ref(kind="draft", id=slug)
+        if canonical is not None:
+            return canonical, False
+        raise
     _file_under_folder(store, int(ref.id))
     return ref, True
 

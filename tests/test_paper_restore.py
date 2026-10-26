@@ -1196,3 +1196,59 @@ class TestDropBodyDoorRoundTrip:
             ).fetchone()
         assert pdf == (sha, "[2,5)", "main")
         assert _idents(store, ref) == idents_before
+
+
+class TestRestoreDroppedIdentifierSuppression:
+    """gr517591 fix round: a dump restore is NOT an edit — restoring a
+    dump taken before a drop must not resurrect the dropped pair,
+    whatever ``source`` the dumped identifier row recorded. Only a live
+    edit/mcp-edit/web-edit lifts ``meta.dropped_identifiers``."""
+
+    def _mark(self, store: Store, ref_id: int) -> dict[str, Any]:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'dropped_identifiers' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+        return dict(row[0]) if row and isinstance(row[0], dict) else {}
+
+    def test_restore_skips_dropped_identifier(self, store: Store) -> None:
+        ref = _seed(store, "resdrop2020", year=2020)
+        _add_ident(store, ref, "doi", "10.9/resdrop")
+        _body(store, ref, 2)
+        dump = _dump(store, ref)
+        store.drop_ref_identifier(ref, "doi", "10.9/resdrop")
+        _drop_body(store, ref)
+
+        report = _restore(store, dump)
+        assert report.completed
+        assert ("doi", "10.9/resdrop") not in _idents(store, ref)
+        assert any(
+            s["id_kind"] == "doi" and s["id_value"] == "10.9/resdrop"
+            for s in report.skipped_identifiers
+        ), report.skipped_identifiers
+        assert set(self._mark(store, ref)["doi"]) == {"10.9/resdrop"}
+
+    def test_restore_edit_sourced_row_still_suppressed(self, store: Store) -> None:
+        """The ruling case: the dumped row recorded ``source='edit'``
+        (the ORIGINAL add was a human edit) — that describes the old
+        write, not this restore, so it must not lift the drop."""
+        ref = _seed(store, "resdropedit2020", year=2020)
+        store.set_ref_identifier(ref, "doi", "10.9/resdropedit", source="edit")
+        _body(store, ref, 2)
+        dump = _dump(store, ref)
+        assert any(
+            i["id_kind"] == "doi" and i.get("source") == "edit"
+            for i in dump.get("identifiers") or []
+        )
+        store.drop_ref_identifier(ref, "doi", "10.9/resdropedit")
+        _drop_body(store, ref)
+
+        report = _restore(store, dump)
+        assert report.completed
+        assert ("doi", "10.9/resdropedit") not in _idents(store, ref)
+        assert any(
+            s["id_kind"] == "doi" and s["id_value"] == "10.9/resdropedit"
+            for s in report.skipped_identifiers
+        ), report.skipped_identifiers
+        assert set(self._mark(store, ref)["doi"]) == {"10.9/resdropedit"}

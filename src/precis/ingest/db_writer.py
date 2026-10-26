@@ -32,6 +32,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.identity import normalize_arxiv, normalize_doi
+from precis.store._identifiers_ops import _dropped_pairs
 from precis.store._refs_ops import clear_acquire_unverified, project_paper_authors
 from precis.utils.authors import AUTHOR_SOURCES
 
@@ -592,7 +593,15 @@ def register_aliases_and_maybe_upgrade(
         "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
         (existing_ref_id,),
     )
-    # ── 1. Always register the new pdf_sha256 / content_hash aliases.
+    # ── 1. Always register the new pdf_sha256 / content_hash aliases —
+    # unless the pair was deliberately dropped (gr517591): the
+    # drop_identifier door's ``meta.dropped_identifiers`` suppression
+    # outranks an ingest-time re-derive.
+    _dropped = _dropped_pairs(conn, existing_ref_id)
+
+    def _suppressed(id_kind: str, id_value: str) -> bool:
+        return id_value.lower() in _dropped.get(id_kind, ())
+
     if paper.pdf_sha256:
         conn.execute(
             "INSERT INTO pdfs "
@@ -607,12 +616,15 @@ def register_aliases_and_maybe_upgrade(
                 paper.pdf_storage_path or "",
             ),
         )
-        conn.execute(
-            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT (id_kind, id_value) DO NOTHING",
-            ("pdf_sha256", paper.pdf_sha256, existing_ref_id, paper.provider),
-        )
-    if paper.content_hash:
+        if not _suppressed("pdf_sha256", paper.pdf_sha256):
+            conn.execute(
+                "INSERT INTO ref_identifiers "
+                "(id_kind, id_value, ref_id, source) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (id_kind, id_value) DO NOTHING",
+                ("pdf_sha256", paper.pdf_sha256, existing_ref_id, paper.provider),
+            )
+    if paper.content_hash and not _suppressed("content_hash", paper.content_hash):
         conn.execute(
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT (id_kind, id_value) DO NOTHING",
@@ -621,6 +633,8 @@ def register_aliases_and_maybe_upgrade(
     # Historical aliases the patch-write-back path collected.
     for alias in paper.pdf_sha256_aliases:
         if not alias or alias == paper.pdf_sha256:
+            continue
+        if _suppressed("pdf_sha256", alias):
             continue
         conn.execute(
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "

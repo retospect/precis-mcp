@@ -34,6 +34,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import Conflict
+
 if TYPE_CHECKING:
     from precis.store.store import Store
 
@@ -324,18 +326,21 @@ def create_cast_draft(
         "date": date_tag,
         **(meta or {}),
     }
-    ref = store.insert_ref(
-        kind="draft",
-        slug=draft_slug,
-        title=full_title,
-        meta=draft_meta,
-    )
-    # The ``cite_key`` identifier is inserted ON CONFLICT DO NOTHING, so under a
-    # race another ref may already own the slug — leaving ``ref`` an orphan the
-    # audio pass would never find. Resolve by slug and adopt the canonical owner.
-    canonical = store.get_ref(kind="draft", id=draft_slug)
-    if canonical is not None and int(canonical.id) != int(ref.id):
-        return canonical, False
+    try:
+        ref = store.insert_ref(
+            kind="draft",
+            slug=draft_slug,
+            title=full_title,
+            meta=draft_meta,
+        )
+    except Conflict:
+        # ``insert_ref`` refuses a slug a live ref already holds
+        # (gr517405): a same-kind holder is a raced create — adopt it;
+        # a foreign-kind holder is a real conflict and re-raises.
+        canonical = store.get_ref(kind="draft", id=draft_slug)
+        if canonical is not None:
+            return canonical, False
+        raise
     # File the fresh draft under this cast's Drive folder so its text (and the
     # audio/PDF links the Drive row surfaces) live alongside the other authored
     # artifacts. Best-effort: placement never blocks a stored cast.
