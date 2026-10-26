@@ -164,8 +164,8 @@ def _s2_handler(hub, store, monkeypatch, *, papers=None):
 
 def test_s2_cached_exclude_request_isolation(hub, store, monkeypatch):
     papers = [{"title": "Hit A"}, {"title": "Hit B"}]
-    pa = store.insert_ref(kind="paper", slug="request-a", title="Hit A", meta={})
-    pb = store.insert_ref(kind="paper", slug="request-b", title="Hit B", meta={})
+    pa = store.insert_ref(kind="paper", slug="hit-a", title="Hit A", meta={})
+    pb = store.insert_ref(kind="paper", slug="hit-b", title="Hit B", meta={})
     handler, fetches = _s2_handler(hub, store, monkeypatch, papers=papers)
     monkeypatch.setattr(
         handler,
@@ -179,8 +179,8 @@ def test_s2_cached_exclude_request_isolation(hub, store, monkeypatch):
         handler,
         "_coerce_query",
         "request-a",
-        lambda: handler.get(id="request-a", exclude=["request-a"]),
-        lambda: handler.get(id="request-b", exclude=["request-b"]),
+        lambda: handler.get(id="request-a", exclude=["hit-a"]),
+        lambda: handler.get(id="request-b", exclude=["hit-b"]),
     )
     assert len(fetches) == 2, "overlap must exercise cache hits"
     assert "Hit A" not in a.body and "Hit B" in a.body

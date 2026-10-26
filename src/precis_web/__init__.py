@@ -69,24 +69,9 @@ row stores only the podcast token digest, so the vault is the other source.
 Sign-out sends a fresh 401 challenge (evicting cached Basic credentials) and
 deletes the session cookie.
 
-**Access logs.** ``access_log.py`` masks every ``t`` query value in
-``uvicorn.access`` records, including repeated and encoded parameter names,
-without changing the request used for authentication. ``create_app`` installs
-it through the active log-record factory: Uvicorn can reset logger filters
-after app construction, alternate entry points may skip the CLI, and lifespan
-can be disabled. The factory chains existing secret scrubbing and preserves
-Uvicorn's five formatter arguments.
-
-**Secrets.** Elsevier checks fixed OA Article Retrieval metadata;
-ScienceDirect Search has a separate entitlement and can falsely reject valid
-retrieval keys. CORE preserves HTTP 429. Secret controls are write-only;
-multiline input uses a textarea because password fields drop pasted newlines
-and cannot be selected while line breaks remain. Blank replacement preserves
-the stored value; rendering reads masked inventory only. Character/line
-counts describe current input (Unicode code points and newline-delimited
-segments), not stored length or validity. ``vault._hint`` stamps counts on
-write; legacy hints remain uncounted until replacement. Rendering never
-decrypts, backfills or prepopulates stored values.
+**Access logs / Secrets.** Detail in ``access_log.py`` and
+``routes/secrets.py`` docstrings: ``t`` query values are masked in access
+logs; secret controls are write-only.
 
 PCB component selection (``pcb_design.py``) uses exact instance IDs in
 same-origin Gerber targets, with a shown snapshot shared by HTML, SVG, chat

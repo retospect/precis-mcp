@@ -337,7 +337,13 @@ def _solve_meta(tof: float = 2.0, **kw) -> dict:
 
 def _quest_with_solve(store, meta: dict) -> int:
     q = store.insert_ref(kind="quest", slug=None, title="cat quest")
-    s = store.insert_ref(kind="structure", slug="slab-1", title="slab", meta=meta)
+    # insert_ref refuses a live slug: a test minting several quests gets
+    # slab-1, slab-1-2, ...
+    slug, n = "slab-1", 1
+    while store.get_ref(kind="structure", id=slug) is not None:
+        n += 1
+        slug = f"slab-1-{n}"
+    s = store.insert_ref(kind="structure", slug=slug, title="slab", meta=meta)
     store.add_link(src_ref_id=s.id, dst_ref_id=q.id, relation="serves")
     return q.id
 

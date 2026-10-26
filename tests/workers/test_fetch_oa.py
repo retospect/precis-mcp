@@ -85,9 +85,15 @@ def _seed_paper_stub(
     the store API which knows the layout instead of hand-rolling
     the INSERT.
     """
+    # insert_ref refuses a slug a live ref holds — seed several stubs with
+    # the default cite_key by suffixing the repeats.
+    slug, n = cite_key, 1
+    while store.get_ref(kind="paper", id=slug) is not None:
+        n += 1
+        slug = f"{cite_key}-{n}"
     ref = store.insert_ref(
         kind="paper",
-        slug=cite_key,
+        slug=slug,
         title=title,
         meta={},
     )

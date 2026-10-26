@@ -11,6 +11,16 @@ the worker's pass lands. Presence (env/vault/file) is re-derived live
 without decrypting (:func:`precis.secrets.present`), so a just-added row
 renders correctly before the next check runs.
 
+Provider notes: Elsevier checks fixed OA Article Retrieval metadata;
+ScienceDirect Search has a separate entitlement and can falsely reject valid
+retrieval keys. CORE preserves HTTP 429. Multiline input uses a textarea
+because password fields drop pasted newlines and cannot be selected while
+line breaks remain. Character/line counts describe current input (Unicode
+code points and newline-delimited segments), not stored length or validity;
+``vault._hint`` stamps counts on write and legacy hints remain uncounted
+until replacement. Rendering never decrypts, backfills or prepopulates
+stored values.
+
 Writes are **write-only**: each row's input is empty (placeholder = the current
 hint); a blank submit is a no-op, so the form can never round-trip existing
 values and a stray Save changes nothing — you must type into one field to

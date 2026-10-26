@@ -1,4 +1,13 @@
-"""Redact web bearer query tokens before access records reach any handler."""
+"""Redact web bearer query tokens before access records reach any handler.
+
+Masks every ``t`` query value in ``uvicorn.access`` records, including
+repeated and encoded parameter names, without changing the request used
+for authentication. ``create_app`` installs it through the active
+log-record factory: Uvicorn can reset logger filters after app
+construction, alternate entry points may skip the CLI, and lifespan can
+be disabled. The factory chains existing secret scrubbing and preserves
+Uvicorn's five formatter arguments.
+"""
 
 from __future__ import annotations
 

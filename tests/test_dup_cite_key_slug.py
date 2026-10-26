@@ -11,6 +11,9 @@ pgvector.
 
 from __future__ import annotations
 
+import pytest
+
+from precis.errors import Conflict
 from precis.store import Store
 
 
@@ -71,17 +74,16 @@ def test_soft_deleted_slug_is_reclaimed_by_new_ref(store: Store) -> None:
 def test_live_slug_is_not_stolen_by_a_second_insert(store: Store) -> None:
     """The reclaim steals only from *soft-deleted* owners — a slug held by a
     LIVE ref is never reassigned by a later same-slug insert (the
-    one-live-ref-per-slug invariant; the conflict still no-ops)."""
+    one-live-ref-per-slug invariant). The second insert is refused with
+    ``Conflict`` (gr517405) instead of minting a slugless orphan."""
     first = store.insert_ref(kind="paper", slug="held42", title="Holder")
-    second = store.insert_ref(kind="paper", slug="held42", title="Interloper")
+    with pytest.raises(Conflict, match="held42"):
+        store.insert_ref(kind="paper", slug="held42", title="Interloper")
 
     # The interloper did not grab the slug; it still resolves to the holder.
     got = store.get_ref(kind="paper", id="held42")
     assert got is not None
     assert got.id == first.id
     assert got.title == "Holder"
-    # The interloper row exists (reachable by numeric id) but carries no
-    # cite_key — a live conflict is left untouched.
-    assert second.id != first.id
-    by_num = store.get_ref(kind="paper", id=second.id)
-    assert by_num is not None and by_num.title == "Interloper"
+    # The refused insert rolled back: no orphan row survived.
+    assert [r.title for r in store.list_refs(kind="paper", limit=50)] == ["Holder"]
