@@ -1,8 +1,11 @@
 """AST-based Python code indexer.
 
-Pure logic, zero deps beyond stdlib. Walks a repo, parses every `.py`
-file with `ast`, and produces a queryable in-memory index of modules,
-classes, functions, methods, line ranges, signatures, and docstrings.
+Pure logic; deps are stdlib plus ``docstring_parser`` (param docs).
+Walks a repo, parses every `.py` file with `ast`, and produces a
+queryable in-memory index of modules, classes, functions, methods,
+line ranges, signatures, docstrings, and per-param records
+(`Symbol.params` — signature merged with Google / Sphinx / NumPy
+docstring param sections, drift flagged; see `docparams`).
 
 Used by `precis.handlers.python` (slug-addressed kind) and also stands
 alone for unit tests / one-off introspection.
@@ -43,6 +46,7 @@ from precis.python_index.indexer import index_module, index_module_bytes, index_
 from precis.python_index.types import (
     CallEdge,
     ModuleIndex,
+    ParamDoc,
     RepoIndex,
     Symbol,
     SymbolKind,
@@ -51,6 +55,7 @@ from precis.python_index.types import (
 __all__ = [
     "CallEdge",
     "ModuleIndex",
+    "ParamDoc",
     "RepoCache",
     "RepoIndex",
     "Symbol",

@@ -139,9 +139,11 @@ def test_parse_id_block_selector() -> None:
     assert p.start_line is None
 
 
-def test_parse_id_rejects_selector_on_qualname() -> None:
-    with pytest.raises(BadInput, match="not supported on symbol id"):
-        _parse_id("repo::pkg.Class~method")
+def test_parse_id_param_selector_on_qualname() -> None:
+    """`~<name>` on a `::` id is the params drill-down (gr520905)."""
+    p = _parse_id("repo::pkg.Class.method~arg")
+    assert p.qualname == "pkg.Class.method"
+    assert p.block_selector == "arg"
 
 
 def test_parse_id_rejects_inverted_range() -> None:
@@ -708,3 +710,113 @@ def test_search_no_match_bare_token_suggests_literal_mode(
 def test_search_no_match_phrase_skips_literal_hint(handler: PythonHandler) -> None:
     out = handler.search(q="some concept phrase zzznothing")
     assert "mode='literal'" not in out.body
+
+
+# ---------------------------------------------------------------------------
+# get — view='params' and the ~<param> selector (gr520905)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def params_repo(tmp_path: Path) -> Path:
+    """A method with docs, an undocumented arg, and a stale doc entry."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/board.py",
+        '''
+        class Board:
+            """A board."""
+
+            def net(self, current: float = 1.5, name: str = "x", speed: int = 0) -> str:
+                """Route a net.
+
+                Args:
+                    current (float): Max current in amps. Sustained, not peak.
+                    name (str): Net label.
+                    legacy (int): Removed parameter.
+                """
+                return name
+        ''',
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def params_handler(params_repo: Path) -> PythonHandler:
+    return PythonHandler(hub=Hub(), roots={"r": params_repo})
+
+
+def test_params_view_renders_toon_header(params_handler: PythonHandler) -> None:
+    out = params_handler.get(id="r::pkg.board.Board.net", view="params")
+    assert "params[4]{name\thint\tdefault\tdoc\tline}" in out.body
+    # Signature fields merge in; `self` is not a param.
+    assert "current\tfloat\t1.5\tMax current in amps." in out.body
+    assert "self" not in out.body
+    # The doc cell carries the first sentence only.
+    assert "Sustained, not peak" not in out.body
+
+
+def test_params_view_notes_drift_both_ways(params_handler: PythonHandler) -> None:
+    out = params_handler.get(id="r::pkg.board.Board.net", view="params")
+    assert "drift: no doc entry: speed" in out.body
+    assert "drift: documented, not in signature: legacy" in out.body
+
+
+def test_params_short_qualname_resolves(params_handler: PythonHandler) -> None:
+    out = params_handler.get(id="r::Board.net", view="params")
+    assert "params[4]" in out.body
+    assert "r::pkg.board.Board.net" in out.body
+
+
+def test_params_ambiguous_short_qualname_lists_candidates(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/a.py", "class Board:\n    def net(self, x):\n        pass\n")
+    _write(tmp_path, "pkg/b.py", "class Board:\n    def net(self, y):\n        pass\n")
+    h = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    with pytest.raises(BadInput) as ei:
+        h.get(id="r::Board.net", view="params")
+    assert ei.value.options is not None
+    assert "r::pkg.a.Board.net" in ei.value.options
+    assert "r::pkg.b.Board.net" in ei.value.options
+
+
+def test_params_param_selector_returns_full_doc(params_handler: PythonHandler) -> None:
+    out = params_handler.get(id="r::pkg.board.Board.net~current")
+    assert "pkg.board.Board.net~current" in out.body
+    assert "Max current in amps." in out.body
+    # The full doc — not just the first-sentence cell.
+    assert "Sustained, not peak." in out.body
+
+
+def test_params_param_selector_doc_only_param(params_handler: PythonHandler) -> None:
+    """A documented-but-absent name still answers with its doc."""
+    out = params_handler.get(id="r::pkg.board.Board.net~legacy")
+    assert "Removed parameter." in out.body
+    assert "drift: doc-only" in out.body
+
+
+def test_params_param_selector_unknown_param(params_handler: PythonHandler) -> None:
+    with pytest.raises(NotFound, match="no param 'bogus'"):
+        params_handler.get(id="r::pkg.board.Board.net~bogus")
+
+
+def test_params_view_on_class_rejected(params_handler: PythonHandler) -> None:
+    with pytest.raises(BadInput, match="function or method"):
+        params_handler.get(id="r::pkg.board.Board", view="params")
+
+
+def test_params_view_on_file_id_rejected(params_handler: PythonHandler) -> None:
+    with pytest.raises(BadInput, match="takes a symbol id"):
+        params_handler.get(id="r/pkg/board.py", view="params")
+
+
+def test_params_no_docstring_renders_signature_rows(tmp_path: Path) -> None:
+    """No docstring: the table still lists signature args, docs empty."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/bare.py", "def f(x: int, y=2):\n    return x\n")
+    h = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    out = h.get(id="r::pkg.bare.f", view="params")
+    assert "params[2]{name\thint\tdefault\tdoc\tline}" in out.body
+    assert "x\tint" in out.body
+    assert "no docstring" in out.body

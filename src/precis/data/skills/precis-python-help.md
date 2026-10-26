@@ -199,6 +199,42 @@ many edges traversable.
 | `imports` | what a module imports, in-repo vs external |
 | `tests` | ranked test nodeids for a file or symbol, evidence-labelled |
 | `impact` | bounded change impact: symbol diff, callers/importers, tests, docs |
+| `params` | per-param table of a function/method (signature + docstring docs) |
+
+## Check a function's parameter contract (`view='params'`)
+
+```python
+get(kind="python", id="<alias>::<qualname>", view="params")  # all params
+get(kind="python", id="<alias>::<qualname>~<param>")  # one param's full doc
+get(kind="python", id="<alias>::Board.net", view="params")  # short qualname ok
+```
+
+`view='params'` answers "what do I pass here?" — the AST signature
+merged with the docstring's param docs (Google, Sphinx `:param:` and
+NumPy styles all parse) as a TOON table:
+
+```
+params[3]{name	hint	default	doc	line}
+```
+
+Columns: `name` (bare arg name; `self`/`cls` dropped), `hint`
+(annotation, docstring type as fallback), `default` (as written),
+`doc` (first sentence only), `line` (signature line). `*args`/`**kw`
+appear under their bare names.
+
+The `~<param>` selector gives one param's **full** multi-line doc plus
+its hint/default/drift — use it when the one-line cell isn't enough.
+
+A *short* qualname (`Board.net` instead of `pkg.mod.Board.net`)
+resolves when unambiguous; an ambiguous one answers with the candidate
+list — pick a full `::` id from it.
+
+Drift shows under the table: `documented, not in signature` (stale doc
+entry) and `no doc entry` (signature arg left undocumented). Doc-only
+params still answer `~<param>` with their doc.
+
+Not for: classes/modules (no signature — use `view='outline'`); bodies
+and prose (`view='source'` / default symbol view).
 
 ## Orient around one symbol — the fisheye ladder (`extent=`)
 

@@ -25,6 +25,34 @@ from typing import Literal
 
 SymbolKind = Literal["module", "class", "function", "method"]
 
+#: Drift directions a `ParamDoc` can carry (``None`` when signature and
+#: docstring agree). ``"undocumented"``: a signature arg with no
+#: docstring entry; ``"doc-only"``: a documented name absent from the
+#: signature (stale doc).
+ParamDrift = Literal["undocumented", "doc-only"]
+
+
+@dataclass(frozen=True, slots=True)
+class ParamDoc:
+    """One callable parameter: AST signature merged with docstring docs.
+
+    `name` is the bare arg name (no ``*``). `hint` is the type
+    annotation from the signature, falling back to the docstring's
+    declared type when unannotated. `default` is the unparsed default
+    expression (docstring-declared default as fallback). `doc` is the
+    param's full description, None when undocumented. `line` is the
+    arg's 1-indexed source line in the signature; for ``doc-only``
+    params it is the docstring line where the name's entry starts
+    (best-effort). `drift` is a `ParamDrift` or None.
+    """
+
+    name: str
+    hint: str | None = None
+    default: str | None = None
+    doc: str | None = None
+    line: int | None = None
+    drift: ParamDrift | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class Symbol:
@@ -46,6 +74,11 @@ class Symbol:
     they appear above the def (top-down), each *without* the leading
     `@`. So `@property\\n@cached_property` yields
     `('property', 'cached_property')`.
+
+    `params` is the signature merged with the docstring's param docs
+    (Google, Sphinx ``:param:`` and NumPy styles; see
+    ``precis.python_index.docparams``). Populated for ``function`` and
+    ``method`` symbols only — empty for modules and classes.
     """
 
     qualname: str
@@ -58,6 +91,7 @@ class Symbol:
     docstring: str | None
     decorators: tuple[str, ...] = ()
     is_async: bool = False
+    params: tuple[ParamDoc, ...] = ()
 
     @property
     def name(self) -> str:

@@ -13,6 +13,7 @@ import pytest
 
 from precis.python_index import (
     CallEdge,
+    ParamDoc,
     RepoIndex,
     Symbol,
     index_repo,
@@ -726,3 +727,161 @@ def test_class_constructor_call_resolves_to_class(tmp_path: Path) -> None:
     calls = _calls_from(mod, "pkg.m.make")
     assert len(calls) == 1
     assert calls[0].callee == "pkg.m.Widget"
+
+
+# ---------------------------------------------------------------------------
+# Param records — signature merged with docstring param docs (gr520905)
+# ---------------------------------------------------------------------------
+
+
+def _params(idx: RepoIndex, qn: str) -> dict[str, ParamDoc]:
+    """`{name: ParamDoc}` for a function/method symbol."""
+    sym = _by_qualname(idx, qn)
+    return {p.name: p for p in sym.params}
+
+
+def test_params_google_style_merged(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        '''
+        def go(name: str, times: int = 2) -> str:
+            """Greets a name.
+
+            Args:
+                name (str): The name to greet.
+                times (int): How many times.
+            """
+            return name
+        ''',
+    )
+    params = _params(index_repo(tmp_path), "pkg.m.go")
+    assert params["name"].hint == "str"
+    assert params["name"].doc == "The name to greet."
+    assert params["name"].drift is None
+    assert params["times"].default == "2"
+    assert params["times"].doc == "How many times."
+    # `line` is the arg's signature line (single-line def → 1).
+    assert params["name"].line == 1
+
+
+def test_params_sphinx_style_merged(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        '''
+        def go(name, times=2):
+            """Greets a name.
+
+            :param name: The name to greet.
+            :type name: str
+            :param times: How many times.
+            """
+            return name
+        ''',
+    )
+    params = _params(index_repo(tmp_path), "pkg.m.go")
+    assert params["name"].doc == "The name to greet."
+    # Unannotated: the docstring's :type: fills the hint.
+    assert params["name"].hint == "str"
+    assert params["times"].default == "2"
+
+
+def test_params_numpy_style_merged(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        '''
+        def go(name, times=2):
+            """Greets a name.
+
+            Parameters
+            ----------
+            name : str
+                The name to greet.
+            times : int, default 2
+                How many times.
+            """
+            return name
+        ''',
+    )
+    params = _params(index_repo(tmp_path), "pkg.m.go")
+    assert params["name"].doc == "The name to greet."
+    assert params["name"].hint == "str"
+    assert params["times"].doc == "How many times."
+
+
+def test_params_method_drops_self_and_keeps_variadics(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        '''
+        class C:
+            def m(self, x: int, *args, flag: bool = True, **kw):
+                """Do.
+
+                Args:
+                    x (int): The x.
+                    *args: Extras.
+                    flag (bool): The flag.
+                    **kw: Named extras.
+                """
+        ''',
+    )
+    params = _params(index_repo(tmp_path), "pkg.m.C.m")
+    assert "self" not in params
+    assert params["x"].doc == "The x."
+    assert params["args"].doc == "Extras."
+    assert params["kw"].doc == "Named extras."
+    assert params["flag"].default == "True"
+
+
+def test_params_drift_flags_both_directions(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        '''
+        def go(name: str, speed: int) -> str:
+            """Greets.
+
+            Args:
+                name (str): The name.
+                legacy (int): Removed param.
+            """
+            return name
+        ''',
+    )
+    params = _params(index_repo(tmp_path), "pkg.m.go")
+    assert params["speed"].drift == "undocumented"
+    assert params["speed"].doc is None
+    assert params["legacy"].drift == "doc-only"
+    assert params["legacy"].doc == "Removed param."
+    # A doc-only param's line points at its docstring entry (the
+    # `legacy (int):` source line).
+    legacy_line = params["legacy"].line
+    name_line = params["name"].line
+    assert legacy_line is not None and name_line is not None
+    assert legacy_line > name_line
+
+
+def test_params_no_docstring_marks_all_undocumented(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/m.py", "def go(x: int):\n    return x\n")
+    params = _params(index_repo(tmp_path), "pkg.m.go")
+    assert params["x"].drift == "undocumented"
+    assert params["x"].doc is None
+
+
+def test_params_classes_and_modules_have_none(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/m.py", "class C:\n    pass\n")
+    idx = index_repo(tmp_path)
+    assert _by_qualname(idx, "pkg.m.C").params == ()
+    mod = idx.module("pkg.m")
+    assert mod is not None
+    assert mod.module_symbol.params == ()

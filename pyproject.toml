@@ -245,6 +245,7 @@ dependencies = [
     "feedparser>=6.0",             # RSS/Atom for the news kind / news_poll
     "python-epo-ops-client>=4.0",  # patent kind — EPO OPS (OAuth2 fair-use)
     "packaging>=24",
+    "docstring-parser>=0.18.0",
 ]
 
 [project.urls]

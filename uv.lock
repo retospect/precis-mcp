@@ -4069,6 +4069,7 @@ source = { editable = "." }
 dependencies = [
     { name = "ase" },
     { name = "avwx-engine" },
+    { name = "docstring-parser" },
     { name = "feedparser" },
     { name = "ftfy" },
     { name = "habanero" },
@@ -4227,6 +4228,7 @@ requires-dist = [
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "cuequivariance-torch", marker = "sys_platform == 'linux' and extra == 'catalyst-gpu'" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },
+    { name = "docstring-parser", specifier = ">=0.18.0" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
     { name = "feedparser", specifier = ">=6.0" },
     { name = "fonttools", marker = "extra == 'paper'", specifier = ">=4.40" },

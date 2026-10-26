@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from precis.python_index.docparams import merge_params
 from precis.python_index.types import (
     CallEdge,
     ModuleIndex,
@@ -328,6 +329,7 @@ class _SymbolVisitor(ast.NodeVisitor):
         module imports for a top-level function / method, the enclosing
         function's merged scope for a nested one.
         """
+        docstring = ast.get_docstring(node)
         self.symbols.append(
             Symbol(
                 qualname=qualname,
@@ -337,9 +339,10 @@ class _SymbolVisitor(ast.NodeVisitor):
                 end_line=node.end_lineno or node.lineno,
                 parent=parent,
                 signature=_signature(node, is_async=is_async),
-                docstring=ast.get_docstring(node),
+                docstring=docstring,
                 decorators=tuple(_unparse(d) for d in node.decorator_list),
                 is_async=is_async,
+                params=merge_params(node, docstring),
             )
         )
         # Calls in the body — including lambda bodies — are credited to

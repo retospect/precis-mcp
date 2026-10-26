@@ -14,12 +14,15 @@ Address grammar accepted by `get`:
     <alias>/<file>~Sym             → local symbol selector (Track B)
     <alias>/<file>~Class.method    → local symbol selector (Track B)
     <alias>::<dotted.qualname>     → symbol drill-down (cross-ref)
+    <alias>::<dotted.qualname>~<param> → one param's full doc
 
 Views: ``toc`` (repo-level), ``outline`` (file/symbol; default),
 ``source`` (file or symbol body), ``callgraph``, ``entries``,
 ``runtrace``, ``callers`` / ``importers`` / ``imports``, ``provenance``,
 ``tests`` (evidence-labelled test discovery), ``impact`` (bounded
-change impact over a git revision pair or a changed symbol).
+change impact over a git revision pair or a changed symbol), ``params``
+(per-param TOON table of a function/method's signature merged with its
+docstring docs).
 
 The kind also answers the fisheye ladder: ``get(kind='python',
 id='<alias>::<qualname or module>', extent=<rung>)`` routes through
@@ -47,6 +50,7 @@ from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_eye as peye
 from precis.handlers import _python_impact as impact_mod
+from precis.handlers import _python_params as pparams
 from precis.handlers import _python_render as render
 from precis.handlers import _python_reverse as reverse
 from precis.handlers import _python_runtrace as rtrace
@@ -105,6 +109,7 @@ _SUPPORTED_VIEWS = (
     "tests",
     "impact",
     "placed",
+    "params",
 )
 _REVERSE_VIEWS = ("callers", "importers", "imports")
 _SEARCH_MODES = ("pattern", "lexical", "semantic", "literal")
@@ -178,7 +183,8 @@ class _ParsedId:
     Exactly one of `file`, `qualname` is non-None (or both are None for
     a bare alias). `start_line` / `end_line` hold the optional Track A
     line range; `block_selector` holds the Track B selector text (e.g.
-    a method or `Class.method`). At most one of (line range, block
+    a method or `Class.method` on a file id, or a `~<param>` name on a
+    `::` qualname id). At most one of (line range, block
     selector) is set.
     """
 
@@ -204,8 +210,8 @@ def _parse_id(raw: str) -> _ParsedId:
     base, sep, raw_selector = raw.partition("~")
     selector: str | None = raw_selector if sep else None
 
-    # Symbol address: `<alias>::<qualname>`. Selectors not allowed here
-    # in v1 — symbols already have a fully-qualified handle.
+    # Symbol address: `<alias>::<qualname>`. A `~<name>` selector names
+    # a param of that symbol (the params view's drill-down — gr520905).
     if "::" in base:
         alias, qn = base.split("::", 1)
         if not alias or not qn:
@@ -213,13 +219,7 @@ def _parse_id(raw: str) -> _ParsedId:
                 f"malformed id {raw!r}: expected '<alias>::<qualname>'",
                 next="get(kind='python', id='myrepo::pkg.mod.Symbol')",
             )
-        if selector is not None:
-            raise BadInput(
-                f"selector ~{selector!r} not supported on symbol id; "
-                f"address sub-symbols by their full qualname instead",
-                next=f"get(kind='python', id='{alias}::{qn}.{selector}')",
-            )
-        return _ParsedId(alias=alias, qualname=qn)
+        return _ParsedId(alias=alias, qualname=qn, block_selector=selector)
 
     # File or alias address.
     if "/" in base:
@@ -530,6 +530,12 @@ class PythonHandler(Handler):
         # Reverse lookups — `<alias>::<qualname>` id only.
         if view in _REVERSE_VIEWS:
             return self._render_reverse(parsed, idx, view)
+
+        # Params view / `~<param>` selector — `<alias>::<qualname>` ids.
+        if parsed.qualname is not None and parsed.block_selector is not None:
+            return self._render_params(parsed, idx, param=parsed.block_selector)
+        if view == "params":
+            return self._render_params(parsed, idx, param=None)
 
         # Symbol address.
         if parsed.qualname is not None:
@@ -1746,6 +1752,14 @@ class PythonHandler(Handler):
 
         # Qualname address.
         if parsed.qualname is not None:
+            if parsed.block_selector is not None:
+                # `~<param>` on a `::` id is a read selector (params
+                # view); it names no editable region.
+                raise BadInput(
+                    f"~{parsed.block_selector!r} names a param, not an editable region",
+                    next=f"edit the symbol itself: "
+                    f"id='{parsed.alias}::{parsed.qualname}'",
+                )
             sym = idx.symbol(parsed.qualname)
             if sym is None:
                 raise NotFound(
@@ -2192,6 +2206,67 @@ class PythonHandler(Handler):
         if mod is not None:
             note_file(idx, mod)
         return Response(body=f"# Provenance detail for {parsed.alias}")
+
+    def _render_params(
+        self, parsed: _ParsedId, idx: RepoIndex, *, param: str | None
+    ) -> Response:
+        """``view='params'`` / ``~<param>`` — per-param table or one doc."""
+        if parsed.qualname is None:
+            raise BadInput(
+                "view='params' takes a symbol id '<alias>::<qualname>'",
+                next=f"get(kind='python', id='{parsed.alias}::pkg.mod.func', "
+                "view='params')",
+            )
+        sym = self._resolve_params_symbol(parsed, idx)
+        if sym.kind not in ("function", "method"):
+            raise BadInput(
+                f"view='params' applies to a function or method "
+                f"({sym.qualname!r} is a {sym.kind})",
+                next=f"get(kind='python', id='{parsed.alias}::{sym.qualname}', "
+                "view='outline')",
+            )
+        mod = idx.file(sym.file)
+        assert mod is not None
+        note_file(idx, mod)
+        if param is not None:
+            return Response(body=pparams.render_param(parsed.alias, sym, param))
+        return Response(body=pparams.render_params(parsed.alias, sym))
+
+    def _resolve_params_symbol(self, parsed: _ParsedId, idx: RepoIndex) -> Symbol:
+        """Symbol lookup for the params view: exact, then short qualname.
+
+        A *short* qualname (``Board.net``) resolves when exactly one
+        symbol's qualname ends with it; a multi-hit answers with the
+        candidate list (``options=``) per the refusal contract.
+        """
+        assert parsed.qualname is not None
+        qn = parsed.qualname
+        sym = idx.symbol(qn)
+        if sym is not None:
+            return sym
+        candidates = [
+            s
+            for m in idx.modules.values()
+            for s in m.symbols
+            if s.qualname.endswith("." + qn)
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            raise BadInput(
+                f"short qualname {qn!r} matches {len(candidates)} symbols "
+                f"in repo {parsed.alias!r}",
+                options=sorted(f"{parsed.alias}::{s.qualname}" for s in candidates)[
+                    :20
+                ],
+                next=f"get(kind='python', id='{parsed.alias}::<full qualname>', "
+                "view='params')",
+            )
+        raise NotFound(
+            f"symbol {qn!r} not found in repo {parsed.alias!r}",
+            next=f"search(kind='python', q='{qn.split('.')[-1]}', "
+            f"scope={parsed.alias!r})",
+        )
 
     def _render_symbol(
         self, alias: str, qualname: str, idx, view: str | None
