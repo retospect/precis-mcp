@@ -4,7 +4,7 @@
 #
 # Invoked as `bash scripts/lib/pytest-inner.sh <pytest args…>` inside
 # `uv run --no-sync ${UV_WITH}` in a throwaway precis-dev container, with
-# the worktree bind-mounted at /app. Runs the three stale-baked-venv
+# the worktree bind-mounted at /app. Runs the four stale-baked-venv
 # preflight checks (see the Preflight comment in scripts/test), decides
 # -n0/-n6 when PRECIS_AUTO_N=1 (test-loop-speed Decision 1: count the
 # collected selection, serial at ≤PRECIS_AUTO_N_MAX=500), then execs
@@ -13,20 +13,29 @@
 set -uo pipefail
 
 python3 scripts/lib/prewarm-pycache.py pysbd || exit $?
-# S2 (gr514478): the three stale-baked-venv checks guard a real failure
-# (gr286507, gr453828, gr494988) but cost ~6 s every run — cache their
+# S2 (gr514478): the four stale-baked-venv checks guard a real failure
+# (gr286507, gr453828, gr494988, gr519535) but cost ~6 s every run — cache their
 # pass. The host computes PRECIS_PREFLIGHT_KEY from image id + uv.lock +
 # pyproject.toml + UV_WITH; a stamp file at the worktree root records the
 # last passing key. A check that ran under a different key, a failure,
 # and an entry-points heal (which patched only this throwaway container,
 # marked by "precis-preflight: healed") all leave no stamp, so the next
 # run checks again. No key → checks run every time, same as before.
+# A pass under an autobridge --with overlay (AUTO_WITH, exported by
+# scripts/test) proves the overlay, not the baked venv — it must not
+# stamp either, or the next plain run would skip the check and hit the
+# gr519535 quiet-skip again; AUTO_WITH also folds into the key so a stamp
+# can never cross envs.
 PREFLIGHT_STAMP="${PRECIS_PREFLIGHT_STAMP:-/app/.precis-preflight}"
+STAMP_KEY="${PRECIS_PREFLIGHT_KEY:-}${AUTO_WITH:+|autowith:${AUTO_WITH}}"
 if [[ -n "${PRECIS_PREFLIGHT_KEY:-}" && -f "$PREFLIGHT_STAMP" ]] \
-    && [[ "$(cat "$PREFLIGHT_STAMP" 2>/dev/null)" == "$PRECIS_PREFLIGHT_KEY" ]]; then
+    && [[ "$(cat "$PREFLIGHT_STAMP" 2>/dev/null)" == "$STAMP_KEY" ]]; then
     : # stamp hit — the checks already passed under this exact key
 else
     python3 scripts/lib/check-core-deps.py || exit $?
+    # gr519535: a dev-group dep added after the image bake quiet-skips via
+    # importorskip — refuse it here, before pytest, with the rebuild named.
+    python3 scripts/lib/check-dev-deps.py || exit $?
     python3 scripts/lib/check-lock-pins.py || exit $?
     _ep_out="$(python3 scripts/lib/check-entry-points.py --heal 2>&1)" || {
         printf '%s\n' "${_ep_out:-}" >&2
@@ -35,8 +44,9 @@ else
     if [[ -n "$_ep_out" ]]; then
         printf '%s\n' "$_ep_out" >&2
     fi
-    if [[ -n "${PRECIS_PREFLIGHT_KEY:-}" && "$_ep_out" != *"precis-preflight: healed"* ]]; then
-        printf '%s\n' "$PRECIS_PREFLIGHT_KEY" >"$PREFLIGHT_STAMP" 2>/dev/null || true
+    if [[ -n "${PRECIS_PREFLIGHT_KEY:-}" && -z "${AUTO_WITH:-}" \
+        && "$_ep_out" != *"precis-preflight: healed"* ]]; then
+        printf '%s\n' "$STAMP_KEY" >"$PREFLIGHT_STAMP" 2>/dev/null || true
     fi
 fi
 

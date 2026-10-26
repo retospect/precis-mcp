@@ -1,7 +1,8 @@
 """Preflight stamp cache — gr514478.
 
-The three stale-baked-venv checks (check-core-deps, check-lock-pins,
-check-entry-points) run inside ``scripts/lib/pytest-inner.sh`` in the test
+The four stale-baked-venv checks (check-core-deps, check-dev-deps,
+check-lock-pins, check-entry-points) run inside
+``scripts/lib/pytest-inner.sh`` in the test
 container. These tests run the real inner script against a fake ``python3``
 on PATH that logs invocations, so the stamp behaviour — write on pass, skip
 on hit, never stamp a failure or a heal — is checked against the shipped
@@ -30,6 +31,14 @@ set -u
 printf '%s\n' "$*" >> "$FAKE_PY_LOG"
 case "${1:-}" in
   scripts/lib/check-core-deps.py)     exit "${FAKE_FAIL_CORE:-0}" ;;
+  scripts/lib/check-dev-deps.py)
+    # FAKE_DEV_DEP emulates a dev-group dep missing from the baked image:
+    # the check fails UNLESS the run is bridged by an AUTO_WITH --with
+    # covering it (the autobridge overlay) — the gr519535 scenario.
+    if [ -n "${FAKE_DEV_DEP:-}" ] \
+      && [ "${AUTO_WITH:-}" != "--with ${FAKE_DEV_DEP}" ]; then exit 1; fi
+    exit "${FAKE_FAIL_DEV:-0}"
+    ;;
   scripts/lib/check-lock-pins.py)     exit "${FAKE_FAIL_LOCK:-0}" ;;
   scripts/lib/check-entry-points.py)
     [ "${FAKE_HEAL:-0}" = "1" ] && echo "precis-preflight: healed"
@@ -99,6 +108,7 @@ def test_miss_runs_checks_and_writes_stamp(tmp_path: Path) -> None:
     assert rc == 0
     assert _checks(log) == [
         "scripts/lib/check-core-deps.py",
+        "scripts/lib/check-dev-deps.py",
         "scripts/lib/check-lock-pins.py",
         "scripts/lib/check-entry-points.py --heal",
     ]
@@ -116,7 +126,7 @@ def test_hit_skips_checks(tmp_path: Path) -> None:
 def test_key_change_rechecks_and_restamps(tmp_path: Path) -> None:
     rc, log, stamp_path = _run(tmp_path, key="key2", stamp="key1\n")
     assert rc == 0
-    assert len(_checks(log)) == 3
+    assert len(_checks(log)) == 4
     assert stamp_path.read_text(encoding="utf-8").strip() == "key2"
 
 
@@ -128,12 +138,59 @@ def test_failed_check_leaves_no_stamp_and_no_pytest(tmp_path: Path) -> None:
     assert not stamp_path.exists()
 
 
+def test_failed_dev_deps_check_leaves_no_stamp_and_no_pytest(tmp_path: Path) -> None:
+    """gr519535: a missing dev-group package must stop the run BEFORE pytest —
+    the gap used to surface only as quiet importorskip skips."""
+    rc, log, stamp_path = _run(tmp_path, extra_env={"FAKE_FAIL_DEV": "1"})
+    assert rc == 1
+    assert _checks(log) == [
+        "scripts/lib/check-core-deps.py",
+        "scripts/lib/check-dev-deps.py",
+    ]
+    assert not any(line.startswith("-P -m pytest") for line in log)
+    assert not stamp_path.exists()
+
+
+def test_bridged_pass_writes_no_stamp_and_plain_run_rechecks(tmp_path: Path) -> None:
+    """gr519535: an autobridged run passes the checks inside the --with
+    overlay — the base venv still lacks the dep, so the pass must NOT
+    stamp. The plain follow-up run hits no stamp, re-runs the checks and
+    refuses on the same missing dep (the gripe's hole otherwise reopens)."""
+    stamp = tmp_path / "shared-stamp"
+    bridged = {
+        "FAKE_DEV_DEP": "fake-dep",
+        "AUTO_WITH": "--with fake-dep",
+        "PRECIS_PREFLIGHT_STAMP": str(stamp),
+    }
+    rc, log, _ = _run(tmp_path / "bridged", extra_env=bridged)
+    assert rc == 0
+    assert log[-1].startswith("-P -m pytest")
+    assert not stamp.exists()
+
+    plain = {"FAKE_DEV_DEP": "fake-dep", "PRECIS_PREFLIGHT_STAMP": str(stamp)}
+    rc2, log2, _ = _run(tmp_path / "plain", extra_env=plain)
+    assert rc2 == 1
+    assert _checks(log2) == [
+        "scripts/lib/check-core-deps.py",
+        "scripts/lib/check-dev-deps.py",
+    ]
+    assert not any(line.startswith("-P -m pytest") for line in log2)
+
+
+def test_bridged_run_does_not_trust_a_plain_stamp(tmp_path: Path) -> None:
+    """AUTO_WITH folds into the stamp key: a stamp written by a plain run
+    is not a hit for a bridged run, so the overlay always rechecks."""
+    rc, log, _ = _run(tmp_path, stamp="key1\n", extra_env={"AUTO_WITH": "--with x"})
+    assert rc == 0
+    assert len(_checks(log)) == 4
+
+
 def test_heal_writes_no_stamp(tmp_path: Path) -> None:
     """A heal patched only the throwaway container — the next run must pay
     the checks again, so no stamp is written."""
     rc, log, stamp_path = _run(tmp_path, extra_env={"FAKE_HEAL": "1"})
     assert rc == 0
-    assert len(_checks(log)) == 3
+    assert len(_checks(log)) == 4
     assert log[-1].startswith("-P -m pytest")
     assert not stamp_path.exists()
 
@@ -141,5 +198,5 @@ def test_heal_writes_no_stamp(tmp_path: Path) -> None:
 def test_no_key_runs_checks_without_stamping(tmp_path: Path) -> None:
     rc, log, stamp_path = _run(tmp_path, key=None)
     assert rc == 0
-    assert len(_checks(log)) == 3
+    assert len(_checks(log)) == 4
     assert not stamp_path.exists()

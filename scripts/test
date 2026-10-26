@@ -59,7 +59,7 @@
 # ``-p no:xdist`` works too: the script withholds its -n6 and conftest's
 # xdist-shim swallows addopts' -n auto so the run parses and goes serial.
 #
-# The three stale-baked-venv preflight checks (see below) are cached
+# The four stale-baked-venv preflight checks (see below) are cached
 # per-worktree: a stamp at ./.precis-preflight keyed on the image id +
 # uv.lock + pyproject.toml + UV_WITH skips them on a hit (~6 s saved per
 # run); any failure or entry-points heal leaves no stamp.
@@ -842,8 +842,10 @@ done
 # (the ship gate itself runs `uv run` WITH sync, so it resolves new deps from
 # uv.lock without an image rebuild; this passthrough gives the fast loop the
 # same reach). PRECIS_TEST_AUTOBRIDGE=1 (gr513760) does the same without
-# naming the deps: inside the container a check-core-deps.py --with-flags
-# pre-pass computes the missing core deps and adds them to the uv run flags —
+# naming the deps: inside the container a --with-flags pre-pass on
+# check-core-deps.py AND check-dev-deps.py (gr519535: the dev-group gap is
+# bridgeable the same way) computes the missing deps and adds them to the
+# uv run flags —
 # opt-in and loud, never the default, because bridging should stay a visible
 # workaround and the durable fix (scripts/build-image precis-dev) belongs to
 # the release owner.
@@ -912,7 +914,7 @@ if [[ "$IMPACTED" == "1" && "$FAST" != "1" ]]; then
     fi
 fi
 
-# Preflight cache key (gr514478): the three stale-baked-venv checks run
+# Preflight cache key (gr514478): the four stale-baked-venv checks run
 # when this changes, skip on a hit (see pytest-inner.sh). Covers exactly
 # the drift the checks guard: the baked image (id), deps (uv.lock,
 # pyproject.toml) and the UV_WITH bridge. Empty when no sha256 tool —
@@ -1003,6 +1005,16 @@ done < <(compgen -e)
 # before pytest starts, naming the missing module(s) and the fix. One extra
 # `uv run` in the same container — no second container spin-up.
 #
+# check-dev-deps.py (gr519535) is the dev-group sibling: a dep added to
+# [dependency-groups] dev after the image bake is absent under --no-sync,
+# and its tests quiet-skip via importorskip instead of going red — the gap
+# is invisible until you look for it. It compares the container's installed
+# distributions against uv.lock's [package.dev-dependencies] (presence, not
+# import — the types-*/stubs entries ship no module) and refuses with the
+# same bridge + rebuild exits. A bridged pass must never write the
+# preflight stamp: it proves the --with overlay, not the base venv — the
+# exported AUTO_WITH tells pytest-inner.sh not to stamp (gr519535).
+#
 # check-lock-pins.py (gr494988) is the version-drift sibling: an installed
 # package whose version/git commit differs from uv.lock (image built before the
 # lock moved) warns, naming the stale packages and the rebuild command; it only
@@ -1071,7 +1083,7 @@ run_pytest() {
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
         "${PASSENV[@]+"${PASSENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'AUTO_WITH=""; if [ "${PRECIS_TEST_AUTOBRIDGE}" = "1" ]; then AUTO_WITH="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py --with-flags 2>/dev/null || true)"; if [ -n "$AUTO_WITH" ]; then echo "PRECIS_TEST_AUTOBRIDGE: bridging missing core dep(s) for this run: ${AUTO_WITH} (durable fix: scripts/build-image precis-dev)" >&2; fi; fi; uv run --no-sync ${UV_WITH} ${AUTO_WITH} bash scripts/lib/pytest-inner.sh "$@"' \
+        bash -lc 'CORE_FLAGS=""; DEV_FLAGS=""; AUTO_WITH=""; export AUTO_WITH; if [ "${PRECIS_TEST_AUTOBRIDGE}" = "1" ]; then CORE_FLAGS="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py --with-flags 2>/dev/null || true)"; DEV_FLAGS="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-dev-deps.py --with-flags 2>/dev/null || true)"; AUTO_WITH="${CORE_FLAGS:+${CORE_FLAGS} }${DEV_FLAGS}"; if [ -n "$AUTO_WITH" ]; then echo "PRECIS_TEST_AUTOBRIDGE: bridging missing dep(s) for this run: ${AUTO_WITH} (durable fix: scripts/build-image precis-dev)" >&2; fi; fi; uv run --no-sync ${UV_WITH} ${AUTO_WITH} bash scripts/lib/pytest-inner.sh "$@"' \
         _ "${VERBOSITY[@]+"${VERBOSITY[@]}"}" "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
         "${RANDOM_ARGS[@]+"${RANDOM_ARGS[@]}"}" \
