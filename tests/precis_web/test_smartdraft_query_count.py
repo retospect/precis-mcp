@@ -19,6 +19,7 @@ tests don't run real SQL, so they can't see this regression.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -48,6 +49,9 @@ def reader_client(runtime_with_store, tmp_path) -> TestClient:
     )
 
 
+_SLUG_SEQ = itertools.count()
+
+
 def _mint_hub_with_evidence(hub: Hub, i: int) -> int:
     """One claim hub, cited by an originator + a corroborator (so both
     seniority groups + a grounding chunk are exercised), returns its
@@ -58,12 +62,17 @@ def _mint_hub_with_evidence(hub: Hub, i: int) -> int:
         scope={"material": f"material-{i}"},
     )
     claim_hub = mint_hub(store, claim)
+    # insert_ref refuses a live slug; hubs are minted repeatedly per scale.
+    uniq = next(_SLUG_SEQ)
     originator = store.insert_ref(
-        kind="paper", slug=f"qc-orig-{i}", title=f"Origin paper {i}", year=2000 + i % 20
+        kind="paper",
+        slug=f"qc-orig-{i}-{uniq}",
+        title=f"Origin paper {i}",
+        year=2000 + i % 20,
     ).id
     follower = store.insert_ref(
         kind="paper",
-        slug=f"qc-follow-{i}",
+        slug=f"qc-follow-{i}-{uniq}",
         title=f"Follower paper {i}",
         year=2010 + i % 10,
     ).id

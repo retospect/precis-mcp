@@ -6,6 +6,7 @@ when the structure's geometry changes."""
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 from pathlib import Path
 
@@ -153,6 +154,9 @@ def test_view_figure_unknown_structure(hub: Hub) -> None:
         _draft_with(hub, {"source": "structure:nope"})
 
 
+_DRAFT_SEQ = itertools.count()
+
+
 def _draft_with(hub: Hub, view: dict) -> None:
     pid = int(
         TodoHandler(hub=hub)
@@ -162,8 +166,10 @@ def _draft_with(hub: Hub, view: dict) -> None:
         .rstrip(",.()")
     )
     d = DraftHandler(hub=hub)
-    d.put(id="g", title="T", project=pid)
-    d.put(id="g", chunk_kind="figure", text="Fig.", meta={"view": view})
+    # insert_ref refuses a live slug: one fresh draft per call.
+    gid = f"g{next(_DRAFT_SEQ)}"
+    d.put(id=gid, title="T", project=pid)
+    d.put(id=gid, chunk_kind="figure", text="Fig.", meta={"view": view})
 
 
 def test_view_recipe_normalises_angles() -> None:

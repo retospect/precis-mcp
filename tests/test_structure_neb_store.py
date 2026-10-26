@@ -19,6 +19,10 @@ from precis.store.types import Tag
 
 
 def _structure(store: Store, slug: str) -> int:
+    # insert_ref refuses a slug a live ref holds — reuse the existing one.
+    hit = store.get_ref(kind="structure", id=slug)
+    if hit is not None:
+        return int(hit.id)
     return int(store.insert_ref(kind="structure", slug=slug, title=slug).id)
 
 
