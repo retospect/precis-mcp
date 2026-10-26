@@ -13,9 +13,15 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
   plus the open rows; every other status's rows lazy-load on the chip's
   first expand. Retired gripes (merged/duplicate/junk soft-deletes)
   bucket under a ``retired`` pseudo-status chip; carries the filing form.
-* ``GET /gripes/rows?status=<s>`` — the chips' shared lazy-rows
-  fragment: one status's rows, on the same ``_rows`` query the list
-  used to run for every status at page load.
+* ``GET /gripes/rows?status=<s>[&offset=<n>]`` — the chips' shared
+  lazy-rows fragment: one status's rows, on the same ``_rows`` query
+  the list used to run for every status at page load. Paged
+  ``_ROWS_PAGE`` at a time — the done bucket alone is ~1.9k rows, so
+  one chip click must not ship the whole cohort; a trailing
+  "show more" row fetches the next page and swaps into the tbody.
+  ``status`` is allowlisted to ``_STATUS_PARAM_VALUES`` plus whatever
+  the grouped count surfaces — a drift status's chip stays expandable;
+  an unknown value not in the DB is a 400 naming the allowed list.
 * ``POST /gripes`` — ``put`` verb create. The filed text gets an
   attribution line naming the signed-in user appended to it (see
   ``_attribute``): a gripe's stored text *is* its whole record, and
@@ -96,6 +102,22 @@ _RANKED_VALUES: tuple[str, ...] = (
 _STATUS_RANK_SQL = " ".join(
     f"WHEN '{v}' THEN {i}" for i, v in enumerate(_RANKED_VALUES)
 )
+
+#: Values ``GET /gripes/rows?status=`` accepts: the renderable STATUS
+#: vocabulary plus the ``retired`` pseudo-status (the soft-deleted
+#: bucket's chip) and the ``all``/``live`` cohort filters — plus, at
+#: request time, every status value the grouped count returns, so an
+#: off-vocabulary drift chip stays expandable. Anything else is a 400
+#: naming this list — the value used to bind straight into the WHERE
+#: clause and hand back an empty state that read as "no gripes", which
+#: silently masked typos and off-vocabulary guesses.
+_STATUS_PARAM_VALUES: tuple[str, ...] = (*_RANKED_VALUES, "retired", "all", "live")
+
+#: Rows per ``/gripes/rows`` page — the cap that keeps a closed-status
+#: chip's first expand from shipping its whole cohort (the done bucket
+#: is ~1.9k rows). The fragment's show-more row fetches the next page
+#: via ``offset=``; the inline open section caps the same way.
+_ROWS_PAGE = 100
 
 #: Badge colour per status, distinct from Alerts' severity palette so
 #: the two tabs don't visually blur together. ``retired`` is the
@@ -192,18 +214,26 @@ def _attribute(text: str, who: str) -> str:
     return f"{text.strip()}\n\n— filed by {who} via the /gripes web form"
 
 
-def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
+def _rows(
+    store: Store,
+    *,
+    status_filter: str,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
     """Live gripes with their STATUS/PRIO tags, workflow- then recency-sorted.
 
     ``status_filter``: ``'live'`` (everything but the TERMINAL_VALUES),
     ``'all'``, ``'retired'`` (the soft-deleted merged/duplicate/junk
-    bucket), or any one status value — the chips pass whatever the
-    grouped count reported, so off-vocabulary drift round-trips too.
-    The status value is always a bind parameter, never interpolated.
-    Shape mirrors ``alerts.py::_rows`` — one ``refs``/``ref_tags``/``tags``
-    join keyed on the STATUS axis, plus a correlated subquery for the
-    optional ``PRIO:`` tag (a plain join would duplicate rows for a
-    multi-PRIO-tagged gripe).
+    bucket), or any one status value. The ``/gripes/rows`` route
+    allowlists to ``_STATUS_PARAM_VALUES`` first; this helper itself
+    still takes any string — the status value is always a bind
+    parameter, never interpolated. ``limit``/``offset`` page the result
+    (both bind parameters; callers fetch ``_ROWS_PAGE + 1`` to detect a
+    next page). Shape mirrors ``alerts.py::_rows`` — one
+    ``refs``/``ref_tags``/``tags`` join keyed on the STATUS axis, plus
+    a correlated subquery for the optional ``PRIO:`` tag (a plain join
+    would duplicate rows for a multi-PRIO-tagged gripe).
     """
     # A gripe with no STATUS tag counts as ``open`` (the migration-0176
     # trigger makes that unreachable, but the list must never hide one).
@@ -221,6 +251,10 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
         clauses.append("r.retired_at IS NULL")
         clauses.append("COALESCE(t.value, 'open') = %s")
         params.append(status_filter)
+    page = ""
+    if limit is not None:
+        page = "LIMIT %s OFFSET %s"
+        params += [limit, max(offset, 0)]
     sql = f"""
         SELECT r.ref_id,
                left(ltrim(r.title, E' \\t\\r\\n'), {_PREVIEW_FETCH_CHARS}),
@@ -237,7 +271,9 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
           LEFT JOIN tags t ON t.tag_id = rt.tag_id
          WHERE {" AND ".join(clauses)}
          ORDER BY CASE COALESCE(t.value, 'open') {_STATUS_RANK_SQL} ELSE {len(_RANKED_VALUES)} END,
-                  r.updated_at DESC
+                  r.updated_at DESC,
+                  r.ref_id DESC
+         {page}
     """
     with store.pool.connection() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -300,28 +336,66 @@ async def gripes(request: Request) -> HTMLResponse:
             0,
             {"status": "open", "count": 0, "badge": _status_badge("open")},
         )
+    open_rows = _rows(store, status_filter="open", limit=_ROWS_PAGE + 1)
     return templates.TemplateResponse(
         request,
         "gripes/list.html.j2",
         {
             "active_tab": "gripes",
             "chips": chips,
-            "open_rows": _rows(store, status_filter="open"),
+            "open_rows": open_rows[:_ROWS_PAGE],
+            "open_next_offset": (_ROWS_PAGE if len(open_rows) > _ROWS_PAGE else None),
             "filed_by": _filed_by(request),
         },
     )
 
 
 @router.get("/rows", response_class=HTMLResponse)
-async def status_rows(request: Request, status: str = "open") -> HTMLResponse:
+async def status_rows(
+    request: Request, status: str = "open", offset: int = 0
+) -> HTMLResponse:
     """One status's rows — the shared lazy fragment every chip loads on
-    first expand (gr520298). ``status`` round-trips whatever the grouped
-    count reported, including ``retired`` and off-vocabulary values."""
+    first expand (gr520298), paged ``_ROWS_PAGE`` at a time.
+
+    ``status`` is allowlisted to ``_STATUS_PARAM_VALUES`` (the
+    vocabulary plus ``retired``/``all``/``live``) plus every value the
+    grouped count returns — a drift status the list renders as a chip
+    (a legacy ``closed``, say) must stay expandable. An unknown value
+    absent from the DB is a 400 naming the allowed list rather than an
+    empty state that read as "no gripes". ``offset`` is the show-more
+    row's continuation: an offset render is a bare ``<tr>`` page that
+    swaps into the tbody in place of the show-more row that fetched
+    it."""
     store = get_store(request)
+    allowed = tuple(
+        dict.fromkeys(
+            (*_STATUS_PARAM_VALUES, *(str(c["status"]) for c in _status_counts(store)))
+        )
+    )
+    if status not in allowed:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "Unknown gripe status",
+                "detail": (
+                    f"unknown status {status!r} — allowed: " + ", ".join(allowed)
+                ),
+                "status": 400,
+            },
+            status_code=400,
+        )
+    offset = max(offset, 0)
+    rows = _rows(store, status_filter=status, limit=_ROWS_PAGE + 1, offset=offset)
     return templates.TemplateResponse(
         request,
         "gripes/_rows.html.j2",
-        {"rows": _rows(store, status_filter=status), "rows_status": status},
+        {
+            "rows": rows[:_ROWS_PAGE],
+            "rows_status": status,
+            "next_offset": (offset + _ROWS_PAGE if len(rows) > _ROWS_PAGE else None),
+            "append": offset > 0,
+        },
     )
 
 

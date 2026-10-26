@@ -1,12 +1,11 @@
 {# One status's gripe rows — shared by the list's inline open section
    and the /gripes/rows fragment every other chip lazy-loads (gr520298).
-   Context: ``rows`` (the _rows dicts) and ``rows_status`` (for the
-   empty-state line). #}
-{% if rows %}
-<div class="overflow-hidden rounded-md border border-line">
-  <table class="w-full text-sm" data-shortcut-scope="list">
-    <tbody>
-      {% for gr in rows %}
+   Context: ``rows`` (the _rows dicts, at most _ROWS_PAGE), ``rows_status``
+   (the empty-state line + the show-more URL), ``next_offset`` (set when
+   another page exists), and ``append`` — true when this render is a
+   page-2+ continuation: bare <tr>s that htmx swaps into the tbody in
+   place of the show-more row that fetched them. #}
+{% macro gripe_row(gr) %}
       <tr data-row class="border-t border-line-subtle first:border-t-0 align-top">
         <td class="px-3 py-2 w-14 text-fg-faint font-mono text-xs">#{{ gr.ref_id }}</td>
         <td class="px-3 py-2">
@@ -20,7 +19,28 @@
           </div>
         </td>
       </tr>
-      {% endfor %}
+{% endmacro %}
+{% macro more_row(status, offset) %}
+      <tr data-rows-more class="border-t border-line-subtle">
+        <td colspan="2" class="px-3 py-2 text-sm">
+          <button type="button"
+                  hx-get="/gripes/rows?status={{ status | urlencode }}&offset={{ offset }}"
+                  hx-target="closest tr" hx-swap="outerHTML"
+                  class="cursor-pointer text-accent-deep hover:underline">
+            show more
+          </button>
+        </td>
+      </tr>
+{% endmacro %}
+{% if append %}
+  {% for gr in rows %}{{ gripe_row(gr) }}{% endfor %}
+  {% if next_offset is not none %}{{ more_row(rows_status, next_offset) }}{% endif %}
+{% elif rows %}
+<div class="overflow-hidden rounded-md border border-line">
+  <table class="w-full text-sm" data-shortcut-scope="list">
+    <tbody>
+      {% for gr in rows %}{{ gripe_row(gr) }}{% endfor %}
+      {% if next_offset is not none %}{{ more_row(rows_status, next_offset) }}{% endif %}
     </tbody>
   </table>
 </div>

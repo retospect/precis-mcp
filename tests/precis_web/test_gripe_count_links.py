@@ -6,6 +6,7 @@ closed/merged/duplicate cohort (``done``/``wontfix``/off-vocab values
 and the soft-deleted ``retired`` bucket) renders as counts, not tables.
 """
 
+import re
 from typing import Any
 
 import pytest
@@ -51,9 +52,9 @@ def test_initial_load_one_grouped_count_plus_open_rows_only(
         counts_calls += 1
         return real_counts(s)
 
-    def rows_spy(s: Any, *, status_filter: str) -> Any:
+    def rows_spy(s: Any, *, status_filter: str, **kw: Any) -> Any:
         rows_calls.append(status_filter)
-        return real_rows(s, status_filter=status_filter)
+        return real_rows(s, status_filter=status_filter, **kw)
 
     monkeypatch.setattr(gripes, "_status_counts", counts_spy)
     monkeypatch.setattr(gripes, "_rows", rows_spy)
@@ -73,23 +74,20 @@ def test_initial_load_one_grouped_count_plus_open_rows_only(
 
 @pytest.mark.parametrize(
     "status",
-    ["triaged", "closed", "merged", "duplicate", "retired"],
+    ["triaged", "retired"],
 )
 def test_rows_endpoint_serves_each_non_open_status(
     store: Any, client: Any, monkeypatch: Any, status: str
 ) -> None:
-    """Acceptance (b)+(c): ``/gripes/rows`` returns rows for whatever the
-    chips reported — a workflow status (triaged keeps working, on the
-    shared path), closed/merged/duplicate drift, or the retired
-    bucket."""
+    """Acceptance (b)+(c): ``/gripes/rows`` returns rows for a
+    non-open chip — a workflow status (triaged keeps working, on the
+    shared path) or the retired bucket."""
     from precis_web.routes import gripes
 
     insert_gripe(store, "fixture-open", status="open")
     if status == "retired":
         ref = insert_gripe(store, f"fixture-{status}", status="done")
         store.retire_ref(ref.id)
-    elif status in ("closed", "merged", "duplicate"):
-        _seed_off_vocab_gripe(store, f"fixture-{status}", status)
     else:
         insert_gripe(store, f"fixture-{status}", status=status)
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
@@ -98,6 +96,129 @@ def test_rows_endpoint_serves_each_non_open_status(
     assert frag.status_code == 200
     assert f"fixture-{status}" in frag.text
     assert "fixture-open" not in frag.text
+
+
+@pytest.mark.parametrize("status", ["closed", "bogus", "refuted"])
+def test_rows_endpoint_rejects_status_outside_the_allowlist(
+    store: Any, client: Any, monkeypatch: Any, status: str
+) -> None:
+    """``?status=`` is allowlisted to the STATUS vocabulary plus
+    retired/all/live plus every value the grouped count returns — a
+    value in none of those (off-vocabulary drift like a legacy
+    ``closed`` when no gripe carries it) is a 400 naming the allowed
+    list, not a silent "no gripes" empty state."""
+    from precis_web.routes import gripes
+
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    resp = client.get(f"/gripes/rows?status={status}")
+    assert resp.status_code == 400
+    for allowed in ("ready_for_fix", "retired", "all", "live"):
+        assert allowed in resp.text
+
+
+def test_rows_endpoint_serves_a_drift_status_the_count_surfaces(
+    store: Any, client: Any, monkeypatch: Any
+) -> None:
+    """GRIPE_FIX ruling: a status the grouped count surfaces stays
+    expandable even off-vocabulary — a legacy ``closed`` chip's rows
+    fragment serves its gripes rather than 400ing."""
+    from precis_web.routes import gripes
+
+    _seed_off_vocab_gripe(store, "fixture-drift-closed", "closed")
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    assert 'data-status="closed"' in client.get("/gripes").text
+    frag = client.get("/gripes/rows?status=closed")
+    assert frag.status_code == 200
+    assert "fixture-drift-closed" in frag.text
+
+
+def test_rows_fragment_pages_at_one_hundred(
+    store: Any, client: Any, monkeypatch: Any
+) -> None:
+    """The lazy fragment caps at ``_ROWS_PAGE`` rows, newest first,
+    with a "show more" row fetching the next page via ``offset=`` —
+    a 250-row status serves 100 + the link, then the next 100. The
+    fixture's ``updated_at`` is tied into buckets (bulk updates land
+    rows on one timestamp): the ``ref_id`` ORDER-BY tiebreaker keeps
+    the three pages disjoint — 250 distinct ids, none repeated or
+    skipped."""
+    from precis_web.routes import gripes
+    from precis_web.routes.gripes import _ROWS_PAGE
+
+    refs = [
+        insert_gripe(store, f"fixture-page-{i:04}", status="done")
+        for i in range(_ROWS_PAGE * 2 + 50)
+    ]
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - interval '1 minute'"
+            " * mod(ref_id, 7) WHERE kind = 'gripe'"
+        )
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    first = client.get("/gripes/rows?status=done")
+    assert first.status_code == 200
+    assert first.text.count("<tr data-row ") == _ROWS_PAGE
+    assert f"/gripes/rows?status=done&offset={_ROWS_PAGE}" in first.text
+
+    second = client.get(f"/gripes/rows?status=done&offset={_ROWS_PAGE}")
+    assert second.status_code == 200
+    assert second.text.count("<tr data-row ") == _ROWS_PAGE
+    # A page-2+ fragment is bare <tr>s — no table wrapper: it swaps
+    # into the tbody in place of the show-more row that fetched it.
+    assert "<table" not in second.text
+    assert f"offset={_ROWS_PAGE * 2}" in second.text
+
+    third = client.get(f"/gripes/rows?status=done&offset={_ROWS_PAGE * 2}")
+    assert third.status_code == 200
+    assert third.text.count("<tr data-row ") == 50
+    assert "show more" not in third.text
+
+    ids = [
+        int(m)
+        for page in (first.text, second.text, third.text)
+        for m in re.findall(r'href="/gripes/(\d+)"', page)
+    ]
+    assert len(ids) == len(set(ids)) == _ROWS_PAGE * 2 + 50
+    assert set(ids) == {r.id for r in refs}
+
+
+def test_retired_gripe_refuses_web_mutations(
+    store: Any, runtime_with_store: Any, tmp_path: Any
+) -> None:
+    """The detail page hides a retired gripe's controls, but the guard
+    is server-side: the ``tag``/``put``/``delete`` verbs resolve the
+    live ref and answer ``Gone`` on a soft-deleted gripe, which the
+    routes surface as a 400 naming the soft-delete — not a silent
+    redirect."""
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    ref = insert_gripe(store, "fixture-retired-writes", status="done")
+    store.retire_ref(ref.id)
+    real_client = TestClient(
+        create_app(
+            runtime=runtime_with_store,
+            web_config=WebConfig(corpus_dir=tmp_path),
+        )
+    )
+    attempts = [
+        real_client.post(f"/gripes/{ref.id}/status", data={"value": "triaged"}),
+        real_client.post(
+            f"/gripes/{ref.id}/status",
+            data={"value": "triaged"},
+            headers={"HX-Request": "true"},
+        ),
+        real_client.post(f"/gripes/{ref.id}/comment", data={"text": "still writable?"}),
+        real_client.post(f"/gripes/{ref.id}/retire"),
+    ]
+    for resp in attempts:
+        assert resp.status_code == 400
+        assert "soft-deleted" in resp.text
 
 
 def test_rows_endpoint_returns_only_that_statuss_rows(
@@ -121,8 +242,7 @@ def test_rows_endpoint_returns_only_that_statuss_rows(
             if other != state:
                 assert f"fixture-only-{other}" not in frag.text
     bogus = client.get("/gripes/rows?status=bogus%3Bdrop")
-    assert bogus.status_code == 200
-    assert "No gripes with status" in bogus.text
+    assert bogus.status_code == 400
 
 
 def test_every_status_renders_as_a_collapsible_chip(
