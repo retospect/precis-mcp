@@ -257,6 +257,19 @@ creepage, trace width) and anything taken from a paper or finding. The
 full convention and the export-expansion rule:
 [[precis-workspace-help]] §Cite the DB in the script (gr514049).
 
+## Run the board script locally
+
+`pcb.run(board, "out")` (`precis-geom[pcb-kernel]`) writes `manifest.json`
++ `check.txt`, and with `--place` places on the same engine the cluster
+job runs — no DB, no network. The one gap is catalog footprints: a
+laptop has no `part_footprints` cache, so every `lcsc=` part synthesizes
+a landpattern bound. Export the real rows once —
+`get(kind='pcb', id=<slug>, view='footprints', args={'format':'json'})` —
+save the body as `footprints.json` next to the script (or point
+`PRECIS_FOOTPRINT_CACHE` at the file or a directory holding it), and the
+run places and checks the real pads. A part the file doesn't cover still
+synthesizes, but its warning names this export call.
+
 ## Read it as a graph — `get`
 
 ```python

@@ -28,17 +28,27 @@ record — the wheel version may differ from the server's).
 
 Footprints: a laptop has no ``part_footprints`` cache, so a part with
 ``lcsc=`` and no authored ``footprint=`` falls to the ``landpattern``
-synthesized bound exactly as the fixtures flag it. Two ways to supply
-real pads offline: ``meta.catalog_footprints[lcsc]`` may carry the cache
-row verbatim (``{pads, pin_map, courtyard, centroid, holes}`` — the shape
-a design export embeds), and every ``place`` call takes
-``catalog={lcsc: row}`` for the rows a caller already holds.
+synthesized bound exactly as the fixtures flag it. Three ways to supply
+real pads offline, lowest precedence first: a ``footprints.json`` cache
+file — ``$PRECIS_FOOTPRINT_CACHE`` (a JSON file, or a directory holding
+``footprints.json``), else ``footprints.json`` next to the running script
+— carrying the ``get(kind='pcb', view='footprints',
+args={'format':'json'})`` export document (gr520330);
+``meta.catalog_footprints[lcsc]`` may carry the cache row verbatim
+(``{pads, pin_map, courtyard, centroid, holes}`` — the shape a design
+export embeds); and every ``place`` call takes ``catalog={lcsc: row}``
+for the rows a caller already holds.
 """
 
 from __future__ import annotations
 
 import copy
+import json
+import logging
+import os
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from precis.pcb import (
@@ -60,6 +70,8 @@ from precis.pcb.optimize import (
     optimize,
     resolve_measures,
 )
+
+log = logging.getLogger(__name__)
 
 
 class LocalError(ValueError):
@@ -343,14 +355,83 @@ def _planes_rows(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+#: The env var naming the laptop's footprint cache — a JSON file, or a
+#: directory holding ``footprints.json`` (gr520330).
+FOOTPRINT_CACHE_ENV = "PRECIS_FOOTPRINT_CACHE"
+
+#: The cache filename looked up under ``$PRECIS_FOOTPRINT_CACHE``'s
+#: directory form and next to the running script.
+FOOTPRINT_CACHE_NAME = "footprints.json"
+
+#: The export call a footprint-cache miss names — the read-only door that
+#: produces the document ``footprints.json`` holds.
+FOOTPRINT_EXPORT_CALL = (
+    "get(kind='pcb', id={slug!r}, view='footprints', args={{'format':'json'}})"
+)
+
+
+def _footprint_cache_path() -> Path | None:
+    """The laptop's footprint-cache file, when one exists:
+    ``$PRECIS_FOOTPRINT_CACHE`` (a JSON file, or a directory holding
+    ``footprints.json``), else ``footprints.json`` next to the running
+    script (``sys.argv[0]``). An env var that resolves to no file is a
+    loud warning, not a silent miss — a typo'd path reads exactly like
+    the no-cache bug this fixes."""
+    env = os.environ.get(FOOTPRINT_CACHE_ENV, "").strip()
+    if env:
+        p = Path(env).expanduser()
+        cand = p / FOOTPRINT_CACHE_NAME if p.is_dir() else p
+        if cand.is_file():
+            return cand
+        log.warning(
+            "pcb.local: %s=%s names no footprint cache file — ignoring",
+            FOOTPRINT_CACHE_ENV,
+            env,
+        )
+        return None
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0 and argv0 not in ("-", "-c"):
+        cand = Path(argv0).resolve().parent / FOOTPRINT_CACHE_NAME
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _load_footprint_cache(path: Path) -> dict[str, dict[str, Any]]:
+    """``footprints.json`` → the LCSC-keyed row map. Accepts the
+    ``view='footprints', format=json`` export document
+    (``{"footprints": {lcsc: row}, "missing": [...]}``) or a bare
+    ``{lcsc: row}`` map; a row without ``pads`` is not geometry and is
+    skipped. A present-but-unreadable file refuses: silently ignoring a
+    stale or truncated cache reads exactly like the no-cache bug this
+    fixes."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise LocalError(f"footprint cache {path}: unreadable ({exc})") from exc
+    if not isinstance(doc, dict):
+        raise LocalError(f"footprint cache {path}: expected a JSON object")
+    inner = doc.get("footprints")
+    rows = inner if isinstance(inner, dict) else doc
+    return {
+        str(lcsc).strip().upper(): row
+        for lcsc, row in rows.items()
+        if isinstance(row, dict) and row.get("pads")
+    }
+
+
 def _catalog_footprints(
     batch: dict[str, Any], catalog: dict[str, dict[str, Any]] | None
 ) -> dict[str, dict[str, Any]]:
-    """LCSC-keyed footprint rows — the ``catalog=`` argument plus any
+    """LCSC-keyed footprint rows — lowest precedence first: the
+    ``footprints.json`` cache file (:func:`_footprint_cache_path`), any
     ``meta.catalog_footprints`` entries that carry a full row (the
-    embedded-cache export shape); a string value there is the fixture's
-    provenance note, not geometry."""
+    embedded-cache export shape; a string value there is the fixture's
+    provenance note, not geometry), then the ``catalog=`` argument."""
     out: dict[str, dict[str, Any]] = {}
+    cache = _footprint_cache_path()
+    if cache is not None:
+        out.update(_load_footprint_cache(cache))
     meta = batch.get("meta") or {}
     for lcsc, row in (meta.get("catalog_footprints") or {}).items():
         if isinstance(row, dict) and row.get("pads"):
@@ -370,6 +451,27 @@ def _local_footprints(batch: dict[str, Any]) -> dict[str, dict[str, Any]]:
         name, data = pcb_rows.normalize_footprint(f_)
         out[name] = data
     return out
+
+
+def _uncached_lcscs(
+    graph: dict[str, Any],
+    by_lcsc: dict[str, dict[str, Any]],
+    local_by_name: dict[str, dict[str, Any]],
+) -> list[str]:
+    """The catalog C-numbers a run will synthesize — every instance whose
+    ``part_lcsc`` resolves no ``part_footprints`` row and whose
+    ``footprint`` names no design-local row either (the same precedence
+    :func:`precis.pcb.session.footprints_by_refdes` applies)."""
+    cached = {str(k).strip().upper() for k in by_lcsc}
+    out: set[str] = set()
+    for inst in graph.get("instances") or []:
+        lcsc = str(inst.get("part_lcsc") or "").strip().upper()
+        if not lcsc or lcsc in cached:
+            continue
+        local = local_by_name.get(str(inst.get("footprint") or ""))
+        if local is None:
+            out.add(lcsc)
+    return sorted(out)
 
 
 def _fixed_copper_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
@@ -461,6 +563,21 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
                 f"{pin['refdes']}.{pin['pin']} declares client_of — "
                 "supply/client matching is server-side only; see above"
             )
+    local_by_name = _local_footprints(batch)
+    missing = _uncached_lcscs(graph, by_lcsc, local_by_name)
+    if missing:
+        slug = str(meta.get("slug") or "<slug>")
+        log.warning(
+            "pcb.local: %d catalog part(s) have no cached footprint (%s) — "
+            "their pins stay at the synthesized landpattern bound. Export "
+            "the real rows: %s, save the body as %s next to the script (or "
+            "set %s=<path>)",
+            len(missing),
+            ", ".join(missing),
+            FOOTPRINT_EXPORT_CALL.format(slug=slug),
+            FOOTPRINT_CACHE_NAME,
+            FOOTPRINT_CACHE_ENV,
+        )
     return _Design(
         batch=batch,
         graph=graph,
@@ -471,7 +588,7 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
         measures=copy.deepcopy(batch.get("measures") or []),
         fixed_copper=_fixed_copper_rows(batch),
         by_lcsc=by_lcsc,
-        local_by_name=_local_footprints(batch),
+        local_by_name=local_by_name,
         fab_caps=fab_caps,
         profile=profile,
         notes=notes,

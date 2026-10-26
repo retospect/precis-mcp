@@ -310,6 +310,40 @@ def test_view_footprints_shows_uncached_on_a_design_seeded_without_footprints(pc
     assert "0/2 catalog-part instance(s) cached" in resp.body
 
 
+def test_view_footprints_format_json_exports_the_cache_rows(pcb):
+    """gr520330: ``args={'format':'json'}`` is the offline export door —
+    one JSON document whose ``footprints`` map carries the same
+    ``part_footprints`` rows the sandbox's ``view='footprint'`` read
+    returns."""
+    slug = _seed(pcb)  # caches both C639448 and C28927
+    doc = json.loads(pcb.get(id=slug, view="footprints", args={"format": "json"}).body)
+
+    assert doc["board"] == slug
+    assert set(doc["footprints"]) == {_HV507_LCSC, _TEMP_SENSOR_LCSC}
+    for lcsc in doc["footprints"]:
+        row = pcb.store.part_footprint_get(lcsc)
+        assert doc["footprints"][lcsc]["pads"] == row["pads"]
+        assert doc["footprints"][lcsc]["pin_map"] == row["pin_map"]
+    assert "missing" not in doc
+
+
+def test_view_footprints_format_json_names_the_uncached_parts(pcb):
+    pcb.put(id="ewod-json-miss", args=_design())  # nothing cached
+
+    doc = json.loads(
+        pcb.get(id="ewod-json-miss", view="footprints", args={"format": "json"}).body
+    )
+
+    assert doc["footprints"] == {}
+    assert set(doc["missing"]) == {_HV507_LCSC, _TEMP_SENSOR_LCSC}
+
+
+def test_view_footprints_format_refuses_an_unknown_format(pcb):
+    slug = _seed(pcb)
+    with pytest.raises(BadInput, match="format"):
+        pcb.get(id=slug, view="footprints", args={"format": "yaml"})
+
+
 # ── (e) op='footprint' closes the synthesized_footprint DRC finding ──────
 
 

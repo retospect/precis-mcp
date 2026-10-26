@@ -48,7 +48,9 @@ pixels. The verbs map onto the seven-verb surface:
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
   'feasibility'|'route-status'|'congestion'|'planes'|'stackup'|'channel-map'``); ``view='footprints'``
   — which catalog-part instances have a cached footprint, the read-side
-  counterpart to ``op='footprint'``; ``view='svg'`` — a
+  counterpart to ``op='footprint'`` (``args={'format':'json'}`` exports
+  the cached rows as one JSON document — the offline runner's
+  ``footprints.json``, gr520330); ``view='svg'`` — a
   publication-quality vector figure (``args={'level':'board'|'sketch'|'fab'}``,
   see :mod:`precis.pcb.svg`); ``view='capability'`` — a generator's
   capability map (usable/reserved pads, plaza slots, pin names, computed
@@ -1002,7 +1004,9 @@ class PcbHandler(Handler):
             "for an EOL sweep (view='availability', live-refreshes stale "
             "C-numbers), which catalog parts have a cached "
             "footprint (view='footprints', one row per catalog-part "
-            "instance), one instance's actual physical pinout "
+            "instance; args={'format':'json'} exports the cached rows as "
+            "one JSON document — save as footprints.json for an offline "
+            "run), one instance's actual physical pinout "
             "(id='slug#J1', view='pinout', read-only), an unsaved explicit mapping "
             "preview (same selector, view='pinout-preview', "
             "args={'pins':[{name,pad}]}), a vector figure (view='svg', "
@@ -3709,7 +3713,7 @@ class PcbHandler(Handler):
                 )
             )
         if view == "footprints":
-            return self._render_footprints_view(ref_id)
+            return self._render_footprints_view(ref_id, args)
         if view == "availability":
             return self._render_availability(ref_id)
         if view == "placement":
@@ -5766,7 +5770,7 @@ class PcbHandler(Handler):
             body=head + render_agent_table(rows, schema=schema) + "\n" + skip_line
         )
 
-    def _render_footprints_view(self, ref_id: int) -> Response:
+    def _render_footprints_view(self, ref_id: int, args: dict[str, Any]) -> Response:
         """gr341532 fix 3 — one row per catalog-part instance (``part``/
         ``part_lcsc`` set), showing whether its ``part_footprints`` cache
         row exists: the read-side counterpart to ``op='footprint'`` and
@@ -5775,7 +5779,14 @@ class PcbHandler(Handler):
         Instances that name a design-local ``footprint=`` (authored copper
         with no LCSC C-number) are out of scope here by construction —
         they carry no ``part_lcsc`` and can never be "synthesized" in
-        this sense."""
+        this sense.
+
+        ``args={'format':'json'}`` (gr520330) is the offline export door:
+        one JSON document ``{"board", "footprints": {lcsc: row},
+        "missing": [lcsc]}`` whose ``footprints`` map is the
+        ``meta.catalog_footprints``/``footprints.json`` shape
+        :mod:`precis.pcb.local` reads — an agent saves the body verbatim
+        as the laptop's footprint cache."""
         design = self.store.pcb_load(ref_id)
         catalog = [i for i in design["instances"] if i.get("part_lcsc")]
         if not catalog:
@@ -5787,6 +5798,33 @@ class PcbHandler(Handler):
             lcsc: self.store.part_footprint_get(lcsc)
             for lcsc in sorted({str(i["part_lcsc"]).strip().upper() for i in catalog})
         }
+        fmt = str((args or {}).get("format") or "").strip().lower()
+        if fmt == "json":
+            ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
+            hits = {
+                lcsc: {
+                    k: row.get(k)
+                    for k in ("pads", "pin_map", "courtyard", "centroid", "holes")
+                }
+                for lcsc, row in sorted(rows_by_lcsc.items())
+                if row is not None
+            }
+            missing = [
+                lcsc for lcsc, row in sorted(rows_by_lcsc.items()) if row is None
+            ]
+            doc: dict[str, Any] = {
+                "board": (ref.slug if ref is not None else None) or str(ref_id),
+                "footprints": hits,
+            }
+            if missing:
+                doc["missing"] = missing
+            return Response(body=json.dumps(doc, sort_keys=True))
+        if fmt:
+            raise BadInput(
+                f"view='footprints' format={fmt!r} is unknown",
+                next="args={'format':'json'} exports the cached rows as one "
+                "JSON document; omit format= for the table",
+            )
         # Per PIN, not per cache row: a cached footprint whose pin names do
         # not join the design's still leaves those pins synthesized
         # (gr346009 — dogfood-1 read "synthesized: no" with 56 synthesized
