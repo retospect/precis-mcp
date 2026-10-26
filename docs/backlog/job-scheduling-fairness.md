@@ -1,5 +1,5 @@
 ---
-status: ready
+status: parked
 title: Job scheduling fairness — origin classes on the job row, class-preserving ageing, a reserved interactive slot per lane, per-job_type caps for standing bands
 pillar: platform
 prio: normal
@@ -126,19 +126,45 @@ count by class (extends the existing "N ahead" hint in
 ## Slices
 
 Ruled (Reto 2026-10-22): laissez-faire and monitor; adjust only if it
-goes sideways. Keep one channel open for interactive work. Build slices
-1, 4 and 6 (origin stamp, reserved interactive slot + wake, queue-wait
-visibility by origin). Slices 2, 3 and 5 and the open questions below are
-parked until the slice-6 numbers show a problem the open channel does not
-solve; the runtime caps of D4 are not set now.
+goes sideways. Keep one channel open for interactive work.
+
+**State (2026-10-26): slices 1, 2, 3, 5 and 6 are shipped; this item is
+parked on slice 4 alone.** The original build order was 1, 4 and 6; the
+cheap class-ordering slices (2, 3, 5) landed alongside and slice 4 — the
+NOTIFY/LISTEN wake and the capacity-aware reserved slot — was deferred as
+the only piece needing new infrastructure (see slice 4). It stays out of
+the pick order until the slice-6 per-class wait numbers show the shipped
+class ordering plus `derived_drain max_running=2/host` does not keep
+foreground moving; reopen then. The runtime caps of D4 are a per-host
+operator setting (`claim.max_running.<job_type>`), not code.
 
 1. **Origin stamp (D1)** — handler + `mint_background_job()` + recurring
    spawn; backfill none. Pure data, no claim change. Ships first so the
    metrics in acceptance can be measured by class.
+   **Shipped.** `workers/_mint.py::mint_background_job` is the one insert
+   door for system-minted jobs (`JOB_ORIGINS`; `background`, or
+   `recurring` for a `dispatched_from_todo` row); `handlers/job.py::
+   JobHandler.put` stamps `human`/`agent` from the write context and
+   carries the parent's class onto a worker-minted child (ruled
+   2026-10-23). `tests/test_job_origin_contract.py` fails any direct
+   `insert_ref(kind='job')` elsewhere in `src/`.
 2. **Class rank + class-bounded ageing (D2, D3)** — `_aged_prio_sql` and
    `_order_key` in `_common.py`; the "N ahead" hint mirrors it.
+   **Shipped.** `workers/executors/_common.py::_claim_order_sql` keys the
+   claim on `(class_rank, aged_prio, queued_since, ref_id)` with prio 1
+   absolute across classes; class-bounded ageing promotes a row at most
+   one class after `claim_class_age_s()` (`DEFAULT_CLAIM_CLASS_AGE_S`,
+   30 min), and `_order_key` applies the same order to the in-Python
+   fair-share pick. The "N ahead" hint mirrors it in
+   `handlers/job.py::_queue_lines` (slice 6).
 3. **Per-job_type cap (D4 cap half)** — `service_config` `max_running`
    checked in the claim tx; set `derived_drain` to 2/host on melchior.
+   **Shipped.** The claim tx in `workers/executors/_common.py` aggregates
+   `running_by_type` on the lane and refuses a job_type already at its
+   cap; caps come from the `claim.max_running.<job_type>` operator
+   setting (`_MAX_RUNNING_KEY_PREFIX`). `tests/workers/test_claim_fairness.py`
+   pins the (cap+1)th-claim refusal. The `derived_drain=2/host` value is
+   that per-host setting, not code.
 4. **Interactive wake (D5)** — NOTIFY on foreground put; runner runs the
    named executor pass out of turn. Reserved-slot rule for multi-process
    lanes.
