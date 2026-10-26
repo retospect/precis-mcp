@@ -1815,6 +1815,15 @@ class NumericRefHandler(Handler):
         """
         return ""
 
+    def _list_row_marks(self, refs: list[Ref]) -> dict[int, str]:
+        """Optional per-kind warning mark for a list/search row.
+
+        ``{ref_id: short text}``; when non-empty the hits table gains a
+        ``stale`` column carrying the mark (gripe: ``unpicked Nd`` for a
+        gripe nobody picked up, gr520909). Default: no marks, no column.
+        """
+        return {}
+
     def _list_by_link(
         self,
         link: str,
@@ -3892,6 +3901,7 @@ class NumericRefHandler(Handler):
             self.store, {int(r.id): self.kind for r in refs}, tagged=chip_rows
         )
         any_chips = bool(chip_map)
+        marks = self._list_row_marks(refs)
         now = datetime.now(UTC)
         rows: list[dict[str, str]] = []
         for r in refs:
@@ -3917,6 +3927,7 @@ class NumericRefHandler(Handler):
                     "remaining_words": str(remaining_words),
                     "links": str(link_counts.get(r.id, 0)),
                     "age": str(age_days),
+                    **({"stale": marks.get(r.id, "")} if marks else {}),
                 }
             )
         schema = ["kind", "id", "summary", "remaining_words", "links", "age"]
@@ -3924,6 +3935,8 @@ class NumericRefHandler(Handler):
             schema.insert(2, "status")
         if any_chips:
             schema.insert(3 if lifecycle else 2, "tags")
+        if marks:
+            schema.append("stale")
         return render_agent_table(rows, schema=schema)
 
     def _render_create_ack(self, ref_id: int) -> Response:

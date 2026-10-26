@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
@@ -252,6 +252,93 @@ def bulk_states(store: Any, refs: list[Ref]) -> list[FixState]:
             f"{ns}:{val}" if ns != "OPEN" else val for ns, val in tag_rows.get(r.id, [])
         ]
         out.append(state_from(r, tags, tuple(by_ref.get(r.id, []))))
+    return out
+
+
+# ── unpicked staleness (gr520909) ─────────────────────────────────────
+#
+# A gripe nobody picked up for ~"a week or 3" (Reto: the spec pins 14
+# days) gets a visible stale mark on its card, in list rows and in the
+# /open + session-digest header. Unpicked is derived — never stored —
+# so picking the gripe up (any ``meta.fix`` key, a STATUS move past
+# ``triaged``, or a live job/todo edge) clears the mark on next read.
+
+#: Age at which a still-unpicked gripe reads as stale.
+UNPICKED_AFTER = timedelta(days=14)
+#: "No status change past triaged" — the only STATUS values that still
+#: count as unpicked (a missing STATUS counts too).
+UNPICKED_STATUSES = frozenset({"open", "triaged"})
+#: Linked-ref kinds that count as picked-up work.
+_WORK_LINK_KINDS: tuple[str, ...] = ("job", "todo")
+#: Terminal STATUS values for those kinds — a linked job/todo that
+#: already finished is not a pickup.
+_WORK_TERMINAL_VALUES: tuple[str, ...] = (
+    "succeeded",
+    "failed",
+    "cancelled",
+    "done",
+    "won't-do",
+    "abandoned",
+)
+
+
+def claimed_work_ids(store: Any, ref_ids: list[int]) -> set[int]:
+    """ref_ids with a live (non-terminal, un-retired) job/todo link.
+
+    One query: any edge in either direction counts, but only when the
+    linked job/todo is itself live — a ``STATUS:done`` todo or a
+    ``STATUS:failed`` job is a closed attempt, not a claim.
+    """
+    if not ref_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT g.ref_id FROM refs g "
+            "JOIN links l ON (l.src_ref_id = g.ref_id OR l.dst_ref_id = g.ref_id) "
+            "JOIN refs w ON w.ref_id = CASE WHEN l.src_ref_id = g.ref_id "
+            "THEN l.dst_ref_id ELSE l.src_ref_id END "
+            "WHERE g.ref_id = ANY(%s) AND w.kind = ANY(%s) "
+            "AND w.retired_at IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = w.ref_id AND t.namespace = 'STATUS' "
+            "AND t.value = ANY(%s) "
+            "AND (rt.expires_at IS NULL OR rt.expires_at > now()))",
+            (list(ref_ids), list(_WORK_LINK_KINDS), list(_WORK_TERMINAL_VALUES)),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def stale_unpicked(
+    store: Any, refs: list[Ref], *, now: datetime | None = None
+) -> dict[int, int]:
+    """``{ref_id: days_old}`` for the live gripes nobody has picked up.
+
+    Unpicked = all of: no ``meta.fix`` (in the fix loop = picked), age
+    ≥ :data:`UNPICKED_AFTER`, STATUS missing or in
+    :data:`UNPICKED_STATUSES`, and no live job/todo link. Callers pass
+    an already-filtered ref set; the age/meta prefilter in Python keeps
+    the two SQL reads off the common path (a fresh gripe costs nothing).
+    """
+    now = now or datetime.now(UTC)
+    old = [
+        r
+        for r in refs
+        if not isinstance((r.meta or {}).get(META_KEY), dict)
+        and now - r.created_at >= UNPICKED_AFTER
+    ]
+    if not old:
+        return {}
+    ids = [r.id for r in old]
+    claimed = claimed_work_ids(store, ids)
+    tag_rows = store.ref_tags_bulk(ids)
+    out: dict[int, int] = {}
+    for r in old:
+        if r.id in claimed:
+            continue
+        status = next((v for ns, v in tag_rows.get(r.id, []) if ns == "STATUS"), None)
+        if status is not None and status not in UNPICKED_STATUSES:
+            continue
+        out[r.id] = (now - r.created_at).days
     return out
 
 
@@ -757,6 +844,8 @@ __all__ = [
     "META_KEY",
     "QUEUES",
     "REVIEW_KIND",
+    "UNPICKED_AFTER",
+    "UNPICKED_STATUSES",
     "VERDICTS",
     "FixEvent",
     "FixPatch",
@@ -765,12 +854,14 @@ __all__ = [
     "build_state",
     "bulk_states",
     "card_line",
+    "claimed_work_ids",
     "fix_state",
     "plan_status",
     "render_batch",
     "render_batches",
     "render_fix_view",
     "render_queue",
+    "stale_unpicked",
     "state_from",
     "validate_patch",
     "verdict_of",

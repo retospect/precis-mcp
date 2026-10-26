@@ -62,7 +62,11 @@ Surface (see ``precis-gripe-help``):
   brief / handoff / review chunks; the card shows a ``fix:`` line,
   ``view='fix'`` the texts, ``get(id='/queue')`` the derived queues
   (filter by queue/host/batch) and ``get(id='/batch')`` the census or
-  one batch's dossier.
+  one batch's dossier. A gripe nobody picked up for 14d (no ``meta.fix``,
+  STATUS never past ``triaged``, no live job/todo link) is marked stale:
+  a ``stale: unpicked Nd`` card line, an ``unpicked Nd`` column in lists
+  and search hits, and an ``N unpicked ≥14d`` clause in the age summary
+  (gr520909; derived per read, pickup clears it).
 """
 
 from __future__ import annotations
@@ -289,13 +293,15 @@ def age_summary(
     id_min: int | None = None,
     id_max: int | None = None,
 ) -> str:
-    """``N open · M older than 3d · oldest grX (D days)`` over a gripe filter.
+    """``N open · M older than 3d · K unpicked ≥14d · oldest grX (D days)``.
 
     Shared by the queryless list header and ``precis gripes --summary``
     (the session-start digest line). ``total`` skips the count when the
     caller already has it. The label is the single ``STATUS:`` value in
     ``tags`` (``open``), else ``live`` when terminal statuses are excluded,
-    else ``listed``.
+    else ``listed``. The ``unpicked`` clause only appears when at least
+    one old-enough gripe has no fix state, no live job/todo link and no
+    STATUS past ``triaged`` (gr520909).
     """
     from precis.utils.handle_registry import format_handle
 
@@ -313,6 +319,22 @@ def age_summary(
         kind="gripe", tags=tags, created_before=now - _STALE_AFTER, **filters
     )
     parts = [f"{total} {label}", f"{stale} older than {_STALE_AFTER.days}d"]
+    # gr520909: age alone isn't "unpicked" — count only the old-enough
+    # gripes with no fix state, no live job/todo edge and no STATUS past
+    # triaged. Derived each read, so a pickup clears it on next render.
+    unpicked = gf.stale_unpicked(
+        store,
+        store.list_refs(
+            kind="gripe",
+            tags=tags,
+            created_before=now - gf.UNPICKED_AFTER,
+            limit=5000,
+            **filters,
+        ),
+        now=now,
+    )
+    if unpicked:
+        parts.append(f"{len(unpicked)} unpicked ≥{gf.UNPICKED_AFTER.days}d")
     oldest = store.list_refs(
         kind="gripe", tags=tags, order_by="created_asc", limit=1, **filters
     )
@@ -459,6 +481,13 @@ class GripeHandler(NumericRefHandler):
         if past_page > 0:
             line += f" · {past_page} more past this page (page=N)"
         return line
+
+    def _list_row_marks(self, refs: list[Ref]) -> dict[int, str]:
+        """gr520909: an old unpicked gripe's row shows ``unpicked Nd``."""
+        return {
+            rid: f"unpicked {d}d"
+            for rid, d in gf.stale_unpicked(self.store, refs).items()
+        }
 
     # ── put: create or append-comment ───────────────────────────────
 
@@ -1731,6 +1760,15 @@ class GripeHandler(NumericRefHandler):
         fix_line = gf.card_line(gf.build_state(ref, tags, blocks))
         if fix_line:
             lines.append(fix_line)
+        elif (d := gf.stale_unpicked(self.store, [ref]).get(ref.id)) is not None:
+            # gr520909: a gripe nobody picked up for UNPICKED_AFTER shows
+            # why and how to clear it (a fix edit or a job/todo link).
+            lines.append(
+                f"stale: unpicked {d}d — no fix state, "
+                f"STATUS:{gf.status_of(tags) or 'none'}, no live job/todo "
+                "link (gr520909); pick up: edit(kind='gripe', "
+                "mode='fix', args={'tree': '<tree>'}) or link a job/todo"
+            )
         # One-line gist of the newest visible comment (~80 B): a closer
         # verifying a close (or a skimmer checking state) shouldn't have
         # to open the timeline for the latest word.
