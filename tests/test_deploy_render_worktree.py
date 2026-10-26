@@ -513,7 +513,10 @@ def test_the_exit_trap_does_not_release_a_lock_owned_by_another_pid(
         foreign.wait()
 
 
+# `--version` answers harmlessly: scripts/deploy logs which ansible runs
+# before the play, and that probe must not trigger the deletion.
 _FAKE_PLAYBOOK_LOSES_ITS_TREE = """#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then echo 'ansible-playbook [core 2.0]'; exit 0; fi
 rm -rf "$(dirname "$PWD")"
 echo '[ERROR]: Task failed: [Errno 2] No such file or directory'
 exit 2

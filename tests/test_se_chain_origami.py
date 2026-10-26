@@ -180,9 +180,11 @@ def test_rectangle_fixture_has_the_shape_the_criterion_names() -> None:
 
 def test_layout_chain_is_fast_and_tiles_every_helix_exactly() -> None:
     tree = _rectangle_tree()
-    started = time.perf_counter()
+    # CPU time, not wall time: a contended xdist runner stretched a 0.3 s
+    # layout to 4.6 s of wall clock (r111).
+    started = time.process_time()
     apply_ops(tree, [{"op": "layout_chain"}])
-    elapsed = time.perf_counter() - started
+    elapsed = time.process_time() - started
     assert elapsed < 2.0, f"layout_chain took {elapsed:.2f} s"
 
     segments = {
