@@ -875,3 +875,27 @@ def test_params_no_docstring_renders_signature_rows(tmp_path: Path) -> None:
     assert "params[2]{name\thint\tdefault\tdoc\tline}" in out.body
     assert "x\tint" in out.body
     assert "no docstring" in out.body
+
+
+def test_params_selector_refused_on_other_views(
+    params_handler: PythonHandler,
+) -> None:
+    """`~<param>` on a non-params view refuses instead of being dropped."""
+    for view in ("callgraph", "tests", "impact", "outline", "source", "toc"):
+        with pytest.raises(BadInput) as ei:
+            params_handler.get(id="r::pkg.board.Board.net~current", view=view)
+        assert ei.value.next == "~param only applies to view='params' or a bare get"
+
+
+def test_params_selector_still_works_on_params_view(
+    params_handler: PythonHandler,
+) -> None:
+    """`view='params'` + `~<param>` is the same drill-down as a bare get."""
+    out = params_handler.get(id="r::pkg.board.Board.net~current", view="params")
+    assert "Max current in amps." in out.body
+
+
+def test_params_selector_on_file_id_unaffected(params_handler: PythonHandler) -> None:
+    """A `~<name>` selector on a file id is Track B, not a param — no refusal."""
+    out = params_handler.get(id="r/pkg/board.py~Board.net", view="source")
+    assert "def net" in out.body

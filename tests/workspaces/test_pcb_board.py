@@ -279,6 +279,52 @@ def test_net_domain_is_electrical_only() -> None:
         b.net("BRACKET", domain="mechanical")
 
 
+def test_bad_kwarg_quotes_the_params_doc_line() -> None:
+    """gr520905 push half: a PcbBuilderError for a bad kwarg appends that
+    param's Args line from the method docstring."""
+    b = Board("kw1")
+    with pytest.raises(PcbBuilderError) as ei:
+        b.net("BRACKET", domain="mechanical")
+    msg = str(ei.value)
+    assert "must be electrical" in msg  # the original message is kept
+    assert "domain: Net domain" in msg  # and the param's doc line quotes
+    # A second failure on another param quotes its own doc line.
+    b.net("VBUS")
+    with pytest.raises(PcbBuilderError, match="name: Net name"):
+        b.net("VBUS")
+
+
+def test_missing_kwarg_error_quotes_doc_too() -> None:
+    """The semantic-missing raise (`pin()` with neither arg) quotes the
+    param doc the same way."""
+    p = Board("kw2").part("U1")
+    with pytest.raises(PcbBuilderError, match="needs a pin number"):
+        p.pin()
+
+
+def test_param_doc_parse_reads_google_args() -> None:
+    """`_param_docs` reads `name (type): doc` entries; wrapped lines
+    join, a missing Args block yields {}."""
+
+    def f(a: int, b: str = "x") -> None:
+        """Summary.
+
+        Args:
+            a (int): First line. continuation line.
+            b (str): Bee.
+        """
+
+    assert pcb._param_docs(f) == {
+        "a": "First line. continuation line.",
+        "b": "Bee.",
+    }
+
+    def g(x: int) -> None:
+        """No sections."""
+
+    assert pcb._param_docs(g) == {}
+
+
 def test_part_kwarg_catalog_ref() -> None:
     """gr514215: ``part=`` takes a catalog-ref — lcsc, the footprint name
     (its ``package``) and ``height_mm`` come off the CatalogPart; an lcsc

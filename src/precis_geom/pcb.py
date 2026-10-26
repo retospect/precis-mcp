@@ -123,6 +123,78 @@ def Min(text: str | float | int) -> Bound:
     return Bound("min", _parse_amps(text), str(text))
 
 
+# ---------------------------------------------------------------------------
+# Kwarg contract (gr520905, the push half): a bad or missing kwarg on a
+# public builder method quotes that param's doc line, so a board-script
+# mistake surfaces the contract at the moment it is made.
+# ---------------------------------------------------------------------------
+
+_ARG_ENTRY = re.compile(r"^(\*{0,2}[^\s(:]+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
+_ARG_SECTIONS = ("Args:", "Arguments:", "Parameters:")
+
+
+@functools.cache
+def _param_docs(fn: Callable[..., Any]) -> dict[str, str]:
+    """``{param: doc line}`` read off `fn`'s Google ``Args:`` block.
+
+    Runtime half of the params contract: the index-time half is
+    ``precis.python_index.docparams`` (docstring_parser, three styles).
+    This module stays stdlib-only, so the same parse is re-done here in
+    the Google style this file's own docstrings use — the D417 ratchet
+    on ``precis_geom.pcb`` keeps the two halves agreeing. A wrapped
+    entry's continuation lines join with a space; ``*args``/``**kwargs``
+    doc names shed their stars. ``__doc__`` never changes after def, so
+    the parse is cached on the function object.
+    """
+    import inspect
+
+    doc = inspect.getdoc(fn) or ""
+    lines = doc.split("\n")
+    docs: dict[str, str] = {}
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() not in _ARG_SECTIONS:
+            i += 1
+            continue
+        # The first nonblank line after the header sets the entry indent;
+        # a dedent below it ends the section.
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j >= len(lines):
+            break
+        base = len(lines[j]) - len(lines[j].lstrip())
+        cur: str | None = None
+        while j < len(lines):
+            raw, text = lines[j], lines[j].strip()
+            indent = len(raw) - len(raw.lstrip())
+            if text and indent < base:
+                break
+            if not text:
+                cur = None
+            elif indent == base:
+                m = _ARG_ENTRY.match(text)
+                if m is not None:
+                    cur = m.group(1).lstrip("*")
+                    docs[cur] = m.group(2)
+                else:
+                    cur = None
+            elif cur is not None:
+                docs[cur] += " " + text
+            j += 1
+        i = j
+    return docs
+
+
+def _bad_kwarg(fn: Callable[..., Any], param: str, msg: str) -> PcbBuilderError:
+    """`PcbBuilderError` about `param` on `fn`, with that param's doc
+    line appended — the contract surfaces where it was broken. `msg`
+    passes through unquoted when `fn`'s docstring has no Args entry for
+    it, so an undocumented param degrades to today's message."""
+    doc = _param_docs(fn).get(param)
+    return PcbBuilderError(f"{msg} — {param}: {doc}" if doc else msg)
+
+
 @functools.cache
 def _script_dir() -> Path:
     """The directory the entry script lives in — the anchor claim sites
@@ -274,6 +346,12 @@ class Pin:
     reference stay implicit, as in an authored batch."""
 
     def __init__(self, *, part: Part, name: str) -> None:
+        """Create the pin — normally via ``part[name]``, not directly.
+
+        Args:
+            part (Part): The owning part.
+            name (str): Pin name/number as the footprint knows it.
+        """
         self.part = part
         self.name = name
         self.tags: list[str] = []
@@ -285,34 +363,61 @@ class Pin:
         self.extra: dict[str, Any] = {}
 
     def etype(self, kind: str) -> Pin:
+        """Set the pin's electrical type — the store's top-level
+        ``etype`` key, which is what earns a tag at write time.
+
+        Args:
+            kind (str): Electrical type, e.g. ``"power_in"``.
+        """
         # The store's top-level key — an etype under `meta` rides meta
         # verbatim and earns no tag (store rule; gr514460 seam review).
         self.extra["etype"] = kind
         return self
 
     def current_role(self, kind: str) -> Pin:
+        """Declare the pin's role in a current path
+        (``meta.current_role``) — e.g. ``"series"`` marks a limiter for
+        the LED check.
+
+        Args:
+            kind (str): Role name, e.g. ``"series"`` or ``"shunt"``.
+        """
         self.meta["current_role"] = kind
         return self
 
     def nc(self) -> Pin:
+        """Mark the pin not-connected (the store's ``nc`` bool shorthand)."""
         self.markers["nc"] = True
         return self
 
     def unused(self) -> Pin:
+        """Mark the pin unused (the store's ``unused`` bool shorthand)."""
         self.markers["unused"] = True
         return self
 
     def must_terminate(self) -> Pin:
+        """Mark the pin must-terminate (the store's bool shorthand)."""
         self.markers["must_terminate"] = True
         return self
 
     def tag(self, *tags: str) -> Pin:
+        """Add free-form tags (deduplicated, order kept).
+
+        Args:
+            tags (str): Tag strings to add.
+        """
         for t in tags:
             if t not in self.tags:
                 self.tags.append(t)
         return self
 
     def client_of(self, role: Role) -> Pin:
+        """Declare the pin a client of a supply :class:`Role`
+        (``meta.client_of``).
+
+        Args:
+            role (Role): The supply role this pin draws from.
+        """
         self.meta.setdefault("client_of", []).append(role.name)
         return self
 
@@ -325,6 +430,7 @@ class Pin:
         return bool(self.tags or self.meta or self.markers or self.extra)
 
     def to_dict(self) -> dict[str, Any]:
+        """The pin's batch row — ``name`` plus whatever was annotated."""
         d: dict[str, Any] = {"name": self.name}
         for marker in _PIN_MARKERS:
             if self.markers.get(marker):
@@ -357,6 +463,24 @@ class Part:
         supplies: Any = None,
         pin_swap_groups: Any = None,
     ) -> None:
+        """Create the part — normally via :meth:`Board.part`, not directly.
+
+        Args:
+            board (Board): The owning board.
+            refdes (str): Module-qualified reference designator.
+            lcsc (str | None): Catalog part number.
+            label (str | None): Display label override.
+            footprint (str | None): Registered footprint name.
+            value (str | None): Component value, e.g. ``"10k"``.
+            height_mm (float | None): Component height, millimetres.
+            roles (Iterable[str]): Supply roles the part provides.
+            note (str | None): Free-text note on the batch row.
+            part_meta (dict | None): Catalog-identity blob carried
+                verbatim as ``part_meta``.
+            supplies (Any): Authored ``supplies`` declaration list,
+                carried verbatim.
+            pin_swap_groups (Any): Authored swap groups, carried verbatim.
+        """
         self.board = board
         self.refdes = refdes
         self.lcsc = lcsc
@@ -400,6 +524,12 @@ class Part:
         self.pattern_instance: str | None = None
 
     def __getitem__(self, key: str | int) -> Pin:
+        """Lazy pin access: ``part[5]``/``part["A1"]`` creates or returns
+        the :class:`Pin`.
+
+        Args:
+            key (str | int): Pin name/number.
+        """
         name = str(key)
         if name not in self._pins:
             self._pins[name] = Pin(part=self, name=name)
@@ -407,6 +537,11 @@ class Part:
         return self._pins[name]
 
     def pins(self, *names: str | int) -> list[Pin]:
+        """Several pins at once: ``part.pins(1, 2, "SDA")``.
+
+        Args:
+            names (str | int): Pin names/numbers.
+        """
         return [self[n] for n in names]
 
     def pin(
@@ -422,18 +557,34 @@ class Part:
         flexible slot the solver fills; ``name`` feeds the firmware pin
         map. A fixed pin claimed twice under different names raises
         :class:`PinConflict` naming both claim sites; the same name
-        again is a no-op."""
+        again is a no-op.
+
+        Args:
+            number (str | int | None): Pin to fix outright — pass this
+                OR ``any_of=``, not both.
+            name (str | None): Firmware pin-map name for the claim.
+            any_of (Iterable[str | int] | None): Candidate pins (≥1, no
+                repeats) — a flexible slot the solver picks one of.
+        """
         site = _caller_site()
         if any_of is not None:
             if number is not None:
-                raise PcbBuilderError(
-                    f"{self.refdes}.pin() takes a pin number OR any_of=, not both"
+                raise _bad_kwarg(
+                    Part.pin,
+                    "any_of",
+                    f"{self.refdes}.pin() takes a pin number OR any_of=, not both",
                 )
             pins = tuple(str(p) for p in any_of)
             if not pins:
-                raise PcbBuilderError(f"{self.refdes}.pin(any_of=…) needs ≥1 pin")
+                raise _bad_kwarg(
+                    Part.pin, "any_of", f"{self.refdes}.pin(any_of=…) needs ≥1 pin"
+                )
             if len(set(pins)) != len(pins):
-                raise PcbBuilderError(f"{self.refdes}.pin(any_of={pins}) repeats a pin")
+                raise _bad_kwarg(
+                    Part.pin,
+                    "any_of",
+                    f"{self.refdes}.pin(any_of={pins}) repeats a pin",
+                )
             # Candidates are live pins: the solver picks one, so each
             # must reach the IR (a declared pin with no wire lands in
             # `unconnected` with a real pad position).
@@ -443,7 +594,11 @@ class Part:
             self._flex_slots.append(fp)
             return fp
         if number is None:
-            raise PcbBuilderError(f"{self.refdes}.pin() needs a pin number or any_of=")
+            raise _bad_kwarg(
+                Part.pin,
+                "number",
+                f"{self.refdes}.pin() needs a pin number or any_of=",
+            )
         p = self[number]
         self._declared_pins.add(p.name)
         if name is not None:
@@ -467,7 +622,14 @@ class Part:
         value may instead be ``{"functions": [...], "max_current_a": …}``
         when the datasheet also rates the pin's drive. ``source`` is the
         datasheet chunk id (``"ds:<id>~<chunk>"``) and is checkable
-        provenance, not a comment."""
+        provenance, not a comment.
+
+        Args:
+            table (Mapping[str, Any]): ``{pin label: [functions]}`` — or
+                ``{"functions": [...], "max_current_a": …}`` per pin.
+            source (str | None): Datasheet chunk id
+                (``"ds:<id>~<chunk>"``).
+        """
         for pin, entry in table.items():
             if isinstance(entry, Mapping):
                 funcs = [str(f) for f in (entry.get("functions") or ())]
@@ -486,7 +648,11 @@ class Part:
 
     def pins_with(self, func: str) -> list[str]:
         """Pin labels whose :meth:`pin_functions` entry lists ``func`` —
-        feeds ``pin(any_of=u1.pins_with("GPIO"))``."""
+        feeds ``pin(any_of=u1.pins_with("GPIO"))``.
+
+        Args:
+            func (str): Function name to match, e.g. ``"GPIO"``.
+        """
         return [p for p, rec in self._pin_functions.items() if func in rec["functions"]]
 
     def swap_group(
@@ -499,18 +665,31 @@ class Part:
         list (``rn1.swap_group([1, 2, 3, 4])``) lets those pins permute
         freely; ``tuple=True`` takes a list of pin tuples moved as units
         (``[(1, 8), (2, 7), …]`` — a buffer channel's ``in_i``/``out_i``
-        always move together)."""
+        always move together).
+
+        Args:
+            members (Iterable): Pins (or pin tuples with ``tuple=True``)
+                the solver may permute — ≥2 members.
+            tuple (bool): ``members`` is a list of equal-length pin
+                tuples moved as units.
+        """
         units = [[m] if isinstance(m, str | int) else list(m) for m in members]
         for u in units:
             for m in u:
                 self._declared_pins.add(self[m].name)
         if len(units) < 2:
-            raise PcbBuilderError(f"{self.refdes}.swap_group needs ≥2 members")
+            raise _bad_kwarg(
+                Part.swap_group,
+                "members",
+                f"{self.refdes}.swap_group needs ≥2 members",
+            )
         widths = {len(u) for u in units}
         if tuple and len(widths) != 1:
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                Part.swap_group,
+                "tuple",
                 f"{self.refdes}.swap_group(tuple=True): members must be "
-                "equal-length tuples"
+                "equal-length tuples",
             )
         self._swap_groups.append(
             {
@@ -523,12 +702,23 @@ class Part:
     def declare(self, *names: str | int) -> Part:
         """Declare pins that must appear in the batch even if nothing
         annotates them (a part with no catalog part and no footprint has
-        only these as its pin list)."""
+        only these as its pin list).
+
+        Args:
+            names (str | int): Pin names/numbers to declare.
+        """
         for n in names:
             self._declared_pins.add(self[n].name)
         return self
 
     def supplies(self, role: Role, pins: Iterable[str] = ()) -> Part:
+        """Declare the part supplies ``role``; ``pins`` marks which of
+        its pins feed it (``meta.supplies``).
+
+        Args:
+            role (Role): The supply role this part provides.
+            pins (Iterable[str]): Pin names that supply the role.
+        """
         if role.name not in self.roles:
             self.roles.append(role.name)
         for name in pins:
@@ -543,16 +733,39 @@ class Part:
         side: str = "top",
         fixed: str = "both",
     ) -> Part:
+        """Place the part on the board (mm, board frame).
+
+        Args:
+            x (float): Board-frame x, millimetres.
+            y (float): Board-frame y, millimetres.
+            rot (float): Rotation, degrees.
+            side (str): ``"top"`` or ``"bottom"``.
+            fixed (str): What the solver must hold — ``"both"`` fixes
+                pose, ``"rot"`` only the rotation.
+        """
         self.x, self.y, self.rot, self.side, self.fixed = x, y, rot, side, fixed
         return self
 
     def leash(self, max_travel_mm: float) -> Part:
+        """Cap how far the solver may move the part.
+
+        Args:
+            max_travel_mm (float): Max solver travel, millimetres.
+        """
         self.max_travel_mm = max_travel_mm
         return self
 
     def on_edge(
         self, face: str, at: float | None = None, require: str = "required"
     ) -> Part:
+        """Declare an edge-mate constraint (the ``edge_mate`` row).
+
+        Args:
+            face (str): Board edge face the part mates, e.g. ``"left"``.
+            at (float | None): Position along the edge, millimetres.
+            require (str): Requirement strength — ``"required"`` or a
+                softer ask.
+        """
         mate: dict[str, Any] = {"face": face, "require": require}
         if at is not None:
             mate["at"] = at
@@ -560,6 +773,7 @@ class Part:
         return self
 
     def to_dict(self) -> dict[str, Any]:
+        """The component's batch row (a ``components[]`` entry)."""
         d: dict[str, Any] = {"refdes": self.refdes}
         if self.label is not None:
             d["label"] = self.label
@@ -658,6 +872,28 @@ class Net:
         width_mm: float | None = None,
         meta: dict[str, Any] | None = None,
     ) -> None:
+        """Create the net — normally via :meth:`Board.net`, not directly.
+
+        Args:
+            board (Board): The owning board.
+            name (str): Net name — already module-qualified.
+            cls (str | None): Net class — the :meth:`Board.net_class`
+                name whose rules this net obeys.
+            current (float | None): Estimated max current, amps
+                (``est_current_a``).
+            voltage (float | None): Working voltage, volts
+                (``working_voltage_v``).
+            impedance (float | None): Controlled-impedance target, ohms.
+            edge_rate (float | None): Switching edge rate, V/ns — the
+                aggressor annotation (``edge_rate_v_per_ns``).
+            function (str | None): Function hint (``function_hint``),
+                e.g. ``"i2c_sda"``.
+            note (str | None): Free-text note on the net's batch row.
+            domain (str | None): Net domain — ``'electrical'`` or omit.
+            width_mm (float | None): Trace width hint, millimetres.
+            meta (dict | None): Extra keys merged verbatim into the
+                net's ``meta`` batch key.
+        """
         self.board = board
         self.name = name
         self.cls = cls
@@ -682,10 +918,22 @@ class Net:
         its net is recorded for the solver, no concrete connection is
         emitted (the solver picks the pin). ``current=pcb.Max("20mA")``
         plus ``source="ds:…~chunk…"`` attach a checkable requirement
-        with provenance to the connection (Decision 15)."""
+        with provenance to the connection (Decision 15).
+
+        Args:
+            pins (Pin | FlexPin): Pins (or flex slots) to wire onto this
+                net.
+            note (str | None): Note on each emitted connection row.
+            current (Bound | None): ``pcb.Max``/``pcb.Min`` checkable
+                current requirement for the connections.
+            source (str | None): Provenance chunk id for the requirement
+                (``"ds:<id>~<chunk>"``).
+        """
         if current is not None and not isinstance(current, Bound):
-            raise PcbBuilderError(
-                f"net {self.name!r}: current= takes pcb.Max/pcb.Min, got {current!r}"
+            raise _bad_kwarg(
+                Net.tie,
+                "current",
+                f"net {self.name!r}: current= takes pcb.Max/pcb.Min, got {current!r}",
             )
         for p in pins:
             if isinstance(p, FlexPin):
@@ -707,6 +955,7 @@ class Net:
         return self.board.pins_on(self.name)
 
     def to_dict(self) -> dict[str, Any]:
+        """The net's batch row (a ``nets[]`` entry)."""
         d: dict[str, Any] = {"name": self.name}
         if self.cls is not None:
             d["class"] = self.cls
@@ -736,6 +985,12 @@ class Role:
     it, a pin ``client_of`` it."""
 
     def __init__(self, name: str, voltage: float | None = None) -> None:
+        """Create the role — normally via :meth:`Board.role`.
+
+        Args:
+            name (str): Role name, e.g. ``"3v3"``.
+            voltage (float | None): Nominal voltage, volts.
+        """
         self.name = name
         self.voltage = voltage
 
@@ -1109,6 +1364,23 @@ class Board:
         outline: dict[str, Any] | list[tuple[float, float]] | None = None,
         meta: dict[str, Any] | None = None,
     ) -> None:
+        """Create the board in memory; :meth:`to_batch` emits the
+        ``pcb_apply`` payload.
+
+        Args:
+            slug (str): Board slug — the design's stable name.
+            profile (str | None): Profile name emitted as the batch's
+                ``profile`` key.
+            stackup (str | int | None): Copper-layer count (``4``) or a
+                preset name (``'2l'``, ``'4l-two-sided'``,
+                ``'4l-top-only'``); omit for the 4-layer default.
+            sides (str): ``"both"`` (default); anything else is emitted
+                as ``meta.placement_sides``.
+            outline (dict | list | None): Board outline — a :func:`rect`
+                geometry dict or an ``(x, y)`` point list.
+            meta (dict | None): Free-form keys for the batch ``meta``
+                dict.
+        """
         self.slug = slug
         self.profile = profile
         self.stackup = stackup
@@ -1132,20 +1404,26 @@ class Board:
         self._board_ctx_tokens: list[Any] = []
 
         if isinstance(stackup, list):
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                Board.__init__,
+                "stackup",
                 f"stackup= takes a layer count or a preset name, not a list "
-                f"({stackup!r}) — use stackup={len(stackup)}"
+                f"({stackup!r}) — use stackup={len(stackup)}",
             )
         if isinstance(stackup, bool) or (
             stackup is not None and not isinstance(stackup, int | str)
         ):
-            raise PcbBuilderError(
-                f"stackup {stackup!r} is not a layer count or preset name"
+            raise _bad_kwarg(
+                Board.__init__,
+                "stackup",
+                f"stackup {stackup!r} is not a layer count or preset name",
             )
         if isinstance(stackup, int) and stackup < 2:
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                Board.__init__,
+                "stackup",
                 f"stackup {stackup} — a board has at least the two outer "
-                f"copper layers (F.Cu/B.Cu)"
+                f"copper layers (F.Cu/B.Cu)",
             )
         if isinstance(stackup, int):
             self.meta["stackup_layers"] = [
@@ -1178,7 +1456,11 @@ class Board:
         """:func:`catalog` bound to THIS board — the read's manifest
         ``parts`` row lands here and only here; a pending module-level
         read of the same part number is NOT consumed (it belongs to the
-        board that owns it, or the next manifest if none does)."""
+        board that owns it, or the next manifest if none does).
+
+        Args:
+            lcsc (str): Catalog part number to read.
+        """
         part = _catalog_read(lcsc)
         if part.resolved or part.error is not None:
             self._catalog_reads[part.lcsc] = _manifest_entry(part)
@@ -1200,7 +1482,11 @@ class Board:
     def footprint(self, fp: Footprint) -> Footprint:
         """Register an authored footprint (authored order is batch order).
         Re-registering the same instance is a no-op; a different instance
-        under a used name is refused."""
+        under a used name is refused.
+
+        Args:
+            fp (Footprint): The authored footprint to register.
+        """
         prev = self._footprints.get(fp.name)
         if prev is None:
             self._footprints[fp.name] = fp
@@ -1236,14 +1522,43 @@ class Board:
         ``height_mm``; explicit kwargs win, a conflicting ``lcsc=``
         refuses. An unresolved ref still sets ``lcsc`` (it resolves
         server-side on apply); only a resolved one can supply the
-        footprint name."""
+        footprint name.
+
+        Args:
+            refdes (str): Reference designator — under :meth:`use` it
+                qualifies as ``<prefix>.<refdes>``; a used one refuses.
+            lcsc (str | None): Catalog part number — must agree with a
+                ``part=`` ref when both are given.
+            part (CatalogPart | str | None): Catalog ref — a
+                :class:`CatalogPart` or an lcsc string read through
+                :meth:`catalog`; supplies ``lcsc``/``footprint``/
+                ``height_mm`` unless kwargs override.
+            label (str | None): Display label override.
+            footprint (str | Footprint | None): Registered footprint
+                name, or an authored :class:`Footprint` (registered on
+                first use).
+            value (str | None): Component value, e.g. ``"10k"``.
+            height_mm (float | None): Component height, millimetres.
+            roles (Iterable[str]): Supply roles the part provides.
+            pins (Iterable): Pins to declare — names, or batch-shaped
+                ``{"name": …, "tags": …, "meta": …}`` dicts.
+            note (str | None): Free-text note on the batch row.
+            part_meta (dict | None): Catalog-identity blob carried
+                verbatim as ``part_meta``.
+            supplies (Any): Authored ``supplies`` declaration list,
+                carried verbatim.
+            pin_swap_groups (Any): Authored swap groups, carried
+                verbatim.
+        """
         if isinstance(part, str):
             part = self.catalog(part)
         if part is not None:
             if lcsc is not None and lcsc != part.lcsc:
-                raise PcbBuilderError(
+                raise _bad_kwarg(
+                    Board.part,
+                    "part",
                     f"part= reads {part.lcsc!r} but lcsc={lcsc!r} was also "
-                    f"given — pass one"
+                    f"given — pass one",
                 )
             lcsc = part.lcsc
             if footprint is None and part.package:
@@ -1259,8 +1574,10 @@ class Board:
                 _CATALOG_READS.pop(part.lcsc, None)
         qualified = self._qualify(refdes, ".")
         if qualified in self._parts:
-            raise PcbBuilderError(
-                f"refdes {qualified!r} already used on board {self.slug!r}"
+            raise _bad_kwarg(
+                Board.part,
+                "refdes",
+                f"refdes {qualified!r} already used on board {self.slug!r}",
             )
         fp_name = (
             self.footprint(footprint).name
@@ -1319,15 +1636,43 @@ class Board:
         width_mm: float | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Net:
+        """Declare an electrical net; :meth:`Net.tie` wires pins onto it.
+        Re-declaring a ``name`` refuses.
+
+        Args:
+            name (str): Net name — under :meth:`use` it qualifies as
+                ``<prefix>/<name>``.
+            cls (str | None): Net class — the :meth:`net_class` name
+                whose rules this net obeys.
+            current (float | None): Estimated max current, amps
+                (``est_current_a``).
+            voltage (float | None): Working voltage, volts
+                (``working_voltage_v``).
+            impedance (float | None): Controlled-impedance target, ohms.
+            edge_rate (float | None): Switching edge rate, V/ns — the
+                aggressor annotation (``edge_rate_v_per_ns``).
+            function (str | None): Function hint (``function_hint``),
+                e.g. ``"i2c_sda"``.
+            note (str | None): Free-text note on the net's batch row.
+            domain (str | None): Net domain — ``'electrical'`` or omit;
+                anything else refuses (only electrical nets route).
+            width_mm (float | None): Trace width hint, millimetres.
+            meta (dict | None): Extra keys merged verbatim into the
+                net's ``meta`` batch key.
+        """
         if domain not in _ELECTRICAL_DOMAINS:
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                Board.net,
+                "domain",
                 f"net {name!r}: domain must be electrical (omit it or pass "
-                f"'electrical'), got {domain!r}"
+                f"'electrical'), got {domain!r}",
             )
         qualified = self._qualify(name, "/")
         if qualified in self._nets:
-            raise PcbBuilderError(
-                f"net {qualified!r} already declared on board {self.slug!r}"
+            raise _bad_kwarg(
+                Board.net,
+                "name",
+                f"net {qualified!r} already declared on board {self.slug!r}",
             )
         n = Net(
             board=self,
@@ -1383,7 +1728,14 @@ class Board:
     def wire(self, pin_a: Pin, pin_b: Pin, name: str | None = None) -> Net:
         """Two-pin net. Without ``name`` the net is minted
         ``<refdes>_<pin>__<refdes>_<pin>`` (the free-ended-net name rule,
-        §1d) and recorded like any other."""
+        §1d) and recorded like any other.
+
+        Args:
+            pin_a (Pin): One end of the wire.
+            pin_b (Pin): The other end.
+            name (str | None): Net name; omit for the auto
+                ``<refdes>_<pin>__<refdes>_<pin>`` name.
+        """
         if name is None:
             name = f"{pin_a.part.refdes}_{pin_a.name}__{pin_b.part.refdes}_{pin_b.name}"
             name = name.replace(".", "_").replace("/", "_")
@@ -1393,11 +1745,24 @@ class Board:
 
     @traced
     def net_class(self, name: str, **rules: Any) -> dict[str, Any]:
+        """Declare a net class — the rule set nets join with ``cls=``.
+
+        Args:
+            name (str): Net class name.
+            rules: Constraint keys (clearances, widths…) carried
+                verbatim into ``net_classes``.
+        """
         self._net_classes[name] = rules
         return rules
 
     @traced
     def role(self, name: str, voltage: float | None = None) -> Role:
+        """Declare a supply role (the ``roles`` batch section).
+
+        Args:
+            name (str): Role name, e.g. ``"3v3"``.
+            voltage (float | None): Nominal voltage, volts.
+        """
         r = Role(name=name, voltage=voltage)
         self._roles[name] = r
         return r
@@ -1414,9 +1779,11 @@ class Board:
         if isinstance(self.stackup, str):
             n = _PRESET_LAYER_COUNTS.get(self.stackup)
             if n is None:
-                raise PcbBuilderError(
+                raise _bad_kwarg(
+                    Board.__init__,
+                    "stackup",
                     f"unknown stackup preset {self.stackup!r} — known: "
-                    f"{sorted(_PRESET_LAYER_COUNTS)}"
+                    f"{sorted(_PRESET_LAYER_COUNTS)}",
                 )
             return n
         return _DEFAULT_LAYER_COUNT
@@ -1436,16 +1803,25 @@ class Board:
             hint = (
                 f" — {layer!r} is index {names.index(layer)}" if layer in names else ""
             )
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                getattr(Board, what),
+                "layer",
                 f"{what}() takes a layer index (0 = top … {n - 1} = bottom), "
-                f"not a name{hint}"
+                f"not a name{hint}",
             )
         return _layer_name(layer, n)
 
     @traced
     def plane(self, layer: int, *, net: Net, priority: int = 0) -> dict[str, Any]:
         """A whole-layer pour for ``net`` on copper layer INDEX ``layer``
-        (``0`` = top … n-1 = bottom; ``-1`` counts from the bottom)."""
+        (``0`` = top … n-1 = bottom; ``-1`` counts from the bottom).
+
+        Args:
+            layer (int): Copper layer index (0 = top … n-1 = bottom;
+                ``-1`` counts from the bottom) — never a name.
+            net (Net): The net the pour belongs to.
+            priority (int): Pour priority when pours overlap.
+        """
         entry = {
             "ftype": "plane_net",
             "layer": self._layer_at(layer, "plane"),
@@ -1463,7 +1839,13 @@ class Board:
         note: str | None = None,
     ) -> dict[str, Any]:
         """The board outline (one per board): a :func:`rect` geometry or a
-        point list (closed by the caller if it should be)."""
+        point list (closed by the caller if it should be).
+
+        Args:
+            geom (dict | list): Outline geometry — a :func:`rect` dict
+                or an ``(x, y)`` point list.
+            note (str | None): Free-text note on the feature row.
+        """
         if any(f_["ftype"] == "outline" for f_ in self._features):
             raise PcbBuilderError(f"board {self.slug!r} already has an outline")
         if not isinstance(geom, dict):
@@ -1485,6 +1867,16 @@ class Board:
         plated: bool = True,
         note: str | None = None,
     ) -> dict[str, Any]:
+        """A mounting hole feature.
+
+        Args:
+            x (float): Centre x, millimetres.
+            y (float): Centre y, millimetres.
+            drill (float): Drill diameter, millimetres.
+            ring (float): Annular ring diameter, millimetres.
+            plated (bool): Plated barrel (default True).
+            note (str | None): Free-text note on the feature row.
+        """
         f_: dict[str, Any] = {
             "ftype": "mounting_hole",
             "x": x,
@@ -1498,6 +1890,12 @@ class Board:
 
     @traced
     def fiducial(self, x: float, y: float) -> dict[str, Any]:
+        """A fiducial marker feature.
+
+        Args:
+            x (float): Marker x, millimetres.
+            y (float): Marker y, millimetres.
+        """
         f_ = {"ftype": "fiducial", "x": x, "y": y}
         self._features.append(f_)
         return f_
@@ -1506,6 +1904,13 @@ class Board:
     def testpoint(
         self, net: Net, x: float | None = None, y: float | None = None
     ) -> dict[str, Any]:
+        """A testpoint feature bound to a net.
+
+        Args:
+            net (Net): The net the testpoint probes.
+            x (float | None): Pad x, millimetres.
+            y (float | None): Pad y, millimetres.
+        """
         f_: dict[str, Any] = {"ftype": "testpoint", "net": net.name}
         if x is not None:
             f_["x"] = x
@@ -1516,6 +1921,7 @@ class Board:
 
     @traced
     def corner_nuts(self) -> dict[str, Any]:
+        """Mounting nuts at the board corners (``corner_nuts``)."""
         f_ = {"ftype": "corner_nuts"}
         self._features.append(f_)
         return f_
@@ -1527,6 +1933,15 @@ class Board:
         layers: Iterable[int] = (),
         reason: str | None = None,
     ) -> dict[str, Any]:
+        """A keepout polygon — optionally restricted to copper layers.
+
+        Args:
+            poly (list[list[float]]): Polygon vertices ``[[x, y], …]``,
+                millimetres.
+            layers (Iterable[int]): Copper layer indexes the keepout
+                applies to; empty = all layers.
+            reason (str | None): Why the area is kept out.
+        """
         f_: dict[str, Any] = {"ftype": "keepout", "geom": {"poly": poly}}
         if layers:
             f_["layers"] = [self._layer_at(layer, "keepout") for layer in layers]
@@ -1538,18 +1953,44 @@ class Board:
     @traced
     def feature(self, ftype: str, **fields: Any) -> dict[str, Any]:
         """An arbitrary ``features[]`` row (``_pcb_insert_feature`` shape)
-        for feature types without a dedicated primitive."""
+        for feature types without a dedicated primitive.
+
+        Args:
+            ftype (str): Feature type tag (the row's ``ftype``).
+            fields: Feature keys carried verbatim into the row.
+        """
         f_: dict[str, Any] = {"ftype": ftype, **fields}
         self._features.append(f_)
         return f_
 
     def near(self, a: Part, b: Part, within_mm: float) -> dict[str, Any]:
+        """Placement measure: keep ``a`` and ``b`` within a distance.
+
+        Args:
+            a (Part): First part.
+            b (Part): Second part.
+            within_mm (float): Max separation, millimetres.
+        """
         return self.measure("near", [a, b], bound=within_mm)
 
     def apart(self, a: Part, b: Part, at_least_mm: float) -> dict[str, Any]:
+        """Placement measure: keep ``a`` and ``b`` at least a distance.
+
+        Args:
+            a (Part): First part.
+            b (Part): Second part.
+            at_least_mm (float): Min separation, millimetres.
+        """
         return self.measure("apart", [a, b], bound=at_least_mm)
 
     def align(self, a: Part, b: Part, axis: str) -> dict[str, Any]:
+        """Placement measure: align ``a`` and ``b`` on an axis.
+
+        Args:
+            a (Part): First part.
+            b (Part): Second part.
+            axis (str): Axis to align on, e.g. ``"x"`` or ``"y"``.
+        """
         m = self.measure("align", [a, b])
         m["axis"] = axis
         return m
@@ -1565,6 +2006,18 @@ class Board:
         hard: bool = False,
         weight: float = 1.0,
     ) -> dict[str, Any]:
+        """A measure row (``measures[]``) — the generic primitive
+        :meth:`near`/:meth:`apart`/:meth:`align` wrap.
+
+        Args:
+            metric (str): Measure name, e.g. ``"near"``.
+            operands (Iterable): Parts (or refdes strings) measured.
+            bound (float | None): Bound on the metric (units are the
+                metric's, mm for distances).
+            goal (float | None): Optimisation goal value.
+            hard (bool): A hard constraint, not a soft cost.
+            weight (float): Soft-constraint weight (default 1.0).
+        """
         m: dict[str, Any] = {
             "metric": metric,
             "operands": [getattr(o, "refdes", o) for o in operands],
@@ -1580,6 +2033,14 @@ class Board:
 
     @traced
     def generate(self, name: str, *, generator: str, **params: Any) -> dict[str, Any]:
+        """A generator row (``generators[]``) — a named generator run
+        server-side on apply.
+
+        Args:
+            name (str): Generator instance name.
+            generator (str): Generator kind/id to run.
+            params: Generator parameters, carried verbatim.
+        """
         g = {"name": name, "generator": generator, "params": params}
         self._generators.append(g)
         return g
@@ -1595,12 +2056,23 @@ class Board:
         offsets: Iterable[tuple[float, float, float]] | None = None,
     ) -> list[Part]:
         """A rigid group (instance meta ``group``/``group_offset``);
-        ``offsets`` are per-part ``(x, y, rot)`` in the group frame."""
+        ``offsets`` are per-part ``(x, y, rot)`` in the group frame.
+
+        Args:
+            name (str): Group name stamped on each member.
+            parts (Iterable[Part]): Members of the group.
+            rigid (bool): Rigidity flag — every group is rigid today.
+            pattern (str | None): Pattern name stamped on each member.
+            offsets (Iterable[tuple] | None): Per-part ``(x, y, rot)``
+                in the group frame — must match ``parts`` 1:1.
+        """
         parts = list(parts)
         offs = list(offsets) if offsets is not None else None
         if offs is not None and len(offs) != len(parts):
-            raise PcbBuilderError(
-                f"group {name!r}: {len(offs)} offsets for {len(parts)} parts"
+            raise _bad_kwarg(
+                Board.group,
+                "offsets",
+                f"group {name!r}: {len(offs)} offsets for {len(parts)} parts",
             )
         for i, p in enumerate(parts):
             p.group = name
@@ -1615,10 +2087,22 @@ class Board:
     def use(self, module_fn: Callable[..., Any], *, prefix: str, **ports: Any) -> Any:
         """Instantiate a module: its parts become ``<prefix>.<local>``, its
         own nets ``<prefix>/<name>``; the ``Net`` arguments are the only
-        outside nets it may touch."""
+        outside nets it may touch.
+
+        Args:
+            module_fn (Callable): The :func:`module`-marked function to
+                run — called ``module_fn(self, **ports)``.
+            prefix (str): Instance prefix — parts become
+                ``<prefix>.<local>``, nets ``<prefix>/<name>``; a used
+                prefix refuses.
+            ports: Arguments handed to the module — the ``Net`` values
+                are the only outside nets it may touch.
+        """
         if prefix in self._used_prefixes:
-            raise PcbBuilderError(
-                f"prefix {prefix!r} already used on board {self.slug!r}"
+            raise _bad_kwarg(
+                Board.use,
+                "prefix",
+                f"prefix {prefix!r} already used on board {self.slug!r}",
             )
         self._used_prefixes.add(prefix)
         allowed = {v.name for v in ports.values() if isinstance(v, Net)}
@@ -1645,11 +2129,18 @@ class Board:
         """The sorted, de-duplicated net names of the connections naming
         ``refdes`` — "which nets does U1 touch" (gr513764: the name reads
         as the net list, so that is what it returns). For the per-pin
-        ``{pin name: net name}`` map see :meth:`pin_nets`."""
+        ``{pin name: net name}`` map see :meth:`pin_nets`.
+
+        Args:
+            refdes (str): Module-qualified refdes — an unknown one
+                refuses.
+        """
         if refdes not in self._parts:
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                Board.nets_of,
+                "refdes",
                 f"nets_of: unknown refdes {refdes!r} — board {self.slug!r} "
-                f"has {len(self._part_order)} parts"
+                f"has {len(self._part_order)} parts",
             )
         return sorted({c["net"] for c in self._connections if c["refdes"] == refdes})
 
@@ -1657,11 +2148,18 @@ class Board:
         """``{pin name: net name}`` — the pin → net map for every
         connection naming ``refdes`` (module-qualified), in the part's
         pin order. (Not ``pin_map``: that name is the footprint
-        pad→pin-name map in the ``pcb_apply`` payload.)"""
+        pad→pin-name map in the ``pcb_apply`` payload.)
+
+        Args:
+            refdes (str): Module-qualified refdes — an unknown one
+                refuses.
+        """
         if refdes not in self._parts:
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                Board.pin_nets,
+                "refdes",
                 f"pin_nets: unknown refdes {refdes!r} — board {self.slug!r} "
-                f"has {len(self._part_order)} parts"
+                f"has {len(self._part_order)} parts",
             )
         order = {n: i for i, n in enumerate(self._parts[refdes]._pin_order)}
         pairs = [
@@ -1674,12 +2172,19 @@ class Board:
         """``(refdes, pin)`` for every connection on ``net``, in authored
         connection order. Accepts the net's name or the :class:`Net`.
         The part-side directions are :meth:`nets_of` (a part's net names)
-        and :meth:`pin_nets` (its pin → net map)."""
+        and :meth:`pin_nets` (its pin → net map).
+
+        Args:
+            net (str | Net): The net's name or the :class:`Net` — an
+                unknown name refuses.
+        """
         name = net.name if isinstance(net, Net) else str(net)
         if name not in self._nets:
-            raise PcbBuilderError(
+            raise _bad_kwarg(
+                Board.pins_on,
+                "net",
                 f"pins_on: unknown net {name!r} — board {self.slug!r} "
-                f"has {len(self._net_order)} nets"
+                f"has {len(self._net_order)} nets",
             )
         return [(c["refdes"], c["pin"]) for c in self._connections if c["net"] == name]
 
@@ -1933,7 +2438,12 @@ class Board:
         side serves — there is no second derivation. ``shape.fits(…)``
         is the callable half. Parts with no pose get no prism and are
         named in ``shape.unplaced``; ``thickness_mm`` overrides the
-        default 1.6 until board thickness is real data (pass A)."""
+        default 1.6 until board thickness is real data (pass A).
+
+        Args:
+            thickness_mm (float | None): Board thickness override, mm —
+                default 1.6 until thickness is real data.
+        """
         parts = [self._parts[r] for r in self._part_order]
         instances = [
             {
@@ -2000,7 +2510,12 @@ class Board:
         run's provenance — ``parts`` records every catalog footprint
         :func:`catalog` resolved (R-e: the ids read + a sha + when — and
         ``{provenance: 'unresolved', error}`` when the read failed) and
-        ``precis_geom`` the wheel's own version."""
+        ``precis_geom`` the wheel's own version.
+
+        Args:
+            requests (Iterable[dict]): The run's request rows, carried
+                into ``requests[]``.
+        """
         # Unattached reads bind to this board now — claimed once, so they
         # cannot leak into a second board's manifest.
         for lcsc in sorted(_CATALOG_READS):

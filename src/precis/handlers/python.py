@@ -468,6 +468,19 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id={id!r}, view='outline')",
             )
 
+        # A `~<param>` selector on a `::` id is a params-view read selector;
+        # every other view would silently drop it — refuse instead.
+        if (
+            parsed.qualname is not None
+            and parsed.block_selector is not None
+            and view not in (None, "params")
+        ):
+            raise BadInput(
+                f"~{parsed.block_selector!r} selects a param of "
+                f"{parsed.qualname!r}; view={view!r} ignores it",
+                next="~param only applies to view='params' or a bare get",
+            )
+
         # Provenance drill-down — the wrapper renders the full detail block;
         # here we only register the file(s) the id addresses.
         if view == "provenance":
