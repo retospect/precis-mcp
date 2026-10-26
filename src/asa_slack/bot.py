@@ -25,6 +25,10 @@ Flow per inbound message (human or bot, any channel the app is in):
      follow-up in a thread asa already replied in — otherwise stop here
      (captured, no reply). Operator directive: on shared channels asa
      listens by default and only talks when spoken to.
+  2c. rewrite asa's own ``<@U…>`` mention to ``@asa`` in the model-facing
+     text — the wire form is an opaque id the model can't map to itself
+     (gr518352). Every other user's ``<@U…>`` stays verbatim, so a reply
+     quoting it still produces a real Slack mention
   3. post an in-thread "thinking..." placeholder
   4. build the system prompt (SOUL + Slack hints + who's talking, via
      ``asa_bot.preamble.build`` — its per-user ``memory`` note mechanism
@@ -63,6 +67,9 @@ from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
 from precis.utils.msgsplit import split_message
 
 log = logging.getLogger(__name__)
+
+# Slack's wire form for a mention: ``<@U0ABC123>``, legacy ``<@U0ABC|name>``.
+_SLACK_MENTION = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
 
 # Message-event subtypes that aren't a chat turn — edits, deletes, channel
 # housekeeping. Anything else (plain messages, and bot-posted messages,
@@ -226,6 +233,9 @@ class AsaSlack:
             thread_engaged=slug in self._engaged_threads,
         )
 
+        # The gate reads the wire form; the model sees @asa for self.
+        text = self._rewrite_self_mention(text)
+
         # Serialize turns within one thread (cross-thread runs concurrently).
         lock = self._thread_locks.setdefault(slug, asyncio.Lock())
         async with lock:
@@ -270,6 +280,23 @@ class AsaSlack:
         who = Identity(slack_id=key, real_name=real_name, is_bot=is_bot)
         self._identity_cache[key] = who
         return who
+
+    def _rewrite_self_mention(self, text: str) -> str:
+        """Rewrite only Asa's own ``<@U…>`` mention to ``@asa``.
+
+        Slack delivers the wire form — an opaque id the model can't map to
+        *itself* (gr518352: asa read ``<@U0ASA>`` as chatter about a
+        third-party "Asa" and sat the thread out). ``@asa`` is the name the
+        preamble's "You're @asa" line already uses. Every other user's
+        ``<@U…>`` (legacy ``<@U…|name>`` included) stays verbatim: a reply
+        quoting it still produces a real Slack mention, and a person
+        actually named "asa" can never read as Asa. The captured turn
+        stores this text too, so the transcript reads as the prompt did.
+        """
+        return _SLACK_MENTION.sub(
+            lambda m: "@asa" if m.group(1) == self._own_user_id else m.group(0),
+            text,
+        )
 
     async def _resolve_channel_name(self, client: Any, channel_id: str) -> str:
         cached = self._channel_name_cache.get(channel_id)

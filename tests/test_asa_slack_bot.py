@@ -187,6 +187,37 @@ def test_gate_dm_always_replies(monkeypatch):
     assert len(client2.posted) == 1
 
 
+def test_self_mention_renders_as_asa_for_the_model(monkeypatch):
+    """gr518352: the wire ``<@U0ASA>`` form is an opaque id — asa read its
+    own mention as third-party chatter about "Asa" and declined. The
+    model-facing text (and the captured turn) must carry ``@asa``."""
+    import asyncio
+
+    instance, captures = _make_bot(monkeypatch)
+    client = _FakeClient()
+    asyncio.run(
+        instance._handle_message(_event("<@U0ASA> can you look at this?"), client)
+    )
+    assert captures[0]["text"] == "@asa can you look at this?"
+
+
+def test_rewrite_self_mention_only_touches_asas_own(monkeypatch):
+    """gr518352 review: only asa's own ``<@U…>`` becomes ``@asa`` — every
+    other user's wire form stays verbatim, so a reply quoting it still
+    produces a real Slack mention and a person named "asa" can't read as
+    Asa."""
+    instance, _captures = _make_bot(monkeypatch)
+    out = instance._rewrite_self_mention("hi <@U0ASA> and <@U1ROCKY>")
+    assert out == "hi @asa and <@U1ROCKY>"
+    # Legacy ``<@U…|name>`` form: self still rewrites; another user's
+    # whole wire span keeps its verbatim form.
+    assert instance._rewrite_self_mention("hi <@U0ASA|asa>") == "hi @asa"
+    assert (
+        instance._rewrite_self_mention("hi <@U1ROCKY|Rocky>") == "hi <@U1ROCKY|Rocky>"
+    )
+    assert instance._rewrite_self_mention("no mention") == "no mention"
+
+
 def test_gate_off_restores_reply_to_everything(monkeypatch):
     import asyncio
     import dataclasses

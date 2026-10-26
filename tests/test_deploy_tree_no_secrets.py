@@ -25,8 +25,10 @@ committed. The committed, scrubbed template shape lives in
 
 This runs inside the normal ``scripts/ship`` pytest gate, so a secret that
 reaches any tracked file fails the ship before it can ever be pushed.
-Filesystem walk (no ``git``) so it is robust in the container gate where
-``.git`` may be absent.
+Files are enumerated with ``git ls-files`` — only TRACKED files are scanned,
+so untracked or gitignored scratch (e.g. a sibling builder's uv-cache,
+gr518224) can never trip the gate. When there is no checkout (the container
+gate can run with ``.git`` absent) it falls back to a filesystem walk.
 
 **Legitimate uses exist** — the SSRF blocklist in ``utils/safe_fetch.py`` must
 name RFC1918 and CGNAT *ranges*, and this file's own self-test must quote the
@@ -51,6 +53,8 @@ from __future__ import annotations
 
 import errno
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -156,13 +160,54 @@ _CREDENTIAL_ALLOWLIST: dict[str, str] = {
 }
 
 
+def _git_tracked_files(root: Path) -> list[Path] | None:
+    """Tracked files under ``root`` per ``git ls-files``; ``None`` to fall
+    back to a filesystem walk.
+
+    Returns ``None`` when ``root`` isn't inside this checkout or the
+    checkout has no ``.git`` (the container gate). When a checkout IS
+    present the listing must succeed: a ``git`` failure mid-gate is
+    :class:`ScanIncomplete`, not a silent partial scan and not the noisy
+    walk the listing exists to replace.
+    """
+    if not root.is_relative_to(_REPO_ROOT) or not (_REPO_ROOT / ".git").exists():
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout
+    except subprocess.CalledProcessError as exc:
+        raise ScanIncomplete(
+            OSError(exc.returncode, f"git ls-files exited {exc.returncode}"),
+            f"listing tracked files under {root}",
+        ) from exc
+    except OSError as exc:
+        raise ScanIncomplete(exc, f"listing tracked files under {root}") from exc
+    try:
+        return [
+            p
+            for rel in out.split("\0")
+            if rel
+            for p in (root / rel,)
+            if p.is_file()
+            and not any(part in _SKIP_DIRS for part in p.relative_to(root).parts)
+        ]
+    except OSError as exc:
+        raise ScanIncomplete(exc, f"walking {root}") from exc
+
+
 def _scannable_files(root: Path) -> list[Path]:
-    """Every text file under ``root``, minus skipped dirs and binaries."""
-    return [
-        path
-        for path in walk_files(root, skip_dirs=_SKIP_DIRS)
-        if path.suffix.lower() not in _BINARY_SUFFIXES
-    ]
+    """Every scannable text file under ``root``, minus skipped dirs and
+    binaries — tracked files via ``git ls-files`` when a checkout is
+    present, else a filesystem walk."""
+    files = _git_tracked_files(root)
+    if files is None:
+        files = walk_files(root, skip_dirs=_SKIP_DIRS)
+    return [p for p in files if p.suffix.lower() not in _BINARY_SUFFIXES]
 
 
 def _scan(root: Path, patterns: list[tuple[str, re.Pattern[str]]]) -> list[str]:
@@ -340,6 +385,32 @@ def test_repo_walk_is_not_vacuous() -> None:
     found = _scannable_files(_REPO_ROOT)
     assert len(found) > 100, f"tree-wide walk found only {len(found)} files"
     assert any(p.name == "safe_fetch.py" for p in found), "walk missed src/"
+
+
+def test_only_tracked_files_reach_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr518224: untracked and gitignored scratch must not trip the gate —
+    only ``git ls-files`` output is scanned. A file joins the scan the
+    moment it is staged (``git add``), so a secret can't slip through by
+    sitting in the worktree uncommitted-but-staged."""
+    if shutil.which("git") is None:
+        pytest.skip("git not on PATH")
+    tailnet = ".".join(("100", "100", "7", "7"))  # assembled, file stays clean
+    (tmp_path / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "junk.txt").write_text(f"ip {tailnet}\n", encoding="utf-8")
+    (tmp_path / "scratch.txt").write_text(f"ip {tailnet}\n", encoding="utf-8")
+    (tmp_path / "clean.txt").write_text("nothing\n", encoding="utf-8")
+    for args in (["init", "-q"], ["add", "clean.txt"]):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True)
+    monkeypatch.setattr(f"{__name__}._REPO_ROOT", tmp_path)
+    # gitignored cache/ and untracked scratch.txt are both outside the scan.
+    assert _scan(tmp_path, _FORBIDDEN_ANYWHERE) == []
+    # Staged = tracked: the same file is scanned and flagged.
+    subprocess.run(["git", "-C", str(tmp_path), "add", "scratch.txt"], check=True)
+    hits = _scan(tmp_path, _FORBIDDEN_ANYWHERE)
+    assert hits == [f"scratch.txt:1: tailscale ip (CGNAT) → ip {tailnet}"]
 
 
 _ENFILE = OSError(errno.ENFILE, "Too many open files in system")
