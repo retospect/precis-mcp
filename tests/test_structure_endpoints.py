@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 import numpy as np
 import pytest
@@ -503,6 +504,38 @@ def test_pd111_with_surface_cu_dopant_builds_the_same_pair() -> None:
     apply_ops(scene_fs, _fs_ops(mg_site))
     _assert_reaction_done(scene_fs)
     _assert_pair(scene_is, scene_fs)
+
+
+def test_slab_op_skill_examples_dry_build() -> None:
+    """gr520132: the slab skill's slab-op H2 carries two worked
+    examples (an Ni adatom on Cu(111); an Ni single-atom alloy + a
+    bridging O). Parse their ``text='{…}'`` payloads back out of the
+    skill file and dry-build each — a schema drift (a renamed arg, a dead
+    site type, a wrong anchor count) fails here instead of in the next
+    quest tick."""
+    pytest.importorskip("ase")
+    from tests._skill_roots import skill_path
+
+    text = skill_path("precis-structure-slab-help").read_text(encoding="utf-8")
+    section = text.split("## Build a slab", 1)[1].split("\n## ", 1)[0]
+    payloads = [
+        json.loads(m) for m in re.findall(r"text='(\{.*?\})'", section, re.DOTALL)
+    ]
+    assert len(payloads) == 2
+    adatom, saa = payloads
+    # The Ni adatom: aNi1 minted on the aCu28 top site.
+    scene = Scene(cell=Cell(np.eye(3) * 20.0))
+    apply_ops(scene, adatom["ops"])
+    assert len(scene.atoms) == 37
+    assert scene.atoms["aNi1"].element == "Ni"
+    # The Ni SAA + bridging O: set_element keeps the aCu28 label — the
+    # dopant IS aCu28 — and aO1 lands over the aCu28–aCu29 bridge.
+    scene = Scene(cell=Cell(np.eye(3) * 20.0))
+    apply_ops(scene, saa["ops"])
+    assert len(scene.atoms) == 37
+    assert scene.atoms["aCu28"].element == "Ni"
+    assert scene.atoms["aO1"].element == "O"
+    assert _errors(validate(scene)) == []
 
 
 # -- the derive_from door (handler-level, db fixture) ---------------------

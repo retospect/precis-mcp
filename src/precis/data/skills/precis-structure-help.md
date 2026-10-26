@@ -10,8 +10,6 @@ answers:
   - how do I export a structure to POSCAR or CIF?
   - how do I put a picture of a structure or se block into a draft figure?
   - does it matter where in the cell I put a dopant?
-  - what does a 3×3 slab supercell mean for coverage?
-  - how do I place an adsorbate on a real site (top/bridge/hollow) without guessing a z coordinate?
 applies-to: get/search/put/edit/delete (kind='structure')
 status: active
 tags: design, verbs
@@ -165,79 +163,10 @@ geometry gets fixed by `relax`, and DFT consumes positions + cell (bonds are
 dropped on export). Auto-detected bonds from geometry show up in
 probes tagged `inferred` — you always see the best picture of reality.
 
-## Place an adsorbate on a real site, not a guessed z
+## Build a slab — `precis-structure-slab-help`
 
-```python
-edit(
-    kind="structure",
-    id="pd111",
-    ops=[
-        {
-            "op": "add_atom_site",
-            "element": "H",
-            "site": {"type": "hollow", "anchors": ["aPd10", "aPd11", "aPd12"]},
-        },
-    ],
-)
-```
-
-`z` comes from the anchors' own geometry, never a remembered constant — a
-`frac` copied from another cell doesn't transfer. Use raw `add_atom` only
-when no anchor exists yet; on the standard Pd(111) `[3,3,4]`/vacuum-10
-cell, on-surface hollow is `z≈0.46` (a ~1 Å H–metal bond) — `frac z=0.66`
-looks plausible but floats H ~4.3 Å off the surface: preflight fails or
-the relax finishes in 0 steps at a subsurface-degenerate energy.
-
-## Reaction endpoints — a label-matched IS/FS pair
-
-An NEB band interpolates between endpoints **by atom label** — a final
-state re-`put` from scratch gets fresh labels and can never pair. Branch
-the FS off the IS instead (`args={'derive_from': …}` on `put`), so labels,
-elements, cell and the fixed set carry over:
-
-```python
-# IS: Cu(111) [3,3,4], bottom two layers frozen; O* on a bridge site,
-# CH4 physisorbed on a neighbouring top site.
-put(kind="structure", id="cu_is", text='{"ops":[
-  {"op":"slab","element":"Cu","size":[3,3,4],"fix_layers":2},
-  {"op":"add_adsorbate","species":"O","site":{"type":"bridge","anchors":["aCu28","aCu29"]},"height":1.9},
-  {"op":"add_adsorbate","species":"CH4","site":{"type":"top","anchors":["aCu31"]},"height":2.5}]}')
-
-# FS: CH4 + O* → CH3* + OH* — one transfer of an H from C onto O, then
-# the remaining CH3 fragment moved to a fresh top site.
-put(kind="structure", id="cu_fs", args={
-  "derive_from": "cu_is",
-  "ops": [
-    {"op":"transfer","from":"aC1","to":"aO1"},
-    {"op":"move_group","atom":"aC1","site":{"type":"top","anchors":["aCu34"]},"height":2.4},
-  ]})
-```
-
-The derive ack reports the pair verdict: `labels preserved …
-NEB-pairable` when the atom set survives, `atom set changed (+a/-r): not
-NEB-pairable` when an op added or removed atoms. `transfer`'s `from:`
-picks the declared-bonded atom nearest `to` (an equidistant tie refuses
-naming both — pick with `atom:`); `move_group` carries the whole
-declared-bond fragment rigidly and refuses when it holds a fixed or slab
-atom (slab = the largest connected metal cluster — a dopant inside it
-counts as slab). Site labels come from the design TOC. Both land
-starting-guess geometry — `relax` each endpoint at `fidelity:"ml"` first.
-
-Then check the pair (read-only, no compute):
-
-```python
-get(kind="structure", id="cu_is", view="pair", args={"other": "cu_fs"})
-```
-
-One row per gate — same atoms/cell/fixed set · slab anchored (≥1 fixed
-slab atom) · validator-clean · a converged `ml` run at one model on
-*both* current versions · distinct basins (max adsorbate move ≥ 0.3 Å)
-· ≤2 bond changes · no >5 Å drag — each `fail` row's `next` is the
-working fix; `warn` never blocks. `relaxed` fails until both endpoints
-have relaxed at `ml`.
-
-Clean pair → `put(mode="neb", args={"final": <slug>})` queues a
-`struct_neb` job (`ml` rung, deduped); `view="neb"` reads it.
+The `slab` op walkthrough, adsorbate site placement and the
+IS/FS endpoint-pair workflow moved to `precis-structure-slab-help`.
 
 ## Edit — `edit(id=<slug>, ops=[…])`
 
