@@ -21,5 +21,5 @@ Defaults!{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }} e
 Defaults!{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }} env_keep += "LANG LC_ALL TERM CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY CLAUDE_CODE_MCP_STARTUP_WAIT_MS PRECIS_NO_AUTOREAP PRECIS_CURRENT_AGENTLOG PRECIS_CURRENT_MODEL PRECIS_ACTING_USER PRECIS_CURRENT_TODO PRECIS_WORKSPACE PRECIS_KINDS_DISABLED PRECIS_PYTHON_ROOTS PRECIS_MCP_DB_ROLE PRECIS_MCP_DENY_VERBS PRECIS_MCP_CONFIG"
 # sudo would otherwise log every allowed invocation's full argv — which
 # carries the `-p` prompt, i.e. untrusted gripe text, into the system log.
-Defaults!{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }} !log_allowed
+Defaults!{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }} !syslog
 {% endif %}

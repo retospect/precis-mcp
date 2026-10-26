@@ -25,7 +25,7 @@ Pins:
   claude's auth vars, with ``env_reset`` pinned per-command;
 * the sudoers template grants deploy the one wrapper command only, never
   grants the run user anything, keeps prompt argv out of the system log
-  (``!log_allowed``), and stays byte-identical to today when
+  (``!syslog``), and stays byte-identical to today when
   ``claude_run_user`` is unset;
 * every claude-spawning darwin unit env (20b collapsed, 20e agentlane, the
   dormant split-unit rollback plist) points ``PRECIS_CLAUDE_BIN`` at the
@@ -503,7 +503,7 @@ def test_sudoers_does_not_log_wrapper_argv() -> None:
     """sudo logs every allowed invocation's argv — which carries the `-p`
     prompt, i.e. untrusted gripe text — into the system log."""
     out = _render_sudoers(claude_run_user=_RUN_USER)
-    assert f"Defaults!{_WRAPPER} !log_allowed" in out
+    assert f"Defaults!{_WRAPPER} !syslog" in out
 
 
 # ── unit env wiring ─────────────────────────────────────────────────────

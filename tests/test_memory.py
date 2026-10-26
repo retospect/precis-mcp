@@ -1180,6 +1180,9 @@ def test_stale_anchored_edit_rolls_back_body_meta_events_and_derived_rows(
 
     def read_then_commit_other_edit(ref: Any) -> str:
         snapshot = read_body(ref)
+        # One-shot: the winner's replace renders link hints that read
+        # ``_body_text`` too — they must not re-enter this hook.
+        monkeypatch.setattr(handler, "_body_text", read_body)
         handler.edit(id=mid, mode="replace", text=winner_body)
         chunk_id = store.chunks.list_chunks_for_ref(mid)[0].id
         winner_chunk_ids.append(chunk_id)
