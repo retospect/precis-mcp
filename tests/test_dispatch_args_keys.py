@@ -30,6 +30,7 @@ PASSTHROUGH = [
     ("todo", "search"),
     ("todo", "delete"),
     ("gripe", "delete"),
+    ("measure", "search"),
     ("draft", "get"),
     ("python", "get"),
     ("pcb", "put"),

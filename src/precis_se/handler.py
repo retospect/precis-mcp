@@ -678,6 +678,7 @@ class SeHandler(Handler):
             "fab",
             "assembly_check",
             "trace",
+            "joints",
             "ops",
             "links",
         ),

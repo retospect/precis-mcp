@@ -1402,11 +1402,12 @@ def test_missing_threads_dir_is_an_empty_index(tmp_path: Path) -> None:
 
 
 def test_cadence_is_15min_service_gated_and_spendy() -> None:
-    from precis.workers.scheduler import CADENCES
+    from precis.workers.scheduler import CADENCES, _gripe_triage_eligible
 
     cad = next(c for c in CADENCES if c.name == "gripe_triage")
     assert cad.interval_s == 15 * 60
-    assert cad.host_affinity is None and cad.eligible is None
+    # gr518089: a host without a usable claude lane skips the claim.
+    assert cad.host_affinity is None and cad.eligible is _gripe_triage_eligible
     # gr518089: the claim is gated on the host's resolved
     # `gripe_triage` service_config prio — a dimmed host skips so a lit
     # host still gets the fire.

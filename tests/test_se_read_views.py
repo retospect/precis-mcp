@@ -90,7 +90,8 @@ def test_connect_like_spellings_point_at_the_view(handler: SeHandler) -> None:
     """Near-miss spellings refuse short and pointed — the gripe's bar
     was a one-line answer under 600 chars, not the ~50-view wall."""
     handler.put(id="c1", text="{}")
-    for v in ("connect", "joint", "joints"):
+    # 'joints' is a real view (the joint vocabulary), not a near-miss.
+    for v in ("connect", "joint"):
         with pytest.raises(BadInput) as exc:
             handler.get(id="c1", view=v)
         next_ = str(exc.value.next)
