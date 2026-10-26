@@ -6,6 +6,8 @@ summary: the first line of a memory/todo/gripe is its entire scannable surface �
 answers:
   - why does the first line of a memory or todo matter so much?
   - what's the actionable-axis pattern for something that points forward?
+  - how do I write a good memory title and description?
+  - which field does memory search match — title, hook, or first line?
 applies-to: put (kind='memory'/'todo'/'gripe')
 tags: drafting
 kinds: memory, todo, gripe
@@ -19,13 +21,26 @@ On any numeric-ref kind (`memory`, `todo`, `gripe`) the
 `/recent` listings, search hits, the grid, and review tiers. Everything
 else is body you only see after you've already decided to open it.
 
-For `memory`, that header is the **`title=`** field: a short scannable
-line stored on the ref, separate from the body prose in `text=`. Write
-it with the same discipline as a first line. If you omit `title=`, it's
-derived from the body's **first line** (capped at 80 chars) — so the
-first-line discipline below still matters as the fallback header. For
-the other kinds the first line of the body *is* the header, by being
-first.
+For `memory`, that header is the **`title=`** field, backed by two more
+retrieval keys — `meta.hook` and the body's first line — defined under
+"Retrieval keys" below. For the other kinds the first line of the body
+*is* the header, by being first.
+
+## Retrieval keys — title vs hook vs first body line
+
+Three fields decide whether a `memory` is found again — defined once
+here, every other doc points here:
+
+- **`title=`** — the header shown in listings, search hits and the
+  grid; matched (with the hook) by `search(kind='memory', q=…,
+  scope='title')`. Carry the terms you will search for — entity,
+  number, scope — in ~12 words.
+- **`meta.hook`** — the one-line index text `view='index'` and recall
+  print after the title (repo-dev convention: status + resume point);
+  also matched by `scope='title'`.
+- **first body line** — the fallback for both: `title=` is derived
+  from it when omitted (capped at 80 chars), and the index line falls
+  back to it when there is no hook.
 
 ## The principle
 
@@ -49,25 +64,27 @@ put(
     text="bge-m3 beat e5 on our retrieval set; e5 lost most on the "
     "long-context youtube transcripts. Kept bge-m3 as default.",
     title="bge-m3 beat e5 on our retrieval set (nDCG 0.71 vs 0.64)",
-    tags=["memory:finding", "user:asa"],
+    tags=["topic:embeddings", "confidence-strong"],
 )
 ```
 
 ## Per-shape patterns
 
-Pick the shape that fits, then write the header to match (the memory
-shapes go in `title=`; todo/gripe in the first body line):
+Pick the shape that fits, then write the header to match — the memory
+shapes go in `title=`, todo/gripe in the first body line. These are
+header *patterns*, not tags; tag vocabulary lives in `precis-tags` (on
+repo-dev the node type is the `section:<type>` tag, `precis-memory-help`).
 
 ```
-shape            header pattern
-memory:decision  Decided: <what> (+ short reason if it fits)
-memory:finding   <conclusion> (<scope or source>)
-memory:open      Open: <the literal question>
-memory:distilled <the distillation, one sentence>
-memory:ref-anchor <source>: <what's there>
-memory:thought   <the thought, first person>
-todo             imperative + the very next physical action (GTD: next step, not the outcome)
-gripe            symptom first, not cause
+shape           header pattern
+decision        Decided: <what> (+ short reason if it fits)
+finding         <conclusion> (<scope or source>)
+open question   Open: <the literal question>
+distilled       <the distillation, one sentence>
+ref-anchor      <source>: <what's there>
+thought         <the thought, first person>
+todo            imperative + the very next physical action (GTD: next step, not the outcome)
+gripe           symptom first, not cause
 ```
 
 ## The actionable axis (for anything that points forward)

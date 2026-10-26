@@ -460,7 +460,7 @@ def _addressable_chunk_idx(hit: SearchHit) -> int | None:
     text = scope_render(text, "write")[0]
     heading = strip_heading_mark(hit.heading)
     for i, chunk in enumerate(chunk_by_h2(text)):
-        if chunk.heading == heading:
+        if chunk.heading == heading or heading in chunk.aliases:
             return i
     return None
 
@@ -496,6 +496,39 @@ def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
         section=section,
         snippet=(hit.snippet or "").strip(),
     )
+
+
+def _title_pin_section(
+    slug: str, qtokens: set[str], existing: _SkillSearchRow | None
+) -> str:
+    """Section handle for a title-pinned row (gr520283).
+
+    A bare "title match" label lands the agent on the whole folded
+    card; the pin means the query names the skill, not which section
+    of it answers the question. Reuse the merged semantic row's
+    ``~N`` handle when one exists (it already carries the best
+    section), else pick the structural chunk with the most query-
+    token overlap — a lexical stand-in when the index is cold.
+    ``"title match"`` is the fallback when no chunk overlaps at all
+    (an identity-only pin, e.g. a DF==1 bypass).
+    """
+    if existing is not None and existing.section.startswith("~"):
+        return existing.section
+    text = _load_skill(slug)
+    if text is None:
+        return "title match"
+    text = scope_render(text, "write")[0]
+    chunks = chunk_by_h2(text)
+    best: tuple[int, str] | None = None
+    for i, chunk in enumerate(chunks):
+        overlap = len(qtokens & set(_content_tokens(chunk.text)))
+        if best is None or overlap > best[0]:
+            best = (overlap, f"~{i}")
+            if chunk.heading:
+                best = (overlap, f"~{i} — {strip_heading_mark(chunk.heading)}")
+    if best is None or best[0] == 0:
+        return "title match"
+    return best[1]
 
 
 #: ``search(kind='skill', mode=...)`` values — the cross-kind search
@@ -1318,7 +1351,7 @@ class SkillHandler(Handler):
                         slug=slug,
                         score=boost,
                         source="title",
-                        section="title match",
+                        section=_title_pin_section(slug, qtokens, existing_row),
                         snippet=_skill_title_text(slug).strip(),
                     )
 
@@ -1912,7 +1945,11 @@ class SkillHandler(Handler):
         index when available, else ``None`` (the renderer falls
         back to H2 boundaries alone in that case).
         """
-        from precis.skill_index.chunker import CHUNKER_VERSION, chunk_by_h2
+        from precis.skill_index.chunker import (
+            CHUNKER_VERSION,
+            _extract_front_matter_questions,
+            chunk_by_h2,
+        )
         from precis.utils.toc import ChunksForToc
 
         slug = str(ref)
@@ -1962,10 +1999,15 @@ class SkillHandler(Handler):
             except Exception:  # pragma: no cover — defensive
                 embeddings = None
 
+        # The whole-paper row's keyword cell also carries the
+        # ``summary:``/``answers:`` front-matter questions — the
+        # lexical hook ``/toc`` was missing (gr520283).
+        _summary, _answers = _extract_front_matter_questions(text)
         return ChunksForToc(
             chunks_text=chunks_text,
             embeddings=embeddings,
             h2_boundaries=h2_boundaries,
+            paper_keywords_extra=tuple(_answers),
             chunker_version=str(CHUNKER_VERSION),
             embedder_name=embedder_name,
             embedder=getattr(self.hub, "embedder", None) if self.hub else None,
@@ -4145,6 +4187,7 @@ def _dropped_section_headings(read_body: str) -> frozenset[str]:
         ]
         if rest and all(line.startswith("(write recipe omitted") for line in rest):
             out.add(chunk.heading)
+            out.update(chunk.aliases)
     return frozenset(out)
 
 

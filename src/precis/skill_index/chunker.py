@@ -13,16 +13,21 @@ Strategy:
 - Skip optional YAML front-matter delimited by ``---``.
 - The text *before* the first H2 (typically the H1 + intro paragraph)
   is its own "head" chunk, so a skill with no H2s still indexes.
-- Every ``## …`` line opens a new chunk. The heading line is included
+- Every ``## …`` line opens a new chunk — except a run of stacked H2s
+  (below), which open one chunk together. Heading lines are included
   in the chunk text so the embedder sees the section name as part of
   the signal.
-- **Alias groups (v2):** when consecutive H2 headings appear with no
-  body text between them, they form an *alias group*. Each heading
-  in the group emits its own chunk; all chunks in the group share
-  the body that follows the group. This is the v1 mechanism for
-  multi-description-per-chunk (docs-and-skills-redesign decision 4):
-  authors write multiple H2s that describe the same operation from
-  different user angles; each angle embeds under its own heading.
+- **Alias groups (v5):** when consecutive H2 headings appear with no
+  body text between them, they form an *alias group* and merge into
+  ONE chunk whose text keeps every ``##`` line stacked above the
+  shared body. The chunk's ``heading`` joins the group's headings
+  (``"A / B"``) and its ``aliases`` tuple lists them individually,
+  so a ``heading_only`` twin or a fence check on any single alias
+  still resolves to the merged section. v2 emitted one chunk per
+  alias with an identical body — the TOC showed ~40 sections where
+  ~25 were distinct, and a ``~N`` hit landed on a duplicate
+  (gr520283). Multi-angle embedding surface is preserved by the
+  ``heading_only`` twins (v4), which still emit one per alias.
 - Empty groups (alias group at EOF with no body) are dropped.
 - **Body-only twins (v3, opt-in):** with ``with_body_aliases=True``
   every section emits one extra ``variant="body_only"`` chunk carrying
@@ -74,7 +79,10 @@ from typing import Final
 #: - 4 → adds opt-in heading-only and question-only twin chunks
 #:   (same ``with_body_aliases`` flag; question-only pulls front-matter
 #:   ``summary:``/``answers:``).
-CHUNKER_VERSION = 4
+#: - 5 → alias groups merge into ONE chunk (joined heading +
+#:   ``aliases`` tuple, every ``##`` line kept in the text) instead
+#:   of one duplicate-bodied chunk per alias (gr520283).
+CHUNKER_VERSION = 5
 
 #: Every shape a :class:`Chunk` can carry — see :attr:`Chunk.variant`.
 CHUNK_VARIANTS: Final[frozenset[str]] = frozenset(
@@ -86,14 +94,16 @@ CHUNK_VARIANTS: Final[frozenset[str]] = frozenset(
 class Chunk:
     """One H2 section of a markdown file, or a v3/v4 embedding twin.
 
-    ``heading`` is the bare H2 text without the ``## `` prefix, or
+    ``heading`` is the bare H2 text without the ``## `` prefix — for a
+    merged alias group the group's headings joined by ``" / "`` — or
     the empty string for the head chunk (content before the first
     H2) and for ``question_only`` twins (no single heading applies).
-    ``text`` is the chunk's embedding surface — for ``"structural"``
-    that's the heading line + body content, so the embedder sees the
-    heading as part of the signal. In an alias group, multiple
-    structural chunks share identical body text; they differ only by
-    which alias heading prefixes that body.
+    ``aliases`` lists a merged group's individual headings
+    (``()`` for a single-heading chunk or a non-structural twin) so
+    callers resolving by one alias still find this chunk. ``text``
+    is the chunk's embedding surface — for ``"structural"`` that's
+    the heading line(s) + body content, so the embedder sees the
+    heading as part of the signal.
 
     ``variant`` (see :data:`CHUNK_VARIANTS`) is one of:
 
@@ -117,6 +127,9 @@ class Chunk:
     heading: str
     text: str
     variant: str = "structural"
+    #: A merged alias group's individual headings, in file order.
+    #: ``()`` outside a ``"structural"`` chunk of a multi-heading group.
+    aliases: tuple[str, ...] = ()
 
     @property
     def body_only(self) -> bool:
@@ -192,10 +205,11 @@ def chunk_by_h2(text: str, *, with_body_aliases: bool = False) -> list[Chunk]:
     ``question_only`` twins, per ``with_body_aliases`` below).
 
     Alias-group semantics: when two or more H2 headings appear with
-    only whitespace between them, every heading in the group emits
-    a chunk that shares the body following the group. If the group
-    has no body following (alias group at EOF), it is dropped (and so
-    is its ``heading_only`` twin).
+    only whitespace between them, the group merges into ONE chunk —
+    its text stacks every ``##`` line above the shared body, its
+    ``heading`` joins them by ``" / "``, its ``aliases`` lists them.
+    If the group has no body following (alias group at EOF), it is
+    dropped (and so are its ``heading_only`` twins).
 
     When ``with_body_aliases`` is True, each section also emits:
 
@@ -269,24 +283,27 @@ def chunk_by_h2(text: str, *, with_body_aliases: bool = False) -> list[Chunk]:
         shared_body = body[body_start:body_end].strip()
 
         if shared_body:
-            for m in group:
-                heading_text = m.group(1).strip()
-                chunk_text = f"## {heading_text}\n{shared_body}"
-                out.append(Chunk(heading=heading_text, text=chunk_text))
-                if with_body_aliases:
-                    heading_twins.append(
-                        Chunk(
-                            heading=heading_text,
-                            text=heading_text,
-                            variant="heading_only",
-                        )
-                    )
+            group_headings = [m.group(1).strip() for m in group]
+            heading_text = " / ".join(group_headings)
+            head_lines = "\n".join(f"## {h}" for h in group_headings)
+            chunk_text = f"{head_lines}\n{shared_body}"
+            out.append(
+                Chunk(
+                    heading=heading_text,
+                    text=chunk_text,
+                    aliases=tuple(group_headings) if len(group) > 1 else (),
+                )
+            )
             if with_body_aliases:
+                for h in group_headings:
+                    heading_twins.append(
+                        Chunk(heading=h, text=h, variant="heading_only")
+                    )
                 # One heading-stripped twin per group; the first
                 # alias supplies the display anchor.
                 twins.append(
                     Chunk(
-                        heading=group[0].group(1).strip(),
+                        heading=group_headings[0],
                         text=shared_body,
                         variant="body_only",
                     )

@@ -153,11 +153,19 @@ class ChunksForToc:
     scored by cosine similarity to the segment / paper centroid.
     When ``None``, falls back to RAKE. Both paths apply the
     abbreviation legend the same way.
+
+    ``paper_keywords_extra`` (optional): phrases appended to the
+    whole-paper row's keyword cell verbatim — the skill adapter
+    fills it from the file's ``summary:``/``answers:`` front matter
+    so the TOC row carries the questions the skill declares it
+    answers (gr520283).
     """
 
     chunks_text: tuple[str, ...]
     embeddings: tuple[tuple[float, ...], ...] | None
     h2_boundaries: tuple[tuple[int, int, str], ...]
+    #: Extra phrases merged into the whole-paper row's keywords.
+    paper_keywords_extra: tuple[str, ...] = ()
     #: Per-chunk canonical position used in ``slug~N`` handles. None
     #: means "use list indices 0..N-1".
     positions: tuple[int, ...] | None = None
@@ -232,6 +240,7 @@ def render(
     scope: tuple[int, int] | None = None,
     positions: Sequence[int] | None = None,
     embedder: Any = None,
+    paper_keywords_extra: Sequence[str] = (),
 ) -> str:
     """Render a TOC body for ``slug`` of ``kind``.
 
@@ -420,14 +429,26 @@ def render(
         positions=positions,
         base_offset=base_offset,
         use_h2=use_h2,
+        kind=kind,
     )
 
     schema = ["handle", "heading", "keywords"] if use_h2 else ["handle", "keywords"]
 
+    # ``paper_keywords_extra`` — adapter-declared phrases (skill
+    # ``answers:``/``summary:`` front matter) merged after the
+    # extracted ones so the row always carries the lexical hook
+    # (gr520283: an empty column gave ``/toc`` no grip).
+    seen_kw = {k.lower() for k in paper_keywords}
+    extras = [
+        p.strip()
+        for p in paper_keywords_extra
+        if p.strip() and p.strip().lower() not in seen_kw
+    ]
+
     # Paper-wide row prepended above the per-segment rows (full-range
     # handle). Skip it when scope is set (the sub-range's "paper-wide"
     # is the parent's segment row already).
-    if scope is None and paper_keywords and body_segments:
+    if scope is None and (paper_keywords or extras) and body_segments:
         first_pos = (
             positions[body_indices[0]] if positions is not None else body_indices[0]
         )
@@ -436,7 +457,7 @@ def render(
         )
         paper_row: dict[str, str] = {
             "handle": _handle_for(slug, first_pos, last_pos),
-            "keywords": ", ".join(paper_keywords),
+            "keywords": ", ".join([*paper_keywords, *extras[:5]]),
         }
         if use_h2:
             paper_row = {
@@ -631,6 +652,7 @@ def _build_rows(
     positions: Sequence[int] | None,
     base_offset: int,
     use_h2: bool,
+    kind: str = "",
 ) -> list[dict[str, str]]:
     """Interleave boilerplate + body segments in reading order, build
     one TOON row per segment."""
@@ -659,10 +681,18 @@ def _build_rows(
             # H2 mode: heading column carries either the H2 text or
             # the boilerplate label.
             heading = label
+            keywords = kw_str if not heading or _is_stupid_h2(heading) else ""
+            if kind == "skill" and not keywords:
+                # gr520283: a named skill section still gets a lexical
+                # hook — extraction blanks on short sections, so fall
+                # back to the heading's own terms.
+                keywords = ", ".join(
+                    extract_keywords(heading, max_keywords=3) or [heading]
+                )
             row = {
                 "handle": handle,
                 "heading": heading,
-                "keywords": kw_str if not heading or _is_stupid_h2(heading) else "",
+                "keywords": keywords,
             }
         else:
             # Embedding mode: no heading column; boilerplate label
@@ -754,6 +784,7 @@ def render_for_ref(
         scope=scope,
         positions=adapter.positions,
         embedder=adapter.embedder,
+        paper_keywords_extra=adapter.paper_keywords_extra,
     )
     _cache_put(key, body)
     return body

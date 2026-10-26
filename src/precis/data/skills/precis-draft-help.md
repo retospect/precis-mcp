@@ -406,11 +406,13 @@ rolls the whole call back and names its position.
 
 ## Audit the draft — hygiene checks & the gap-finder
 
-See [[precis-draft-review-help]].
+See [[precis-draft-review-help]] — audits, hygiene checks, the
+gap-finder.
 
 ## Steer prose changes; correct unsupported claims directly
 
-See [[precis-draft-review-help]].
+See [[precis-draft-review-help]] — steering prose edits, fixing
+unsupported claims.
 
 ## Export the draft
 

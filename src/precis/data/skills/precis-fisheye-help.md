@@ -170,6 +170,20 @@ A **quest** eye opens with its gist — the striving statement +
 `rubric:`/`demand:`/`supply:` lines from meta — not its logbook; the
 lab notebook stays at `view='logbook'`.
 
+## Memory rings
+
+On a **memory** focus the same rings read: `part-of` to its hub (or
+summary node) under `Parts:` on both ends — and on the `section:index`
+hub itself every member lists under `contains:`, one line each,
+exempt from the 8-cap (a `… +N more` line past 300 expands with
+`q='contains'`); a `qualifies` edge (gotcha → thread) under `Argument:`
+on both ends; a `[handle]` mention written in the body materialises
+`related-to` under `Notes & links` on the target's eye; `cites` lands
+under `Notes & links`, `derived-from` under `Argument`. Every label
+block caps at 8 — `related-to` is the default write and the most
+numerous, so on a well-linked memory it is the first group to fold
+behind `… +N more`.
+
 ## The second hop (`fisheye+2hop`)
 
 What the ring's refs link to, excluding the focus and the ring itself,

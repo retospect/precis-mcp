@@ -18,7 +18,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.todo import TERMINAL_TODO_STATUSES
-from precis.utils.eye_render import _HUB_TAG, _VERBATIM_CAP, _hub_ids
+from precis.utils.eye_render import (
+    _HUB_TAG,
+    _VERBATIM_CAP,
+    RECALL_MAX_DISTANCE,
+    _hub_ids,
+)
 from precis.utils.memory_threads import THREADS_TAG
 
 log = logging.getLogger(__name__)
@@ -354,7 +359,7 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     hubs = store.list_refs(kind="memory", tags=[space, _HUB_TAG], limit=10_000)
     hubs = [h for h in hubs if h.id != ref_id]
     if not hubs:
-        return []
+        return _hubless_hints(handler, ref_id, space)
     ref = store.get_ref(kind="memory", id=ref_id)
     if ref is None:
         return []
@@ -427,6 +432,210 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
             )
         )
     return lines
+
+
+#: Candidate neighbours the hub-less fallback offers (gr520279) —
+#: "leads to check, not connections", so three is plenty.
+_HUBLESS_CANDIDATES = 3
+#: Query content-word coverage at which the lexical leg calls the
+#: nearest same-space memory a possible duplicate.
+_HUBLESS_DUP_COVERAGE = 0.5
+
+
+def _hubless_hints(handler: Any, ref_id: int, space: str) -> list[tuple[str, str]]:
+    """Fallback lines for a space with no ``section:index`` hub
+    (gr520279). The hub hints above only exist in hub-shaped spaces
+    (repo-dev today); elsewhere a fresh ``put`` acked with no link
+    advice, no nearest-existing duplicate flag and no read-back, so
+    the remember recipe's "the Next: block does most of it" was a
+    dead end. Neighbours come from the same memory+finding pool the
+    ``+recall`` rung renders: semantic when the ref already carries
+    an embedding (edit/tag/link acks), lexical word-overlap otherwise
+    (a ``put`` ack lands before the worker embeds the node).
+    """
+    store: Store = handler.store
+    ref = store.get_ref(kind="memory", id=ref_id)
+    if ref is None:
+        return []
+    from precis.utils import handle_registry
+
+    def h(i: int) -> str:
+        return handle_registry.try_format("memory", i) or f"me{i}"
+
+    me = h(ref_id)
+    body = handler._body_text(ref)
+    hook = str((ref.meta or {}).get("hook") or body[:_QUERY_BODY_CHARS])
+    query = f"{ref.title or ''} {hook}".strip()
+
+    cands, dup = _hubless_neighbours(handler, ref, space, query)
+    lines: list[tuple[str, str]] = []
+    if dup is not None:
+        dup_id, dup_kind, dup_score = dup
+        target = handle_registry.try_format(dup_kind, dup_id) or f"{dup_kind}:{dup_id}"
+        score = f" ({dup_score:.2f})" if dup_score is not None else ""
+        lines.append(
+            (
+                f"get(kind='{dup_kind}', id='{target}')",
+                f"nearest existing{score} — same subject? edit it "
+                "instead of keeping both",
+            )
+        )
+    for rid, kind, _dist in cands:
+        if dup is not None and rid == dup_id:
+            continue
+        target = handle_registry.try_format(kind, rid) or f"{kind}:{rid}"
+        lines.append(
+            (
+                f"link(kind='memory', id='{me}', target='{target}', rel='related-to')",
+                "leads to check, not connections",
+            )
+        )
+    lines.append(
+        (
+            f"get(kind='memory', id='{me}', extent='fisheye+1hop+recall')",
+            "see this node's link and recall neighbourhood",
+        )
+    )
+    return lines
+
+
+def _hubless_neighbours(
+    handler: Any, ref: Any, space: str, query: str
+) -> tuple[list[tuple[int, str, float]], tuple[int, str, float | None] | None]:
+    """``(candidates, dup)`` for the hub-less fallback.
+
+    ``candidates`` is up to :data:`_HUBLESS_CANDIDATES` ``(ref_id, kind,
+    distance)`` triples — memory + finding, same SPACE. ``dup`` is the
+    nearest same-space *memory* that looks like the same subject:
+    any semantic hit inside the recall floor, or a lexical hit sharing
+    ≥ :data:`_HUBLESS_DUP_COVERAGE` of the query's content words.
+    """
+    store: Store = handler.store
+    ref_id = int(ref.id)
+    seed = store.chunks.seed_chunk_for_ref(ref_id)
+    vec = store.chunks.get_chunk_vector(seed) if seed is not None else None
+    if vec is not None:
+        sem_hits = store.chunks.search_chunks_semantic(
+            query_vec=vec,
+            kinds=["finding", "memory"],
+            tags=[space],
+            limit=_HUBLESS_CANDIDATES * 3,
+            max_distance=RECALL_MAX_DISTANCE,
+            exclude_ref_ids=[ref_id],
+            # memory/finding embed whole-ref cards (ord -1), not body
+            # chunks — same leg the ``+recall`` rung opts back in.
+            card_kinds=("card_combined",),
+        )
+        seen: set[int] = set()
+        cands: list[tuple[int, str, float]] = []
+        dup: tuple[int, str, float | None] | None = None
+        for _b, r, dist in sem_hits:
+            rid = int(r.id)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            kind = str(r.kind)
+            if dup is None and kind == "memory":
+                dup = (rid, kind, float(dist))
+            cands.append((rid, kind, float(dist)))
+            if len(cands) == _HUBLESS_CANDIDATES:
+                break
+        return cands, dup
+
+    # No embedding yet (the common ``put`` ack path): lexical search +
+    # a word-overlap pass when FTS draws blank — no synchronous embed
+    # on a write.
+    if not query:
+        return [], None
+    from precis.store import Tag
+
+    hits: list[tuple[Any, Any, float]] = []
+    for kind in ("memory", "finding"):
+        try:
+            hits.extend(
+                store.chunks.search_chunks(
+                    q=query,
+                    mode="lexical",
+                    kind=kind,
+                    tags=Tag.normalize_filter([space], kind=kind),
+                    limit=_HUBLESS_CANDIDATES,
+                    exclude_ref_ids=[ref_id],
+                )
+            )
+        except Exception:
+            log.debug("hub-less hint lexical leg failed", exc_info=True)
+    best_by_ref: dict[int, tuple[Any, Any, float]] = {}
+    for _b, r, s in hits:
+        best_by_ref.setdefault(int(r.id), (_b, r, s))
+    scored = sorted(
+        ((rid, str(r.kind), float(s)) for rid, (_b, r, s) in best_by_ref.items()),
+        key=lambda t: -t[2],
+    )
+    if not scored:
+        # FTS ANDs every term — a fresh neighbour that only shares the
+        # topic words still surfaces via title/hook overlap.
+        others = [
+            m
+            for m in store.list_refs(kind="memory", tags=[space], limit=10_000)
+            if m.id != ref_id
+        ]
+        scored = [
+            (i, "memory", float(n) / max(1, len(_content_words(query))))
+            for n, i in _overlap_scored(query, others)
+        ]
+    dup = next(
+        (
+            (rid, kind, cov)
+            for rid, kind, _score in scored
+            if kind == "memory"
+            and (cov := _dup_coverage(handler, query, rid)) is not None
+        ),
+        None,
+    )
+    return scored[:_HUBLESS_CANDIDATES], dup
+
+
+def _content_words(text: str) -> set[str]:
+    return {
+        w.strip(".,;:!?()[]{}'\"").lower()
+        for w in text.split()
+        if len(w.strip(".,;:!?()[]{}'\"")) > 3
+    }
+
+
+def _dup_coverage(handler: Any, query: str, ref_id: int) -> float | None:
+    """Shared query content-word fraction for ``ref_id`` — ≥ the dup bar
+    returns the fraction, else ``None``. ``None`` also when the query
+    has no content words (no honest bar to clear). Scored over the
+    same text the hint query is built from — title + hook + body
+    head — so a verbatim-repeat body flags as a dup."""
+    words = _content_words(query)
+    if not words:
+        return None
+    ref = handler.store.get_ref(kind="memory", id=ref_id)
+    if ref is None:
+        return None
+    body = handler._body_text(ref)
+    text = (
+        f"{ref.title or ''} {(ref.meta or {}).get('hook') or ''} "
+        f"{body[:_QUERY_BODY_CHARS]}"
+    )
+    cov = len(words & _content_words(text)) / len(words)
+    return cov if cov >= _HUBLESS_DUP_COVERAGE else None
+
+
+def _overlap_scored(query: str, refs: list[Any]) -> list[tuple[int, int]]:
+    """``(shared_words, ref_id)`` for refs sharing ≥1 content word with
+    ``query``, best first — the FTS-blank fallback for the hub-less
+    hint."""
+    words = _content_words(query)
+    scored = []
+    for r in refs:
+        text = f"{r.title or ''} {(r.meta or {}).get('hook') or ''}"
+        n = len(words & _content_words(text))
+        if n:
+            scored.append((n, int(r.id)))
+    return sorted(scored, key=lambda t: (-t[0], t[1]))
 
 
 def thread_dup_hint(store: Store, ref_id: int) -> list[tuple[str, str]]:

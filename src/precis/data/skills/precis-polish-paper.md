@@ -91,10 +91,10 @@ master report:
 […]
 
 ## Medium (N)
-[…]
+[same row shape, severity = medium]
 
 ## Low (N)
-[…]
+[same row shape, severity = low]
 
 ## Coverage
 - precis-adversarial-reviewer: <N findings, run at <stamp>>

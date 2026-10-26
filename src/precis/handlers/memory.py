@@ -958,6 +958,7 @@ class MemoryHandler(NumericRefHandler):
                 "title conventions (lead with the conclusion)",
             ),
             *link_hints(self, ref_id),
+            *_roundtrip_hint(self, ref_id),
             *super()._create_ack_next_hints(ref_id),
         ]
 
@@ -2517,6 +2518,34 @@ class MemoryHandler(NumericRefHandler):
             ),
             misses,
         )
+
+
+def _roundtrip_hint(handler: Any, ref_id: int) -> list[tuple[str, str]]:
+    """The create-ack recall check (gr520279): ``view='index'`` recall
+    applies the hard :data:`SEMANTIC_ONLY_FOLD_DISTANCE` cut, so a memory
+    whose title/hook lacks the task words silently never comes back. One
+    prefilled line telling the writer to verify — in every space, not
+    just hub-shaped ones. Never raises, like ``link_hints``."""
+    try:
+        ref = handler.store.get_ref(kind="memory", id=ref_id)
+        title = " ".join(str(ref.title or "").split())[:80] if ref else ""
+        if not title:
+            return []
+        from precis.store._mappers import SEMANTIC_ONLY_FOLD_DISTANCE
+        from precis.utils import handle_registry
+
+        me = handle_registry.try_format("memory", ref_id) or f"me{ref_id}"
+        cut = SEMANTIC_ONLY_FOLD_DISTANCE.get("memory", 0.42)
+        return [
+            (
+                f"search(kind='memory', q={title!r}, view='index')",
+                f"round-trip: if {me} is not listed, the {cut} recall "
+                "cut hides it — put the task words in title=/meta.hook",
+            )
+        ]
+    except Exception:
+        log.debug("memory round-trip hint skipped for %s", ref_id, exc_info=True)
+        return []
 
 
 def _derive_title(body: str, *, max_len: int = _TITLE_MAX) -> str:

@@ -70,22 +70,18 @@ def test_chunker_no_h2_returns_single_chunk() -> None:
     assert "Body only" in chunks[0].text
 
 
-def test_chunker_aliases_consecutive_h2s_sharing_body() -> None:
+def test_chunker_merges_stacked_h2s_into_one_chunk() -> None:
     # Consecutive H2s with only whitespace between them form an
-    # alias group: each heading emits a chunk sharing the body
-    # that follows. CHUNKER_VERSION 2 behaviour (was: drop the
-    # bodyless heading).
+    # alias group: the group merges into ONE chunk (gr520283 —
+    # v2 emitted a duplicate-bodied chunk per heading). The text
+    # keeps every ``##`` line stacked above the shared body; the
+    # heading joins the aliases and ``aliases`` lists them.
     text = "## Empty\n\n## Has body\n\nbody.\n"
     chunks = chunk_by_h2(text)
-    headings = [c.heading for c in chunks]
-    assert headings == ["Empty", "Has body"]
-    # Both chunks carry the shared body.
-    assert "body." in chunks[0].text
-    assert "body." in chunks[1].text
-    # Each chunk's text leads with its own alias heading, not the
-    # group's other headings.
-    assert chunks[0].text.startswith("## Empty\n")
-    assert chunks[1].text.startswith("## Has body\n")
+    assert len(chunks) == 1
+    assert chunks[0].heading == "Empty / Has body"
+    assert chunks[0].aliases == ("Empty", "Has body")
+    assert chunks[0].text == "## Empty\n## Has body\nbody."
 
 
 def test_chunker_drops_alias_group_at_eof_with_no_body() -> None:
@@ -101,7 +97,7 @@ def test_chunker_handles_blank_input() -> None:
     assert chunk_by_h2("   \n\n  ") == []
 
 
-def test_chunker_alias_group_of_three_emits_three_chunks() -> None:
+def test_chunker_alias_group_of_three_emits_one_chunk() -> None:
     text = (
         "## Check that citations are valid\n"
         "## Run an in-depth check of citations\n"
@@ -110,14 +106,21 @@ def test_chunker_alias_group_of_three_emits_three_chunks() -> None:
         "shared body content.\n"
     )
     chunks = chunk_by_h2(text)
-    headings = [c.heading for c in chunks]
-    assert headings == [
+    assert len(chunks) == 1
+    assert chunks[0].heading == (
+        "Check that citations are valid / "
+        "Run an in-depth check of citations / "
+        "Verify sources are real"
+    )
+    assert chunks[0].aliases == (
         "Check that citations are valid",
         "Run an in-depth check of citations",
         "Verify sources are real",
-    ]
-    for c in chunks:
-        assert "shared body content." in c.text
+    )
+    assert "shared body content." in chunks[0].text
+    # every alias heading line is in the chunk text
+    for h in chunks[0].aliases:
+        assert f"## {h}\n" in chunks[0].text
 
 
 def test_chunker_mixes_standalone_and_alias_group() -> None:
@@ -132,14 +135,38 @@ def test_chunker_mixes_standalone_and_alias_group() -> None:
     headings = [c.heading for c in chunks]
     assert headings == [
         "Standalone first",
-        "Alias A",
-        "Alias B",
+        "Alias A / Alias B",
         "Standalone last",
     ]
+    assert chunks[1].aliases == ("Alias A", "Alias B")
     assert "first body." in chunks[0].text
     assert "shared body." in chunks[1].text
-    assert "shared body." in chunks[2].text
-    assert "last body." in chunks[3].text
+    assert "last body." in chunks[2].text
+
+
+def test_shipped_skills_no_two_chunks_share_a_body() -> None:
+    """gr520283: over the whole shipped corpus, no two chunks of one
+    skill share an identical body — the v2 alias group emitted a
+    duplicate-bodied chunk per stacked heading; v5 merges them, and
+    this sweeps for any other literal duplicate that slips in."""
+    from precis.ingest.skill_template import DocResolver, Includer
+    from tests._skill_roots import skill_files
+
+    files = skill_files()
+    docs = {p.stem: p.read_text(encoding="utf-8") for p in files}
+    includer = Includer(resolvers={"doc": DocResolver(docs=docs)})
+    bad: list[str] = []
+    for stem, text in docs.items():
+        expanded = includer.expand(text) if "{{include" in text else text
+        seen: dict[str, int] = {}
+        for i, chunk in enumerate(chunk_by_h2(expanded)):
+            body = "\n".join(
+                ln for ln in chunk.text.splitlines() if not ln.startswith("## ")
+            ).strip()
+            if body in seen:
+                bad.append(f"{stem}~{i} == ~{seen[body]}")
+            seen.setdefault(body, i)
+    assert bad == []
 
 
 def test_chunker_default_emits_no_body_only_twins() -> None:
@@ -178,8 +205,7 @@ def test_chunker_with_body_aliases_appends_one_twin_per_group() -> None:
     # come first; twins are appended after.
     assert [c.heading for c in structural] == [
         "Standalone first",
-        "Alias A",
-        "Alias B",
+        "Alias A / Alias B",
         "Standalone last",
     ]
     assert chunks[: len(structural)] == structural

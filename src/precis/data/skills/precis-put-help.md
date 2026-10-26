@@ -53,7 +53,10 @@ put(
 
 Omit `id=` to mint a fresh numeric ref. The response returns the new
 id and its handle (`me<N>`); read back with `get(id='me<N>')` (the
-prefix infers the kind) or `get(kind='memory', id=42)`.
+prefix infers the kind) or `get(kind='memory', id=42)`. The full write
+recipe — search first, dedupe, hub/link, the round-trip check — is
+`precis-memory-help`'s "Write a memory that will be found later"
+section.
 
 ## File a todo
 ## Add a task to my list

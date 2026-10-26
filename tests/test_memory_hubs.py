@@ -138,9 +138,15 @@ def test_put_hints_nearest_hubs_when_no_part_of(hub: Hub) -> None:
 
 def test_edit_hints_and_quiet_cases(hub: Hub) -> None:
     store, handler = hub.live_store, MemoryHandler(hub=hub)
-    # no hub in the space -> nothing
+    # no hub in the space -> the hub-less fallback: the read-back line,
+    # no leads while it is the only node
     lone = _note(handler, "Lone", "body", "section:threads")
-    assert link_hints(handler, lone) == []
+    assert link_hints(handler, lone) == [
+        (
+            f"get(kind='memory', id='{_h(lone)}', extent='fisheye+1hop+recall')",
+            "see this node's link and recall neighbourhood",
+        )
+    ]
     root = _note(handler, "Root", "x", HUB)
     # the hub itself is never nudged
     assert link_hints(handler, root) == []
@@ -194,6 +200,89 @@ def test_part_of_child_gets_no_qualifies_hint(hub: Hub) -> None:
 
     parent_calls = [c for c, _d in link_hints(handler, summary)]
     assert any(_h(gotcha) in c and "rel='qualifies'" in c for c in parent_calls)
+
+
+def test_hubless_space_ack_offers_leads_dup_line_and_roundtrip(
+    hub: Hub,
+) -> None:
+    """gr520279: a space with no ``section:index`` hub still gets link
+    advice — related-to candidates, the nearest-existing dup flag, the
+    fisheye+recall read — plus the round-trip search line every space's
+    put ack now carries."""
+    handler = MemoryHandler(hub=hub)
+    space = "SPACE:personal"
+    near = _created_id(
+        handler.put(
+            text="cavitation erodes impeller blades",
+            title="Impeller cavitation notes",
+            tags=[space],
+        )
+    )
+    resp = handler.put(
+        text="impeller pitting under vibration",
+        title="Pitting",
+        tags=[space],
+    )
+    out, new = resp.body, _created_id(resp)
+    assert (
+        f"link(kind='memory', id='{_h(new)}', target='{_h(near)}', "
+        "rel='related-to')" in out
+    )
+    assert f"get(kind='memory', id='{_h(new)}', extent='fisheye+1hop+recall')" in out
+    assert "search(kind='memory', q='Pitting', view='index')" in out
+
+    # A near-duplicate put flags the nearest existing memory.
+    dup = handler.put(
+        text="cavitation erodes impeller blades",
+        title="Impeller cavitation notes",
+        tags=[space],
+    )
+    assert "nearest existing" in dup.body
+    assert "edit it instead of keeping both" in dup.body
+
+
+def test_hubless_fallback_leaves_repo_dev_hub_hints_first(hub: Hub) -> None:
+    """gr520279 acceptance: repo-dev behaviour unchanged — the hub
+    part-of hint still leads the ack's link advice."""
+    handler = MemoryHandler(hub=hub)
+    hub_id = _note(handler, "Stray hub", "x", HUB)
+    resp = handler.put(
+        text="a stray node", title="Stray", tags=[SPACE_TAG, "section:gotchas"]
+    )
+    out = resp.body
+    assert f"target='{_h(hub_id)}', rel='part-of'" in out
+    # the hub part-of hint still leads the write-path advice — the
+    # round-trip search line comes after it, no hub-less related-to
+    assert out.index("rel='part-of'") < out.index("view='index'")
+    assert "rel='related-to'" not in out
+
+
+def test_memory_edges_render_in_their_documented_rings(hub: Hub) -> None:
+    """gr520282: the ring placement precis-fisheye-help documents —
+    ``part-of`` under Parts (the hub's members listed under
+    ``contains:``), ``qualifies`` under Argument on both ends, and a
+    body ``[handle]`` mention materialised as ``related-to`` under
+    Notes & links."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root", "x", HUB)
+    thread = _note(handler, "Thread", "t", "section:threads")
+    gotcha = _note(handler, "Gotcha", f"see [{_h(thread)}]", "section:gotchas")
+    for m in (thread, gotcha):
+        _part_of(store, m, root)
+    store.add_link(src_ref_id=gotcha, dst_ref_id=thread, relation="qualifies")
+
+    gotcha_eye = render_eye(store, _h(gotcha), "fisheye+1hop")
+    assert gotcha_eye.index("Parts:") < gotcha_eye.index(f"part-of: {_h(root)}")
+    assert gotcha_eye.index("Argument:") < gotcha_eye.index(f"qualifies: {_h(thread)}")
+    assert gotcha_eye.index("Notes & links:") < gotcha_eye.index(
+        f"related-to: {_h(thread)}"
+    )
+    thread_eye = render_eye(store, _h(thread), "fisheye+1hop")
+    assert thread_eye.index("Argument:") < thread_eye.index(
+        f"qualified-by: {_h(gotcha)}"
+    )
+    hub_eye = render_eye(store, _h(root), "fisheye+1hop")
+    assert hub_eye.index("Parts:") < hub_eye.index(f"contains: {_h(thread)}")
 
 
 def test_hint_failure_never_breaks_a_write(

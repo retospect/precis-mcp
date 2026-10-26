@@ -37,6 +37,27 @@ def _ranked_slugs(body: str) -> list[str]:
     return out
 
 
+def _pinned_slugs(body: str) -> list[str]:
+    """Slugs whose row is a title pin, in rendered order.
+
+    gr520283 replaced the literal ``title match`` label with a section
+    handle: a pinned row shows ``~0``/``~N`` (``title match`` remains
+    only when no chunk overlaps any query token). The ``skill`` fixture
+    has no embedder, so no semantic ``~N`` rows can appear, and lexical
+    rows read ``N word matches`` / ``N substring hits`` — a ``~`` or
+    ``title match`` section here can only be a pin.
+    """
+    out: list[str] = []
+    for ln in body.splitlines():
+        if "\t" not in ln or ln.startswith("{"):
+            continue
+        head, _, rest = ln.partition("\t")
+        section = rest.split("\t", 1)[0].strip()
+        if section.startswith("~") or "title match" in section:
+            out.append(head.strip())
+    return out
+
+
 def test_title_boost_matches_word_overlap_not_contiguous_phrase(
     skill: SkillHandler,
 ) -> None:
@@ -139,7 +160,7 @@ def test_title_boost_ubiquitous_token_alone_does_not_bypass_coverage_bar(
     words must stay off every skill's identity: "reference" left this
     query when ``precis-draft-reference-help`` made it a DF==1 token.)"""
     out = skill.search(q="help documentation manual guide extra words here")
-    assert "title match" not in out.body, out.body
+    assert _pinned_slugs(out.body) == [], out.body
 
 
 # ── boundary pins for the DF-aware bypass cluster (gr333204) ───────────
@@ -165,10 +186,10 @@ def test_title_boost_df_exactly_one_bypasses_but_df_two_does_not(
     a difference in outcome.
     """
     out = skill.search(q="pagination banana orange grape mango kiwi")
-    assert "title match" in out.body, out.body
+    assert _pinned_slugs(out.body) == ["precis-search-help"], out.body
 
     out = skill.search(q="anki banana orange grape mango kiwi")
-    assert "title match" not in out.body, out.body
+    assert _pinned_slugs(out.body) == [], out.body
 
 
 def test_title_boost_single_word_query_bypasses_bar_for_a_common_identity_word(
@@ -184,7 +205,10 @@ def test_title_boost_single_word_query_bypasses_bar_for_a_common_identity_word(
     the boost never fired.
     """
     out = skill.search(q="anki")
-    assert "title match" in out.body, out.body
+    assert set(_pinned_slugs(out.body)) == {
+        "precis-cloze",
+        "precis-anki-help",
+    }, out.body
 
 
 def test_title_boost_two_word_match_at_full_coverage_beats_one_word_match(
@@ -199,10 +223,13 @@ def test_title_boost_two_word_match_at_full_coverage_beats_one_word_match(
     count boundary from the coverage leg.
     """
     out = skill.search(q="anki cloze")
-    assert "title match" in out.body, out.body
+    assert set(_pinned_slugs(out.body)) == {
+        "precis-cloze",
+        "precis-anki-help",
+    }, out.body
 
     out = skill.search(q="anki extra words")
-    assert "title match" not in out.body, out.body
+    assert _pinned_slugs(out.body) == [], out.body
 
 
 # ── hyphenated compounds + family-root pin (skill-search audit 2026-10) ──
@@ -295,12 +322,7 @@ def test_family_root_pin_is_the_root_only_never_siblings(
     """Padding a family-root word to kill coverage still pins the root
     — and pins NOTHING for a sibling slug or a one-member stem."""
     body = skill.search(q="cad banana orange grape mango kiwi").body
-    pinned = [
-        ln.split("\t", 1)[0].strip()
-        for ln in body.splitlines()
-        if "\t" in ln and "title match" in ln
-    ]
-    assert pinned == ["precis-cad-help"], pinned
+    assert _pinned_slugs(body) == ["precis-cad-help"], _pinned_slugs(body)
 
     out = skill.search(q="anki banana orange grape mango kiwi")
-    assert "title match" not in out.body, out.body
+    assert _pinned_slugs(out.body) == [], out.body

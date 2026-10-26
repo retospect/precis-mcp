@@ -190,9 +190,9 @@ search(
 )
 ```
 
-Then **poke around** before trusting a hit: read the full chunk
-(`get(id='pc…')`) or `search(kind='paper', scope='pa…', q='…')`.
-Cite only once you've confirmed the context, never off the keyword row.
+Then verify before trusting a hit: read the full chunk
+(`get(id='pc…')`); cite only after confirming context, never off
+the keyword row.
 
 Rules of thumb:
 - Research / triage questions, not exact-string lookups (`mode='lexical'`
@@ -205,7 +205,7 @@ Rules of thumb:
   any search (a `'lexical'` broad search fuses only the text legs).
 - **Paginate by repeating the broad knobs** — `page=2` must carry the
   same `args=`, or it silently switches to single-query ordering and
-  duplicates page 1. The `Next:` trailer echoes the full call.
+  duplicates page 1.
 - The headline shows a returned count with no "of K" total — there's
   no honest lexical total for a fused set; the trailer offers
   `page=N+1` while candidates remain.

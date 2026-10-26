@@ -5,6 +5,8 @@ title: precis — relation vocabulary for link(rel=)
 summary: closed relation vocabulary — cites, supports, disputes, contradicts, derived-from, blocks, retracts, corrects
 answers:
   - which relation do I use to link two refs — cites, supports, or something else?
+  - which relation do I use between two memories?
+  - how many links should a memory have?
   - how do I record that a memory agrees with or disagrees with a paper?
   - how do I mark one ref as derived from another?
   - how do I block one todo on another?
@@ -37,6 +39,25 @@ options list. Link verb mechanics and target grammar live in
 | `conjunct-of` | (none) | Taproot only: A (an atomic claim hub) is one conjunct of B (the composite hub bundling it) — no inverse, advisory-only, written by `taproot.hub.apply_extraction`'s decomposition, not hand-authored. |
 | `explains` | (none) | Taproot only: A (a claim hub stating a mechanism/cause) explains B (the claim hub it is the "because" of) — directed A → B, no inverse, no cycles, advisory-only: no evidence flows along it and it never feeds trust or the cite fallback. Written by `taproot.hub.apply_extraction`'s causal split, or `link(rel='explains')` on a claim hub. |
 | `generalises` | `specialises` | A is the broader abstraction of B. |
+
+## Memory ↔ memory — hub, thread and duplicate edges
+## Which relation between two memories?
+## How many links should a memory have?
+
+| `rel=` | Use for |
+|---|---|
+| `part-of` | membership: node → its `section:index` hub, or a detail node → its summary node. Exactly one per node — hand-written. |
+| `qualifies` | a `section:gotchas` node → the `section:threads` node it applies to (the thread reads `qualified-by`). |
+| `supersedes` | new node → the old it replaces, then `delete` the old — the edge is the record, never prose alone. |
+| `derived-from` | a distilled note → its source (perplexity cache, paper, thread). |
+| `related-to` | the default "see also" — but prefer a `[handle]` mention in the body, which materialises the same edge. |
+
+Link budget: one `part-of` plus 0–3 typed edges per memory; anything
+more belongs in the body as `[handle]` mentions. Hub/member mechanics
+and the write recipe: `precis-memory-help` ("Hubs, part-of and
+qualifies", "Write a memory that will be found later"); where each
+edge renders: `precis-fisheye-help`.
+
 ## Which relation for workflow items, reasoning, documents and parts?
 ## Relation slugs beyond claims and citations — blocks, fixes, entails, cited-in, realized-by
 ## What do the workflow, argument-graph and document rels mean?
@@ -60,7 +81,7 @@ options list. Link verb mechanics and target grammar live in
 | `realized-by` | `realizes` | A is made real by B: a cad design's catalog part → the component that realizes it, or a component → the catalog part that builds it (`target='part:C25804'`; the part's ref is minted on its first link). |
 | `quantifies` | `quantified-by` | Paper chunk A states a number for measurand taxon B. One shared edge per chunk and measurand; each measure keeps its own span. Written by measure extraction (see `precis-measure-help`), never by hand. |
 | `datasheet-of` | `has-datasheet` | Datasheet A documents part B. `edit(kind='datasheet', part_lcsc='C25804')` writes it. |
-| `part-of` (SI use) | `contains` | A supplementary-information PDF (own paper ref, `meta.role='supplement'` on the edge) is part of its parent paper; written by the SI ingest, not by hand. The SI cites as the parent. A dedicated `supplements` / `has-supplement` pair is not seeded yet. |
+| `part-of` | `contains` | Two uses: a memory's membership edge to its `section:index` hub or summary node — hand-written, the "Memory ↔ memory" block above — and a supplementary-information PDF (own paper ref, `meta.role='supplement'` on the edge) part of its parent paper, written by the SI ingest, not by hand. The SI cites as the parent. A dedicated `supplements` / `has-supplement` pair is not seeded yet. |
 
 ## Which endpoints does a relation accept?
 ## Why did link() refuse my rel= — wrong kind, second draft, or a cycle?
@@ -294,6 +315,7 @@ untouched.
 ## See also
 
 - [[precis-link-help]] — link verb mechanics, target=, mode=
+- [[precis-memory-help]] — memory hubs, the write recipe
 - [[precis-tags]] — tag vocabulary (axes vs relations)
 - [[precis-overview]] — verbs and kinds
 - [[precis-todo-help]] — blocks/blocked-by workflow filter

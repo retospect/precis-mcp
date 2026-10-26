@@ -10,6 +10,12 @@ answers:
   - how do I recall what I already know before starting a task?
   - how do I attach a memory to the paper section it came from?
   - how do I distil an expensive research-cache answer into a durable memory?
+  - how do I write a good memory title and description?
+  - how do I avoid writing a duplicate memory?
+  - how do I link a new memory to its hub / related memories?
+  - how do I check a memory is findable after writing?
+  - how do I consolidate or supersede overlapping memories?
+  - how many links should a memory have?
 applies-to: get/search (kind='memory'), put (kind='memory')
 tags: [drafting, addressing, workflow]
 kinds: [memory]
@@ -35,66 +41,52 @@ to `get`/`delete`/`tag`/`link` raises `[error:BadInput] memory id must be an int
 If you only have a topic, not the id: `search(kind='memory',
 q='<topic>')` first, then use the integer id from the hit.
 
-## Keep a memory in its space, index and file
+## Write a memory that will be found later
+## Capture a durable fact so recall brings it back
 
-The `dream_consolidate` service retires stale dreams under `supersedes`
-summaries; it is dark until `service_config` lights it, then dry-run until
-`dream_consolidate.dry_run` is disarmed. Reto ruled it stays dark
-(2026-10-24): dreams exist to add useful links to the graph for discovery,
-so don't retire them by age. Improve weak dreams or link them instead.
+What belongs: a stable fact, decision, lesson or open question — not
+transcript, not landed history (those live in `git log` and the docs).
 
-**Space.** Every memory carries one `SPACE:` tag. `put` stamps
-`SPACE:research` unless you pass your own (`tags=['SPACE:repo-dev']`
-replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
-`precis memory mirror import|export` is how harness `MEMORY.md` and its topic files
-become `SPACE:repo-dev` nodes (the one-shot `precis memory import` is the cutover
-tool, not a seeding path); `precis memory index` prints only the live
-threads: `section:threads` nodes edited in the last 14
-days (`--days N`), newest first, one `- me<id> <Title> — <Left: line>` each
-(first body line, else `meta.hook`), plus a count of older ones. The
-SessionStart hook prints just the `--for-hook` counts line pointing here —
-run the command when you want the roster. Everything
-else is recalled by `search`; `--full` prints the old every-node list.
-A thread node's first line is `Left: …`; keep it true or `delete` the node.
-A `SPACE:repo-dev` memory's index text is `meta={'hook': 'one line'}`, on
-`put` or alone on `edit(kind='memory', id=N, mode='replace',
-args={'meta': {'hook': '…'}})` (one line, non-empty; `hook` is the only
-writable key; `edit`'s kind fields go in `args=`).
-Its `section:<slug>` tag places it under that `## Section` of the index;
-retag with `tag(add=['section:<slug>'], remove=['section:<old>'])`.
+1. **Search first.** `search(kind='memory', q='<the fact>',
+   scope='title')`, then plain `search(kind='memory', q='<the fact>')`.
+   On a near hit, `get(kind='memory', id='me<N>',
+   extent='fisheye+1hop+recall')` shows its links and nearest unlinked
+   neighbours.
+2. **Decide:**
 
-For explicit file coexistence, the operator CLI `precis memory mirror import
-DIR --namespace NAME` preserves YAML name/description/metadata, body prose and
-filenames; `memory mirror export DEST --namespace NAME` writes a fresh directory.
-Reruns update the same imported handles and resolve `[[…]]` links (a topic
-filename stem inside double brackets). Missing files stay live; graph edits cause an import conflict. Export preserves graph
-body edits but refuses changed file-authored metadata. These are CLI operations,
-not native MCP modes; they do not authorize migration of a real harness directory.
-`mirror import` refuses when live nodes from the one-shot importer share a topic's
-`name:` (`--legacy retire` soft-deletes them in the import, `--legacy keep` imports
-beside them, `--legacy refresh` adopts each in place: same handle and inbound
-links, the file's body and links written over it); `mirror export` writes a live
-`SPACE:repo-dev` node that has no file to a new `<slug>.md` (slug of the title,
-`-<id>` on a clash; `description:` = its hook (else the body's first line),
-`metadata.type` = its `type` meta
-or `project`) and stamps it as a mirror node (its title becomes the slug, so keep
-the readable line in the hook), and reports any node it still
-cannot render (no title, or another namespace's) as `unexported`.
+   | the search found | write |
+   |---|---|
+   | same subject, new state | an anchored `edit` on that node — never a second one ("Update or new node?") |
+   | overlaps; yours is better | `put` the new node, `link(rel='supersedes')` new → old, `delete` the old |
+   | nothing close | `put` with `title=`, `tags=`, one `link=` |
 
-The harness files are not mounted as a read-only `markdown` root on the
-session server: the graph nodes above are the record, and the files remain a
-legacy import source only. `PRECIS_ROOTS` mirrors the skill files instead
-(`precis-overview`).
+3. **Run the ack's `Next:` lines** — every memory `put`/`edit` ack lists
+   the ready-to-run `part-of`, `qualifies` and type-tag calls the node
+   still needs, plus a prefilled copy of step 4. No lines means the node
+   is in place.
+4. **Round-trip check.** `search(kind='memory', q='<the question you
+   will ask next time>', view='index')`. If the new `me<N>` is not
+   listed, rewrite `title=` / `meta.hook` with those task words — the
+   index view applies a hard 0.42 recall cut, so a memory without them
+   silently never comes back. Title vs hook vs first body line:
+   `precis-firstline-help` (Retrieval keys).
+5. **Link it in.** One `part-of` to a hub (or to a summary node for a
+   detail node) plus 0–3 typed edges — more belongs in the body as
+   `[handle]` mentions (`precis-relations`, the memory↔memory block).
 
-**Where to edit.** A memory that has a file is edited in the graph with the anchored
-`edit` once the real mirror import has run for its namespace, and in the file before
-that; the mirror export is how the file catches up. A memory with no file is created
-with `put(kind='memory', tags=['SPACE:repo-dev','section:<slug>'], meta={'hook': '…'})`
-and gets its file at the next `mirror export`; set `meta={'type': 'user'|'feedback'|
-'project'|'reference'}` to choose the file's `metadata.type` (default `project`).
-Note `meta['type']` is that file-metadata axis only — the node *type*
-(`threads`/`runbooks`/`gotchas`/`workflow`/`reference`) is the `section:<slug>`
-tag, never a `meta['type']` value.
+| edge you write | where it shows (`fisheye+1hop`) |
+|---|---|
+| `part-of` → hub / summary | `Parts:` on both ends; on the `section:index` hub every member lists under `contains:`, one line each |
+| `qualifies` gotcha → thread | `Argument:` on both ends |
+| `[handle]` mention in the body | `related-to` under `Notes & links` on the target's eye (8-cap) |
+| `cites` / `derived-from` | `Notes & links` / `Argument` |
+
+`+recall` on a memory stays inside its own `SPACE:` and returns same-kind
+memories plus findings — a `research` memory's paper neighbours never
+appear as recall. Repo-dev nodes take
+`tags=['SPACE:repo-dev', 'section:threads|runbooks|gotchas|workflow|reference']`
+and `meta={'hook': 'one line — status + resume point'}` (writable meta
+keys: `hook`, `type`).
 
 ## Save a thought
 ## Capture a note
@@ -113,11 +105,15 @@ put(
 
 `text=` is the only required arg — it is the memory's **body prose**,
 stored in a chunk (embedded + keyworded, so search finds it). `title=`
-is the short **header** shown in listings, search hits, and the grid;
-write the body first, then a title once its point is clear. Omit `title=`
-and one is derived from the body's first line (capped at 80 chars), but an
-explicit title reads better. `tags=` and `link=` on create save a
-round-trip vs. a follow-up `tag()` / `link()`.
+is the short **header** — the retrieval keys (title vs `meta.hook` vs
+first body line) are defined once in `precis-firstline-help`; write the
+body first, then a title carrying the words you will search for. Omit
+`title=` and one is derived from the body's first line (capped at 80
+chars), but an explicit title reads better. `tags=` and `link=` on
+create save a round-trip vs. a follow-up `tag()` / `link()`.
+
+## Edit a memory in place
+## Rewrite a memory body without losing its id or links
 
 Rewrite a memory in place with `edit(kind='memory', id=42, mode='replace',
 text='new body'[, title='new header'])` — same id, links stay attached,
@@ -213,8 +209,10 @@ get(kind="memory", id="me4641", view="fisheye+1hop+recall")  # on the best hit
 memory mirrors a topic file; the hook is `meta.hook`, else the body's first
 line. `q=` is required. The second call opens the hit with its linked
 neighbours and the nearest unlinked memories in the same `SPACE:`
-(`precis-fisheye-help`). Shell form: `precis memory index --q "<task>" --k 5`.
-Any other `view=` on memory search is refused.
+(`precis-fisheye-help`). `view='index'` applies the same hard 0.42
+recall cut as the write-section round-trip check — a memory whose
+title/hook lacks the task words never lists. Shell form: `precis memory
+index --q "<task>" --k 5`. Any other `view=` on memory search is refused.
 
 ## Read a memory I have the id for
 ## Open a memory by id
@@ -385,9 +383,12 @@ calls when a link, type tag or split is missing: the two nearest hubs, up to
 five unlinked gotchas for a thread — and, on a `put` whose
 `section:threads` title prefix matches a live thread node's, the
 `edit(mode='replace')` call that updates that node instead. No lines
-means the node is in place.
+means the node is in place. The `rel=` choices between two memories:
+`precis-relations` (the memory↔memory block); where each edge renders:
+`precis-fisheye-help`.
 
-## Update or new node?
+## Update or new node? — the duplicate check
+## Merge a duplicate instead of keeping both
 
 - **Same subject, new state** → edit the node you have: an anchored
   `edit(mode='find-replace', find='old', text='new')` for one span, or
@@ -533,9 +534,68 @@ part, then `delete`. Settled → add what you changed to the todo and mark it
 `tag(kind='todo', id=<this todo>, add=['waiting-for:reto'])` — that puts it on
 Reto's queue (`precis-user-queue-help`) and takes it out of planner dispatch.
 
+## Operator: mirror files
+## Harness MEMORY.md ↔ graph import/export — CLI, not MCP verbs
+
+The `dream_consolidate` service retires stale dreams under `supersedes`
+summaries; it is dark until `service_config` lights it, then dry-run until
+`dream_consolidate.dry_run` is disarmed. Reto ruled it stays dark
+(2026-10-24): dreams exist to add useful links to the graph for discovery,
+so don't retire them by age. Improve weak dreams or link them instead.
+
+`precis memory mirror import|export` is how harness `MEMORY.md` and its
+topic files become `SPACE:repo-dev` nodes (the one-shot `precis memory
+import` is the cutover tool, not a seeding path); `precis memory index`
+prints only the live threads — `section:threads` nodes edited in the last
+14 days (`--days N`), newest first, one `- me<id> <Title> — <Left: line>`
+each (first body line, else `meta.hook`), plus a count of older ones. The
+SessionStart hook prints just the `--for-hook` counts line pointing here —
+run the command when you want the roster. Everything else is recalled by
+`search`; `--full` prints the old every-node list. A thread node's first
+line is `Left: …`; keep it true or `delete` the node.
+
+For explicit file coexistence, `precis memory mirror import
+DIR --namespace NAME` preserves YAML name/description/metadata, body prose
+and filenames; `mirror export DEST --namespace NAME` writes a fresh
+directory. Reruns update the same imported handles and resolve `[[…]]`
+links (a topic filename stem inside double brackets). Missing files stay
+live; graph edits cause an import conflict. Export preserves graph body
+edits but refuses changed file-authored metadata. These are CLI
+operations, not native MCP modes; they do not authorize migration of a
+real harness directory. `mirror import` refuses when live nodes from the
+one-shot importer share a topic's `name:` (`--legacy retire` soft-deletes
+them in the import, `--legacy keep` imports beside them, `--legacy
+refresh` adopts each in place: same handle and inbound links, the file's
+body and links written over it); `mirror export` writes a live
+`SPACE:repo-dev` node that has no file to a new `<slug>.md` (slug of the
+title, `-<id>` on a clash; `description:` = its hook, else the body's
+first line; `metadata.type` = its `type` meta or `project`) and stamps it
+as a mirror node — its title becomes the slug in listings, so the
+readable line belongs in `meta.hook`, which the index and recall print —
+and reports any node it still cannot render (no title, or another
+namespace's) as `unexported`.
+
+The harness files are not mounted as a read-only `markdown` root on the
+session server: the graph nodes above are the record, and the files
+remain a legacy import source only. `PRECIS_ROOTS` mirrors the skill
+files instead (`precis-overview`).
+
+**Where to edit.** A memory that has a file is edited in the graph with
+the anchored `edit` once the real mirror import has run for its
+namespace, and in the file before that; the mirror export is how the
+file catches up. A memory with no file is created with
+`put(kind='memory', tags=['SPACE:repo-dev','section:<slug>'],
+meta={'hook': '…'})` and gets its file at the next `mirror export`; set
+`meta={'type': 'user'|'feedback'|'project'|'reference'}` to choose the
+file's `metadata.type` (default `project`). `meta['type']` is that
+file-metadata axis only — the node *type* (`threads`/`runbooks`/
+`gotchas`/`workflow`/`reference`) is the `section:<slug>` tag, never a
+`meta['type']` value.
+
 ## See also
 
 - [[precis-overview]] — verbs and kinds
+- [[precis-firstline-help]] — the retrieval keys (title / hook / first line)
 - [[precis-tags]] — open-tag axes, bare flags
 - [[precis-relations]] — rel= vocabulary
 - [[precis-link-help]] — link verb mechanics
