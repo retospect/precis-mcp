@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: "pcb design flow: requirements-to-fab skill, part selection record, budgets, consigned BOM lines, mech/coating checklist"
 pillar: 3d-design
 prio: high
@@ -76,8 +76,40 @@ to ask:
   `resolve_track_rules` already maps a net's `est_current_a` to an
   IPC-2221 width.
 
-  A topo design review is running in parallel (2026-10-26). The flow's
-  layout step points at its outcome and does not restate it.
+  **Topo router state** (read-only design review of `worktree-topo-s5`,
+  2026-10-26). Conclusions are copied here because the review file is
+  not durable. The fixes belong to
+  [pcb-topo-place](pcb-topo-place.md), not to this item.
+  - The method is sound: a CDT mesh, wires as crossed-edge sequences,
+    per-edge order lists, layer assignment, then geometry. This is the
+    SURF / rubber-band shape.
+  - Three design pieces are missing:
+    - spacing-aware realisation: the realiser emits the taut sketch
+      verbatim, so wires pass through pad corners and coincide;
+    - capacity/congestion feedback: `capacity_mm`/`gap_cap` are computed
+      and nothing reads them;
+    - crossing resolution beyond one greedy outer-layer flip: no
+      re-thread, no inner layers, no rip-up.
+  - Bench symptoms:
+    - nano 0/64 is a mesh-recovery crash (`MeshConflictError` on a
+      collinear header row) that the job swallows as "unrouted";
+    - esp32c3's 80–145 DRC errors come from 0.000 mm clearances and vias
+      minted on pad-ring edges;
+    - ewod-replay moves are a placer gap: a fixed via is not a net anchor,
+      and the via exemption is per part, not per pad.
+  - Ranked plan:
+    1. mesh robustness and loud failures;
+    2. spacing-aware realisation (spoke offsets);
+    3. via siting with keepout;
+    4. crossing resolution (inner layers, re-thread, bounded rip-up);
+    5. fixed vias as placer anchors;
+    6. capacity cost.
+
+  Pours stay ruled out. Consequence for this flow: until fixes 1–4 land,
+  step 9 ends at a topo placement plus the check surface. The skill says
+  so and does not tell agents to hand-route or pour. The `est_current_a`
+  hand-off from step 6 is still written, so post-route widening picks it
+  up when routing produces copper.
 - **Flex fab layers and bend zones** (coverlay, stiffener, coating
   keep-off, documentation layer) are gr520329 and
   [pcb-flexboard](pcb-flexboard.md). This item adds only the checklist
@@ -136,6 +168,39 @@ The record carries these links:
 The script's part line cites the record. fi520367 is migrated to this
 shape as the first worked example.
 
+**Managing a record over the design's life** (Reto 2026-10-26: "manage
+and update"). One record per role per design. It is edited in place
+while it is `open`. Once it is `decided`, it changes only through these
+moves, all with `edit(kind='memory')` plus links, and no record is ever
+deleted:
+
+- **Add or drop a candidate while open.** Edit the `candidates:` block
+  and add or remove its `rejects` link. Each verdict line keeps its
+  fact handles.
+- **Re-select** (a better part, a failed review, the part going EOL,
+  NRND or out of stock). Write a new record for the same role whose
+  `pick` is the new part. Link `supersedes` → the old record, and set the
+  old record to `status: superseded`. The new record copies the old
+  rejects whose reasons still hold and turns the old pick into a
+  `rejects` link whose reason says why it fell (for example "EOL per
+  Digi-Key 2026-11-02"). The old record keeps its own links, so the
+  history of why the design moved stays one walk. The board script's
+  `# me<id>` cite is updated to the new record in the same change.
+- **Keep rejects.** A rejected part is never unlinked when a record
+  moves on, because the rejection reason is the reusable knowledge ("0.14
+  F BestCap: two parts double the leakage"). A rejection proved wrong
+  later is struck through in the body and gets `qualifies` → the fact
+  that overturned it. It is not deleted.
+- **Stale signal.** pcb-datasheet-review slice 8's lifecycle/stock
+  staleness reads the record's `selects` target. A stale record shows on
+  `#REFDES` as "selection stale: <reason>" until a re-select or an
+  explicit "keep, reason" edit clears it.
+- **Reuse across designs.** A later design's record may cite an earlier
+  record's rejects with `derived-from` instead of re-arguing them. The
+  `selects`/`rejects` rels are scoped to part selection (Reto: "yes, for
+  part selection"). Architecture decisions (step 2) use `derived-from` and
+  `serves` only.
+
 **Budget convention.** The model is code in the workspace (the design's
 script folder), with `assert` margins:
 
@@ -158,7 +223,8 @@ the copper can't disagree. A failing assert blocks the publish.
 1. **Skill `precis-pcb-design-flow-help`** (a new router skill, each chunk
    ≤ 4000 chars). It holds:
    - the flow table above;
-   - the selection-record template and its links;
+   - the selection-record template, its links and its life-cycle (open →
+     decided → superseded; rejects kept);
    - the budget convention, with the energy model of a solar + supercap
      node as the worked example;
    - the BOM-home rule;
@@ -254,6 +320,14 @@ the copper can't disagree. A failing assert blocks the publish.
 5. `checklist pcb-mech-env` applies to taz-leaf-a (flex + parylene).
    `op='review'` gives a verdict or `not checkable (gr520329)` on every
    item, never a silent pass.
+6. Re-selecting the TAZ supercap (mark CAP-XX EOL by hand) per the skill:
+   - gives a new record that `supersedes` the old one;
+   - the old record reads `status: superseded` and keeps all its links;
+   - the new record carries the CAP-XX as a `rejects` with the EOL
+     reason, plus the still-valid old rejects;
+   - `#REFDES` shows only the new record as current, with the old one
+     one hop back;
+   - the board script's cite points at the new record.
 
 ## Target + blast radius
 
@@ -289,20 +363,18 @@ the copper can't disagree. A failing assert blocks the publish.
 
 ## Open questions / decisions log
 
-Recommendations are DESIGN's; each needs Reto's ruling before `/ready`.
+Rulings by Reto, 2026-10-26 (typed in the coordinator pane, relayed):
 
-- **Q1 (blocker) Record home.**
-  - *Recommend:* a memory node, following pcb-datasheet-review's
-    2026-10-13 ruling that design intent lives in graph memory. It holds
-    many sources, and that ruling already covers it.
-  - *Alternatives:* a finding hub mode with `supporters=` (findings are
-    claims about the world, but a pick is a choice); or a new `decision`
-    kind (more surface for one shape).
-- **Q2 (blocker) Rel names.**
-  - *Recommend:* `selects` / `rejects`, which read naturally from the
-    record.
-  - gr519924 suggested `chosen-because` / `rejected-because`. Those point
-    part → reason, the wrong direction for the anchor walk.
+- **[decided] Q1 Record home: graph memory.** "yes in graph is good,
+  manage and update." The selection record is a memory node, and its
+  life-cycle is specified in §Managing a record over the design's life:
+  edit while open, supersede on re-select, rejects kept.
+- **[decided] Q2 Rel names: `selects` / `rejects`, scoped to part
+  selection.** "seems good. yes, for part selection." Architecture
+  decisions don't use them.
+
+Open, none blocking (recommendations are DESIGN's):
+
 - **Q3 Consign in fab.**
   - *Recommend:* a separate `consigned.csv` plus a fab-notes line.
     `op='order'` refuses while consigned lines exist until JLC's
