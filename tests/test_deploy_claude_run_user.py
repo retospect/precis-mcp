@@ -24,9 +24,10 @@ Pins:
   ``env_keep`` (plus macOS's stock list) is the allowlist and must carry
   claude's auth vars, with ``env_reset`` pinned per-command;
 * the sudoers template grants deploy the one wrapper command only, never
-  grants the run user anything, keeps prompt argv out of the system log
-  (``!syslog``), and stays byte-identical to today when
-  ``claude_run_user`` is unset;
+  grants the run user anything, lets sudo log the wrapper's argv as normal
+  (per-command log suppression was dropped: CI's sudo-rs visudo rejects
+  it), and stays byte-identical to today when ``claude_run_user`` is
+  unset;
 * every claude-spawning darwin unit env (20b collapsed, 20e agentlane, the
   dormant split-unit rollback plist) points ``PRECIS_CLAUDE_BIN`` at the
   wrapper iff the host var is set, and play 29 covers both mac claude
@@ -499,11 +500,14 @@ def test_rendered_sudoers_parses_under_visudo(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stdout + res.stderr
 
 
-def test_sudoers_does_not_log_wrapper_argv() -> None:
-    """sudo logs every allowed invocation's argv — which carries the `-p`
-    prompt, i.e. untrusted gripe text — into the system log."""
+def test_sudoers_has_no_per_command_log_defaults() -> None:
+    """sudo logs the wrapper's argv as normal; per-command log suppression
+    was dropped because CI's sudo-rs visudo rejects it."""
     out = _render_sudoers(claude_run_user=_RUN_USER)
-    assert f"Defaults!{_WRAPPER} !syslog" in out
+    assert "!syslog" not in out
+    assert "log_allowed" not in out
+    defaults = [ln for ln in out.splitlines() if ln.startswith(f"Defaults!{_WRAPPER}")]
+    assert all(ln.split()[1] in ("env_reset", "env_keep") for ln in defaults)
 
 
 # ── unit env wiring ─────────────────────────────────────────────────────
