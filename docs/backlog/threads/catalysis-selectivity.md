@@ -51,139 +51,49 @@ midpoint and the end. The Ta effect at the end is −0.29 eV in both methods
 (design note §22f). Reto accepted it (`catalysis-selectivity-27`): the
 emptied-site rule stands for when the pilot resumes, and every hold stays.
 A spin-polarised point at the Ta end keeps no moment and matches the
-spin-paired energy (§22i), so the table stands. Catpath
-0.23.0 (Part B) runs in Reto's
-`catpath` tmux window, and he sends the release sha for
-`uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
-**Resume (2026-10-04, round 6):** nothing is half-done or on the branch
-only; everything this thread built is on main and was live by round 4.
-**Resume (2026-10-21, pd-hydride-s3):** the spec's stage-3 precis fixes
-landed (`c9c52c95b`): `struct_relax` keeps the relaxed lattice and takes
-an explicit `fmax`; an H-loaded-slab preflight pass is test-pinned (the
-straddle caveat itself was gr462730's fix). Stages 1–2 and the top-10
-re-run are unbuilt; the NEB pilot stays held.
+spin-paired energy (§22i), so the table stands.
+**Settled history (folded 2026-10-26; the Resume block above is current,
+the dated detail is in `git log` and the owning items):**
 
-**Resume (2026-10-24, gr510764):** network-basis sync to the pinned
-engine landed in `gf-questbasis` — `frontier.apply_network_demotion`
-takes the pinned basis (`compute._pinned_network_basis`: pin/env
-version + the quest's resolved neb template) so any stamped key on an
-older engine demotes to provisional (pending re-measurement, never
-final; same-engine template mismatches still demote margins only), and
-the restale pass redispatches those candidates at their own tier, cap-
-bounded and deduped by the in-flight pathway check. st497185's mixed
-parked@0.32.0 / coadsorbed@0.35.0 stamps re-run on the next tick.
-
-**Kinetics guard (2026-10-23, gr502251):** the aggregate's microkinetics
-stage probes a steady-state solve and caps Monte Carlo samples to 60% of
-its wall budget, refusing before solve below the 100-sample floor. This
-keeps the existing 900-second child cap and leaves aggregate success
-independent of the diagnostic solve. Landed `e0e59d776`; no production
-rerun was requested or performed in this session.
-- Live, not yet seen working:
-  - the diagram arrows (item 22): pw455722 drawn from prod shows 12 angled
-    H⁺+e⁻ arrows and no dashed overlay, but Reto has not looked at it in
-    the browser;
-  - the engine-version guard (item 24) has nothing to act on until a
-    catpath 0.23.0 margin lands;
-  - the pourbaix_bulk note clamp and the pymatgen#4709 citation
-    (b41b70d03) wait for the first MP-key job.
-- Item 17 is resolved (round 4): pa5303's and pa166889's SIs (pa465134,
-  pa465698) both state V vs RHE. qu164903's operating point (−0.3 V_RHE,
-  window −0.2 to −0.4 V, pH 7) is in its logbook (decision entry 626).
-- Waits on others:
-  - Reto: `PRECIS_MP_API_KEY` (Do-next 4);
-  - the catpath session: the 0.23.0 release sha for
-    `uv lock -P autocatpath` (Do-next 1). Then one build here: the lock,
-    the engine-guard check, and the neb-tier re-run once the holds lift;
-  - fetches: 13 of the 15 papers the CNT item waits on (Parked).
-- Open question for the orchestrator (raised 2026-10-04): chemistry's
-  Resume block expects the next qu164903 tick to re-mint 23 failed verify
-  seeds. If that counts as a re-run under the item-25 hold, it needs a
-  ruling before the tick.
-- Next step: when the catpath sha arrives, run `uv lock -P autocatpath`.
-  The holds of items 23/25 (no re-runs, no hydride pilot) stay until
-  Reto lifts them.
-
-**Resume (2026-10-07, released from the Codex-merge hold):**
-- **Catpath 0.24.0 is locked** (Reto's ruling, 2026-10-07, one change
-  after the 0.23.0 pin): `tool.uv.sources` names the v0.24.0 tag commit
-  9a4cfede, not `branch = "main"`; floors `>=0.24.0`; engine token
-  0.24.0. 0.24.0 = 0.23.0's network (NH₂OH scission, NO+NO coupling,
-  `network_digest`) + 0.23.1's NH₂OH gas entry + the item-19 gas (NH₃,
-  NO, N₂O, NH₂OH) and Pd H* +0.25 eV corrections, ON by default and
-  recorded under `results.corrections`. No precis-side correction code
-  existed to strip (grep over `src/precis_pathway`, 2026-10-07), so
-  there is no double correction. Coverage anchors stay uncorrected on
-  0.24.0: `coverage.scan` applies no corrections (catpath session), and
-  the scan job records `meta.corrections` from the scan payload, never
-  the config.
-- **Margins restale by the engine-version rule**: `frontier.
-  same_network_basis` compares `version` first, so every 0.22.0
-  (pw455722) and 0.23.0 margin is demoted against a 0.24.0 one with no
-  guard change; 0.23.0 margins were already non-comparable with 0.22.0
-  (50→54 states, 34→37 steps, new `network_digest`), and 0.24.0 moves
-  every level on top. Still open: fold `results.corrections` into the
-  basis as item 24's "correction-set id", so a corrections flip inside
-  one engine version cannot pass as comparable — spec and strict-xfail
-  tests in `backlog/pathway-correction-basis.md` (recovered from the Codex
-  `work/catalysis/bootstrap` branch, 2026-10-07).
-- **Codex catalysis branches folded in (2026-10-07, branch audit):** the
-  bulk-Pourbaix quest gate Part B first slice (R14: `quest.meta.
-  operating_conditions`, `pourbaix_bulk` dispatch/harvest/stamp,
-  `precis.quest.pourbaix`) and the R15 contribs REST fix landed from
-  `work/catalysis/pourbaix-quest-gate` with its unit tests (the mp-api
-  builder test skips where the `[estimate]` extra is absent); the
-  2026-10-05 Pourbaix rulings moved into the surface-Pourbaix item. Both
-  branches are now delete-list. The R15 production proof job still waits
-  on a deploy carrying this code and on `PRECIS_MP_API_KEY`.
-- **td470248 approved** (Reto via chat-interface, 2026-10-07): BEEF-vdW
-  single points on the four existing PdH H-flight geometries (Ta-adjacent
-  β-PdH midpoint + endpoint `B_Ta.extxyz`, undoped β-PdH midpoint +
-  endpoint). The launch still needs a verified pre-launch estimate under
-  $25 per run, or the exact command handed to Reto; me470247 says the PBE
-  basis is unmeasured, so measure it on the first single point.
-- `scripts/build-image` now builds the dev image's autocatpath layer from
-  the lock's sha (it resolved catpath main's HEAD before, which would have
-  baked 0.24.0 under a 0.23.0 lock); the cluster wheelhouse already built
-  from the lock.
-- **Coverage anchors (surface-Pourbaix slice 1 input):** none exist as
-  refs. Prod (read-only, 2026-10-07): 376 structures on qu164903, 0
-  β-PdH or hydride structures anywhere, 0 explicit O*/OH* coverage
-  structures, no coverage/anchor meta keys. The 257 harvested candidates
-  each embed one pathway whose nodes hold single-adsorbate energies (one
-  per supercell, n=1, 0.22.0 engine, no corrections). catpath's
-  `autocatpath coverage` scan (γ(θ) per adsorbate per facet, MARI pick)
-  is the generator, but precis never calls it (`run_kinetics` sets
-  `mari=None`) and it builds its own clean slab from element+facet,
-  ignoring the prebuilt-slab side channel — doped slabs and β-PdH need the
-  engine change (task A1, catpath repo, 0.25.0; no brief was ever filed)
-  before their anchors can be scanned.
-- Surface-Pourbaix "file only" is lifted (Reto via chat-interface,
-  2026-10-07): slices 1–2 are this thread's next build, after the lock.
-  Rulings: q6 discrete slabs, q7 (111) only; slice 6 gets a quest-side
-  "which slab model to trust" representation; q2 ruled 2026-10-05, q3
-  2026-10-12.
-  `PRECIS_MP_API_KEY` is in the overlay; Pourbaix must not block on the
-  MP import.
-
-**Resume (2026-10-13, SPSO wave A landed):** Reto approved the build plan
-(coordinator memory me481988). Landed the same day: catpath **0.25.0**
-(tag v0.25.0, f88e45f: A1 coverage scan honours the injected slab, shares
-the pipeline's lattice derivation, applies the model corrections and
-records `corrections`/`slab_source`/`lattice_source`; A2 `che_affine`
-per-edge/per-route export + `network.her` side branch kept out of the
-headline U_L); precis main 01b36dba7 (A3 slice 2 map view + `/pourbaix/
-<handle>`; A4 `staircase_masks.py` slices 4+5 with the n_e sign
-convention; gr482107 coverage snap; gr482121 ingest slug) and 75a6ab85b
-(pin bump; needs the agent-image rebuild, r33). A5: jo482106 proof and
-θ→0 (caveat: pw455722 is the Sn-subsurface candidate) — in the item.
-Wave B in flight as Devin trees spso-b1 (anchors rung: mint per
-candidate, harvest sweep + θ→0, lift the `slab_extxyz` refusal), spso-b2
-(slice 3 staircase panel + `staircase_routes.py` adapter + slider bank),
-spso-b3 (window area / Shapley IPR / HER margin as Pareto measures,
-anchor-placement proposals, validity region per candidate). Decisions and
-the open paper-date collision: the item's §Rulings 2026-10-13. The
-gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
+- **Engine and pin.** Catpath 0.24.0 added NO+NO coupling, NH₂OH scission,
+  template-level `network_digest` and the item-19 gas (NH₃, NO, N₂O,
+  NH₂OH) and Pd H* +0.25 eV corrections, ON by default and recorded under
+  `results.corrections`; precis has no correction code of its own, so
+  nothing is applied twice. The pin has moved on since (see Resume); the
+  rule stands that margins compare only on equal engine version
+  (`frontier.same_network_basis`). Open: fold `results.corrections` into
+  that basis as item 24's "correction-set id" —
+  `backlog/pathway-correction-basis.md` (spec plus strict-xfail tests).
+- **Restale.** `frontier.apply_network_demotion` takes the pinned basis
+  (`compute._pinned_network_basis`: pin/env version plus the quest's
+  resolved neb template); any stamped key on an older engine demotes to
+  provisional, and the restale pass redispatches it at its own tier,
+  cap-bounded and deduped by the in-flight pathway check (gr510764,
+  `gf-questbasis`). That redispatch is a re-run: it is under item 25's
+  hold until validation is green.
+- **Kinetics guard (gr502251, `e0e59d776`).** The aggregate's
+  microkinetics stage caps Monte Carlo samples to 60% of its wall budget
+  and refuses below 100 samples; the 900-second child cap is unchanged.
+- **Pd-hydride.** The stage-3 precis fixes landed (`c9c52c95b`:
+  `struct_relax` keeps the relaxed lattice, explicit `fmax`; H-loaded-slab
+  preflight is test-pinned). Stages 1–2 and the top-10 re-run are unbuilt;
+  the NEB pilot stays held (item 23). The BEEF-vdW points (td470248) are
+  done.
+- **Surface-Pourbaix (SPSO).** Wave A (catpath 0.25.0 coverage scan and
+  `che_affine` export; slices 2, 4, 5), wave B (anchors rung, staircase
+  panel, window/Shapley/HER objectives) and wave C slice 7 are built; the
+  item `backlog/surface-pourbaix-staircase-optimizer.md` owns the status.
+  The paper-date collision is its §Rulings 2026-10-13 and `td462597`.
+- **Operating point.** qu164903 (NO→NH₃ selectivity): −0.3 V_RHE, window
+  −0.2 to −0.4 V, pH 7 (logbook decision entry 626; both source SIs state
+  V vs RHE).
+- **Live, not yet seen working.** The diagram arrows (item 22): pw455722
+  drawn from prod shows 12 angled H⁺+e⁻ arrows and no dashed overlay, but
+  Reto has not looked at it in the browser. The pourbaix_bulk note clamp
+  and the pymatgen#4709 citation (b41b70d03) wait for a recorded
+  Materials Project job ("MP key live: <call> → <result>" is still
+  unrecorded; `PRECIS_MP_API_KEY` is in the overlay).
+- **Waits on others.** 13 of the 15 papers the CNT item waits on (Parked).
 
 **Worktree:** `catalysis-selectivity`
 **Allocation decision (historical):** yes — Reto, 2026-10-02 ("high up").
@@ -197,7 +107,12 @@ gr482121 backfill of the 559 overwritten `pw-*` structure refs is closed.
    the like-with-like network-basis ranking has shipped. Catpath 0.24.0 (NO+NO coupling, NH₂OH scission,
    template-level `network_digest`, gas + Pd H* corrections ON) is
    locked (2026-10-07). Left: the neb-tier re-run of pw455722's candidate
-   and the trap/poison re-check in qu164903's logbook, held by item 25.
+   and the trap/poison re-check in qu164903's logbook. Held by item 25,
+   which lifts when catpath's 7-test real-potential validation (UMA, on
+   spark) is green (Reto, 2026-10-26: "lift 25 after validation"). Prepare
+   the plan and a verified <$25 per-run bound now; launch nothing until
+   the validation is green. The restale pass redispatches stale stamps on
+   its own, so confirm it is not the first thing to fire at the lift.
 2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
    operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
    Pd(111). Stages 0–2 done. The pilot pair is built
