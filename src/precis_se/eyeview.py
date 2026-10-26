@@ -138,7 +138,9 @@ def _merged(store: Any, tree: Any, slug: str) -> tuple[Any, Any, Any, Any]:
     from precis_se import handler as _h
 
     ctx = _h._trace_context(tree)
-    bts: dict[str, Any] = dict(ctx)
+    # The bond graph is atoms-only — cad-bound ctx entries (scene None,
+    # gr514244) never reach it.
+    bts: dict[str, Any] = {n: bt for n, bt in ctx.items() if bt.scene is not None}
     resolver = getattr(tree, "structures", None)
     if resolver is not None:
         for name, node in tree.blocks.items():

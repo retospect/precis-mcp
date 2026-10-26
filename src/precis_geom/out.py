@@ -264,25 +264,27 @@ def _block_kind(scene_like: Any, name: str, scale: str | None) -> str:
     return kind
 
 
-def _write_atomic(root: Path, name: str, scene: Any) -> tuple[str, str]:
+def _write_atomic(root: Path, name: str, scene: Any) -> tuple[str, str, str | None]:
     """``blocks/<name>.extxyz`` via the one canonical writer
     (:mod:`precis_geom.extxyz`, duck-typed on the scene protocol — this
     package is a standalone kernel and never imports ``precis``), plus
     the ``.bonds.json`` sidecar when the scene carries bonds (the
     importer's default sidecar path — no ``bonds`` key needed in the
     manifest). Returns ``(the manifest ``file``, the written file's
-    sha256)`` — the sha is the block's ``vs previous``/re-import change
-    signal (gr514248)."""
+    sha256, the sidecar's sha256 or None)`` — the shas are the block's
+    ``vs previous``/re-import change signal and the importer's upload
+    verification (gr514248/gr517643)."""
     rel = f"blocks/{name}.extxyz"
     p = root / rel
     body = _extxyz.to_extxyz(scene)
     p.write_text(body, encoding="utf-8")
     bonds = list(getattr(scene, "bonds", None) or [])
+    bonds_sha: str | None = None
     if bonds:
-        (root / f"blocks/{name}.bonds.json").write_text(
-            _extxyz.bonds_to_json(bonds), encoding="utf-8"
-        )
-    return rel, hashlib.sha256(body.encode("utf-8")).hexdigest()
+        bonds_body = _extxyz.bonds_to_json(bonds)
+        (root / f"blocks/{name}.bonds.json").write_text(bonds_body, encoding="utf-8")
+        bonds_sha = hashlib.sha256(bonds_body.encode("utf-8")).hexdigest()
+    return rel, hashlib.sha256(body.encode("utf-8")).hexdigest(), bonds_sha
 
 
 def _write_macro(root: Path, name: str, geom: Any) -> tuple[str, str]:
@@ -450,15 +452,18 @@ class Run:
             return self.board(geom)
         (self.root / "blocks").mkdir(parents=True, exist_ok=True)
         if kind == "atomic":
-            file_rel, file_sha = _write_atomic(self.root, n, geom)
+            file_rel, file_sha, bonds_sha = _write_atomic(self.root, n, geom)
         else:
             file_rel, file_sha = _write_macro(self.root, n, geom)
+            bonds_sha = None
         entry: dict[str, Any] = {
             "name": n,
             "file": file_rel,
             "scale": kind,
             "sha": file_sha,
         }
+        if bonds_sha is not None:
+            entry["bonds_sha"] = bonds_sha
         if ports:
             entry["ports"] = [dict(p) for p in ports]
         if gfindings:

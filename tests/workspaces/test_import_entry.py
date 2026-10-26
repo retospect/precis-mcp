@@ -11,6 +11,7 @@ nothing.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import runpy
 from pathlib import Path
@@ -155,6 +156,62 @@ def test_dry_run_writes_nothing(store: Store) -> None:
     assert persist.load_tree(store, se_ref.id).blocks == {}
     assert _file_paths(store) == {}
     assert "workspaces" not in (se_ref.meta or {})
+
+
+def test_files_py_must_compile(store: Store) -> None:
+    """gr517643: a workspace ``.py`` that does not parse refuses the op
+    naming file:line — before this, a retyped main.py synced happily
+    and the run still reported 'N block(s) written'."""
+    se = _se(store)
+    _design(se)
+    with pytest.raises(BadInput) as exc:
+        se.edit(
+            id="ws-op",
+            ops=[_op(files={"main.py": "def broken(:\n", "ok.py": "x = 1\n"})],
+        )
+    msg = str(exc.value)
+    assert "main.py:1" in msg and "does not compile" in msg
+    assert exc.value.next
+    # the refusal precedes any write — no folder, no blocks
+    assert _file_paths(store) == {}
+    se_ref = store.get_ref(kind="se", id="ws-op")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
+def test_files_py_null_byte_refuses(store: Store) -> None:
+    """gr517643: ``compile`` raises ValueError on a null byte (not
+    SyntaxError) — a corrupted upload must refuse as BadInput, not
+    escape as an unhandled exception."""
+    se = _se(store)
+    _design(se)
+    with pytest.raises(BadInput) as exc:
+        se.edit(
+            id="ws-op",
+            ops=[_op(files={"main.py": "x = 1\n\x00\n", "ok.py": "y = 2\n"})],
+        )
+    msg = str(exc.value)
+    assert "main.py" in msg and "does not compile" in msg
+    assert exc.value.next
+    assert _file_paths(store) == {}
+    se_ref = store.get_ref(kind="se", id="ws-op")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
+def test_dry_run_reports_sha_verification(store: Store) -> None:
+    """gr517643: the dry run shares the import path, so it reports the
+    same sha256 verification line."""
+    se = _se(store)
+    _design(se)
+    run = _run_dict()
+    m = json.loads(run["manifest.json"])
+    for blk in m["blocks"]:
+        blk["sha"] = hashlib.sha256(run[blk["file"]].encode("utf-8")).hexdigest()
+    run["manifest.json"] = json.dumps(m)
+    resp = se.edit(id="ws-op", ops=[_op(run=run, dry_run=True)])
+    assert "DRY RUN" in resp.body
+    assert "sha256 verified: blocks/p.extxyz" in resp.body
 
 
 def test_files_sync_update_and_retire(store: Store) -> None:

@@ -169,7 +169,7 @@ is refused by name — the vet is the contract, and the key set is:
 
 | entry | keys |
 |---|---|
-| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `mode`, `measures`, `loads`, `template`, `findings`, `census`, `frame`, `sha` |
+| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `bonds_sha`, `mode`, `measures`, `loads`, `notes`, `template`, `findings`, `census`, `frame`, `sha` |
 | port (inside `ports`) | `name`, `atom` (atomic only), `roles`, `direction`, `expected_element`, `expected_hybridization`, `pose`, `annotations`, `frame` |
 | instance | `name`, `template`, `parent`, `pose`, `rot`, `pose_unit`, `rot_unit`, `linear`, `polar`, `frame` |
 | connect | `a`, `b`, `kind`, `joint`, `objectives`, `frame` |
@@ -189,10 +189,25 @@ library part that is never itself placed (gr514241). A block's
 `findings` is a list of strings — the Geom findings `out.block` stamps
 (`chirality.flipped` and the like); `census` is an object — a hexfold Net's junction/seam/valence summary `out.block` stamps (gr514059), run-record only, never imported; import echoes each as
 `block '<name>': <finding>` so a mirrored hand shows in the run record
-(gr514205). `sha` is the writer's sha256 of the geometry file —
-`out.block` stamps it automatically and import stores it on the bound
+(gr514205). `sha` is the writer's sha256 of the geometry file and
+`bonds_sha` the sidecar's — `out.block` stamps both automatically
+(`bonds_sha` only when the writer serialized the sidecar itself;
+`bonds`/`bonds_sha` are atomic-only). Declared means verified: the
+imported bytes must hash to the declared digest or the whole import
+refuses, naming the path and both digests — the inline `run` map
+retypes every byte, and this is the check that catches a corrupted
+upload (gr517643). `sha` also lands on the bound
 ref's `meta.generated.sha`, so a re-import can answer
 changed/unchanged without re-diffing geometry (gr514248).
+
+## Ledger notes — `notes`
+
+A block's `notes` is a list of `{"name", "kind":
+"question"|"answer"|"decision", "text", "re"?, "about"?, "origin"?}`
+— `add_note` ledger entries (`about` defaults to the declaring
+block, `origin` to `generated`); the ledger is append-only, so a
+re-imported identical note is skipped and a same-named different one
+refuses (gr514245).
 
 **Not yet supported.** The manifest has no `material`, `measure`,
 `binding` or `bom` keys — the vet refuses them as unknown. Ruling
@@ -208,7 +223,7 @@ ops in [[precis-se-help]]).
 | geometry | `Scene` (atoms/bonds) → `.extxyz` + `.bonds.json` | DSL text → `.cad` · `SceneSpec` → `.cad.json` |
 | library | hexfold (`pg`/`pga` `Geom` in Å), RDKit, ASE | `precis.cad` primitives (`pga` `Geom` in mm) |
 | bound ref kind | `structure` | `cad` |
-| trace reads | per-atom `maker` → `view='trace'` | `made-by:` on the block eye only (below) |
+| trace reads | per-atom `maker` → `view='trace'` | `view='trace'` summary/frame/`against` + `made-by:` (below) |
 
 A block binds either leg; one design can mix both — instances and
 connects don't care.
@@ -235,11 +250,10 @@ eye — [[precis-se-regions-help]]), `view='validate'` finding rows
 carry the script line, and the block eye's `made-by:` names the user
 frame (`ws-<run>::<fn> (main.py:N)`).
 
-**Macro limit.** `view='trace'` reads structure-bound blocks only. A
-cad-bound macro block imports its `frame` fine — `made-by:` shows on
-its eye — but there is no frame card, no per-line listing and no run
-diff on the macro leg yet, and `view='trace'` on a macro-only design
-reports no construction trace.
+**Macro leg.** `view='trace'` answers on cad-bound macro blocks too —
+the summary, `frame` cards, `against` run diffs, and a `made-by:`
+listing (which script line made which block). Only the *atom* asks
+(`atom`/`atoms`) stay structure-bound: a solid has no atoms to trace.
 
 **build123d / CadQuery limit.** The importer accepts only the
 `precis.cad` graph, so a build123d script converts at the end and gets
@@ -292,12 +306,27 @@ edit(kind='se', id='<design>', ops=[{
 ```
 
 `run` is the whole `out/` verbatim (`manifest.json` + `trace.json` +
-`blocks/*`; the `.fitcache/` cache dir may be dropped). `files` syncs
+`blocks/*`; the `.fitcache/` cache dir may be dropped) — and the
+files' bytes are verified: a declared `sha`/`bonds_sha` that does not
+match the uploaded file refuses the import, an empty bonds list or a
+`files` `.py` that does not compile refuses naming file:line
+(gr517643). `edit(ops=[...])` is the canonical call form — `ops=` is a
+declared kwarg of `edit`, not a deprecated spelling. The inline `run`
+map is the interim door: a staged-upload path (signed URL, bytes land
+server-side, `import_workspace` takes a digest instead of text) is
+planned so file bytes never pass through model tokens. `files` syncs
 the workspace's code: a `folder` ref `part-of` the design plus
 `plaintext` children slugged `ws-<workspace>--<path>` — the
 `ws-<workspace>` python root then serves them (`get(kind='python',
 id='ws-<workspace>::<qualname>')`). Absent `files` leaves the folder
 untouched; `files={}` retires every file.
+
+**Main/prod drift.** The manifest surface on main can be ahead of the
+deployed release — `census` (gr514059) landed after r106, so prod
+r106's vet refuses a manifest carrying it as an unknown key. When a
+fresh `out/` refuses on prod naming a key this table lists, that key
+is post-release: strip it for the prod import (it is run-record only)
+or wait for the next release.
 
 The op rides alone — the sole op of its `edit`, refused in `put` (put
 builds a fresh tree). An unknown design's error `next=` points at

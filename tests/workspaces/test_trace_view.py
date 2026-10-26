@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -230,6 +231,151 @@ def test_no_trace_is_a_clean_answer(store: Store) -> None:
     se = SeHandler(hub=Hub(store=store))
     body = se.get(id="plain", view="trace").body
     assert "no construction trace" in body
+
+
+# ── gr514244 — trace views on a macro-only run ─────────────────────
+
+_MACRO_TRACE: dict[str, Any] = {
+    "schema": 1,
+    "run": {"workspace": "hcol-macro"},
+    "frames": [
+        {
+            "id": 0,
+            "key": "root0000",
+            "parent": None,
+            "qual": "main",
+            "file": "main.py",
+            "line": 1,
+            "occ": 0,
+            "kind": "root",
+            "args": {},
+            "made": {},
+            "touched": {},
+        },
+        {
+            "id": 1,
+            "key": "build001",
+            "parent": "root0000",
+            "qual": "main.build",
+            "file": "main.py",
+            "line": 12,
+            "occ": 0,
+            "kind": "user",
+            "args": {},
+            "made": {},
+            "touched": {},
+        },
+        {
+            "id": 2,
+            "key": "blk00002",
+            "parent": "build001",
+            "qual": "out.block",
+            "file": "out.py",
+            "line": 30,
+            "occ": 0,
+            "kind": "core",
+            "args": {},
+            "made": {"blocks": 1},
+            "touched": {},
+        },
+    ],
+}
+
+
+def _macro_design(store: Store, tmp_path: Path, slug: str = "ws-macro") -> None:
+    """Import a macro-only run — one cad-DSL block, no structure-bound
+    block at all (gr514244's case)."""
+    _design(store, slug)
+    out = tmp_path / "out"
+    (out / "blocks").mkdir(parents=True)
+    (out / "blocks/plate.cad").write_text(
+        "plate add box:w40mmd20mmh10mm\n", encoding="utf-8"
+    )
+    (out / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "blocks": [
+                    {
+                        "name": "plate",
+                        "file": "blocks/plate.cad",
+                        "scale": "macro",
+                        "frame": 2,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (out / "trace.json").write_text(json.dumps(_MACRO_TRACE), encoding="utf-8")
+    res = import_workspace_run(
+        store,
+        workspace="hcol-macro",
+        design=slug,
+        out_dir=out,
+        run_job=_job(store),
+    )
+    assert res.trace is not None
+
+
+def test_macro_only_trace_summary_and_made_by(store: Store, tmp_path: Path) -> None:
+    """gr514244: a macro-only run's trace.json answers the no-args
+    summary — the run line plus a which-line-made-which-block
+    listing — instead of 'no construction trace'."""
+    _macro_design(store, tmp_path)
+    se = SeHandler(hub=Hub(store=store))
+    body = se.get(id="ws-macro", view="trace").body
+    assert "no construction trace" not in body
+    assert "workspace hcol-macro" in body and "3 frames" in body
+    assert "made-by:" in body
+    assert "plate: ws-hcol-macro::main.build (main.py:12)" in body
+
+
+def test_macro_only_frame_card(store: Store, tmp_path: Path) -> None:
+    """gr514244: args['frame'] renders the frame card on a cad-bound
+    trace (samples are atom paths — structure-only, so none here)."""
+    _macro_design(store, tmp_path)
+    se = SeHandler(hub=Hub(store=store))
+    body = se.get(id="ws-macro", view="trace", args={"frame": "build001"}).body
+    assert "main.build" in body
+    assert "selector: frame:build001" in body
+    assert "out.block" in body  # the child line
+
+
+def test_macro_only_run_diff(store: Store, tmp_path: Path) -> None:
+    """gr514244: args['against'] diffs the run against an earlier
+    ws_trace chunk."""
+    _macro_design(store, tmp_path)
+    se = SeHandler(hub=Hub(store=store))
+    old = json.loads(json.dumps(_MACRO_TRACE))
+    for f in old["frames"]:
+        if f["key"] == "blk00002":
+            f["made"] = {"blocks": 2}
+    job2 = _job(store)
+    store.chunks.insert_chunks(
+        job2,
+        [
+            ChunkInsert(
+                ord=0,
+                text=json.dumps(old),
+                meta={"chunk_kind": "ws_trace"},
+            )
+        ],
+    )
+    body = se.get(id="ws-macro", view="trace", args={"against": job2}).body
+    assert "run diff" in body and "out.block" in body
+    assert "~" in body  # blk00002 changed (made)
+
+
+def test_macro_atom_ask_stays_structure_bound(store: Store, tmp_path: Path) -> None:
+    """gr514244: atom asks on a cad-bound block refuse naming the
+    limit, not 'no block' or a crash on scene=None."""
+    from precis.errors import BadInput
+
+    _macro_design(store, tmp_path)
+    se = SeHandler(hub=Hub(store=store))
+    with pytest.raises(BadInput, match="cad-bound"):
+        se.get(id="ws-macro", view="trace", args={"atom": "plate/0"})
 
 
 def test_pocket_over_frame_holds_made_count(store: Store, se: SeHandler) -> None:

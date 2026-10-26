@@ -147,7 +147,10 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
   `{"class": rigid|revolute|prismatic|cylindrical|screw|planar|ball|
   compliant|captive|axial, "axis"?: [x,y,z], "mechanism"?: snap|screw|
   press|clamp|key|magnet|bearing|bond|integral|fuse|adhesive|rivet|pin|
-  cable|tensioner, "params"?: {…}}` — nested, never flat.
+  cable|tensioner, "params"?: {…}}` — nested, never flat. `view='joints'`
+  (no design id needed) lists the whole vocabulary generated from
+  `precis_se.joints` — class glosses, which classes take `axis`, and
+  each mechanism's DRC/BOM demands.
 
 ## Ops — loads, prose, measures
 
@@ -288,7 +291,9 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 
 `tree · block · report · ports · connects · topology · chain · measures · revisions · branches · diff · provenance · contracts · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
-literature · fret · links · export · cut · ops · assembly_check · trace`. No `mass` view — mass
+literature · fret · links · export · cut · ops · assembly_check · trace · joints`
+(`joints` also serves without an id — the generated joint vocabulary).
+No `mass` view — mass
 goes via `bom`. `interview` elicits what's missing. `assembly_check` is
 macro relax v1 (check-and-report, nothing moves): drc + mate redundancy
 (Jacobian rank, the redundant set named) + every interfering pair with

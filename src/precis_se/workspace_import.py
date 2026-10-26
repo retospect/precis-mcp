@@ -19,7 +19,8 @@ run's failure, refused naming the key)::
                  "ports"?: [{"name", "atom"?, "roles"?, "direction"?,
                              "expected_element"?, "expected_hybridization"?,
                              "frame"?}],
-                 "relax"?, "desc"?, "frame"?, "bonds"?, "mode"?, "sha"?,
+                 "relax"?, "desc"?, "frame"?, "bonds"?, "bonds_sha"?,
+                 "mode"?, "sha"?, "notes"?,
                  "measures"?: [{"name", "value"?|"min"?/"max"?, "unit"?,
                                 "strength"?, "reason"?, "relation"?,
                                 "datum"?, "origin"?}],
@@ -44,6 +45,12 @@ run's failure, refused naming the key)::
   manufacturing mode, its named measures and its load declarations. Like
   ports/rays they are replace semantics: a facet the new manifest drops
   is cleared on the block it was declared on.
+* ``notes`` on a block (gr514245): a list of ``{"name", "kind", "text",
+  "re"?, "about"?, "origin"?}`` — ``add_note`` entries on the design's
+  interrogation ledger (``about`` defaults to the declaring block,
+  ``origin`` to ``generated``). The ledger is append-only, so notes are
+  additive, not replace: an identical note already on the ledger is
+  skipped, a same-named different one refuses.
 * ``scenario`` (gr514245): the design's governing production scenario id
   (:func:`precis.design.scenarios.set_design_scenario`), existence-vetted
   before any write.
@@ -56,10 +63,15 @@ run's failure, refused naming the key)::
   back onto the block as ``template_only`` — instance-named
   template-ness needs no flag at all (:func:`precis_se.ops.
   template_names` is the union).
-* ``sha`` on a block (gr514248): the writer's sha256 of the geometry
-  file's bytes — stamped back onto the bound ref as
-  ``meta.generated.sha`` so the next import can answer
-  changed/unchanged without re-diffing geometry (gr514249).
+* ``sha``/``bonds_sha`` on a block (gr514248/gr517643): the writer's
+  sha256 of the geometry file's / the bonds sidecar's bytes. Declared
+  means verified: the file's bytes must hash to it or the whole import
+  refuses naming the path and both digests — the inline
+  ``{relpath: text}`` door retypes every byte, and this is the only
+  check that catches a corrupted upload. ``sha`` is also stamped back
+  onto the bound ref as ``meta.generated.sha`` so the next import can
+  answer changed/unchanged without re-diffing geometry (gr514249).
+  ``bonds``/``bonds_sha`` are atomic-only keys.
 * ``census`` on a block (gr514059): a hexfold Net's structural census
   ``out.block`` stamps — junction/seam/port atom sets and the
   degree/valence summary in the block's ``a<El><n>`` label space.
@@ -85,6 +97,7 @@ is a ``port.missing`` echo finding, never a silent drop.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -204,12 +217,16 @@ _BLOCK_KEYS = frozenset(
         "mode",
         "measures",
         "loads",
+        "notes",
         "template",
         "findings",
         "census",
         "sha",
+        "bonds_sha",
     }
 )
+#: A ``notes`` entry's keys — the ``add_note`` op vocabulary (gr514245).
+_NOTE_KEYS = frozenset({"name", "kind", "text", "re", "about", "origin"})
 _PORT_KEYS = frozenset(
     {
         "name",
@@ -328,9 +345,11 @@ class BlockEntry:
     mode: str | None
     measures: list[dict[str, Any]]
     loads: dict[str, Any] | None
+    notes: list[dict[str, Any]]
     template: bool
     findings: list[str]
     sha: str | None
+    bonds_sha: str | None
 
 
 def _vet_manifest(
@@ -373,6 +392,7 @@ def _vet_manifest(
         )
     blocks: list[BlockEntry] = []
     names: set[str] = set()
+    note_names: set[str] = set()
     for i, raw in enumerate(blocks_raw):
         where = f"blocks[{i}]"
         if not isinstance(raw, dict):
@@ -434,6 +454,31 @@ def _vet_manifest(
                 f"manifest {where}: 'loads' must be an object — the "
                 "set_load vocabulary (force, torque, fixed, duty, cycles, …)"
             )
+        notes = raw.get("notes")
+        if notes is not None:
+            if not isinstance(notes, list):
+                raise BadInput(f"manifest {where}: 'notes' must be a list")
+            for j, nn in enumerate(notes):
+                nw = f"{where}.notes[{j}]"
+                if not isinstance(nn, dict):
+                    raise BadInput(f"manifest {nw}: must be an object")
+                _unknown_keys(nn, _NOTE_KEYS, nw)
+                nname = str(nn.get("name") or "").strip()
+                if (
+                    not nname
+                    or not str(nn.get("kind") or "").strip()
+                    or not str(nn.get("text") or "").strip()
+                ):
+                    raise BadInput(
+                        f"manifest {nw}: needs 'name', 'kind' and 'text' — "
+                        "the add_note vocabulary"
+                    )
+                if nname in note_names:
+                    raise BadInput(
+                        f"manifest {nw}: duplicate note name {nname!r} — "
+                        "note names are unique per design"
+                    )
+                note_names.add(nname)
         template = raw.get("template")
         if template is not None and not isinstance(template, bool):
             raise BadInput(
@@ -459,6 +504,20 @@ def _vet_manifest(
                 "hexfold Net (gr514059); run-record only, the importer "
                 "does not read it"
             )
+        for sha_key in ("sha", "bonds_sha"):
+            sv = raw.get(sha_key)
+            if sv is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", str(sv)):
+                raise BadInput(
+                    f"manifest {where}: {sha_key!r} must be a sha256 hex "
+                    f"digest (64 hex chars), got {sv!r}"
+                )
+        if scale != "atomic" and (
+            raw.get("bonds") is not None or raw.get("bonds_sha") is not None
+        ):
+            raise BadInput(
+                f"manifest {where}: 'bonds'/'bonds_sha' belong to atomic "
+                "blocks only — a macro block carries no bond list"
+            )
         frame = raw.get("frame")
         bonds_path = raw.get("bonds")
         blocks.append(
@@ -474,9 +533,15 @@ def _vet_manifest(
                 mode=str(mode).strip() if mode is not None else None,
                 measures=[dict(m) for m in measures or []],
                 loads=dict(loads) if loads is not None else None,
+                notes=[dict(n) for n in notes or []],
                 template=bool(template),
                 findings=[str(f) for f in findings or []],
-                sha=str(raw["sha"]).strip() if raw.get("sha") else None,
+                sha=str(raw["sha"]).strip().lower() if raw.get("sha") else None,
+                bonds_sha=(
+                    str(raw["bonds_sha"]).strip().lower()
+                    if raw.get("bonds_sha")
+                    else None
+                ),
             )
         )
     for field_name, allowed in (
@@ -791,7 +856,9 @@ class ImportResult:
     blocks by their bound ref's prior ``meta.generated.sha`` against the
     manifest's ``sha`` (and the port-name set — a facet the file sha
     cannot see); ``moved`` names the instances whose local pose/rot
-    shifted numerically (gr514249)."""
+    shifted numerically (gr514249). ``verified`` names the files whose
+    bytes checked out against a declared ``sha``/``bonds_sha``
+    (gr517643)."""
 
     design_slug: str
     run_ref: int | None = None
@@ -802,6 +869,7 @@ class ImportResult:
     unchanged: list[str] = field(default_factory=list)
     sha_unknown: list[str] = field(default_factory=list)
     moved: list[str] = field(default_factory=list)
+    verified: list[str] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
     trace: TraceView | None = None
 
@@ -810,6 +878,8 @@ class ImportResult:
             f"workspace import into {self.design_slug!r}: "
             f"{len(self.imported)} block(s) written"
         ]
+        if self.verified:
+            lines.append("sha256 verified: " + ", ".join(self.verified))
         if self.replaced:
             lines.append("replaced: " + ", ".join(self.replaced))
         if self.changed:
@@ -1055,8 +1125,28 @@ def import_workspace_run(
         )
 
     # Parse every geometry file BEFORE the write transaction — caps and
-    # refusals happen here so nothing half-imports.
+    # refusals happen here so nothing half-imports. A declared ``sha`` /
+    # ``bonds_sha`` is verified against the file's bytes here too
+    # (gr517643): the inline ``{relpath: text}`` door retypes every byte,
+    # so the manifest's own hash is the only thing that can catch a
+    # corrupted upload — a mismatch refuses the whole import. ``verified``
+    # collects the files that checked out; the run echo reports them.
     parsed: dict[str, tuple[Any, Any]] = {}
+    verified: list[str] = []
+
+    def _check_sha(rel: str, declared: str, what: str) -> None:
+        # Hash the file's RAW bytes — ``read_text``'s universal-newline
+        # read would make a CRLF upload false-refuse (gr517643).
+        got = hashlib.sha256((out_path / rel).read_bytes()).hexdigest()
+        if got != declared:
+            raise BadInput(
+                f"block {what}: {rel!r} sha256 mismatch — manifest declares "
+                f"{declared}, the uploaded file hashes {got}",
+                next="re-upload the out/ tree verbatim — the bytes were "
+                "rewritten between the run and the import",
+            )
+        verified.append(rel)
+
     for entry in manifest["blocks"]:
         try:
             body = _read_file(
@@ -1065,6 +1155,8 @@ def import_workspace_run(
                 cap=MAX_WS_FILE_BYTES,
                 what=f"blocks[{entry.name!r}] file",
             )
+            if entry.sha is not None:
+                _check_sha(entry.file, entry.sha, f"{entry.name!r}")
             if entry.scale == "atomic":
                 scene = extxyz_to_scene(body)
                 if len(scene.atoms) > MAX_WS_BLOCK_ATOMS:
@@ -1075,15 +1167,42 @@ def import_workspace_run(
                 bonds_rel = entry.bonds or str(
                     Path(entry.file).with_suffix(".bonds.json")
                 )
-                if (out_path / bonds_rel).is_file():
-                    scene.bonds = bonds_from_json(
-                        _read_file(
-                            out_path,
-                            bonds_rel,
-                            cap=MAX_WS_FILE_BYTES,
-                            what=f"{entry.name!r} bonds",
-                        )
+                sidecar = (out_path / bonds_rel).is_file()
+                if entry.bonds is not None and not sidecar:
+                    raise BadInput(
+                        f"block {entry.name!r}: declared bonds file "
+                        f"{bonds_rel!r} is not in the out/ tree",
+                        next="upload the .bonds.json sidecar too, or drop "
+                        "the 'bonds' key",
                     )
+                if entry.bonds_sha is not None and not sidecar:
+                    # A declared digest with nothing on disk must refuse —
+                    # passing it silently is a verify-by-omission hole
+                    # (gr517643).
+                    raise BadInput(
+                        f"block {entry.name!r}: declared 'bonds_sha' but no "
+                        f"sidecar {bonds_rel!r} in the out/ tree — nothing "
+                        "to verify against",
+                        next="upload the .bonds.json sidecar too, or drop 'bonds_sha'",
+                    )
+                if sidecar:
+                    bonds_body = _read_file(
+                        out_path,
+                        bonds_rel,
+                        cap=MAX_WS_FILE_BYTES,
+                        what=f"{entry.name!r} bonds",
+                    )
+                    if entry.bonds_sha is not None:
+                        _check_sha(bonds_rel, entry.bonds_sha, f"{entry.name!r}")
+                    scene.bonds = bonds_from_json(bonds_body)
+                    if not scene.bonds:
+                        raise BadInput(
+                            f"block {entry.name!r}: bonds file {bonds_rel!r} "
+                            "parsed to an empty bond list — the writer only "
+                            "writes the sidecar when bonds exist",
+                            next="fix the file or drop the sidecar (and any "
+                            "'bonds'/'bonds_sha' keys)",
+                        )
                 parsed[entry.name] = ("atomic", scene)
             else:
                 if entry.file.endswith(".json"):
@@ -1138,6 +1257,7 @@ def import_workspace_run(
     rays_before = persist.observe_all_rays(store, int(ref.id))
     result = ImportResult(design_slug=design, trace=trace, run_ref=run_job)
     result.findings.extend(findings)
+    result.verified.extend(verified)
     block_entries = {e.name: e for e in manifest["blocks"]}
     inst_entries = {
         str(i["name"]): i
@@ -1260,6 +1380,9 @@ def import_workspace_run(
         # ── write the manifest's blocks ──
         pendings: list[PendingGenerate] = []
         cad_saves: list[tuple[str, str, SceneSpec, str]] = []
+        # Manifest-declared notes collect here and apply once, after
+        # every block — a ``re`` may name a note a later block declares.
+        note_decls: list[tuple[BlockEntry, dict[str, Any]]] = []
         for entry in manifest["blocks"]:
             kind, payload = parsed[entry.name]
             bsite = _site(entry.frame)
@@ -1403,6 +1526,7 @@ def import_workspace_run(
                 ops.append(
                     {"op": "add_measure", "block": entry.name, **m, "name": mname}
                 )
+            note_decls.extend((entry, n) for n in entry.notes)
             _apply(tree, ops, what=f"block {entry.name!r}", at=bsite)
             node = tree.blocks[entry.name]
             if kind == "atomic":
@@ -1614,6 +1738,49 @@ def import_workspace_run(
                 what=f"connect {c['a']}—{c['b']}",
                 at=_site(c.get("frame")),
             )
+
+        # ── declared notes (gr514245): the design's ledger is
+        # append-only, so notes replay additive — an identical one
+        # already on the ledger is skipped (a re-import replays its
+        # manifest verbatim), a same-named different one refuses (the
+        # run cannot rewrite the record — the ledger's own rule) ──
+        for entry, n in note_decls:
+            nname = str(n["name"]).strip()
+            raw_about = n.get("about")
+            about = (
+                [str(raw_about)]
+                if isinstance(raw_about, str)
+                else ([str(a) for a in raw_about] if raw_about is not None else [])
+            ) or [entry.name]
+            op_n: dict[str, Any] = {
+                "op": "add_note",
+                "name": nname,
+                "kind": str(n["kind"]).strip(),
+                "text": n["text"],
+                "about": about,
+                "origin": str(n.get("origin") or "generated").strip(),
+            }
+            if n.get("re") is not None:
+                op_n["re"] = n["re"]
+            ex = next((x for x in tree.notes if x.name == nname), None)
+            if ex is not None:
+                if (
+                    ex.kind == op_n["kind"]
+                    and ex.body == str(n["text"]).strip()
+                    and ex.re
+                    == (str(n["re"]).strip() if n.get("re") is not None else None)
+                    and sorted(ex.about) == sorted(about)
+                    and ex.origin == op_n["origin"]
+                ):
+                    continue
+                raise BadInput(
+                    f"manifest blocks[{entry.name!r}] notes: {nname!r} is "
+                    f"already on the design's ledger with different "
+                    f"text{_site(entry.frame)}",
+                    next="notes are append-only — add a NEW note to amend, "
+                    "or rename this one",
+                )
+            _apply(tree, [op_n], what=f"note {nname!r}", at=_site(entry.frame))
 
         # ── rays (slice 2r): the manifest's rays replace this workspace's
         # previous ones IN PLACE — a ray the run still writes keeps its
@@ -2097,6 +2264,29 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
         if files_raw is None
         else _vet_relpath_map(files_raw, what="'files'", total_cap=MAX_WS_OUT_BYTES)
     )
+    # A workspace file must be a script that parses — gr517643: a
+    # retyped/corrupted main.py used to sync happily and still report
+    # "N block(s) written". SyntaxError carries lineno/offset, so the
+    # refusal names the file:line.
+    for rel, text in (files or {}).items():
+        if not rel.endswith(".py"):
+            continue
+        try:
+            compile(text, rel, "exec")
+        except (SyntaxError, ValueError, TypeError) as exc:
+            # ValueError/TypeError too — null bytes, a lone \r, a nested
+            # literal: a corrupt upload must refuse as BadInput, not
+            # escape as an unhandled exception (gr517643).
+            where = (
+                f"{rel}:{exc.lineno}"
+                if isinstance(exc, SyntaxError) and exc.lineno
+                else rel
+            )
+            detail = exc.msg if isinstance(exc, SyntaxError) else str(exc)
+            raise BadInput(
+                f"import_workspace: 'files' {where} does not compile — {detail}",
+                next="fix the script and re-upload — the folder syncs verbatim source",
+            ) from exc
     dry_run = bool(op.get("dry_run"))
     target = str(op.get("target") or "design").strip()
     if target not in ("design", "fork"):

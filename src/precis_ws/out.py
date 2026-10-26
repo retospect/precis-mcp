@@ -200,11 +200,10 @@ def block(
             entry["bonds"] = bonds
         else:
             bname = str(Path(fname).with_suffix(".bonds.json"))
-            _payloads[bname] = (
-                json.dumps(bonds, sort_keys=True).encode("utf-8"),
-                "utf-8",
-            )
+            bpayload = json.dumps(bonds, sort_keys=True).encode("utf-8")
+            _payloads[bname] = (bpayload, "utf-8")
             entry["bonds"] = bname
+            entry["bonds_sha"] = hashlib.sha256(bpayload).hexdigest()
     _blocks.append(entry)
     _trace.record(made={"blocks": 1})
 

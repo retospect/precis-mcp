@@ -178,6 +178,40 @@ def nipple_turns(params: dict[str, Any]) -> dict[str, float] | None:
 _JOINT_KEYS = frozenset({"class", "axis", "mechanism", "params"})
 
 
+def render_vocabulary() -> str:
+    """``view='joints'`` — the legal joint vocabulary generated from
+    :data:`KINEMATIC_CLASSES` / :data:`AXIS_CLASSES` /
+    :data:`MECHANISMS` / :data:`RANGE_CLASSES` (gr518167): the same
+    tables ``connect``/``set_joint`` vet against, so the listing cannot
+    drift from what is accepted."""
+    out = ["kinematic classes (joint 'class' — what motion is permitted):"]
+    for klass in sorted(KINEMATIC_CLASSES):
+        axis = " — takes 'axis'" if klass in AXIS_CLASSES else ""
+        out.append(f"  {klass}: {KINEMATIC_CLASSES[klass]}{axis}")
+    out.append("mechanisms (joint 'mechanism' — how it is realized):")
+    for mech in sorted(MECHANISMS):
+        m = MECHANISMS[mech]
+        demands = []
+        if m.get("demands_relation"):
+            demands.append(f"needs {m['demands_relation']}")
+        if m.get("demands_bom"):
+            demands.append(f"needs a BOM line for {m['demands_bom']}")
+        out.append(f"  {mech}" + (f" — {'; '.join(demands)}" if demands else ""))
+    out.append(
+        "contract params: 'range'/'moves'/'samples' declare the travel of "
+        f"a {'|'.join(sorted(RANGE_CLASSES))} joint (swept for "
+        "collisions); 'fit_class'/'lead'/'thread_strategy'/'counterbore' "
+        "shape a screw fastening; 'axial' takes free_length/rate/"
+        "tension_capacity/compression_capacity/preload/thread_pitch; "
+        "the rest of 'params' is open and descriptive"
+    )
+    out.append(
+        "write: connect/set_joint joint={'class': <class>, 'axis'?: "
+        "[x,y,z], 'mechanism'?: <mechanism>, 'params'?: {...}}"
+    )
+    return "\n".join(out)
+
+
 class JointError(ValueError):
     """A malformed joint payload (bad class/mechanism/axis/keys)."""
 

@@ -603,6 +603,187 @@ def test_block_cap_refuses_before_any_write(store: Store, tmp_path: Path) -> Non
     assert persist.load_tree(store, se_ref.id).blocks == {}
 
 
+def _fixture_with_manifest(tmp_path: Path, edit: Any) -> Path:
+    """Copy FIXTURE into tmp, pass its manifest dict through ``edit``,
+    write it back. Returns the out dir."""
+    out = tmp_path / "out"
+    shutil.copytree(FIXTURE, out)
+    m = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    edit(m)
+    (out / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    return out
+
+
+def test_manifest_sha_verified_and_echoed(store: Store, tmp_path: Path) -> None:
+    """gr517643: a declared sha/bonds_sha is checked against the file
+    bytes and the echo (shared by the dry run) lists the verified
+    files."""
+
+    def declare(m: dict[str, Any]) -> None:
+        for blk in m["blocks"]:
+            rel = blk["file"]
+            blk["sha"] = hashlib.sha256(
+                (tmp_path / "out" / rel).read_bytes()
+            ).hexdigest()
+        blk0 = m["blocks"][0]
+        blk0["bonds_sha"] = hashlib.sha256(
+            (tmp_path / "out" / "blocks/p.bonds.json").read_bytes()
+        ).hexdigest()
+
+    _design(store)
+    res = _import(store, _fixture_with_manifest(tmp_path, declare))
+    assert set(res.verified) == {
+        "blocks/p.extxyz",
+        "blocks/p.bonds.json",
+        "blocks/plate.cad.json",
+    }
+    assert "sha256 verified:" in res.echo()
+
+
+def test_manifest_sha_mismatch_refuses_naming_both_shas(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr517643: a declared sha that does not match the uploaded bytes
+    refuses the whole import — BadInput naming the file, the declared
+    digest and the computed one, with a next=. Nothing is written."""
+    _design(store)
+    declared = "0" * 64
+    out = _fixture_with_manifest(
+        tmp_path, lambda m: m["blocks"][0].update(sha=declared)
+    )
+    got = hashlib.sha256((out / "blocks/p.extxyz").read_bytes()).hexdigest()
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    msg = str(exc.value)
+    assert "blocks/p.extxyz" in msg
+    assert declared in msg and got in msg
+    assert exc.value.next
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
+def test_declared_bonds_missing_refuses(store: Store, tmp_path: Path) -> None:
+    """gr517643: a 'bonds' key naming a file that is not in the tree
+    refuses — a block must not silently lose its bond list."""
+    _design(store)
+    out = _fixture_with_manifest(
+        tmp_path,
+        lambda m: m["blocks"][0].update(bonds="blocks/nope.bonds.json"),
+    )
+    with pytest.raises(BadInput) as exc:
+        _import(store, out)
+    assert "blocks/nope.bonds.json" in str(exc.value)
+    assert exc.value.next
+
+
+def test_bonds_sha_mismatch_refuses(store: Store, tmp_path: Path) -> None:
+    """gr517643: bonds_sha verifies the sidecar the same way sha
+    verifies the geometry file."""
+    _design(store)
+    out = _fixture_with_manifest(
+        tmp_path, lambda m: m["blocks"][0].update(bonds_sha="f" * 64)
+    )
+    with pytest.raises(BadInput, match="sha256 mismatch") as exc:
+        _import(store, out)
+    assert "blocks/p.bonds.json" in str(exc.value)
+
+
+def test_empty_bonds_list_refuses(store: Store, tmp_path: Path) -> None:
+    """gr517643: a sidecar that parses to zero bonds refuses — the
+    writer only writes it when bonds exist, so an empty one is a
+    corrupted upload, not a bond-free block."""
+    _design(store)
+    out = _fixture_with_manifest(tmp_path, lambda m: None)
+    (out / "blocks/p.bonds.json").write_text(
+        json.dumps({"schema": 1, "bonds": []}), encoding="utf-8"
+    )
+    with pytest.raises(BadInput, match="empty bond list") as exc:
+        _import(store, out)
+    assert "blocks/p.bonds.json" in str(exc.value)
+
+
+def test_bonds_keys_on_macro_block_refused(store: Store, tmp_path: Path) -> None:
+    """gr517643: bonds/bonds_sha are atomic-only — on a macro block they
+    are refused at the vet rather than silently ignored."""
+    _design(store)
+    out = _fixture_with_manifest(
+        tmp_path, lambda m: m["blocks"][1].update(bonds_sha="a" * 64)
+    )
+    with pytest.raises(BadInput, match="atomic"):
+        _import(store, out)
+
+
+def test_bonds_sha_without_sidecar_refuses(store: Store, tmp_path: Path) -> None:
+    """gr517643: a declared ``bonds_sha`` with no sidecar in the tree
+    refuses — a digest with nothing to hash is a verify-by-omission
+    hole, not a bond-free block."""
+    _design(store)
+    out = _fixture_with_manifest(
+        tmp_path, lambda m: m["blocks"][0].update(bonds_sha="a" * 64)
+    )
+    (out / "blocks/p.bonds.json").unlink()
+    with pytest.raises(BadInput, match="bonds_sha") as exc:
+        _import(store, out)
+    assert "blocks/p.bonds.json" in str(exc.value)
+    assert exc.value.next
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
+def test_crlf_block_file_verifies_against_declared_sha(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr517643: the declared sha hashes the file's raw bytes — a CRLF
+    upload verifies, where hashing the ``read_text`` body would see
+    normalized newlines and false-refuse."""
+
+    def declare(m: dict[str, Any]) -> None:
+        raw = (tmp_path / "out" / "blocks/p.extxyz").read_bytes()
+        crlf = raw.replace(b"\n", b"\r\n")
+        (tmp_path / "out" / "blocks/p.extxyz").write_bytes(crlf)
+        m["blocks"][0]["sha"] = hashlib.sha256(crlf).hexdigest()
+
+    _design(store)
+    res = _import(store, _fixture_with_manifest(tmp_path, declare))
+    assert "blocks/p.extxyz" in res.verified
+    assert "p" in res.imported
+
+
+def test_uppercase_sha_verifies_and_stores_lowercase(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr517643: sha digests are case-folded at the vet — an UPPERCASE
+    manifest sha verifies, lands on ``meta.generated.sha`` lowercase,
+    and a re-import declaring the lowercase digest reads 'unchanged'
+    rather than a false 'changed'."""
+    _design(store)
+
+    def with_case(upper: bool) -> Path:
+        if (tmp_path / "out").is_dir():
+            shutil.rmtree(tmp_path / "out")
+
+        def declare(m: dict[str, Any]) -> None:
+            for blk in m["blocks"]:
+                digest = hashlib.sha256(
+                    (tmp_path / "out" / blk["file"]).read_bytes()
+                ).hexdigest()
+                blk["sha"] = digest.upper() if upper else digest
+
+        return _fixture_with_manifest(tmp_path, declare)
+
+    _import(store, with_case(upper=True))
+    for kind, slug in (("structure", "ws-test-p"), ("cad", "ws-test-plate")):
+        ref = store.get_ref(kind=kind, id=slug)
+        assert ref is not None
+        stored = ref.meta["generated"]["sha"]
+        assert stored == stored.lower() and len(stored) == 64
+    res2 = _import(store, with_case(upper=False))
+    assert res2.changed == []
+    assert sorted(res2.unchanged) == ["p", "plate"]
+
+
 def test_trace_truncated(store: Store, tmp_path: Path) -> None:
     _design(store)
     big = tmp_path / "out"
@@ -814,6 +995,126 @@ def test_block_facets_dropped_on_reimport(store: Store, tmp_path: Path) -> None:
     # manifest records what the RUN declared, and this run said nothing).
     sc = scenarios.design_scenario(store, se_ref.id)
     assert sc is not None and sc.scenario_id == "prototype"
+
+
+def _notes_manifest(**kw: Any) -> dict[str, Any]:
+    """One file'd block carrying gr514245's ledger ``notes`` key."""
+    manifest: dict[str, Any] = {
+        "schema": 1,
+        "blocks": [
+            {
+                "name": "axle",
+                "file": "blocks/axle.cad",
+                "scale": "macro",
+                "notes": [
+                    {
+                        "name": "axle-material",
+                        "kind": "decision",
+                        "text": "steel-1045 over alu for the 20 mm shaft",
+                    },
+                    {
+                        "name": "axle-q",
+                        "kind": "question",
+                        "text": "keyway or splined?",
+                    },
+                ],
+            },
+        ],
+    }
+    manifest.update(kw)
+    return manifest
+
+
+def _notes_files() -> dict[str, str]:
+    return {"blocks/axle.cad": "a add cyl:r10mmh100mm\n"}
+
+
+def test_notes_replay_is_additive_and_idempotent(store: Store, tmp_path: Path) -> None:
+    """gr514245: manifest notes land on the design ledger as add_note
+    entries (about defaults to the declaring block, origin to
+    generated); a verbatim re-import skips them, a same-named rewrite
+    refuses."""
+    _design(store)
+    _import(
+        store, _write_out(tmp_path, manifest=_notes_manifest(), files=_notes_files())
+    )
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    note = next(n for n in tree.notes if n.name == "axle-material")
+    assert note.kind == "decision" and note.about == ["axle"]
+    assert note.origin == "generated"
+    # Verbatim re-import: skipped, not duplicated.
+    _import(
+        store, _write_out(tmp_path, manifest=_notes_manifest(), files=_notes_files())
+    )
+    tree = persist.load_tree(store, se_ref.id)
+    assert sorted(n.name for n in tree.notes) == ["axle-material", "axle-q"]
+    # A same-named note with different text refuses.
+    out = _write_out(
+        tmp_path,
+        manifest=_notes_manifest(
+            blocks=[
+                {
+                    "name": "axle",
+                    "file": "blocks/axle.cad",
+                    "scale": "macro",
+                    "notes": [
+                        {"name": "axle-material", "kind": "decision", "text": "alu"}
+                    ],
+                }
+            ]
+        ),
+        files=_notes_files(),
+    )
+    with pytest.raises(BadInput, match="append-only"):
+        _import(store, out)
+
+
+def test_notes_entry_vet_errors(store: Store, tmp_path: Path) -> None:
+    """gr514245 vet shape: a notes entry without name/kind/text, a
+    duplicate note name and a non-list 'notes' all refuse before any
+    write."""
+    _design(store)
+    axle = {"name": "axle", "file": "blocks/axle.cad", "scale": "macro"}
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [{**axle, "notes": [{"name": "n1", "kind": "decision"}]}],
+        },
+        files=_notes_files(),
+    )
+    with pytest.raises(BadInput, match="needs 'name', 'kind' and 'text'"):
+        _import(store, out)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    **axle,
+                    "notes": [
+                        {"name": "n1", "kind": "decision", "text": "a"},
+                        {"name": "n1", "kind": "question", "text": "b"},
+                    ],
+                }
+            ],
+        },
+        files=_notes_files(),
+    )
+    with pytest.raises(BadInput, match="duplicate note name"):
+        _import(store, out)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [{**axle, "notes": {"name": "n1"}}],
+        },
+        files=_notes_files(),
+    )
+    with pytest.raises(BadInput, match="'notes' must be a list"):
+        _import(store, out)
 
 
 def test_manifest_facet_vet_errors(store: Store, tmp_path: Path) -> None:

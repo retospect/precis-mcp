@@ -1915,6 +1915,11 @@ class SeHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
+            if (view or "").strip().lower() == "joints":
+                # The joint vocabulary is design-independent — it serves
+                # without an id so a script/skill author can reach it
+                # before any design exists (gr518167).
+                return Response(body=se_joints.render_vocabulary())
             if (view or "").strip().lower() in ("completion", "completion_digest"):
                 raise BadInput("completion requires a specific SE design id")
             if (view or "").strip().lower() == "surface_deviation":
@@ -2154,6 +2159,8 @@ class SeHandler(Handler):
             return Response(body=body.rstrip("\n") + "\n\n" + digest)
         if v == "kinematics":
             return Response(body=self._render_kinematics(tree, ref.id))
+        if v == "joints":
+            return Response(body=se_joints.render_vocabulary())
         if v == "bom":
             return Response(body=self._render_bom(tree))
         if v == "order":
@@ -2524,13 +2531,15 @@ class SeHandler(Handler):
                 fr = tr.frame(key)
                 if fr is None:
                     continue
-                ids = tr.subtree_ids(key)
-                labels = list(bt.scene.atoms)
-                samples = [
-                    f"{next(n for n, b in ctx.items() if b is bt)}/{labels[i]}"
-                    for i, at in enumerate(bt.scene.atoms.values())
-                    if at.maker is not None and int(at.maker) in ids
-                ][:3]
+                samples = []
+                if bt.scene is not None:
+                    ids = tr.subtree_ids(key)
+                    labels = list(bt.scene.atoms)
+                    samples = [
+                        f"{next(n for n, b in ctx.items() if b is bt)}/{labels[i]}"
+                        for i, at in enumerate(bt.scene.atoms.values())
+                        if at.maker is not None and int(at.maker) in ids
+                    ][:3]
                 return tv.card(tr, key, samples=samples)
             top = [
                 f["key"] for tr in traces.values() for f in tr.children.get(None, [])
@@ -2540,7 +2549,11 @@ class SeHandler(Handler):
                 next=_TRACE_NEXT,
                 options=top,
             )
-        # No args: the design's trace summary — one line per top frame.
+        # No args: the design's trace summary — one line per top frame,
+        # then which script line made which block (gr514244 — the macro
+        # leg's per-block made-by is the listing a structure-only
+        # summary never had). Instance nodes resolve to their
+        # template's maker line, so the listing names template blocks.
         out = []
         seen: set[int] = set()
         for name in sorted(ctx):
@@ -2558,6 +2571,14 @@ class SeHandler(Handler):
                 out.append(f"  {tv.line(f, tr.ws)}")
             if len(out) > 40:
                 break
+        made = [
+            f"  {name}: {line.removeprefix('made-by: ')}"
+            for name, node in sorted(tree.blocks.items())
+            if node.template is None and (line := _made_by_line(self.store, tree, node))
+        ]
+        if made:
+            out.append("made-by:")
+            out.extend(made)
         out.append(
             "asks: args={'atom': '<block>/<path>'|'frame': '<key>'|"
             "'atoms': [...]|'against': <run_job>}"
@@ -6189,10 +6210,9 @@ def _render_pockets(tree: SeTree) -> str:
 
 _NO_TRACE = (
     "no construction trace on this design — view='trace' reads the "
-    "trace.json a workspace run stores on its job, for structure-bound "
-    "(atomic) blocks only; cad-bound macro blocks carry made-by: on the "
-    "block eye but have no trace views yet (precis-workspace-help); "
-    "hand-built and generator blocks have none"
+    "trace.json a workspace run stores on its job (structure and "
+    "cad-bound macro blocks alike; atom asks stay structure-bound — "
+    "precis-workspace-help); hand-built and generator blocks have none"
 )
 
 #: ``next=`` hint every ``view='trace'`` refusal carries (mcp-authoring):
@@ -6201,9 +6221,10 @@ _TRACE_NEXT = "get(kind='se', id='<slug>', view='trace')"
 
 
 class _BlockTrace(NamedTuple):
-    """One structure-bound block's trace access for ``view='trace'`` and
-    the findings ``frame`` column: the bound scene (``maker`` ids index
-    scene order) and the run's parsed trace doc."""
+    """One bound block's trace access for ``view='trace'`` and the
+    findings ``frame`` column: the bound scene (``maker`` ids index
+    scene order — ``None`` for a cad-bound block, a solid has no atoms)
+    and the run's parsed trace doc."""
 
     bound: str
     scene: Any
@@ -6212,31 +6233,52 @@ class _BlockTrace(NamedTuple):
 
 
 def _trace_context(tree: SeTree) -> dict[str, _BlockTrace]:
-    """block name → its bound structure's scene + run trace doc
-    (:attr:`SeTree.structures`/``traces`` resolvers; instance blocks map
-    to their template's binding). Blocks with no structure binding or no
-    loadable scene are absent."""
+    """block name → its bound ref's scene + run trace doc
+    (:attr:`SeTree.structures`/``cad_designs``/``traces`` resolvers;
+    instance blocks map to their template's binding). Cad-bound (macro)
+    blocks map too — ``scene`` is ``None`` — so a macro-only run's
+    trace still answers the summary/frame/``against`` asks (gr514244);
+    atom asks stay structure-bound (``_atom_lookup`` refuses them).
+    Blocks with no binding or no loadable bound ref are absent."""
     resolver = getattr(tree, "structures", None)
-    if resolver is None:
-        return {}
+    cad_resolver = getattr(tree, "cad_designs", None)
+    traces = getattr(tree, "traces", None)
     out: dict[str, _BlockTrace] = {}
     for name, node in tree.blocks.items():
         owner = tree.blocks.get(node.template) if node.template else node
         owner = owner or node
-        if owner.bound_kind != "structure" or not owner.bound:
+        if not owner.bound:
             continue
-        bound = resolver(owner.bound)
-        if bound is None:
-            continue
-        gen = (bound.meta or {}).get("generated") or {}
-        traces = getattr(tree, "traces", None)
-        doc = traces(gen.get("trace")) if traces is not None else None
-        out[name] = _BlockTrace(
-            bound=owner.bound,
-            scene=bound.scene,
-            meta=dict(bound.meta or {}),
-            doc=doc,
-        )
+        gen: dict[str, Any] = {}
+        if owner.bound_kind == "structure":
+            if resolver is None:
+                continue
+            bound = resolver(owner.bound)
+            if bound is None:
+                continue
+            gen = (bound.meta or {}).get("generated") or {}
+            doc = traces(gen.get("trace")) if traces is not None else None
+            out[name] = _BlockTrace(
+                bound=owner.bound,
+                scene=bound.scene,
+                meta=dict(bound.meta or {}),
+                doc=doc,
+            )
+        elif owner.bound_kind == "cad":
+            if cad_resolver is None:
+                continue
+            got = cad_resolver(owner.bound)
+            if got is None:
+                continue
+            _design, meta = got
+            gen = (meta or {}).get("generated") or {}
+            doc = traces(gen.get("trace")) if traces is not None else None
+            out[name] = _BlockTrace(
+                bound=owner.bound,
+                scene=None,
+                meta=dict(meta or {}),
+                doc=doc,
+            )
     return out
 
 
@@ -6283,6 +6325,12 @@ def _atom_lookup(
     bt = ctx.get((owner or node).name) or ctx.get(node.name)
     if bt is None:
         return f"block {node.name!r} binds no traced structure"
+    if bt.scene is None:
+        return (
+            f"block {node.name!r} is cad-bound — atom asks read "
+            "structure-bound (atomic) blocks only; try 'frame' or the "
+            "block's made-by on its eye"
+        )
     labels = list(bt.scene.atoms)
     if ref is None:
         return f"atom ref missing after {block_token!r}"
@@ -7986,6 +8034,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "drc": frozenset({"state", "previous", "load_cases"}),
     "trace": frozenset({"atom", "atoms", "frame", "touched", "against", "block"}),
     "kinematics": frozenset(),
+    "joints": frozenset(),
     "bom": frozenset(),
     "order": frozenset(),
     "fasten": frozenset(),
@@ -9243,7 +9292,7 @@ _VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
         "records",
         "completion completion_digest report catalogue measures contracts "
         "provenance revisions branches diff interview freedom ops links "
-        "export cut trace",
+        "export cut trace joints",
     ),
     (
         "checks",
@@ -9259,8 +9308,9 @@ _VIEWS_ALL = sorted({v for _fam, names in _VIEW_FAMILIES for v in names.split()}
 
 #: Words a caller reaches for when they want the connects/joints table
 #: under a near-miss spelling — these get a pointed answer naming the
-#: real view instead of the roster.
-_CONNECT_LIKE_VIEWS = frozenset({"connect", "joint", "joints"})
+#: real view instead of the roster. ('joints' IS a real view — the
+#: joint vocabulary, gr518167.)
+_CONNECT_LIKE_VIEWS = frozenset({"connect", "joint"})
 
 
 def _unknown_view_next(v: str) -> str:

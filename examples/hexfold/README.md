@@ -50,6 +50,16 @@ reused. `<name>` is `prism` / `nanobud` / `pillar`, `<slug>` is
 
    Add `'dry_run': True` to see the plan with nothing written. The
    op must ride alone — no other ops in the same `edit`.
+   `edit(ops=[...])` is the canonical call form; a declared
+   `sha`/`bonds_sha` whose file bytes do not match refuses the import
+   (that check is what catches a retyped/corrupted upload), and a
+   `main.py` that does not compile refuses naming file:line.
+
+   *Main/prod drift:* the manifest surface on main can be ahead of the
+   deployed release — the `census` key (gr514059) is post-r106, so
+   prod r106 refuses a manifest carrying it as an unknown key. Strip
+   run-record keys the refusal names, or wait for the release that
+   carries them.
 5. View it:
    - block tree: `get(kind='se', id='<slug>', view='tree')`
    - construction trace: `get(kind='se', id='<slug>', view='trace')`
