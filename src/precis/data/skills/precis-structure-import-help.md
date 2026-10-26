@@ -84,17 +84,25 @@ get(
   gated all public access — the GraphQL API 401s without an `X-API-Key` and
   the old public Postgres password is rotated. The on-demand `source=` path is
   code-complete but needs a SUNCAT credential to reach the network.
-- **Keyless ingress — mine a local cathub `.db`.** A cathub `.db` is a
-  self-contained, credential-free package (relational reactions + embedded ASE
+## Keyless ingress — mine a local cathub `.db`
+
+- A cathub `.db` is a self-contained, credential-free package
+  (relational reactions + embedded ASE
   structures + citation). The bulk import is operator-run, not a verb — ask a
-  human to run it. Each reaction's product adsorbate config lands as an
-  ordinary `structure` (its external run carries the adsorption energy +
-  method fingerprint), searchable as usual.
+  human to run it. Every member system of a selected reaction imports — clean
+  slab, gas references and adsorbate product alike — each an ordinary
+  `structure` whose external run carries that system's DFT *total* energy
+  (a system shared across reactions imports once — a shared adsorbate
+  still carries every producing reaction's references). The reaction's
+  stated energies land as typed `measures` rows on the adsorbate ref
+  (adsorption/reaction/activation energy), searchable as usual.
 - **Imported designs are read-only.** They carry `provenance:external` on
   their `struct_runs` row; `edit` refuses ("derive a variant instead") —
   branch off one with `derive(id=<imported-slug>, to=<new-slug>, ops=[...])`.
   `view='runs'` labels each row's provenance + method fingerprint
-  (functional/cutoff/spin/dataset_doi/facet/...).
+  (functional/cutoff_eV/kmesh/spin/dataset_doi) — `facet`,
+  `surface_composition`, `reactants`/`products` ride in the run's
+  `descriptor`, not the fingerprint.
 - **Energies are only comparable within one method.** An external run's DFT
   functional/cutoff differs from a computed rung's model — subtracting across
   them is a category error, not a real ΔE, so an energy-delta surface must

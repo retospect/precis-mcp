@@ -45,10 +45,16 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from precis.store._measures_ops import MeasureSpec
 from precis.structure.cell import Cell, as_image3
 from precis.structure.importers import ExternalId, ExternalRun
 from precis.structure.measures import evaluate as _evaluate_measure
 from precis.structure.scene import Atom, Bond, Measure, Scene
+from precis.taxonomy.nodes import (
+    initial_taxon_meta,
+    taxon_card_text,
+    validate_taxon_meta,
+)
 
 if TYPE_CHECKING:
     from precis.structure.completion_types import CompletionSnapshot, DisplaySelector
@@ -195,6 +201,8 @@ class StructureMixin:
     chunks: Any  # ChunkStore sub-store — the shared card_combined write
     find_ref_by_identifier: Any  # IdentifiersMixin — external-id collapse
     insert_ref_identifiers: Any  # IdentifiersMixin — external-id collapse
+    insert_measure: Any  # MeasuresMixin — reference-measure rows
+    add_link: Any  # LinksMixin — measurand taxon's specialises edge
 
     def structure_save(
         self,
@@ -482,6 +490,13 @@ class StructureMixin:
                 dataset=dataset,
                 config_id=config_id,
             )
+            self._import_reference_measures(
+                conn,
+                ref_id=ref.id,
+                run=run,
+                dataset=dataset,
+                config_id=config_id,
+            )
         return int(ref.id)
 
     def _import_run_upsert(
@@ -504,6 +519,7 @@ class StructureMixin:
         cache_key = f"external:{dataset}:{config_id}"
         geometry = Jsonb(run.final_geometry) if run.final_geometry is not None else None
         method = Jsonb(run.method)
+        descriptor = Jsonb(run.descriptor) if run.descriptor else None
         row = conn.execute(
             "SELECT id FROM struct_runs "
             "WHERE ref_id = %s AND provenance = 'external' "
@@ -515,7 +531,8 @@ class StructureMixin:
             conn.execute(
                 "UPDATE struct_runs SET "
                 "on_version = %s, energy = %s, max_force = %s, "
-                "final_geometry = %s, method = %s, model = %s, cache_key = %s, "
+                "final_geometry = %s, method = %s, descriptor = %s, "
+                "model = %s, cache_key = %s, "
                 "status = 'succeeded', converged = TRUE "
                 "WHERE id = %s",
                 (
@@ -524,6 +541,7 @@ class StructureMixin:
                     run.max_force,
                     geometry,
                     method,
+                    descriptor,
                     model,
                     cache_key,
                     run_id,
@@ -534,8 +552,8 @@ class StructureMixin:
             "INSERT INTO struct_runs "
             "(ref_id, fidelity, status, model, on_version, converged, n_steps, "
             " energy, max_force, max_disp, params, cache_key, final_geometry, "
-            " provenance, method) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            " provenance, method, descriptor) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (
                 ref_id,
                 "external",
@@ -552,10 +570,218 @@ class StructureMixin:
                 geometry,
                 run.provenance,
                 method,
+                descriptor,
             ),
         ).fetchone()
         assert inserted is not None
         return int(inserted[0])
+
+    # -- typed references → measures (catalyst-library tie-in, slice A1) --
+
+    #: Reference ``quantity`` -> ``(taxon slug, taxon name, definition)``.
+    #: Canonical unit is coherent SI ('J') with ``display_unit`` 'eV' — the
+    #: Store-SI ruling; the source's stated value is written in
+    #: ``reported_unit`` 'eV' and converted on the way in.
+    _REFERENCE_MEASURANDS = {
+        "adsorption_energy": (
+            "adsorption-energy",
+            "adsorption energy",
+            "the energy change when an adsorbate binds to a surface site, "
+            "as stated by an external dataset record",
+        ),
+        "reaction_energy": (
+            "reaction-energy",
+            "reaction energy",
+            "the energy change of a surface reaction as stated by an "
+            "external dataset record",
+        ),
+        "activation_energy": (
+            "activation-energy",
+            "activation energy",
+            "the activation barrier of a surface reaction as stated by an "
+            "external dataset record",
+        ),
+    }
+
+    #: SI exponents of an energy (J = kg·m²·s⁻²), in
+    #: :data:`precis.taxonomy.types.SI_BASE_ORDER`.
+    _ENERGY_SI_VECTOR = "2,1,-2,0,0,0,0"
+
+    @staticmethod
+    def _taxon_id_by_slug(conn: Connection, slug: str) -> int | None:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'taxon' "
+            "AND meta ->> 'slug' = %s AND retired_at IS NULL "
+            "ORDER BY ref_id LIMIT 1",
+            (slug,),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def _measurand_parent_id(self, conn: Connection) -> int | None:
+        """The parent a minted measurand specialises — the parent
+        ``adsorption-energy`` itself uses when one is linked, else the
+        ``measurand`` start node (migration 0174's measurand root). Read on
+        ``conn`` so a just-minted ``adsorption-energy`` in this transaction
+        is already visible."""
+        ads_id = self._taxon_id_by_slug(conn, "adsorption-energy")
+        if ads_id is not None:
+            row = conn.execute(
+                "SELECT parent FROM ("
+                "  SELECT dst_ref_id AS parent FROM links "
+                "  WHERE src_ref_id = %s AND relation = 'specialises' "
+                "  AND src_chunk_id IS NULL AND dst_chunk_id IS NULL "
+                "  UNION ALL "
+                "  SELECT src_ref_id AS parent FROM links "
+                "  WHERE dst_ref_id = %s AND relation = 'generalises' "
+                "  AND src_chunk_id IS NULL AND dst_chunk_id IS NULL"
+                ") e ORDER BY parent LIMIT 1",
+                (ads_id, ads_id),
+            ).fetchone()
+            if row is not None:
+                return int(row[0])
+        return self._taxon_id_by_slug(conn, "measurand")
+
+    def _mint_measurand_taxon(
+        self, conn: Connection, *, slug: str, name: str, definition: str
+    ) -> int:
+        """Mint a measurand taxon the handler's way: ``initial_taxon_meta``
+        + ``validate_taxon_meta`` (SI energy — J canonical, eV display), the
+        embeddable ``card_combined``, and a ``specialises`` edge under the
+        same parent ``adsorption-energy`` uses — so the node is dimensioned,
+        rooted and indexed like a hand-put one."""
+        meta = initial_taxon_meta(
+            name,
+            definition,
+            extra={
+                "dimension_kind": "si",
+                "si_vector": self._ENERGY_SI_VECTOR,
+                "canonical_unit": "J",
+                "display_unit": "eV",
+                "higher_is_better": False,
+            },
+        )
+        meta = validate_taxon_meta(meta, check_si_unit=True)
+        if meta["slug"] != slug:
+            raise ValueError(
+                f"measurand name {name!r} slugifies to {meta['slug']!r}, "
+                f"expected {slug!r} — the slug is the mint-or-reuse key"
+            )
+        ref = self.insert_ref(kind="taxon", slug=None, title=name, meta=meta, conn=conn)
+        self.chunks.upsert_card_combined(
+            ref.id,
+            taxon_card_text(meta["name"], meta["definition"], meta["aliases"]),
+            conn=conn,
+        )
+        parent_id = self._measurand_parent_id(conn)
+        if parent_id is not None and parent_id != ref.id:
+            self.add_link(
+                src_ref_id=ref.id,
+                dst_ref_id=parent_id,
+                relation="specialises",
+                conn=conn,
+            )
+        return int(ref.id)
+
+    def _reference_measurand_id(self, conn: Connection, quantity: str) -> int:
+        """The measurand taxon ref for one reference ``quantity``, minted
+        on first use as a ``kind='taxon'`` node keyed on its slug. On prod
+        the ``adsorption-energy`` node already exists and is reused;
+        ``reaction-energy`` / ``activation-energy`` (and a fresh database's
+        ``adsorption-energy``) mint through :meth:`_mint_measurand_taxon`."""
+        try:
+            slug, name, definition = self._REFERENCE_MEASURANDS[quantity]
+        except KeyError:
+            raise ValueError(
+                f"unknown reference quantity {quantity!r}; known: "
+                f"{sorted(self._REFERENCE_MEASURANDS)}"
+            ) from None
+        found = self._taxon_id_by_slug(conn, slug)
+        if found is not None:
+            return found
+        return self._mint_measurand_taxon(
+            conn, slug=slug, name=name, definition=definition
+        )
+
+    @staticmethod
+    def _equation_label(equation: dict[str, Any]) -> str:
+        """``star + NOgas -> NOstar`` — the reference's compact subject."""
+
+        def side(terms: Any) -> str:
+            return " + ".join(
+                f"{t['stoich']}·{t['name']}"
+                if t.get("stoich") not in (None, 1)
+                else t["name"]
+                for t in terms or []
+            )
+
+        return f"{side(equation.get('reactants'))} -> {side(equation.get('products'))}"
+
+    def _import_reference_measures(
+        self,
+        conn: Connection,
+        *,
+        ref_id: int,
+        run: ExternalRun,
+        dataset: str,
+        config_id: str,
+    ) -> None:
+        """Persist each typed :class:`Reference` on the run as a
+        ``measures`` row on the imported ref: subject = the structure,
+        measurand = the quantity's taxon, value = the stated eV converted
+        to SI on write. The equation, member config_ids and the record's
+        descriptor ride in ``meta`` (frozen, like every measure field).
+
+        Idempotent on the import's own collapse key: a live row for the
+        same (subject, measurand, dataset, config_id, quantity, equation)
+        carrying the same ``value_eV`` is left alone; a changed value
+        supersedes it — never two live rows for one reference. The
+        equation rides in the key because one system can be the product
+        of several reactions sharing a quantity (a merged batch record).
+        """
+        for reference in run.references:
+            measurand_id = self._reference_measurand_id(conn, reference.quantity)
+            ref_key = (
+                f"{dataset}:{config_id}:{reference.quantity}:"
+                f"{self._equation_label(reference.equation)}"
+            )
+            existing = conn.execute(
+                "SELECT id, meta ->> 'value_eV' FROM measures "
+                "WHERE subject_ref_id = %s AND measurand_ref_id = %s "
+                "AND direction = 'output' AND superseded_by IS NULL "
+                "AND meta ->> 'reference_id' = %s",
+                (ref_id, measurand_id, ref_key),
+            ).fetchone()
+            if existing is not None and existing[1] is not None:
+                if float(existing[1]) == reference.value_eV:
+                    continue
+            method_label = "/".join(
+                str(run.method[k]) for k in ("functional", "code") if run.method.get(k)
+            )
+            spec = MeasureSpec(
+                measurand_ref_id=measurand_id,
+                literal=str(reference.value_eV),
+                subject_ref_id=ref_id,
+                subject=self._equation_label(reference.equation),
+                reported_unit="eV",
+                value_num=reference.value_eV,
+                tier="computed",
+                source_attribution="cited_work",
+                measurand_status="explicit",
+                method=method_label or None,
+                supersedes=int(existing[0]) if existing is not None else None,
+                meta={
+                    "reference_id": ref_key,
+                    "quantity": reference.quantity,
+                    "value_eV": reference.value_eV,
+                    "equation": reference.equation,
+                    "members": list(reference.members),
+                    "descriptor": run.descriptor,
+                    "dataset": dataset,
+                    "config_id": config_id,
+                    "dataset_doi": run.method.get("dataset_doi"),
+                },
+            )
+            self.insert_measure(spec, actor=f"import:{dataset}", conn=conn)
 
     # -- read ------------------------------------------------------------
     def structure_positions_snapshot(

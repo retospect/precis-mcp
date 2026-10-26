@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: Catalyst-library records tie to our Pd slab models through a typed reference quantity, a geometric match key and a bare-host calibration panel
 pillar: quests
 ---
@@ -79,8 +79,10 @@ members    the config_ids of the systems the value was computed from
   `surface_composition`, `reactants`, `products`) move to a `descriptor`
   payload. `_method_key` then compares methods.
 - The reference is stored as a `measures` row on the imported structure
-  ref (Reto, 2026-10-05), so slice A's storage waits on
-  `measures-substrate.md`.
+  ref (Reto, 2026-10-05). The substrate exists (migration 0187+,
+  `insert_measure`); a reference row is `tier='computed'`,
+  `source_attribution='cited_work'`, unanchored (`extraction_status=
+  'unverified'`) — the dataset is the source, not a corpus chunk.
 - When a source gives no cutoff or k-mesh, the method key is (functional,
   code, dataset_doi), so two papers never merge by accident (Reto,
   2026-10-05).
@@ -236,12 +238,101 @@ any use. Limited to fcc(111) hosts until the engine takes other facets
   import (§1), `slab_key` (§2), `derive` (§6), the re-relaxation and
   comparison row (§3), the panel for bare Pd(111) fed from the local
   cathub `.db` files with its noise floor and the two-cell check (§4).
-  No credentials needed.
+  No credentials needed. Split per the 2026-10-25 readiness review
+  (`chem-catlib`, NEEDS-SPEC): **A1** is the reference substrate —
+  typed `reference` + method/descriptor split + member-system import +
+  measures storage (§1 in full). **A2** is the match and the panel —
+  `slab_key` (§2), `derive` (§6), re-relaxation + comparison row (§3),
+  panel + noise floor + two-cell check (§4).
 - **B.** Panel shown on the leaderboard; the `reference_gap` flag (§5).
 - **C.** Per-candidate comparison; the Catalysis-Hub credential path when
   the SUNCAT key arrives (`chem-database-tie-ins.md` build step 3).
 - **D.** Library slabs as quest seeds (§6); hydride panel and Materials
   Project references (§7).
+
+## Slice A1 — the .db-fed Pd(111) reference substrate
+
+**Reto 2026-10-25: option (a) — the Pd(111) cathub `.db` panel.** The
+readiness review (NEEDS-SPEC, 2026-10-25) flagged a feed conflict —
+`chem-database-tie-ins.md` build order 1 says "first fed from ODAC23",
+this item says local cathub `.db` — and ruled the Pd(111)
+adsorption-energy panel first, read from local cathub `.db` files.
+
+**Scope.** Everything of §1, nothing of §2–§6:
+
+- a typed `reference` payload on the imported run: `quantity`
+  (`adsorption_energy` | `reaction_energy` | `activation_energy`),
+  `value_eV`, `equation` (reactants → products, each term with its state
+  `gas`|`star` and stoichiometry, as the source wrote it), `members`
+  (config_ids of the systems the value was computed from);
+- `method` holds only `functional`, `code`, `cutoff_eV`, `kmesh`,
+  `spin`, `dataset_doi`; `facet`, `surface_composition`, `reactants` and
+  `products` move to a `descriptor` payload on `struct_runs`;
+- `cathub_db` imports every member system of a selected reaction —
+  clean slab (`star`), gas-phase references (`Xgas`), adsorbate product
+  (`Xstar`) — each as its own structure ref with its own DFT total
+  energy, so `members` resolves inside the store;
+- `ExternalRun.energy` is always the DFT total energy; a record with no
+  total energy is skipped and counted in `ImportSummary`;
+- each reference lands as a `measures` row on the adsorbate ref: subject
+  = the imported structure, measurand = the quantity's taxon
+  (`adsorption-energy` / `reaction-energy` / `activation-energy`,
+  canonical `J`, `display_unit` `eV` — minted on first use), meta carries
+  `quantity`, `value_eV`, `equation`, `members`, the descriptor and the
+  dataset DOI;
+- an `activationEnergy` becomes a second reference on the same record
+  with `quantity = activation_energy`;
+- import stays idempotent on `(dataset, config_id)`: a re-import reuses
+  the refs, keeps one external run each, and neither duplicates nor
+  supersedes an unchanged measure row (a changed value supersedes).
+
+**Data source and licence.** Local cathub `.db` files — self-contained
+SQLite mirrors of a Catalysis-Hub dataset (`reaction` + `reaction_system`
++ ASE `systems` + `publication`), shipped with papers or handed over.
+Only `PengRole2020.db` is proven against this reader. Catalysis-Hub's
+redistribution licence is unconfirmed (`chem-database-tie-ins.md`
+sources table), so the repo carries only the small synthetic fixture
+`tests/fixtures/catalysis/cathub_no_pd.db` (built in-tree, EMT-compatible
+elements); a real `.db` is passed to the loader as a local path — never
+downloaded into the repo — and there is no `PRECIS_CATHUB_API_KEY`
+handling on this path.
+
+**What is compared against what.** Per adsorbate on a host: the source's
+stated `reactionEnergy` — for `star + Xgas → Xstar`, the adsorption
+energy of X on that surface, published against the source's own clean
+slab and gas references — is the reference value, kept with the record's
+functional and dataset DOI. Our value is the same equation evaluated on
+the member systems re-relaxed by our (backend, model) — the §3
+normalisation, which is A2. A1 stores only the reference side: nothing
+subtracts an external energy from a computed one, and
+`guard_energy_comparable` keeps refusing that pair.
+
+**A1 acceptance numbers** (all on the fixture, no network):
+
+- 6 structure refs — each reaction's `star`, `Xgas` and `Xstar` systems —
+  each with exactly one external `struct_runs` row whose `energy` is the
+  DFT total energy.
+- 2 `measures` rows, one per adsorbate ref: `quantity=adsorption_energy`,
+  `value_eV` −1.85 (NO/Pd) and −0.61 (CO/Cu); each row's `members` names
+  the reaction's 3 config_ids and every config_id resolves to a live
+  imported ref via `find_ref_by_identifier`.
+- `method` holds the 6 method keys only; `descriptor` holds
+  facet/composition/reactants/products. `_method_key` is equal for the
+  two fixture runs (same dataset and functional) and unequal against a
+  record with a different `dftFunctional`.
+- A member record with no system energy is skipped and counted in
+  `ImportSummary.skipped`.
+- A re-import of the same `.db` yields `imported=0`, `reused=6`, still
+  one run and one live measure per adsorbate.
+- `guard_energy_comparable` still raises on a computed/external pair.
+
+**Out of scope (A1).** `slab_key`, `derive`, the re-relaxation job, the
+comparison row and the panel view, the noise floor, the two-cell check,
+any flag, the leaderboard (all A2+). ODAC23 — MOF CO₂/H₂O records can
+never feed a Pd-slab match key, and its UMA-circularity caveat is
+unresolved. The keyed Catalysis-Hub GraphQL path — no SUNCAT key exists;
+the credential hunt stays with `chem-database-tie-ins.md`. Any download
+of a real `.db` into the repo or onto the NAS.
 
 ## Explicitly NOT in scope
 
@@ -297,6 +388,16 @@ any use. Limited to fcc(111) hosts until the engine takes other facets
   idempotent on `(dataset, config_id)`.
 
 ## Open questions / decisions log
+
+Decided, Reto 2026-10-25:
+
+- **The feed is the Pd(111) cathub `.db` panel** (option (a) of the
+  NEEDS-SPEC readiness review): slice A's panel is fed from local cathub
+  `.db` files, not ODAC23 and not the keyed GraphQL API (no SUNCAT key).
+  Slice A splits into A1 (reference substrate, §1) and A2 (match +
+  panel, §2–§4). `chem-database-tie-ins.md` build order 1 should be
+  corrected to point at the `.db` feed when that item is next touched —
+  this file carries the ruling.
 
 Decided, Reto 2026-10-05:
 

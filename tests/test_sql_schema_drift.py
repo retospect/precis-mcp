@@ -85,7 +85,8 @@ _NON_PG_QUERIES: frozenset[tuple[str, str]] = frozenset(
         (
             "structure/importers/cathub_db.py",
             "select id, surface_composition, facet, reactants, products, "
-            "reaction_energy, dft_code, dft_functional, pub_id from reaction",
+            "reaction_energy, activation_energy, dft_code, dft_functional, "
+            "pub_id from reaction",
         ),
         (
             "structure/importers/cathub_db.py",

@@ -2722,22 +2722,37 @@ class StructureHandler(Handler):
             )
         return Response(body=export.to_cif(scene))
 
+    #: Record-descriptor keys pre-0252 rows packed into ``method`` — the
+    #: fallback a ``descriptor IS NULL`` row still answers with.
+    _DESCRIPTOR_KEYS = ("facet", "surface_composition", "reactants", "products")
+
     def _external_provenance(self, ref_id: int) -> dict[str, Any] | None:
         """The design's newest external-provenance run, if any (migration 0084). Non-``None`` means this design mirrors an imported
         dataset entry (OC20/OC22, Materials Project, …) — it must stay a
         faithful, read-only reference; all work branches via ``derive``.
+
+        Returns ``{"method", "descriptor"}``: the method fingerprint plus
+        the record-level descriptors (facet/composition/reactants/products)
+        which moved to their own column in 0252 — a row that predates the
+        column still carries them inside ``method``, so read them back out.
 
         Queried directly against ``struct_runs`` rather than through
         ``store.structure_runs`` so this guard is correct regardless of
         whether that helper's own column list has caught up with 0084 yet."""
         with self.store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT method FROM struct_runs "
+                "SELECT method, descriptor FROM struct_runs "
                 "WHERE ref_id = %s AND provenance = 'external' "
                 "ORDER BY id DESC LIMIT 1",
                 (ref_id,),
             ).fetchone()
-        return None if row is None else {"method": row[0] or {}}
+        if row is None:
+            return None
+        method = row[0] or {}
+        descriptor = row[1] or {
+            k: method[k] for k in self._DESCRIPTOR_KEYS if k in method
+        }
+        return {"method": method, "descriptor": descriptor}
 
     def _runs_provenance(
         self, run_ids: list[int]
@@ -3343,7 +3358,7 @@ class StructureHandler(Handler):
         1. the author's own ``description`` (meta), when set;
         2. a host-metal/adsorbate/facet phrase over ``scene.composition()``
            — ``surface_composition``/``facet`` from an external-provenance
-           method fingerprint when this design was hydrated from a catalyst
+           record's descriptor when this design was hydrated from a catalyst
            DB (mirroring the catalysis-hub adapter's fields)
            and that string names an actual composition element, else a
            heuristic over :data:`_HOST_METAL_ELEMENTS` — **every** recognised
@@ -3363,9 +3378,9 @@ class StructureHandler(Handler):
         Same scene + ref meta ⇒ same string (composition/method dicts are
         walked in a fixed sort order)."""
         comp = scene.composition()
-        method = (self._external_provenance(ref.id) or {}).get("method") or {}
-        ext_host = method.get("surface_composition") or None
-        facet = method.get("facet") or None
+        descriptor = (self._external_provenance(ref.id) or {}).get("descriptor") or {}
+        ext_host = descriptor.get("surface_composition") or None
+        facet = descriptor.get("facet") or None
         # An alloy-formula string (e.g. "Ag3Pd") names no single composition
         # element symbol — using it verbatim as "the host" produces a
         # redundant query ("Ag Pd on Ag3Pd") instead of a useful one; fall

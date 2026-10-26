@@ -46,7 +46,7 @@ import numpy as np
 
 from ..cell import Cell, as_pbc3
 from ..scene import FIX_ALL, Atom, Scene
-from . import ExternalId, ExternalRun, register_adapter
+from . import ExternalId, ExternalRun, Reference, register_adapter
 
 if TYPE_CHECKING:
     import httpx
@@ -159,33 +159,102 @@ def _scene_from_input_file(geom: dict[str, Any]) -> Scene:
     return scene
 
 
+def _term_state(name: str) -> str:
+    """A cathub species name's state: ``NOgas`` is a gas-phase reference,
+    ``NOstar``/``star`` live on the slab."""
+    return "gas" if name.endswith("gas") else "star"
+
+
+def _equation(reactants: Any, products: Any) -> dict[str, Any]:
+    """Normalise the source's ``reactants``/``products`` maps into the
+    :class:`Reference` ``equation`` payload — each term keeps its name, its
+    state (``gas``|``star``) and its stoichiometry, as the source wrote it."""
+
+    def terms(d: Any) -> list[dict[str, Any]]:
+        return [
+            {"name": n, "state": _term_state(n), "stoich": s}
+            for n, s in (d or {}).items()
+        ]
+
+    return {"reactants": terms(reactants), "products": terms(products)}
+
+
+def _quantity_of(equation: dict[str, Any]) -> str:
+    """``adsorption_energy`` when the reaction is a bare adsorption —
+    ``star`` + one gas species -> one adsorbed product, all stoichiometry 1
+    (``star + NOgas -> NOstar``). Anything richer stays the source's
+    ``reaction_energy``."""
+    reactants = equation["reactants"]
+    products = equation["products"]
+    gases = [t for t in reactants if t["state"] == "gas"]
+    slabs = [t for t in reactants if t["name"] == "star"]
+    if (
+        len(gases) == 1
+        and len(slabs) == 1
+        and len(reactants) == 2
+        and len(products) == 1
+        and products[0]["state"] == "star"
+        and products[0]["name"] != "star"
+        and all(t["stoich"] == 1 for t in (*reactants, *products))
+    ):
+        return "adsorption_energy"
+    return "reaction_energy"
+
+
+def _is_adsorbate_row(raw: dict[str, Any]) -> bool:
+    """True when this flattened row is the reaction's adsorbate-on-slab
+    product — the system a reaction/activation energy belongs to. A record
+    with no ``name`` predates member rows (the single-system shape always
+    represented the adsorbate), so it keeps the reference. A merged batch
+    record names its producing reactions under ``producing``."""
+    name = raw.get("name")
+    if name is None:
+        return True
+    if raw.get("producing"):
+        return True
+    products = raw.get("products") or {}
+    return name in products and name != "star" and not name.endswith("gas")
+
+
 def adapter(raw: object) -> tuple[Scene, ExternalRun, ExternalId]:
     """Normalise one flattened Catalysis-Hub ``(reaction, system)`` record.
 
     Pure — no I/O. ``raw`` is the shape :func:`_flatten` (and the
     ``tests/fixtures/catalysis/`` fixture) produce: reaction-level fields
-    (``reactionEnergy``, ``facet``, ``surfaceComposition``, ``reactants``,
-    ``products``, ``dftCode``, ``dftFunctional``, ``publication``) alongside
-    one nested ``system`` dict (``uniqueId``/``id``, ``energy``,
-    ``InputFile`` — the already-decoded ASE-db-JSON geometry, see
-    :func:`_scene_from_input_file`).
+    (``reactionEnergy``, ``activationEnergy``, ``facet``,
+    ``surfaceComposition``, ``reactants``, ``products``, ``dftCode``,
+    ``dftFunctional``, ``publication``, the reaction system's ``name`` and
+    the sibling ``member_ids``) alongside one nested ``system`` dict
+    (``uniqueId``/``id``, ``energy``, ``InputFile`` — the already-decoded
+    ASE-db-JSON geometry, see :func:`_scene_from_input_file`).
 
     Mapping:
 
     * ``Scene`` — built from ``system.InputFile`` (cell/pbc/numbers/
       positions/constraints).
-    * ``ExternalRun.energy`` — ``reactionEnergy`` when present (the
-      adsorption/reaction energy, the quantity the catalyst quest cares
-      about), else the raw DFT total ``system.energy``.
+    * ``ExternalRun.energy`` — the raw DFT total ``system.energy``, always
+      (``None`` when the record carries none). The stated
+      ``reactionEnergy``/``activationEnergy`` are derived quantities and
+      never land here — they ride in ``references`` (slice A1).
+    * ``ExternalRun.references`` — on the adsorbate-product row only: one
+      :class:`Reference` per stated derived energy, ``adsorption_energy``
+      when the equation is a bare ``star + Xgas -> Xstar`` adsorption,
+      ``reaction_energy`` otherwise; ``members`` is every member system's
+      config_id. A batch-deduped record can carry ``producing`` — one
+      entry per selected reaction whose product this system is — and gets
+      a reference set per entry, so a shared adsorbate keeps every
+      producing reaction's stated energies.
     * ``ExternalRun.max_force`` — Catalysis-Hub's GraphQL schema does not
       expose a per-system max-force field (only the relaxed geometry +
       final energy), so this is always ``None`` for this source.
     * ``ExternalRun.final_geometry`` — the ``system.InputFile`` dict
       verbatim (already JSONB-serializable).
-    * ``ExternalRun.method`` — ``functional``/``code``/``facet``/
-      ``surface_composition``/``reactants``/``products``/``dataset_doi``
-      (+ ``cutoff_eV``/``spin`` when the record carries them — Catalysis-
-      Hub's public schema does not, today, so they land as ``None``).
+    * ``ExternalRun.method`` — the method fingerprint only:
+      ``functional``/``code``/``dataset_doi`` (+ ``cutoff_eV``/``kmesh``/
+      ``spin`` when the record carries them — Catalysis-Hub's public schema
+      does not, today, so they land as ``None``).
+    * ``ExternalRun.descriptor`` — what the record describes: ``facet``,
+      ``surface_composition``, ``reactants``, ``products``.
     * ``ExternalId`` — ``dataset='catalysis-hub'``, ``config_id`` = the
       system's ``uniqueId`` (falls back to its numeric ``id``) — the
       idempotent collapse key.
@@ -197,32 +266,61 @@ def adapter(raw: object) -> tuple[Scene, ExternalRun, ExternalId]:
     geometry = system["InputFile"]
     scene = _scene_from_input_file(geometry)
 
-    energy = raw.get("reactionEnergy")
-    if energy is None:
-        energy = system["energy"]
+    energy = system.get("energy")
 
     publication = raw.get("publication") or {}
     method = {
         "functional": raw.get("dftFunctional"),
         "code": raw.get("dftCode"),
         "cutoff_eV": raw.get("cutoffEnergy"),
+        "kmesh": raw.get("kmesh"),
         "spin": raw.get("spin"),
         "dataset_doi": publication.get("doi"),
+    }
+    descriptor = {
         "facet": raw.get("facet"),
         "surface_composition": raw.get("surfaceComposition"),
         "reactants": raw.get("reactants"),
         "products": raw.get("products"),
     }
 
+    config_id = str(system.get("uniqueId") or system["id"])
+    member_ids = tuple(str(u) for u in (raw.get("member_ids") or (config_id,)))
+
+    references: tuple[Reference, ...] = ()
+    if _is_adsorbate_row(raw):
+        refs: list[Reference] = []
+        # ``producing`` (batch .db dedupe) lists every selected reaction
+        # that produces this system — a shared adsorbate keeps them all.
+        # A plain record produces it once: itself.
+        for src in raw.get("producing") or (raw,):
+            equation = _equation(src.get("reactants"), src.get("products"))
+            members = tuple(str(u) for u in (src.get("member_ids") or member_ids))
+            refs.extend(
+                Reference(
+                    quantity=quantity,
+                    value_eV=float(value),
+                    equation=equation,
+                    members=members,
+                )
+                for quantity, value in (
+                    (_quantity_of(equation), src.get("reactionEnergy")),
+                    ("activation_energy", src.get("activationEnergy")),
+                )
+                if value is not None
+            )
+        references = tuple(refs)
+
     run = ExternalRun(
-        energy=float(energy),
+        energy=None if energy is None else float(energy),
         max_force=None,
         final_geometry=geometry,
         method=method,
+        descriptor=descriptor,
+        references=references,
         provenance="external",
     )
 
-    config_id = str(system.get("uniqueId") or system["id"])
     eid = ExternalId(dataset="catalysis-hub", config_id=config_id)
     return scene, run, eid
 
@@ -251,6 +349,10 @@ def _flatten(node: dict[str, Any]) -> list[dict[str, Any]]:
         "pubId": node.get("pubId"),
         "publication": node.get("publication"),
     }
+    member_ids = [
+        str((rs.get("systems") or {}).get("uniqueId") or "")
+        for rs in node.get("reactionSystems") or []
+    ]
     out: list[dict[str, Any]] = []
     for rs in node.get("reactionSystems") or []:
         sys_raw = dict(rs.get("systems") or {})
@@ -259,6 +361,7 @@ def _flatten(node: dict[str, Any]) -> list[dict[str, Any]]:
             sys_raw["InputFile"] = json.loads(input_file)
         row = dict(reaction_fields)
         row["name"] = rs.get("name")
+        row["member_ids"] = [u for u in member_ids if u]
         row["system"] = sys_raw
         out.append(row)
     return out

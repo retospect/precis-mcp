@@ -41,6 +41,33 @@ class ExternalId:
     config_id: str
 
 
+@dataclass(frozen=True)
+class Reference:
+    """One typed reference quantity an imported record reports
+    (catalyst-library tie-in, slice A1).
+
+    ``energy`` on :class:`ExternalRun` is always the DFT *total* energy of
+    that system; a :class:`Reference` is a *derived* quantity the source
+    stated against its own member systems — e.g. the adsorption energy of
+    ``star + NOgas -> NOstar``. Persisted as a ``measures`` row on the
+    imported structure ref by ``store.structure_import``.
+
+    * ``quantity`` — ``adsorption_energy`` | ``reaction_energy`` |
+      ``activation_energy``.
+    * ``value_eV`` — the source's stated value.
+    * ``equation`` — ``{"reactants": [...], "products": [...]}``, each term
+      ``{"name", "state" ("gas"|"star"), "stoich"}`` as the source wrote it.
+    * ``members`` — config_ids of the systems the value was computed from
+      (clean slab, adsorbed state, gas molecules, transition state); each
+      resolves to an imported ref via ``(dataset, config_id)``.
+    """
+
+    quantity: str
+    value_eV: float
+    equation: dict
+    members: tuple[str, ...] = ()
+
+
 @dataclass
 class ExternalRun:
     """The run-cube payload an import pre-fills.
@@ -56,12 +83,25 @@ class ExternalRun:
     experimental, solvent-removed cells and no DFT energy); the row still
     lands, with its ``method`` fingerprint naming the source, so the design
     stays read-only and reports where its atoms came from.
+
+    ``method`` keeps only method fields (``functional``/``code``/
+    ``cutoff_eV``/``kmesh``/``spin``/``dataset_doi``) so its fingerprint is a
+    pure comparability key; record-level *descriptors* (``facet``,
+    ``surface_composition``, ``reactants``, ``products`` — what the record
+    describes, not how it was computed) ride in ``descriptor``, stored in the
+    ``struct_runs.descriptor`` column (0252). ``references`` carries the
+    source's stated derived quantities (a reaction/adsorption/activation
+    energy) — never folded into ``energy``.
     """
 
     energy: float | None
     max_force: float | None
     final_geometry: dict | None  # relaxed geometry payload, JSONB-serializable
     method: dict = field(default_factory=dict)  # functional/cutoff_eV/kmesh/spin/...
+    descriptor: dict = field(
+        default_factory=dict
+    )  # facet/surface_composition/reactants/...
+    references: tuple[Reference, ...] = ()
     provenance: str = "external"
 
 
@@ -99,6 +139,7 @@ __all__ = [
     "Adapter",
     "ExternalId",
     "ExternalRun",
+    "Reference",
     "get_adapter",
     "register_adapter",
 ]

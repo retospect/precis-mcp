@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from precis.structure.importers import ExternalId, ExternalRun, get_adapter
+from precis.structure.importers import (
+    ExternalId,
+    ExternalRun,
+    Reference,
+    get_adapter,
+)
 from precis.structure.importers.catalysis_hub import _reactions_query, adapter
 from precis.structure.scene import FIX_ALL, Scene
 
@@ -38,30 +43,110 @@ def test_adapter_honours_fixatoms_constraint() -> None:
     assert len(free) == 6  # top Pd layer + the NO adsorbate
 
 
-def test_adapter_run_energy_and_method() -> None:
+def test_adapter_run_energy_method_and_descriptor() -> None:
     _scene, run, _eid = adapter(_load_raw())
 
     assert isinstance(run, ExternalRun)
-    # reactionEnergy wins over the raw system total when both are present.
-    assert run.energy == -1.85
+    # energy is always the DFT total — the stated reactionEnergy rides in
+    # references, never here (slice A1).
+    assert run.energy == -321.456
     assert run.max_force is None  # Catalysis-Hub doesn't expose per-system forces
     assert run.final_geometry is not None
     assert run.final_geometry["numbers"][:3] == [46, 46, 46]
-    assert run.method["functional"] == "BEEF-vdW"
-    assert run.method["code"] == "Quantum ESPRESSO"
-    assert run.method["facet"] == "111"
-    assert run.method["surface_composition"] == "Pd"
-    assert run.method["dataset_doi"] == "10.1021/acscatal.9b02179"
-    assert run.method["reactants"] == {"NOgas": 1, "star": 1}
-    assert run.method["products"] == {"NOstar": 1}
+    # method holds the comparability fingerprint only — the record's
+    # descriptors moved to `descriptor`.
+    assert run.method == {
+        "functional": "BEEF-vdW",
+        "code": "Quantum ESPRESSO",
+        "cutoff_eV": None,
+        "kmesh": None,
+        "spin": None,
+        "dataset_doi": "10.1021/acscatal.9b02179",
+    }
+    assert run.descriptor == {
+        "facet": "111",
+        "surface_composition": "Pd",
+        "reactants": {"NOgas": 1, "star": 1},
+        "products": {"NOstar": 1},
+    }
     assert run.provenance == "external"
 
 
-def test_adapter_falls_back_to_system_energy_when_no_reaction_energy() -> None:
+def test_adapter_typed_reference_on_the_adsorbate_row() -> None:
+    _scene, run, _eid = adapter(_load_raw())
+
+    (ref,) = run.references
+    assert isinstance(ref, Reference)
+    # star + NOgas -> NOstar, stoichiometry 1: a bare adsorption.
+    assert ref.quantity == "adsorption_energy"
+    assert ref.value_eV == -1.85
+    assert ref.equation == {
+        "reactants": [
+            {"name": "NOgas", "state": "gas", "stoich": 1},
+            {"name": "star", "state": "star", "stoich": 1},
+        ],
+        "products": [{"name": "NOstar", "state": "star", "stoich": 1}],
+    }
+    assert ref.members == ("PdNO111top-a1b2c3",)
+
+
+def test_adapter_members_come_from_member_ids() -> None:
     raw = _load_raw()
-    raw["reactionEnergy"] = None
+    raw["member_ids"] = ["slab-uid", "gas-uid", "ads-uid"]
     _scene, run, _eid = adapter(raw)
-    assert run.energy == -321.456
+    (ref,) = run.references
+    assert ref.members == ("slab-uid", "gas-uid", "ads-uid")
+
+
+def test_adapter_member_rows_carry_no_reference() -> None:
+    for name in ("star", "NOgas"):
+        raw = _load_raw()
+        raw["name"] = name
+        _scene, run, _eid = adapter(raw)
+        assert run.references == ()
+        assert run.energy == -321.456
+
+
+def test_adapter_activation_energy_is_its_own_reference() -> None:
+    raw = _load_raw()
+    raw["activationEnergy"] = 0.92
+    _scene, run, _eid = adapter(raw)
+    assert [r.quantity for r in run.references] == [
+        "adsorption_energy",
+        "activation_energy",
+    ]
+    assert run.references[1].value_eV == 0.92
+
+
+def test_adapter_multi_species_reaction_stays_reaction_energy() -> None:
+    raw = _load_raw()
+    # a two-gas coadsorption: still a product row, but not the bare
+    # star + Xgas -> Xstar shape, so the quantity stays reaction_energy.
+    raw["reactants"] = {"star": 1, "NOgas": 1, "H2gas": 1}
+    raw["products"] = {"NOstar": 1, "H2star": 1}
+    _scene, run, _eid = adapter(raw)
+    (ref,) = run.references
+    assert ref.quantity == "reaction_energy"
+
+
+def test_adapter_multi_adsorbate_reaction_is_reaction_energy_on_each_product() -> None:
+    """GRIPE_FIX ruling: with more than one adsorbate product the stated
+    energy is NOT an adsorption energy of either product — it is a
+    ``reaction_energy`` reference carried on EACH product row."""
+    raw = _load_raw()
+    raw["reactants"] = {"star": 1, "Ngas": 1, "Ogas": 1}
+    raw["products"] = {"Nstar": 1, "Ostar": 1}
+    for name in ("Nstar", "Ostar"):
+        _scene, run, _eid = adapter({**raw, "name": name})
+        (ref,) = run.references
+        assert ref.quantity == "reaction_energy"
+
+
+def test_adapter_no_total_energy_leaves_energy_none() -> None:
+    raw = _load_raw()
+    raw["system"]["energy"] = None
+    _scene, run, _eid = adapter(raw)
+    assert run.energy is None
 
 
 def test_adapter_external_id_uses_system_unique_id() -> None:

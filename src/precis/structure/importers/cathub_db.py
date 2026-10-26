@@ -16,14 +16,18 @@ exact dict :func:`precis.structure.importers.catalysis_hub.adapter` already
 consumes (same source, ``dataset='catalysis-hub'``), so the one tested adapter
 handles both the (dead) live path and this local-file path.
 
-What gets imported: per reaction, the **product adsorbate system** — the
-``reaction_system`` row whose ``name`` is one of the reaction's ``products``
-keys (e.g. ``NOstar``: NO adsorbed on the slab). That is the substrate the
-catalyst quest explores; the clean-slab (``star``) and gas-phase reference
-(``NOgas``) systems of the same reaction are skipped in v1. The imported run's
-energy is the reaction's ``reaction_energy`` (the adsorption energy — the
-quantity the quest grounds against); the per-system DFT total energy rides along
-as the adapter's fallback.
+What gets imported (slice A1): per selected reaction, **every member
+system** — the clean slab (``star``), the gas-phase references
+(``NOgas``) and the product adsorbate system (``NOstar``) alike — each as
+its own ``structure`` ref whose external run carries *its* DFT total
+energy. Only the adsorbate row additionally carries ``reference``
+payloads (the stated ``reaction_energy`` — an adsorption energy for
+``star + Xgas -> Xstar`` — and any ``activation_energy``), whose
+``members`` name every member system's config_id so they resolve inside
+the store. Systems are emitted once per batch even when several selected
+reactions share them; a shared adsorbate's record merges the references
+of every reaction that produces it (``producing``), while a shared slab
+or gas row carries no reaction-specific terms at all.
 
 Unit enclave (`precis.structure` package docstring): eV/Å-native, matching
 the ASE ``systems`` it reads; energies are never converted to SI here.
@@ -111,15 +115,22 @@ def read_cathub_db(
     """Read a local cathub ``.db`` into raw records for
     :func:`catalysis_hub.adapter`.
 
-    One record per **product adsorbate system** (``reaction_system.name`` in the
-    reaction's ``products``) that passes the filters:
+    One record per **member system** of each selected reaction — clean
+    slab, gas references and adsorbate product alike — so a reference's
+    ``members`` resolve inside the store. A system shared by several
+    selected reactions emits once: slab/gas rows then carry no
+    ``reactants``/``products`` (no last-writer-wins), while an adsorbate
+    row keeps its terms and merges every producing reaction's reference
+    fields under ``producing``:
 
     * ``surface_contains`` — keep a reaction only if its ``surface_composition``
       contains any of these element strings (e.g. ``['Pd','Cu','Ni']``).
     * ``facet`` — keep only reactions whose facet starts with this (``'111'``).
-    * ``product_contains`` — keep a product system only if its name contains any
-      of these (e.g. ``['NO','NH']`` for NOx intermediates).
-    * ``limit`` — stop after this many records.
+    * ``product_contains`` — keep a reaction only if one of its adsorbate
+      product systems' names contains any of these (e.g. ``['NO','NH']``
+      for NOx intermediates).
+    * ``limit`` — stop after this many *reactions*. A reaction's members
+      are never split: all of them emit, or the reaction is not selected.
 
     Raises:
         CathubDbUnsupported: ``ase`` (the ``[import]`` extra) isn't installed.
@@ -138,7 +149,8 @@ def read_cathub_db(
             pubs[pub_id] = doi
         reactions = conn.execute(
             "select id, surface_composition, facet, reactants, products, "
-            "reaction_energy, dft_code, dft_functional, pub_id from reaction"
+            "reaction_energy, activation_energy, dft_code, dft_functional, "
+            "pub_id from reaction"
         ).fetchall()
         systems_by_reaction: dict[int, list[tuple[str, str]]] = {}
         for name, ase_id, rid in conn.execute(
@@ -148,52 +160,137 @@ def read_cathub_db(
     finally:
         conn.close()
 
-    # Phase 2: for each selected product system, pull its ASE atoms + energy.
-    adb = connect(path)
-    out: list[dict[str, Any]] = []
-    for (
-        rid,
-        surface,
-        rfacet,
-        reactants,
-        products,
-        reaction_energy,
-        dft_code,
-        dft_functional,
-        pub_id,
-    ) in reactions:
+    # Phase 2: select the reactions — filters first, ``limit`` counting
+    # selected reactions only. A reaction contributes when it has at least
+    # one adsorbate product passing the filters; then ALL its systems emit
+    # (the clean slab and gas references are what a ``reference.members``
+    # resolves to), and its members are never split by the limit.
+    picked: list[tuple[tuple, set[str], list[tuple[str, str]]]] = []
+    for reaction in reactions:
+        rid, surface, rfacet, _r, products, _e, _a, _c, _f, _p = reaction
         if not _matches_surface(surface, surface_contains):
             continue
         if not _matches_facet(rfacet, facet):
             continue
         product_names = set(json.loads(products or "{}"))
-        for name, ase_id in systems_by_reaction.get(rid, []):
-            if not _is_adsorbate_product(name, product_names):
-                continue  # only adsorbate-on-slab product systems (not slab/gas)
-            if product_contains and not any(
-                pc.lower() in name.lower() for pc in product_contains
-            ):
+        systems = systems_by_reaction.get(rid, [])
+        adsorbate_names = {
+            name for name, _ in systems if _is_adsorbate_product(name, product_names)
+        }
+        if not adsorbate_names:
+            continue  # the reaction has no adsorbate-on-slab product at all
+        if product_contains and not any(
+            pc.lower() in name.lower()
+            for name in adsorbate_names
+            for pc in product_contains
+        ):
+            continue
+        if limit is not None and len(picked) >= limit:
+            break
+        picked.append((reaction, product_names, systems))
+
+    # Each ase_id emits ONCE per batch: real .db files share systems across
+    # reactions, and re-emitting would re-import the same system N times.
+    # Counts and producers are over the SELECTED reactions only — a system
+    # also used by a filtered-out reaction is not "shared" here.
+    #
+    # ``producing`` gathers every selected reaction whose adsorbate product
+    # a system is. A shared adsorbate's one emitted record still carries
+    # every producing reaction's references — its adsorption energy in R1
+    # must not vanish because R2 also lists it as a member (NOstar in
+    # ``star + NOgas -> NOstar`` AND ``NOstar + star -> Nstar + Ostar``).
+    ase_use_count: dict[str, int] = {}
+    producing: dict[str, list[dict[str, Any]]] = {}
+    for reaction, product_names, systems in picked:
+        (
+            _id,
+            _s,
+            _f,
+            reactants,
+            products,
+            reaction_energy,
+            activation_energy,
+            _c,
+            _n,
+            _b,
+        ) = reaction
+        member_ids = [ase_id for _name, ase_id in systems]
+        for name, ase_id in systems:
+            ase_use_count[ase_id] = ase_use_count.get(ase_id, 0) + 1
+            if _is_adsorbate_product(name, product_names):
+                producing.setdefault(ase_id, []).append(
+                    {
+                        "reactants": json.loads(reactants) if reactants else None,
+                        "products": json.loads(products) if products else None,
+                        "reactionEnergy": reaction_energy,
+                        "activationEnergy": activation_energy,
+                        "member_ids": member_ids,
+                    }
+                )
+
+    adb = connect(path)
+    out: list[dict[str, Any]] = []
+    emitted: set[str] = set()
+    for reaction, _pn, systems in picked:
+        (
+            rid,
+            surface,
+            rfacet,
+            reactants,
+            products,
+            reaction_energy,
+            activation_energy,
+            dft_code,
+            dft_functional,
+            pub_id,
+        ) = reaction
+        member_ids = [ase_id for _name, ase_id in systems]
+        for name, ase_id in systems:
+            if ase_id in emitted:
                 continue
+            emitted.add(ase_id)
+            prod = producing.get(ase_id)
+            # Role decides whose terms the descriptor carries. A clean slab
+            # or gas species shared by selected reactions gets NONE — one
+            # reaction's terms would be last-writer-wins noise for a system
+            # that equally serves another. An adsorbate keeps its terms —
+            # they are what its references key on — taken from a reaction
+            # that produces it (a system can be one reaction's product and
+            # only a member of the next).
+            shared_species = (name == "star" or name.endswith("gas")) and (
+                ase_use_count.get(ase_id, 0) > 1
+            )
+            if shared_species:
+                row_reactants = row_products = None
+            elif prod:
+                row_reactants = prod[0]["reactants"]
+                row_products = prod[0]["products"]
+            else:
+                row_reactants = json.loads(reactants) if reactants else None
+                row_products = json.loads(products) if products else None
             row = adb.get(unique_id=ase_id)
             atoms = row.toatoms()
             raw = {
                 "reactionEnergy": reaction_energy,
+                "activationEnergy": activation_energy,
                 "facet": rfacet,
                 "surfaceComposition": surface,
-                "reactants": json.loads(reactants) if reactants else None,
-                "products": json.loads(products) if products else None,
+                "reactants": row_reactants,
+                "products": row_products,
                 "dftCode": dft_code,
                 "dftFunctional": dft_functional,
                 "publication": {"doi": pubs.get(pub_id)},
+                "name": name,
+                "member_ids": member_ids,
                 "system": {
                     "uniqueId": ase_id,
                     "energy": getattr(row, "energy", None),
                     "InputFile": _geom_from_atoms(atoms),
                 },
             }
+            if prod:
+                raw["producing"] = prod
             out.append(raw)
-            if limit is not None and len(out) >= limit:
-                return out
     return out
 
 
@@ -204,6 +301,7 @@ class ImportSummary:
     configs: int = 0  # records the reader yielded (post-filter)
     imported: int = 0  # newly minted structure refs
     reused: int = 0  # re-imports that collapsed onto an existing ref
+    skipped: int = 0  # records dropped for carrying no DFT total energy
     ref_ids: list[int] = field(default_factory=list)
 
 
@@ -218,10 +316,12 @@ def batch_import(
 ) -> ImportSummary:
     """Mine a local cathub ``.db`` into ``structure`` refs (batch mirror).
 
-    Each product config is normalised by the shared ``catalysis-hub`` adapter and
-    written through :meth:`store.structure_import`, which is idempotent on
-    ``(dataset, config_id)`` — so a re-run collapses onto the existing refs
-    rather than duplicating them.
+    Each member system is normalised by the shared ``catalysis-hub`` adapter
+    and written through :meth:`store.structure_import`, which is idempotent
+    on ``(dataset, config_id)`` — so a re-run collapses onto the existing
+    refs rather than duplicating them. A record whose system carries no DFT
+    total energy is skipped (and counted), never imported with a fabricated
+    one.
     """
     from .catalysis_hub import adapter
 
@@ -235,6 +335,9 @@ def batch_import(
     summary = ImportSummary(configs=len(records))
     for raw in records:
         scene, run, eid = adapter(raw)
+        if run.energy is None:
+            summary.skipped += 1
+            continue
         existed = (
             store.find_ref_by_identifier(
                 eid.dataset.strip().lower(), eid.config_id.strip(), kind="structure"

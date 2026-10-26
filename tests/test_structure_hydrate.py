@@ -68,7 +68,13 @@ def test_first_touch_hydrates_a_searchable_cited_structure(structure, stub_fetch
     runs = structure.store.structure_runs(ref.id)
     assert len(runs) == 1
     assert runs[0]["fidelity"] == "external"
-    assert runs[0]["energy"] == pytest.approx(-1.85)
+    # the run carries the DFT total energy; the source's stated adsorption
+    # energy lands as a typed measures row, never in run.energy (slice A1).
+    assert runs[0]["energy"] == pytest.approx(-321.456)
+    (measure,) = structure.store.measures_for(ref.id)
+    assert measure["measurand"] == "adsorption energy"
+    assert measure["meta"]["quantity"] == "adsorption_energy"
+    assert measure["meta"]["value_eV"] == pytest.approx(-1.85)
 
 
 def test_repeat_call_by_config_id_is_a_cache_hit_no_refetch(structure, stub_fetch):

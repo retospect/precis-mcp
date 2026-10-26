@@ -308,6 +308,12 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "struct_measures.operands",
         "struct_measures.value_derived",
         "struct_runs.charges",
+        # 0252: an external run's record-level descriptors (facet,
+        # surface_composition, reactants, products) split out of `method`;
+        # the key set is per-importer and readers take the bag whole
+        # (handlers/structure.py::_external_provenance), never a SQL key
+        # probe.
+        "struct_runs.descriptor",
         "struct_runs.final_geometry",
         "struct_runs.forces",
         "struct_runs.method",
