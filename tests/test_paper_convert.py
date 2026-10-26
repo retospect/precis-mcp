@@ -598,3 +598,26 @@ class TestConvertToDatasheet:
         assert exc.value.next is not None
         assert store.fetch_refs_by_ids([ref])[ref].retired_at is None
         assert _events(store, ref, "converted") == []
+
+
+def test_convert_to_door_passes_args_validator(runtime_with_store: Any) -> None:
+    """gr520110: ``convert_to`` / ``subtype`` were missing from the paper.edit
+    ArgsSpec, so the dispatcher refused the door before the handler ran."""
+    store = runtime_with_store.live_store
+    ref = _seed(store, "convertvalidator2026")
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "edit",
+        {
+            "kind": "paper",
+            "id": f"pa{ref}",
+            "dry_run": True,
+            "__extras__": {
+                "convert_to": "datasheet",
+                "subtype": "reference-manual",
+                "reason": "x",
+            },
+        },
+    )
+    assert "not accepted by" not in body, body
+    assert not is_error, body
+    assert _kind(store, ref) == "paper"

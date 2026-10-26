@@ -568,8 +568,12 @@ class PaperHandler(Handler):
                 "keep_pdf",
                 "pdf_sha256",
                 "move_body_to",
+                "move_pdf_to",
+                "attach_pdf",
                 "split_body",
                 "clear_abstract",
+                "convert_to",
+                "subtype",
                 "drop_identifier",
                 "reason",
             }
