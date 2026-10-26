@@ -702,11 +702,21 @@ class TestEnrichRearmCli:
 # ── bodiless PDFs (gr453860) ──────────────────────────────────────
 
 
-def _bodiless_paper(store: Store, *, slug: str, storage_path: str) -> tuple[int, str]:
+def _bodiless_paper(
+    store: Store, *, slug: str, storage_path: str, title: str | None = None
+) -> tuple[int, str]:
     """A live paper that holds a PDF (``pdf_sha256`` set, ``pdfs`` row at
     ``storage_path``) and carries only its ``ord < 0`` card — the bodiless
-    shape the heal targets."""
-    rid = _paper(store, slug=slug, title=f"Paper {slug}")
+    shape the heal targets. ``title=None`` (the default) writes the real
+    title ``f"Paper {slug}"`` — the identity gate judges it (gr517423:
+    a blank default hid the gate for every test). Pass ``title=""`` to
+    opt out explicitly (``unchecked``), or a real title to exercise the
+    gate (then the pdf text must carry its words or a doi)."""
+    rid = _paper(store, slug=slug, title=title or f"Paper {slug}")
+    if title == "":
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET title = '' WHERE ref_id = %s", (rid,))
+            conn.commit()
     sha = f"{rid:064d}"
     with store.pool.connection() as conn:
         with conn.transaction():
@@ -926,7 +936,9 @@ class TestHealBodilessPdfs:
 
         pdf = tmp_path / "empty.pdf"
         _write_pdf(pdf, text="Some text the probe sees but Marker drops.")
-        rid, _ = _bodiless_paper(store, slug="bl-nobody", storage_path=str(pdf))
+        rid, _ = _bodiless_paper(
+            store, slug="bl-nobody", storage_path=str(pdf), title=""
+        )
 
         def nothing(path: Any, cand: Any) -> Any:
             return _fake_body(
@@ -967,7 +979,9 @@ class TestHealBodilessPdfs:
 
         pdf = tmp_path / "flaky.pdf"
         _write_pdf(pdf, text="Some text the probe sees.")
-        rid, _ = _bodiless_paper(store, slug="bl-flaky", storage_path=str(pdf))
+        rid, _ = _bodiless_paper(
+            store, slug="bl-flaky", storage_path=str(pdf), title=""
+        )
         heal_bodiless_pdfs(
             store,
             corpus_dirs=(tmp_path,),
@@ -990,7 +1004,9 @@ class TestHealBodilessPdfs:
 
         pdf = tmp_path / "dry.pdf"
         _write_pdf(pdf, text="Readable text.")
-        rid_ok, _ = _bodiless_paper(store, slug="bl-dry-ok", storage_path=str(pdf))
+        rid_ok, _ = _bodiless_paper(
+            store, slug="bl-dry-ok", storage_path=str(pdf), title=""
+        )
         rid_prev, _ = _bodiless_paper(store, slug="bl-dry-prev", storage_path=str(pdf))
         _fetch_event(
             store, rid_prev, "fetch_ok", hours_ago=2, source="fetcher:elsevier"
@@ -1012,8 +1028,12 @@ class TestHealBodilessPdfs:
 
         pdf = tmp_path / "cap.pdf"
         _write_pdf(pdf, text="Readable text.")
-        rid_a, _ = _bodiless_paper(store, slug="bl-cap-a", storage_path=str(pdf))
-        rid_b, _ = _bodiless_paper(store, slug="bl-cap-b", storage_path=str(pdf))
+        rid_a, _ = _bodiless_paper(
+            store, slug="bl-cap-a", storage_path=str(pdf), title=""
+        )
+        rid_b, _ = _bodiless_paper(
+            store, slug="bl-cap-b", storage_path=str(pdf), title=""
+        )
 
         out = heal_bodiless_pdfs(
             store,
@@ -1088,8 +1108,10 @@ class TestHealBodilessPdfs:
         from precis.ingest.paper_hygiene import heal_bodiless_pdfs
 
         pdf = tmp_path / "spread.pdf"
-        _write_pdf(pdf, text="Two letters share this page.")
-        rid, _ = _bodiless_paper(store, slug="bl-spread", storage_path=str(pdf))
+        _write_pdf(pdf, text="Paper bl-spread\nTwo letters share this page.")
+        rid, _ = _bodiless_paper(
+            store, slug="bl-spread", storage_path=str(pdf), title="Paper bl-spread"
+        )
         store.set_ref_identifier(rid, "doi", "10.1038/24521", source="manual")
         seen: list[Any] = []
 
@@ -1145,7 +1167,9 @@ class TestHealBodilessPdfs:
 
         pdf = tmp_path / "ambig.pdf"
         _write_pdf(pdf, text="Two letters share this page.")
-        rid, _ = _bodiless_paper(store, slug="bl-ambig", storage_path=str(pdf))
+        rid, _ = _bodiless_paper(
+            store, slug="bl-ambig", storage_path=str(pdf), title=""
+        )
 
         def fake(path: Any, cand: Any) -> Any:
             return _fake_body(
@@ -1169,6 +1193,77 @@ class TestHealBodilessPdfs:
         assert event == "ambiguous" and payload["reason"] == "no confident match"
         assert "multi-article" in _tags(store, rid)
         assert _body_count(store, rid) == 4
+
+    def test_filename_like_title_heals_unchecked(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        """gr517423 r3: a filename-like title carries no identity signal —
+        the gate reads ``unchecked`` and the ref heals, not strands."""
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "ok.pdf"
+        _write_pdf(pdf, text="A real body of text on the page.")
+        rid, _ = _bodiless_paper(
+            store,
+            slug="bl-fname",
+            storage_path=str(pdf),
+            title="s41586-020-2649-2.pdf",
+        )
+        out = heal_bodiless_pdfs(
+            store,
+            corpus_dirs=(tmp_path,),
+            dry_run=False,
+            extractor=lambda p, cand: _fake_body(3),
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "extracted")]
+        assert _body_count(store, rid) == 3
+
+    def test_identity_mismatch_rearms_on_repaired_title(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        """gr517423 r3: a mismatch verdict is keyed on the judged title —
+        while the title stands the sha stays excluded, but a repaired
+        title re-arms the heal for a later pass."""
+        from precis.ingest.paper_hygiene import heal_bodiless_pdfs
+
+        pdf = tmp_path / "rearm.pdf"
+        _write_pdf(pdf, text="Paper bl-rearm\nA real body of text.")
+        rid, sha = _bodiless_paper(
+            store,
+            slug="bl-rearm",
+            storage_path=str(pdf),
+            title="Totally Unrelated Study of Field Mice",
+        )
+        out = heal_bodiless_pdfs(
+            store,
+            corpus_dirs=(tmp_path,),
+            dry_run=False,
+            extractor=lambda p, cand: _fake_body(3),
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "identity_mismatch")]
+        events = _heal_events(store, rid)
+        assert events[0][0] == "identity_mismatch"
+        assert events[0][1]["pdf_sha256"] == sha
+        assert events[0][1]["title"] == "Totally Unrelated Study of Field Mice"
+        assert _body_count(store, rid) == 0
+        # Same title: the recorded verdict keeps the sha excluded.
+        assert heal_bodiless_pdfs(store, corpus_dirs=(tmp_path,), dry_run=False) == []
+        # The title-repair pass lands a real title — the (sha, title)
+        # key no longer matches, so the next pass judges the file afresh.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET title = 'Paper bl-rearm' WHERE ref_id = %s",
+                (rid,),
+            )
+            conn.commit()
+        out = heal_bodiless_pdfs(
+            store,
+            corpus_dirs=(tmp_path,),
+            dry_run=False,
+            extractor=lambda p, cand: _fake_body(3),
+        )
+        assert [(o.ref_id, o.outcome) for o in out] == [(rid, "extracted")]
+        assert _body_count(store, rid) == 3
 
 
 class TestRaiseJunkTitlePapers:

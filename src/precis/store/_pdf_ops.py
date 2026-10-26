@@ -261,15 +261,7 @@ class PdfMixin:
     ) -> bool:
         """True when some host has a **fresh, non-empty** verdict for this
         PDF — i.e. a node actually holds the bytes, TTL-current."""
-        ttl = _location_ttl_days() if ttl_days is None else ttl_days
-        with self.pool.connection() as c:
-            row = c.execute(
-                "SELECT EXISTS (SELECT 1 FROM pdf_locations "
-                "WHERE pdf_sha256 = %s AND path <> '' "
-                "  AND seen_at > now() - %s::interval)",
-                (pdf_sha256, f"{ttl} days"),
-            ).fetchone()
-        return bool(row and row[0])
+        return bool(self.pdf_holders(pdf_sha256, ttl_days=ttl_days))
 
     def pdf_missing(self, pdf_sha256: str, *, ttl_days: int | None = None) -> bool:
         """True when this held PDF is genuinely missing: it has been checked
@@ -290,6 +282,22 @@ class PdfMixin:
                 (pdf_sha256, pdf_sha256, f"{ttl} days"),
             ).fetchone()
         return bool(row and row[0])
+
+    def pdf_holders(self, pdf_sha256: str, *, ttl_days: int | None = None) -> list[str]:
+        """Hosts holding this PDF — fresh, non-empty ledger verdicts,
+        sorted. The per-sha read behind ``pdf_held_anywhere``: a job
+        that needs the bytes names these nodes in its deferred record
+        (gr517423 r3)."""
+        ttl = _location_ttl_days() if ttl_days is None else ttl_days
+        with self.pool.connection() as c:
+            rows = c.execute(
+                "SELECT host FROM pdf_locations "
+                "WHERE pdf_sha256 = %s AND path <> '' "
+                "  AND seen_at > now() - %s::interval "
+                "ORDER BY host",
+                (pdf_sha256, f"{ttl} days"),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
 
     def pdfs_due_for_host(
         self,

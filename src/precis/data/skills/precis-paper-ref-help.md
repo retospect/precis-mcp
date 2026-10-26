@@ -40,6 +40,7 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | re-point a merged stub | `args={'redirect_to': '<pa>', 'reason': …}` |
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` (drop_body takes `'keep_pdf': True` to keep the stored pdf) |
+| re-extract from the stored pdf | `args={'reextract': True, 'reason': …}` — keeps the pdf, queues a `paper_reextract` job; `'pdf_sha256': '<sha>'` names the file when several are attached |
 | export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
 | rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` or `precis paper restore <file> --apply` |
 | download a held PDF | `get(id=…, view='pdf_link')` — signed URL, no bytes over MCP |
@@ -196,6 +197,7 @@ A duplicate of a real record wants a merge instead. `dry_run` previews.
 ```python
 edit(kind="paper", id="pa506039", args={"drop_body": True, "reason": "wrong pdf"})
 edit(kind="paper", id="pa254044", args={"drop_body": True, "keep_pdf": True, "pdf_sha256": "<sha to keep>", "reason": "body is another paper's; re-extract own pdf"})
+edit(kind="paper", id="pa990", args={"reextract": True, "reason": "garbled extraction of the right pdf"})
 edit(kind="paper", id="pa1108", args={"move_body_to": "pa42053", "reason": "it's 42053's"})
 edit(kind="paper", id="pa41", args={"split_body": {"title": "Companion paper"}, "reason": "different work"})
 edit(kind="paper", id="pa174214", args={"clear_abstract": True, "reason": "junk abstract"})
@@ -218,6 +220,21 @@ PDFs (several `pdf_sha256` identifier rows), `'pdf_sha256': '<sha>'` names
 the one to keep — required then; naming an attached sha that is not the
 pointer re-points `refs.pdf_sha256` at it. It refuses when the named sha
 isn't attached or several are attached and none is named.
+`reextract` queues a `paper_reextract` job to re-extract the body from
+the stored pdf — the repair for a bad *extraction* of the right file
+(garbled chunks, an old Marker). The door only validates: a sha no
+node holds refuses toward `pdf_url`, and a ref with no pdf refuses the
+same way. The job probes the file, checks its leading pages against
+the ref's title/DOI, extracts, then swaps old body for new in one
+transaction — the old body survives any failure, and a file held only
+on another node parks the job for a retry rather than failing.
+`'pdf_sha256': '<sha>'` rides it with the same naming rule as
+`keep_pdf`; the job re-points `refs.pdf_sha256` to it (the ack names
+the pending switch). The job is idempotent on
+`reextract:<ref>:<sha>` — a repeat call reuses the queued job. Watch
+`get(kind='job', id=…)`; the outcome lands on `meta.reextract`, and a
+non-extracted verdict (missing file, unreadable, preview,
+identity_mismatch) also logs `reextract_failed`.
 `move_body_to` gives body, pdf and content ids to a live ref holding
 zero body chunks and no pdf (refuses otherwise: `drop_body`/
 `merge_into`/`bodiless-heal`); the donor ends a live stub.

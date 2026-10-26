@@ -268,13 +268,15 @@ _MERGE_UNKNOWN_YEAR_SIM = 0.95
 
 #: The ``edit(args=…)`` door keys, in dispatch order — at most one per
 #: call, and never combined with the metadata fields. Every door takes
-#: ``args['reason']``. ``keep_pdf`` / ``pdf_sha256`` are *modifiers* of
-#: ``drop_body``, not doors — they ride the same args dict.
+#: ``args['reason']``. ``keep_pdf`` / ``pdf_sha256`` are *modifiers* —
+#: ``keep_pdf`` of ``drop_body`` alone, ``pdf_sha256`` of ``drop_body``
+#: and ``reextract`` — they ride the same args dict.
 _EDIT_DOOR_ARGS = (
     "retire",
     "redirect_to",
     "merge_into",
     "drop_body",
+    "reextract",
     "move_body_to",
     "split_body",
     "clear_abstract",
@@ -497,6 +499,9 @@ class PaperHandler(Handler):
         # :meth:`_move_body_to`, :meth:`_split_body`,
         # :meth:`_clear_abstract`) — ``keep_pdf`` / ``pdf_sha256`` are
         # ``drop_body``'s modifiers (gr513878), not doors of their own;
+        # ``reextract`` drops the body, keeps the pdf and queues a
+        # ``paper_reextract`` job to re-extract it (gr517423,
+        # :meth:`_reextract`; ``pdf_sha256`` rides it too);
         # ``drop_identifier`` removes one named identifier row
         # (:meth:`_drop_identifier`); ``reason`` is the audit string every
         # door writes into its ref_event. Subclass hooks read their own
@@ -508,6 +513,7 @@ class PaperHandler(Handler):
                 "merge_into",
                 "clear_stamp",
                 "drop_body",
+                "reextract",
                 "keep_pdf",
                 "pdf_sha256",
                 "move_body_to",
@@ -2758,7 +2764,10 @@ class PaperHandler(Handler):
         wrong id sitting next to correct ones
         (:meth:`_drop_identifier`); ``args={'drop_body': True,
         'keep_pdf': True}`` drops the body but keeps the pdf attachment
-        so the bodiless-heal re-extracts it (:meth:`_drop_body`).
+        so the bodiless-heal re-extracts it (:meth:`_drop_body`);
+        ``args={'reextract': True}`` is that kept drop plus the queued
+        ``paper_reextract`` job in one call — the repair for a wrong
+        *extraction* of the right file (:meth:`_reextract`).
         ``args={'clear_stamp': <key|[keys]>}`` removes allow-listed
         worker-retry stamps from ``refs.meta`` so the owning pass
         re-claims the paper on its next sweep
@@ -2849,15 +2858,22 @@ class PaperHandler(Handler):
                 ),
             )
         doors = [k for k in _EDIT_DOOR_ARGS if k in raw_args]
-        if ("keep_pdf" in raw_args or "pdf_sha256" in raw_args) and (
-            "drop_body" not in doors
-        ):
-            # keep_pdf / pdf_sha256 are drop_body modifiers — anywhere
-            # else they would be silently ignored and the pdf dropped.
+        if "keep_pdf" in raw_args and "drop_body" not in doors:
+            # keep_pdf is a drop_body modifier — anywhere else it would
+            # be silently ignored and the pdf dropped.
             raise BadInput(
-                "args['keep_pdf'] / args['pdf_sha256'] only modify the drop_body door",
+                "args['keep_pdf'] only modifies the drop_body door",
                 next=f"edit(kind='{self.spec.kind}', id='{id}', args="
                 "{'drop_body': True, 'keep_pdf': True, 'reason': '<why>'})",
+            )
+        if "pdf_sha256" in raw_args and not {"drop_body", "reextract"} & set(doors):
+            # pdf_sha256 names the attachment a keep_pdf drop retains or
+            # a reextract re-reads — anywhere else it is ignored.
+            raise BadInput(
+                "args['pdf_sha256'] only modifies the drop_body / reextract doors",
+                next=f"edit(kind='{self.spec.kind}', id='{id}', args="
+                "{'drop_body': True, 'keep_pdf': True, 'pdf_sha256': "
+                "'<sha>', 'reason': '<why>'})",
             )
         if doors:
             door = doors[0]
@@ -2925,6 +2941,13 @@ class PaperHandler(Handler):
                     reason=reason,
                     dry=bool(dry_mode),
                     keep_pdf=keep_pdf,
+                    pdf_sha256=raw_args.get("pdf_sha256"),
+                )
+            if door == "reextract":
+                return self._reextract(
+                    id,
+                    reason=reason,
+                    dry=bool(dry_mode),
                     pdf_sha256=raw_args.get("pdf_sha256"),
                 )
             if door == "move_body_to":
@@ -3948,6 +3971,119 @@ class PaperHandler(Handler):
                 "bibliographic metadata kept — the ref is a stub again "
                 "(ref_event 'body_dropped' logged). Refetch with "
                 f"put(kind='{kind}', id='{handle}', args={{'pdf_url': ...}})."
+            )
+        )
+
+    def _reextract(
+        self,
+        id: str | int,
+        *,
+        reason: str,
+        dry: bool,
+        pdf_sha256: Any = None,
+    ) -> Response:
+        """``edit(args={'reextract': True})`` — re-extract the body from
+        the stored pdf on a worker (gr517423 slice 4).
+
+        The repair for a ref whose *extraction* went wrong while the
+        attached file is right. The call only validates and enqueues —
+        per the Opus ruling it never drops the body: the ``paper_reextract``
+        job (``job_inproc`` — Marker minutes per file is far too slow for
+        the call) resolves the file, runs a ``pdf_identity`` gate against
+        the ref's title/DOI, extracts, then swaps old body for new in one
+        locked transaction, re-pointing ``refs.pdf_sha256`` when the named
+        sha differs. A failed extraction leaves the ref exactly as it was.
+        ``args['pdf_sha256']: '<sha>'`` names the file to re-extract when
+        the ref is attached to several — the same naming rule ``keep_pdf``
+        uses. The job's outcome lands on ``meta.reextract`` (a
+        non-extracted verdict also logs ``reextract_failed``); a file
+        held only on another node parks the job for a retry, and a file
+        no node holds refuses here.
+        """
+        from precis.ingest import body_ops, paper_dump
+        from precis.workers.job_types import paper_reextract
+
+        kind = self.spec.kind
+        ref, handle = self._require_live_body_ref(id, "reextract")
+        self._require_reason(reason, "reextract", kind, handle)
+        named = None if pdf_sha256 is None else str(pdf_sha256).strip() or None
+        with self.store.pool.connection() as conn:
+            probe = body_ops.probe_body(conn, ref.id)
+            # A re-extract has nothing to read without an attached file —
+            # refuse before resolve_kept_pdf, whose next= points at the
+            # plain drop rather than the file the caller actually needs.
+            if not probe.pdf and not any(
+                i.startswith("pdf_sha256:") for i in probe.identifiers
+            ):
+                raise BadInput(
+                    f"{handle} holds no pdf — there is no stored file to "
+                    "re-extract from",
+                    next=f"attach one first: put(kind='{kind}', "
+                    f"id='{handle}', "
+                    "args={'pdf_url': 'https://…/x.pdf'}), then re-run "
+                    "the reextract",
+                )
+            kept_sha, switched = body_ops.resolve_kept_pdf(conn, ref.id, named=named)
+            ptr_row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (ref.id,)
+            ).fetchone()
+            pointer = str(ptr_row[0]).strip() if ptr_row and ptr_row[0] else None
+            undo = paper_dump.undo_line(conn, ref.id, handle)
+        # Cheap presence refusal: refuse only a sha the ledger has
+        # *swept and found absent everywhere* — a never-swept sha (the
+        # reconcile pass hasn't judged it yet) is unknown, not missing,
+        # and goes through to the job, which defers or fails correctly
+        # (gr517423 r3 finding D).
+        if self.store.pdf_missing(kept_sha):
+            raise BadInput(
+                f"{handle}'s pdf {kept_sha[:16]}… is held on no node — "
+                "there is no file to re-extract from",
+                next=f"attach a copy first: put(kind='{kind}', "
+                f"id='{handle}', args={{'pdf_url': 'https://…/x.pdf'}}), "
+                "or restore the file into the corpus, then re-run",
+            )
+        switch_note = (
+            f" and re-point pdf_sha256 from {pointer} to {kept_sha}" if switched else ""
+        )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would queue paper_reextract "
+                    f"(job_inproc, idem_key "
+                    f"'{paper_reextract.idem_key(ref.id, kept_sha)}') to "
+                    f"re-extract {handle} from stored pdf {kept_sha}"
+                    f"{switch_note}. The job probes the file, checks its "
+                    "leading pages against this paper's title/DOI, "
+                    "extracts, then swaps the current body "
+                    f"({probe.chunks} chunk(s), {probe.embeddings} "
+                    "embedding row(s), "
+                    f"{probe.chunk_links_total} chunk link(s) removed) "
+                    "for the new one in one "
+                    "transaction — the old body survives any failure. "
+                    f"\n\n{undo}"
+                )
+            )
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        resp = hub.sibling("job").put(
+            job_type=paper_reextract.JOB_TYPE,
+            executor="job_inproc",
+            parent_id=ref.id,
+            params={
+                "ref_id": ref.id,
+                "pdf_sha256": kept_sha,
+                "reason": reason,
+            },
+            idem_key=paper_reextract.idem_key(ref.id, kept_sha),
+        )
+        state = "already queued" if getattr(resp, "reused", False) else "queued"
+        return Response(
+            body=(
+                f"{state}: re-extract {handle} from stored pdf {kept_sha}"
+                f"{switch_note} — the body swap happens inside job id="
+                f"{resp.ref_id} (the current body stays until the new "
+                "one lands). Watch: "
+                f"get(kind='job', id={resp.ref_id}); the outcome lands on "
+                "the paper's meta.reextract."
             )
         )
 
