@@ -151,6 +151,15 @@
     # Mirrors precis-worker(-agent).service.j2 and claude_mcp.json.j2's
     # explicit pin.
     #
+    # PRECIS_CLAUDE_BIN (darwin only, `claude_run_user` set — Reto ruling
+    # 2026-10-26): on a mac worker the in-proc `claude -p` spawns must drop
+    # to a dedicated non-admin user, not run as admin `deploy`. This points
+    # the spawn path at the sudo -n re-exec wrapper the claude_code role
+    # renders (play 29, which site.yml and redeploy-precis.yml both run
+    # BEFORE this play); unset host var = raw `claude` on PATH, today's
+    # behaviour. Mirrored into 20e's lane env and the dormant split-unit
+    # rollback plist.
+    #
     # PATH's /Library/TeX/texbin (darwin only): mactex-no-gui's latexmk +
     # biber, needed by the compile guard job_claude_inproc's planner can
     # invoke — mirrors precis-worker-agent.plist.j2 (the system-worker
@@ -244,6 +253,10 @@
          | combine({'PRECIS_JOB_CPUSET': precis_job_cpuset | default('')} if os_family == 'linux' else {})
          | combine({'PRECIS_EMBEDDER': precis_worker_embedder, 'PRECIS_EMBEDDER_URL': precis_worker_embedder_url})
          | combine({'PGPASSFILE': ('/home/deploy/.pgpass' if os_family == 'linux' else '/Users/deploy/.pgpass')})
+         | combine(
+             {'PRECIS_CLAUDE_BIN': claude_run_wrapper | default('/opt/precis/bin/claude-run-user')}
+             if (os_family == 'darwin' and (claude_run_user | default('')) | length > 0) else {}
+           )
          | combine({
              'PRECIS_SUMMARIZE_CONCURRENCY': (precis_worker_summarize_concurrency | default(3)) | string,
              'PRECIS_SUMMARIZE_TIMEOUT': (precis_worker_summarize_timeout | default(120)) | string,

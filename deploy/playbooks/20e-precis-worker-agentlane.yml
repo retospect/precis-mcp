@@ -321,6 +321,10 @@
                      'PRECIS_CONTAINER_BIN': precis_worker_agent_container_bin | default('/opt/homebrew/bin/docker'),
                      'PRECIS_AGENT_IMAGE': precis_agent_image | default('precis-agent:latest'),
                    })
+               )
+             | combine(
+                 {'PRECIS_CLAUDE_BIN': claude_run_wrapper | default('/opt/precis/bin/claude-run-user')}
+                 if (os_family == 'darwin' and (claude_run_user | default('')) | length > 0) else {}
                ) }}
         # ^ gr346813 (2026-09-20): this lane claims most claude_inproc jobs on
         # the gateway, yet only 20b's collapsed unit carried the §13 container

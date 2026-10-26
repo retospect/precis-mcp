@@ -556,6 +556,15 @@
           deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart precis-worker
           {% endif %}
 
+# claude run-user wrapper (Reto ruling 2026-10-26): on a mac worker whose
+# host_vars set `claude_run_user`, 29 creates the non-admin user and renders
+# the PRECIS_CLAUDE_BIN wrapper the collapsed unit's env then points at —
+# so this MUST precede 20b (same silent-drift re-assert reasoning as
+# 19-pgpass / 15-logrotate above; the role is idempotent — the npm install
+# task is a stat-skip once claude exists).
+- name: "claude run-user wrapper + non-admin asserts (mac workers)"
+  ansible.builtin.import_playbook: playbooks/29-claude-code.yml
+
 # §L-b (2026-08-04): the COLLAPSED worker playbook replaced
 # 20-precis-worker.yml here — one `precis worker --profile all` unit per
 # host (same com.precis.worker / precis-worker.service label, rendered via

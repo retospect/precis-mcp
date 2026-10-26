@@ -39,15 +39,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from precis.utils._claude_subprocess import ClaudeProcessError, run_claude
 from precis.utils.claude_oauth import (
     LOGGED_OUT_MARKERS,
-    ensure_oauth_token,
     logged_out_banner_present,
 )
 
@@ -369,13 +368,15 @@ def refresh_snapshot(
     no-op gracefully but auth is still OK).
     """
     cmd_binary = binary or os.environ.get("PRECIS_CLAUDE_BIN", "claude")
-    # Bootstrap the OAuth token from ~/.claude_oauth_token so a launchd
-    # daemon's ``claude -p`` doesn't fall back to stale keychain creds and
-    # 401 (2026-07-12 incident — same fix as plan_tick / claude_agent).
-    quota_env = dict(os.environ)
-    ensure_oauth_token(quota_env)
+    # run_claude is the chokepoint: it copies the env, disarms session
+    # hooks, bootstraps the OAuth token (the 2026-07-12 incident — a
+    # launchd daemon's ``claude -p`` otherwise falls back to stale
+    # keychain creds and 401s), and on timeout TERMs before it KILLs —
+    # under the run-user wrapper a bare subprocess.run(timeout=) SIGKILLs
+    # sudo and leaves claude running as a uid nothing on the host can
+    # signal.
     try:
-        res = subprocess.run(
+        res = run_claude(
             [
                 cmd_binary,
                 "-p",
@@ -386,23 +387,22 @@ def refresh_snapshot(
                 "stream-json",
                 "--verbose",
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=timeout_s,
-            env=quota_env,
+            binary=cmd_binary,
+            label="claude -p (quota probe)",
+            timeout_s=timeout_s,
+            error_cls=ClaudeProcessError,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        log.warning("claude_quota: refresh failed (%s)", exc)
-        return None, RefreshOutcome.UNAVAILABLE
-
-    if res.returncode != 0:
-        auth = _looks_like_auth_failure(res.stdout or "", res.stderr or "")
+    except ClaudeProcessError as exc:
+        if exc.returncode is None:
+            # timeout / missing binary — auth state unknown.
+            log.warning("claude_quota: refresh failed (%s)", exc)
+            return None, RefreshOutcome.UNAVAILABLE
+        auth = _looks_like_auth_failure(exc.stdout, exc.stderr)
         log.warning(
             "claude_quota: claude -p exited %d (auth_failure=%s stderr=%s)",
-            res.returncode,
+            exc.returncode,
             auth,
-            (res.stderr or "").strip()[:200],
+            (exc.stderr or "").strip()[:200],
         )
         return None, (
             RefreshOutcome.AUTH_FAILED if auth else RefreshOutcome.UNAVAILABLE

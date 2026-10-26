@@ -46,6 +46,15 @@
     <string>/Users/deploy/.pgpass</string>
     <key>PATH</key>
     <string>{{ precis_worker_venv }}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    {# Non-admin claude run user (Reto ruling 2026-10-26) — mirrors 20b's
+       _l_b_base_env combine: on a mac worker with `claude_run_user` set,
+       every in-proc `claude` spawn routes through the sudo -n re-exec
+       wrapper instead of the raw binary. Parity so a rollback to this
+       split unit doesn't silently re-arm claude-as-deploy. #}
+    {% if claude_run_user | default('') %}
+    <key>PRECIS_CLAUDE_BIN</key>
+    <string>{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }}</string>
+    {% endif %}
     <key>PRECIS_DATABASE_URL</key>
     <string>{{ precis_worker_dsn }}</string>
     <key>HF_HOME</key>

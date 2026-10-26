@@ -80,7 +80,7 @@
 - name: "27 — Acatome extract-watch daemon"
   ansible.builtin.import_playbook: playbooks/27-extract-watch.yml
 
-- name: "29 — Claude Code CLI on the gateway"
+- name: "29 — Claude Code CLI on the mac claude hosts (gateway + scheduler)"
   ansible.builtin.import_playbook: playbooks/29-claude-code.yml
 
 # Playbook 30 (precis-cron-tick launchd timer) retired 2026-07-18 by the

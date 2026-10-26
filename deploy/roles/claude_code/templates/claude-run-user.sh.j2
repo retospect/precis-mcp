@@ -1,0 +1,96 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# claude-run-user — the PRECIS_CLAUDE_BIN shim for the non-admin claude run
+# user (Reto ruling 2026-10-26). The precis worker spawns this where it
+# would otherwise spawn `claude`; still running as `deploy`, it re-execs
+# itself through `sudo -n` as `{{ claude_run_user }}` (the ONE grant in
+# /etc/sudoers.d/deploy — the run user itself has no sudo, asserted at
+# deploy time), then execs `{{ claude_bin }}`.
+set -u
+
+if [ "$(id -un)" != "{{ claude_run_user }}" ]; then
+    # Still the worker's user — re-exec as the run user. -n: never prompt;
+    # a missing grant fails loudly here, not interactively.
+    exec /usr/bin/sudo -n -u "{{ claude_run_user }}" "$0" "$@"
+fi
+
+# Running as {{ claude_run_user }} now. sudo's env_reset (pinned
+# per-command in /etc/sudoers.d/deploy) already scrubbed the worker
+# environment — its Cmnd-scoped env_keep plus the stock macOS
+# /etc/sudoers env_keep (SSH_AUTH_SOCK, EDITOR, VISUAL, TZ, MAIL,
+# __CF_USER_TEXT_ENCODING — none secret) is the whole allowlist
+# (roles/hardening/templates/sudoers_deploy.j2): claude's own auth plus
+# the non-secret tick-context vars a bound stdio `precis serve` child
+# expands. No DB creds, no PGPASSFILE, no shared API keys can cross the
+# sudo boundary. A second env scrub here would only re-add vars
+# sudo already passed — and via env's argv, where `ps` shows the OAuth
+# token to every local user. All that remains is pinning HOME (this
+# user's own home — claude state + `claude login` credentials live there)
+# and a minimal PATH.
+
+# Watchdog, not exec (GRIPE_FIX ruling 2026-10-26): a TERM may never
+# reach us — in no-pty mode sudo drops one whose sender sits in sudo's
+# own process group, which the worker's kill always is — and a KILL
+# reaps sudo alone. So claude runs as a background CHILD: signals that
+# do arrive are forwarded (INT as TERM — an async child spawns with
+# SIGINT ignored and can't un-ignore it across exec), and a BACKGROUND
+# loop polls our ppid every 2s — once sudo is gone (changed, or already
+# 1: it may die between our re-exec and here) it TERMs the child, gives
+# it 5s, then KILLs it; same uid, so it always works. The main path is a
+# bare wait, so a clean claude exit returns at once instead of riding
+# out a poll tick; the exit code is the child's, so the caller sees
+# claude's own result.
+_ppid=$PPID
+_child=""
+_fwd() { [ -n "$_child" ] && kill "-$1" "$_child" 2>/dev/null; return 0; }
+trap '_fwd TERM' TERM
+trap '_fwd TERM' INT
+trap '_fwd HUP' HUP
+
+# <&0: an async command's stdin is /dev/null under job-control-off sh —
+# run_claude's stdin_data (vision) and run_claude_gated's stream-json
+# writes would hit EOF at once. Keep the caller's stdin on the child.
+/usr/bin/env \
+    HOME="{{ claude_run_home }}" \
+    PATH="{{ claude_run_bin_dir | default('/opt/homebrew/bin') }}:/usr/bin:/bin" \
+    "{{ claude_bin }}" "$@" <&0 &
+_child=$!
+
+# $$ inside the subshell still names the wrapper (POSIX), so the ppid
+# being read is ours, not the loop's. The loop gets /dev/null on all
+# three fds: its orphaned `sleep`s must never hold the caller's pipes
+# open past the child's death (that re-adds the poll tick to every
+# clean run via subprocess's read-until-EOF).
+(
+    while kill -0 "$_child" 2>/dev/null; do
+        sleep 2
+        _now=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+        if [ -n "$_now" ] && { [ "$_now" != "$_ppid" ] || [ "$_now" = "1" ]; }; then
+            kill -TERM "$_child" 2>/dev/null
+            _n=0
+            while kill -0 "$_child" 2>/dev/null && [ "$_n" -lt 25 ]; do
+                sleep 0.2
+                _n=$((_n + 1))
+            done
+            kill -KILL "$_child" 2>/dev/null
+            break
+        fi
+    done
+) </dev/null >/dev/null 2>&1 &
+_dog=$!
+
+wait "$_child"
+_st=$?
+if kill -0 "$_child" 2>/dev/null; then
+    # a trap interrupted the first wait — reap the still-dying child for
+    # its real status
+    wait "$_child"
+    _st=$?
+fi
+# KILL, not TERM, for the watchdog: a non-interactive bash defers a
+# caught-or-default signal while a foreground `sleep` runs, so a TERM
+# would only land at the next tick — the very 2 s delay this shape
+# removes. The orphaned 2 s sleep dies on its own.
+kill -KILL "$_dog" 2>/dev/null
+wait "$_dog" 2>/dev/null
+exit "$_st"

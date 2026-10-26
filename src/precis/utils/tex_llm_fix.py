@@ -28,6 +28,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+from precis.utils._claude_subprocess import ClaudeProcessError, run_claude
 from precis.utils.llm.router import Tier, resolve_model
 
 log = logging.getLogger(__name__)
@@ -81,7 +82,7 @@ def attempt_llm_fix(
     sonnet_model = resolve_model(Tier.BIG)
     prompt = _build_fixer_prompt(text=text, errors=chktex_errors)
     try:
-        proc = subprocess.run(
+        proc = run_claude(
             [
                 claude_bin,
                 "-p",
@@ -97,29 +98,34 @@ def attempt_llm_fix(
                 "--",
                 prompt,
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=timeout_s,
-            check=False,
+            binary=claude_bin,
+            label="claude -p (tex fixer)",
+            timeout_s=float(timeout_s),
+            error_cls=ClaudeProcessError,
         )
-    except subprocess.TimeoutExpired:
+    except ClaudeProcessError as exc:
+        if exc.timed_out:
+            return Layer2Result(
+                verdict="failed",
+                errors=chktex_errors,
+                note=f"Layer-2 fixer timed out after {timeout_s}s",
+            )
+        if exc.binary_missing:
+            return Layer2Result(
+                verdict="failed",
+                errors=chktex_errors,
+                note=f"claude binary not found: {exc}",
+            )
         return Layer2Result(
             verdict="failed",
             errors=chktex_errors,
-            note=f"Layer-2 fixer timed out after {timeout_s}s",
+            note=f"claude -p exit {exc.returncode}: {exc.stderr[:500]}",
         )
-    except (OSError, FileNotFoundError) as exc:
+    except OSError as exc:
         return Layer2Result(
             verdict="failed",
             errors=chktex_errors,
             note=f"claude binary not found: {exc}",
-        )
-    if proc.returncode != 0:
-        return Layer2Result(
-            verdict="failed",
-            errors=chktex_errors,
-            note=f"claude -p exit {proc.returncode}: {proc.stderr[:500]}",
         )
     proposed = _extract_proposal(proc.stdout)
     if not proposed or "UNFIXABLE" in proc.stdout.upper():

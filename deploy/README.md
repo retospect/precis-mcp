@@ -266,6 +266,43 @@ an explicit passthrough entry, `"VAR": "${VAR:-}"`, in
 passed through, so subprocess-spawned agents (dream, `claude -p` plan ticks)
 do not see them; in-process ticks use the `inproc_context` ContextVar instead.
 
+## claude runs as a non-admin user on mac workers
+
+Ruling (Reto 2026-10-26): on a macOS worker node that runs `claude` in-proc
+(the collapsed `precis worker` daemon spawning `claude -p`), claude must run
+as a dedicated **non-admin** user — never as the admin `deploy` user —
+mirroring the `hermes` daemon-user pattern on the gateway (no `admin` group,
+no `/etc/sudoers.d` entry). Linux nodes are unaffected — they use the
+containerized `job_claude_docker` lane, and the `claude_code` role refuses
+`claude_run_user` there.
+
+Setup, per mac worker:
+
+1. In the worker's `host_vars` set `claude_run_user` plus a pinned
+   `claude_run_uid` (`claude_run_gid` defaults to the uid,
+   `claude_run_shell` defaults to `/bin/zsh` so `sudo -iu <user>` works).
+2. Deploy (`scripts/deploy`, or by hand `playbooks/10-hardening.yml` for the
+   sudoers line plus `playbooks/29-claude-code.yml` — site.yml and
+   redeploy-precis.yml both order these before the worker-unit render). The
+   `claude_code` role creates the user, renders
+   `/opt/precis/bin/claude-run-user` (a `sudo -n` re-exec shim — the ONE
+   grant lives in deploy's own sudoers file, whose Cmnd-scoped `env_keep`
+   is the allowlist carrying claude's auth and tick-context vars only: no
+   DB creds, no vault vars), and **fails the deploy** if the user is in
+   `admin` or has any sudo grant. The role also refuses `claude_run_user`
+   on a gateway-group host: that worker binds `PRECIS_MCP_CONFIG`, and a
+   stdio `precis serve` child spawned as the run user would have no
+   `~/.pgpass` and no DB env. The worker units' env then points
+   `PRECIS_CLAUDE_BIN` at the wrapper, so every in-proc `claude` spawn
+   drops privileges.
+3. One-time login as that user: `sudo -iu <user>`, then `claude` (device
+   flow → `~<user>/.claude/.credentials.json`). The env-token path
+   (`CLAUDE_CODE_OAUTH_TOKEN`, injected by `ensure_oauth_token` and passed
+   through the wrapper's allowlist) still works too — the login is the
+   fallback.
+4. Clear the triage breaker's blocked flag so it retries under the new
+   user: `scripts/prod-precis service clear <node> gripe_triage`.
+
 ## The secret boundary (read before you commit)
 
 precis-mcp is a **public** repository. A commit that leaks the real cluster's

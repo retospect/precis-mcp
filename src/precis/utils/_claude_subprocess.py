@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -159,6 +160,137 @@ def disarm_session_hooks(env: dict[str, str]) -> None:
     env.update(_NESTED_SESSION_ENV)
 
 
+#: Seconds a timed-out / aborted claude gets to exit on SIGTERM before the
+#: runner escalates to SIGKILL.
+_TERM_GRACE_S: float = 3.0
+
+#: Seconds ``run_claude``'s timeout branch drains the child's pipes after
+#: :func:`terminate_claude` — bounded because a survivor the KILL could not
+#: reach (see below) still holds the write ends, so an unbounded
+#: ``communicate()`` wedges the worker thread on an EOF that never comes.
+_REAP_DRAIN_S: float = 5.0
+
+
+def _signal_pid(pid: int, sig: int) -> None:
+    """Signal the child pid directly — never its process group: the
+    runners below deliberately do NOT ``start_new_session`` (see
+    :func:`terminate_claude`), so the child's group IS ours."""
+    try:
+        os.kill(pid, sig)
+    except OSError:
+        pass
+
+
+def _term_via_foreign_pgrp(pid: int) -> None:
+    """SIGTERM ``pid`` from a sender OUTSIDE sudo's process group.
+
+    Under the run-user wrapper the direct child is ``sudo`` running
+    no-pty (launchd workers have no tty, and ``use_pty`` only applies
+    "if sudo is running in a terminal"): sudo's exec_nopty ignores a
+    user-sent signal whose sender's process group equals its own
+    (``si_pgrp == ppgrp``) — and the runner shares that group precisely
+    because the claude Popen is session-less. A one-shot ``/bin/kill``
+    with ``start_new_session`` has a foreign pgrp, so sudo relays the
+    TERM to claude's pgrp instead of dropping it. For a plain
+    (non-wrapper) claude the signal arrives identically. Falls back to
+    a direct send when ``/bin/kill`` can't run — losing the relay but
+    not the shutdown.
+    """
+    try:
+        subprocess.run(
+            ["/bin/kill", "-TERM", str(pid)],
+            start_new_session=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _signal_pid(pid, signal.SIGTERM)
+
+
+async def _term_via_foreign_pgrp_async(pid: int) -> None:
+    """Async variant of :func:`_term_via_foreign_pgrp` — the sync
+    ``subprocess.run`` version would block the event loop for the whole
+    spawn, so this uses ``create_subprocess_exec`` (with the same
+    ``start_new_session`` — the foreign pgrp is the entire point) and a
+    bounded wait."""
+    try:
+        killer = await asyncio.create_subprocess_exec(
+            "/bin/kill",
+            "-TERM",
+            str(pid),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        _signal_pid(pid, signal.SIGTERM)
+        return
+    try:
+        await asyncio.wait_for(killer.wait(), timeout=5)
+    except TimeoutError:
+        _signal_pid(killer.pid, signal.SIGKILL)
+        await killer.wait()  # reap our own child — never leave a zombie
+
+
+def terminate_claude(proc: subprocess.Popen[Any], grace_s: float | None = None) -> None:
+    """SIGTERM the child pid, wait a short grace, then SIGKILL — never a
+    bare ``proc.kill()``.
+
+    The runners keep claude in the worker's OWN process group (no
+    ``start_new_session``, Reto ruling 2026-10-26): launchd kills the
+    job's group when the job exits (``AbandonProcessGroup`` defaults to
+    false), so a deploy restart reaps an in-flight run instead of
+    orphaning it mid-spend. killpg is therefore off the table — the
+    child's group is OURS.
+
+    When ``PRECIS_CLAUDE_BIN`` is the ``sudo -n`` re-exec wrapper
+    (``claude_run_user`` deploys) the direct child is ``sudo``, and
+    SIGKILL cannot be relayed: a bare ``kill()`` reaps sudo and leaves
+    claude running as the run user — a uid nothing on the host can
+    signal afterwards. sudo DOES forward SIGTERM, but only from a
+    sender outside its own process group, so TERM goes out via a
+    session-fresh ``/bin/kill`` (see :func:`_term_via_foreign_pgrp`).
+    The wrapper's parent-death watchdog reaps claude whenever this
+    KILL had to reap sudo alone — TERM is the best-effort path, never
+    the only one.
+    """
+    if proc.poll() is not None:
+        return
+    _term_via_foreign_pgrp(proc.pid)
+    grace = _TERM_GRACE_S if grace_s is None else grace_s
+    try:
+        proc.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_pid(proc.pid, signal.SIGKILL)
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+async def terminate_claude_async(
+    proc: asyncio.subprocess.Process, grace_s: float | None = None
+) -> None:
+    """Async variant of :func:`terminate_claude`."""
+    if proc.returncode is not None:
+        return
+    await _term_via_foreign_pgrp_async(proc.pid)
+    grace = _TERM_GRACE_S if grace_s is None else grace_s
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+        return
+    except TimeoutError:
+        pass
+    _signal_pid(proc.pid, signal.SIGKILL)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    except TimeoutError:
+        pass
+
+
 def run_claude(
     argv: list[str],
     *,
@@ -215,43 +347,55 @@ def run_claude(
     if stdin_data is not None and stdin_devnull:
         raise ValueError("run_claude: stdin_data and stdin_devnull are exclusive")
     try:
-        if stdin_data is not None:
+        proc = subprocess.Popen(
+            argv,
+            stdin=(
+                subprocess.PIPE
+                if stdin_data is not None
+                else (subprocess.DEVNULL if stdin_devnull else None)
+            ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             # Binary stdin can't ride text=True — run raw and decode.
-            raw = subprocess.run(
-                argv,
-                input=stdin_data,
-                capture_output=True,
-                timeout=timeout_s,
-                env=env,
-                cwd=cwd,
-            )
-            res: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
-                argv, raw.returncode, to_str(raw.stdout), to_str(raw.stderr)
-            )
-        else:
-            res = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=timeout_s,
-                env=env,
-                cwd=cwd,
-                stdin=subprocess.DEVNULL if stdin_devnull else None,
-            )
-    except subprocess.TimeoutExpired as exc:
-        raise error_cls(
-            f"{label} timed out after {timeout_s}s",
-            stdout=to_str(exc.stdout),
-            stderr=to_str(exc.stderr),
-            timed_out=True,
-        ) from exc
+            text=stdin_data is None,
+            encoding="utf-8" if stdin_data is None else None,
+            env=env,
+            cwd=cwd,
+            # Same process group as the worker (never start_new_session):
+            # launchd kills the job's group on exit, so a restart reaps an
+            # in-flight claude. terminate_claude signals the pid — the
+            # group is OURS.
+        )
     except FileNotFoundError as exc:
         raise error_cls(
             f"claude binary not found ({binary!r}); "
             f"set PRECIS_CLAUDE_BIN or install Claude Code",
             binary_missing=True,
         ) from exc
+    try:
+        out, err = proc.communicate(input=stdin_data, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        terminate_claude(proc)
+        # A survivor the KILL couldn't reach (under the run-user wrapper:
+        # a TERM-ignoring claude behind the dead sudo) still holds the
+        # pipe write ends — bound the drain so this thread can't wedge.
+        try:
+            out, err = proc.communicate(timeout=_REAP_DRAIN_S)
+        except subprocess.TimeoutExpired as drain:
+            out, err = drain.output, drain.stderr
+        raise error_cls(
+            f"{label} timed out after {timeout_s}s",
+            stdout=to_str(out),
+            stderr=to_str(err),
+            timed_out=True,
+        ) from None
+    except BaseException:
+        # Never leak a live CLI on an unexpected error.
+        terminate_claude(proc)
+        raise
+    res: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
+        argv, proc.returncode, to_str(out), to_str(err)
+    )
 
     if res.returncode != 0:
         raise error_cls(
@@ -467,6 +611,8 @@ def run_claude_gated(
             errors="replace",
             env=env,
             cwd=cwd,
+            # No start_new_session — stay in the worker's process group so
+            # a launchd restart reaps an in-flight run (see run_claude).
         )
     except FileNotFoundError as exc:
         raise error_cls(
@@ -485,8 +631,7 @@ def run_claude_gated(
         try:
             proc.wait(timeout=_GATE_EXIT_GRACE_S)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            terminate_claude(proc)
         stdout, stderr = gs.collect()
         waited = round(time.monotonic() - started)
         return error_cls(
@@ -502,8 +647,7 @@ def run_claude_gated(
 
     def _timeout_failure() -> ClaudeProcessError:
         gs.close_stdin()
-        proc.kill()
-        proc.wait()
+        terminate_claude(proc)
         stdout, stderr = gs.collect()
         return error_cls(
             f"{label} timed out after {timeout_s}s",
@@ -569,7 +713,10 @@ def run_claude_gated(
         # ── gate passed: send the prompt, run to the result event ──
         user_msg = {"type": "user", "message": {"role": "user", "content": prompt}}
         if not gs.write(json.dumps(user_msg) + "\n"):
-            proc.wait()
+            try:
+                proc.wait(timeout=_GATE_EXIT_GRACE_S)
+            except subprocess.TimeoutExpired:
+                terminate_claude(proc)
             raise _exit_failure("while the prompt was being sent")
         with gs.cond:
             finished = gs.cond.wait_for(
@@ -588,8 +735,7 @@ def run_claude_gated(
         # Never leak a live CLI on an unexpected error (KeyboardInterrupt, a
         # bug above); the gate's own errors have already reaped it.
         if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+            terminate_claude(proc)
         raise
     stdout, stderr = gs.collect()
     if proc.returncode != 0:
@@ -654,6 +800,8 @@ async def run_claude_async(
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            # No start_new_session — stay in the worker's process group so
+            # a launchd restart reaps an in-flight run (see run_claude).
         )
     except FileNotFoundError as exc:
         raise error_cls(
@@ -686,8 +834,7 @@ async def run_claude_async(
     try:
         await asyncio.wait_for(_pump_stdout(), timeout=timeout_s)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await terminate_claude_async(proc)
         stderr_partial = b""
         if proc.stderr is not None:
             try:
@@ -700,6 +847,11 @@ async def run_claude_async(
             stderr=to_str(stderr_partial),
             timed_out=True,
         ) from None
+    except BaseException:
+        # Never leak a live CLI on cancellation/an unexpected error.
+        if proc.returncode is None:
+            await terminate_claude_async(proc)
+        raise
 
     # Read stderr to EOF (closes when the process exits) *before* ``wait()``
     # so a chatty stderr can't deadlock against an unread pipe buffer.
@@ -726,5 +878,7 @@ __all__ = [
     "run_claude",
     "run_claude_async",
     "run_claude_gated",
+    "terminate_claude",
+    "terminate_claude_async",
     "to_str",
 ]

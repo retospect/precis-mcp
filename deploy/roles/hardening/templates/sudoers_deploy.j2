@@ -1,3 +1,25 @@
 # {{ ansible_managed }}
 # deploy user can sudo without password for Ansible operations
 deploy ALL=(ALL) NOPASSWD: ALL
+{% if claude_run_user | default('') %}
+# Non-admin claude run user (Reto ruling 2026-10-26): deploy may re-exec
+# EXACTLY the claude-run-user wrapper as {{ claude_run_user }} — the ruling
+# lives here in deploy's file; the run user itself gets no sudoers.d entry
+# (the claude_code role's deploy-time asserts fail on either). The blanket
+# ALL grant above already covers this — the line documents the intended
+# edge so it survives a future narrowing of that grant.
+# env_keep is Cmnd-scoped: ONLY while running the wrapper may these vars
+# cross the sudo boundary — claude's own auth + non-secret tick context.
+# env_reset is pinned per-command so a future global !env_reset cannot
+# widen that boundary; on macOS the stock /etc/sudoers env_keep
+# (SSH_AUTH_SOCK, EDITOR, VISUAL, TZ, MAIL, __CF_USER_TEXT_ENCODING)
+# also crosses — none are secrets, and the wrapper re-pins HOME. The
+# wrapper itself adds nothing
+# (deploy/roles/claude_code/templates/claude-run-user.sh.j2).
+deploy ALL=({{ claude_run_user }}) NOPASSWD: {{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }}
+Defaults!{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }} env_reset
+Defaults!{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }} env_keep += "LANG LC_ALL TERM CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY CLAUDE_CODE_MCP_STARTUP_WAIT_MS PRECIS_NO_AUTOREAP PRECIS_CURRENT_AGENTLOG PRECIS_CURRENT_MODEL PRECIS_ACTING_USER PRECIS_CURRENT_TODO PRECIS_WORKSPACE PRECIS_KINDS_DISABLED PRECIS_PYTHON_ROOTS PRECIS_MCP_DB_ROLE PRECIS_MCP_DENY_VERBS PRECIS_MCP_CONFIG"
+# sudo would otherwise log every allowed invocation's full argv — which
+# carries the `-p` prompt, i.e. untrusted gripe text, into the system log.
+Defaults!{{ claude_run_wrapper | default('/opt/precis/bin/claude-run-user') }} !log_allowed
+{% endif %}

@@ -16,16 +16,20 @@ import asyncio
 import os
 import shlex
 import stat
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
+import precis.utils._claude_subprocess as _sub
 from precis.utils._claude_subprocess import (
     ClaudeProcessError,
     exit_detail,
     run_claude,
     run_claude_async,
+    terminate_claude,
 )
 from precis.utils.claude_oauth import ENV_VAR
 
@@ -431,3 +435,315 @@ def test_run_claude_async_copies_caller_env(tmp_path: Path, monkeypatch) -> None
     # ... while the caller's own dict stayed exactly as it was handed over.
     assert ENV_VAR not in caller_env
     assert _NO_AUTOREAP not in caller_env
+
+
+# ── timeout kills: SIGTERM the child pid first, then SIGKILL ─────────────
+#
+# The runners keep claude in the worker's OWN process group (no
+# start_new_session, Reto ruling 2026-10-26): launchd kills the job's
+# group on exit (AbandonProcessGroup=false), so a deploy restart reaps an
+# in-flight run — and killpg is off the table because the child's group
+# is OURS. When PRECIS_CLAUDE_BIN is the sudo -n re-exec wrapper the
+# direct child is `sudo`: SIGKILL cannot be relayed — a bare proc.kill()
+# reaps sudo and leaves claude running as the run user, a uid nothing on
+# the host can signal — and sudo relays TERM only from a sender OUTSIDE
+# its own group (no-pty mode drops si_pgrp == ppgrp), so TERM goes out
+# via a session-fresh /bin/kill. terminate_claude TERM-to-KILLs the pid
+# with a bounded grace; the wrapper's own parent-death watchdog covers a
+# sudo that dies without relaying. The stubs below trap TERM to prove
+# ordering.
+
+
+def _write_term_stub(
+    path: Path, trap_body: str, pid_path: Path, ready_path: Path
+) -> None:
+    """A stub that installs ``trap_body`` on TERM, records its pid, touches
+    ``ready_path``, then runs forever — ``sleep & wait`` so the trap fires
+    promptly when the pid is signalled (bash's ``wait`` returns at once on
+    a trapped signal). Trap FIRST: a TERM delivered before the install
+    would hit the default disposition, so callers must wait on
+    ``ready_path``. The 1 s sleep keeps any orphaned grandchild short
+    lived."""
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        f"trap '{trap_body}' TERM\n"
+        f"echo $$ > {shlex.quote(str(pid_path))}\n"
+        f"touch {shlex.quote(str(ready_path))}\n"
+        "while :; do sleep 1 & wait; done\n",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+
+
+def _ready(path: Path, timeout: float = 10.0) -> None:
+    """Wait for the stub's ready marker — i.e. for its TERM trap to be
+    installed — before signalling."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"stub never became ready: {path}")
+
+
+def _spawn(path: Path) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [str(path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _dead(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def test_terminate_claude_term_alone_reaps_a_compliant_child(tmp_path: Path) -> None:
+    """A child that exits on TERM is reaped inside the grace — no KILL
+    ever sent. If KILL came first the stub could not exit 0."""
+    pid_path = tmp_path / "pid.out"
+    ready = tmp_path / "ready.out"
+    stub = tmp_path / "stub.sh"
+    _write_term_stub(stub, "exit 0", pid_path, ready)
+    proc = _spawn(stub)
+    _ready(ready)
+
+    started = time.monotonic()
+    terminate_claude(proc, grace_s=5.0)
+
+    assert proc.returncode == 0
+    assert time.monotonic() - started < 4.0  # did not ride out the grace
+
+
+def test_terminate_claude_sends_term_from_a_foreign_process_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """sudo in no-pty mode drops a TERM whose sender sits in sudo's own
+    process group — and the session-less runner shares it. The TERM must
+    therefore go out via ``/bin/kill`` spawned in a NEW session so sudo
+    relays it to claude. KILL needs no relay — it reaps sudo directly."""
+    pid_path = tmp_path / "pid.out"
+    ready = tmp_path / "ready.out"
+    stub = tmp_path / "stub.sh"
+    _write_term_stub(stub, ":", pid_path, ready)  # swallows TERM, keeps running
+    proc = _spawn(stub)
+    _ready(ready)
+
+    seen: list[tuple[tuple, dict]] = []
+
+    def fake_run(*args, **kwargs):
+        seen.append((args, kwargs))
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(_sub.subprocess, "run", fake_run)
+
+    terminate_claude(proc, grace_s=0.3)
+
+    assert seen == [
+        (
+            (["/bin/kill", "-TERM", str(proc.pid)],),
+            {"start_new_session": True, "timeout": 5, "check": False},
+        )
+    ]
+    # TERM was faked away, yet the bounded grace + KILL still reaped it.
+    assert proc.returncode is not None
+    assert _dead(int(pid_path.read_text(encoding="utf-8").strip()))
+
+
+def test_terminate_claude_escalates_when_term_is_swallowed(tmp_path: Path) -> None:
+    """A child that survives TERM (traps it and keeps running) gets the
+    KILL after the grace — and the marker proves TERM went first, not
+    KILL."""
+    pid_path = tmp_path / "pid.out"
+    ready = tmp_path / "ready.out"
+    marker = tmp_path / "term.out"
+    stub = tmp_path / "stub.sh"
+    _write_term_stub(stub, f"echo term >> {shlex.quote(str(marker))}", pid_path, ready)
+    proc = _spawn(stub)
+    _ready(ready)
+
+    terminate_claude(proc, grace_s=0.3)
+
+    assert marker.read_text(encoding="utf-8").strip() == "term"
+    assert proc.returncode is not None
+    assert _dead(int(pid_path.read_text(encoding="utf-8").strip()))
+
+
+def test_run_claude_timeout_terms_then_escalates(tmp_path: Path, monkeypatch) -> None:
+    """End to end through run_claude: the timeout path must deliver TERM
+    (the stub's trap writes to stderr, which the timeout error carries)
+    and still reap the child — a bare KILL would show neither."""
+    monkeypatch.setattr(_sub, "_TERM_GRACE_S", 0.3)
+    pid_path = tmp_path / "pid.out"
+    ready = tmp_path / "ready.out"
+    stub = tmp_path / "stub.sh"
+    _write_term_stub(stub, "echo saw-term >&2", pid_path, ready)
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=0.3,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert exc.value.timed_out is True
+    assert "saw-term" in exc.value.stderr
+    assert _dead(int(pid_path.read_text(encoding="utf-8").strip()))
+
+
+def _write_pipe_hog_stub(path: Path, ready_path: Path) -> None:
+    """A stub that dies cleanly on TERM but leaves a grandchild holding the
+    stdout/stderr pipe write ends — the shape of a TERM-ignoring claude
+    behind a KILLed sudo: the direct child is gone, the pipes never EOF."""
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "trap 'exit 0' TERM\n"
+        f"touch {shlex.quote(str(ready_path))}\n"
+        "sleep 60 &\n"
+        "wait\n",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+
+
+def test_run_claude_timeout_drain_is_bounded(tmp_path: Path, monkeypatch) -> None:
+    """After terminate_claude reaps the direct child, a grandchild can
+    still hold the pipe write ends — an unbounded ``communicate()`` then
+    wedges the worker thread on an EOF that never comes. The drain must
+    give up inside ``_REAP_DRAIN_S`` and still raise ``timed_out``."""
+    monkeypatch.setattr(_sub, "_TERM_GRACE_S", 0.3)
+    monkeypatch.setattr(_sub, "_REAP_DRAIN_S", 0.5)
+    ready = tmp_path / "ready.out"
+    stub = tmp_path / "stub.sh"
+    _write_pipe_hog_stub(stub, ready)
+
+    started = time.monotonic()
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=0.3,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert exc.value.timed_out is True
+    # 0.3 timeout + 0.3 grace + 0.5 drain, plus slack — nowhere near the
+    # 60 s the orphaned grandchild keeps the pipes open.
+    assert time.monotonic() - started < 10.0
+
+
+# ── no start_new_session: the worker's process group owns claude ─────────
+#
+# Reto ruling 2026-10-26: a detached session survives a launchd job exit
+# (AbandonProcessGroup defaults to false — the group dies with the job),
+# so start_new_session would orphan every in-flight claude on each deploy
+# restart — still spending tokens, still making MCP writes, with TERM
+# unreachable under the run-user wrapper. The runners must never pass it.
+
+
+def _popen_spy(monkeypatch) -> list[dict[str, object]]:
+    """Record the kwargs of every ``subprocess.Popen`` the code under test
+    makes (delegating to the real one)."""
+    seen: list[dict[str, object]] = []
+    real = subprocess.Popen
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_sub.subprocess, "Popen", spy)
+    return seen
+
+
+def _write_exit_stub(path: Path) -> None:
+    path.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+
+
+def test_run_claude_stays_in_the_worker_process_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seen = _popen_spy(monkeypatch)
+    stub = tmp_path / "stub.sh"
+    _write_exit_stub(stub)
+
+    run_claude(
+        [str(stub)],
+        binary=str(stub),
+        label="claude -p (test)",
+        timeout_s=10.0,
+        error_cls=ClaudeProcessError,
+        env={"PATH": os.environ.get("PATH", "")},
+        bootstrap_oauth=False,
+    )
+
+    assert seen, "run_claude never spawned a Popen"
+    assert all("start_new_session" not in kw for kw in seen)
+
+
+def test_run_claude_gated_stays_in_the_worker_process_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seen = _popen_spy(monkeypatch)
+    stub = tmp_path / "stub.sh"
+    _write_exit_stub(stub)
+
+    with pytest.raises(ClaudeProcessError):  # gate fails: the stub exits
+        _sub.run_claude_gated(
+            [str(stub)],
+            prompt="hi",
+            require_mcp=("precis",),
+            gate_deadline_s=5.0,
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert seen, "run_claude_gated never spawned a Popen"
+    assert all("start_new_session" not in kw for kw in seen)
+
+
+def test_run_claude_async_stays_in_the_worker_process_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _vault(monkeypatch, None)
+    seen: list[dict[str, object]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        seen.append(kwargs)
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(_sub.asyncio, "create_subprocess_exec", spy)
+    stub = tmp_path / "stub.sh"
+    _write_exit_stub(stub)
+
+    asyncio.run(
+        run_claude_async(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+    )
+
+    assert seen, "run_claude_async never spawned a subprocess"
+    assert all("start_new_session" not in kw for kw in seen)

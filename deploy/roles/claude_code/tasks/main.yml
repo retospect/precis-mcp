@@ -115,9 +115,14 @@
 # `sudo -iu hermes claude` interactive login can drop its
 # credentials there without permission gymnastics. Mode 0700
 # matches what `claude` would create itself; we just front-load it
-# so the directory perms are deterministic.
-- name: Ensure hermes user's ~/.claude directory exists
-  when: claude_code_prep_hermes_home | default(true) | bool
+# so the directory perms are deterministic. Gateway-group only:
+# hermes exists nowhere else (overlay only_groups), and play 29 also
+# targets scheduler — the bare default would chown a nonexistent
+# user's home there on every redeploy.
+- name: Ensure hermes user's ~/.claude directory exists (gateway only)
+  when:
+    - "'gateway' in group_names"
+    - claude_code_prep_hermes_home | default(true) | bool
   ansible.builtin.file:
     path: /Users/hermes/.claude
     state: directory
@@ -125,3 +130,190 @@
     group: staff
     mode: "0700"
   become: true
+
+# ── Non-admin claude run user (macOS workers; Reto ruling 2026-10-26) ────
+# Wrapper route, deliberately chosen over running the whole collapsed
+# worker unit as the run user: that unit does far more than spawn claude —
+# it reads ~deploy/.pgpass on every DB call, owns the HF cache and the
+# venv's marker `static/` dir, and writes NFS/NAS paths as deploy.
+# Re-homeing all of that onto a fresh account puts EVERY pass on the host
+# (embed, summarize, chase, scheduler cadences) one missed permission away
+# from a silent degrade. Pointing PRECIS_CLAUDE_BIN at a `sudo -n` re-exec
+# wrapper confines the change to exactly what the ruling covers — the
+# `claude` process drops to a dedicated non-admin user; everything else on
+# the worker is untouched. The Cmnd-scoped env_keep in deploy's sudoers
+# grant is the allowlist: nothing from the worker env crosses the sudo
+# boundary unless named.
+
+- name: "claude run user: macOS-only (Linux runs the container lane)"
+  when:
+    - claude_run_user | default('') | length > 0
+    - os_family != "darwin"
+  ansible.builtin.fail:
+    msg: >-
+      claude_run_user={{ claude_run_user }} is set on a non-darwin host —
+      Linux nodes run the containerized job_claude_docker lane; host claude
+      spawns only exist on macOS workers. Unset it for
+      {{ inventory_hostname }}.
+
+# The run user has no ~/.pgpass and no DB env, so a host whose worker
+# binds PRECIS_MCP_CONFIG — the gateway group, where a stdio `precis
+# serve` MCP child expands mcp.json passthroughs — would run that child
+# as the run user and fail every call unauthenticated. Refuse the
+# combination; the run-user lane is for workers with no bound MCP config.
+- name: "claude run user: refuse a host whose worker binds PRECIS_MCP_CONFIG"
+  when:
+    - claude_run_user | default('') | length > 0
+    - "'gateway' in group_names"
+  ansible.builtin.fail:
+    msg: >-
+      claude_run_user={{ claude_run_user }} is set on a gateway-group
+      host, whose collapsed-worker env binds PRECIS_MCP_CONFIG
+      (20b-precis-worker-collapsed.yml). claude's stdio `precis serve`
+      child would spawn as the run user — no ~/.pgpass, no DB env — and
+      fail unauthenticated. Unset it for {{ inventory_hostname }}.
+
+- name: "claude run user: uid must be pinned alongside the name"
+  when:
+    - claude_run_user | default('') | length > 0
+    - (claude_run_uid | default('') | string | length) == 0
+  ansible.builtin.fail:
+    msg: >-
+      claude_run_user={{ claude_run_user }} is set but claude_run_uid is
+      empty — pin it in the host_vars too. Same pinned-id rule as
+      roles/users: an auto-assigned uid must never differ across nodes
+      (NFS carries numeric ids).
+
+- name: Create + guard the non-admin claude run user (macOS)
+  when:
+    - os_family == "darwin"
+    - claude_run_user | default('') | length > 0
+  block:
+    - name: "claude run user: probe existing account uid"
+      ansible.builtin.command: dscl . -read "/Users/{{ claude_run_user }}" UniqueID
+      register: _claude_run_uid_probe
+      failed_when: false
+      changed_when: false
+
+    # Same no-renumber rule as roles/users: a name held at a different uid
+    # is drift to remediate deliberately, never to usermod past.
+    - name: "claude run user: refuse a name held at another uid"
+      when:
+        - _claude_run_uid_probe.rc == 0
+        - _claude_run_uid_probe.stdout.split()[-1] | int != (claude_run_uid | int)
+      ansible.builtin.fail:
+        msg: >-
+          account {{ claude_run_user }} already exists at uid
+          {{ _claude_run_uid_probe.stdout.split()[-1] }}, not the pinned
+          {{ claude_run_uid }} — usermod would orphan every file at the old
+          id. Fix the pin or remediate by hand.
+
+    - name: "claude run user: probe existing group gid"
+      ansible.builtin.command: dscl . -read "/Groups/{{ claude_run_user }}" PrimaryGroupID
+      register: _claude_run_gid_probe
+      failed_when: false
+      changed_when: false
+
+    - name: "claude run user: create the pinned group"
+      when: _claude_run_gid_probe.rc != 0
+      ansible.builtin.command: >
+        dseditgroup -o create -i {{ claude_run_gid | default(claude_run_uid, true) }}
+        -r {{ claude_run_user }} {{ claude_run_user }}
+      become: true
+
+    # sysadminctl also creates /Users/<name> — the home the wrapper pins
+    # as HOME and the one-time `claude login` writes into.
+    - name: "claude run user: create the account"
+      when: _claude_run_uid_probe.rc != 0
+      ansible.builtin.command: >
+        sysadminctl -addUser {{ claude_run_user }}
+        -UID {{ claude_run_uid }}
+        -GID {{ claude_run_gid | default(claude_run_uid, true) }}
+        -shell {{ claude_run_shell }}
+      become: true
+
+    - name: "claude run user: ~/.claude exists for the one-time login"
+      ansible.builtin.file:
+        path: "{{ claude_run_home }}/.claude"
+        state: directory
+        owner: "{{ claude_run_user }}"
+        group: staff
+        mode: "0700"
+      become: true
+
+    - name: "claude run user: ensure the wrapper's parent dir"
+      ansible.builtin.file:
+        path: "{{ claude_run_wrapper | dirname }}"
+        state: directory
+        owner: root
+        group: wheel
+        mode: "0755"
+      become: true
+
+    - name: "claude run user: render the PRECIS_CLAUDE_BIN wrapper"
+      ansible.builtin.template:
+        src: claude-run-user.sh.j2
+        dest: "{{ claude_run_wrapper }}"
+        owner: root
+        group: wheel
+        mode: "0755"
+      vars:
+        # Resolved here (ansible's dirname filter) so the template stays
+        # plain jinja — the render tests load it without ansible filters.
+        claude_run_bin_dir: "{{ claude_bin | dirname }}"
+      become: true
+
+    # ── Deploy-time asserts — the ruling's hard edge, re-verified every run ──
+    - name: "claude run user: FAIL if it is in the admin group"
+      ansible.builtin.command: id -Gn {{ claude_run_user }}
+      register: _claude_run_groups
+      changed_when: false
+      failed_when: "'admin' in (_claude_run_groups.stdout | default('')).split()"
+
+    # `sudo -l -U` is the authoritative probe — it reads the whole
+    # policy (main sudoers, sudoers.d, group rules). But the exit code
+    # alone can't read the answer: sudo's display_privs prints "User X
+    # is not allowed to run sudo on H." and STILL exits 0 when the count
+    # is zero, so a grant-less user looks identical to a granted one.
+    # Fail on a probe error (rc != 0) OR on rc == 0 without the denial
+    # line — the ONE wrapper grant lives in /etc/sudoers.d/deploy
+    # (deploy's file, granting deploy, not the run user). ONE expression:
+    # a failed_when LIST is ANDed, which would pass a granted user on
+    # the first item.
+    - name: "claude run user: FAIL if it has any sudo grant"
+      ansible.builtin.command: /usr/bin/sudo -l -U {{ claude_run_user }}
+      become: true
+      register: _claude_run_sudo
+      changed_when: false
+      failed_when: >-
+        _claude_run_sudo.rc != 0
+        or 'is not allowed to run sudo' not in
+        ((_claude_run_sudo.stdout | default(''))
+        ~ (_claude_run_sudo.stderr | default('')))
+
+    # Belt to the -l probe's braces: grep sudoers.d for the user in
+    # rule-subject position (first field of a grant line) — the ruling's
+    # named case. grep rc 1 (no match) is the pass; 0 is a grant found,
+    # ≥2 a probe error — both fail.
+    - name: "claude run user: FAIL if any sudoers.d file names it as a subject"
+      ansible.builtin.command: >
+        /usr/bin/grep -rE '^[[:space:]]*{{ claude_run_user }}[[:space:]]'
+        /etc/sudoers.d/
+      become: true
+      register: _claude_run_sudoersd
+      changed_when: false
+      failed_when: _claude_run_sudoersd.rc != 1
+
+    - name: "claude run user: assert {{ claude_bin }} is executable by it"
+      ansible.builtin.command: >
+        /usr/bin/sudo -n -u {{ claude_run_user }}
+        /usr/bin/test -x {{ claude_bin }}
+      become: true
+      changed_when: false
+
+    # End-to-end smoke: the full chain — deploy → wrapper → sudo -n re-exec
+    # → env_keep allowlist → claude — must work the day the unit flips
+    # PRECIS_CLAUDE_BIN, not on the first real spawn.
+    - name: "claude run user: wrapper smoke (claude --version as the run user)"
+      ansible.builtin.command: "{{ claude_run_wrapper }} --version"
+      changed_when: false

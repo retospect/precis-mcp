@@ -70,7 +70,6 @@
   "src/precis/store/schema_dump.py::_run_pg_dump::subprocess.run": 1,
   "src/precis/store/schema_dump.py::generate_baseline_sql::psycopg.connect": 2,
   "src/precis/tts/encode.py::encode_mp3::subprocess.run": 1,
-  "src/precis/utils/_claude_subprocess.py::run_claude_gated::Popen.wait": 2,
   "src/precis/utils/db_log_handler.py::_do_insert::psycopg.connect": 1,
   "src/precis/utils/rate_limit.py::_get_conn::psycopg.connect": 1,
   "src/precis/utils/stall_capture.py::allow::fcntl.flock": 1,

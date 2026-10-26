@@ -7,5 +7,37 @@ claude_code_force_reinstall: false
 
 # Pre-create /Users/hermes/.claude so a future `sudo -iu hermes
 # claude` interactive login can drop its OAuth credentials there
-# cleanly. Set to false on hosts where hermes isn't running.
+# cleanly. Only ever runs in the gateway group — hermes exists nowhere
+# else, so scheduler hosts skip it regardless of this flag.
 claude_code_prep_hermes_home: true
+
+# ── Non-admin claude run user (Reto ruling 2026-10-26) ───────────────────
+# On a macOS worker where `claude -p` spawns run in-proc (the collapsed
+# `precis worker` daemon, com.precis.worker), claude must NOT run as the
+# admin `deploy` user — it runs as a dedicated non-admin user, mirroring
+# the hermes daemon-user pattern on the gateway (no admin group, no
+# sudoers file). Set `claude_run_user` plus a pinned `claude_run_uid` in
+# the worker's host_vars; unset = today's behaviour (claude spawns as
+# deploy). Linux nodes use the containerized job_claude_docker lane — the
+# role refuses a set var there.
+#
+# When set the role: creates the user (own pinned group, never admin, no
+# sudo), pre-creates ~/.claude for the one-time `claude login`, renders
+# the PRECIS_CLAUDE_BIN wrapper (a `sudo -n` re-exec; the Cmnd-scoped
+# env_keep in deploy's sudoers file is the allowlist), and FAILS the
+# deploy if the user is in `admin` or has any sudo grant. The matching
+# sudoers line + env_keep live in roles/hardening's sudoers_deploy.j2 —
+# the deploy user's file; the run user itself gets no file. A host whose
+# worker binds PRECIS_MCP_CONFIG (the gateway group) is refused: a stdio
+# `precis serve` child would spawn as the run user with no .pgpass.
+claude_run_user: ""
+claude_run_uid: ""
+# Primary gid for the run user's own group; defaults to the uid.
+claude_run_gid: ""
+# A login shell so `sudo -iu <user>` works for the one-time `claude login`
+# (same shape as hermes on the gateway).
+claude_run_shell: "/bin/zsh"
+claude_run_home: "/Users/{{ claude_run_user }}"
+# The PRECIS_CLAUDE_BIN target the worker units export when the var is
+# set — a sudo -n re-exec shim into the run user, env-scrubbed inside.
+claude_run_wrapper: "/opt/precis/bin/claude-run-user"

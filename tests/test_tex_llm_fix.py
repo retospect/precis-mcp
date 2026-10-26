@@ -2,7 +2,7 @@
 resolver (BIG / sonnet), byte-identically to the legacy inline read.
 
 DB-free and spawn-free: ``_run_chktex`` is stubbed to force the LLM path and
-``subprocess.run`` is captured, so no ``claude`` binary runs.
+``run_claude`` is captured, so no ``claude`` binary runs.
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ class _FakeCompleted:
 def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     captured: dict[str, list[str]] = {}
 
-    def fake_run(cmd: list[str], **_kw: Any) -> _FakeCompleted:
-        captured["cmd"] = cmd
+    def fake_run(argv: list[str], **_kw: Any) -> _FakeCompleted:
+        captured["cmd"] = argv
         # A plausible corrected-file body so attempt_llm_fix returns 'hint'.
         return _FakeCompleted("\\section{x}\nfixed body\n")
 
     monkeypatch.setattr(tlf, "_run_chktex", lambda _t: ("Warning 1 something",))
-    monkeypatch.setattr(tlf.subprocess, "run", fake_run)
+    monkeypatch.setattr(tlf, "run_claude", fake_run)
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude-stub")
     res = tlf.attempt_llm_fix("\\section{x}\nsome body\n")
     assert res.verdict == "hint"

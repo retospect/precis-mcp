@@ -325,38 +325,67 @@ class _FakeRes:
         self.stderr = err
 
 
+def _quota_err(
+    msg: str,
+    *,
+    rc: int | None = None,
+    out: str = "",
+    err: str = "",
+    timed_out: bool = False,
+    binary_missing: bool = False,
+):
+    from precis.utils._claude_subprocess import ClaudeProcessError
+
+    return ClaudeProcessError(
+        msg,
+        stdout=out,
+        stderr=err,
+        returncode=rc,
+        timed_out=timed_out,
+        binary_missing=binary_missing,
+    )
+
+
 def test_refresh_snapshot_outcomes(monkeypatch) -> None:
     from precis.utils import claude_quota as cq
     from precis.utils.claude_quota import RefreshOutcome, refresh_snapshot
 
     # 401 → AUTH_FAILED (the pageable condition)
-    monkeypatch.setattr(
-        cq.subprocess,
-        "run",
-        lambda *a, **k: _FakeRes(
-            1, "API Error: 401 Invalid authentication credentials"
-        ),
-    )
+    def _auth(*a, **k):
+        raise _quota_err(
+            "exited 1", rc=1, out="API Error: 401 Invalid authentication credentials"
+        )
+
+    monkeypatch.setattr(cq, "run_claude", _auth)
     snap, outcome = refresh_snapshot(object())
     assert snap is None and outcome is RefreshOutcome.AUTH_FAILED
 
     # non-auth non-zero exit → UNAVAILABLE (don't flap the alert on a blip)
-    monkeypatch.setattr(
-        cq.subprocess, "run", lambda *a, **k: _FakeRes(1, "network glitch")
-    )
+    def _glitch(*a, **k):
+        raise _quota_err("exited 1", rc=1, out="network glitch")
+
+    monkeypatch.setattr(cq, "run_claude", _glitch)
     _snap, outcome = refresh_snapshot(object())
     assert outcome is RefreshOutcome.UNAVAILABLE
 
     # clean exit, no rate_limits payload → NO_LIMITS (auth is fine)
-    monkeypatch.setattr(cq.subprocess, "run", lambda *a, **k: _FakeRes(0, "{}"))
+    monkeypatch.setattr(cq, "run_claude", lambda *a, **k: _FakeRes(0, "{}"))
     _snap, outcome = refresh_snapshot(object())
     assert outcome is RefreshOutcome.NO_LIMITS
 
     # missing binary → UNAVAILABLE
     def _missing(*a, **k):
-        raise FileNotFoundError("claude")
+        raise _quota_err("claude binary not found", binary_missing=True)
 
-    monkeypatch.setattr(cq.subprocess, "run", _missing)
+    monkeypatch.setattr(cq, "run_claude", _missing)
+    _snap, outcome = refresh_snapshot(object())
+    assert outcome is RefreshOutcome.UNAVAILABLE
+
+    # timeout → UNAVAILABLE
+    def _slow(*a, **k):
+        raise _quota_err("timed out", timed_out=True)
+
+    monkeypatch.setattr(cq, "run_claude", _slow)
     _snap, outcome = refresh_snapshot(object())
     assert outcome is RefreshOutcome.UNAVAILABLE
 
@@ -371,11 +400,11 @@ def test_refresh_snapshot_probe_is_bounded_to_one_turn(monkeypatch) -> None:
 
     seen: dict[str, list[str]] = {}
 
-    def fake_run(cmd: list[str], **kw: object) -> _FakeRes:
-        seen["cmd"] = cmd
+    def fake_run(argv: list[str], **kw: object) -> _FakeRes:
+        seen["cmd"] = argv
         return _FakeRes(0, "{}")
 
-    monkeypatch.setattr(cq.subprocess, "run", fake_run)
+    monkeypatch.setattr(cq, "run_claude", fake_run)
     refresh_snapshot(object())
     cmd = seen["cmd"]
     assert cmd[cmd.index("--max-turns") + 1] == "1"
@@ -389,8 +418,8 @@ def test_refresh_snapshot_pages_on_logged_out_clean_exit(monkeypatch) -> None:
     from precis.utils.claude_quota import RefreshOutcome, refresh_snapshot
 
     monkeypatch.setattr(
-        cq.subprocess,
-        "run",
+        cq,
+        "run_claude",
         lambda *a, **k: _FakeRes(0, "Not logged in · Please run /login"),
     )
     snap, outcome = refresh_snapshot(object())
@@ -407,7 +436,7 @@ def test_refresh_snapshot_clean_payload_containing_401_is_not_auth_failure(
     from precis.utils.claude_quota import RefreshOutcome, refresh_snapshot
 
     payload = json.dumps({"rate_limits": {"five_hour": {"utilization": 1401}}})
-    monkeypatch.setattr(cq.subprocess, "run", lambda *a, **k: _FakeRes(0, payload))
+    monkeypatch.setattr(cq, "run_claude", lambda *a, **k: _FakeRes(0, payload))
     _snap, outcome = refresh_snapshot(object())
     assert outcome is not RefreshOutcome.AUTH_FAILED
 
