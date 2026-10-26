@@ -12,6 +12,14 @@ plus the ``args=`` lifecycle doors — ``retire`` / ``redirect_to`` /
 the single-row identifier removal (``drop_identifier``, gr513878); it
 never edits block text in place.
 
+Superseded paper restoration is CLI-only (``precis garden restore``);
+MCP/web handlers expose no restore-superseded write door.
+Superseded-handle resolution on link/edit/put/tag emits a per-call footer
+receipt through the shared hint bus, exempt from advice cooldown/caps because
+it names the ref actually changed. Reads keep a cooled-down merge note in the
+footer. Delete refuses superseded handles before normalization and names the
+survivor's explicit delete call, so a stale address cannot retire its survivor.
+
 Slug parsing supports the canonical slug-with-chunk syntax used across
 v2:
 

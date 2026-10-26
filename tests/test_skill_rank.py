@@ -158,8 +158,8 @@ def test_title_boost_df_exactly_one_bypasses_but_df_two_does_not(
     *exactly* 1, not "not 1" or "exactly 2" — a mutant on either the
     ``==`` or the ``1`` would make a DF==2 word bypass identically to a
     genuine DF==1 word. "pagination" is DF==1 (only
-    ``precis-search-help``'s title carries it); "gripe" is DF==2
-    (``precis-gripe-help`` and ``precis-fix-gripe-help`` both do). Both
+    ``precis-search-help``'s title carries it); "anki" is DF==2
+    (``precis-anki-help`` and ``precis-cloze`` both do). Both
     queries pad the same way to well under the 70% coverage bar and
     below the 2-word-match floor, so only the DF==1 bypass can explain
     a difference in outcome.
@@ -167,7 +167,7 @@ def test_title_boost_df_exactly_one_bypasses_but_df_two_does_not(
     out = skill.search(q="pagination banana orange grape mango kiwi")
     assert "title match" in out.body, out.body
 
-    out = skill.search(q="gripe banana orange grape mango kiwi")
+    out = skill.search(q="anki banana orange grape mango kiwi")
     assert "title match" not in out.body, out.body
 
 
@@ -176,14 +176,14 @@ def test_title_boost_single_word_query_bypasses_bar_for_a_common_identity_word(
 ) -> None:
     """The single-word exemption (``not single`` short-circuits the
     whole bar) must hold even when the query word is *not* a rare
-    (DF==1) identity token — "gripe" is DF==2, so this can't pass by
+    (DF==1) identity token — "anki" is DF==2, so this can't pass by
     accident via the rare-identity bypass; only the single-word
     exemption explains the boost. Distinct from
     ``test_single_word_query_pins_named_skill``, which only checks the
     slug ranks somewhere and would still pass off a bare lexical hit if
     the boost never fired.
     """
-    out = skill.search(q="gripe")
+    out = skill.search(q="anki")
     assert "title match" in out.body, out.body
 
 
@@ -193,15 +193,15 @@ def test_title_boost_two_word_match_at_full_coverage_beats_one_word_match(
     """``len(matched) < 2`` is the exact floor: two matched words at
     full coverage clears the OR (both legs false) and boosts; one
     matched word at reduced coverage trips ``matched < 2`` and is
-    blocked. Both queries share the same identity tokens ("gripe",
-    "resolve" — both DF > 1, so the rare-identity bypass can't explain
+    blocked. Both queries share the same identity tokens ("anki",
+    "cloze" — both DF > 1, so the rare-identity bypass can't explain
     a difference) and the same padding shape, isolating the matched-
     count boundary from the coverage leg.
     """
-    out = skill.search(q="gripe resolve")
+    out = skill.search(q="anki cloze")
     assert "title match" in out.body, out.body
 
-    out = skill.search(q="gripe extra words")
+    out = skill.search(q="anki extra words")
     assert "title match" not in out.body, out.body
 
 
@@ -243,7 +243,7 @@ def test_family_root_slugs_only_pins_canonical_roots() -> None:
     assert roots["cad"] == "precis-cad-help"
     assert roots["job"] == "precis-job-help"  # the compute split's family
     assert roots["mermaid"] == "precis-mermaid-help"  # -help beats the bare slug
-    for word in ("gripe", "help", "claim", "review", "doi"):
+    for word in ("anki", "help", "claim", "review", "doi"):
         assert word not in roots, (word, roots.get(word))
 
     # Synthetic shapes: -help preferred, bare precis-<word> next, a
@@ -302,5 +302,5 @@ def test_family_root_pin_is_the_root_only_never_siblings(
     ]
     assert pinned == ["precis-cad-help"], pinned
 
-    out = skill.search(q="gripe banana orange grape mango kiwi")
+    out = skill.search(q="anki banana orange grape mango kiwi")
     assert "title match" not in out.body, out.body

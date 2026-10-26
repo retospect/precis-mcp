@@ -5,13 +5,7 @@ declares its verb surface via :class:`precis.protocol.KindSpec`; handlers
 register with the :class:`precis.dispatch.Hub` at boot (contract + failure
 modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
-Superseded paper restoration is CLI-only (``precis garden restore``);
-MCP/web handlers expose no restore-superseded write door.
-Superseded-handle resolution on link/edit/put/tag emits a per-call footer
-receipt through the shared hint bus, exempt from advice cooldown/caps because
-it names the ref actually changed. Reads keep a cooled-down merge note in the
-footer. Delete refuses superseded handles before normalization and names the
-survivor's explicit delete call, so a stale address cannot retire its survivor.
+Superseded-handle resolution and restoration: :mod:`precis.handlers.paper`.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace
@@ -54,10 +48,7 @@ richer newest-in-full / one-liner policy in
 :mod:`precis.handlers._comment_timeline` (the single-``limit`` shape
 can't express it; both kinds share that one implementation).
 
-Paper ``view='measures'`` groups live outputs by their stored table ordinal
-then prose, through the shared measure row renderer. It shares measure
-search's live-row eligibility; table extraction counters include every
-unsuperseded output, even those excluded from the live view.
+Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
 
 Memory authoring reuses ``utils.edit_resolve`` for anchored body edits:
 all handler body writes lock the owning ref, and anchored writes also
