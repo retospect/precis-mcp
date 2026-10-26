@@ -146,8 +146,8 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
 - `set_joint` — `a`, `b`, `joint` (req). Joint dict:
   `{"class": rigid|revolute|prismatic|cylindrical|screw|planar|ball|
   compliant|captive|axial, "axis"?: [x,y,z], "mechanism"?: snap|screw|
-  press|clamp|key|magnet|bearing|bond|integral|cable, "params"?: {…}}` —
-  nested, never flat.
+  press|clamp|key|magnet|bearing|bond|integral|fuse|adhesive|rivet|pin|
+  cable|tensioner, "params"?: {…}}` — nested, never flat.
 
 ## Ops — loads, prose, measures
 

@@ -1965,8 +1965,9 @@ def _find_connect(tree: SeTree, op: dict[str, Any], *, opname: str) -> ConnectSp
 def _op_set_joint(tree: SeTree, op: dict[str, Any]) -> None:
     """Set/replace (or clear, with ``joint=null``) an existing connect's
     joint — the slice-3 schema: ``{'class': rigid|revolute|prismatic|
-    cylindrical|planar|ball|compliant|captive, 'axis'?: [x,y,z],
-    'mechanism'?: snap|screw|press|clamp|key|magnet|bearing|bond|integral,
+    cylindrical|screw|planar|ball|compliant|captive|axial,
+    'axis'?: [x,y,z], 'mechanism'?: snap|screw|press|clamp|key|magnet|
+    bearing|bond|integral|fuse|adhesive|rivet|pin|cable|tensioner,
     'params'?: {...}}``."""
     c = _find_connect(tree, op, opname="set_joint")
     if "joint" not in op:

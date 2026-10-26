@@ -1560,7 +1560,8 @@ def abstract_joints(
 ) -> list[tuple[ConnectSpec, str]]:
     """Every connect whose mechanism *implies* real hardware
     (:data:`precis_se.joints.MECHANISMS`'s ``demands_bom`` entries — today
-    ``screw``/``magnet``/``bearing``/``cable``) where nothing real has been
+    ``screw``/``magnet``/``bearing``/``adhesive``/``rivet``/``pin``/
+    ``cable``/``tensioner``) where nothing real has been
     named for it yet: the requirements say a joint exists, but nothing
     realizes it — se-print-implementer.md's "real things need real
     things". Rung 4 renders these as the ``abstract_joint`` finding; this

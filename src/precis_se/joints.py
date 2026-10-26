@@ -123,6 +123,24 @@ MECHANISMS: dict[str, dict[str, Any]] = {
     },
     "bond": {"demands_relation": None},  # atomic scale: one covalent bond
     "integral": {"demands_relation": None},  # print-in-place, same body
+    # two bodies made ONE at the interface — weld, braze/solder,
+    # solvent-weld (gr516957 vocabulary gap). Realizes 'rigid' only: a
+    # fused joint permits no motion. The filler is a process consumable
+    # (weld wire, flux), not a bought part the joint names — no BOM
+    # demand, though a solder/braze alloy can still be declared as one.
+    "fuse": {"demands_relation": None},
+    # a cured glue film between the members — 'rigid' only (bond's macro
+    # counterpart: bond is one covalent bond at the atomic scale). The
+    # adhesive IS the bought article — which glue is the joint's
+    # decision, so it earns the BOM demand.
+    "adhesive": {"demands_relation": None, "demands_bom": "the adhesive"},
+    # a set rivet clamps the members — 'rigid' only; a pin meant to
+    # articulate is 'pin', not a rivet. Bought fastener.
+    "rivet": {"demands_relation": None, "demands_bom": "the rivet(s)"},
+    # a dowel/clevis/hinge pin — 'rigid' when it fixes the pair (dowel,
+    # cross-pin), 'revolute' when it IS the hinge axis (pin hinge,
+    # pin-and-clip). Bought hardware.
+    "pin": {"demands_relation": None, "demands_bom": "the pin(s)"},
     # the article realizing an axial tie — a cable joint with nothing to
     # buy is a drawing, not rigging (two-axis rule: the mechanism names
     # the physical article, the class names what it does).

@@ -19,6 +19,7 @@ from precis.errors import BadInput, NotFound
 from precis.store import Store
 from precis_se import drc as se_drc
 from precis_se import fret, persist
+from precis_se import joints as se_joints
 from precis_se.handler import SeHandler, _render_tree
 from precis_se.measures import MeasureSpec, stackup
 from precis_se.ops import OpError, SeTree, apply_ops, effective_envelope
@@ -1722,6 +1723,90 @@ def test_joint_unknown_mechanism_rejected() -> None:
                 }
             ],
         )
+
+
+# ── permanent-join mechanisms (gr516957-adjacent vocabulary gap: the
+# design-tree leaves weld/braze-solder/solvent-weld → 'fuse', adhesive →
+# 'adhesive', rivet → 'rivet', pin-and-clip/pin-hinge/cross-pin → 'pin') ──
+
+
+@pytest.mark.parametrize("mechanism", ["fuse", "adhesive", "rivet", "pin"])
+def test_joint_permanent_mechanisms_accepted(mechanism: str) -> None:
+    """Each new token validates and stores through the one schema — both
+    the bare ``validate_joint`` path and the ``set_joint`` op."""
+    joint = se_joints.validate_joint({"class": "rigid", "mechanism": mechanism})
+    assert joint["mechanism"] == mechanism
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "rigid", "mechanism": mechanism},
+            }
+        ],
+    )
+    assert tree.connects[0].joint == {"class": "rigid", "mechanism": mechanism}
+
+
+def test_joint_pin_mechanism_can_be_a_hinge() -> None:
+    """'pin' is the one new token whose class compatibility is wider than
+    'rigid': a hinge pin realizes 'revolute'."""
+    joint = se_joints.validate_joint(
+        {"class": "revolute", "axis": [0, 0, 2], "mechanism": "pin"}
+    )
+    assert joint["mechanism"] == "pin"
+    assert joint["axis"] == [0.0, 0.0, 1.0]
+
+
+@pytest.mark.parametrize(
+    ("mechanism", "demands_bom"),
+    [
+        # weld filler is a process consumable — the joint names no bought
+        # part, so no mechanism_bom finding.
+        ("fuse", False),
+        ("adhesive", True),
+        ("rivet", True),
+        ("pin", True),
+    ],
+)
+def test_permanent_mechanism_bom_demand(mechanism: str, demands_bom: bool) -> None:
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_joint",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "joint": {"class": "rigid", "mechanism": mechanism},
+            }
+        ],
+    )
+    findings = [f for f in se_drc.drc(tree).findings if f.rule == "mechanism_bom"]
+    assert bool(findings) == demands_bom
+
+
+def test_joint_unknown_mechanism_refusal_lists_vocabulary() -> None:
+    """The refusal carries its own next step — the legal mechanism list —
+    so it must keep naming the vocabulary, new tokens included."""
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="must be one of") as exc_info:
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_joint",
+                    "a": "wheel.bore",
+                    "b": "hub.shaft",
+                    "joint": {"class": "rigid", "mechanism": "weld"},
+                }
+            ],
+        )
+    for token in ("fuse", "adhesive", "rivet", "pin"):
+        assert token in str(exc_info.value)
 
 
 def test_set_joint_replaces_and_clears() -> None:

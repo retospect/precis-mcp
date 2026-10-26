@@ -53,7 +53,8 @@ Refused on a block that is already bound (`set_binding(clear=true)`
 first) or has no envelope (`set_envelope` first). An array/template
 member realizes through its own template — one implementation per
 template, the same way instancing already works. **`realize` never mints
-fasteners** — a `screw`/`press`/`bearing`/`magnet`/`cable` connect naming
+fasteners** — a `screw`/`bearing`/`magnet`/`adhesive`/`rivet`/`pin`/
+`cable`/`tensioner` connect naming
 no real hardware yet stays an `abstract_joint` finding (below); which
 screw to buy is a design decision, not something this op guesses.
 
@@ -158,7 +159,8 @@ honestly; nothing is invented.
 
 **`unrealized`** (info) means exactly what `realize` fixes: the block
 says `fdm` but has no bound cad design yet — there is nothing to print.
-An unbound `screw`/`press`/`bearing`/`magnet`/`cable` connect touching the
+An unbound `screw`/`bearing`/`magnet`/`adhesive`/`rivet`/`pin`/`cable`/
+`tensioner` connect touching the
 block is **`abstract_joint`** (warn): the requirements say a joint
 exists, nothing real realizes it. Fix it the `precis-se-fasten-help` way
 — mint the fastener from the series registry, bind it
