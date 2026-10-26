@@ -9,6 +9,16 @@ The thread-session fleet (one window per roadmap thread) is
 ``gripe-fleet`` skill (.claude/skills/gripe-fleet/SKILL.md).
 
     fleet-wave launch NAME --brief FILE [--tier R|W] [--devin]
+    fleet-wave launch NAME --batch SLUG [--tier R|W] [--devin|--codex]
+                                        brief = the batch dossier rendered from
+                                        the gripes (precis gripe-fix brief); the
+                                        launch records host/session/tree on them
+    fleet-wave reassign NAME --batch SLUG|--brief FILE
+                                        /clear a builder, point it at a new brief,
+                                        record it on the batch
+    fleet-wave handoff-wait NAME...     when a pane shows a bare DONE-HANDOFF,
+                                        /clear it and send the resume line
+    fleet-wave cites ID...              unlanded branch commits naming gr<ID>
     fleet-wave peek [WIN...] [-n N]     last N non-empty lines per window
     fleet-wave ctx                      context % per Claude pane
     fleet-wave prompts                  panes at a dialog: window, type, command
@@ -70,6 +80,35 @@ the coordinator session's own rules forbid it writing a grant the user
 did not type, and the coordinator transcript shows which lines the user
 typed; .claude/fleet/authority.md still governs.
 
+Batch launches (gr519361). ``--batch SLUG`` takes the brief from the DB:
+``scripts/prod-precis gripe-fix brief SLUG --out <state>/<win>.brief.md``
+renders the batch dossier (the brief in force plus every member gripe's
+body and comments — what a builder without MCP access gets), and after
+the window is up ``gripe-fix assign SLUG --host <this host> --session
+<vendor>:<win> --tree NAME`` records who builds it on every gripe of the
+batch. ``FLEET_GRIPE_FIX_CMD`` overrides the command prefix (tests point
+it at a fake). A failed assign is reported, never fatal to the launch.
+The session recorded is ``<vendor>:<window>`` (``claude:claude-NAME``,
+``devin:devin-NAME``, ``codex:codex-NAME``) — the one handle every
+vendor has at launch time.
+
+``--codex`` launches a Codex builder: a LOCKED worktree (the reaper
+deletes unlocked sessionless trees; unlock with ``git worktree unlock``),
+the prompt copied to ``<tree>/scratch/codex-brief.md`` with a no-MCP
+note appended, and window ``codex-NAME`` running ``codex`` with exactly
+the tier's flags from ``scripts/fleet-authority`` (``codex-flags:``) —
+nothing added or overridden: what a tier grants is authority. Tier R is
+refused for ``--codex`` (its ``--sandbox read-only`` cannot commit);
+``--tier W`` is the lane. Launch waits ``--settle`` seconds and refuses
+(no "launched", no assign) when the window is already gone — codex
+exits at once on a bad flag set.
+
+``reassign``, ``handoff-wait`` and ``cites`` replace the GRIPE_FIX
+coordinator's scratch scripts (reassign.sh, handoff-wait.sh,
+dupcheck.sh): a builder re-pointed at a new batch, a Devin that printed
+``DONE-HANDOFF`` at its context ceiling resumed after ``/clear``, and a
+check whether some unlanded branch already names a gripe.
+
 Configuration (env, or the matching flag before the subcommand):
   FLEET_TMUX_SESSION  --session   tmux session (default: the current one)
   FLEET_TMUX_SOCKET   --socket    private tmux server (tmux -L), tests
@@ -90,6 +129,8 @@ import hashlib
 import itertools
 import os
 import re
+import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -116,7 +157,7 @@ from fleet_panes import (
 #: Above this length, or with a newline, text goes in as one bracketed
 #: paste (typed text loses its head in a Claude pane; see scripts/fleet).
 PASTE_MIN = 200
-PREFIXES = ("claude-", "devin-")
+PREFIXES = ("claude-", "devin-", "codex-")
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 try:
@@ -864,23 +905,123 @@ def _mark_claim_purpose(f: Fleet, name: str, claimed: list[str]) -> None:
     )
 
 
+def _gripe_fix_cmd() -> list[str]:
+    """The ``precis gripe-fix`` command prefix: prod by default (the loop's
+    state is on the prod gripes), ``FLEET_GRIPE_FIX_CMD`` for a test fake."""
+    override = os.environ.get("FLEET_GRIPE_FIX_CMD", "")
+    if override:
+        return shlex.split(override)
+    return [str(SCRIPTS / "prod-precis"), "gripe-fix"]
+
+
+def _render_batch_brief(f: Fleet, slug: str, win: str) -> Path:
+    """Write the batch dossier to ``<state>/<win>.brief.md`` and return it."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", slug):
+        raise SystemExit(f"fleet-wave: bad batch slug {slug!r}")
+    f.state.mkdir(parents=True, exist_ok=True)
+    out = f.state / f"{win}.brief.md"
+    proc = subprocess.run(
+        [*_gripe_fix_cmd(), "brief", slug, "--out", str(out)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if proc.returncode or not out.is_file():
+        raise SystemExit(
+            f"fleet-wave: gripe-fix brief {slug} failed: "
+            f"{(proc.stderr or proc.stdout).strip()[:200]}"
+        )
+    return out
+
+
+def _assign_batch(slug: str, *, win: str, name: str, vendor: str) -> None:
+    """Record host/session/tree on the batch's gripes; a refusal is reported."""
+    host = socket.gethostname().split(".")[0]
+    argv = [*_gripe_fix_cmd(), "assign", slug, "--host", host]
+    argv += ["--session", f"{vendor}:{win}", "--tree", name]
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, encoding="utf-8", check=False
+    )
+    if proc.returncode:
+        print(
+            f"fleet-wave: assign {slug} not recorded: "
+            f"{(proc.stderr or proc.stdout).strip()[:200]}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"assigned batch {slug}: {proc.stdout.strip().splitlines()[0][:120]}")
+
+
 def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     name = a.name
     if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         print(f"fleet-wave: bad tree name {name!r}", file=sys.stderr)
         return 2
-    win = ("devin-" if a.devin else "claude-") + name
+    if bool(a.brief) == bool(a.batch):
+        print(
+            "fleet-wave: launch takes exactly one of --brief FILE / --batch SLUG",
+            file=sys.stderr,
+        )
+        return 2
+    if a.devin and a.codex:
+        print("fleet-wave: --devin and --codex are exclusive", file=sys.stderr)
+        return 2
+    vendor = "devin" if a.devin else "codex" if a.codex else "claude"
+    win = f"{vendor}-{name}"
     if win in f.windows():
         print(f"exists: {win}")
         return 0
+    if a.batch:
+        if a.dry_run:
+            print(
+                " ".join(
+                    [
+                        *_gripe_fix_cmd(),
+                        "brief",
+                        a.batch,
+                        "--out",
+                        "<state>/" + win + ".brief.md",
+                    ]
+                )
+            )
+            print(
+                " ".join(
+                    [
+                        *_gripe_fix_cmd(),
+                        "assign",
+                        a.batch,
+                        "--host",
+                        "<host>",
+                        "--session",
+                        f"{vendor}:{win}",
+                        "--tree",
+                        name,
+                    ]
+                )
+            )
+        else:
+            a.brief = str(_render_batch_brief(f, a.batch, win))
     tier = TIER_ALIASES.get(a.tier, a.tier)
+    if a.codex and tier != "W":
+        print(
+            f"fleet-wave: REFUSED --codex at tier {tier}: its codex flags are a "
+            "read-only sandbox, which cannot commit. next: fleet-wave launch "
+            f"{name} --codex --tier W ...",
+            file=sys.stderr,
+        )
+        return 2
     fills = {
         "coordinator": a.coordinator or os.environ.get("FLEET_COORDINATOR", ""),
         "release_owner": a.release_owner or os.environ.get("FLEET_RELEASE_OWNER", ""),
         "approval": a.approval or os.environ.get("FLEET_APPROVAL", ""),
     }
     footer = _fill_footer(_footer_template(f, tier), fills)
-    brief = Path(a.brief).read_text(encoding="utf-8").rstrip("\n")
+    brief = (
+        Path(a.brief).read_text(encoding="utf-8").rstrip("\n")
+        if a.brief
+        else f"<batch {a.batch} dossier, rendered at launch>"
+    )
     _warn_brief_shas(f, brief)
     text = f"{brief}\n{footer}"
     f.state.mkdir(parents=True, exist_ok=True)
@@ -910,7 +1051,14 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         if a.dry_run:
             print(" ".join(argv))
             return 0
-        return subprocess.run(argv, check=False).returncode
+        rc = subprocess.run(argv, check=False).returncode
+        if rc == 0 and a.batch:
+            _assign_batch(a.batch, win=win, name=name, vendor=vendor)
+        return rc
+    if a.codex:
+        return _launch_codex(
+            f, a, name=name, win=win, tier=tier, text=text, codex_flags=codex
+        )
     tmux_argv = ["new-window", "-d", "-n", win, "-c", str(f.main)]
     if f.session:
         tmux_argv[2:2] = ["-t", f"={f.session}:"]
@@ -931,6 +1079,195 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     print(f"launched {win} ({f.model}, tier {tier}, prompt {prompt_file})")
     if codex:
         print(f"codex flags for tier {tier}: {codex}")
+    if a.batch:
+        _assign_batch(a.batch, win=win, name=name, vendor=vendor)
+    return 0
+
+
+_CODEX_NOTE = (
+    "\n\nYou have NO precis MCP access in this session (approval=never refuses "
+    "it). Do not try MCP tools; use the repo, scripts/ and git only. Post to "
+    'the board with scripts/board post {win} "<120 chars>". Use '
+    "UV_CACHE_DIR=/tmp/codex-uv-{name} for every uv/scripts call; never put a "
+    "cache inside the tree. Do not run scripts/test; write tests and run "
+    "ruff, the coordinator runs the tests.\n"
+)
+
+
+def _launch_codex(
+    f: Fleet,
+    a: argparse.Namespace,
+    *,
+    name: str,
+    win: str,
+    tier: str,
+    text: str,
+    codex_flags: str,
+) -> int:
+    """Window ``codex-NAME`` over a locked worktree reading
+    ``scratch/codex-brief.md`` (the launch-codex.sh recipe)."""
+    tree = f.worktrees / name
+    tmux_argv = ["new-window", "-d", "-n", win, "-c", str(tree)]
+    if f.session:
+        tmux_argv[2:2] = ["-t", f"={f.session}:"]
+    if a.dry_run:
+        flags = codex_flags or f"<codex-flags for tier {tier}>"
+        print(" ".join([*tmux_argv, _codex_cmd(flags)]))
+        return 0
+    # The legacy-footer path skips the authority apply in cmd_launch; the
+    # tree and the tier's flags are needed here either way.
+    _ensure_tree(f, name)
+    if not codex_flags:
+        codex_flags = _apply_authority(tier, tree)
+    if not codex_flags:
+        print(
+            f"fleet-wave: REFUSED {win}: no codex flags for tier {tier}",
+            file=sys.stderr,
+        )
+        return 3
+    _git_rc("worktree", "lock", "--reason", f"codex builder {name} (fleet-wave)",
+            str(tree), cwd=f.main)  # fmt: skip
+    if not _tree_locked(f, tree):
+        print(
+            f"fleet-wave: REFUSED {win}: could not lock {tree} (the reaper deletes "
+            "an unlocked sessionless tree); git worktree lock it and relaunch",
+            file=sys.stderr,
+        )
+        return 3
+    (tree / "scratch").mkdir(parents=True, exist_ok=True)
+    (tree / "scratch" / "codex-brief.md").write_text(
+        text + _CODEX_NOTE.format(win=win, name=name), encoding="utf-8"
+    )
+    f.tmux(*tmux_argv, _codex_cmd(codex_flags))
+    # codex exits at once on a flag it rejects; the window dies with it.
+    # Say "launched" and record the builder only for a window still up.
+    time.sleep(a.settle)
+    if f.capture(win) is None:
+        print(
+            f"fleet-wave: REFUSED {win}: window gone within {a.settle:g}s — codex "
+            f"exited (flags: {codex_flags}); run the command by hand to see why",
+            file=sys.stderr,
+        )
+        return 3
+    print(f"launched {win} (codex, tier {tier}, locked tree {tree})")
+    if a.batch:
+        _assign_batch(a.batch, win=win, name=name, vendor="codex")
+    return 0
+
+
+def _codex_cmd(flags: str) -> str:
+    return f"codex {flags} 'Read scratch/codex-brief.md and do exactly what it says.'"
+
+
+def _tree_locked(f: Fleet, tree: Path) -> bool:
+    """Whether ``git worktree list --porcelain`` shows ``tree`` locked."""
+    cur = ""
+    for ln in git("worktree", "list", "--porcelain", cwd=f.main).splitlines():
+        if ln.startswith("worktree "):
+            cur = ln[len("worktree ") :]
+        elif ln.startswith("locked") and Path(cur).resolve() == tree.resolve():
+            return True
+    return False
+
+
+def _send(f: Fleet, win: str, text: str, *, pause: float = 1.0) -> int:
+    """``send-line`` as a call: the same checks (dialog, unsent text,
+    compaction) and the same swallowed-Enter retry."""
+    ns = argparse.Namespace(
+        win=win, text=text, wait=90.0, poll=2.0, retries=2, pause=pause
+    )
+    return cmd_send_line(f, ns)
+
+
+_HANDOFF_RE = re.compile(r"^\s*[⏺•]?\s*DONE-HANDOFF\s*$", re.MULTILINE)
+_RESUME_TEXT = (
+    "Resume your batch in this tree. Read your handoff first (the gripes' "
+    "view='fix', or the handoff file you wrote), then the brief for the rules "
+    "and the finish-message format. Don't redo anything the handoff marks "
+    "done. Commit each piece as soon as it is green. Use scripts/test, never "
+    "bare pytest. Stop at 70% context with a commit and a handoff."
+)
+
+
+def cmd_handoff_wait(f: Fleet, a: argparse.Namespace) -> int:
+    """One line per builder resumed (``/clear`` + the resume line once its
+    pane shows a bare ``DONE-HANDOFF`` and no spinner) or timed out."""
+    pending = list(a.names)
+    start = time.monotonic()
+    resume = a.resume or _RESUME_TEXT
+    for k, _ in enumerate(_ticks(a)):
+        if k:
+            time.sleep(a.interval)
+        if not pending:
+            break
+        left: list[str] = []
+        for name in pending:
+            win = f.resolve(name)
+            pane = f.capture(win) if win else None
+            if pane is None:
+                print(f"GONE {name}")
+                continue
+            tail = "\n".join(nonempty_tail(pane, 15))
+            if _HANDOFF_RE.search(tail) and not BUSY_RE.search(tail):
+                assert win is not None
+                if _send(f, win, "/clear", pause=a.pause) != 0:
+                    # send-line printed why (dialog open, unsent text,
+                    # compacting); the resume line waits for the next tick.
+                    print(f"HELD {name}: /clear not sent; retrying next tick")
+                    left.append(name)
+                    continue
+                time.sleep(a.pause)
+                if _send(f, win, resume, pause=a.pause) != 0:
+                    print(f"HELD {name}: cleared but the resume line was not sent")
+                    left.append(name)
+                    continue
+                print(f"resumed {name} from handoff")
+            elif time.monotonic() - start > a.timeout_min * 60:
+                print(f"TIMEOUT {name}: no DONE-HANDOFF after {a.timeout_min} min")
+            else:
+                left.append(name)
+        pending = left
+    return 0
+
+
+def cmd_reassign(f: Fleet, a: argparse.Namespace) -> int:
+    """``/clear`` a builder and point it at a new brief or batch."""
+    if bool(a.brief) == bool(a.batch):
+        print("fleet-wave: reassign takes exactly one of --brief FILE / --batch SLUG",
+              file=sys.stderr)  # fmt: skip
+        return 2
+    win = f.resolve(a.name)
+    if not win:
+        print(f"fleet-wave: no window {a.name}", file=sys.stderr)
+        return 2
+    vendor = win.split("-", 1)[0]
+    name = win.split("-", 1)[1]
+    brief = a.brief or str(_render_batch_brief(f, a.batch, win))
+    if rc := _send(f, win, "/clear", pause=a.pause):
+        return rc
+    time.sleep(a.pause)
+    if rc := _send(f, win, f"Read {brief} and do it.", pause=a.pause):
+        return rc
+    if a.batch:
+        _assign_batch(a.batch, win=win, name=name, vendor=vendor)
+    print(f"reassigned {win} -> {brief}")
+    return 0
+
+
+def cmd_cites(f: Fleet, a: argparse.Namespace) -> int:
+    """Unlanded branch commits (not on origin/main) naming each gripe id —
+    is it already built somewhere before a new builder starts on it?"""
+    for gid in a.ids:
+        gid = gid.strip().removeprefix("gr")
+        hits = git(
+            "log", "--branches", "--not", "origin/main", "--oneline",
+            f"--grep={gid}", cwd=f.main,
+        ).splitlines()[:5]  # fmt: skip
+        print(f"== gr{gid}")
+        for h in hits:
+            print(h)
+        if not hits:
+            print("none")
     return 0
 
 
@@ -1116,9 +1453,16 @@ def parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("launch", help="start a builder window")
     s.add_argument("name")
-    s.add_argument("--brief", required=True)
+    s.add_argument("--brief", default="", help="brief file (one-off task)")
+    s.add_argument(
+        "--batch",
+        default="",
+        help="gripe batch slug: brief rendered from the gripes, builder recorded on them",
+    )
     s.add_argument("--tier", choices=("R", "W", *TIER_ALIASES), default="R")
     s.add_argument("--devin", action="store_true")
+    s.add_argument("--codex", action="store_true", help="a Codex builder (locked tree)")
+    s.add_argument("--settle", type=float, default=3.0, help=argparse.SUPPRESS)
     s.add_argument("--coordinator", default="")
     s.add_argument("--release-owner", default="")
     s.add_argument("--approval", default="")
@@ -1167,6 +1511,26 @@ def parser() -> argparse.ArgumentParser:
         if cmd == "stuck-watch":
             s.add_argument("--quiet-min", type=int, default=20)
         s.set_defaults(fn=fn)
+
+    s = sub.add_parser("reassign", help="/clear a builder and point it at a new brief")
+    s.add_argument("name")
+    s.add_argument("--brief", default="")
+    s.add_argument("--batch", default="")
+    s.add_argument("--pause", type=float, default=6.0, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_reassign)
+
+    s = sub.add_parser("handoff-wait", help="resume builders that printed DONE-HANDOFF")
+    s.add_argument("names", nargs="+")
+    s.add_argument("--resume", default="", help="the resume line (default built in)")
+    s.add_argument("--timeout-min", type=float, default=15.0)
+    s.add_argument("--interval", type=float, default=20.0)
+    s.add_argument("--ticks", type=int, default=0, help="stop after N polls")
+    s.add_argument("--pause", type=float, default=5.0, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_handoff_wait)
+
+    s = sub.add_parser("cites", help="unlanded branch commits naming gr<ID>")
+    s.add_argument("ids", nargs="+")
+    s.set_defaults(fn=cmd_cites)
 
     s = sub.add_parser(
         "close",

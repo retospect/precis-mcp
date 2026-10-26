@@ -56,6 +56,13 @@ Surface (see ``precis-gripe-help``):
   (:func:`age_summary`, also the session-start digest line).
 - ``tag`` / ``link`` / ``delete`` behave like every other
   first-class numeric ref kind via :class:`NumericRefHandler`.
+- The gripe-fix loop's working state lives on the gripe (gr519361,
+  :mod:`._gripe_fix`): ``edit(id=N|[ids], mode='fix', args={...})`` sets
+  the batch tag, host/session/tree/landed in ``meta.fix`` and appends
+  brief / handoff / review chunks; the card shows a ``fix:`` line,
+  ``view='fix'`` the texts, ``get(id='/queue')`` the derived queues
+  (filter by queue/host/batch) and ``get(id='/batch')`` the census or
+  one batch's dossier.
 """
 
 from __future__ import annotations
@@ -71,6 +78,7 @@ from typing import Any, ClassVar, NamedTuple
 
 from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported
 from precis.handlers import _comment_timeline as tl
+from precis.handlers import _gripe_fix as gf
 from precis.handlers._gripe_themes import THEME_TAG_PREFIX, match_themes
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
@@ -390,7 +398,9 @@ class GripeHandler(NumericRefHandler):
         # the agent reaches for daily ("what's still open?", "what did
         # I decide not to fix?"). Other STATUS values come via the
         # explicit tag filter: search(kind='gripe', tags=['STATUS:in_review']).
-        return ("recent", "open", "wontfix")
+        # /queue and /batch are the gripe-fix loop views (gr519361),
+        # rendered in get() before the base list-view route.
+        return ("recent", "open", "wontfix", "queue", "batch")
 
     paged_list_views: ClassVar[frozenset[str]] = frozenset({"open", "wontfix"})
 
@@ -1350,17 +1360,41 @@ class GripeHandler(NumericRefHandler):
         text: str | None = None,
         body: str | None = None,
         dry_run: bool | str | None = None,
+        # ``mode='fix'`` keys (gr519361, :mod:`._gripe_fix`) — named here
+        # so the dispatcher's args= gate admits them; read only under that
+        # mode, refused with the title door otherwise.
+        batch: str | None = None,
+        host: str | None = None,
+        session: str | None = None,
+        tree: str | None = None,
+        brief: str | None = None,
+        handoff: str | None = None,
+        review: str | None = None,
+        findings: str | None = None,
+        landed: str | None = None,
         **kw: Any,
     ) -> Response:
-        """Rewrite a gripe's title (``refs.title``) only. The body and the
-        comment timeline are append-only: add context with
+        """Rewrite a gripe's title (``refs.title``), or — ``mode='fix'`` —
+        record gripe-fix loop state (:func:`._gripe_fix.apply_patch`). The
+        body and the comment timeline are append-only: add context with
         ``put(id=N, text=...)``. ``text=``/``body=`` are declared only so
         they are refused here, with that recovery named. ``id=[...]``
-        (``batch_ids``) applies the same retitle to every id in one
+        (``batch_ids``) applies the same edit to every id in one
         transaction — :meth:`_edit_batch` (gr514482)."""
+        fix_kw = {
+            "batch": batch,
+            "host": host,
+            "session": session,
+            "tree": tree,
+            "brief": brief,
+            "handoff": handoff,
+            "review": review,
+            "findings": findings,
+            "landed": landed,
+        }
         if isinstance(id, list):
             return self._edit_batch(
-                id, title=title, text=text, body=body, dry_run=dry_run, **kw
+                id, title=title, text=text, body=body, dry_run=dry_run, **fix_kw, **kw
             )
         # The edit verb injects ``verdict='approved'`` on every call
         # (``_WRAPPER_DEFAULTED_KWARGS``); drop that default so the
@@ -1368,6 +1402,20 @@ class GripeHandler(NumericRefHandler):
         # (gr500645). A caller-supplied verdict still lists as unaccepted.
         if kw.get("verdict") == "approved":
             kw.pop("verdict")
+        if kw.get("mode") == "fix":
+            return self._edit_fix(
+                id=id, dry_run=dry_run, title=title, text=text, body=body, **fix_kw
+            )
+        fix_given = sorted(k for k, v in fix_kw.items() if v is not None)
+        if fix_given:
+            raise BadInput(
+                f"{', '.join(fix_given)} are gripe-fix loop keys — they need "
+                "mode='fix'",
+                next=(
+                    f"edit(kind={self.kind!r}, id={id or '<id>'}, mode='fix', "
+                    f"args={{{', '.join(f'{k!r}: ...' for k in fix_given)}}})"
+                ),
+            )
         extra = sorted(
             [k for k, v in kw.items() if v is not None and k != "mode"]
             + [k for k, v in (("text", text), ("body", body)) if v is not None]
@@ -1414,6 +1462,40 @@ class GripeHandler(NumericRefHandler):
         self.store.update_ref(ref.id, title=new)
         return Response(
             body=f"{self._sense()} id={ref.id} title {ref.title!r} → {new!r}"
+        )
+
+    def _edit_fix(
+        self,
+        *,
+        id: str | int | None,
+        dry_run: bool | str | None,
+        title: str | None,
+        text: str | None,
+        body: str | None,
+        **raw: Any,
+    ) -> Response:
+        """``edit(mode='fix')``: validate the whole patch, then write it in
+        one transaction (:func:`._gripe_fix.apply_patch`). The ack's first
+        line lists every change and the derived queue before → after, so
+        :meth:`_edit_batch`'s per-id line carries the effect."""
+        if id is None:
+            raise BadInput(
+                "edit(kind='gripe', mode='fix') requires id=",
+                next="get(kind='gripe', id='/queue') lists the loop; then "
+                "edit(kind='gripe', id=<id>, mode='fix', args={...})",
+            )
+        prose = [k for k, v in (("title", title), ("text", text), ("body", body)) if v]
+        if prose:
+            raise BadInput(
+                f"mode='fix' takes no {', '.join(prose)}= — the brief, handoff and "
+                "review texts are args keys",
+                next=f"edit(kind='gripe', id={id}, mode='fix', args={{'brief': '...'}})",
+            )
+        patch = gf.validate_patch(id, raw)
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        tags = self.store.tags_for(ref.id)
+        return Response(
+            body=gf.apply_patch(self.store, ref, tags, patch, dry_run=bool(dry_run))
         )
 
     def _append_comment(self, *, id: str | int, text: str) -> Response:
@@ -1492,6 +1574,11 @@ class GripeHandler(NumericRefHandler):
         # handling).
         comment: int | str | None = None,
         comments: int | str | None = None,
+        # ``get(id='/queue', args={'queue', 'host', 'batch'})`` filters and
+        # ``get(id='/batch', args={'batch': slug})`` (gr519361).
+        queue: str | None = None,
+        host: str | None = None,
+        batch: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
@@ -1503,6 +1590,33 @@ class GripeHandler(NumericRefHandler):
         view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
+        if id in ("/queue", "/batch"):
+            if _kw.get("page") not in (None, 1) or _kw.get("page_size") is not None:
+                raise BadInput(
+                    f"id={id!r} renders the whole loop on one page; it takes no "
+                    "page/page_size",
+                    next=f"get(kind='gripe', id={id!r}, args={{'queue': 'in-build'}})"
+                    if id == "/queue"
+                    else f"get(kind='gripe', id={id!r}, args={{'batch': '<slug>'}})",
+                )
+            return self._fix_list_view(
+                str(id), view=view, queue=queue, host=host, batch=batch
+            )
+        if queue is not None or host is not None or batch is not None:
+            raise BadInput(
+                "args={'queue'|'host'|'batch'} filter the gripe-fix list views only",
+                next=[
+                    "get(kind='gripe', id='/queue', args={'queue': 'in-build', "
+                    "'host': '<host>'})",
+                    "get(kind='gripe', id='/batch', args={'batch': '<slug>'})",
+                ],
+            )
+        if view == "fix" and id is not None and not isinstance(id, list):
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            tags = self.store.tags_for(ref.id)
+            state = gf.fix_state(self.store, ref, tags)
+            head = "\n".join(self._header_lines(ref, tags))
+            return Response(body=gf.render_fix_view(ref, state, head))
         if isinstance(id, list):
             # Batch form: the base class renders it (summary-shaped) or
             # refuses the view= combination.
@@ -1555,7 +1669,7 @@ class GripeHandler(NumericRefHandler):
                 readings,
             )
         if view is not None and view not in _BASE_VIEWS:
-            views = [*_BASE_VIEWS, "body", "comments", "full"]
+            views = [*_BASE_VIEWS, "body", "comments", "full", "fix"]
             near = difflib.get_close_matches(view, views, n=1)
             lead = f"nearest is view={near[0]!r}. " if near else ""
             raise Unsupported(
@@ -1604,6 +1718,12 @@ class GripeHandler(NumericRefHandler):
             f"comments: {len(comments)} · body: view='body' · "
             "timeline: view='comments'",
         ]
+        # gr519361: a gripe in the fix loop shows its batch, derived queue,
+        # who (session@host), tree, the newest brief/handoff/review ords
+        # and the landed sha — view='fix' reads the texts.
+        fix_line = gf.card_line(gf.build_state(ref, tags, blocks))
+        if fix_line:
+            lines.append(fix_line)
         # One-line gist of the newest visible comment (~80 B): a closer
         # verifying a close (or a skimmer checking state) shouldn't have
         # to open the timeline for the latest word.
@@ -1645,6 +1765,74 @@ class GripeHandler(NumericRefHandler):
             ),
         ]
         return "\n".join(lines)
+
+    def _fix_list_view(
+        self,
+        which: str,
+        *,
+        view: str | None,
+        queue: str | None,
+        host: str | None,
+        batch: str | None,
+    ) -> Response:
+        """``/queue`` (derived queues, filterable) and ``/batch`` (census,
+        or one batch's dossier with ``args={'batch': slug}``) — gr519361.
+
+        The loop's population is every live gripe with a ``meta.fix``
+        key (``list_refs(meta_has='fix')``); terminal gripes drop out of
+        the queues by derivation, so nothing has to be un-tagged on close.
+        """
+        if view is not None:
+            raise BadInput(
+                f"id={which!r} takes no view= (got {view!r})",
+                next=f"get(kind='gripe', id={which!r})",
+            )
+        if queue is not None and queue not in gf.QUEUES:
+            raise BadInput(
+                f"unknown queue {queue!r}",
+                options=list(gf.QUEUES),
+                next="get(kind='gripe', id='/queue', args={'queue': 'in-build'})",
+            )
+        refs = self.store.list_refs(
+            kind=self.kind,
+            meta_has=gf.META_KEY,
+            exclude_tags=sorted(_TERMINAL_STATUS_TAGS),
+            order_by="updated_desc",
+            limit=2000,
+        )
+        states = gf.bulk_states(self.store, refs)
+        if which == "/queue":
+            titles = {r.id: r.title for r in refs}
+            return Response(
+                body=gf.render_queue(
+                    states, titles, queue=queue, host=host, batch=batch
+                )
+            )
+        if queue is not None or host is not None:
+            raise BadInput(
+                "id='/batch' takes args={'batch': '<slug>'} only; queue/host "
+                "filters belong to '/queue'",
+                next="get(kind='gripe', id='/queue', args={'queue': ..., 'host': ...})",
+            )
+        if batch is None:
+            return Response(body=gf.render_batches(states))
+        members = [s for s in states if s.batch == batch]
+        bodies: dict[int, str] = {}
+        comments: dict[int, list[tuple[int, str]]] = {}
+        by_id = {r.id: r for r in refs}
+        for s in members:
+            ref = by_id[s.ref_id]
+            blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+            bodies[ref.id] = next(
+                (b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title
+            )
+            hidden = tl.hidden_comments(ref)
+            comments[ref.id] = [
+                (b.ord, b.text)
+                for b in blocks
+                if b.chunk_kind == _COMMENT_KIND and b.ord not in hidden
+            ]
+        return Response(body=gf.render_batch(batch, states, bodies, comments))
 
     def _dup_lines(self, ref: Ref) -> list[str]:
         """Pipeline v2 slice 2 card lines (``docs/backlog/

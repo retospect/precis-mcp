@@ -221,7 +221,11 @@ get(kind="gripe", id=42, view="full")  # body + comments on one bounded page
 
 A bare `get` shows the body (clipped at ~1500 chars when long) plus a
 one-line gist of the newest comment; the full
-comment timeline stays behind `view='comments'` (gr514351, gr515189). The
+comment timeline stays behind `view='comments'` (gr514351, gr515189). A
+gripe inside a builder wave also shows a `fix:` line — batch, derived
+queue, `session@host`, tree, the newest brief/handoff/review and the
+landed sha — and `view='fix'` reads those texts; the loop itself is
+`precis-gripe-loop-help`. The
 selectors work inside `view='comments'`
 or `view='full'`: `args={'comments': K}` is the newest K,
 `args={'comments': 'A-B'}` is comments A through B (also `'A-'`, A on),
@@ -338,7 +342,11 @@ diff the branch to learn the coverage (gr514899).
 ## Who fixes a gripe?
 ## Can I hand a gripe off to an LLM to fix? {write}
 
-The repo session that owns the gripe's work thread fixes it in
+A coordinator running a builder wave batches gripes, briefs a builder
+and records handoff, review verdict and landed sha on each gripe with
+`edit(kind='gripe', id=[...], mode='fix', args={...})`; the queues are
+`get(kind='gripe', id='/queue')` — see `precis-gripe-loop-help`.
+Otherwise the repo session that owns the gripe's work thread fixes it in
 its own worktree;
 `/pillar-review` relinks unthreaded gripes to a thread. The
 auto-fix lane is OFF by ruling: the groomer mints no `fix_gripe`
@@ -614,6 +622,7 @@ citation audit emits findings and todos, not gripes.
 
 ## See also
 
+- [[precis-gripe-loop-help]] — the builder-wave loop: batch, brief, assign, handoff, verdict, land, close
 - [[precis-fix-gripe-help]] — the fix_gripe job recipe (lane OFF)
 - [[precis-job-help]] — monitor/cancel fix attempts
 - [[precis-search-help]] — search across kinds

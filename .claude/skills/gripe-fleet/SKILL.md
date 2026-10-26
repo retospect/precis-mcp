@@ -1,72 +1,69 @@
 ---
 name: gripe-fleet
-description: "Use when coordinating a builder wave in tmux: ready-check specs, write briefs, pick a landing tier, launch, watch, relay, close with scripts/fleet-wave."
+description: "Use when coordinating a builder wave in tmux: the loop itself is the product skill precis-gripe-loop-help (state on the gripe); this file holds the repo-dev mechanics — fleet-wave launch/close, tiers, Devin/Codex, board, panes, safety rules."
 ---
 
-# gripe-fleet — run a builder wave
+# gripe-fleet — run a builder wave (repo-dev mechanics)
 
-A wave is a batch of independent tasks (usually gripes or ready backlog
-items), one builder session each, in its own worktree and tmux window. The
-coordinator plans and watches; builders build; the release owner deploys.
+**The loop is in the product skill:** `get(kind='skill',
+id='precis-gripe-loop-help')` — triage, batch + brief, assign, handoff,
+review verdict, land queue, close on deploy. Every state lives on the
+gripe (`edit(kind='gripe', id=[...], mode='fix', args={...})`) and every
+queue is `get(kind='gripe', id='/queue')`; a crashed coordinator resumes
+from that view alone. This file is what that skill cannot know — this
+repo's tmux, scripts and authority tiers. Steps 3–8 and the two sections
+after them are authority-gated text: change them only with Reto's typed
+go.
+
 All mechanics go through `scripts/fleet-wave` (`--help` for flags). The
 thread-session fleet (one window per roadmap thread) is `scripts/fleet` and
-the `fleet` skill — a different tool.
+the `fleet` skill — a different tool. Configuration is env or flags, never
+baked in: `FLEET_TMUX_SESSION`, `FLEET_WORKTREES`, `FLEET_MODEL`,
+`FLEET_STATE`, and the footer fills `FLEET_COORDINATOR`,
+`FLEET_RELEASE_OWNER`, `FLEET_APPROVAL` (the user's approval quote for
+the tier, with its UTC time).
 
-Configuration is env or flags, never baked in: `FLEET_TMUX_SESSION`,
-`FLEET_WORKTREES`, `FLEET_MODEL`, `FLEET_STATE`, and the footer fills
-`FLEET_COORDINATOR`, `FLEET_RELEASE_OWNER`, `FLEET_APPROVAL` (the user's
-approval quote for the tier, with its UTC time).
+## Loop step → script
 
-## Steps
+| loop step | here |
+|---|---|
+| batch + brief | the session MCP (`edit(mode='fix')`); the file a builder without MCP reads is `scripts/prod-precis gripe-fix brief <batch> --out FILE` (the `/batch` dossier) |
+| assign / launch | `scripts/fleet-wave launch NAME --batch SLUG --tier R\|W [--devin\|--codex]` renders that file, launches, and records `host`/`<vendor>:<window>`/`tree` on every gripe of the batch (`--brief FILE` for a one-off task); `scripts/prod-precis gripe-fix assign SLUG --host H --session S --tree T` by hand |
+| re-point a builder at a new batch | `scripts/fleet-wave reassign NAME --batch SLUG` (or `--brief FILE`): `/clear`, then "Read … and do it", then assign |
+| watch | `watch-done`, `stuck-watch` under Monitor; `scripts/fleet-wave handoff-wait NAME...` resumes a builder that printed a bare `DONE-HANDOFF` (`/clear` + resume line); `scripts/fleet panes status [--flagged]`; the ctx ceiling nudge is `ctx-guard` once gr515267 lands |
+| handoff | the builder's finish message / handoff → `edit(..., args={'handoff': ...})` on its gripes |
+| review | a `reviewer` agent on the branch; its verdict → `edit(..., args={'review': 'land'\|'fix', 'findings': ...})`; a fix round is the next brief, sent with `send-line` |
+| land | tier R: `landing` rows (tree + sha) to the release owner or a round (`round` skill); tier W: the builder lands; then `edit(..., args={'landed': '<main sha>'})`. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming a gripe (is it already built somewhere?) |
+| close on deploy | the `awaiting-deploy` rows get `resolved: <sha> (r<N>) — …` + `STATUS:done`; `scripts/fleet-wave close NAME...` reaps the tree |
+| import the old file state | `scripts/prod-precis gripe-fix import DIR` (dry run), `--apply` to write |
 
-1. **Ready-check each spec.** One task per builder, with a clear finish
-   line and no overlap with a live tree (`scripts/inflight`). A spec that
-   needs a design decision goes to the user first, not to a builder. The
-   `ready` agent judges a backlog item.
-2. **Write the brief.** One file per builder: the task, numbered slices
-   (one commit each), what to verify before changing, how to test. Name
-   the files and anchors you already know. Briefs point builders at the
-   session MCP for gripe reads — `get(kind='gripe', id=N, view='body')`,
-   `view='comments'` for later rulings; when one does give
-   `scripts/prod-psql` SQL, `ref_id` is a bare bigint (`513753`, not
-   `'gr513753'`) (gr513776). When a task pairs a length
-   target with a per-item content rule ("a shorter summary" plus "one
-   line per group with reason+fix"), give a character budget or say
-   which wins — a literal reading of both can be unsatisfiable, and the
-   builder resolves it by measuring instead of building (gr513765).
-   Carry each gripe's rulings in the brief itself: fold the
-   `view='comments'` notes that bound the work — "parked", "deferred",
-   a narrowed scope — into the gripe text; a bare triage verdict like
-   "fixable without design" that drops them sends the builder guessing
-   scope from conflicting signals (gr514903; gr512667's parked-hexfold
-   landed in a fix batch, gr514870). When a brief constrains a surface,
-   name the allowed functions — "_TOP_KEYS only" is ambiguous about
-   whether a related refusal may live in a neighbouring helper
-   (gr514946).
-   State what a length cap is measured on — the board's 120 counts the
-   note text only, not the timestamp/window `post` prepends (gr515485).
-   Cite only commits on origin/main and say "base on origin/main" —
-   launch warns on a cited sha that is not an ancestor (gr515489); never
-   stack on a squash-landed branch either, its commits are not ancestors
-   (gr515506). The lint step is `scripts/test --typecheck` (mypy on
-   src+tests), never "mypy on touched files" — qland's gate checks
-   tests, so test-file errors bounce the landing (gr515507). When a
-   brief says where a hook is wired, check
-   `docs/reference/hooks.md` — `~/.claude/settings.json` wiring
-   (compact-state-note.sh) is user-level, not the project file
-   (gr515488).
-   The footer is appended at launch; do not restate its rules. When the tier grants precis writes
-   (W), include one line in the brief: the write verbs are deferred
-   tools — before the first `mcp__precis__put`/`edit`/`tag`/`link`, load
-   them with ToolSearch `select:mcp__precis__put,mcp__precis__edit,
-   mcp__precis__tag,mcp__precis__link`; an unselected write dies with
-   `No such tool available` (gr504489). A rebase instruction names
-   `git rebase --autostash origin/main` — a bare `git rebase` refuses on
-   the dirty mid-slice tree, so every builder works around it with a
-   stash/rebase/pop of its own (gr513770). Never brief the heredoc commit
-   recipe `git commit -m "$(cat <<'EOF' …)"` — it trips the shell rules
-   and breaks on apostrophes and backticks in the message; the footer
-   already prescribes `git commit -F <file>` (gr513763).
+Retired scratch (GRIPE_FIX's job dir): `launch3.sh`/`launch-codex.sh` →
+`launch --batch`/`--codex`; `peek.sh`/`peekall.sh` → `peek`;
+`handoff-wait.sh` → `handoff-wait`; `reassign.sh` → `reassign`;
+`dupcheck.sh` → `cites`; `idle-watch.sh` → `panes status` + `stuck-watch`;
+`ctx-guard.sh` → `ctx-guard` (gr515267, in flight); `recover_gf.py` —
+obsolete, the state is in the DB.
+
+## Brief rules that bit here
+
+Briefs point builders at the batch dossier, not at raw SQL; when one does
+give `scripts/prod-psql`, `ref_id` is a bare bigint (gr513776). Cite only
+commits on origin/main and say "base on origin/main" — launch warns on a
+cited sha that is not an ancestor (gr515489, gr515506). The lint step is
+`scripts/test --typecheck`, never "mypy on touched files" (gr515507). A
+rebase instruction names `git rebase --autostash origin/main` (gr513770).
+Never brief the heredoc commit recipe; the footer prescribes `git commit
+-F <file>` (gr513763). When the tier grants precis writes (W), say the
+write verbs are deferred tools: load them with ToolSearch
+`select:mcp__precis__put,mcp__precis__edit,mcp__precis__tag,mcp__precis__link`
+first (gr504489). Hook wiring claims are checked against
+`docs/reference/hooks.md` (gr515488). The footer is appended at launch; do
+not restate its rules. The content rules (length budget vs per-item rule,
+name the allowed functions, what a cap measures) are in
+`precis-gripe-loop-help`.
+
+## Steps (verbatim from the authority-gated text; 1–2 moved to the product skill)
+
 3. **Pick the tier** (`.claude/fleet/authority.md` v2). `R` (default; alias
    `readonly`): builders commit, nothing lands; the release owner lands.
    `W` (alias `qland`): builders land their own slice with

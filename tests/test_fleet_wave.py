@@ -963,3 +963,223 @@ def test_close_on_gone_tree_releases_its_claim(
     assert "status: ready" in text
     assert "claimed-by" not in text
     assert "\trelease\tw2\tdocs/backlog/gone-spec.md" in _claims(env)
+
+
+# ── launch --batch: the brief comes from the gripes (gr519361) ─────────
+
+FAKE_GRIPE_FIX = f"""#!{sys.executable}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_GRIPE_FIX_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(args) + "\\n")
+if args[0] == "brief":
+    out = args[args.index("--out") + 1]
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write("# batch " + args[1] + " — 2 gripes\\n\\n## brief (all)\\nTask text.\\n")
+print("ok")
+"""
+
+
+def _with_gripe_fix(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    exe = tmp_path / "bin" / "fake-gripe-fix"
+    exe.write_text(FAKE_GRIPE_FIX, encoding="utf-8")
+    exe.chmod(0o755)
+    return {
+        **env,
+        "FLEET_GRIPE_FIX_CMD": str(exe),
+        "FAKE_GRIPE_FIX_LOG": str(tmp_path / "gripe-fix.jsonl"),
+        "FLEET_COORDINATOR": "coord-1",
+        "FLEET_RELEASE_OWNER": "rel-2",
+        "FLEET_APPROVAL": "approved 2026-01-01T00:00Z",
+    }
+
+
+def test_launch_batch_renders_brief_and_assigns(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _windows(env, {})
+    proc = _run(env, "launch", "draft-reads", "--batch", "draft-reads", "--tier", "R")
+    assert proc.returncode == 0, proc.stderr
+    log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+    calls = [json.loads(ln) for ln in log.splitlines()]
+    assert calls[0][:2] == ["brief", "draft-reads"]
+    assert calls[0][-1].endswith("claude-draft-reads.brief.md")
+    assign = calls[1]
+    assert assign[:2] == ["assign", "draft-reads"]
+    assert assign[assign.index("--session") + 1] == "claude:claude-draft-reads"
+    assert assign[assign.index("--tree") + 1] == "draft-reads"
+    assert "--host" in assign
+    argv = json.loads(Path(env["FAKE_CLAUDE_LOG"]).read_text(encoding="utf-8"))
+    assert argv[6].startswith("# batch draft-reads")
+    assert "assigned batch draft-reads" in proc.stdout
+
+
+def test_launch_needs_exactly_one_of_brief_and_batch(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _windows(env, {})
+    proc = _run(env, "launch", "x")
+    assert proc.returncode == 2 and "exactly one" in proc.stderr
+    brief = tmp_path / "b.txt"
+    brief.write_text("t\n", encoding="utf-8")
+    proc = _run(env, "launch", "x", "--brief", str(brief), "--batch", "x")
+    assert proc.returncode == 2 and "exactly one" in proc.stderr
+
+
+def test_launch_batch_dry_run_prints_the_commands(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _windows(env, {})
+    proc = _run(env, "launch", "d-y", "--batch", "wave-1", "--devin", "--dry-run")
+    assert proc.returncode == 0, proc.stderr
+    assert "brief wave-1 --out" in proc.stdout
+    assert "assign wave-1 --host <host> --session devin:devin-d-y --tree d-y" in (
+        proc.stdout
+    )
+    assert not Path(env["FAKE_GRIPE_FIX_LOG"]).exists()
+
+
+def _pane_alive(env: dict[str, str], win: str, text: str = IDLE) -> None:
+    """A pane the fake tmux can capture, without listing the window (so a
+    launch does not see it as already existing)."""
+    (Path(env["FAKE_TMUX_DIR"]) / f"pane-{win}.txt").write_text(text, encoding="utf-8")
+
+
+def test_launch_codex_tier_w_uses_the_tier_flags_verbatim(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _windows(env, {})
+    _pane_alive(env, "codex-castor-s2")
+    proc = _run(
+        env, "launch", "castor-s2", "--batch", "castor-s2", "--codex",
+        "--tier", "W", "--settle", "0",
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    nw = next(c for c in _tmux_calls(env) if c[0] == "new-window")
+    assert nw[nw.index("-n") + 1] == "codex-castor-s2"
+    # exactly scripts/fleet-authority's tier-W codex flags, nothing appended
+    assert nw[-1].startswith(
+        "codex --sandbox workspace-write --ask-for-approval on-request 'Read "
+    )
+    assert "never" not in nw[-1] and "scratch/codex-brief.md" in nw[-1]
+    tree = Path(env["FLEET_WORKTREES"]) / "castor-s2"
+    brief = (tree / "scratch" / "codex-brief.md").read_text(encoding="utf-8")
+    assert brief.startswith("# batch castor-s2") and "NO precis MCP access" in brief
+    locked = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=env["CWD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    assert "locked" in locked
+    log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+    assign = json.loads(log.splitlines()[1])
+    assert assign[assign.index("--session") + 1] == "codex:codex-castor-s2"
+    assert "launched codex-castor-s2" in proc.stdout
+
+
+def test_launch_codex_refuses_tier_r(env: dict[str, str], tmp_path: Path) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _windows(env, {})
+    proc = _run(env, "launch", "castor-s2", "--batch", "castor-s2", "--codex")
+    assert proc.returncode == 2
+    assert "REFUSED --codex at tier R" in proc.stderr and "--tier W" in proc.stderr
+    assert not any(c[0] == "new-window" for c in _tmux_calls(env))
+    log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+    assert "assign" not in log  # the brief render happened, nothing was recorded
+
+
+def test_launch_codex_refuses_a_window_that_died(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _windows(env, {})  # no pane for codex-castor-s2: the window is gone
+    proc = _run(
+        env, "launch", "castor-s2", "--batch", "castor-s2", "--codex",
+        "--tier", "W", "--settle", "0",
+    )  # fmt: skip
+    assert proc.returncode == 3, proc.stdout
+    assert "REFUSED codex-castor-s2: window gone" in proc.stderr
+    assert "launched" not in proc.stdout
+    log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+    assert "assign" not in log
+
+
+HANDOFF_PANE = "committed abc1234\n⏺ DONE-HANDOFF\n\n────\n❯ \n────\n  71% ctx\n"
+
+
+def test_handoff_wait_holds_when_clear_is_refused(env: dict[str, str]) -> None:
+    # DONE-HANDOFF printed, but a permission dialog is open: send-line
+    # refuses /clear, so the resume line must not go out either.
+    _windows(env, {"devin-x": "⏺ DONE-HANDOFF\n" + PROMPT})
+    proc = _run(env, "handoff-wait", "x", "--ticks", "1", "--pause", "0")
+    assert proc.returncode == 0, proc.stderr
+    assert "HELD x" in proc.stdout and "resumed" not in proc.stdout
+    assert not any(c[0] == "send-keys" for c in _tmux_calls(env))
+
+
+def test_handoff_wait_clears_and_resumes(env: dict[str, str]) -> None:
+    _windows(env, {"devin-x": HANDOFF_PANE, "devin-y": IDLE})
+    proc = _run(
+        env,
+        "handoff-wait",
+        "x",
+        "y",
+        "--ticks",
+        "1",
+        "--pause",
+        "0",
+        "--resume",
+        "go on",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "resumed x from handoff" in proc.stdout
+    assert "y" not in proc.stdout.replace("resumed x from handoff", "")
+    sends = [c[-1] for c in _tmux_calls(env) if c[0] == "send-keys" and "-l" in c]
+    assert sends == ["/clear", "go on"]
+
+
+def test_reassign_batch_clears_points_and_assigns(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _windows(env, {"devin-x": IDLE})
+    proc = _run(env, "reassign", "x", "--batch", "wave-2", "--pause", "0")
+    assert proc.returncode == 0, proc.stderr
+    sends = [c[-1] for c in _tmux_calls(env) if c[0] == "send-keys" and "-l" in c]
+    assert sends[0] == "/clear"
+    assert sends[1].startswith("Read ") and sends[1].endswith(
+        "devin-x.brief.md and do it."
+    )
+    calls = [
+        json.loads(ln)
+        for ln in Path(env["FAKE_GRIPE_FIX_LOG"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert calls[0][:2] == ["brief", "wave-2"]
+    assert calls[1][:2] == ["assign", "wave-2"]
+    assert calls[1][calls[1].index("--session") + 1] == "devin:devin-x"
+    assert "reassigned devin-x" in proc.stdout
+    assert _run(env, "reassign", "x").returncode == 2
+
+
+def test_cites_lists_unlanded_commits_naming_a_gripe(env: dict[str, str]) -> None:
+    repo = Path(env["CWD"])
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    for cmd in (
+        ["git", "checkout", "-q", "-b", "worktree-z"],
+        ["git", "add", "f.txt"],
+        ["git", "commit", "-q", "-m", "fix(z): the thing (gr514001)"],
+        ["git", "checkout", "-q", "main"],
+    ):
+        subprocess.run(cmd, cwd=repo, check=True)
+    proc = _run(env, "cites", "514001", "gr999999")
+    assert proc.returncode == 0, proc.stderr
+    assert "== gr514001\n" in proc.stdout and "the thing (gr514001)" in proc.stdout
+    assert "== gr999999\nnone" in proc.stdout

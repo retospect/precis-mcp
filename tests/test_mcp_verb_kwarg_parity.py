@@ -154,6 +154,18 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # the wrong rule and verified nothing).
         ("gripe", "put", "new"),
         ("gripe", "put", "observation"),
+        # -- gripe: edit(mode='fix') loop-state keys (gr519361), args= by
+        # design — the coordinator is the only caller (precis-gripe-loop-help)
+        # and eight fix-loop params would sit in every agent's tools/list.
+        # (``review`` is already a full-verb param — draft's sign-off.)
+        ("gripe", "edit", "batch"),
+        ("gripe", "edit", "brief"),
+        ("gripe", "edit", "findings"),
+        ("gripe", "edit", "handoff"),
+        ("gripe", "edit", "host"),
+        ("gripe", "edit", "landed"),
+        ("gripe", "edit", "session"),
+        ("gripe", "edit", "tree"),
         # -- put: diagram kinds ------------------------------------------
         ("figure", "put", "viewbox"),
         ("figure", "put", "vocab"),

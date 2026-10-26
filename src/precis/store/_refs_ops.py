@@ -3110,6 +3110,7 @@ class RefsMixin:
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
+        meta_has: str | None = None,
         owner_login: str | None = None,
         unowned: bool = False,
         id_min: int | None = None,
@@ -3125,6 +3126,10 @@ class RefsMixin:
         offset: int = 0,
     ) -> list[Ref]:
         """Paginated list of live refs, filter by kind/provider/tags.
+
+        ``meta_has=`` keeps refs whose ``meta`` carries that top-level key
+        (``meta ? key`` — the generalised ``has_schedule``); the gripe-fix
+        queue views select the gripes in the loop by ``meta_has='fix'``.
         ``order_by`` is one of :attr:`_LIST_ORDER_BY`'s keys (default
         ``updated_desc``); an unknown key falls back rather than erroring
         (a stale client bookmark can't 500). ``has_pdf``/``has_chunks``
@@ -3174,6 +3179,9 @@ class RefsMixin:
             clauses.append(
                 "(r.meta ? 'schedule')" if has_schedule else "NOT (r.meta ? 'schedule')"
             )
+        if meta_has is not None:
+            params.append(meta_has)
+            clauses.append("(r.meta ? %s)")
         if id_min is not None:
             params.append(id_min)
             clauses.append("r.ref_id >= %s")

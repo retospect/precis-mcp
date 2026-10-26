@@ -215,6 +215,12 @@ COMMANDS: tuple[Command, ...] = (
     _c("podcast", "podcast", "Publish/list private audio-feed episodes."),
     _c("gripes", "gripe", "Dump all filed gripes for human triage."),
     _c(
+        "gripe-fix",
+        "gripe_fix",
+        "Gripe-fix loop: import the file-era state, render a batch brief, "
+        "assign a builder.",
+    ),
+    _c(
         "garden",
         "garden",
         "Read/act on graph-gardener proposals (merge apply + undo).",

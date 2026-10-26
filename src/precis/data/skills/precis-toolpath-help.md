@@ -71,6 +71,7 @@ their own view set instead, is in `precis-overview`.
 |---|---|---|
 | File a task | `put(kind='todo', text='...', tags=['PRIO:high'])` | `precis-todo-help` |
 | File a bug in precis itself | `put(kind='gripe', text='...')` (search first) | `precis-gripe-help` |
+| Batch gripes for a builder, record handoff / verdict / landed sha | `edit(kind='gripe', id=[...], mode='fix', args={'batch': 'x', 'brief': '...'})`; queues `get(kind='gripe', id='/queue')` | `precis-gripe-loop-help` |
 | Keep a note for later | `put(kind='memory', text='...')` | `precis-memory-help` |
 | Rewrite a region of a file | `edit(kind='markdown', id='notes/x.md', find='...', text='...')` | `precis-edit-help` |
 | Delete a matched span | `edit(..., find='...', text='')` | `precis-edit-help` |
