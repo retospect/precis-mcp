@@ -174,8 +174,12 @@ Field notes:
   `polarized: true` for one that actually is (electrolytic/tantalum cap,
   polarized inductor) to keep the mark; a `label` containing ELEC/TANT/POL
   (case-insensitive) infers it too, so a well-named part needs no explicit
-  flag. Every other family (D/Q/U/J/LED/…) is unaffected and always keeps
-  its mark. **Placement constraints**: `group: "<name>"` +
+  flag. `polarized: false` is the opt-out for ANY family (an authored
+  non-polarized footprint, refdes SNS*/PV*) — it suppresses the pin-1 mark
+  entirely (a deliberate skip, not a DRC finding) and beats the label
+  regex, and it is component metadata, not geometry: a re-put that
+  changes it on an existing refdes applies it. **Placement
+  constraints**: `group: "<name>"` +
   `group_offset: {x, y, rot}` lock components into one rigid body the
   autoplacer moves as a unit — the offsets are authored geometry (e.g. the
   two header rows of a daughterboard at their real row pitch); a `fixed`

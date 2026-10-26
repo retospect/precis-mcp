@@ -94,6 +94,23 @@ def _jsonb_or_none(value: Any) -> Jsonb | None:
     return Jsonb(value) if value is not None else None
 
 
+def _json_same(a: Any, b: Any) -> bool:
+    """Structural equality tolerant of the jsonb round-trip — numbers
+    compare by value (an authored ``10`` reads back ``10.0``), dicts and
+    lists recursively. :meth:`PcbMixin._pcb_reput_existing` uses it to tell
+    "authored the same value the row already holds" (idempotent, not
+    ignored) from "authored a change that was dropped" (gr520369)."""
+    if isinstance(a, bool) != isinstance(b, bool):
+        return False
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return math.isclose(float(a), float(b), rel_tol=0.0, abs_tol=1e-9)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_json_same(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_json_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
 #: Sentinel default for :meth:`PcbMixin.pcb_move_instance`'s ``fixed=``
 #: kwarg — lets a caller pass ``fixed=None`` to explicitly CLEAR the lock,
 #: distinct from omitting the kwarg (leave the lock alone).
@@ -600,6 +617,8 @@ class PcbMixin:
         conn: Connection | None = None,
         seeded: list[str] | None = None,
         mapped: list[str] | None = None,
+        ignored: dict[str, list[str]] | None = None,
+        applied: dict[str, list[str]] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """Create-or-extend a design, batch. Returns ``(ref, created,
         counts)``.
@@ -608,8 +627,8 @@ class PcbMixin:
         instance (1:1 convenience): keys ``refdes`` (req), ``label``,
         ``part``/``part_lcsc``, ``footprint``, ``courtyard``, ``centroid``,
         ``height_mm``, ``x``, ``y``, ``rot``, ``layer``, ``fixed``,
-        ``roles``, ``note``, ``pins`` (``[{name, pad?, tags?,
-        description?, note?}]``). Placement-constraint keys ride the
+        ``roles``, ``note``, ``polarized``, ``pins`` (``[{name, pad?,
+        tags?, description?, note?}]``). Placement-constraint keys ride the
         instance's ``meta``: ``group``/``group_offset``,
         ``pattern``/``pattern_instance``, ``edge_mate``. The soft pin
         ``max_travel_mm`` (mm a placer may move the part from its stored
@@ -660,6 +679,18 @@ class PcbMixin:
         as footprint pad numbers and rewritten to pin names
         (``"U1.8 -> GND"``; :meth:`_pcb_map_pad_number_pins`).
 
+        ``ignored``, when given, is an out-dict the apply fills with
+        ``{refdes: [field, ...]}`` — the authored component fields a
+        re-put DROPPED because the refdes already exists (this method's
+        create-or-extend contract reuses it untouched). Only fields whose
+        authored value differs from the stored one are listed, so an
+        idempotent re-put reports nothing (gr520369;
+        :meth:`_pcb_reput_existing`). ``applied`` is the counterpart
+        out-dict for the fields a re-put DOES patch onto an existing
+        refdes — component metadata, not geometry: today that is
+        ``polarized`` (gr520373 ruling: the taz-leaf boards opt their SNS
+        parts out of the pin-1 mark without recreating them).
+
         Reuses ``conn`` inside an existing transaction (e.g. bundling
         the ``net_classes`` upsert so both commit/rollback as one unit);
         opens its own otherwise (mirrors :meth:`pcb_ensure_board`)."""
@@ -678,6 +709,8 @@ class PcbMixin:
                 meta=meta,
                 seeded=seeded,
                 mapped=mapped,
+                ignored=ignored,
+                applied=applied,
             )
         with self._pcb_tx() as c:
             return self._pcb_apply(
@@ -694,6 +727,8 @@ class PcbMixin:
                 meta=meta,
                 seeded=seeded,
                 mapped=mapped,
+                ignored=ignored,
+                applied=applied,
             )
 
     def _pcb_apply(
@@ -712,6 +747,8 @@ class PcbMixin:
         meta: dict[str, Any] | None = None,
         seeded: list[str] | None = None,
         mapped: list[str] | None = None,
+        ignored: dict[str, list[str]] | None = None,
+        applied: dict[str, list[str]] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """The body of :meth:`pcb_apply`, given an already-open ``conn``."""
         existing = self.get_ref(kind="pcb", id=slug)
@@ -902,6 +939,7 @@ class PcbMixin:
 
         declarations: dict[str, list[dict[str, Any]]] = {}
         pending_completions: list[tuple[dict[str, Any], int, str]] = []
+        reused: list[dict[str, Any]] = []
         for c in components:
             refdes = str(c.get("refdes") or "").strip()
             if not refdes:
@@ -924,8 +962,26 @@ class PcbMixin:
                         c["supplies"], refdes, declared_names or None
                     ),
                 }
+            if c.get("polarized") is not None and not isinstance(
+                c.get("polarized"), bool
+            ):
+                # A non-bool flag is a bug, not a value: 'false' (string)
+                # is truthy and would read as POLARIZED while
+                # `unpolarized_refdes`'s `is False` never opts it out.
+                raise ValueError(
+                    f"pcb component {refdes!r}: 'polarized' is a boolean "
+                    f"flag (true/false), got {c.get('polarized')!r}"
+                )
             if refdes in inst_by_refdes:
                 comp_id = inst_by_refdes[refdes][1]
+                # gr520369 — the whole authored dict is dropped for an
+                # existing refdes (create-or-extend); keep it so the
+                # post-connection diff below can say WHICH of its fields
+                # were ignored (and patch `polarized`, which is component
+                # metadata, not geometry — `_pcb_reput_existing`). A
+                # generator expansion's emitted component reaches here
+                # identically.
+                reused.append(c)
             else:
                 comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
                 counts["components"] += 1
@@ -1060,6 +1116,19 @@ class PcbMixin:
             }
             self._pcb_check_free_ended_nets(conn, changed)
 
+        # gr520369 — the authored-vs-stored diff runs AFTER both the
+        # declare-all completion AND the connections loop: a pin the
+        # footprint just supplied doesn't read as dropped, and neither
+        # does a bare name this batch's own connections minted
+        # (`_pcb_pin_id` creates a pin on first reference — a re-put that
+        # declares AND wires a new name is a legal extension, not a
+        # dropped declaration). Two batched queries for the whole reused
+        # set, not one per component (same N+1 discipline as
+        # `pending_completions` above); the same pass patches `polarized`
+        # onto the stored component meta.
+        if reused:
+            self._pcb_reput_existing(conn, ref.id, reused, ignored, applied)
+
         for mm in measures or []:
             self._pcb_insert_measure(conn, ref.id, mm)
             counts["measures"] += 1
@@ -1097,6 +1166,259 @@ class PcbMixin:
         )
         self._pcb_reconcile_part_edges(conn, ref.id)
         return ref, created, counts
+
+    def _pcb_reput_existing(
+        self,
+        conn: Connection,
+        ref_id: int,
+        reused: list[dict[str, Any]],
+        ignored: dict[str, list[str]] | None,
+        applied: dict[str, list[str]] | None,
+    ) -> None:
+        """The re-put pass over EXISTING refdes: patch the component
+        metadata a re-put may change, then report the authored fields it
+        dropped.
+
+        The apply half (gr520373 ruling): ``polarized`` is component
+        metadata, not geometry, so a re-put that changes it on an
+        existing refdes writes it through to ``pcb_components.meta`` —
+        the taz-leaf boards opt their SNS parts out of the pin-1 mark
+        without recreating them — and reports the field under
+        ``applied``, not ``ignored``. An idempotent re-put (authored ==
+        stored) writes nothing and stays quiet.
+
+        The report half fills ``ignored`` with ``{refdes: [field, ...]}``
+        — the authored fields on each EXISTING refdes that differ from
+        what is stored and were therefore dropped by the create-or-extend
+        contract (gr520369: a re-put used to discard them silently, so a
+        full-board batch read as a clean extend while poses, locks, pin
+        intent and pin_decls all fell off). Two batched queries for the
+        whole set — the instance+component rows, then every live pin of
+        the reused components (read AFTER the connections loop, so a pin
+        this batch's own connections just minted is not reported as a
+        name the part lacks) — then per-field comparison in
+        :meth:`_pcb_reput_ignored_fields`. Only CHANGED fields are
+        reported: an idempotent re-put that re-supplies stored values
+        fills nothing. Either out-dict may be ``None`` — the apply half
+        runs regardless."""
+        refdes_list = [
+            str(c.get("refdes") or "").strip()
+            for c in reused
+            if str(c.get("refdes") or "").strip()
+        ]
+        if not refdes_list:
+            return
+        stored = {
+            str(r[0]): r
+            for r in conn.execute(
+                "SELECT i.refdes, i.x, i.y, i.rot, i.layer, i.fixed, "
+                "       i.roles, i.meta, i.max_travel_mm, "
+                "       c.label, c.part_lcsc, c.footprint, c.courtyard, "
+                "       c.centroid, c.height_mm, c.note, c.meta, "
+                "       c.component_id "
+                "FROM pcb_instances i "
+                "JOIN pcb_components c ON c.component_id = i.component_id "
+                "WHERE i.ref_id = %s AND i.retired_at IS NULL "
+                "AND i.refdes = ANY(%s)",
+                (ref_id, refdes_list),
+            ).fetchall()
+        }
+        comp_ids = [int(r[17]) for r in stored.values()]
+        pins: dict[int, dict[str, tuple[list[Any], dict[str, Any], Any, Any]]] = {}
+        if comp_ids:
+            for comp_id, name, tags, description, note, meta in conn.execute(
+                "SELECT component_id, name, tags, description, note, meta "
+                "FROM pcb_pins "
+                "WHERE component_id = ANY(%s) AND retired_at IS NULL",
+                (comp_ids,),
+            ).fetchall():
+                pins.setdefault(int(comp_id), {})[str(name)] = (
+                    list(tags or []),
+                    dict(meta or {}),
+                    description,
+                    note,
+                )
+        for c in reused:
+            refdes = str(c.get("refdes") or "").strip()
+            row = stored.get(refdes)
+            if row is None:
+                continue
+            authored_pol = c.get("polarized")
+            if authored_pol is not None and not _json_same(
+                authored_pol, (row[16] or {}).get("polarized")
+            ):
+                conn.execute(
+                    "UPDATE pcb_components SET meta = meta || %s "
+                    "WHERE component_id = %s",
+                    (Jsonb({"polarized": authored_pol}), int(row[17])),
+                )
+                if applied is not None:
+                    applied.setdefault(refdes, []).append("polarized")
+            if ignored is None:
+                continue
+            fields = self._pcb_reput_ignored_fields(
+                c, refdes, row, pins.get(int(row[17]), {})
+            )
+            if fields:
+                ignored[refdes] = fields
+
+    #: A re-put's ``i.meta`` placement-constraint keys, diffed against the
+    #: stored instance meta (:meth:`_pcb_reput_ignored_fields`).
+    _REPUT_INSTANCE_META_KEYS = (
+        "group",
+        "group_offset",
+        "pattern",
+        "pattern_instance",
+        "edge_mate",
+    )
+
+    #: A re-put's ``c.meta`` component-fact keys, diffed against the
+    #: stored component meta. ``part_meta`` is handled separately — it
+    #: stores under ``meta['part']``, not its own key. ``polarized`` is
+    #: absent on purpose: component metadata a re-put PATCHES
+    #: (:meth:`_pcb_reput_existing`), never an ignored field.
+    _REPUT_COMPONENT_META_KEYS = (
+        "pin_swap_groups",
+        "pin_decls",
+        "supplies",
+    )
+
+    @classmethod
+    def _pcb_reput_ignored_fields(
+        cls,
+        c: dict[str, Any],
+        refdes: str,
+        row: Any,
+        pins: dict[str, tuple[list[Any], dict[str, Any], Any, Any]],
+    ) -> list[str]:
+        """The authored keys of ``c`` that a re-put just dropped for the
+        EXISTING ``refdes`` — i.e. present in the batch dict AND different
+        from the stored row (``row`` is the
+        :meth:`_pcb_reput_existing` SELECT tuple). Presence-based like
+        :meth:`_pcb_patch_net`: a key the batch omits is never reported,
+        and one re-supplying the stored value reports nothing either —
+        only a real authored change counts as "ignored". ``pins`` is the
+        stored ``{name: (tags, meta, description, note)}`` map AFTER
+        declare-all completion AND the connections loop (so a name this
+        batch's own connection just minted is present): a pin named in
+        the batch that the component still lacks reports
+        ``"pins (new name)"`` — ``op='pins'`` cannot reach it (it
+        annotates real pins only); one carrying semantics
+        (:func:`precis.pcb.rows.pin_tags_meta` folds them the same way
+        the insert path does) that differ from the stored pin reports
+        ``"pins"`` once; and a changed ``description``/``note`` reports
+        ``"pins (description/note)"`` — also not ``op='pins'``-editable,
+        so it reads insert-only."""
+        i_meta = row[7] or {}
+        c_meta = row[16] or {}
+        fields: list[str] = []
+
+        def changed(key: str, stored: Any) -> None:
+            authored = c.get(key)
+            if authored is not None and not _json_same(authored, stored):
+                fields.append(key)
+
+        changed("x", row[1])
+        changed("y", row[2])
+        if c.get("rot") is not None or c.get("rot_deg") is not None:
+            try:
+                authored_rot = _rot_deg(c)
+            except (TypeError, ValueError):
+                authored_rot = None
+            if authored_rot is not None and (
+                row[3] is None
+                or not math.isclose(
+                    float(authored_rot), float(row[3]), rel_tol=0.0, abs_tol=1e-9
+                )
+            ):
+                fields.append("rot")
+        changed("layer", row[4])
+        changed("fixed", row[5])
+        if c.get("roles") is not None and sorted(map(str, c["roles"] or [])) != sorted(
+            map(str, row[6] or [])
+        ):
+            fields.append("roles")
+        for k in cls._REPUT_INSTANCE_META_KEYS:
+            changed(k, i_meta.get(k))
+        changed("max_travel_mm", row[8])
+        # An authored label '' stores as the refdes
+        # (`_pcb_insert_component`'s `label or refdes`), so diff the
+        # EFFECTIVE value — a re-put authoring `label: ''` on the part it
+        # names is idempotent, not a change.
+        authored_label = c.get("label")
+        if authored_label is not None and not _json_same(
+            str(authored_label or refdes), row[9]
+        ):
+            fields.append("label")
+        part = c.get("part_lcsc") or c.get("part")
+        if (
+            part is not None
+            and str(part).strip().upper() != str(row[10] or "").strip().upper()
+        ):
+            fields.append("part")
+        changed("footprint", row[11])
+        changed("courtyard", row[12])
+        changed("centroid", row[13])
+        changed("height_mm", row[14])
+        changed("note", row[15])
+        for k in cls._REPUT_COMPONENT_META_KEYS:
+            changed(k, c_meta.get(k))
+        changed("part_meta", c_meta.get("part"))
+
+        if c.get("pins"):
+            declared = set(pins) | {
+                str(p.get("name") or "").strip()
+                for p in c["pins"]
+                if isinstance(p, dict)
+            }
+            new_name = False
+            dropped = False
+            prose = False
+            for p in c["pins"]:
+                if not isinstance(p, dict):
+                    continue
+                name = str(p.get("name") or "").strip()
+                if not name:
+                    continue
+                stored_pin = pins.get(name)
+                if stored_pin is None:
+                    # A name the component still lacks after this batch's
+                    # own connections had their chance to mint it: the
+                    # declaration was dropped outright, and op='pins'
+                    # refuses unknown names — reported separately so the
+                    # reply can name the step that DOES create it.
+                    new_name = True
+                    continue
+                # A bare {name, pad} re-declaration wires connections; it
+                # asserts no semantics, so it is not a dropped change.
+                # Pad conflicts on an existing name are refused by
+                # validate_pin_declarations before this point anyway.
+                if set(p) - {"name", "pad"}:
+                    try:
+                        tags, meta = pcb_rows.pin_tags_meta(p, refdes, declared)
+                    except ValueError:
+                        dropped = True
+                        break
+                    st_tags, st_meta, st_desc, st_note = stored_pin
+                    if sorted(map(str, tags)) != sorted(
+                        map(str, st_tags)
+                    ) or not _json_same(meta, st_meta):
+                        dropped = True
+                    if (
+                        p.get("description") is not None
+                        and not _json_same(p.get("description"), st_desc)
+                    ) or (
+                        p.get("note") is not None
+                        and not _json_same(p.get("note"), st_note)
+                    ):
+                        prose = True
+            if dropped:
+                fields.append("pins")
+            if prose:
+                fields.append("pins (description/note)")
+            if new_name:
+                fields.append("pins (new name)")
+        return fields
 
     def _pcb_reconcile_part_edges(
         self, conn: Connection, ref_id: int, *, dry_run: bool = False
@@ -1548,7 +1870,7 @@ class PcbMixin:
         # and rides the same way (already normalised by `_pcb_apply`).
         component_meta = {
             k: c[k]
-            for k in ("pin_swap_groups", "pin_decls", "supplies")
+            for k in ("pin_swap_groups", "pin_decls", "supplies", "polarized")
             if c.get(k) is not None
         }
         if c.get("part_meta"):
@@ -2817,6 +3139,13 @@ class PcbMixin:
                         if "part" in (r[14] or {})
                         else {}
                     ),
+                    # gr520373 — the authored polarity flag, False included
+                    # (explicitly unpolarized is a real declaration).
+                    **(
+                        {"polarized": (r[14] or {})["polarized"]}
+                        if "polarized" in (r[14] or {})
+                        else {}
+                    ),
                     **{
                         k: (r[13] or {})[k]
                         for k in (
@@ -3087,6 +3416,15 @@ class PcbMixin:
                     **(
                         {"pin_decls": (r[14] or {})["pin_decls"]}
                         if "pin_decls" in (r[14] or {})
+                        else {}
+                    ),
+                    # `polarized` (gr520373) — the authored polarity
+                    # declaration `polarized_refdes`/`unpolarized_refdes`
+                    # read; False hoists too (an explicit non-polarized
+                    # footprint suppresses its pin-1 mark).
+                    **(
+                        {"polarized": (r[14] or {})["polarized"]}
+                        if "polarized" in (r[14] or {})
                         else {}
                     ),
                     # `supplies` (§1b): list of {role, blocks, ...}.

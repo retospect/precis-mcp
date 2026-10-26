@@ -38,6 +38,7 @@ def board_furniture(
     capability: CapabilityRow | None = None,
     date: str | None = None,
     polarized: frozenset[str] = frozenset(),
+    unpolarized: frozenset[str] = frozenset(),
     label_spots: dict[str, str] | None = None,
     profile: str | None = None,
 ) -> tuple[
@@ -83,7 +84,9 @@ def board_furniture(
     component flags/labels (this function only sees ``ir``/``pads``,
     never a label). Defaults to empty, same "every pre-2026-09-01
     caller's behaviour is unchanged" contract ``build_silk`` itself
-    documents. ``label_spots`` is passed through the same way — the
+    documents. ``unpolarized`` (gr520373) likewise — refdes explicitly
+    declared ``"polarized": false``, suppressing the pin-1 attempt for
+    any family. ``label_spots`` is passed through the same way — the
     per-instance refdes-label spot overrides (``session.label_spots``
     off the raw design; ``build_silk``'s docstring defines the map).
 
@@ -148,6 +151,7 @@ def board_furniture(
             instance_sides=instance_sides,
             capability=capability,
             polarized=polarized,
+            unpolarized=unpolarized,
             label_spots=label_spots,
             height_mm=refdes_height_mm,
         )
@@ -349,6 +353,7 @@ def board_furniture(
         capability=capability,
         outline=[(float(p[0]), float(p[1])) for p in outline],
         polarized=polarized,
+        unpolarized=unpolarized,
         label_spots=label_spots,
         height_mm=refdes_height_mm,
     )

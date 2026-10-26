@@ -3252,17 +3252,20 @@ def check_silk_missing(
         )
 
     silkscreen = model.get("silkscreen") or {}
-    drawn: set[tuple[str, str]] = set()
-    for side_draws in silkscreen.values():
+    drawn: set[tuple[str, str, str]] = set()
+    for side_name, side_draws in silkscreen.items():
         for draw in side_draws:
             kind = _ROLE_TO_SILK_KIND.get(str(draw.get("role") or ""))
             refdes = str(draw.get("refdes") or "")
             if kind is not None and refdes:
-                drawn.add((refdes, kind))
+                # gr520373 item 2 — keyed by SIDE: ink for a bottom part
+                # must appear in silkscreen['bottom']; a draw on the
+                # wrong face cannot satisfy the census row.
+                drawn.add((refdes, kind, str(side_name)))
     for c in census:
         if c.outcome not in ("placed", "relocated"):
             continue
-        if (c.refdes, c.kind) in drawn:
+        if (c.refdes, c.kind, c.side) in drawn:
             continue
         findings.append(
             DrcFinding(

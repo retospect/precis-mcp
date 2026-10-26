@@ -1630,23 +1630,43 @@ def polarized_refdes(design: dict[str, Any]) -> frozenset[str]:
     The IR silk builds from has refdes but no labels, so this happens off
     the raw design's ``instances`` list. An instance is polarized when it
     declares ``"polarized": true`` outright, OR its ``label`` matches
-    (case-insensitively) one of ELEC/TANT/POL — neither test authoritative
-    on its own: a label is free text a BOM author may not have written
-    consistently, and a design with no ``polarized`` flag at all (the
-    common case today) must still infer polarity from whatever label it
-    has."""
+    (case-insensitively) one of ELEC/TANT/POL — the EXPLICIT flag, either
+    way, is authoritative over the label test (gr520373): a ``polarized``:
+    false`` part keeps its unpolarized verdict even under an ELEC/TANT/POL
+    label, while a label remains the fallback for a design with no flag at
+    all (the common case — free text a BOM author may not have written
+    consistently)."""
     out: set[str] = set()
     for i in design.get("instances") or []:
         refdes = str(i.get("refdes") or "")
         if not refdes:
             continue
-        if i.get("polarized"):
-            out.add(refdes)
+        if i.get("polarized") is not None:
+            if i["polarized"]:
+                out.add(refdes)
             continue
         label = str(i.get("label") or "")
         if _POLARIZED_LABEL_RE.search(label):
             out.add(refdes)
     return frozenset(out)
+
+
+def unpolarized_refdes(design: dict[str, Any]) -> frozenset[str]:
+    """The refdes of every instance EXPLICITLY declared unpolarized —
+    ``"polarized": false`` on the component (gr520373). This is the
+    footprint-level "no pin-1 mark" opt-out that used to work only by
+    accident of refdes family (R/C/L/FB were exempt regardless); any
+    family may now declare it — the authored wetness-comb ``SNS``
+    footprints whose forced pin-1 marks the gripe reported. Deliberate
+    skips, not failures: ``build_silk`` renders them census
+    ``not_applicable``, never ``dropped``, so ``check_silk_missing``
+    stays quiet. Reads the same ``design['instances']`` shape
+    :func:`polarized_refdes` does."""
+    return frozenset(
+        refdes
+        for i in design.get("instances") or []
+        if (refdes := str(i.get("refdes") or "")) and i.get("polarized") is False
+    )
 
 
 def label_spots(design: dict[str, Any]) -> dict[str, str]:
@@ -1690,4 +1710,5 @@ __all__ = [
     "signal_layers",
     "sorted_graph",
     "stackup_capability",
+    "unpolarized_refdes",
 ]

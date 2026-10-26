@@ -370,6 +370,27 @@ _GROUP_MOVE_MARGIN_EPS_MM = 1e-4
 _MOVE_COLUMN_KEYS = frozenset(
     {"layer", "max_travel_mm", "fixed_side", "group_fixed", "room_id"}
 )
+
+#: gr520369 — for each component field a re-put drops on an EXISTING
+#: refdes (``store.pcb_apply(ignored=…)``), the ``args={'op': …}`` edit
+#: that applies it. A field absent here is insert-only: the batch put
+#: writes it once at component creation and no op revisits it — the
+#: reply says so rather than implying an edit exists.
+_REPUT_FIELD_OPS: dict[str, str] = {
+    "x": "op='move'",
+    "y": "op='move'",
+    "rot": "op='move'",
+    "layer": "op='move' (side=)",
+    "fixed": "op='move'",
+    "max_travel_mm": "op='move'",
+    "pins": "op='pins'",
+    # op='pins' annotates REAL pins only and refuses a name the component
+    # lacks — a pin the design never declared is minted by wiring it,
+    # then annotated.
+    "pins (new name)": (
+        "connect to it in a re-put to mint it, then op='pins' for semantics"
+    ),
+}
 _MOVES_EXAMPLE = (
     "args={'op':'move','moves':[{'refdes':'U1','x':10,'y':5},"
     "{'refdes':'U2','x':20,'y':5,'rot':90}]}"
@@ -1187,6 +1208,8 @@ class PcbHandler(Handler):
                 )
             tag_counts: dict[str, Any] = {}
             mapped: list[str] = []
+            ignored: dict[str, list[str]] = {}
+            applied: dict[str, list[str]] = {}
 
             def apply(conn: Any) -> tuple[Any, bool, dict[str, int], int]:
                 seeded: list[str] = []
@@ -1204,6 +1227,8 @@ class PcbHandler(Handler):
                     conn=conn,
                     seeded=seeded,
                     mapped=mapped,
+                    ignored=ignored,
+                    applied=applied,
                 )
                 if profile is not None:
                     self.store.pcb_set_board_profile(ref.id, profile, conn=conn)
@@ -1314,6 +1339,8 @@ class PcbHandler(Handler):
             if mapped
             else ""
         )
+        ignored_block = self._reput_ignored_block(ignored)
+        applied_block = self._reput_applied_block(applied)
         head = (
             f"# {slug} — {verb}: +{counts['components']} part(s), "
             f"+{counts['nets']} net(s), +{counts['conns']} conn(s){extra}  "
@@ -1328,6 +1355,8 @@ class PcbHandler(Handler):
             + judged.lines()
             + (tag_line + "\n" if tag_line else "")
             + mapped_line
+            + ignored_block
+            + applied_block
             + "".join(n + "\n" for n in notes)
             + (f"{queued} datasheet pull(s) queued\n" if queued else "")
             + (
@@ -1337,6 +1366,56 @@ class PcbHandler(Handler):
             )
             + self._put_echo(ref.id)
             + self._toc(design)
+        )
+
+    @staticmethod
+    def _reput_ignored_block(ignored: dict[str, list[str]]) -> str:
+        """gr520369 — the "your authored changes were dropped" section of a
+        batch-put reply: one line per EXISTING refdes naming every field the
+        create-or-extend contract ignored and the op that applies each
+        (:data:`_REPUT_FIELD_OPS`; anything else is insert-only). Empty
+        when no authored field differed — an idempotent re-put stays quiet."""
+        if not ignored:
+            return ""
+        lines = []
+        for refdes in sorted(ignored):
+            by_op: dict[str, list[str]] = {}
+            for field in ignored[refdes]:
+                by_op.setdefault(_REPUT_FIELD_OPS.get(field, "insert-only"), []).append(
+                    field
+                )
+            lines.append(
+                f"- {refdes}: "
+                + "; ".join(
+                    f"{', '.join(fields)} → {op}" for op, fields in by_op.items()
+                )
+            )
+        return (
+            "\n## ignored on re-put — an existing refdes keeps what it has "
+            "(create-or-extend, never an edit):\n"
+            + "\n".join(lines)
+            + "\n(insert-only = no op edits it after authoring; a wrong pin "
+            "name is op='pin_rename'/'pin_remove', and re-authoring anything "
+            "else means a new design — delete + put)\n"
+        )
+
+    @staticmethod
+    def _reput_applied_block(applied: dict[str, list[str]]) -> str:
+        """The counterpart of :meth:`_reput_ignored_block` for the fields
+        a re-put DID patch onto an existing refdes — component metadata,
+        not geometry (``store.pcb_apply(applied=…)``; today ``polarized``,
+        gr520373). Empty when nothing applied — an idempotent re-put
+        stays quiet there too."""
+        if not applied:
+            return ""
+        return (
+            "\n## applied on re-put — component metadata the existing "
+            "refdes took this time:\n"
+            + "\n".join(
+                f"- {refdes}: {', '.join(applied[refdes])}"
+                for refdes in sorted(applied)
+            )
+            + "\n"
         )
 
     def _put_tags(
@@ -4079,6 +4158,7 @@ class PcbHandler(Handler):
         capability: CapabilityRow | None = None,
         date: str | None = None,
         polarized: frozenset[str] = frozenset(),
+        unpolarized: frozenset[str] = frozenset(),
         label_spots: dict[str, str] | None = None,
         profile: str | None = None,
     ) -> tuple[
@@ -4106,6 +4186,7 @@ class PcbHandler(Handler):
             capability=capability,
             date=date,
             polarized=polarized,
+            unpolarized=unpolarized,
             label_spots=label_spots,
             profile=profile,
         )
@@ -4509,6 +4590,7 @@ class PcbHandler(Handler):
                 vias=vias,
                 instance_sides=instance_sides,
                 polarized=self._polarized_refdes(design),
+                unpolarized=pcb_session.unpolarized_refdes(design),
                 label_spots=pcb_session.label_spots(design),
                 copper=copper,
                 outline=outline,
@@ -6995,6 +7077,7 @@ class PcbHandler(Handler):
                 vias=vias,
                 instance_sides=instance_sides,
                 polarized=self._polarized_refdes(design),
+                unpolarized=pcb_session.unpolarized_refdes(design),
                 label_spots=pcb_session.label_spots(design),
                 copper=copper,
                 outline=outline,

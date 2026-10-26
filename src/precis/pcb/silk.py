@@ -1115,6 +1115,31 @@ def _via_reaches_side(span: Any, layer_names: list[str]) -> tuple[bool, bool]:
     return top_idx == 0, bottom_idx == len(layer_names) - 1
 
 
+def _pad_reaches_side(pad: dict[str, Any], layer_names: list[str]) -> tuple[bool, bool]:
+    """``(reaches_top, reaches_bottom)`` for a pad obstacle — the pad
+    counterpart of :func:`_via_reaches_side` (gr520373 item 2: bottom
+    silk was being checked against TOP pads, so a bottom part whose
+    courtyard overlapped a top pad lost its silk to a collision that
+    cannot exist — ink on one face never touches copper on the other).
+    A pad's ``layer`` names the OUTER copper its land flashes on
+    (stackup index 0 = top, last = bottom, same convention as the via
+    span); ``"top"``/``"bottom"`` literals are accepted for fixtures
+    that never named a stackup. A ``drill`` pad (THT) exposes its
+    annulus on BOTH faces, like a through via. A pad with no usable
+    layer signal at all reaches both — the same never-under-flag
+    default the via path takes on a malformed span."""
+    if pad.get("drill"):
+        return True, True
+    if not layer_names or layer_names[0] == layer_names[-1]:
+        return True, True
+    layer = str(pad.get("layer") or "")
+    if layer in (layer_names[0], "top"):
+        return True, False
+    if layer in (layer_names[-1], "bottom"):
+        return False, True
+    return True, True
+
+
 # ─────────────────────────────────────────────────────────────────────
 # per-instance geometry
 # ─────────────────────────────────────────────────────────────────────
@@ -1291,8 +1316,20 @@ def _pin1_dot_candidates(
             # Clear of the courtyard's own reach in THIS direction, plus
             # the fab clearance and the dot's own radius — the first ring
             # is the closest the dot may legally sit, and each further
-            # ring adds one diameter.
-            first = _courtyard_support_mm(courtyard, ux, uy) + clearance_mm + dia / 2.0
+            # ring adds one diameter. The support is measured from the
+            # instance ORIGIN while the dot offsets from pin 1, so pin
+            # 1's own projection in this direction comes off first —
+            # omitting it placed the mark ~|pin 1| beyond the hull edge
+            # (gr520373: PV1's dot on the hanger ring, ~11mm off the
+            # part, because its pin 1 sits at local x=10.7).
+            first = (
+                max(
+                    _courtyard_support_mm(courtyard, ux, uy) - dx * ux - dy * uy,
+                    0.0,
+                )
+                + clearance_mm
+                + dia / 2.0
+            )
             radius = first + step * dia
             out.append(((dx + ux * radius, dy + uy * radius), dia))
     return out
@@ -3805,6 +3842,7 @@ def build_silk(
     capability: CapabilityRow | None = None,
     outline: list[tuple[float, float]] | None = None,
     polarized: frozenset[str] | None = None,
+    unpolarized: frozenset[str] | None = None,
     label_spots: dict[str, str] | None = None,
 ) -> SilkResult:
     """Build ``{"top": [...], "bottom": [...]}`` silk draws for every
@@ -3824,6 +3862,13 @@ def build_silk(
     (:mod:`precis.handlers.pcb` reads it off a ``"polarized": true``
     component flag or a label match) — this module only knows refdes and
     geometry, never labels.
+
+    ``unpolarized`` (gr520373) is the mirror set: refdes EXPLICITLY
+    declared unpolarized (``"polarized": false`` on the component), which
+    suppresses the pin-1 attempt for ANY family — not only the
+    R/C/L/FB-exempt ones — and wins over ``polarized`` membership. The
+    footprint-level "no pin-1 mark" the policy used to grant only by
+    accident of refdes prefix. ``None`` = empty, unchanged behaviour.
 
     ``pads`` is the board's real flashed pad geometry, in
     :mod:`precis.pcb.gerber`'s ``model["pads"]`` shape — used ONLY to
@@ -3906,6 +3951,7 @@ def build_silk(
         "capability": capability,
         "outline": outline,
         "polarized": polarized,
+        "unpolarized": unpolarized,
         "label_spots": label_spots,
     }
     result, bulges = _build_silk_pass(ir, pads, bulge_veto=frozenset(), **common)
@@ -3969,6 +4015,7 @@ def _build_silk_pass(
     capability: CapabilityRow | None,
     outline: list[tuple[float, float]] | None,
     polarized: frozenset[str] | None,
+    unpolarized: frozenset[str] | None,
     label_spots: dict[str, str] | None,
     bulge_veto: frozenset[tuple[str, str]] | None,
 ) -> tuple[SilkResult, dict[str, list[tuple[str, float, float]]]]:
@@ -3976,6 +4023,7 @@ def _build_silk_pass(
     bulges); also returns the bulges kept, by refdes."""
     sides = instance_sides or {}
     polarized_set = polarized or frozenset()
+    unpolarized_set = unpolarized or frozenset()
     label_spots = label_spots or {}
     top: list[dict[str, Any]] = []
     bottom: list[dict[str, Any]] = []
@@ -4010,24 +4058,36 @@ def _build_silk_pass(
         if reaches_bottom:
             bottom_via_pads.append(via_pad)
 
-    # The ONE obstacle list per side (module docstring): seeded with real
-    # pads, that side's via annuli, and the caller's board-level `reserved`
-    # geometry -- then grown in place as each instance's own silk survives,
-    # so it is simultaneously "what this instance must avoid" and "what the
-    # NEXT instance (and this instance's later draws) must avoid".
+    # The ONE obstacle list per side (module docstring): seeded with the
+    # real pads REACHING that side (gr520373: every pad used to seed BOTH
+    # sides, so bottom silk could be scraped off by top copper -- a
+    # collision that cannot exist; `_pad_reaches_side` is the pad
+    # counterpart of the via split just above), that side's via annuli,
+    # and the caller's board-level `reserved` geometry -- then grown in
+    # place as each instance's own silk survives, so it is simultaneously
+    # "what this instance must avoid" and "what the NEXT instance (and
+    # this instance's later draws) must avoid".
     # Sorted canonically (:func:`_obstacle_sort_key`): the set is what
     # matters, and the first-hit naming in `_stroke_hits` shouldn't see
     # the caller's list order either.
     obstacles_by_side: dict[str, _SideObstacles] = {
         "top": _SideObstacles(
             sorted(
-                [*pads, *top_via_pads, *reserved_by_side.get("top", [])],
+                [
+                    *[p for p in pads if _pad_reaches_side(p, layer_names)[0]],
+                    *top_via_pads,
+                    *reserved_by_side.get("top", []),
+                ],
                 key=_obstacle_sort_key,
             )
         ),
         "bottom": _SideObstacles(
             sorted(
-                [*pads, *bottom_via_pads, *reserved_by_side.get("bottom", [])],
+                [
+                    *[p for p in pads if _pad_reaches_side(p, layer_names)[1]],
+                    *bottom_via_pads,
+                    *reserved_by_side.get("bottom", []),
+                ],
                 key=_obstacle_sort_key,
             )
         ),
@@ -4337,14 +4397,19 @@ def _build_silk_pass(
         # obstacle membership.
         tick_obstacle: dict[str, Any] | None = None
         # Policy check FIRST, ahead of the dot search below:
-        # an unpolarized R/C/L/FB gets no pin-1 attempt regardless of
-        # whether its courtyard survived -- there is no mark to have lost,
-        # so "the courtyard was dropped" would be the wrong reason to give.
+        # an unpolarized part gets no pin-1 attempt regardless of whether
+        # its courtyard survived -- there is no mark to have lost, so
+        # "the courtyard was dropped" would be the wrong reason to give.
+        # Two ways to be unpolarized (gr520373): an R/C/L/FB part the
+        # caller's `polarized` set does not name, OR an explicit
+        # `polarized: false` declaration on ANY family (the `unpolarized`
+        # set -- the footprint-level opt-out that used to exist only for
+        # the exempt families). The explicit flag wins even over
+        # `polarized`/`polarized_set` membership.
         family = _refdes_family(refdes)
-        no_pin1_by_policy = (
-            bool(pins)
-            and family in _PIN1_EXEMPT_FAMILIES
-            and refdes not in polarized_set
+        no_pin1_by_policy = bool(pins) and (
+            refdes in unpolarized_set
+            or (family in _PIN1_EXEMPT_FAMILIES and refdes not in polarized_set)
         )
         if no_pin1_by_policy:
             census.append(
@@ -4354,7 +4419,10 @@ def _build_silk_pass(
                     side=side_name,
                     outcome="not_applicable",
                     reason=(
-                        f"no polarity -- pin-1 mark not applicable ({family} "
+                        "no polarity -- pin-1 mark not applicable "
+                        "(declared 'polarized': false)"
+                        if refdes in unpolarized_set
+                        else f"no polarity -- pin-1 mark not applicable ({family} "
                         "parts are unpolarized unless declared polarized)"
                     ),
                     stroke_width_mm=stroke_width_mm,
@@ -4479,6 +4547,28 @@ def _build_silk_pass(
                     if tick_pts
                     else None
                 )
+                # gr520373: the tick used to be the ONE mark never checked
+                # against the board edge -- the dot candidates above answer
+                # to outline+margin, but a tick beside a part sitting at
+                # the edge could still print past it (the prod finding:
+                # pin-1 ink 0.04mm off the cut). A mark must never land
+                # outside the board or inside its silk-to-edge margin.
+                if tick_pts and tick_hit is None and outline_ring is not None:
+                    edge_line = _ShapelyLineString(
+                        outline_ring
+                        if outline_ring[0] == outline_ring[-1]
+                        else [*outline_ring, outline_ring[0]]
+                    )
+                    if (
+                        not all(point_in_polygon(p, outline_ring) for p in tick_pts)
+                        or edge_line.distance(_ShapelyLineString(tick_pts))
+                        < edge_margin_mm + stroke_width_mm / 2.0
+                    ):
+                        tick_hit = {
+                            "obstacle": "the board edge",
+                            "x": tick_pts[0][0],
+                            "y": tick_pts[0][1],
+                        }
                 if tick_pts and tick_hit is None:
                     bucket.append(
                         _draw(tick_pts, stroke_width_mm, role="pin1", refdes=refdes)

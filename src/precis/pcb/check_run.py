@@ -811,6 +811,7 @@ def run(
             vias=vias,
             instance_sides=instance_sides,
             polarized=pcb_session.polarized_refdes(design),
+            unpolarized=pcb_session.unpolarized_refdes(design),
             copper=copper,
             outline=outline,
             layer_names=layer_names,

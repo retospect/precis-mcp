@@ -740,9 +740,10 @@ def instance_row(
     and the c.meta component facts (``pin_swap_groups``/``pin_decls``/
     ``supplies`` — normalised — /``part_meta`` -> ``part``) hoisted when
     present, the
-    0219 lock columns hoisted when set. ``polarized``/``value``/``note``
-    are deliberately NOT emitted — ``pcb_graph`` never carries them (the
-    label regex is the only working polarity path).
+    0219 lock columns hoisted when set. ``polarized`` IS emitted now
+    (gr520373 — the explicit flag is a real authored fact, stored on
+    ``c.meta`` and authoritative over the label regex); ``value``/``note``
+    are still deliberately NOT emitted — ``pcb_graph`` never carries them.
 
     ``pin_names`` is the component's LIVE pin-name set (declared pins ∪
     footprint-completed ∪ connection-minted ghosts) — the store counts
@@ -804,6 +805,8 @@ def instance_row(
         inst["supplies"] = normalize_supplies(c["supplies"], refdes, declared)
     if c.get("part_meta") is not None:
         inst["part"] = dict(c["part_meta"])
+    if c.get("polarized") is not None:
+        inst["polarized"] = bool(c["polarized"])
     if c.get("max_travel_mm") is not None:
         inst["max_travel_mm"] = float(c["max_travel_mm"])
     if c.get("fixed_side"):

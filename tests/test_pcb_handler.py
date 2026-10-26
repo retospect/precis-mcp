@@ -4384,3 +4384,239 @@ def test_op_place_placer_reaches_the_job_row(pcb, store):
                 (ref.id,),
             )
             conn.commit()
+
+
+# ── gr520369 -- a re-put reports the authored fields it dropped ────────
+def test_reput_reports_ignored_fields_per_existing_component(pcb, store):
+    """gr520369 (taz-leaf dogfood): a batch re-put on an existing refdes
+    used to silently drop every authored change -- pose, fixed, pin
+    intent, pin_decls -- while the reply read as a clean "extended". The
+    reply now lists, per existing component, each field it ignored and
+    the op that applies it; only CHANGED fields are named, so an
+    idempotent re-put stays quiet."""
+    pcb.put(
+        id="reput-drop",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "MCU",
+                    "x": 5.0,
+                    "y": 5.0,
+                    "pins": [{"name": "VDD"}, {"name": "IO1"}],
+                },
+                {
+                    "refdes": "R1",
+                    "label": "1k",
+                    "x": 9.0,
+                    "y": 5.0,
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                },
+            ],
+            "nets": [{"name": "SIG"}],
+            "connections": [{"net": "SIG", "refdes": "R1", "pin": "1"}],
+        },
+    )
+    resp = pcb.put(
+        id="reput-drop",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "x": 8.0,
+                    "y": 6.5,
+                    "rot": 90,
+                    "layer": "bottom",
+                    "fixed": "both",
+                    "label": "MCU v2",
+                    "pin_decls": {"slots": {"S1_M": ["IO1"]}},
+                    "pins": [{"name": "VDD", "nc": True}, {"name": "IO1"}],
+                },
+                # R1 re-supplied identically -- nothing of it was dropped,
+                # so it must not be listed.
+                {
+                    "refdes": "R1",
+                    "label": "1k",
+                    "x": 9.0,
+                    "y": 5.0,
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                },
+            ],
+        },
+    )
+    assert "## ignored on re-put" in resp.body
+    block = resp.body.split("## ignored on re-put", 1)[1]
+    line = next(l for l in block.splitlines() if l.startswith("- U1:"))
+    for field in ("x", "y", "rot", "layer", "fixed"):
+        assert field in line, line
+    assert "op='move'" in line
+    assert "op='pins'" in line
+    assert "label" in line and "pin_decls" in line and "insert-only" in line
+    assert not any(l.startswith("- R1:") for l in block.splitlines())
+    # The dropped changes really did not land -- create-or-extend kept
+    # the stored component and instance.
+    ref = store.get_ref(kind="pcb", id="reput-drop")
+    inst = {i["refdes"]: i for i in store.pcb_load(ref.id)["instances"]}["U1"]
+    assert inst["x"] == 5.0 and inst["y"] == 5.0
+    assert inst["rot"] == 0.0 and inst["layer"] == "top"
+    assert inst["fixed"] is None
+    # And the nc pin intent is indeed absent from the stored pin.
+    pins = store.pcb_instance_neighbors(ref.id, "U1")["pins"]
+    assert "nc" not in {p["pin"]: p["tags"] for p in pins}["VDD"]
+
+
+def test_reput_reports_a_new_pin_name_the_existing_part_never_got(pcb):
+    """An authored pin the stored component does not have is dropped too
+    (a re-put never adds pins -- declare-all completion only fills names
+    the footprint owns); the reply names it under ``pins (new name)``
+    with the step that actually creates it, NOT ``op='pins'`` alone —
+    that op annotates real pins only and refuses a name the component
+    lacks."""
+    pcb.put(
+        id="reput-pin",
+        args={
+            "components": [
+                {"refdes": "U1", "x": 1.0, "y": 1.0, "pins": [{"name": "A"}]}
+            ]
+        },
+    )
+    resp = pcb.put(
+        id="reput-pin",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "pins": [{"name": "A"}, {"name": "RST", "nc": True}],
+                }
+            ]
+        },
+    )
+    line = next(
+        l for l in resp.body.splitlines() if l.startswith("- U1:") and "pins" in l
+    )
+    assert "pins (new name)" in line
+    assert "connect to it in a re-put to mint it" in line
+
+
+def test_reput_pin_minted_by_this_batchs_own_connection_is_not_dropped(pcb, store):
+    """The ignored-fields diff runs AFTER the connections loop: a bare
+    pin name this batch's own connection mints is a legal extension, not
+    a dropped declaration -- a re-put that declares AND wires a new name
+    must not report it. And when the declaration carries semantics the
+    minted pin lacks, the report is ``pins -> op='pins'`` (correct: the
+    pin exists now), never ``pins (new name)``."""
+    pcb.put(
+        id="reput-mint",
+        args={
+            "components": [
+                {"refdes": "U1", "x": 1.0, "y": 1.0, "pins": [{"name": "A"}]}
+            ]
+        },
+    )
+    resp = pcb.put(
+        id="reput-mint",
+        args={
+            "components": [{"refdes": "U1", "pins": [{"name": "A"}, {"name": "RST"}]}],
+            "connections": [{"net": "N1", "refdes": "U1", "pin": "RST"}],
+        },
+    )
+    assert "## ignored on re-put" not in resp.body
+    # The connection really minted the pin.
+    ref = store.get_ref(kind="pcb", id="reput-mint")
+    assert "RST" in {
+        p["pin"] for p in store.pcb_instance_neighbors(ref.id, "U1")["pins"]
+    }
+
+    # Same shape, now with semantics the minted pin does not carry: the
+    # dropped piece is the SEMANTICS on a pin that exists, so the reply
+    # names the ordinary op='pins' edit.
+    resp2 = pcb.put(
+        id="reput-mint",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "pins": [{"name": "A"}, {"name": "RST", "nc": True}],
+                }
+            ],
+        },
+    )
+    line = next(
+        l for l in resp2.body.splitlines() if l.startswith("- U1:") and "pins" in l
+    )
+    assert "pins (new name)" not in line
+    assert "op='pins'" in line
+
+
+def test_reput_applies_a_changed_polarized_flag(pcb, store):
+    """gr520373 ruling: ``polarized`` is component metadata, not geometry
+    -- a re-put that changes it on an existing refdes APPLIES it (the
+    taz-leaf boards opt their SNS parts out of the pin-1 mark without
+    recreating them), reported under 'applied', never 'ignored'."""
+    pcb.put(
+        id="reput-pol",
+        args={
+            "components": [
+                {
+                    "refdes": "SNS1",
+                    "label": "wetness comb",
+                    "polarized": True,
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                }
+            ]
+        },
+    )
+    resp = pcb.put(
+        id="reput-pol",
+        args={
+            "components": [
+                {
+                    "refdes": "SNS1",
+                    "label": "wetness comb",
+                    "polarized": False,
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                }
+            ]
+        },
+    )
+    assert "## applied on re-put" in resp.body
+    assert "- SNS1: polarized" in resp.body
+    assert "## ignored on re-put" not in resp.body
+    ref = store.get_ref(kind="pcb", id="reput-pol")
+    inst = {i["refdes"]: i for i in store.pcb_load(ref.id)["instances"]}["SNS1"]
+    assert inst["polarized"] is False
+
+    # Back to True the same way -- and an idempotent re-put stays quiet.
+    resp2 = pcb.put(
+        id="reput-pol",
+        args={"components": [{"refdes": "SNS1", "polarized": True}]},
+    )
+    assert "- SNS1: polarized" in resp2.body
+    inst = {i["refdes"]: i for i in store.pcb_load(ref.id)["instances"]}["SNS1"]
+    assert inst["polarized"] is True
+    resp3 = pcb.put(
+        id="reput-pol",
+        args={"components": [{"refdes": "SNS1", "polarized": True}]},
+    )
+    assert "## applied on re-put" not in resp3.body
+    assert "## ignored on re-put" not in resp3.body
+
+
+def test_put_refuses_a_non_boolean_polarized(pcb):
+    """'polarized' is a flag: 'false' (string) is truthy and would read
+    as POLARIZED while `unpolarized_refdes`'s ``is False`` never opts it
+    out -- a non-bool value refuses the whole put instead of storing a
+    corrupt declaration."""
+    with pytest.raises(BadInput, match="polarized"):
+        pcb.put(
+            id="reput-polstr",
+            args={
+                "components": [
+                    {
+                        "refdes": "SNS1",
+                        "polarized": "false",
+                        "pins": [{"name": "1"}, {"name": "2"}],
+                    }
+                ]
+            },
+        )

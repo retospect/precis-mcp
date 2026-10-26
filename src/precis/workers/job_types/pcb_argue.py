@@ -208,6 +208,7 @@ def _catalogue(
             capability=inp["capability"],
             date=datetime.now(UTC).date().isoformat(),
             polarized=pcb_session.polarized_refdes(design),
+            unpolarized=pcb_session.unpolarized_refdes(design),
             label_spots=pcb_session.label_spots(design),
             profile=inp["profile"],
         )

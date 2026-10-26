@@ -2480,7 +2480,10 @@ def test_census_records_relocated_outcome_with_the_spot_it_settled_on():
     bearing -- never a bare ordinal a reader cannot picture."""
     ir = from_graph(_graph("TP3", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
     # A tall pad covering the whole band below the part (both bottom
-    # corners and the bottom side) moves the label to the top-left corner.
+    # corners and the bottom side) pushes the label above the part; the
+    # pin-1 dot — which since gr520373 sits correctly BESIDE pin 1 rather
+    # than overshooting by pin 1's own projection — already claims the
+    # top-left corner pin 1 occupies, so the label lands top-right.
     pads = [
         {"shape": "rect", "x": 0.0, "y": -1.75, "w": 4.0, "h": 4.6, "net": "FOREIGN"}
     ]
@@ -2489,7 +2492,7 @@ def test_census_records_relocated_outcome_with_the_spot_it_settled_on():
         c for c in result.census if c.refdes == "TP3" and c.kind == "refdes"
     )
     assert refdes_row.outcome == "relocated"
-    assert refdes_row.reason is not None and "drawn at top-left" in refdes_row.reason
+    assert refdes_row.reason is not None and "drawn at top-right" in refdes_row.reason
     assert f"TP3: {refdes_row.reason}" in result.relocated
 
 
@@ -3492,3 +3495,162 @@ def test_board_furniture_prototype_profile_raises_the_refdes_height():
     expected = profile_rules("prototype").refdes_height_mm
     assert expected != DEFAULT_REFDES_HEIGHT_MM  # the test would be vacuous otherwise
     assert _furnish("prototype") == {expected}
+
+
+# ── gr520373: pin-1 policy + silk side-awareness ───────────────────────
+def test_explicit_unpolarized_suppresses_pin1_for_any_family():
+    """gr520373 item 1: ``polarized: false`` is a footprint-level "no
+    pin-1 mark" opt-out that used to exist only for the R/C/L/FB exempt
+    families -- an authored non-polarized footprint (the wetness comb,
+    refdes SNS*) got a forced pin-1 mark it never asked for. Naming the
+    refdes in ``unpolarized`` must hold for ANY family, and the census
+    reads ``not_applicable`` (deliberate skip), so ``check_silk_missing``
+    stays quiet."""
+    ir = from_graph(_graph("SNS1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    marked = build_silk(ir, pads=[])
+    assert "pin1" in {d["role"] for d in marked.draws["top"]}  # fixture: it would mark
+    result = build_silk(ir, pads=[], unpolarized=frozenset({"SNS1"}))
+    roles = {d["role"] for d in result.draws["top"]}
+    assert "pin1" not in roles
+    row = next(c for c in result.census if c.refdes == "SNS1" and c.kind == "pin1")
+    assert row.outcome == "not_applicable"
+    assert "polarized" in (row.reason or "")
+    findings = drc.check_silk_missing(result.census, {"silkscreen": result.draws})
+    assert not any("(pin1," in f.where for f in findings)
+
+
+def test_unpolarized_flag_beats_an_inferred_polarity():
+    """The explicit flag is authoritative over the label regex: a
+    ``polarized: false`` part labelled like an electrolytic is still
+    unpolarized (``session.unpolarized_refdes`` names it and
+    ``polarized_refdes`` does not)."""
+    from precis.pcb import session as pcb_session
+
+    design = {
+        "instances": [
+            {"refdes": "C9", "label": "CAP-ELEC-16V", "polarized": False},
+            {"refdes": "C10", "label": "CAP-ELEC-16V"},
+        ]
+    }
+    assert pcb_session.polarized_refdes(design) == frozenset({"C10"})
+    assert pcb_session.unpolarized_refdes(design) == frozenset({"C9"})
+
+
+def test_bottom_silk_is_not_scraped_by_top_side_pads():
+    """gr520373 item 2: a bottom part's silk must only dodge copper it can
+    actually touch. A TOP pad under its courtyard used to drop the bottom
+    silk (C10 bottom vs U1.DEC3 top) -- pads now seed the obstacle list of
+    the side they sit on. The same pad on B.Cu still counts."""
+    ir = from_graph(_graph("C10", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    top_pad = {
+        "shape": "rect",
+        "x": 0.0,
+        "y": 0.0,
+        "w": 4.0,
+        "h": 4.0,
+        "layer": "F.Cu",
+        "net": "TOP",
+    }
+    result = build_silk(ir, pads=[top_pad], instance_sides={"C10": "bottom"})
+    courtyard = next(
+        c for c in result.census if c.refdes == "C10" and c.kind == "courtyard"
+    )
+    assert courtyard.side == "bottom" and courtyard.outcome != "dropped"
+
+    bottom_pad = {**top_pad, "layer": "B.Cu"}
+    result2 = build_silk(ir, pads=[bottom_pad], instance_sides={"C10": "bottom"})
+    courtyard2 = next(
+        c for c in result2.census if c.refdes == "C10" and c.kind == "courtyard"
+    )
+    assert courtyard2.outcome == "dropped"
+
+
+def test_a_pin1_tick_never_lands_outside_the_board_edge():
+    """gr520373 item 1: the corner tick was the one mark never checked
+    against the board edge (the dot candidates answer to outline+margin;
+    the tick did not) -- the prod finding was pin-1 ink 0.04mm off the
+    cut. A tick that would land outside the outline or inside the
+    silk-to-edge margin is now dropped, not drawn."""
+    # A part flush against the right edge of a small board: its pin-1
+    # side faces the edge, and foreign pads wall off every dot direction
+    # except over the cut -- so the tick fallback fires, at a courtyard
+    # corner sitting on/past the edge margin.
+    outline = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]
+    ir = from_graph(_graph("U1", 2, x=29.3, y=15.0), stackup=DEFAULT_STACKUP)
+    ir.pin_dx[0], ir.pin_dy[0] = 0.6, 0.0  # pin 1 toward the edge
+    ir.pin_dx[1], ir.pin_dy[1] = -0.6, 0.0
+    ir.pin_w[0], ir.pin_h[0] = 0.4, 0.4
+    ir.pin_w[1], ir.pin_h[1] = 0.4, 0.4
+    blockers = [
+        # Left/inner side: covers every dot candidate at x < ~28.5.
+        {"shape": "rect", "x": 24.2, "y": 15.0, "w": 8.4, "h": 30.0, "net": "BLK"},
+        # Up and down directions past the courtyard's y reach.
+        {"shape": "rect", "x": 30.5, "y": 24.5, "w": 3.0, "h": 15.0, "net": "BLK"},
+        {"shape": "rect", "x": 30.5, "y": 5.5, "w": 3.0, "h": 15.0, "net": "BLK"},
+    ]
+    result = build_silk(ir, pads=blockers, outline=outline)
+    pin1 = next(c for c in result.census if c.refdes == "U1" and c.kind == "pin1")
+    assert pin1.outcome == "dropped"
+    for d in result.draws["top"]:
+        if d["role"] != "pin1":
+            continue
+        for seg in d["segments"]:
+            for p in (seg["start"], seg["end"]):
+                assert point_in_polygon(p, outline)
+
+
+def test_the_pin1_dot_stays_adjacent_to_its_own_courtyard():
+    """gr520373 comment 2: PV1's pin-1 dot printed on the hanger ring,
+    ~11mm off the part. The dot ladder sizes each ring off the
+    courtyard's directional support -- measured from the instance
+    ORIGIN -- but offset the candidate from pin 1's own position,
+    overshooting by pin 1's projection in the sweep direction (~|pin 1|
+    in the outward direction). The mark must sit beside the part's own
+    courtyard, or drop -- never land on unrelated board geometry."""
+    ir = from_graph(_graph("PV1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    # The real part's shape: two 3x8 mm pads at local x = +/-10.7, pin 1
+    # on the right-hand pad.
+    ir.pin_dx[0], ir.pin_dy[0] = 10.7, 0.0
+    ir.pin_dx[1], ir.pin_dy[1] = -10.7, 0.0
+    ir.pin_w[0], ir.pin_h[0] = 3.0, 8.0
+    ir.pin_w[1], ir.pin_h[1] = 3.0, 8.0
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.refdes == "PV1" and c.kind == "pin1")
+    assert row.outcome == "placed"
+    marks = [
+        d for d in result.draws["top"] if d["role"] == "pin1" and d["refdes"] == "PV1"
+    ]
+    assert len(marks) == 1
+    (dx, dy) = marks[0]["segments"][0]["start"]
+    poly = instance_courtyard_polygon(
+        ir, 0, clearance_mm=silk_clearance_mm(None, stroke_width_mm=0.15)
+    )
+    dist = min(
+        _point_to_segment_dist((dx, dy), poly[i], poly[i + 1])
+        for i in range(len(poly) - 1)
+    )
+    # Beside the hull -- the ladder's whole reach is clearance + a few
+    # dot diameters, so ~11mm out on the hanger ring is far past any
+    # legal candidate.
+    assert dist < 3.0
+
+
+def test_check_silk_missing_cross_check_is_side_aware():
+    """The cross-check keyed ``(refdes, kind)`` across both silk layers,
+    so a bottom census row claiming 'placed' passed on TOP ink. Side is
+    now part of the key: bottom silk must exist in silkscreen['bottom']."""
+    placed = silk.SilkPlacement(
+        refdes="C10",
+        kind="courtyard",
+        side="bottom",
+        outcome="placed",
+        stroke_width_mm=0.15,
+    )
+    model = {
+        "silkscreen": {
+            "top": [{"role": "outline", "refdes": "C10", "segments": []}],
+            "bottom": [],
+        }
+    }
+    findings = drc.check_silk_missing([placed], model)
+    assert any(f.rule == "silk_missing" for f in findings)

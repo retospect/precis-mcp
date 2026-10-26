@@ -938,6 +938,7 @@ def _model(placement: LocalPlacement) -> dict[str, Any]:
             ),
             capability=design.fab_caps,
             polarized=pcb_session.polarized_refdes(design.graph),
+            unpolarized=pcb_session.unpolarized_refdes(design.graph),
             label_spots=pcb_session.label_spots(design.graph),
         )
         silk_draws = silk_res.draws
