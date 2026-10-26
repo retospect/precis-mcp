@@ -452,6 +452,11 @@ docker_disk_preflight "scripts/test" || exit $?
 # then (see the testmon-exit-guard block near the bottom for why impacted
 # mode captures pytest's output to a file instead of streaming it raw).
 TESTMON_LOG=""
+# The stderr fifo + filter pid for run_pytest (gr513886 review): a fifo
+# plus a real background job gives a waitable pid — a process
+# substitution's is not reliably waitable on bash 3.2.
+ERR_FIFO=""
+ERR_FILTER_PID=""
 # Subagent trees (basename `agent-*`, the key compose-project.sh uses) never
 # resume, and every compose project holds one docker network address pool
 # (~31 on this host) for as long as its test-db exists — idle subagent dbs ran
@@ -512,7 +517,7 @@ agent_db_teardown() {
     done <<<"$services"
     other_run_alive && return 0
     env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" \
-        -p "$COMPOSE_PROJECT" --profile dev down -v >/dev/null 2>&1 || true
+        -p "$COMPOSE_PROJECT" --profile dev down -v >>"${RUN_LOG:-/dev/null}" 2>&1 || true
     return 0
 }
 cleanup() {
@@ -536,6 +541,50 @@ cleanup() {
     fi
     hb_stop
     agent_db_teardown || true
+    # A leftover stderr filter (interrupt path; run_pytest waits it out on
+    # the normal one) must be gone before the verdict — nothing may print
+    # after it. Kill first: a writer still holding the fifo would make a
+    # bare wait block.
+    if [[ -n "$ERR_FILTER_PID" ]]; then
+        kill "$ERR_FILTER_PID" 2>/dev/null || true
+        wait "$ERR_FILTER_PID" 2>/dev/null || true
+        ERR_FILTER_PID=""
+    fi
+    if [[ -n "$ERR_FIFO" ]]; then
+        rm -f "$ERR_FIFO"
+        ERR_FIFO=""
+    fi
+    # The one-line verdict, LAST (gr513886): PASS/FAIL, pytest's own counts
+    # line and the run's wall duration. Nothing prints after it. A green
+    # run's transcript has no reader — delete the log and drop its path
+    # (they piled up in TMPDIR on every run otherwise). A red run keeps
+    # the log, names it, and prunes kept logs older than a day.
+    if [[ -n "${RUN_LOG:-}" ]]; then
+        local _verdict _counts
+        _verdict="PASS"
+        [[ "$rc" == 0 ]] || _verdict="FAIL (rc ${rc})"
+        _counts="$(grep -E '[0-9]+ (passed|failed|skipped|xfailed|xpassed|deselected|errors?|warnings?|tests? collected)|no tests ran' "$RUN_LOG" 2>/dev/null \
+            | tail -1 | sed -e 's/^=\+[[:space:]]*//' -e 's/[[:space:]]*=\+[[:space:]]*$//' || true)"
+        if [[ "$rc" == 0 ]]; then
+            rm -f "$RUN_LOG"
+            if [[ -n "$_counts" ]]; then
+                printf 'scripts/test: %s — %s | %ss\n' \
+                    "$_verdict" "$_counts" "$((SECONDS - RUN_T0))"
+            else
+                printf 'scripts/test: %s — no pytest summary | %ss\n' \
+                    "$_verdict" "$((SECONDS - RUN_T0))"
+            fi
+        else
+            find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'precis-test-run.*' -mtime +1 -delete 2>/dev/null || true
+            if [[ -n "$_counts" ]]; then
+                printf 'scripts/test: %s — %s | %ss | log %s\n' \
+                    "$_verdict" "$_counts" "$((SECONDS - RUN_T0))" "$RUN_LOG"
+            else
+                printf 'scripts/test: %s — no pytest summary | %ss | log %s\n' \
+                    "$_verdict" "$((SECONDS - RUN_T0))" "$RUN_LOG"
+            fi
+        fi
+    fi
     exit "$rc"
 }
 trap cleanup EXIT
@@ -544,6 +593,47 @@ trap cleanup EXIT
 # terse-output contract promises away. Errors still print; this only drops
 # the progress reporter.
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose --progress quiet -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
+
+# Terminal-noise filters (gr513886): noise that can't be silenced at the
+# source is appended to the per-run log ($RUN_LOG) instead of the
+# terminal. Patterns are deliberately narrow — docker/compose lifecycle
+# lines and pysbd's compile-time SyntaxWarnings — so real signal still
+# shows. awk, not grep -v: grep exits 1 when it selects no lines, which
+# pipefail would read as a failed run; awk exits 0 after processing input
+# so the pipeline status stays compose's own (same reasoning as the sed
+# it replaces, gr514615). fflush() keeps the stream live.
+#
+# Why not PYTHONWARNINGS=ignore::SyntaxWarning:pysbd (the fix the gripe
+# names): on Python 3.13 a compile-time warning is emitted with NO module
+# name, so a module-scoped filter can never match it — verified against
+# the container's interpreter, where even `.*` as the module field fails.
+# `ignore:invalid escape:SyntaxWarning` does match (message-scoped) but
+# hides the same warning in FIRST-party code too, which the gripe
+# forbids. The prewarm .pyc (pytest-inner.sh) is the source-level fix;
+# these filters are the backstop for a path it can't reach (unwritable
+# site-packages, a UV_WITH overlay env).
+_out_filter() {
+    awk -v logf="${RUN_LOG:-/dev/null}" '
+        /pysbd\/[^:]*\.py:[0-9]+: SyntaxWarning:/ { print >> logf; skip=1; next }
+        skip { print >> logf; skip=0; next }
+        /^bringing up nodes/ { print >> logf; next }
+        { print; fflush() }
+    '
+}
+# compose's stderr carries BOTH the container's stderr and docker's own
+# lifecycle chatter — indistinguishable except by line shape, so only
+# unmistakable compose/daemon shapes are diverted to the log; everything
+# else reaches the terminal's stderr as before.
+_err_filter() {
+    awk -v logf="${RUN_LOG:-/dev/null}" '
+        /pysbd\/[^:]*\.py:[0-9]+: SyntaxWarning:/ { print >> logf; skip=1; next }
+        skip { print >> logf; skip=0; next }
+        /^(Container|Volume|Network) [^ ]+ +(Attaching|Attached|Creating|Created|Starting|Started|Restarting|Restarted|Stopping|Stopped|Killing|Killed|Removing|Removed|Waiting|Healthy|Unhealthy|Running|Exiting|Exited|Exists|Recreating|Recreated)/ { print >> logf; next }
+        /^\[\+\]|^[[:space:]]*(✔|✓|⠿|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏)/ { print >> logf; next }
+        /^WARN\[[0-9]+\]|^time="/ { print >> logf; next }
+        { print; fflush() }
+    '
+}
 
 # Heartbeat (gr514502): a run that goes quiet — xdist's ~25 s "bringing up
 # nodes", a congested gate queue — reads as wedged and gets backgrounded or
@@ -618,6 +708,14 @@ THREAD_CAP_ENV=(
     -e NUMEXPR_NUM_THREADS=1 -e VECLIB_MAXIMUM_THREADS=1
 )
 
+# One run log per invocation (gr513886): docker/compose lifecycle chatter
+# (test-db up/down, compose-side stderr noise) and any residual pysbd
+# SyntaxWarnings are appended here instead of the terminal — the filtered
+# pytest stream is tee'd in too, so the file is the full transcript.
+# cleanup() deletes it on a green run and names it on a red one.
+RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/precis-test-run.XXXXXX")"
+RUN_T0=$SECONDS
+
 # Take a fleet-wide gate slot before any heavyweight container work — BEFORE
 # the tmpfs test-db below, so a queued run waits empty-handed rather than
 # holding a live Postgres for the length of its wait (gr514466). --fast
@@ -640,16 +738,19 @@ fi
 TEST_DB_ENV=()
 if [[ "$FAST" == "1" || "$COLLECT_ONLY" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
-elif hb_start "test db up" && run_marker_write && DB_UP_OUT="$(compose up -d --wait precis-test-db 2>&1)"; then
+elif hb_start "test db up" && run_marker_write && compose up -d --wait precis-test-db >>"$RUN_LOG" 2>&1; then
     TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
 else
     echo "WARNING: precis-test-db didn't start — falling back to the container's default test DB" >&2
     # Every worktree's project owns one compose network; idle ones used up
     # docker's address pools on 2026-10-03 and failed every scripts/test in the
     # fleet with only this compose error. Name the remedy.
-    if [[ "$DB_UP_OUT" == *"fully subnetted"* ]]; then
+    if grep -q 'fully subnetted' "$RUN_LOG"; then
         echo "docker is out of network address pools (idle worktree test-dbs hold them): run scripts/reap-test-dbs; PRECIS_REAP_DB_MIN_AGE_SECONDS=7200 widens it to thread trees idle 2 h" >&2
+    else
+        tail -n 5 "$RUN_LOG" >&2
     fi
+    echo "scripts/test: the test-db startup output is in the run log: $RUN_LOG" >&2
 fi
 hb_stop
 
@@ -923,12 +1024,24 @@ run_pytest() {
         tm_args=("${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}")
     fi
     local rc=0
-    # The sed filter drops xdist's "bringing up nodes..." status line —
-    # printed for non-tty runs whenever verbosity < 0 (i.e. our -q), with
-    # no upstream off switch (xdist/dsession.py getstatus). sed, not
-    # grep -v: grep exits 1 when it selects no lines, which pipefail would
-    # read as a failed run — sed exits 0 after processing input, so the
-    # pipeline status stays compose's own (gr514615). -u keeps it live.
+    # The stdout filter (_out_filter) drops xdist's "bringing up nodes..."
+    # status line — printed for non-tty runs whenever verbosity < 0 (i.e.
+    # our -q), with no upstream off switch (xdist/dsession.py getstatus) —
+    # and any residual pysbd SyntaxWarning pair into the run log; the
+    # stderr filter (_err_filter) sends docker/compose lifecycle chatter
+    # the same way (gr513886). The tee appends the filtered stream to the
+    # log so the file is the full transcript.
+    #
+    # The stderr filter drains a fifo as a real background job — a process
+    # substitution's pid isn't waitable on bash 3.2, so a late crash
+    # traceback could still print after the verdict. The fifo's opens pair
+    # (reader below, compose's fd 2 next); when compose exits the reader
+    # sees EOF and exits, and `wait` returns before the run continues —
+    # cleanup()'s verdict is then genuinely the last line.
+    ERR_FIFO="$(mktemp -u "${TMPDIR:-/tmp}/precis-test-err.XXXXXX")"
+    mkfifo "$ERR_FIFO"
+    _err_filter >&2 <"$ERR_FIFO" &
+    ERR_FILTER_PID=$!
     compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
         -e PRECIS_STRICT_LOCK_CHECK="${PRECIS_STRICT_LOCK_CHECK:-}" \
         -e PRECIS_TEST_AUTOBRIDGE="$AUTOBRIDGE" \
@@ -945,7 +1058,11 @@ run_pytest() {
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
         "${RANDOM_ARGS[@]+"${RANDOM_ARGS[@]}"}" \
         "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@" \
-        | sed -u '/^bringing up nodes/d' || rc=$?
+        2>"$ERR_FIFO" | _out_filter | tee -a "$RUN_LOG" || rc=$?
+    wait "$ERR_FILTER_PID" 2>/dev/null || true
+    ERR_FILTER_PID=""
+    rm -f "$ERR_FIFO"
+    ERR_FIFO=""
     # Exit 137 = the container's own OOM kill (mem_limit in compose.yaml) —
     # name it as such rather than a silent red run (gate-slot.sh).
     gate_oom_note "$rc" "the pytest container"

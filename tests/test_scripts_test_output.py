@@ -1,4 +1,4 @@
-"""scripts/test output filter — gr514615, gr514718.
+"""scripts/test output filter — gr514615, gr514718, gr513886.
 
 gr514615: every run printed pysbd ``SyntaxWarning: invalid escape
 sequence`` lines (the image sets PYTHONDONTWRITEBYTECODE=1, so nothing is
@@ -48,9 +48,12 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #   FAKE_DOCKER_LOG   appended: up|<proj> / run|<proj>|<all args> / down|<proj>
 #   FAKE_PS_SERVICES  newline-separated service names `docker ps` reports
 #   FAKE_RUN_STDOUT   file whose contents `compose run` prints to stdout
+#   FAKE_RUN_STDERR   file whose contents `compose run` prints to stderr
 #   FAKE_RUN_RC       exit status of `compose run` (default 0)
 #   FAKE_RUN_RC_FILE  file of exit statuses, one per line — each `compose
 #                     run` pops the first; overrides FAKE_RUN_RC
+#   FAKE_UP_STDOUT    file whose contents `compose up` prints to stdout
+#   FAKE_UP_RC        exit status of `compose up` (default 0)
 # A plain `docker run ... df` is the free-disk preflight probe: it answers
 # with 100 GB free so the preflight passes and never reaches the log.
 set -u
@@ -76,10 +79,15 @@ case "${args[0]:-}" in
         fi
     done
     case "$verb" in
-      up)   echo "up|$proj" >> "$FAKE_DOCKER_LOG" ;;
+      up)
+        echo "up|$proj" >> "$FAKE_DOCKER_LOG"
+        [ -n "${FAKE_UP_STDOUT:-}" ] && cat "$FAKE_UP_STDOUT"
+        exit "${FAKE_UP_RC:-0}"
+        ;;
       run)
         echo "run|$proj|${args[*]}" >> "$FAKE_DOCKER_LOG"
         [ -n "${FAKE_RUN_STDOUT:-}" ] && cat "$FAKE_RUN_STDOUT"
+        [ -n "${FAKE_RUN_STDERR:-}" ] && cat "$FAKE_RUN_STDERR" >&2
         if [ -n "${FAKE_RUN_RC_FILE:-}" ] && [ -s "$FAKE_RUN_RC_FILE" ]; then
           rc="$(head -n1 "$FAKE_RUN_RC_FILE")"
           tail -n +2 "$FAKE_RUN_RC_FILE" > "$FAKE_RUN_RC_FILE.tmp"
@@ -359,3 +367,104 @@ def test_typecheck_no_retry_on_plain_failure(tmp_path: Path) -> None:
     assert rc == 1
     runs = [line for line in log if line.startswith("run|")]
     assert len(runs) == 1
+
+
+# --- gr513886 review: verdict last, log lifecycle, fifo stderr drain ----
+
+
+def test_pass_verdict_is_last_and_deletes_run_log(tmp_path: Path) -> None:
+    """A green run's transcript has no reader: cleanup deletes the log
+    (one piled up in TMPDIR per run otherwise) and the verdict — still
+    the last line — drops the ``| log <path>`` tail."""
+    noise = tmp_path / "noise.txt"
+    noise.write_text("2 passed in 1.00s\n", encoding="utf-8")
+    rc, out, _, stderr = _run(tmp_path, extra_env={"FAKE_RUN_STDOUT": str(noise)})
+    assert rc == 0, stderr
+    last = out.strip().splitlines()[-1]
+    assert last.startswith("scripts/test: PASS"), last
+    assert "2 passed" in last
+    assert "| log" not in last
+    assert not list(tmp_path.glob("precis-test-run.*"))
+
+
+def test_fail_verdict_keeps_and_names_run_log(tmp_path: Path) -> None:
+    """A red run keeps the transcript and the verdict names it — the file
+    holds everything the filters diverted plus the tee'd pytest stream."""
+    noise = tmp_path / "noise.txt"
+    noise.write_text("1 failed in 1.00s\n", encoding="utf-8")
+    rc, out, _, _ = _run(
+        tmp_path,
+        extra_env={"FAKE_RUN_STDOUT": str(noise), "FAKE_RUN_RC": "5"},
+    )
+    assert rc == 5
+    last = out.strip().splitlines()[-1]
+    assert last.startswith("scripts/test: FAIL (rc 5)"), last
+    assert "| log " in last
+    log_path = Path(last.rsplit("log ", 1)[1])
+    assert log_path.exists()
+    assert "1 failed" in log_path.read_text(encoding="utf-8")
+
+
+def test_fail_verdict_prunes_day_old_run_logs(tmp_path: Path) -> None:
+    """Kept logs are bounded: a red verdict prunes precis-test-run.*
+    older than a day (the fresh own log is untouched)."""
+    stale = tmp_path / "precis-test-run.stale"
+    stale.write_text("old transcript\n", encoding="utf-8")
+    old = 1_000_000_000  # 2001 — safely past -mtime +1
+    os.utime(stale, (old, old))
+    noise = tmp_path / "noise.txt"
+    noise.write_text("1 failed in 1.00s\n", encoding="utf-8")
+    rc, out, _, _ = _run(
+        tmp_path,
+        extra_env={"FAKE_RUN_STDOUT": str(noise), "FAKE_RUN_RC": "5"},
+    )
+    assert rc == 5
+    assert not stale.exists()
+    kept = list(tmp_path.glob("precis-test-run.*"))
+    assert len(kept) == 1 and kept[0].name != "precis-test-run.stale"
+
+
+def test_run_stderr_passes_through_fifo_filter(tmp_path: Path) -> None:
+    """The fifo-drained _err_filter (replacing the unwaitable process
+    substitution): real stderr still reaches the terminal — a blocked
+    drain would hang the run on `wait`, a dropped line would eat crash
+    tracebacks."""
+    err_noise = tmp_path / "err.txt"
+    err_noise.write_text("LATESTDERR-MARKER\n", encoding="utf-8")
+    rc, _, _, stderr = _run(tmp_path, extra_env={"FAKE_RUN_STDERR": str(err_noise)})
+    assert rc == 0, stderr
+    assert "LATESTDERR-MARKER" in stderr
+
+
+def test_err_filter_glyph_alternation_under_c_locale(tmp_path: Path) -> None:
+    """The bracket ``[✔✓…]`` was a BYTE set under LC_ALL=C: any stderr
+    line starting with 0xE2 (—, →, …) got diverted to the log. The
+    alternation matches the named glyphs only — a — line must pass."""
+    err_noise = tmp_path / "err.txt"
+    err_noise.write_text("✔ network ready\n— em-dash stderr line\n", encoding="utf-8")
+    rc, _, _, stderr = _run(
+        tmp_path,
+        extra_env={"FAKE_RUN_STDERR": str(err_noise), "LC_ALL": "C"},
+    )
+    assert rc == 0, stderr
+    assert "em-dash stderr line" in stderr
+    assert "network ready" not in stderr
+
+
+def test_db_up_failure_tails_the_run_log(tmp_path: Path) -> None:
+    """Non-subnet db-up failures were diagnosable only by opening the log;
+    the script now tails it (subnet keeps its own hint, not the tail)."""
+    up_out = tmp_path / "up.txt"
+    up_out.write_text(
+        "early1\nearly2\nlate3\nlate4\nlate5\nlate6\nlate7\n",
+        encoding="utf-8",
+    )
+    rc, _, _, stderr = _run(
+        tmp_path,
+        extra_env={"FAKE_UP_STDOUT": str(up_out), "FAKE_UP_RC": "1"},
+    )
+    assert rc == 0, stderr
+    assert "precis-test-db didn't start" in stderr
+    assert "late7" in stderr and "late3" in stderr
+    assert "early1" not in stderr and "early2" not in stderr
+    assert "in the run log" in stderr
