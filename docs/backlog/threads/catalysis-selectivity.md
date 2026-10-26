@@ -8,27 +8,12 @@ design-review: yes
 
 ## Resume
 
-- **Next:** SPSO wave A LANDED 2026-10-13 (main 01b36dba7 slices 2/4/5 + gr482107/gr482121, closed; catpath v0.25.0 f88e45f; pin bump 75a6ab85b, rides r33 with the agent-image rebuild); wave B: B2 staircase panel (slice 3) LANDED 2026-10-13, B3 window/Shapley/HER objectives (slice 6) and B1 anchors rung (meta.surface_anchors) LANDED 2026-10-13 — wave B complete; after r33: re-mint the clean Pd(111) scan on 0.25.0 (corrected anchors) and confirm the ssh_node lane.
-  Wave A is done (A1/A2 engine 0.25.0, A3 slice 2, A4 slices 4+5, A5 slice-1 proof jo482106 + θ→0 vs pw455722, all in the SPSO doc). Wave B = quest wiring, in flight. Then the Pourbaix gate's R15
-  proof, preserving failed before-job 468292, gate rule-out/lift,
-  correction-set basis, and Pd-hydride precis-side fixes.
-- **Blocked by:** source-dependent production operations remain held. Items
-  23/25 retain the re-run/hydride holds; seed re-mint is not a re-run.
-  Record a verified **<$25** scan bound and verify its worker engine while
-  against the 0.24.1 floor; a timeout is not a dollar bound.
-  **BEEF is estimate only**, `td470248` waiting-for:reto. `me470247` contains
-  conditional cost/time formulas; absolute PBE basis and dollars are unknown.
-  Native `estimate` rejects `put`, so the memory is an explicit fallback,
-  not an estimate-kind receipt. No BEEF command or run.
+- **Next:** a thread session is being brought up (2026-10-26). catpath v0.41.0 (catpath main 8e4b119; local suite 1201 passed, 3 skipped) runs ledger → CHE electrochemical layer (v0.40 ShiftProvider; PCET count ledger-driven, gr515697; U_L sign follows reaction direction so oxidation is covered, gr516530) → `kin.solve` with NEB→BEP rated sources → steady state, TOF, X_RC, paired-draw ratio band, per-route U_L. Open work: (1) real-potential validation on spark, UMA backend only (MACE stopped on Reto's OK 2026-10-26, it starved spark's memory): 17.5 h in, on B3 (full-stack ammonia/Ru), test 3 of 7; C (co_oxidation) and A×3 (orr_pt111) to come, no ETA; B1 and B2 failed on both backends, cause unknown until pytest prints details at session end; zero validation passes so far. (2) gr517976 (test_draws) on catpath branch `fix/gr517976-draws-tests`: test 1 rewritten and passing (cross-checked against an NEB-only solve); test 2 scan shows rho=0.5 narrows the band (width ratio 0.82), no `draws.paired` bug; next multi-seed test 2, full suite, land, close.
+- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) unchanged; its original lift condition was "the improved catpath": item-19 corrections (shipped in 0.24.0) plus the surface-Pourbaix work, whose optimizer build is unverified. td470248 (BEEF-vdW single points on the PdH geometries) is done. Pending: B1/B2 diagnosis, ordered by Reto 2026-10-26 and run separately off spark by the catpath coordinator.
 - **Unblocks:** A ranking against a complete competing network.
-- **Acceptance:** Use [the latest handoff and item holds](#thread-context);
-  engine-version checks must match the released engine. No re-run is authorized.
-  `me472839` records expected/actual proof contracts under qu164903/qu202468.
-  Coordinator native status confirms `bb244e093` / 8.35.18, drift none;
-  startup `ae908c573a59` is superseded. HOST18=MAC7 is open; the release cut
-  does not establish deployment beyond `bb244e093`.
+- **Acceptance:** NO→NH₃ answered over a U/pH window on the complete network ([Status](#thread-context)); validation passes on real-potential cases; validation green lifts item 25; no re-run before. Engine-version checks must match the released engine.
 - **Worktree:** `catalysis-selectivity`
-- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Builds:** Unknown; use the owning item's slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
 ## Thread context
