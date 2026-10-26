@@ -213,6 +213,9 @@ def build_aizynth_argv(
     ]
     if models_dir:
         argv += ["-v", f"{models_dir}:{CONTAINER_MODELS}:ro"]
+    # The network-share models mount refuses POSIX locks (errno 37); HDF5 locks
+    # on open by default. Files are only read, so disabling locking is safe.
+    argv += ["-e", "HDF5_USE_FILE_LOCKING=FALSE"]
     argv += [image, "precis-aizynth-run", smiles]
     if max_routes:
         argv.append(f"{CONTAINER_IN}/config.yml")

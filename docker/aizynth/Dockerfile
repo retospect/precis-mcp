@@ -52,6 +52,8 @@ RUN HOME=/root "${LINCHEMIN_VENV}/bin/linchemin_configure"
 ENV PRECIS_AIZYNTH_CONFIG=/models/config.yml
 # The engine version string stamped into route.json (kept in sync with the pin).
 ENV PRECIS_AIZYNTH_VERSION=${AIZYNTH_VERSION}
+# Network-share models mount refuses POSIX locks (errno 37); files are read-only.
+ENV HDF5_USE_FILE_LOCKING=FALSE
 
 COPY precis-aizynth-run /usr/local/bin/precis-aizynth-run
 COPY az_to_route.py /usr/local/lib/az_to_route.py

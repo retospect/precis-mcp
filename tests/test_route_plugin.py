@@ -384,6 +384,8 @@ def test_build_aizynth_argv() -> None:
     assert argv[:5] == ["podman", "run", "--rm", "--name", "precis-route-7"]
     assert "img:sha" in argv and argv[-2:] == ["precis-aizynth-run", "CCO"]
     assert "/s/in:/work/in:ro" in argv and "/s/out:/work/out" in argv
+    i = argv.index("HDF5_USE_FILE_LOCKING=FALSE")
+    assert argv[i - 1] == "-e" and i < argv.index("img:sha")
     # No models mount unless asked.
     assert CONTAINER_MODELS not in " ".join(argv)
     argv2 = build_aizynth_argv(
