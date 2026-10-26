@@ -913,6 +913,9 @@ class PcbHandler(Handler):
                 # op='place' placer selection (topo-place spec §1c,
                 # Decision 21): 'topo' runs the phase-0 kernel.
                 "placer",
+                # op='place' placer='topo' route opt-in (GRIPE_FIX):
+                # route=True runs the in-job route stage; absent = none.
+                "route",
                 "net",
                 "a",
                 "b",
@@ -1838,6 +1841,11 @@ class PcbHandler(Handler):
                     next="put(args={'op':'place','placer':'topo'})",
                 )
             params["placer"] = placer
+        # Route opt-in for placer='topo' (GRIPE_FIX ruling): route=True
+        # runs the in-job route stage that writes copper + pcb_routes;
+        # absent means place only. Ignored on other placers.
+        if op == "place" and opts.get("route") is not None:
+            params["route"] = bool(opts["route"])
         # Opt-in support-passive organisation (optimize.OptimizeConfig.
         # support_groups): pull-up banks, per-IC decoupling rows and
         # series pairs re-laid as organised rows post-anneal.

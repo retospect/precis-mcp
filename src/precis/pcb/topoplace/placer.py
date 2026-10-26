@@ -179,6 +179,13 @@ def topo_place(
     movable = np.flatnonzero(~d.fixed)
     can_rotate = np.flatnonzero((d.freedoms & FREEDOM_ROTATE).astype(bool) & ~d.fixed)
     can_flip = np.flatnonzero((d.freedoms & FREEDOM_BACK_SIDE).astype(bool) & ~d.fixed)
+    if d.sides in ("top", "bottom"):
+        # placement_sides (gr520370): only a part already on the
+        # disallowed side is offered the move (its flip comes OFF it) —
+        # the per-proposal check below keeps a flipped part from being
+        # sent back.
+        disallowed = 1.0 if d.sides == "top" else 0.0
+        can_flip = can_flip[d.pose0[can_flip, 3] == disallowed]
     sigs = _signatures(d)
     by_sig: dict[tuple[Any, ...], list[int]] = {}
     for p in movable.tolist():
@@ -305,6 +312,12 @@ def topo_place(
                 p = int(can_flip[rng.integers(len(can_flip))])
                 row = proxy.pose[p].copy()
                 row[3] = 1.0 - row[3]
+                # sides='top'/'bottom': only the flip that lands on the
+                # allowed side is legal (gr520370).
+                if (d.sides == "top" and row[3] >= 0.5) or (
+                    d.sides == "bottom" and row[3] < 0.5
+                ):
+                    continue
                 staged_rows = {p: row}
             else:
                 i, j = swap_pairs[rng.integers(len(swap_pairs))]
@@ -401,13 +414,16 @@ def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]
     seen (a 2+-cycle the conflict count can't see); or the
     ``_POST_PASSES`` ceiling — a cap, not a runaway guard.
 
-    Returns ``(pose, merged ShoveResult, merged LegalizeResult)``:
-    ``moved_mm``/``rounds`` summed over every pass, ``lp_optimum_mm``
-    the first pass's objective (the spec's displacement-bound
-    reference), ``reason`` the first non-empty stop reason any shove
-    pass reported, ``min_tri_area_mm2`` the worst audit any pass saw,
-    and ``resolved``/``remaining`` from the LAST pass — the state the
-    returned pose is actually in."""
+    Returns ``(pose, merged ShoveResult, merged LegalizeResult)`` where
+    ``pose`` is the BEST pose seen — the end-of-pass pose with the
+    fewest residual conflicts, not the last one visited (a regressing
+    pass does not get to keep the board). ``moved_mm``/``rounds`` sum
+    over every pass, ``lp_optimum_mm`` is the FIRST pass's objective
+    (the spec's displacement-bound reference), ``reason`` the first
+    non-empty stop reason any shove pass reported,
+    ``min_tri_area_mm2`` the worst audit any pass saw, and
+    ``resolved``/``remaining`` read off the pass that produced the
+    returned pose — the state the pose is actually in."""
     import dataclasses
 
     from precis.pcb.topoplace.legalize import legalize_pose
@@ -420,14 +436,16 @@ def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]
     reason = ""
     seen: set[bytes] = set()
     prev_conflicts: int | None = None
-    shoved = legal = None
+    best_conflicts: int | None = None
+    best: tuple[np.ndarray, Any, Any] | None = None
     for _pass in range(_POST_PASSES):
         key = pose.tobytes()
         if key in seen:
             break
         seen.add(key)
         s = shove_pose(d, pose)
-        lp_optimum = lp_optimum or s.lp_optimum_mm
+        if _pass == 0:
+            lp_optimum = s.lp_optimum_mm
         reason = reason or s.reason
         if s.moved_mm > 0:
             pose = s.pose
@@ -438,14 +456,16 @@ def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]
         shove_rounds += s.rounds
         legalize_rounds += l.rounds
         min_tri = min(min_tri, s.min_tri_area_mm2)
-        shoved, legal = s, l
+        if best_conflicts is None or len(l.remaining) < best_conflicts:
+            best, best_conflicts = (pose.copy(), s, l), len(l.remaining)
         if s.moved_mm == 0.0 and l.moved_mm == 0.0:
             break
         conflicts = len(s.remaining) + len(l.remaining)
         if prev_conflicts is not None and conflicts >= prev_conflicts:
             break
         prev_conflicts = conflicts
-    assert shoved is not None and legal is not None
+    assert best is not None
+    pose, shoved, legal = best
     shoved = dataclasses.replace(
         shoved,
         rounds=shove_rounds,

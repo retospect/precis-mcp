@@ -2978,6 +2978,14 @@ class PcbMixin:
         if not ftype:
             raise ValueError("pcb feature needs an ftype")
         geom = f.get("geom")
+        # pcb_features has only a singular ``layer`` column and no
+        # ``reason`` — an authored ``layers`` list (a keepout scoped to
+        # F.Cu) or ``reason`` is persisted inside ``geom`` so readers
+        # can scope it back out (topo-s5 fix1).
+        if f.get("layers"):
+            geom = {**(geom or {}), "layers": list(f["layers"])}
+        if f.get("reason"):
+            geom = {**(geom or {}), "reason": str(f["reason"])}
         conn.execute(
             """
             INSERT INTO pcb_features
@@ -4508,7 +4516,12 @@ class PcbMixin:
         return out
 
     def pcb_routes_write(
-        self, ref_id: int, board_id: int, rows: dict[str, dict[str, Any]]
+        self,
+        ref_id: int,
+        board_id: int,
+        rows: dict[str, dict[str, Any]],
+        *,
+        conn: Connection | None = None,
     ) -> int:
         """Upsert one ``pcb_routes`` row per named net — the ``pcb_route``
         job's checkpoint write-back. A net absent from ``rows`` (the
@@ -4517,49 +4530,67 @@ class PcbMixin:
         reason alongside ``status`` — e.g. the dangling-net exemption,
         which writes ``status='realized'`` with a note explaining why
         rather than a bare status a later reader can't distinguish from an
-        actually-routed net. Returns the number of rows written."""
+        actually-routed net. Returns the number of rows written. Reuses
+        ``conn`` inside an existing transaction."""
+        if conn is not None:
+            return self._pcb_routes_write(conn, ref_id, board_id, rows)
+        with self._pcb_tx() as c:
+            return self._pcb_routes_write(c, ref_id, board_id, rows)
+
+    def _pcb_routes_write(
+        self,
+        conn: Connection,
+        ref_id: int,
+        board_id: int,
+        rows: dict[str, dict[str, Any]],
+    ) -> int:
         n = 0
-        with self._pcb_tx() as conn:
-            for net_name, row in rows.items():
-                net = conn.execute(
-                    "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
-                    "AND retired_at IS NULL",
-                    (ref_id, net_name),
-                ).fetchone()
-                if net is None:
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO pcb_routes
-                        (board_id, net_id, tree, topology, layer_assign,
-                         status, fail, note, meta, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-                    ON CONFLICT (board_id, net_id) DO UPDATE SET
-                        tree = EXCLUDED.tree,
-                        topology = EXCLUDED.topology,
-                        layer_assign = EXCLUDED.layer_assign,
-                        status = EXCLUDED.status,
-                        fail = EXCLUDED.fail,
-                        note = EXCLUDED.note,
-                        meta = EXCLUDED.meta,
-                        updated_at = now()
-                    """,
-                    (
-                        board_id,
-                        int(net[0]),
-                        _jsonb_or_none(row.get("tree")),
-                        _jsonb_or_none(row.get("topology")),
-                        _jsonb_or_none(row.get("layer_assign")),
-                        row.get("status") or "unrouted",
-                        _jsonb_or_none(row.get("fail")),
-                        row.get("note"),
-                        Jsonb(dict(row.get("meta") or {})),
-                    ),
-                )
-                n += 1
+        for net_name, row in rows.items():
+            net = conn.execute(
+                "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
+                "AND retired_at IS NULL",
+                (ref_id, net_name),
+            ).fetchone()
+            if net is None:
+                continue
+            conn.execute(
+                """
+                INSERT INTO pcb_routes
+                    (board_id, net_id, tree, topology, layer_assign,
+                     status, fail, note, meta, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (board_id, net_id) DO UPDATE SET
+                    tree = EXCLUDED.tree,
+                    topology = EXCLUDED.topology,
+                    layer_assign = EXCLUDED.layer_assign,
+                    status = EXCLUDED.status,
+                    fail = EXCLUDED.fail,
+                    note = EXCLUDED.note,
+                    meta = EXCLUDED.meta,
+                    updated_at = now()
+                """,
+                (
+                    board_id,
+                    int(net[0]),
+                    _jsonb_or_none(row.get("tree")),
+                    _jsonb_or_none(row.get("topology")),
+                    _jsonb_or_none(row.get("layer_assign")),
+                    row.get("status") or "unrouted",
+                    _jsonb_or_none(row.get("fail")),
+                    row.get("note"),
+                    Jsonb(dict(row.get("meta") or {})),
+                ),
+            )
+            n += 1
         return n
 
-    def pcb_copper_replace(self, board_id: int, rows: list[dict[str, Any]]) -> int:
+    def pcb_copper_replace(
+        self,
+        board_id: int,
+        rows: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
         """Regenerate a board's derived copper wholesale — DELETE + INSERT,
         the same cascade discipline as chunks->embeddings the table's own
         comment promises (never a partial UPDATE). ``rows`` must be
@@ -4569,23 +4600,31 @@ class PcbMixin:
         DERIVED table and defeat the whole point of keeping the two
         separate (pcb-pre-place-route-blocks Slice 1). No caller does that
         today (checked: every :meth:`pcb_copper_list` reader is a render/
-        DRC consumer, never a :meth:`pcb_copper_replace` source)."""
-        with self._pcb_tx() as conn:
-            conn.execute("DELETE FROM pcb_copper WHERE board_id = %s", (board_id,))
-            for r in rows:
-                conn.execute(
-                    "INSERT INTO pcb_copper "
-                    "(board_id, ctype, layer, net_id, route_id, geom) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (
-                        board_id,
-                        r["ctype"],
-                        r["layer"],
-                        r["net_id"],
-                        r.get("route_id"),
-                        Jsonb(r["geom"]),
-                    ),
-                )
+        DRC consumer, never a :meth:`pcb_copper_replace` source). Reuses
+        ``conn`` inside an existing transaction."""
+        if conn is not None:
+            return self._pcb_copper_replace(conn, board_id, rows)
+        with self._pcb_tx() as c:
+            return self._pcb_copper_replace(c, board_id, rows)
+
+    def _pcb_copper_replace(
+        self, conn: Connection, board_id: int, rows: list[dict[str, Any]]
+    ) -> int:
+        conn.execute("DELETE FROM pcb_copper WHERE board_id = %s", (board_id,))
+        for r in rows:
+            conn.execute(
+                "INSERT INTO pcb_copper "
+                "(board_id, ctype, layer, net_id, route_id, geom) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    board_id,
+                    r["ctype"],
+                    r["layer"],
+                    r["net_id"],
+                    r.get("route_id"),
+                    Jsonb(r["geom"]),
+                ),
+            )
         return len(rows)
 
     def pcb_copper_list(self, board_id: int) -> list[dict[str, Any]]:

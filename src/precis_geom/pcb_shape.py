@@ -395,8 +395,10 @@ class Hole:
 @dataclass(frozen=True)
 class Keepout:
     """A ``keepout`` feature: a layer-scoped polygon (board frame, mm).
-    Recorded, not enforced — the fit check reports overlaps as warnings,
-    which is exactly the not-yet-binding status the spec gives it."""
+    Binding for copper — ``precis.pcb.drc.check_keepout_copper`` errors on
+    a track/via/pour inside it on a scoped layer; this module's own fit
+    check still reports overlaps as warnings only (a fit warning is
+    mechanical context, not a DRC rule)."""
 
     poly: tuple[tuple[float, float], ...]
     layers: tuple[str, ...]

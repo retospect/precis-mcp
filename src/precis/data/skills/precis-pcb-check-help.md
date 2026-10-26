@@ -111,6 +111,13 @@ is an error (`via_pad_keepout`, or `via_in_pad` for an imported or authored
 same-net fixed via), because a via in a pad needs a filled and capped via,
 a fab upgrade we do not buy. Fix an imported one at the source board.
 
+An authored keepout binds: a `features[]` row `{'ftype':'keepout',
+'geom':{'poly':[[x,y],…]}}` — optional `layers:['F.Cu',…]` (absent means
+every copper layer), `reason` names it — makes a track, via or pour
+inside the polygon on a scoped layer a `keepout_copper` error. Pads are
+not flagged: a pad inside a keepout is the placer's miss, not a copper
+defect.
+
 The fab-export path (`view='gerber'`) always judges at `fab`: an
 authored `phase='placed'` claim is a progress statement, not a licence
 to ship — a routed board's clearance/connectivity errors still lead the

@@ -269,10 +269,8 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "stored-pour note formatter; its only caller was the route run's "
         "report — kept with the planes surface that renders stored pours"
     ),
-    "src/precis/pcb/realize.py::through_span": (
-        "through-hole pad layer span; its only caller was the realize "
-        "route path — kept with the pad-geometry slice (PAD_LAYER)"
-    ),
+    # realize.py::through_span left this list 2026-10-26: topoplace/
+    # realise.py's pad-stack builder calls it (topo-place slice 5).
     "src/precis/pcb/resolved.py::snapshot_pins": (
         "the resolved pin->net snapshot for stored write-back; its only "
         "caller was the pcb_route job — the topo realiser's matching pass "

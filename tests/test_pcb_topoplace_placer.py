@@ -251,6 +251,55 @@ def test_settle_pose_stops_when_conflicts_stop_improving(monkeypatch) -> None:
     assert legal.rounds == 2 and legal.moved_mm == pytest.approx(0.02)
 
 
+def test_settle_pose_returns_the_best_pose_seen(monkeypatch) -> None:
+    """A regressing pass does not keep the board: when pass 2 leaves
+    MORE residuals than pass 1, the loop returns pass 1's pose — and
+    the merged result reads its ``remaining`` off that pass while
+    ``lp_optimum_mm`` stays the FIRST pass's objective and
+    ``min_tri_area_mm2`` the worst any pass saw."""
+    calls = {"s": 0}
+    poses_out: list[np.ndarray] = []
+
+    def fake_shove(d, pose):
+        calls["s"] += 1
+        p = pose.copy()
+        p[0, 0] += 0.5
+        return ShoveResult(
+            pose=p,
+            resolved=False,
+            rounds=1,
+            moved_mm=0.5,
+            lp_optimum_mm=0.5 if calls["s"] == 1 else 9.9,
+            min_tri_area_mm2=1.0 if calls["s"] == 1 else 0.25,
+            remaining=((0, 1, 0.5),) * (2 if calls["s"] == 1 else 4),
+        )
+
+    def fake_legalize(d, pose):
+        p = pose.copy()
+        p[0, 1] += 0.5
+        poses_out.append(p)
+        return LegalizeResult(
+            pose=p,
+            resolved=False,
+            rounds=1,
+            moved_mm=0.5,
+            remaining=((0, 1, 0.25),) if calls["s"] == 1 else ((0, 1, 0.25),) * 3,
+        )
+
+    monkeypatch.setattr("precis.pcb.topoplace.shove.shove_pose", fake_shove)
+    monkeypatch.setattr("precis.pcb.topoplace.legalize.legalize_pose", fake_legalize)
+    d = example_a()
+    pose, shoved, legal = placer._settle_pose(d, d.pose0)
+    # pass 1: 2+1 conflicts, pose P1; pass 2: 4+3 (no improvement) ->
+    # break, and the returned pose is P1's, not P2's
+    assert calls["s"] == 2
+    np.testing.assert_array_equal(pose, poses_out[0])
+    assert len(legal.remaining) == 1  # pass 1's residual, not pass 2's 3
+    assert shoved.lp_optimum_mm == pytest.approx(0.5)  # first pass only
+    assert shoved.min_tri_area_mm2 == pytest.approx(0.25)  # worst across
+    assert shoved.rounds == 2 and shoved.moved_mm == pytest.approx(1.0)
+
+
 def test_settle_pose_pose_hash_breaks_an_oscillation(monkeypatch) -> None:
     """shove pushes +x, legalize undoes it: the pose revisits a seen
     hash and the loop breaks BEFORE the next shove — a 2-cycle the
@@ -298,3 +347,48 @@ def test_settle_pose_is_deterministic() -> None:
     np.testing.assert_array_equal(a[0], b[0])
     assert a[1].moved_mm == b[1].moved_mm
     assert a[2].moved_mm == b[2].moved_mm
+
+
+def test_placement_sides_top_forbids_bottom_flips() -> None:
+    """gr520370: sides='top' never lands a part on the bottom — the flip
+    move is only offered to a part already down (to come up), and the
+    per-proposal check keeps a top part from ever going down."""
+    import dataclasses
+
+    d, _inst, _nets = synth_design(seed=0)
+    d = dataclasses.replace(d, sides="top")
+    res = topo_place(d, objective=W, effort=3000, seed=1)
+    assert (res.best_pose[:, 3] < 0.5).all()
+    for e in res.elites:
+        assert (e.pose[:, 3] < 0.5).all()
+
+
+def test_fixed_side_strips_the_back_side_freedom() -> None:
+    """gr520370's per-part lock: ``fixed_side`` on an instance denies the
+    BACK_SIDE freedom — the placer can't flip it, whatever the board's
+    placement_sides says."""
+    from precis.pcb.ir import from_graph
+    from precis.pcb.topoplace.design import FREEDOM_BACK_SIDE, design_from_ir
+
+    ir = from_graph(
+        {
+            "instances": [
+                {"refdes": "A", "pins": [{"name": "1"}], "fixed_side": True},
+                {"refdes": "B", "pins": [{"name": "1"}]},
+            ],
+            "nets": [
+                {
+                    "name": "N1",
+                    "members": [
+                        {"refdes": "A", "pin": "1"},
+                        {"refdes": "B", "pin": "1"},
+                    ],
+                }
+            ],
+        }
+    )
+    td = design_from_ir(ir, {})
+    assert not (td.freedoms[0] & FREEDOM_BACK_SIDE)
+    assert td.freedoms[1] & FREEDOM_BACK_SIDE
+    td_top = design_from_ir(ir, {}, placement_sides="top")
+    assert td_top.sides == "top"

@@ -29,6 +29,7 @@ from precis.pcb.realize import (
 )
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.pcb.silk import SilkPlacement
+from precis_geom.pcb_shape import Keepout
 
 _CAP4 = capability_for("4layer")
 # 4-layer trace_spacing_mm: jlc_min=0.09, house_default=0.15 (capabilities.py)
@@ -3642,3 +3643,124 @@ def test_run_geometric_drc_prod_profile_rules_stays_as_silent_as_none() -> None:
         profile_rules=profile_rules("prod"),
     )
     assert "via_under_part" not in {f.rule for f in findings}
+
+
+# ── keepout_copper (authored ftype='keepout' regions bind) ────────────────
+
+
+def _keepout(*layers: str, reason: str | None = "crystal keep-out") -> Keepout:
+    return Keepout(
+        poly=((2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)),
+        layers=tuple(layers),
+        reason=reason,
+    )
+
+
+def test_keepout_copper_fires_on_track_inside_layer_scoped_keepout():
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [_track("SIG", "F.Cu", (0.0, 3.0), (6.0, 3.0))],
+    }
+    findings = drc.check_keepout_copper(model, [_keepout("F.Cu")])
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "keepout_copper" and f.severity == "error"
+    assert f.margin_mm is not None and f.margin_mm < 0.0
+    assert f.objects[0]["ctype"] == "track" and f.objects[0]["net"] == "SIG"
+    assert f.objects[1]["ctype"] == "keepout"
+    assert f.objects[1]["net"] == "crystal keep-out"
+
+
+def test_keepout_copper_same_track_on_an_unscoped_layer_is_clean():
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [_track("SIG", "B.Cu", (0.0, 3.0), (6.0, 3.0))],
+    }
+    assert drc.check_keepout_copper(model, [_keepout("F.Cu")]) == []
+
+
+def test_keepout_copper_no_layers_scopes_every_layer():
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [
+            _track("SIG", "F.Cu", (0.0, 3.0), (6.0, 3.0)),
+            _track("SIG", "B.Cu", (0.0, 3.0), (6.0, 3.0)),
+            _track("SIG", "B.Cu", (0.0, 8.0), (6.0, 8.0)),
+        ],
+    }
+    findings = drc.check_keepout_copper(model, [_keepout()])
+    assert len(findings) == 2
+    assert all(f.rule == "keepout_copper" for f in findings)
+
+
+def test_keepout_copper_via_span_reports_the_hit_layers():
+    # A through-via (span, not a layers override) inside a B.Cu-scoped
+    # keepout fires once and names B.Cu — not F.Cu.
+    via = {
+        "ctype": "via",
+        "net": "SIG",
+        "x": 3.0,
+        "y": 3.0,
+        "dia_mm": 0.6,
+        "drill_mm": 0.2,
+        "span": ["F.Cu", "B.Cu"],
+    }
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [via]}
+    findings = drc.check_keepout_copper(model, [_keepout("B.Cu")])
+    assert len(findings) == 1
+    assert findings[0].objects[1]["layer"] == "B.Cu"
+    # The same via inside an unscoped keepout hits on both span layers.
+    findings = drc.check_keepout_copper(model, [_keepout()])
+    assert len(findings) == 1
+    assert findings[0].objects[1]["layer"] == "F.Cu,B.Cu"
+
+
+def test_keepout_copper_pour_inside_fires():
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [
+            {
+                "ctype": "pour",
+                "net": "GND",
+                "layer": "F.Cu",
+                "polygon": [[2.5, 2.5], [3.5, 2.5], [3.5, 3.5], [2.5, 3.5]],
+            }
+        ],
+    }
+    findings = drc.check_keepout_copper(model, [_keepout("F.Cu")])
+    assert len(findings) == 1
+    assert findings[0].objects[0]["ctype"] == "pour"
+
+
+def test_keepout_copper_outside_is_clean():
+    # Wholly outside the keepout only — a track ENDING on the keepout
+    # boundary is not a clean graze: its buffered end cap physically
+    # intrudes into the polygon and rightly fires (covered by the
+    # fired-on tests above).
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [_track("SIG", "F.Cu", (0.0, 8.0), (6.0, 8.0))],
+    }
+    assert drc.check_keepout_copper(model, [_keepout("F.Cu")]) == []
+    # no keepouts at all and a degenerate polygon are both silent
+    assert drc.check_keepout_copper(model, []) == []
+    assert (
+        drc.check_keepout_copper(
+            model, [Keepout(poly=((1.0, 1.0), (2.0, 2.0)), layers=(), reason=None)]
+        )
+        == []
+    )
+
+
+def test_run_geometric_drc_threads_keepouts_into_the_rule():
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [_track("SIG", "F.Cu", (0.0, 3.0), (6.0, 3.0))],
+    }
+    findings = drc.run_geometric_drc(
+        model, capability=_CAP4, outline=None, keepouts=[_keepout("F.Cu")]
+    )
+    assert "keepout_copper" in {f.rule for f in findings}
+    # the default keepouts=() stays silent on the same board
+    findings = drc.run_geometric_drc(model, capability=_CAP4, outline=None)
+    assert "keepout_copper" not in {f.rule for f in findings}

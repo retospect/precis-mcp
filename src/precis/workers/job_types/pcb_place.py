@@ -71,6 +71,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # behind placer='topo' — opt-in until the bench shows it beats
         # the default anneal. Absent = the optimize.py anneal.
         "placer": {"type": "string", "enum": ["topo"]},
+        # Route is a second opt-in on top of placer='topo' (GRIPE_FIX
+        # ruling): default False so a topo placement never rewrites the
+        # board's derived copper unless the caller asked for it.
+        "route": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -197,6 +201,9 @@ def _topo_run(
             net_classes=graph.get("net_classes"),
             features=features,
             fixed_copper=fixed_copper,
+            placement_sides=(
+                ((graph.get("board") or {}).get("meta") or {}).get("placement_sides")
+            ),
         )
         _tp.check_slots(td)
         result = _tp.topo_place(
@@ -256,6 +263,210 @@ def _topo_run(
     return result, files, summary_text, side_changes
 
 
+def _topo_route(
+    ctx: DispatchContext,
+    ir: PcbIR,
+    graph: dict[str, Any],
+    footprints: dict[str, Any] | None,
+    *,
+    features: list[dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+    capability: Any,
+    board_id: Any,
+    pcb_ref_id: int,
+) -> tuple[str, dict[str, Any]]:
+    """The topo route half of a ``placer='topo'`` run (slice-5 ruling:
+    place and route are ONE job — the pose commits above, then the same
+    pose is routed and its copper + ``pcb_routes`` rows written). ``ir``
+    already carries the placed pose (``_topo_run`` mutated it), so
+    ``route_design``'s ``d.pose0`` default IS the routed pose.
+
+    BEST-EFFORT: never fails the place. No board row or no fab
+    capability row skips with a note; a raise is caught by the caller
+    and lands as a summary line, because a placed-but-unrouted board is
+    strictly better than a failed job that wrote nothing. Returns
+    ``(summary_text, meta)`` — ``meta`` lands under
+    ``meta.topo_run.route``."""
+    from precis.pcb import DANGLING_NET_NOTE_PREFIX
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb import ratsnest as pcb_ratsnest
+    from precis.pcb import topoplace as _tp
+    from precis.pcb.topoplace import realise as _tprealise
+
+    if board_id is None:
+        return (
+            "topo-route: skipped — the design has no board row, so there is "
+            "nowhere to write copper or route status; the placement stands\n",
+            {},
+        )
+    if capability is None:
+        return (
+            "topo-route: skipped — no fab capability row for this stackup, "
+            "so the widen oracle has nothing to measure against\n",
+            {},
+        )
+    td_route = _tp.design_from_ir(
+        ir,
+        footprints or {},
+        net_classes=graph.get("net_classes"),
+        features=features,
+        fixed_copper=fixed_copper,
+        route_planes=True,
+    )
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    outline = pcb_session.outline_from_features(features or [])
+    keepouts = pcb_session.keepouts_from_features(features or [])
+    net_rules = pcb_session.clearance_net_rules(
+        ctx.store.pcb_load(pcb_ref_id), capability
+    )
+    plan, rres = _tprealise.route_design(td_route, ir, net_rules=net_rules)
+
+    def _drc_errors(result: Any) -> int:
+        # The widen stage's clearance oracle — the SAME model + rules the
+        # view='drc' gate runs (pads + emitted copper + keepouts), so
+        # "clearance allows" is exactly what the gate accepts.
+        model = pcb_session._copper_model(
+            ir,
+            pcb_realize.result_copper_rows(result, ir, layers, derived=True),
+            footprints=footprints,
+        )
+        return sum(
+            1
+            for f in pcb_drc.run_geometric_drc(
+                model, capability=capability, outline=outline, keepouts=keepouts
+            )
+            if f.severity == "error"
+        )
+
+    power_ids = {
+        net_id
+        for net_id in range(ir.n_nets)
+        if str(ir.net_class[net_id] or "").strip().lower() in pcb_ratsnest.PLANE_CLASSES
+        or str(ir.net_domain[net_id] or "") == "power"
+        or (
+            not math.isnan(float(ir.net_current_a[net_id]))
+            and float(ir.net_current_a[net_id]) > 0.0
+        )
+        or int(ir.net_plane_layers[net_id]) != 0
+    }
+    rres, widths = _tprealise.widen_power(
+        rres, sorted(power_ids), drc_errors=_drc_errors
+    )
+    rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
+
+    # pcb_copper.net_id is a real FK — the IR-local net int resolves back
+    # to the DB net_id by name (the deleted pcb_route's own join, verbatim).
+    db_net_ids = ctx.store.pcb_net_ids(pcb_ref_id)
+    copper_rows: list[dict[str, Any]] = []
+    for t in rres.tracks:
+        db_id = db_net_ids.get(str(ir.net_name[t.net_id]))
+        if db_id is None or t.layer < 0 or t.layer >= len(layers):
+            continue
+        copper_rows.append(
+            {
+                "ctype": "track",
+                "layer": layers[t.layer],
+                "net_id": db_id,
+                "route_id": None,
+                "geom": {
+                    "segments": list(t.segments),
+                    "length_mm": round(t.length_mm, 4),
+                    "width_mm": t.width_mm,
+                    "is_dogbone": bool(t.is_dogbone),
+                },
+            }
+        )
+    for v in rres.vias:
+        db_id = db_net_ids.get(str(ir.net_name[v.net_id]))
+        if db_id is None:
+            continue
+        lo = v.layer_lo if 0 <= v.layer_lo < len(layers) else 0
+        hi = v.layer_hi if 0 <= v.layer_hi < len(layers) else len(layers) - 1
+        copper_rows.append(
+            {
+                # pcb_copper.layer is NOT NULL; a via's real membership is
+                # geom["span"] — this column holds the span's lower layer
+                # purely for the schema (every reader reads the span).
+                "ctype": "via",
+                "layer": layers[lo],
+                "net_id": db_id,
+                "route_id": None,
+                "geom": {
+                    "x": round(v.x, 4),
+                    "y": round(v.y, 4),
+                    "dia_mm": v.dia_mm,
+                    "drill_mm": v.drill_mm,
+                    "span": [layers[lo], layers[hi]],
+                },
+            }
+        )
+    for pour in rres.pours:
+        db_id = db_net_ids.get(str(pour.get("net", "")))
+        if db_id is None:
+            continue
+        geom: dict[str, Any] = {"polygon": pour["polygon"]}
+        if pour.get("holes"):
+            geom["holes"] = pour["holes"]
+        for key in ("starved_thermal", "fill"):
+            if pour.get(key):
+                geom[key] = pour[key]
+        copper_rows.append(
+            {
+                "ctype": "pour",
+                "layer": str(pour.get("layer", "")),
+                "net_id": db_id,
+                "route_id": None,
+                "geom": geom,
+            }
+        )
+    # ONE transaction: a raise between the copper replace and the route
+    # rows must never strand copper without route status. And an empty
+    # route result never wipes stored copper — the replace is skipped
+    # while the per-net status rows still write.
+    with ctx.store.tx() as conn:
+        n_copper = (
+            ctx.store.pcb_copper_replace(int(board_id), copper_rows, conn=conn)
+            if copper_rows
+            else 0
+        )
+        n_routes = ctx.store.pcb_routes_write(
+            pcb_ref_id, int(board_id), rows, conn=conn
+        )
+
+    n_realized = sum(1 for r in rows.values() if r["status"] == "realized")
+    n_dangling = sum(
+        1
+        for r in rows.values()
+        if (r.get("note") or "").startswith(DANGLING_NET_NOTE_PREFIX)
+    )
+    n_failed = sum(1 for r in rows.values() if r["status"] == "failed")
+    meta = {
+        "nets": len(rows),
+        "realized": n_realized,
+        "failed": n_failed,
+        "tracks": len(rres.tracks),
+        "vias": len(rres.vias),
+        "crossings": len(plan.crossings),
+        "unreachable": len(plan.unreachable),
+        "widened": {str(k): v for k, v in widths.items()},
+    }
+    widened_line = ""
+    if widths:
+        widened_line = "; widened " + ", ".join(
+            f"{ir.net_name[k]}→{w}mm" for k, w in sorted(widths.items())
+        )
+    text = (
+        f"topo-route: {len(rows)} net(s) — {n_realized} realized "
+        f"({n_dangling} dangling), {n_failed} failed, "
+        f"{len(plan.crossings)} unresolved crossing(s), "
+        f"{len(plan.unreachable)} unreachable net(s); wrote {n_copper} "
+        f"copper row(s), {n_routes} route row(s){widened_line}"
+        + (" — route produced nothing; stored copper kept" if not copper_rows else "")
+        + "\n"
+    )
+    return text, meta
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pcb_ref_id = int(params["pcb_ref_id"])
@@ -266,6 +477,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     iters = int(params.get("iters") or (20000 if placer == "topo" else _DEFAULT_ITERS))
     seed = int(params.get("seed") or 0)
     snap = bool(params.get("snap") or False)
+    # Route is a second opt-in on placer='topo' (GRIPE_FIX ruling) —
+    # absent/False leaves the stored derived copper untouched.
+    route = bool(params.get("route"))
     groups = bool(params.get("groups") or False)
 
     # The effective netlist (Slice 7): the latest resolved snapshot over
@@ -602,9 +816,39 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # `placement_drc_report`, one definition, so the two jobs cannot drift).
     placement_summary = f"{placement_report}\n\n" if placement_report else ""
     if placer == "topo":
+        # Slice-5 ruling: place and route are ONE job — but routing is
+        # opt-in (route=True, GRIPE_FIX ruling). The pose is committed
+        # above; when requested, route it now — best-effort, a raise is a
+        # note, never a failed place (a placed-but-unrouted board is
+        # strictly better than a job that wrote nothing).
+        route_text = ""
+        route_meta: dict[str, Any] = {}
+        if route:
+            try:
+                route_text, route_meta = _topo_route(
+                    ctx,
+                    ir,
+                    graph,
+                    footprints,
+                    features=features,
+                    fixed_copper=kept_rows,
+                    capability=capability,
+                    board_id=gate_board_id,
+                    pcb_ref_id=pcb_ref_id,
+                )
+            except Exception as exc:
+                log.exception("pcb_place: topo route stage raised; placement kept")
+                route_text = (
+                    f"topo-route: raised {type(exc).__name__}: {exc} — the "
+                    "placement above stands, no copper written\n"
+                )
         # Decision 20: the whole run payload rides the job ref's meta for
         # ``view='topo'`` drill-down; the summary text is the same file.
-        ctx.set_meta(topo_run={"files": topo_files})
+        # ``route`` stays absent when the stage never ran.
+        topo_run_meta: dict[str, Any] = {"files": topo_files}
+        if route:
+            topo_run_meta["route"] = route_meta
+        ctx.set_meta(topo_run=topo_run_meta)
         flips = (
             "side flips: "
             + ", ".join(f"{r}->{s}" for r, s in sorted(side_changes.items()))
@@ -629,6 +873,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             "(get(kind='pcb', id=<slug>, view='topo'))\n\n"
             + pcb_session.ripup_note(n_ripped, fixed_rows, ripped)
             + flips
+            + route_text
+            + "\n"
             + topo_text,
         )
         return

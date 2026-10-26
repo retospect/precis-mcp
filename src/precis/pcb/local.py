@@ -45,6 +45,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -56,6 +57,7 @@ from precis.pcb import (
     ROUTE_RETIRED,
     ROUTE_RETIRED_NEXT,
     STACKUP_PRESETS,
+    ratsnest,
 )
 from precis.pcb import drc as pcb_drc
 from precis.pcb import profiles as pcb_profiles
@@ -770,6 +772,12 @@ class TopoRun:
     assignment: Any = field(repr=False)
     pair_map: Any = field(repr=False)
     design_ctx: _Design | None = field(repr=False, default=None)
+    #: ``(RoutePlan, RealizeResult)`` of the slice-5 route stage over the
+    #: winning pose — the same shared half the ``placer='topo'`` job runs
+    #: (:func:`precis.pcb.topoplace.realise.route_design` +
+    #: :func:`~precis.pcb.topoplace.realise.widen_power`). ``None`` only
+    #: if that stage itself raised — place output still stands.
+    route: Any = field(repr=False, default=None)
 
     def summary(self) -> str:
         return str(self.files["summary.txt"])
@@ -823,6 +831,9 @@ def topo_place(
         net_classes=design.graph.get("net_classes"),
         features=design.features,
         fixed_copper=design.fixed_copper,
+        placement_sides=(
+            ((design.graph.get("board") or {}).get("meta") or {}).get("placement_sides")
+        ),
     )
     _tp.check_slots(td)
     result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed)
@@ -872,6 +883,95 @@ def topo_place(
         )
         for i, refdes in enumerate(td.parts)
     }
+    # Slice-5 ruling: the same place→route half the job runs, in-process —
+    # a routing design that admits the rails, the mesh at the WINNING pose
+    # (``pose=``, not the authored ``pose0``), then widen_power under the
+    # board's own DRC oracle. Best-effort like the job: a raise keeps the
+    # place output, ``route`` stays None and route.json records the note.
+    route_pair = None
+    route_json: dict[str, Any] = {}
+    try:
+        from precis.pcb.topoplace import realise as _tprealise
+
+        td_route = _tp.design_from_ir(
+            ir,
+            footprints,
+            net_classes=design.graph.get("net_classes"),
+            features=design.features,
+            fixed_copper=design.fixed_copper,
+            route_planes=True,
+        )
+        plan, rres = _tprealise.route_design(
+            td_route,
+            ir,
+            pose=result.best_pose,
+            net_rules=pcb_session.clearance_net_rules(design.graph, design.fab_caps),
+        )
+        # The oracle measures the PLACED board — write the winning pose
+        # into the local ir first (it is throwaway; ``poses`` above
+        # already captured it for the caller).
+        for i in range(len(td.parts)):
+            x, y, rot_q, side = (float(v) for v in result.best_pose[i])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            ir.inst_x[i] = x
+            ir.inst_y[i] = y
+            ir.inst_rot[i] = rot_q * 90.0
+            ir.inst_bottom[i] = side >= 0.5
+        layers = design.layer_names
+        keepouts = pcb_session.keepouts_from_features(design.features)
+
+        def _drc_errors(rres_: Any) -> int:
+            model = pcb_realize.to_gerber_model(
+                rres_,
+                ir,
+                layers=layers,
+                outline=[list(p) for p in (design.outline or [])],
+            )
+            return sum(
+                1
+                for f in pcb_drc.run_geometric_drc(
+                    model,
+                    capability=design.fab_caps,
+                    outline=model["outline"],
+                    keepouts=keepouts,
+                )
+                if f.severity == "error"
+            )
+
+        power_ids = {
+            net_id
+            for net_id in range(ir.n_nets)
+            if str(ir.net_class[net_id] or "").strip().lower() in ratsnest.PLANE_CLASSES
+            or str(ir.net_domain[net_id] or "") == "power"
+            or (
+                not math.isnan(float(ir.net_current_a[net_id]))
+                and float(ir.net_current_a[net_id]) > 0.0
+            )
+            or int(ir.net_plane_layers[net_id]) != 0
+        }
+        rres, widths = _tprealise.widen_power(
+            rres, sorted(power_ids), drc_errors=_drc_errors
+        )
+        rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
+        route_pair = (plan, rres)
+        route_json = {
+            "nets": {
+                name: {"status": r["status"], "note": r.get("note")}
+                for name, r in rows.items()
+            },
+            "tracks": len(rres.tracks),
+            "vias": len(rres.vias),
+            "crossings": [list(c) for c in plan.crossings],
+            "unreachable": [str(td_route.net_name[k]) for k in plan.unreachable],
+            "widened": {str(ir.net_name[k]): w for k, w in widths.items()},
+        }
+        files["route.json"] = route_json
+        _runstore.write_run(files, out)
+    except Exception as exc:
+        route_json = {"error": f"{type(exc).__name__}: {exc}"}
+        files["route.json"] = route_json
+        _runstore.write_run(files, out)
     return TopoRun(
         slug=slug,
         out=str(out),
@@ -884,6 +984,7 @@ def topo_place(
         assignment=assignment,
         pair_map=pm,
         design_ctx=design,
+        route=route_pair,
     )
 
 
@@ -989,6 +1090,7 @@ def drc(placement: LocalPlacement) -> list[Any]:
         net_rules=pcb_session.clearance_net_rules(design.graph, design.fab_caps),
         net_voltages=_net_voltages(design.graph),
         unconnected=design.graph.get("unconnected"),
+        keepouts=pcb_session.keepouts_from_features(design.features),
         phase="placed",
         profile_rules=pcb_profiles.profile_rules(design.profile),
     )

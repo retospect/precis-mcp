@@ -9,12 +9,12 @@ sketch, board) → ``summary.md`` + ``metrics.json``. Per-stage wall
 times land in both outputs; the loop's job is to make every stage land
 cleanly in a few minutes.
 
-Route is topo slice 2 output, landing with builder topo-2b; vroute is
-gone — topo is the only router (Reto 2026-10-25). Until the topo route
-exists the loop reports the place stage's own numbers (crossings,
-evals, airwire) plus the realized via count, and never enqueues an
-``op='route'`` job. The route stage below is the seam topo-2b's output
-plugs into.
+Route is the slice-5 realiser inside the place job (topo is the only
+router — vroute deleted 2026-10-25): the ``placer='topo'`` job commits
+the pose, routes it in-process and writes copper + ``pcb_routes`` rows.
+The loop reads the route counts back off the job ref's
+``meta.topo_run.route`` and reports unrouted nets + the realized via
+count; it never enqueues an ``op='route'`` job (none exists).
 
 Reuses the topo bench's helpers (``tests.fixtures.pcb.topo_bench``) so
 loop numbers and bench numbers come from the same measurement code.
@@ -406,6 +406,7 @@ def run(args: argparse.Namespace) -> int:
                 args={
                     "op": "place",
                     "placer": "topo",
+                    "route": True,
                     "iters": args.effort,
                     "seed": args.seed,
                     "force": args.force,
@@ -441,24 +442,34 @@ def run(args: argparse.Namespace) -> int:
                 **{k: getattr(stage, k) for k in _STAGE_FIELDS},
             }
 
-    # ── route — topo slice 2 output once topo-2b lands it; this is the
-    # seam. vroute is gone (topo is the only router), so no job is
-    # enqueued: the loop reports the place stage's crossing numbers and
-    # the realized via count (computed below) until the topo route
-    # writes copper.
-    route_ran = False
+    # ── route — the placer='topo' job routed the committed pose itself
+    # (slice-5 ruling: place and route are ONE job); its counts ride the
+    # job ref's meta.topo_run.route. No second job exists.
+    route_meta = (
+        ((tb._job_meta(store, place_job).get("topo_run") or {}).get("route")) or {}
+        if not args.skip_place and place_ok
+        else {}
+    )
+    route_ran = bool(route_meta)
     metrics["route"] = {
-        "status": "pending topo slice 2",
-        "note": "topo route output lands with topo-2b; vroute removed",
+        "status": "ran in the place job" if route_ran else "not run",
         "crossings_start": stage.crossings_start,
         "crossings": stage.crossings,
         "via_bracket": stage.via_bracket,
+        "unresolved_crossings": route_meta.get("crossings"),
+        "nets": route_meta.get("nets"),
+        "realized": route_meta.get("realized"),
+        "failed": route_meta.get("failed"),
+        "tracks": route_meta.get("tracks"),
+        "vias": route_meta.get("vias"),
+        "unreachable": route_meta.get("unreachable"),
+        "widened": route_meta.get("widened"),
     }
 
     # ── widen — GND/power copper grown after route, before final DRC
-    # (the loop's power-rail ask). No route stage means no derived
-    # copper, so today it reports 0 — the seam and its DRC bracket are
-    # in place for topo-2b's output.
+    # (the loop's power-rail ask). The place job's own widen_power
+    # already grew rails where its DRC oracle allowed; this pass raises
+    # whatever still sits under the loop's floors.
     metrics["widen"] = _widen_power_copper(store, pcb, ref)
 
     # ── DRC — no route stage runs it; run it standalone so a
@@ -487,10 +498,10 @@ def run(args: argparse.Namespace) -> int:
     }
 
     # Per-net route statuses with their reasons — the same rows
-    # view='route-status' shows (status + the legible note the route job
-    # writes), restricted to the >=2-member nets the routed count
-    # covers. Meaningful only once the topo route stage runs; with no
-    # router every net reports unrouted, which is noise not signal.
+    # view='route-status' shows (status + the legible note the place
+    # job's route stage writes), restricted to the >=2-member nets the
+    # routed count covers. Empty when the route stage did not run — with
+    # no route every net reads unrouted, which is noise not signal.
     unrouted_nets: list[dict[str, Any]] = []
     if route_ran:
         fanout = {

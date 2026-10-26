@@ -524,6 +524,13 @@ class PcbIR:
     #: without :func:`from_graph`, whose instances are all unpinned.
     inst_max_travel_mm: np.ndarray | None = None
 
+    #: bool[n_inst] — the ``fixed_side`` lock (0219, ``op='move'
+    #: fixed_side=true``): the instance's board SIDE is authored, only the
+    #: author may change it. Read by ``design_from_ir`` (the topo placer's
+    #: BACK_SIDE freedom); the write paths already enforce it. ``None``
+    #: means an IR built without :func:`from_graph` — nobody is locked.
+    inst_fixed_side: np.ndarray | None = None
+
     #: The board's mounting holes (:class:`MountingHole`) — board-config
     #: data with the same status as ``outline`` above: populated once at
     #: hydration from ``ftype='mounting_hole'`` features, never mutated
@@ -1583,6 +1590,9 @@ def from_graph(
         inst_fixed_rot=np.array(
             [(inst.get("fixed") or "") in ("rot", "both") for inst in instances],
             dtype=bool,
+        ),
+        inst_fixed_side=np.array(
+            [bool(inst.get("fixed_side")) for inst in instances], dtype=bool
         ),
         inst_max_travel_mm=np.array(
             [

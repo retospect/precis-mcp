@@ -63,10 +63,11 @@ the objective shares and constraints this consumes;
 were the smooth-energy engines (both deleted, Reto 2026-10-25; git
 history); pcb-vector-router (deleted; tag vroute-final) was the geometry
 engine — `vroute.py` was deleted on 2026-10-25 (tag `vroute-final`), so
-the topological router is the only router and until slice 5 lands there
-is no routed-copper output. topo-place is that router's front end:
-poses, pin assignments, a layer per wire piece and via sites; slice 5
-turns them into copper in a topoplace realiser.
+the topological router is the only router. topo-place is that router's
+front end: poses, pin assignments, a layer per wire piece and via sites;
+the slice-5 realiser (`topoplace/realise.py`, landed 2026-10-26) turns
+them into copper inside the `placer='topo'` job itself — place and
+route are one job.
 
 ## Rulings (Reto 2026-10-24)
 
@@ -303,6 +304,13 @@ on actual areas) + legal centre-box bounds, ≤10 rounds; tris inside a
 conflict's intersection lens are exempt (transient geometry). The
 corridor demand/capacity driver (`corridor.py`) waits on slice-2b
 wires.
+2026-10-26 — slice-5 realiser v1 landed (`topoplace/realise.py`):
+`route_design` + `widen_power` + `sketch_rows`; `placer='topo'` is now
+one place→route job writing `pcb_copper`/`pcb_routes`;
+`pcb.local.topo_place` runs the same stage; DRC flags copper inside
+keepouts (`keepout_copper`). Still open: unresolved odd crossing
+cycles (mid-piece flip is the missing refinement) and the DRC-0
+acceptance run.
 2026-10-25 — `src/precis/pcb/topoplace/` exists (design, pairmap,
 proxy, archive, placer, pins, writeback, summary, runstore); 2a mesh
 in flight on `worktree-topo-s2`: `edge_owner`/`edge_side` per
@@ -718,7 +726,21 @@ first round; outline containment holds.
 `vroute-final`); topo is the only router, so this slice grows topo's own
 realiser: it turns the topo route's wires (edge sequences on one layer)
 and via sites into copper tracks and vias written through the normal
-realise/store path. There is no routed-copper output until this lands.
+realise/store path.
+
+Landed v1 (2026-10-26, `topoplace/realise.py`): `route_design` (mesh →
+wires → plan → copper for one pose) + `widen_power` (rails widen where
+the board's own DRC oracle allows) + `sketch_rows` (the `pcb_routes`
+ladder — dangling / unrouted / same-layer-crossing). The
+`placer='topo'` job routes the pose it just committed and writes
+`pcb_copper` + `pcb_routes` rows itself — place and route are ONE job,
+best-effort (a route raise never fails the place). Routing is opt-in
+(`route=True`, GRIPE_FIX ruling) and not yet DRC-0 on the standing
+boards. `pcb.local.topo_place` runs the same stage (`TopoRun.route`,
+`route.json`). Branches an unresolved same-layer crossing names are
+stripped from the emitted copper — the plan still reports them.
+Known gap: odd crossing cycles (K3) can end a run with unresolved
+crossings — mid-piece flip is the missing refinement.
 
 - The topo route's per-wire layer assignment fixes each wire's layer (a
   surface pad's mount side stays the terminal layer); the topo route's
@@ -746,9 +768,9 @@ Slices 0–5 above; skills: `precis-pcb-workspace-help` gains the pin forms,
 - A peripheral DSL (I2C instances, timer sharing, alt-function
   exclusivity); the LLM fixes those pins (Decision 11).
 - Promoting pin function tables into the component library (Decision 16).
-- Native taut geometry — no routed-copper output exists until the
-  slice-5 realiser lands (`vroute` deleted 2026-10-25, tag
-  `vroute-final`).
+- Native taut geometry — the slice-5 realiser writes wire-piece tracks
+  and via-site vias; corner rounding/tautening stays out (`vroute`
+  deleted 2026-10-25, tag `vroute-final`).
 - Rotation during shove.
 - Blind and buried vias.
 - Exact k-layer via minimisation beyond the 2-layer relaxation (NP-complete

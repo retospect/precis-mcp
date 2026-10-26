@@ -162,6 +162,7 @@ from precis.pcb.rules import (
 )
 from precis.pcb.rules import required as rules_required
 from precis.pcb.silk import SilkPlacement
+from precis_geom.pcb_shape import Keepout
 
 Coord = tuple[float, float]
 
@@ -3111,6 +3112,110 @@ def check_outline_containment(
     return findings
 
 
+def check_keepout_copper(
+    model: dict[str, Any], keepouts: Sequence[Keepout] = ()
+) -> list[DrcFinding]:
+    """Copper inside an authored keep-out region is an error — the binding
+    half of ``ftype='keepout'`` (``docs/backlog/pcb-keepout-does-not-bind.md``):
+    until this rule, a keepout was recorded data the se fit check warned
+    about (:class:`~precis_geom.pcb_shape.Keepout`'s own docstring) and no
+    check read. Tracks, vias and pours whose polygon
+    (:func:`_copper_item_polygon` — the SAME physical shape every other
+    rule measures, so a track's buffered width and a pour's antipad holes
+    count here exactly as in :func:`check_clearance`) intersect the
+    keepout's polygon on a layer the keepout scopes fire. A keepout with
+    no ``layers`` scopes every copper layer.
+
+    **Pads are not tested** — only ``model["copper"]`` rows. A pad inside
+    a keepout is the placer's miss and placement-side checks own that
+    axis; flagging its copper too would report one defect twice (the same
+    reason :func:`check_via_pad_keepout` exists beside the placement
+    engine's own keepout rather than replacing it).
+
+    Layer matching is by name: the item's own ``layer`` for tracks and
+    pours, :func:`_via_layer_names` for a via's ``span`` (a through-via
+    inside an all-layers keepout fires once, listing every layer it
+    violates on). ``margin_mm`` is the deepest the copper reaches into
+    the polygon, signed negative like every rule here; ``severity`` is
+    always ``error`` — an authored keepout is a stated hard constraint,
+    not a margin (the DRC-finding posture the spec's decisions log
+    already leans).
+    """
+    zones: list[tuple[Keepout, BaseGeometry]] = []
+    for k in keepouts:
+        if len(k.poly) < 3:
+            continue
+        geom: BaseGeometry = Polygon(list(k.poly))
+        if not geom.is_valid:
+            geom = geom.buffer(0)
+        if geom.is_empty or geom.area <= _EPS:
+            continue
+        zones.append((k, geom))
+    if not zones:
+        return []
+    all_layers = [str(n) for n in (model.get("layers") or [])]
+    findings: list[DrcFinding] = []
+    for item in model.get("copper") or []:
+        ctype = item.get("ctype")
+        if ctype == "via":
+            item_layers = _via_layer_names(item, all_layers)
+        elif ctype in ("track", "pour"):
+            item_layers = [str(item.get("layer") or "")]
+        else:
+            continue
+        geom = _copper_item_polygon(item)
+        if geom is None or geom.is_empty:
+            continue
+        for k, zone in zones:
+            scope = set(k.layers)
+            hits = [n for n in item_layers if not scope or n in scope]
+            if not hits:
+                continue
+            over = geom.intersection(zone)
+            if over.is_empty or over.area <= 1e-6:
+                continue
+            # Deepest the copper reaches in: the intersection vertex
+            # farthest from the keepout's boundary (vertices on the edge
+            # score 0, so a graze reads shallow and a full burial reads
+            # its true depth) — outline_containment's same measure,
+            # mirrored across the boundary.
+            depth = max(
+                (
+                    zone.boundary.distance(Point(c))
+                    for g in getattr(over, "geoms", [over])
+                    for c in getattr(g, "exterior", g).coords
+                ),
+                default=0.0,
+            )
+            depth = max(depth, 1e-6)
+            name = k.reason or "keepout"
+            net, layer = item.get("net"), item.get("layer")
+            findings.append(
+                DrcFinding(
+                    rule="keepout_copper",
+                    severity="error",
+                    where=f"{ctype}[{net}] inside keepout {name} on {','.join(hits)}",
+                    detail=(
+                        f"{ctype}[{net}] overlaps keepout {name} by "
+                        f"{over.area:.4f}mm^2 ({depth:.3f}mm deep) on "
+                        f"{','.join(hits)}"
+                    ),
+                    objects=(
+                        {
+                            "net": net,
+                            "layer": layer,
+                            "ctype": ctype,
+                            **_participant_tags(item),
+                            **_derived_tag(item),
+                        },
+                        {"ctype": "keepout", "net": name, "layer": ",".join(hits)},
+                    ),
+                    margin_mm=-depth,
+                )
+            )
+    return findings
+
+
 def check_edge_mating(
     edge_mates: Sequence[Any] | None,
     *,
@@ -4208,6 +4313,7 @@ def run_geometric_drc(
     holes: Sequence[HoleKeepout] = (),
     edge_mates: Sequence[Any] | None = None,
     unconnected: Iterable[dict[str, Any]] | None = None,
+    keepouts: Sequence[Keepout] = (),
     phase: str = "netlist",
     undeclared_unchecked: Sequence[str] = (),
     courtyard_clearance_mm: float | None = None,
@@ -4266,6 +4372,11 @@ def run_geometric_drc(
     ``undeclared_unchecked`` names). ``None``/empty keeps a caller that
     never built them silent on that axis — same contract as ``unrouted``.
 
+    ``keepouts`` (:func:`precis.pcb.session.keepouts_from_features`'s
+    authored ``ftype='keepout'`` rows) feeds :func:`check_keepout_copper`;
+    empty by default, so a caller that does not pass it stays silent on
+    that axis — same contract as ``unrouted``.
+
     ``profile_rules`` (:func:`precis.pcb.profiles.profile_rules` for the
     board's authored profile) gates the prototype-only rules
     (:func:`check_via_density`, :func:`check_via_under_part`,
@@ -4291,6 +4402,7 @@ def run_geometric_drc(
     findings += check_octilinear(model)
     findings += check_outline_missing(outline)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
+    findings += check_keepout_copper(model, keepouts)
     findings += check_edge_mating(edge_mates, outline=outline)
     findings += check_connectivity(model)
     findings += check_pour_fragmented(model)
@@ -5273,6 +5385,7 @@ __all__ = [
     "check_courtyard_hole",
     "check_courtyard_overlap",
     "check_edge_mating",
+    "check_keepout_copper",
     "check_no_decoupling",
     "check_no_driver",
     "check_npth_clearance",

@@ -879,6 +879,7 @@ def run(
         ],
         edge_mates=pcb_edge_mate.records(ir),
         unconnected=graph.get("unconnected"),
+        keepouts=pcb_session.keepouts_from_features(store.pcb_features_list(ref_id)),
         phase=phase,
         courtyard_clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
         undeclared_unchecked=undeclared_unchecked,

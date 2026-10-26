@@ -344,6 +344,33 @@ def test_mounting_holes_from_features_parses_drill_ring_and_plating():
     ]
 
 
+def test_keepouts_from_features_parses_poly_layers_and_reason():
+    from precis.pcb.session import keepouts_from_features
+
+    keepouts = keepouts_from_features(
+        [
+            {"ftype": "outline", "geom": {"path": [[0, 0], [10, 0], [10, 10]]}},
+            {
+                "ftype": "keepout",
+                "geom": {"poly": [[0, 0], [5, 0], [5, 5]]},
+                "layers": ["F.Cu"],
+                "reason": "crystal keep-out",
+            },
+            # no layers key at all means every copper layer, no reason
+            {"ftype": "keepout", "geom": {"poly": [[1, 1], [4, 1], [4, 4]]}},
+            # malformed / degenerate rows must be skipped, never crash
+            {"ftype": "keepout", "geom": {"poly": [[0, 0], [1, 1]]}},
+            {"ftype": "keepout", "geom": {"poly": [["oops", 0], [1, 0], [1, 1]]}},
+            {"ftype": "keepout", "geom": {}},
+        ]
+    )
+    assert [(k.layers, k.reason) for k in keepouts] == [
+        (("F.Cu",), "crystal keep-out"),
+        ((), None),
+    ]
+    assert keepouts[0].poly == ((0.0, 0.0), (5.0, 0.0), (5.0, 5.0))
+
+
 def test_build_ir_carries_mounting_holes_onto_the_ir():
     from precis.pcb.session import build_ir, mounting_holes_from_features
 

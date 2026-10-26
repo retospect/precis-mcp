@@ -180,21 +180,34 @@ class TopoDesign:
     pin_side: np.ndarray  # (P,) int8: 0 top SMD, 1 bottom SMD, 2 TH
     pin_label: np.ndarray  # (P,) object: footprint pin/pad name per pin (1b)
     pin_net: np.ndarray  # (P,) int32: ir net id per pin, NO_NET unwired (1b)
-    net_pins: tuple[np.ndarray, ...]  # per signal net: pin ids (plane nets dropped)
+    #: per routable net: pin ids. Plane-class nets are dropped unless
+    #: ``design_from_ir(route_planes=True)`` — the placer's design keeps
+    #: them out (a rail's member list would mint airwires the proxy
+    #: counts as crossings); the router's design takes them in (Reto:
+    #: GND and power route as normal nets, widened post-route).
+    net_pins: tuple[np.ndarray, ...]
     flex: tuple[FlexSlot, ...]  # any_of slots (1b)
     swap_groups: tuple[SwapGroup, ...]  # plain / tuple groups (1b)
     fixed: np.ndarray  # (N,) bool: xy locked
     freedoms: np.ndarray  # (N,) uint8 bitset: ROTATE | BACK_SIDE
     outline: np.ndarray  # (K, 2) board outline, mm
     pose0: np.ndarray  # (N, 4) x, y, rot_quarter (0..3), side (0/1)
+    #: The board's ``placement_sides`` (``meta.placement_sides`` — 'both'
+    #: default): 'top'/'bottom' forbid the flip move that would land a
+    #: part on the other side — the placer checks it per proposal, so a
+    #: part already on the disallowed side may still flip OFF it
+    #: (gr520370: a one-sided JLC assembly cannot take bottom parts).
+    sides: str = "both"
     claims: tuple[tuple[int, str], ...] = ()  # (pin id, name) named fixed claims
     #: The nets 1b declarations reference — slot ties plus swap-group
     #: members' wired nets. Indexed by :attr:`FlexSlot.net`. ``decl_nets``
-    #: is the ir-level pin membership (plane and singleton nets included,
-    #: unlike ``net_pins``); ``decl_net_ir`` the ir net id (-1 when the
+    #: is the ir-level pin membership (every ir net included, whatever
+    #: ``net_pins`` holds); ``decl_net_ir`` the ir net id (-1 when the
     #: declared name matches no ir net); ``decl_net_route`` the
     #: ``net_pins`` index or -1; ``decl_net_plane`` marks plane-class
-    #: nets (a pin bound there ties to the plane — no airwire exists).
+    #: nets (a pin bound there ties to the plane — the pin-assignment
+    #: proxy mints no airwire for it, whether or not
+    #: ``route_planes`` routed the net).
     decl_nets: tuple[np.ndarray, ...] = ()
     decl_net_ir: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int32))
     decl_net_route: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
@@ -451,9 +464,11 @@ def _zones(
             continue
         if not np.allclose(ring[0], ring[-1], atol=1e-9):
             ring = np.vstack([ring, ring[0]])
-        unknown = [
-            str(nm) for nm in (f.get("layers") or ()) if str(nm) not in name_to_idx
-        ]
+        # ``layers`` arrives inline on authored features or inside
+        # ``geom`` on stored rows (_pcb_insert_feature has no layers
+        # column — it persists the list into geom, topo-s5 fix1).
+        ko_layers = f.get("layers") or (f.get("geom") or {}).get("layers") or ()
+        unknown = [str(nm) for nm in ko_layers if str(nm) not in name_to_idx]
         if unknown:
             raise BadInput(
                 f"keepout names layer(s) {unknown} — not in the "
@@ -465,8 +480,10 @@ def _zones(
             TopoZone(
                 kind="keepout",
                 ring=ring,
-                layers=tuple(sorted(name_to_idx[nm] for nm in (f.get("layers") or ()))),
-                name=str(f.get("reason") or "keepout"),
+                layers=tuple(sorted(name_to_idx[nm] for nm in ko_layers)),
+                name=str(
+                    f.get("reason") or (f.get("geom") or {}).get("reason") or "keepout"
+                ),
             )
         )
     if fixed_copper:
@@ -502,6 +519,8 @@ def design_from_ir(
     net_classes: Mapping[str, Mapping[str, Any]] | None = None,
     features: Iterable[Mapping[str, Any]] | None = None,
     fixed_copper: Iterable[Mapping[str, Any]] | None = None,
+    route_planes: bool = False,
+    placement_sides: str | None = None,
 ) -> TopoDesign:
     """Build the one immutable placer input from the IR.
 
@@ -531,6 +550,10 @@ def design_from_ir(
     - ``net_pins`` keeps every non-plane signal net with ≥2 pins
       (``net_class`` against :data:`ratsnest.PLANE_CLASSES`, the same
       drop ``build_airwires`` makes — single-pin nets carry no wire).
+      ``route_planes=True`` admits ≥2-pin plane-class nets too — the
+      slice-5 ruling routes GND/power as normal nets; it is opt-in so
+      the placer's design never pays for rail airwires (a routing
+      caller builds its own design for the settled pose).
     - 1b decls ride ``decl_nets`` — NOT ``net_pins``: a plane net's
       member list would mint airwires the proxy would count as
       crossings. A slot's ``net`` index points into ``decl_nets``;
@@ -538,8 +561,13 @@ def design_from_ir(
       routable.
     - ``freedoms`` derives from the lock bits: ROTATE unless
       ``inst_fixed_rot``, BACK_SIDE unless ``inst_fixed_xy`` (a part
-      that may not move may not change sides either). The authored
-      intent channels (Decision 17) land with 1b.
+      that may not move may not change sides either) — and never for a
+      ``fixed_side`` part (gr520370: the authored side is a lock the
+      placer must honour, not a preference). ``placement_sides``
+      ('top'/'bottom' off the board meta) lands on
+      :attr:`TopoDesign.sides`; the placer rejects the flip proposal
+      that would land a part on the disallowed side — a part already
+      there may still flip off it.
     - ``pose0`` rotation snaps ``inst_rot`` to the nearest quarter turn
       (mod 4); non-quarter authored rotations are approximated, not
       refused — the mover only ever produces quarter turns.
@@ -557,7 +585,7 @@ def design_from_ir(
     route_of: dict[int, int] = {}  # ir net id -> net_pins index
     for net_id in range(ir.n_nets):
         cls = str(ir.net_class[net_id] or "").strip().lower()
-        if cls in ratsnest.PLANE_CLASSES:
+        if cls in ratsnest.PLANE_CLASSES and not route_planes:
             continue
         pins = np.flatnonzero(ir.pin_net == net_id).astype(np.int64)
         if len(pins) >= 2:
@@ -579,6 +607,10 @@ def design_from_ir(
     freedoms = np.zeros(n, dtype=np.uint8)
     freedoms[~ir.inst_fixed_rot] |= FREEDOM_ROTATE
     freedoms[~ir.inst_fixed_xy] |= FREEDOM_BACK_SIDE
+    if ir.inst_fixed_side is not None:
+        freedoms[np.asarray(ir.inst_fixed_side, dtype=bool)] &= np.uint8(
+            ~FREEDOM_BACK_SIDE
+        )
 
     outline = np.empty((0, 2), dtype=np.float64)
     if ir.outline:
@@ -621,6 +653,11 @@ def design_from_ir(
         freedoms=freedoms,
         outline=outline,
         pose0=pose0,
+        sides=(
+            str(placement_sides).strip().lower()
+            if str(placement_sides or "").strip().lower() in ("top", "bottom")
+            else "both"
+        ),
         claims=decl["claims"],
         decl_nets=decl["nets"],
         decl_net_ir=decl["net_ir"],

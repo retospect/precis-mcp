@@ -5,15 +5,17 @@
 Every board runs through the REAL job path on the test DB so both
 pipelines see the same gates and stores:
 
-- ``anneal+vroute`` — ``put(op='route')``: the production joint
-  place+sketch anneal -> realize, the default pipeline.
-- ``topo+vroute`` — ``put(op='place', placer='topo')`` writes the
-  phase-0 winning pose through the same placement-DRC gate and
-  fixed-copper rip-up the anneal gets, then ``put(op='route',
-  place=False)`` realizes it (route-only, poses held). That is the pose
-  hand-off that exists until spec slice 5 wires per-wire layers and
-  fixed vias into ``vroute`` — the ``route_mode`` field names it so the
-  columns' provenance stays explicit when the real hand-off lands.
+- ``anneal+vroute`` — ``put(op='route')``: RETIRED. The vector router
+  was deleted 2026-10-25 (tag ``vroute-final``) and ``op='route'``
+  refuses, so this side can only ever report the refusal. It runs only
+  under ``run_bench(anneal=True)`` — the numbers table is topo-only.
+- ``topo+route`` — ``put(op='place', placer='topo')``: ONE job (the
+  slice-5 ruling). It writes the phase-0 winning pose through the same
+  placement-DRC gate and fixed-copper rip-up the anneal gets, then
+  routes that pose in-process (``realise.route_design`` +
+  ``widen_power``) and writes the copper + ``pcb_routes`` rows itself.
+  The ``route_mode`` field names the mechanism so the columns'
+  provenance stays explicit.
 
 Per board the row carries routed/nets (nets with two or more members,
 the route bench's honest denominator), DRC errors, median routed-net
@@ -90,9 +92,9 @@ SNAPSHOT_SOURCES: dict[str, str] = {
 #: The topo placer's eval budget (``pcb.local.topo_place``'s own default,
 #: mirrored by the ``placer='topo'`` job).
 TOPO_EFFORT = 20000
-#: Named provenance for the topo+vroute columns: today the pose
-#: hand-off; spec slice 5 replaces the mechanism, not the column.
-TOPO_ROUTE_MODE = "pose hand-off (pre-slice-5)"
+#: Named provenance for the topo columns: the place job's own route
+#: stage (slice 5) replaced the pose hand-off to a vroute leg.
+TOPO_ROUTE_MODE = "in-job topo route (slice 5)"
 _BASE_CROSS_RE = re.compile(r"crossings (\d+) → (\d+)")
 
 
@@ -130,16 +132,19 @@ def power_net_names(nets: list[dict[str, Any]]) -> set[str]:
 @dataclass(frozen=True)
 class PipeSide:
     """One pipeline's route numbers. ``None`` fields print ``n/a`` —
-    pre-slice-5 refusals, absent boards and gate failures all land as
-    ``None`` with the reason in ``note`` rather than as a 0. The
+    refused runs, absent boards and gate failures all land as ``None``
+    with the reason in ``note`` rather than as a 0. The
     ``*_signal``/``*_power`` splits report power/GND copper separately
     (:func:`power_net_names`) so a rail-dominated via count does not
     skew the pipeline comparison; the bar metrics compare signal-side
-    numbers when present, the totals otherwise."""
+    numbers when present, the totals otherwise. ``drc_rules`` is the
+    error count per DRC rule (:func:`_split_findings`) — the class
+    breakdown the numbers table prints."""
 
     routed: int | None = None
     nets: int | None = None
     drc_errors: int | None = None
+    drc_rules: dict[str, int] | None = None
     median_mm: float | None = None
     vias: int | None = None
     vias_signal: int | None = None
@@ -253,18 +258,18 @@ def _mm_cell(side: PipeSide) -> str:
 
 
 def render_table(rows: list[TopoBenchRow]) -> str:
-    """The two-pipeline results table — the topo+vroute columns fill in
-    from the same row shape when slice 5 swaps the hand-off. ``vias``
-    and ``med net mm`` render ``signal+power`` (:func:`power_net_names`)
-    so rail copper reports separately from the signal comparison."""
+    """The two-pipeline results table — the topo+route columns measure
+    the place job's own route stage. ``vias`` and ``med net mm`` render
+    ``signal+power`` (:func:`power_net_names`) so rail copper reports
+    separately from the signal comparison."""
     lines = [
-        f"topo+vroute route mode: {TOPO_ROUTE_MODE}",
+        f"route mode: {TOPO_ROUTE_MODE}",
         "",
         "| board | pipeline | routed/nets | DRC err | med net mm | vias | wall s |",
         "|---|---|---|---|---|---|---|",
     ]
     for r in rows:
-        for label, side in (("anneal+vroute", r.anneal), ("topo+vroute", r.topo)):
+        for label, side in (("anneal+vroute", r.anneal), ("topo+route", r.topo)):
             note = f" — {side.note}" if side.note else ""
             lines.append(
                 f"| {_board_cell(r)} | {label} | "
@@ -274,6 +279,26 @@ def render_table(rows: list[TopoBenchRow]) -> str:
                 f"| {_vias_cell(side)} "
                 f"| {_cell(side, 'wall_s', '{:.1f}')}{note} |"
             )
+    return "\n".join(lines)
+
+
+def render_drc_table(rows: list[TopoBenchRow]) -> str:
+    """The topo side's DRC errors broken out by rule — one column per
+    rule class seen across the run (``keepout_copper`` gets its own
+    column like every other), ``-`` for a rule a board never hit."""
+    rules = sorted({rule for r in rows for rule in (r.topo.drc_rules or {})})
+    lines = [
+        "",
+        "| board | " + " | ".join(rules or ["(no findings)"]) + " | total |",
+        "|---|" + "---|" * (len(rules) + 1 or 2),
+    ]
+    for r in rows:
+        counts = r.topo.drc_rules or {}
+        cells = " | ".join(str(counts.get(rule, "-")) for rule in rules) or "-"
+        total = r.topo.drc_errors
+        lines.append(
+            f"| {_board_cell(r)} | {cells} | {'n/a' if total is None else total} |"
+        )
     return "\n".join(lines)
 
 
@@ -323,13 +348,15 @@ def render_verdicts(rows: list[TopoBenchRow]) -> str:
 
 def bench_json(rows: list[TopoBenchRow], *, generated_utc: str) -> dict[str, Any]:
     """The machine-readable mirror — ``route_mode`` pins the column
-    provenance so a slice-5 rerun is not mistaken for a pose hand-off."""
+    provenance so a later mechanism change is not mistaken for the
+    in-job slice-5 route these rows measured."""
 
     def side_dict(s: PipeSide) -> dict[str, Any]:
         return {
             "routed": s.routed,
             "nets": s.nets,
             "drc_errors": s.drc_errors,
+            "drc_rules": s.drc_rules,
             "median_mm": s.median_mm,
             "vias": s.vias,
             "vias_signal": s.vias_signal,
@@ -549,6 +576,7 @@ def _measure(store: Store, pcb: PcbHandler, slug: str, wall: float) -> PipeSide:
         routed=sum(1 for s in status.values() if s == "realized"),
         nets=len(multi),
         drc_errors=sum(errors.values()),
+        drc_rules=dict(errors),
         median_mm=(round(statistics.median(lengths), 2) if lengths else 0.0),
         vias=vias,
         vias_signal=vias - vias_power,
@@ -593,15 +621,17 @@ def _topo_side(
     seed: int,
     effort: int,
     force: bool = False,
+    route: bool = True,
 ) -> tuple[PipeSide, TopoStage]:
-    """topo-place + vroute, the pose hand-off: the ``placer='topo'`` job
-    writes the winning pose, a route-only ``place=False`` job realizes
-    it. A refused place leaves the stored pose — routing it would
-    mislabel an anneal-side number as topo, so a failed place job ends
-    the side with the refusal in ``note``. ``force`` rides both jobs'
-    own escape hatches (the place never-worse gate, the route pre-route
-    legality gate — the proxy pose can be placement-illegal); the bench
-    does not use it — it exists for cheap end-to-end smoke."""
+    """topo place+route, measured off the ONE ``placer='topo'`` job: the
+    slice-5 ruling made place and route a single job — the committed
+    pose is routed in-process and its copper + ``pcb_routes`` rows are
+    written before the job returns, so there is no second route leg to
+    drain. A refused place leaves the stored pose — nothing new was
+    routed — so a failed job ends the side with the refusal in
+    ``note``. ``force`` rides the place gate's escape hatch (the proxy
+    pose can be placement-illegal); the bench does not use it — it
+    exists for cheap end-to-end smoke."""
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
     try:
@@ -610,6 +640,7 @@ def _topo_side(
             args={
                 "op": "place",
                 "placer": "topo",
+                "route": route,
                 "iters": effort,
                 "seed": seed,
                 "force": force,
@@ -629,29 +660,9 @@ def _topo_side(
         return _fail_side(store, place_job, "topo place refused"), _topo_stage(
             store, place_job, place_wall
         )
-
-    stage = _topo_stage(store, place_job, place_wall)
-
-    try:
-        enq = pcb.put(
-            id=slug,
-            args={"op": "route", "place": False, "seed": seed, "force": force},
-        )
-    except BadInput as exc:
-        return PipeSide(note=f"topo route refused: {exc}"), stage
-    if "enqueued" not in enq.body:
-        return (
-            PipeSide(note=f"topo route refused: {enq.body.splitlines()[0]}"),
-            stage,
-        )
-    route_job, status, route_wall = _drain(store, ref.id)
-    if status != SUCCEEDED:
-        return dataclasses.replace(
-            _measure(store, pcb, slug, place_wall + route_wall),
-            note=_fail_side(store, route_job, "topo route refused").note,
-        ), stage
-    side = _measure(store, pcb, slug, place_wall + route_wall)
-    return side, stage
+    return _measure(store, pcb, slug, place_wall), _topo_stage(
+        store, place_job, place_wall
+    )
 
 
 # ── boards ──────────────────────────────────────────────────────────────
@@ -681,6 +692,12 @@ def _refresh_generators(store: Store, pcb: PcbHandler, slug: str) -> int:
     return n
 
 
+#: The anneal column's standing note when the side is skipped —
+#: ``op='route'`` refuses unconditionally (vroute deleted 2026-10-25),
+#: so the comparison column can never carry a number again.
+_ANNEAL_RETIRED = "anneal+vroute retired — op='route' refuses"
+
+
 def _snapshot_board(
     store: Store,
     pcb: PcbHandler,
@@ -689,23 +706,29 @@ def _snapshot_board(
     *,
     seed: int,
     effort: int,
+    anneal: bool,
 ) -> TopoBenchRow:
-    """A prod export loaded twice (anneal/topo copies share nothing)."""
+    """A prod export loaded twice (anneal/topo copies share nothing) —
+    once when the anneal side is skipped."""
     fixture_data = read_snapshot(fixture)
+    suffixes = ("anneal", "topo") if anneal else ("topo",)
     with store.pool.connection() as conn:
-        load_snapshot(conn, fixture_data, f"{board}-anneal")
-        load_snapshot(conn, fixture_data, f"{board}-topo")
+        for suffix in suffixes:
+            load_snapshot(conn, fixture_data, f"{board}-{suffix}")
     refreshed = sum(
-        _refresh_generators(store, pcb, f"{board}-{suffix}")
-        for suffix in ("anneal", "topo")
+        _refresh_generators(store, pcb, f"{board}-{suffix}") for suffix in suffixes
     )
     note = f"re-expanded {refreshed} stale generator(s)" if refreshed else ""
-    anneal = _anneal_side(store, pcb, f"{board}-anneal", seed=seed)
+    anneal_side = (
+        _anneal_side(store, pcb, f"{board}-anneal", seed=seed)
+        if anneal
+        else PipeSide(note=_ANNEAL_RETIRED)
+    )
     topo, stage = _topo_side(store, pcb, f"{board}-topo", seed=seed, effort=effort)
     return TopoBenchRow(
         board=board,
         source=SNAPSHOT_SOURCES.get(board, "fixture"),
-        anneal=anneal,
+        anneal=anneal_side,
         topo=topo,
         topo_stage=stage,
         note=note,
@@ -721,29 +744,46 @@ def _design_board(
     seed: int,
     effort: int,
     setup: Any = None,
+    anneal: bool,
 ) -> TopoBenchRow:
-    """A batch design put under two slugs; ``setup(pcb, slug)`` applies
-    board extras (stackup, plane nets) identically to both copies."""
-    for suffix in ("anneal", "topo"):
+    """A batch design put under two slugs (one when the anneal side is
+    skipped); ``setup(pcb, slug)`` applies board extras (stackup, plane
+    nets) identically to every copy."""
+    suffixes = ("anneal", "topo") if anneal else ("topo",)
+    for suffix in suffixes:
         slug = f"{board}-{suffix}"
         assert "created" in pcb.put(id=slug, args=copy.deepcopy(design)).body
         if setup is not None:
             setup(store, pcb, slug)
-    anneal = _anneal_side(store, pcb, f"{board}-anneal", seed=seed)
+    anneal_side = (
+        _anneal_side(store, pcb, f"{board}-anneal", seed=seed)
+        if anneal
+        else PipeSide(note=_ANNEAL_RETIRED)
+    )
     topo, stage = _topo_side(store, pcb, f"{board}-topo", seed=seed, effort=effort)
     return TopoBenchRow(
-        board=board, source="fixture", anneal=anneal, topo=topo, topo_stage=stage
+        board=board,
+        source="fixture",
+        anneal=anneal_side,
+        topo=topo,
+        topo_stage=stage,
     )
 
 
 def bench_nano(
-    store: Store, seed: int = 1, *, effort: int = TOPO_EFFORT
+    store: Store, seed: int = 1, *, effort: int = TOPO_EFFORT, anneal: bool = False
 ) -> TopoBenchRow:
     for lcsc, fp in nano_fx.CATALOG_FOOTPRINTS.items():
         store.part_footprint_put(lcsc, fp)
     pcb = PcbHandler(hub=Hub(store=store))
     return _design_board(
-        store, pcb, "nano", dict(nano_fx.DESIGN), seed=seed, effort=effort
+        store,
+        pcb,
+        "nano",
+        dict(nano_fx.DESIGN),
+        seed=seed,
+        effort=effort,
+        anneal=anneal,
     )
 
 
@@ -761,7 +801,7 @@ def _esp32c3_setup(store: Store, pcb: PcbHandler, slug: str) -> None:
 
 
 def bench_esp32c3(
-    store: Store, seed: int, *, effort: int = TOPO_EFFORT
+    store: Store, seed: int, *, effort: int = TOPO_EFFORT, anneal: bool = False
 ) -> TopoBenchRow:
     with ESP32C3_FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = copy.deepcopy(json.load(fh))
@@ -781,17 +821,24 @@ def bench_esp32c3(
         seed=seed,
         effort=effort,
         setup=_esp32c3_setup,
+        anneal=anneal,
     )
 
 
 def bench_ewod(
-    store: Store, *, seed: int = 1, effort: int = TOPO_EFFORT
+    store: Store, *, seed: int = 1, effort: int = TOPO_EFFORT, anneal: bool = False
 ) -> TopoBenchRow:
     """The replay fixture as a fixed-pose control — the topo side must
     leave the frozen placement alone and equal the anneal side."""
     pcb = PcbHandler(hub=Hub(store=store))
     return _snapshot_board(
-        store, pcb, "ewod-replay", EWOD_REPLAY_FIXTURE, seed=seed, effort=effort
+        store,
+        pcb,
+        "ewod-replay",
+        EWOD_REPLAY_FIXTURE,
+        seed=seed,
+        effort=effort,
+        anneal=anneal,
     )
 
 
@@ -805,30 +852,49 @@ def snapshot_fixture(board: str) -> Path | None:
 
 
 def bench_snapshot(
-    store: Store, board: str, *, seed: int = 1, effort: int = TOPO_EFFORT
+    store: Store,
+    board: str,
+    *,
+    seed: int = 1,
+    effort: int = TOPO_EFFORT,
+    anneal: bool = False,
 ) -> TopoBenchRow:
     pcb = PcbHandler(hub=Hub(store=store))
     fixture = snapshot_fixture(board)
     assert fixture is not None, f"no snapshot for {board}"
-    return _snapshot_board(store, pcb, board, fixture, seed=seed, effort=effort)
+    return _snapshot_board(
+        store, pcb, board, fixture, seed=seed, effort=effort, anneal=anneal
+    )
 
 
-def run_bench(store: Store, *, effort: int = TOPO_EFFORT) -> list[TopoBenchRow]:
+def run_bench(
+    store: Store, *, effort: int = TOPO_EFFORT, anneal: bool = False
+) -> list[TopoBenchRow]:
     """The full set: standing boards when their exports exist, then the
-    route bench's placement boards."""
+    route bench's placement boards. ``anneal=True`` still runs the
+    retired ``op='route'`` side (it can only report the refusal — kept
+    for the comparison table's shape)."""
     rows: list[TopoBenchRow] = []
     for board in SNAPSHOT_BOARDS:
         if snapshot_fixture(board) is not None:
-            rows.append(bench_snapshot(store, board, effort=effort))
-    rows.append(bench_nano(store, effort=effort))
-    rows += [bench_esp32c3(store, seed, effort=effort) for seed in ESP32C3_SEEDS]
-    rows.append(bench_ewod(store, effort=effort))
+            rows.append(bench_snapshot(store, board, effort=effort, anneal=anneal))
+    rows.append(bench_nano(store, effort=effort, anneal=anneal))
+    rows += [
+        bench_esp32c3(store, seed, effort=effort, anneal=anneal)
+        for seed in ESP32C3_SEEDS
+    ]
+    rows.append(bench_ewod(store, effort=effort, anneal=anneal))
     return rows
 
 
 def render(rows: list[TopoBenchRow]) -> str:
     return "\n".join(
-        [render_table(rows), render_stage_table(rows), render_verdicts(rows)]
+        [
+            render_table(rows),
+            render_drc_table(rows),
+            render_stage_table(rows),
+            render_verdicts(rows),
+        ]
     )
 
 
@@ -846,6 +912,7 @@ __all__ = [
     "overall",
     "power_net_names",
     "render",
+    "render_drc_table",
     "render_stage_table",
     "render_table",
     "render_verdicts",

@@ -3,11 +3,10 @@
 Three layers:
 
 - verdict/render unit tests — fabricated rows, no DB, no network;
-- ``test_topo_handoff_routes_a_tiny_board`` — the pose hand-off's live
-  half on a four-part board: the ``placer='topo'`` job completes and
-  stamps its stage metrics, then the route-only ``place=False`` leg
-  refuses with the retirement contract (routing is retired — the (b)
-  pipeline's route half is gone until topo grows its own realiser);
+- ``test_topo_place_writes_copper`` — the slice-5 contract end-to-end
+  on a four-part board: ONE ``placer='topo'`` job commits the pose,
+  routes it in-process and writes the copper + ``pcb_routes`` rows
+  itself (``meta.topo_run.route`` reports the counts);
 - ``test_topo_bench_table`` — opt-in (``PRECIS_PCB_TOPO_BENCH_OUT``,
   set by ``scripts/pcb-topo-bench``): the standing boards plus the
   route-bench set, the markdown table + JSON written to that path.
@@ -135,7 +134,7 @@ def test_render_tables_mark_na_and_notes() -> None:
     )
     table = tb.render_table([row])
     assert "| b | anneal+vroute | 9/10 | 1 | 31.2 | 8 | 20.0 |" in table
-    assert "topo+vroute | n/a/n/a | n/a | n/a | n/a | n/a" in table
+    assert "topo+route | n/a/n/a | n/a | n/a | n/a | n/a" in table
     assert "topo place refused: 3 placement DRC" in table
     stage = tb.render_stage_table([row])
     assert (
@@ -164,7 +163,7 @@ def test_render_tables_fill_when_topo_route_exists() -> None:
         ),
     )
     table = tb.render_table([row])
-    assert "| b | topo+vroute | 10/10 | 0 | 29.9 | 7 | 15.0 |" in table
+    assert "| b | topo+route | 10/10 | 0 | 29.9 | 7 | 15.0 |" in table
     stage = tb.render_stage_table([row])
     assert "| b | 41 → 0 | 20000 | 1500 | 120 | 13.3 |" in stage
     assert "| b | PASS | PASS | PASS | PASS | PASS | PASS |" in tb.render_verdicts(
@@ -284,11 +283,10 @@ def test_power_split_renders_and_drives_the_verdict() -> None:
     assert tb.verdicts(row2)["vias"] == "FAIL"  # 16 > 15 signal vias
 
 
-def test_topo_handoff_routes_a_tiny_board(store: Store) -> None:
-    """The (b) pipeline's live half: placer='topo' writes poses and the
-    stage reports real numbers; the route-only job that used to realize
-    them refuses — routing is retired (gr515107), so the refusal IS the
-    contract this smoke now pins."""
+def test_topo_place_writes_copper(store: Store) -> None:
+    """The slice-5 contract end-to-end: ONE placer='topo' job commits
+    the pose, routes it in-process and writes the copper + pcb_routes
+    rows itself — no second op='route' leg exists."""
     pcb = PcbHandler(hub=Hub(store=store))
     assert "created" in pcb.put(id="tiny-topo", args=_TINY).body
     # force=True rides the place gate's escape hatch: the proxy placer
@@ -296,9 +294,169 @@ def test_topo_handoff_routes_a_tiny_board(store: Store) -> None:
     # error the never-worse gate would refuse.
     side, stage = tb._topo_side(store, pcb, "tiny-topo", seed=1, effort=200, force=True)
     assert stage.crossings is not None and stage.evals is not None, side.note
-    assert side.routed is None and side.nets is None
-    assert "topo route refused" in side.note
-    assert "routing is retired" in side.note
+    assert side.nets == 2, side.note
+    assert side.routed is not None and side.routed > 0, side.note
+    ref = store.get_ref(kind="pcb", id="tiny-topo")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    assert any(r["ctype"] == "track" for r in store.pcb_copper_list(board_id))
+    # The route stage's own report rides the job ref's meta.
+    with store.pool.connection() as conn:
+        job = conn.execute(
+            "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (ref.id,),
+        ).fetchone()
+    assert job is not None
+    route_meta = (job[0].get("topo_run") or {}).get("route") or {}
+    assert route_meta.get("nets") == 2
+    assert route_meta.get("realized", 0) > 0
+    assert route_meta.get("tracks", 0) > 0
+
+
+def _latest_job(store: Store, ref_id: int) -> int:
+    with store.pool.connection() as conn:
+        job = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (ref_id,),
+        ).fetchone()
+    assert job is not None
+    return int(job[0])
+
+
+def _copper_key(row: dict[str, Any]) -> str:
+    return json.dumps(row, sort_keys=True, default=str)
+
+
+def test_topo_route_is_opt_in_default_off(store: Store) -> None:
+    """GRIPE_FIX ruling: routing is opt-in — a ``placer='topo'`` job
+    with no ``route`` arg places only: stored copper stays untouched
+    and ``meta.topo_run.route`` is absent."""
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-noroute", args=_TINY).body
+    ref = store.get_ref(kind="pcb", id="tiny-topo-noroute")
+    assert ref is not None
+    enq = pcb.put(
+        id="tiny-topo-noroute",
+        args={
+            "op": "place",
+            "placer": "topo",
+            "iters": 200,
+            "seed": 1,
+            "force": True,
+        },
+    )
+    assert "enqueued" in enq.body
+    _job, status, _wall = tb._drain(store, ref.id)
+    assert status == tb.SUCCEEDED
+    board_id = store.pcb_ensure_board(ref.id)
+    assert store.pcb_copper_list(board_id) == []
+    topo_run = tb._job_meta(store, _latest_job(store, ref.id)).get("topo_run") or {}
+    assert "route" not in topo_run
+
+
+def test_topo_route_empty_result_keeps_stored_copper(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty route result never wipes stored copper: the replace is
+    skipped while the per-net ``pcb_routes`` rows still write, and the
+    summary reports ``route produced nothing; stored copper kept``."""
+    import types
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise as _tprealise
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-empty", args=_TINY).body
+    side, _stage = tb._topo_side(
+        store, pcb, "tiny-topo-empty", seed=1, effort=200, force=True
+    )
+    ref = store.get_ref(kind="pcb", id="tiny-topo-empty")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    seeded = store.pcb_copper_list(board_id)
+    assert any(r["ctype"] == "track" for r in seeded), side.note
+
+    empty_plan = types.SimpleNamespace(
+        pieces=(), vias=(), layers=(), crossings=(), unreachable=(), stranded=()
+    )
+    monkeypatch.setattr(
+        _tprealise,
+        "route_design",
+        lambda *a, **k: (empty_plan, pcb_realize.RealizeResult((), (), ())),
+    )
+    # a different seed guarantees a fresh job (the idem key covers
+    # params + design state, so a repeat run could collapse onto run 1)
+    tb._topo_side(store, pcb, "tiny-topo-empty", seed=2, effort=200, force=True)
+    copper = store.pcb_copper_list(board_id)
+    assert sorted(map(_copper_key, copper)) == sorted(map(_copper_key, seeded))
+    # the per-net status rows still wrote
+    routes = store.pcb_routes_get(ref.id)
+    assert {r["status"] for r in routes.values()} == {"sketched"}
+    job_id = _latest_job(store, ref.id)
+    route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
+    assert route_meta is not None and route_meta.get("nets") == 2
+    assert "route produced nothing; stored copper kept" in tb.job_summary_text(
+        store, job_id
+    )
+
+
+def test_topo_route_copper_and_route_rows_write_atomically(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``pcb_copper_replace`` + ``pcb_routes_write`` share one tx: a
+    routes-write raise rolls the copper replace back — the seeded
+    copper survives a route stage that would have replaced it, and the
+    raise lands in the summary line with the exception text."""
+    import types
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise as _tprealise
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-atomic", args=_TINY).body
+    side, _stage = tb._topo_side(
+        store, pcb, "tiny-topo-atomic", seed=1, effort=200, force=True
+    )
+    ref = store.get_ref(kind="pcb", id="tiny-topo-atomic")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    seeded = store.pcb_copper_list(board_id)
+    assert any(r["ctype"] == "track" for r in seeded), side.note
+
+    # A different result than the seeded copper — if the replace had
+    # committed on its own, this marker width would be what survives.
+    marker = pcb_realize.RealizedTrack(
+        seg_id=0,
+        net_id=0,
+        layer=0,
+        segments=({"shape": "line", "start": [0.0, 0.0], "end": [1.0, 1.0]},),
+        length_mm=1.0,
+        blocked_by=None,
+        width_mm=0.99,
+    )
+    plan = types.SimpleNamespace(
+        pieces=(), vias=(), layers=(), crossings=(), unreachable=(), stranded=()
+    )
+    monkeypatch.setattr(
+        _tprealise,
+        "route_design",
+        lambda *a, **k: (plan, pcb_realize.RealizeResult((marker,), (), ())),
+    )
+
+    def _boom(*_a: Any, **_k: Any) -> int:
+        raise RuntimeError("boom mid-write")
+
+    monkeypatch.setattr(store, "pcb_routes_write", _boom)
+    tb._topo_side(store, pcb, "tiny-topo-atomic", seed=2, effort=200, force=True)
+    copper = store.pcb_copper_list(board_id)
+    assert sorted(map(_copper_key, copper)) == sorted(map(_copper_key, seeded))
+    assert not any(r.get("width_mm") == 0.99 for r in copper)
+    job_id = _latest_job(store, ref.id)
+    assert "topo-route: raised RuntimeError: boom mid-write" in tb.job_summary_text(
+        store, job_id
+    )
 
 
 # Opt-in only (scripts/pcb-topo-bench): the whole set runs two real

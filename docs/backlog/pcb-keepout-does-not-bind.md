@@ -13,14 +13,16 @@ lists it in the `ftype` column comment
 (`mounting_hole|fiducial|testpoint|keepout|outline`), and
 `pcb-argue-with-design.md`'s anchor grammar documents `feature:outline` as
 resolving to a `pcb_features` row with `ftype` drawn from that same set. But
-the literal `'keepout'` appears **nowhere else** in `src/precis` — a repo
-grep finds it only in that one migration comment. `drc.py`'s
-`check_via_pad_keepout` / `check_via_via_keepout` are unrelated geometric
-checks (via-to-pad and via-to-via clearance rules, not user-authored
-keepout regions — their names collide with the concept but not the
-mechanism). An authored or imported keepout region today constrains
-nothing: placement can put a part on it, routing can run copper through it,
-and no DRC finding fires.
+the literal `'keepout'` appeared nowhere else in `src/precis`. As of the
+`keepout_copper` commit this is half-fixed: `run_geometric_drc` flags a
+track/via/pour inside a keepout's polygon on its scoped layers
+(`check_keepout_copper`, fed by
+`session.keepouts_from_features`), and the topo placer/router already
+blocks the scoped layers (`topoplace.design._zones` → `SIDE_ZONE`). An
+authored keepout still constrains nothing on the anneal placer side —
+placement can still put a part on it with no DRC finding (courtyard
+overlap vs. keepout is unchecked) — and an import still drops one
+silently.
 
 Separately, `pcb_nets` has a `domain` column with `fluidic`/`thermal`
 schema-reserved, and `src/precis/handlers/pcb.py::_reject_non_electrical`
@@ -41,11 +43,15 @@ else.
 
 ## In scope
 
-- **Keepout binds in placement + routing DRC**: a `pcb_features` row with
-  `ftype='keepout'` becomes an obstacle the placer avoids and the router's
-  DRC forbids copper crossing — same obstacle-primitive machinery the
-  via/pad keepout checks already use (layer-masked polygon), just fed from
-  user-authored features instead of only via geometry.
+- ~~**Keepout binds in routing DRC**~~ — shipped: `check_keepout_copper`
+  fires `keepout_copper` errors on copper inside a keepout's polygon on
+  its scoped layers (no `layers` = all layers); the topo placer/router
+  already treats keepouts as `SIDE_ZONE` obstacles.
+- **Keepout binds in placement (anneal placer)** — the remaining half:
+  a part whose courtyard/lands overlap an authored keepout on its layers
+  should be a placement-side finding (the
+  `pcb-placer-obstacle-set-is-mounting-holes-only.md` sibling's obstacle
+  set), not just the topo path's.
 - **Warn on import when a keepout is present** — an EasyEDA/KiCad import
   that carries a keepout region today drops it silently; surface that as
   an explicit warning so a round-tripped board doesn't lose the constraint.
@@ -65,9 +71,10 @@ else.
 
 ## Acceptance criteria
 
-- A board with an `ftype='keepout'` feature rejects a placement that
-  overlaps it (placer-side) and reports a DRC finding on copper routed
-  through it (router-side).
+- ~~A board with an `ftype='keepout'` feature reports a DRC finding on
+  copper routed through it (router-side)~~ — shipped as
+  `check_keepout_copper`. Remaining: rejects a placement that overlaps
+  it (anneal placer-side).
 - An imported board (EasyEDA/KiCad) whose source carries a keepout region
   either preserves it as an `ftype='keepout'` feature or emits an explicit
   import warning — never silent drop.

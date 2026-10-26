@@ -45,6 +45,7 @@ from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
 from precis.pcb import pose
 from precis.pcb.rules import resolve_net_rules
+from precis_geom.pcb_shape import Keepout
 
 if TYPE_CHECKING:
     from precis.pcb.capabilities import CapabilityRow
@@ -169,6 +170,52 @@ def mounting_holes_from_features(
                 head_dia_mm=float(geom.get("head_dia_mm") or 0.0),
                 plated=bool(geom.get("plated")),
                 part=str(geom["part"]) if geom.get("part") else None,
+            )
+        )
+    return tuple(out)
+
+
+def keepouts_from_features(
+    features: list[dict[str, Any]],
+) -> tuple[Keepout, ...]:
+    """Every ``ftype='keepout'`` feature as a
+    :class:`~precis_geom.pcb_shape.Keepout`` — the authored keep-out
+    regions :func:`precis.pcb.drc.check_keepout_copper` enforces against
+    copper, parsed here once so the DRC check and the se fit check read
+    the same shape (``geom.poly`` in board-frame mm; ``layers`` empty or
+    absent means every copper layer; ``reason`` is the keepout's name).
+    A polygon with fewer than 3 points or a non-numeric vertex is skipped
+    rather than guessed at — same contract as
+    :func:`mounting_holes_from_features` above."""
+    out: list[Keepout] = []
+    for f in features:
+        if str(f.get("ftype") or "") != "keepout":
+            continue
+        poly = (f.get("geom") or {}).get("poly") or []
+        if len(poly) < 3:
+            continue
+        try:
+            ring = tuple((float(p[0]), float(p[1])) for p in poly)
+        except (TypeError, ValueError, IndexError):
+            continue
+        out.append(
+            Keepout(
+                poly=ring,
+                layers=tuple(
+                    str(layer)
+                    for layer in (
+                        f.get("layers") or (f.get("geom") or {}).get("layers") or ()
+                    )
+                ),
+                reason=(
+                    str(f["reason"])
+                    if f.get("reason")
+                    else (
+                        str((f.get("geom") or {})["reason"])
+                        if (f.get("geom") or {}).get("reason")
+                        else None
+                    )
+                ),
             )
         )
     return tuple(out)
@@ -1698,6 +1745,7 @@ __all__ = [
     "fixed_vias_from_copper",
     "footprints_by_refdes",
     "furniture_clearance_mm",
+    "keepouts_from_features",
     "label_spots",
     "land_rects_by_instance",
     "local_footprint_names_by_refdes",

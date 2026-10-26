@@ -3422,6 +3422,44 @@ def _put_poses(pcb, store, slug, **poses):
     return pcb._judged_mutation(ref.id, apply)[1]
 
 
+def test_keepout_layers_survive_feature_storage(pcb, store):
+    """A keepout authored with ``layers=["F.Cu"]`` keeps its scope
+    through the store: ``_pcb_insert_feature`` folds ``layers`` into
+    ``geom`` (the table has no layers column) and
+    ``keepouts_from_features`` reads it back — an F.Cu-scoped keepout
+    must not bleed onto B.Cu."""
+    from precis.pcb.session import keepouts_from_features
+
+    pcb.put(
+        id="ko-layers",
+        args={
+            "components": [
+                {
+                    "refdes": "P1",
+                    "label": "p",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "pins": [{"name": "1"}],
+                }
+            ],
+            "features": [
+                {
+                    "ftype": "keepout",
+                    "layers": ["F.Cu"],
+                    "reason": "crystal keep-out",
+                    "geom": {"poly": [[1.0, 1.0], [3.0, 1.0], [3.0, 3.0]]},
+                }
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="ko-layers")
+    assert ref is not None
+    stored = [f for f in store.pcb_features_list(ref.id) if f["ftype"] == "keepout"]
+    (keepout,) = keepouts_from_features(stored)
+    assert keepout.layers == ("F.Cu",)
+    assert keepout.reason == "crystal keep-out"
+
+
 def test_outline_shrunk_under_router_track_rips_the_net(pcb, store):
     _, board_id = _judge_board(pcb, store, "oc-rip", p2_x=3.0, routed=True)
     # the track sits at x = 3 + 0.5 + 0.4 + 0.1 = 4.0, y -3..3

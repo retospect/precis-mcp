@@ -21,19 +21,29 @@ topological placer (`precis.pcb.topoplace`) — an anneal over the
 incremental straight-airwire proxy (crossings + length) with side flips
 among the moves, plus solver-side pin assignment for `any_of` slots.
 Topological routing is the only router: the old vector router was
-deleted 2026-10-25 (tag `vroute-final`) and topo's own realiser
-(topo-place slice 5) has not landed — `op='route'` refuses and there is
-no routed-copper output until then. This skill covers the topo placer
-opt-in and its readback view; the placer stays opt-in until a bench
-shows it beats the default.
+deleted 2026-10-25 (tag `vroute-final`) and `op='route'` refuses. Place
+and route are ONE job when you opt in — `route=True` on `placer='topo'`
+commits the pose, then routes it in-process (mesh → wires → per-piece
+layers → tracks/vias, power rails widened where the board's DRC allows)
+and writes the `pcb_copper` + `pcb_routes` rows in one transaction.
+Without `route` the job places only and leaves stored copper untouched.
+The route stage is best-effort and early: it is known to fail on some
+boards (a raised mesh conflict on nano, clearance errors on esp32c3),
+so check `view='drc'` and `view='route-status'` before trusting the
+copper it wrote. This skill covers the topo placer opt-in and its
+readback view; the placer stays opt-in until a bench shows it beats
+the default.
 
 ## Enqueue a topo-place run
 
 ```python
 put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo"})
-put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo", "iters": 50000, "seed": 3})
+put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo", "route": True})
+put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo", "route": True, "iters": 50000, "seed": 3})
 ```
 
+- `route=True` runs the in-job route stage after the pose commits;
+  absent means place only — stored copper is never touched.
 - `iters` is the topo placer's eval budget (default 20000, vs the
   anneal's step count); `seed` is the RNG seed, as on the anneal.
 - The result lands through the SAME placement-DRC gate and rip-up as the
@@ -60,6 +70,14 @@ the default); `against=` diffs the selected run's best pose and
 crossing count against another run's. A board with no topo runs says
 so and names the enqueue.
 
+When `route=True` ran, the route half's counts ride the same job meta
+under `topo_run.route` (absent when the stage never ran) — nets,
+realized/failed, tracks, vias, unresolved crossings, unreachable nets,
+widened rails — and the job summary prints a `topo-route:` line. Per-net status (realized / sketched /
+failed with the legible note) lands on `view='route-status'`; a net
+left unrouted or an unresolved same-layer crossing is written
+`failed` with the reason, never silently.
+
 ## Iterate locally — `scripts/pcb-loop`
 
 The dev loop runs the whole pipeline off a local `.epro2` on this
@@ -72,13 +90,15 @@ scripts/pcb-loop --force                  # topo pose committed despite the
                                           # placement-DRC gate
 ```
 
-One run: import → `placer='topo'` place → DRC →
+One run: import → `placer='topo'` place+route (one job — the pose is
+committed, then routed in-process and its copper written) → DRC →
 `placement.svg`/`topo-placement.svg`/`sketch.svg`/`board.svg` +
-`summary.md` + `metrics.json` (per-stage wall times). There is no route
-stage — routing is retired and topo's realiser (topo-place slice 5) is
-unshipped, so the loop reports the place stage's crossings and the via
-bracket. The bench side (`scripts/pcb-topo-bench`) measures topo vs the
-anneal against the default-switch bar on the standing boards.
+`summary.md` + `metrics.json` (per-stage wall times, route counts off
+the job's `meta.topo_run.route`, unrouted nets and the realized via
+count). The bench side (`scripts/pcb-topo-bench`) measures the topo
+job's routed output on the standing boards — the anneal+vroute column
+is retired (`op='route'` refuses), so the table is topo numbers and
+their DRC-by-rule breakdown.
 
 ## See also
 
