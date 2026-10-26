@@ -1436,7 +1436,12 @@ def build_ref_passes(
     # cadences too) into the worker via a DB-lease conditional advance
     # (exactly-once across the fleet, no designated node). It must run on
     # the agent profile too, or a host-pinned melchior cadence never has
-    # an eligible claimant.
+    # an eligible claimant. gr518349: the STANDING trigger is the
+    # dedicated `start_scheduler_thread` (cli/worker.py) — this
+    # in-rotation pass stays as a backstop so one long sibling pass
+    # can't starve cadence firing; lease claims are atomic, so a
+    # double-fire is a harmless `claimed=0` (same shape as the
+    # heartbeat pass below).
     if _register("scheduler"):
         from precis.workers.runner import BatchResult as _BatchResult
         from precis.workers.scheduler import run_scheduler_pass

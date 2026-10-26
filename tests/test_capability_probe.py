@@ -460,3 +460,24 @@ def test_retractable_soft_signals_covers_container_not_mem() -> None:
     mem must NOT be (absence = unmeasurable → leave)."""
     assert "container_agent" in cap.RETRACTABLE_SOFT_SIGNALS
     assert "mem" not in cap.RETRACTABLE_SOFT_SIGNALS
+
+
+def test_claude_agent_capable_binary_or_verified_container_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr518089: the agent-lane verdict the worker's ``needs_claude="agent"``
+    veto consumes — True with the binary, or without it only when the
+    container lane is opted in AND verified; mirrors the router's
+    claude_agent rescue (``_claude_rung_unavailable``)."""
+    monkeypatch.setattr(cap, "claude_bin_present", lambda: True)
+    _patch_container(monkeypatch, enabled=False, capable=False)
+    assert cap.claude_agent_capable() is True  # the binary alone suffices
+
+    monkeypatch.setattr(cap, "claude_bin_present", lambda: False)
+    assert cap.claude_agent_capable() is False  # nothing to fall back on
+
+    _patch_container(monkeypatch, enabled=True, capable=False)
+    assert cap.claude_agent_capable() is False  # opted in but unverified
+
+    _patch_container(monkeypatch, enabled=True, capable=True)
+    assert cap.claude_agent_capable() is True  # the container lane carries it

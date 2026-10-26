@@ -26,7 +26,9 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import Mapping
+import threading
+import time
+from collections.abc import Callable, Iterator, Mapping
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -39,7 +41,7 @@ from precis.cli._worker_passes import build_ref_passes
 from precis.embedder import make_embedder
 from precis.format import serialize
 from precis.store import Store
-from precis.utils.env import env_flag
+from precis.utils.env import env_flag, env_float
 from precis.workers import (
     EmbedHandler,
     RakeLemmaHandler,
@@ -47,6 +49,7 @@ from precis.workers import (
     run_loop,
 )
 from precis.workers.registry import (
+    SERVICES,
     SERVICES_BY_NAME,
     service_names_for_profile,
 )
@@ -86,6 +89,72 @@ def _should_register(
     if spec is None:
         return True
     return bool(spec.enable_env)
+
+
+_AGENT_LANE_TTL_ENV = "PRECIS_AGENT_LANE_TTL_S"
+_AGENT_LANE_TTL_DEFAULT_S = 300.0
+_SCHED_JOIN_ENV = "PRECIS_SCHED_JOIN_S"
+_SCHED_JOIN_DEFAULT_S = 30.0
+
+
+class _ClaudeLanes(Mapping[str, bool]):
+    """Per-lane claude verdicts for the ``needs_claude`` veto. The ``claude``
+    binary leg is probed once at construction (it can't appear without a
+    restart); the container/agent leg (``container_capability_ok``: runtime +
+    image + auth) is re-probed at most every ``ttl_s``, so a container
+    runtime that comes up after the service manager started the worker
+    un-vetoes the agent-lane passes without a restart."""
+
+    def __init__(
+        self,
+        *,
+        ttl_s: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        from precis.workers import capability_probe
+        from precis.workers.executors import agent_container
+
+        self._ttl_s = ttl_s
+        self._clock = clock
+        self._agent_container = agent_container
+        self.bin_ok = capability_probe.claude_bin_present()
+        self._container_ok = False
+        self._container_at: float | None = None
+
+    def _container_lane(self) -> bool:
+        now = self._clock()
+        if self._container_at is None or now - self._container_at >= self._ttl_s:
+            ac = self._agent_container
+            self._container_ok = bool(
+                ac.container_agent_enabled() and ac.container_capability_ok()
+            )
+            self._container_at = now
+        return self._container_ok
+
+    def __getitem__(self, lane: str) -> bool:
+        if lane == "cli":
+            return self.bin_ok
+        if lane == "agent":
+            return self.bin_ok or self._container_lane()
+        raise KeyError(lane)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(("cli", "agent"))
+
+    def __len__(self) -> int:
+        return 2
+
+
+def _claude_ok_for(service: str, lane_ok: Mapping[str, bool]) -> bool:
+    """The gr518089 hard veto for one service: a spec naming ``needs_claude``
+    is gated on that lane's boot probe (``"cli"`` → the ``claude`` binary,
+    ``"agent"`` → binary OR verified container lane); anything else passes —
+    a spec with no marking, or a service with no spec at all (plugin/axis
+    passes, ad-hoc ``--only`` names)."""
+    spec = SERVICES_BY_NAME.get(service)
+    if spec is None or spec.needs_claude is None:
+        return True
+    return lane_ok.get(spec.needs_claude, False)
 
 
 def _capability_ok(name: str, environ: Mapping[str, str]) -> bool:
@@ -566,6 +635,8 @@ def run(args: argparse.Namespace) -> None:
         advertise_boot_id_now(store)
     except Exception:
         log.warning("worker: boot_id advertise failed", exc_info=True)
+    sched_thread: threading.Thread | None = None
+    stop_flag: dict[str, bool] = {"stop": False}
     try:
         handlers = _build_handlers(args, store)
         if args.status:
@@ -694,12 +765,46 @@ def run(args: argparse.Namespace) -> None:
                 )
             return _profile_default_on(service)
 
+        # gr518089: claude-dependent services get a boot-time HARD veto —
+        # a host with no runnable claude lane never runs such a pass, even
+        # over an explicit `service_config` row (a transport that can never
+        # work is a host defect, not run control — distinct from
+        # `capability_env`, which shapes only the no-row DEFAULT above).
+        # The veto is NOT overridden by a service_config prio row: a host
+        # without the binary would fail at exec anyway; only `--only` escapes.
+        # The binary leg is probed once at boot; the container/agent leg is
+        # re-probed on PRECIS_AGENT_LANE_TTL_S (default 300s) so a Docker
+        # that starts after the service manager launched us un-vetoes the
+        # agent-lane passes. Skipped entirely under `--only` (the operator
+        # escape hatch, same as service_config), which also keeps a manual
+        # one-pass run from paying the container probe.
+        _claude_lane_ok: Mapping[str, bool] = {}
+        if args.only is None:
+            _lanes = _ClaudeLanes(
+                ttl_s=env_float(_AGENT_LANE_TTL_ENV, _AGENT_LANE_TTL_DEFAULT_S, lo=0.0)
+            )
+            _claude_lane_ok = _lanes
+            _claude_vetoed = sorted(
+                s.name
+                for s in SERVICES
+                if s.needs_claude is not None and not _lanes.get(s.needs_claude, False)
+            )
+            if _claude_vetoed:
+                log.warning(
+                    "worker: no usable claude lane on this host — passes vetoed "
+                    "even over service_config rows: %s",
+                    ", ".join(_claude_vetoed),
+                )
+
         _pass_gate = (
             None
             if args.only is not None
             else (
-                lambda service: _svc_resolver.enabled(
-                    service, default_on=_gate_default_on(service)
+                lambda service: (
+                    _claude_ok_for(service, _claude_lane_ok)
+                    and _svc_resolver.enabled(
+                        service, default_on=_gate_default_on(service)
+                    )
                 )
             )
         )
@@ -725,6 +830,29 @@ def run(args: argparse.Namespace) -> None:
             from precis.workers.heartbeat import start_heartbeat_thread
 
             start_heartbeat_thread(dsn, should_stop=lambda: stop_flag["stop"])
+        # gr518349: the same starvation class as the heartbeat thread above
+        # — one long serial rotation step (hub_refine ~10 min on the agent host)
+        # starves the in-rotation `scheduler` pass, so cadences whose only
+        # lit/eligible host is this worker stop firing (gripe_triage,
+        # deep_review, cron_tick). A dedicated thread claims leases on its
+        # own tick; the in-rotation `_scheduler_pass` stays as a backstop —
+        # lease claims are atomic conditional advances, so a double-fire is
+        # a harmless `claimed=0` for the loser (the heartbeat argument).
+        # `_register` is pure, so asking "did scheduler register" a second
+        # time is safe. `_pass_gate` (None under `--only`) is consulted per
+        # tick as `gate("scheduler")`, so a live `service_config` flip dims
+        # the thread within one TTL — UNLIKE heartbeat, which must not
+        # depend on a DB read, the scheduler's whole job is leases and may.
+        if _register("scheduler") and not args.once:
+            from precis.workers.scheduler import start_scheduler_thread
+
+            sched_thread = start_scheduler_thread(
+                dsn,
+                host=host_name(),
+                batch_size=args.batch_size,
+                gate=_pass_gate,
+                should_stop=lambda: stop_flag["stop"],
+            )
         run_loop(
             handlers,
             store,
@@ -736,7 +864,29 @@ def run(args: argparse.Namespace) -> None:
             pass_gate=_pass_gate,
         )
     finally:
+        _stop_and_join_scheduler(
+            sched_thread,
+            stop_flag,
+            env_float(_SCHED_JOIN_ENV, _SCHED_JOIN_DEFAULT_S, lo=0.0),
+        )
         store.close()
+
+
+def _stop_and_join_scheduler(
+    thread: threading.Thread | None,
+    stop_flag: dict[str, bool],
+    timeout_s: float,
+) -> None:
+    """Shutdown: flag the scheduler thread to stop and wait up to
+    ``timeout_s`` (``PRECIS_SCHED_JOIN_S``) so a cadence fire whose lease
+    already advanced finishes instead of dying with the process."""
+    stop_flag["stop"] = True
+    if thread is not None:
+        thread.join(timeout=timeout_s)
+        if thread.is_alive():
+            log.warning(
+                "worker: scheduler thread still running after %gs join", timeout_s
+            )
 
 
 # ---------------------------------------------------------------------------

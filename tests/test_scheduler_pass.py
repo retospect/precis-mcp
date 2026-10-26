@@ -803,3 +803,116 @@ def test_detached_cadence_reclaims_lease_after_finishing(store) -> None:
     finally:
         first_done.set()
         scheduler_mod._INFLIGHT.pop(cad.name, None)
+
+
+def test_concurrent_passes_in_one_process_run_once_and_skip_once(store) -> None:
+    """Two threads calling run_scheduler_pass at once: the module lock lets
+    one run; the other returns an empty result instead of re-running the
+    same cadence concurrently."""
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+    runs: list[str] = []
+
+    def _slow(s, b) -> None:
+        runs.append("run")
+        started.set()
+        release.wait(10)
+
+    cad = _pinned_cad(_slow, host_affinity=None)
+    results: list = []
+
+    def _call() -> None:
+        results.append(run_scheduler_pass(store, host="h", cadences=(cad,)))
+
+    t1 = threading.Thread(target=_call)
+    t1.start()
+    assert started.wait(10)
+    t2 = threading.Thread(target=_call)
+    t2.start()
+    t2.join(10)  # the loser returns immediately while t1 still holds the lock
+    assert not t2.is_alive()
+    release.set()
+    t1.join(10)
+    assert runs == ["run"]
+    assert sorted((r.claimed, r.ok) for r in results) == [(0, 0), (1, 1)]
+
+
+# ── gr518089: claude-lane eligibility on the claude cadences ────────────
+
+
+def test_dream_agent_cadence_has_an_eligible_gate() -> None:
+    """The ``dream_agent`` cadence carries ``eligible`` (the agent-profile
+    env marker AND, post-gr518089, the claude-agent lane probe)."""
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "dream_agent")
+    assert cad.eligible is not None
+
+
+def test_gripe_triage_cadence_has_an_eligible_gate() -> None:
+    """gr518089: the ``gripe_triage`` cadence carries ``eligible`` — the
+    strict ``claude_bin_present`` probe (claude_p can't containerize)."""
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "gripe_triage")
+    assert cad.eligible is not None
+
+
+def test_gripe_triage_cadence_skips_without_a_claude_binary(store, monkeypatch) -> None:
+    """gr518089 end to end: a host with no ``claude`` skips the claim
+    WITHOUT advancing the lease (a capable host still gets the fire) —
+    and once the binary is present the ``service`` gate is what dims it.
+    Mirrors ``test_ineligible_worker_skips_without_advancing_lease``."""
+    from precis.workers import capability_probe
+    from precis.workers.scheduler import CADENCES
+    from precis.workers.service_config import set_service_prio
+
+    cad = next(c for c in CADENCES if c.name == "gripe_triage")
+    assert cad.eligible is not None
+
+    monkeypatch.setattr(capability_probe, "claude_bin_present", lambda: False)
+    assert cad.eligible() is False
+    r1 = run_scheduler_pass(store, host="host-b", cadences=(cad,))
+    assert (r1.claimed, r1.ok, r1.failed) == (0, 0, 0)
+    # Seeded (health_digest sees it) but never claimed by the claude-less host.
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.last_fired_at is None
+    assert lease.last_host is None
+
+    monkeypatch.setattr(capability_probe, "claude_bin_present", lambda: True)
+    assert cad.eligible() is True
+    # Now the `service` gate is the dimmer: dark without a lit row.
+    r2 = run_scheduler_pass(store, host="host-b", cadences=(cad,))
+    assert (r2.claimed, r2.ok, r2.failed) == (0, 0, 0)
+
+    # A lit + binary-carrying host gets the fire (empty corpus → the pass
+    # no-ops, but the CLAIM itself is what the veto protects).
+    set_service_prio(store, "host-b", "gripe_triage", 5)
+    r3 = run_scheduler_pass(store, host="host-b", cadences=(cad,))
+    assert (r3.claimed, r3.ok, r3.failed) == (1, 1, 0)
+
+
+def test_structural_cadence_eligible_also_requires_a_claude_lane(monkeypatch) -> None:
+    """gr518089: the reviewers' ``eligible`` composes the env gate AND the
+    claude-agent lane — a lit host with no ``claude`` and no verified
+    container lane skips the claim too (its fires only pause
+    ``cli_unavailable``). Same for deep_review via the shared lane probe."""
+    from precis.workers import capability_probe
+    from precis.workers.scheduler import CADENCES
+
+    structural = next(c for c in CADENCES if c.name == "structural")
+    deep_review = next(c for c in CADENCES if c.name == "deep_review")
+    assert structural.eligible is not None
+    assert deep_review.eligible is not None
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
+
+    monkeypatch.setattr(capability_probe, "claude_agent_capable", lambda: False)
+    assert structural.eligible() is False
+    assert deep_review.eligible() is False
+
+    monkeypatch.setattr(capability_probe, "claude_agent_capable", lambda: True)
+    assert structural.eligible() is True
+    assert deep_review.eligible() is True

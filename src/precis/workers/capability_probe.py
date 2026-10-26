@@ -348,6 +348,24 @@ def claude_auth_present() -> bool:
     return _probe_claude_config() == 1
 
 
+def claude_agent_capable() -> bool:
+    """Whether THIS host can run a ``call_claude_agent``-class workload —
+    the ``claude`` binary (:func:`claude_bin_present`) OR the verified
+    container lane (``PRECIS_AGENT_CONTAINER`` opted in AND
+    :func:`~precis.workers.executors.agent_container.container_capability_ok`
+    green — the image carries its own claude). Mirrors the rescue the LLM
+    router's ``_claude_rung_unavailable`` applies to claude_agent rungs, so
+    a host that can only serve them in-container is not wrongly gated off."""
+    if claude_bin_present():
+        return True
+    from precis.workers.executors import agent_container
+
+    return (
+        agent_container.container_agent_enabled()
+        and agent_container.container_capability_ok()
+    )
+
+
 #: Capability token → its presence probe. A probe returns a capacity
 #: (``> 0`` present, ``0`` absent) or ``None`` (unknown — leave the row).
 _PROBES: dict[str, Callable[[], int | None]] = {

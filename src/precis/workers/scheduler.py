@@ -41,12 +41,22 @@ gives catch-up-late-not-lost on recovery (one fire, no backlog burst).
 *Trigger is separate from execution*: today each cadence runs its work
 in-process on whichever worker won the lease. A later refinement could
 mint a capability-routed job instead; the lease mechanism is unchanged.
+
+*Two triggers, one mechanism* (gr518349): the pass fires from a dedicated
+``start_scheduler_thread`` daemon thread on its own ~5s tick — the standing
+trigger, because one long serial rotation step (hub_refine ~10 min on
+the agent host) must not starve every due cadence — plus the in-rotation
+``scheduler`` ref-pass kept as a backstop. Lease claims are atomic
+conditional advances, so both triggers firing in the same window is a
+harmless ``claimed=0`` for the loser, never a double fire — the same
+argument as the heartbeat thread vs its in-rotation pass.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -661,31 +671,57 @@ def _run_deep_review(
     )
 
 
+def _claude_agent_lane() -> bool:
+    """gr518089: whether THIS host can run a ``call_claude_agent``-class
+    cadence — the ``claude`` binary on PATH/``PRECIS_CLAUDE_BIN``, or the
+    verified container lane (``PRECIS_AGENT_CONTAINER`` opted in AND its
+    runtime+image+auth probe green) — the same rescue the LLM router's
+    ``_claude_rung_unavailable`` applies to claude_agent rungs. A host with
+    neither skips the claim so a capable host still gets the fire
+    (drop-no-fire, same contract as the other ``eligible`` checks above)."""
+    from precis.workers import capability_probe
+
+    return capability_probe.claude_agent_capable()
+
+
+def _gripe_triage_eligible() -> bool:
+    """gr518089: strict ``claude_bin_present`` — the triage tick's batch
+    call goes through claude_p-class transports that can't containerize,
+    so a host without the binary would claim the lease only to pause
+    (``cli_unavailable``); it skips instead and a capable host still gets
+    the fire."""
+    from precis.workers import capability_probe
+
+    return capability_probe.claude_bin_present()
+
+
 def _structural_eligible() -> bool:
     """The SAME gate ``run_structural_pass`` checks internally
-    (``precis.workers.review._gate_enabled``) — a host without
-    ``PRECIS_STRUCTURAL_REVIEW`` set skips *before* the claim, so the lease
-    is never advanced by a host that can't do the work (drop-no-fire, not a
+    (``precis.workers.review._gate_enabled``) AND the claude-agent lane
+    probe (gr518089) — a host without ``PRECIS_STRUCTURAL_REVIEW`` set, or
+    with no runnable claude lane, skips *before* the claim, so the lease is
+    never advanced by a host that can't do the work (drop-no-fire, not a
     stolen fire — a later eligible host still gets it)."""
     from precis.workers.review import _gate_enabled
     from precis.workers.structural import STRUCTURAL
 
-    return _gate_enabled(STRUCTURAL.gate_env)
+    return _gate_enabled(STRUCTURAL.gate_env) and _claude_agent_lane()
 
 
 def _deep_review_eligible() -> bool:
     """Same shape as ``_structural_eligible`` — reuses the review driver's
-    gate helper against ``PRECIS_DEEP_REVIEW``."""
+    gate helper against ``PRECIS_DEEP_REVIEW``, plus the same claude-agent
+    lane probe (gr518089)."""
     from precis.workers.deep_review import DEEP_REVIEW
     from precis.workers.review import _gate_enabled as _review_gate_enabled
 
-    return _review_gate_enabled(DEEP_REVIEW.gate_env)
+    return _review_gate_enabled(DEEP_REVIEW.gate_env) and _claude_agent_lane()
 
 
 def _dream_agent_eligible() -> bool:
     from precis.workers.dream_agent import eligible
 
-    return eligible()
+    return eligible() and _claude_agent_lane()
 
 
 def _anki_sync_eligible() -> bool:
@@ -970,12 +1006,15 @@ CADENCES: tuple[Cadence, ...] = (
     # host's resolved gripe_triage prio (gr518089: an exact-host `prio 0`
     # row dims a fleet-wide `*` light — a dimmed host skips the claim so
     # a lit one still gets the fire); the pass re-checks the same gate
-    # inside. spends=True: the tick bills the model call, so the daily
-    # ceiling gates it.
+    # inside. `eligible` is the strict claude-binary probe (gr518089: a
+    # host with no `claude` would claim only to pause `cli_unavailable` —
+    # claude_p can't containerize, so no lane rescue here). spends=True:
+    # the tick bills the model call, so the daily ceiling gates it.
     Cadence(
         name="gripe_triage",
         interval_s=15 * 60,
         run=_run_gripe_triage,
+        eligible=_gripe_triage_eligible,
         service="gripe_triage",
         spends=True,
     ),
@@ -1077,7 +1116,41 @@ _RUN_DEADLINE_ENV = "PRECIS_CADENCE_RUN_DEADLINE_S"
 _RUN_DEADLINE_DEFAULT_S = 300.0
 
 
+#: In-process mutual exclusion for the whole pass: the dedicated thread and
+#: the in-rotation backstop would otherwise run the same cadence
+#: concurrently when a run outlives its interval, and race ``_INFLIGHT``.
+#: Taken non-blocking — the loser skips this tick (the winner is already
+#: doing the work), never queues.
+_PASS_LOCK = threading.Lock()
+
+
 def run_scheduler_pass(
+    store: Any,
+    *,
+    host: str,
+    batch_size: int = 32,
+    cadences: tuple[Cadence, ...] = CADENCES,
+    run_deadline_s: float | None = None,
+) -> BatchResult:
+    """Claim + fire every due cadence this cycle, unless another thread of
+    this process is already inside the pass (non-blocking lock; the skip
+    returns an empty result and logs at debug). See ``_scheduler_pass``."""
+    if not _PASS_LOCK.acquire(blocking=False):
+        log.debug("scheduler: pass already running in this process; skipping")
+        return BatchResult(handler="scheduler", claimed=0, ok=0, failed=0)
+    try:
+        return _scheduler_pass(
+            store,
+            host=host,
+            batch_size=batch_size,
+            cadences=cadences,
+            run_deadline_s=run_deadline_s,
+        )
+    finally:
+        _PASS_LOCK.release()
+
+
+def _scheduler_pass(
     # forwards into the Store-typed _run_*/_over_daily_budget helpers;
     # test_scheduler_budget_gate.py calls this directly with a minimal
     # _Store (only claim_scheduler_lease) narrower than Store.
@@ -1180,7 +1253,7 @@ def run_scheduler_pass(
                     bound,
                 )
                 continue
-            del _INFLIGHT[cad.name]
+            _INFLIGHT.pop(cad.name, None)
             log.info("scheduler: cadence %s detached run finished", cad.name)
         try:
             won = store.claim_scheduler_lease(cad.name, interval_s, host)
@@ -1228,4 +1301,125 @@ def run_scheduler_pass(
     return BatchResult(handler="scheduler", claimed=claimed, ok=ok, failed=failed)
 
 
-__all__ = ["CADENCES", "Cadence", "run_scheduler_pass"]
+#: How long the thread sleeps between attempts. A module global (not a local
+#: constant) so tests can monkeypatch it down for a fast-running loop — same
+#: convention as heartbeat.py's ``_THREAD_TICK_SECONDS``.
+_SCHEDULER_TICK_SECONDS = 5.0
+
+
+def _sleep_with_stop_check(duration: float, should_stop: Callable[[], bool]) -> None:
+    """Sleep ``duration`` seconds in ~1s increments, returning early the
+    moment ``should_stop()`` flips — so a shutdown request is noticed
+    promptly rather than sleeping through it. Local copy of heartbeat.py's
+    helper (kept private there on purpose, same as this one)."""
+    remaining = duration
+    while remaining > 0 and not should_stop():
+        step = min(1.0, remaining)
+        time.sleep(step)
+        remaining -= step
+
+
+def _scheduler_thread_body(
+    dsn: str,
+    host: str,
+    batch_size: int,
+    gate: Callable[[str], bool] | None,
+    cadences: tuple[Cadence, ...],
+    should_stop: Callable[[], bool],
+) -> None:
+    """The ``start_scheduler_thread`` loop body — see that function's
+    docstring for the design rationale."""
+    from precis.store import Store
+
+    store: Store | None = None
+    while not should_stop():
+        try:
+            if store is None:
+                try:
+                    store = Store.connect(dsn)
+                except Exception:
+                    log.warning(
+                        "scheduler thread: failed to connect; retrying",
+                        exc_info=True,
+                    )
+                    store = None
+            if store is not None and (gate is None or gate("scheduler")):
+                run_scheduler_pass(
+                    store,
+                    host=host,
+                    batch_size=batch_size,
+                    cadences=cadences,
+                )
+        except Exception:
+            # Belt-and-suspenders: a bug in this loop must never take the
+            # whole worker down with it. The store is dropped too — its
+            # connection may be the fault — and reconnected on the next tick.
+            log.warning("scheduler thread: tick failed", exc_info=True)
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+                store = None
+
+        _sleep_with_stop_check(_SCHEDULER_TICK_SECONDS, should_stop)
+
+    if store is not None:
+        try:
+            store.close()
+        except Exception:
+            pass
+
+
+def start_scheduler_thread(
+    dsn: str,
+    *,
+    host: str,
+    batch_size: int = 32,
+    gate: Callable[[str], bool] | None = None,
+    cadences: tuple[Cadence, ...] = CADENCES,
+    should_stop: Callable[[], bool] | None = None,
+) -> threading.Thread:
+    """Start a dedicated daemon thread that fires due cadences independently
+    of the serial worker rotation (gr518349).
+
+    ``workers/runner.py``'s ``run_loop`` runs handlers then ref_passes
+    strictly serially — a single long pass (observed: hub_refine holding the
+    rotation ~10 min on the agent host) starves the in-rotation ``scheduler`` pass,
+    so cadences whose only lit/eligible host is that worker stop firing
+    (gripe_triage, deep_review, cron_tick). This thread bounds cadence
+    staleness to roughly ``_SCHEDULER_TICK_SECONDS`` regardless of how long
+    any single rotation pass runs.
+
+    Owns a SEPARATE ``Store.connect(dsn)`` from the main loop's store —
+    psycopg connections aren't usable concurrently across threads. Calls the
+    same :func:`run_scheduler_pass` the in-rotation pass calls; lease claims
+    are atomic conditional advances, so a thread/rotation race is a harmless
+    ``claimed=0`` for the loser, never a double fire — the in-rotation
+    ``_scheduler_pass`` stays registered as a backstop (same argument as the
+    heartbeat thread vs its in-rotation pass).
+
+    ``gate`` is the worker's per-cycle service gate (``cli/worker.py``'s
+    ``_pass_gate``): consulted once per tick as ``gate("scheduler")`` so a
+    ``service_config`` flip dims the thread within one cache TTL, the same
+    dimming the in-rotation pass gets. ``None`` (``--only``) means ungated.
+
+    The thread never crashes the worker: a connect failure or a pass
+    exception is caught and logged, the store is dropped, and the loop
+    reconnects on the next tick.
+
+    Returns the started (daemon, so it won't block process exit) thread;
+    the caller usually just fires-and-forgets it.
+    """
+    stop = should_stop or (lambda: False)
+    thread = threading.Thread(
+        target=_scheduler_thread_body,
+        args=(dsn, host, batch_size, gate, cadences, stop),
+        name="scheduler",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+__all__ = ["CADENCES", "Cadence", "run_scheduler_pass", "start_scheduler_thread"]

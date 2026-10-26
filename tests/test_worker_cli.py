@@ -18,6 +18,7 @@ from precis.cli.worker import (
     _build_handlers,
     _capability_ok,
     _classify_topics_enabled_slugs,
+    _claude_ok_for,
     _print_status,
     _resolve_embedder,
     _should_register,
@@ -976,6 +977,139 @@ class TestHeartbeatThreadWiring:
         )
         kwarg_names = {kw.arg for kw in call.keywords}
         assert "should_stop" in kwarg_names
+
+
+class TestClaudeGate:
+    """gr518089 — the ``needs_claude`` hard veto: a host with no runnable
+    claude lane never runs a claude-dependent pass, even over an explicit
+    ``service_config`` row (a host's missing ``claude`` binary paused
+    card_describe/gripe_triage on every LLM tick). ``_claude_ok_for`` is
+    the pure helper ``run()`` composes into ``_pass_gate`` with the
+    boot-probe verdicts."""
+
+    def test_cli_service_vetoed_without_the_binary(self) -> None:
+        """card_describe (``needs_claude="cli"`` — claude_p, can't
+        containerize) is vetoed when the boot probe found no binary."""
+        assert _claude_ok_for("card_describe", {"cli": False, "agent": False}) is False
+
+    def test_cli_service_passes_with_the_binary(self) -> None:
+        assert _claude_ok_for("card_describe", {"cli": True, "agent": False}) is True
+
+    def test_agent_service_ok_on_the_container_lane_alone(self) -> None:
+        """job_claude_inproc (``needs_claude="agent"``) runs when ONLY the
+        verified container lane is up — claude_agent transports
+        containerize, so a missing binary alone must not veto it."""
+        assert (
+            _claude_ok_for("job_claude_inproc", {"cli": False, "agent": True}) is True
+        )
+        assert (
+            _claude_ok_for("job_claude_inproc", {"cli": False, "agent": False}) is False
+        )
+
+    def test_unmarked_and_specless_services_never_vetoed(self) -> None:
+        assert _claude_ok_for("heartbeat", {"cli": False, "agent": False}) is True
+        assert _claude_ok_for("axis:domain", {"cli": False, "agent": False}) is True
+        assert _claude_ok_for("scheduler", {"cli": False, "agent": False}) is True
+
+    def test_needs_claude_markings(self) -> None:
+        """The marking table pins itself: claude_p/subprocess passes are
+        ``"cli"`` (can't containerize); ``call_claude_agent`` users are
+        ``"agent"`` (binary OR verified container lane)."""
+        assert SERVICES_BY_NAME["card_describe"].needs_claude == "cli"
+        assert SERVICES_BY_NAME["gripe_triage"].needs_claude == "cli"
+        assert SERVICES_BY_NAME["quota_check"].needs_claude == "cli"
+        for name in ("structural", "deep_review", "dream_agent", "job_claude_inproc"):
+            assert SERVICES_BY_NAME[name].needs_claude == "agent", name
+
+
+class TestClaudeLanesTtl:
+    """The agent lane's container leg is re-probed on a TTL; the claude
+    binary leg is probed once."""
+
+    def _lanes(self, monkeypatch, *, bin_ok: bool, capable: list[bool], ttl_s=300.0):
+        from precis.cli.worker import _ClaudeLanes
+        from precis.workers import capability_probe
+        from precis.workers.executors import agent_container
+
+        calls = {"bin": 0, "cap": 0}
+
+        def _bin() -> bool:
+            calls["bin"] += 1
+            return bin_ok
+
+        def _cap() -> bool:
+            calls["cap"] += 1
+            return capable[min(calls["cap"] - 1, len(capable) - 1)]
+
+        monkeypatch.setattr(capability_probe, "claude_bin_present", _bin)
+        monkeypatch.setattr(agent_container, "container_agent_enabled", lambda: True)
+        monkeypatch.setattr(agent_container, "container_capability_ok", _cap)
+        clock = {"t": 0.0}
+        lanes = _ClaudeLanes(ttl_s=ttl_s, clock=lambda: clock["t"])
+        return lanes, calls, clock
+
+    def test_container_comes_up_after_boot_unvetoes_agent_lane(
+        self, monkeypatch
+    ) -> None:
+        lanes, calls, clock = self._lanes(
+            monkeypatch, bin_ok=False, capable=[False, True]
+        )
+        assert _claude_ok_for("structural", lanes) is False
+        assert _claude_ok_for("structural", lanes) is False
+        assert calls["cap"] == 1  # inside the TTL: cached
+        clock["t"] = 301.0
+        assert _claude_ok_for("structural", lanes) is True  # re-probed, Docker up
+        assert calls["cap"] == 2
+        assert _claude_ok_for("card_describe", lanes) is False  # cli leg: no binary
+        assert calls["bin"] == 1  # binary probed once at boot
+
+    def test_binary_present_never_probes_the_container(self, monkeypatch) -> None:
+        lanes, calls, clock = self._lanes(monkeypatch, bin_ok=True, capable=[False])
+        clock["t"] = 10_000.0
+        assert _claude_ok_for("structural", lanes) is True
+        assert calls["cap"] == 0
+
+
+class TestSchedulerShutdownJoin:
+    def test_flags_stop_and_joins_before_returning(self) -> None:
+        import threading
+
+        from precis.cli.worker import _stop_and_join_scheduler
+
+        flag = {"stop": False}
+        seen: list[bool] = []
+
+        def _body() -> None:
+            while not flag["stop"]:
+                threading.Event().wait(0.01)
+            seen.append(True)
+
+        t = threading.Thread(target=_body, daemon=True)
+        t.start()
+        _stop_and_join_scheduler(t, flag, 5.0)
+        assert flag["stop"] is True
+        assert not t.is_alive()
+        assert seen == [True]
+
+    def test_none_thread_still_sets_the_flag(self) -> None:
+        from precis.cli.worker import _stop_and_join_scheduler
+
+        flag = {"stop": False}
+        _stop_and_join_scheduler(None, flag, 1.0)
+        assert flag["stop"] is True
+
+    def test_join_is_bounded(self) -> None:
+        import threading
+
+        from precis.cli.worker import _stop_and_join_scheduler
+
+        release = threading.Event()
+        t = threading.Thread(target=release.wait, daemon=True)
+        t.start()
+        _stop_and_join_scheduler(t, {"stop": False}, 0.05)
+        assert t.is_alive()  # timed out rather than hanging
+        release.set()
+        t.join(timeout=2)
 
 
 def test_chase_trigger_pass_does_not_forward_the_loop_batch_size() -> None:

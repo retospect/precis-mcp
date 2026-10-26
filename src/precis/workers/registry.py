@@ -133,6 +133,18 @@ class ServiceSpec:
     #: (cli/worker.py) as the no-row baseline only — an explicit
     #: ``service_config`` row still overrides in either direction.
     capability_env: tuple[str, ...] = ()
+    #: ``"cli"`` / ``"agent"`` marks a pass whose work can ONLY go through a
+    #: claude lane (gr518089) — probed ONCE at worker start (``cli/worker.py``),
+    #: logged once, then composed into the per-cycle ``_pass_gate`` as a HARD
+    #: veto even over an explicit ``service_config`` row: a transport that can
+    #: never work on this host is a host defect, not run control (distinct
+    #: from ``capability_env``, which shapes only the no-row DEFAULT — a row
+    #: still overrides that one). ``"cli"`` = the pass shells the ``claude``
+    #: binary itself (claude_p/subprocess — can't containerize); ``"agent"``
+    #: = a ``call_claude_agent`` user, served by the binary OR the verified
+    #: container lane. ``--only`` stays the operator escape hatch (ungated,
+    #: same as ``service_config``).
+    needs_claude: str | None = None
     # ── capability + cost (feeds later slices) ──────────────────────
     requires: frozenset[str] = field(default_factory=frozenset)
     uses_model: bool = False
@@ -573,6 +585,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="review",
         kind=ServiceKind.PASS,
         ref_pass=True,
+        needs_claude="agent",
         uses_model=True,
         uses_external=("anthropic",),
         cost_sources=("structural",),
@@ -610,6 +623,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="review",
         kind=ServiceKind.PASS,
         ref_pass=True,
+        needs_claude="agent",
         uses_model=True,
         uses_external=("anthropic",),
         cost_sources=("deep_review",),
@@ -644,6 +658,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.PASS,
         default_profiles=_AGT,
         capability_env=("PRECIS_MCP_CONFIG",),
+        needs_claude="agent",
         ref_pass=True,
         uses_model=True,
         uses_external=("anthropic",),
@@ -677,6 +692,8 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # only to the gateway group, so its presence IS the deploy-
         # controlled "claude-capable host" marker.
         capability_env=("PRECIS_MCP_CONFIG",),
+        # `claude -p` subprocess (claude_quota) — can't containerize.
+        needs_claude="cli",
         ref_pass=True,
         uses_external=("anthropic",),
         one_line="Refresh the Claude OAuth utilisation snapshot; page on 401.",
@@ -916,6 +933,14 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="discovery",
         kind=ServiceKind.PASS,
         default_profiles=_SYS,
+        # gr518089's named symptom. card_describe dispatches through the
+        # router's BIG chain (DispatchClient, Tier.BIG), which is claude-only
+        # today, so a host with no claude binary has no usable rung.
+        # TODO: if a non-claude rung is ever added to that chain, gate on
+        # whether the chain has a usable rung on this host instead of the
+        # binary. A service_config prio row does NOT override this veto: a
+        # host without the binary fails at exec anyway; only --only escapes.
+        needs_claude="cli",
         ref_pass=True,
         uses_model=True,
         cost_sources=("card_describe",),
@@ -1269,6 +1294,9 @@ SERVICES: tuple[ServiceSpec, ...] = (
         label="Gripe triage",
         category="health",
         kind=ServiceKind.PASS,
+        # The batch call goes through claude_p-class transports — can't
+        # containerize; the cadence's `eligible` mirrors this strictly.
+        needs_claude="cli",
         uses_model=True,
         cost_sources=("gripe_triage",),
         one_line="15-minute LLM tick over the oldest open gripes — one "
@@ -1408,6 +1436,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="review",
         kind=ServiceKind.PASS,
         ref_pass=True,
+        needs_claude="agent",
         uses_model=True,
         uses_external=("anthropic",),
         prompt_env="PRECIS_DREAM_PROMPT_PATH",
