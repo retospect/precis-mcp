@@ -903,6 +903,8 @@ _advise_unrendered() {
     local printed="" pbl
     while IFS= read -r r; do
         [[ -n "$r" ]] || continue
+        # A role deleted in this range has nothing left to render.
+        [[ -d "${cluster}/roles/$r" ]] || continue
         printf '%s\n' "$covered_roles" | grep -qxF "$r" && continue
         pbl="$(awk -F'\t' -v r="$r" '$1 == r {print $2}' <<< "$role_map" | sort -u)"
         if [[ -n "$pbl" ]]; then
@@ -918,6 +920,7 @@ _advise_unrendered() {
     done < <(printf '%s\n' "${ch_roles[@]+"${ch_roles[@]}"}" | sed '/^$/d' | sort -u)
     while IFS= read -r p; do
         [[ -n "$p" ]] || continue
+        [[ -f "${cluster}/playbooks/$p" ]] || continue
         printf '%s\n' "$covered_pb" | grep -qxF "$p" && continue
         echo "ADVISORY: deploy/playbooks/${p} changed since ${prev:0:9} and is not imported by redeploy-precis.yml — run by hand: ansible-playbook deploy/playbooks/${p}"
         printed=1

@@ -202,6 +202,26 @@ def test_a_changed_unimported_playbook_is_named(fx: Fixture, tmp_path: Path) -> 
     assert "ansible-playbook deploy/playbooks/08-monitoring.yml" in out, out
 
 
+def test_a_deleted_playbook_and_role_stay_quiet(fx: Fixture, tmp_path: Path) -> None:
+    # Freerouting drop (7bcf57ffd) deleted a playbook and its role; the r108
+    # deploy still told the operator to run the deleted playbook by hand.
+    _layout_at_marker(fx)
+    _git(
+        fx.repo,
+        "rm",
+        "-q",
+        "-r",
+        "deploy/playbooks/11-backups.yml",
+        "deploy/roles/backups",
+    )
+    _git(fx.repo, "commit", "-q", "-m", "drop backups")
+    sha = _git(fx.repo, "rev-parse", "HEAD").stdout.strip()
+    result = _deploy(fx, tmp_path, sha, "--pinned")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "ADVISORY" not in out, out
+
+
 def test_group_vars_moves_get_a_single_advisory(fx: Fixture, tmp_path: Path) -> None:
     _layout_at_marker(fx)
     sha = _commit_files(fx, {"deploy/playbooks/group_vars/all.yml": "x: 1\n"})
