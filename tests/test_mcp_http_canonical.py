@@ -269,6 +269,7 @@ def _run_cli_block(tmp_path: Path, env_extra: dict[str, str]) -> str:
             note() {{ log "$*"; printf 'precis-mcp: %s\\n' "$*" >&2; }}
             PY_ROOTS="${{PY_ROOTS:-precis:/app,main:/main}}"
             EXTRA_MOUNTS=()
+            PY_ROOT_CHECKS=()
             . "{block}"
             printf 'PY_ROOTS=%s\\n' "$PY_ROOTS"
             printf 'MOUNT=%s\\n' "${{EXTRA_MOUNTS[@]+"${{EXTRA_MOUNTS[@]}}"}}"
@@ -292,14 +293,88 @@ def _run_cli_block(tmp_path: Path, env_extra: dict[str, str]) -> str:
 
 def test_cli_root_resolves_the_installed_package(tmp_path: Path) -> None:
     """Discovery asks the console script's shebang interpreter for the
-    package dir and mounts it one level down so qualnames stay precis.*."""
+    package dir, copies it into the ensure state dir — the discovered
+    path can sit outside the docker VM's host share, where the bind
+    mount reads EMPTY inside the container (gr520147) — and mounts the
+    copy one level down so qualnames stay precis.*."""
     bindir, pkg = _fake_cli(tmp_path)
     out = _run_cli_block(
         tmp_path,
         {"PATH": f"{bindir}:{os.environ['PATH']}", "PYTHONPATH": str(pkg.parent)},
     )
     assert ",cli:/roots/cli" in out
+    assert f"{tmp_path}/state/cli-python-root:/roots/cli:ro" in out
+    assert (tmp_path / "state" / "cli-python-root" / "precis" / "__init__.py").is_file()
+
+
+def _cli_log(tmp_path: Path) -> str:
+    return (tmp_path / "state" / "ensure.log").read_text(encoding="utf-8")
+
+
+def test_cli_root_auto_mode_logs_why_nothing_found(tmp_path: Path) -> None:
+    """gr520147: auto discovery used to fall through with no log line at
+    all — a missing `precis` console script must say so in ensure.log."""
+    out = _run_cli_block(tmp_path, {"PATH": "/usr/bin:/bin"})
+    assert ",cli:" not in out
+    log = _cli_log(tmp_path)
+    assert "no cli root" in log and "console script on PATH" in log
+
+
+def test_cli_root_off_logs_disabled(tmp_path: Path) -> None:
+    out = _run_cli_block(tmp_path, {"PRECIS_MCP_CLI_PYTHON": "off"})
+    assert ",cli:" not in out
+    assert "PRECIS_MCP_CLI_PYTHON=off" in _cli_log(tmp_path)
+
+
+def test_cli_root_names_a_non_executable_interpreter(tmp_path: Path) -> None:
+    """PRECIS_MCP_CLI_PYTHON=<missing python>: the note says why."""
+    out = _run_cli_block(
+        tmp_path, {"PRECIS_MCP_CLI_PYTHON": str(tmp_path / "no-python")}
+    )
+    assert ",cli:" not in out
+    assert "not executable" in _cli_log(tmp_path)
+
+
+def test_cli_root_copy_refreshes_when_the_source_changes(tmp_path: Path) -> None:
+    """A `precis` upgrade in the venv must reach the mounted copy: the
+    content signature moves and the next run re-copies."""
+    bindir, pkg = _fake_cli(tmp_path)
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "PYTHONPATH": str(pkg.parent),
+    }
+    _run_cli_block(tmp_path, env)
+    state_pkg = tmp_path / "state" / "cli-python-root" / "precis"
+    assert (state_pkg / "__init__.py").is_file()
+    added = pkg / "newmod.py"
+    added.write_text("X = 1\n", encoding="utf-8")
+    _run_cli_block(tmp_path, env)
+    assert (state_pkg / "newmod.py").read_text(encoding="utf-8") == "X = 1\n"
+    added.unlink()
+    _run_cli_block(tmp_path, env)
+    assert not (state_pkg / "newmod.py").exists()
+
+
+def test_cli_root_falls_back_to_direct_mount_when_copy_fails(
+    tmp_path: Path,
+) -> None:
+    """The copy is the fix, not a new failure mode: when it cannot write
+    the state dir the block still mounts the discovered path, loudly."""
+    bindir, pkg = _fake_cli(tmp_path)
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "cp").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (fakebin / "cp").chmod(0o755)
+    out = _run_cli_block(
+        tmp_path,
+        {
+            "PATH": f"{fakebin}:{bindir}:{os.environ['PATH']}",
+            "PYTHONPATH": str(pkg.parent),
+        },
+    )
+    assert ",cli:/roots/cli" in out
     assert f"{pkg}:/roots/cli/precis:ro" in out
+    assert "mounting the host path directly" in _cli_log(tmp_path)
 
 
 def test_cli_root_off_disables_discovery(tmp_path: Path) -> None:
@@ -316,16 +391,16 @@ def test_cli_root_off_disables_discovery(tmp_path: Path) -> None:
 
 def test_cli_root_override_names_the_interpreter(tmp_path: Path) -> None:
     """PRECIS_MCP_CLI_PYTHON=<python> resolves without `precis` on PATH."""
-    _bindir, pkg = _fake_cli(tmp_path)
+    _bindir, _pkg = _fake_cli(tmp_path)
     out = _run_cli_block(
         tmp_path,
         {
             "PRECIS_MCP_CLI_PYTHON": sys.executable,
-            "PYTHONPATH": str(pkg.parent),
+            "PYTHONPATH": str(_pkg.parent),
         },
     )
     assert ",cli:/roots/cli" in out
-    assert f"{pkg}:/roots/cli/precis:ro" in out
+    assert f"{tmp_path}/state/cli-python-root:/roots/cli:ro" in out
 
 
 def test_cli_root_operator_entry_wins(tmp_path: Path) -> None:
@@ -341,6 +416,168 @@ def test_cli_root_operator_entry_wins(tmp_path: Path) -> None:
     )
     assert out.count(",cli:") == 1
     assert "MOUNT=" not in out or f"{pkg}:/roots" not in out
+
+
+def test_cli_root_falls_back_to_direct_mount_when_sig_fails(
+    tmp_path: Path,
+) -> None:
+    """An empty signature — the hasher missing or the pipeline failing
+    under pipefail — is the direct mount with a note, never an abort of
+    the ensure."""
+    bindir, pkg = _fake_cli(tmp_path)
+    fakebin = tmp_path / "nosigbin"
+    fakebin.mkdir()
+    (fakebin / "xargs").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (fakebin / "xargs").chmod(0o755)
+    out = _run_cli_block(
+        tmp_path,
+        {
+            "PATH": f"{fakebin}:{bindir}:{os.environ['PATH']}",
+            "PYTHONPATH": str(pkg.parent),
+        },
+    )
+    assert ",cli:/roots/cli" in out
+    assert f"{pkg}:/roots/cli/precis:ro" in out
+    log = _cli_log(tmp_path)
+    assert "cannot sign" in log and "mounting the host path directly" in log
+
+
+def test_cli_root_cleans_stale_staging_dirs(tmp_path: Path) -> None:
+    """A run killed mid-copy leaves cli-python-root.new.*; the next run
+    reaps it before staging its own."""
+    bindir, pkg = _fake_cli(tmp_path)
+    stale = tmp_path / "state" / "cli-python-root.new.99999"
+    (stale / "precis").mkdir(parents=True)
+    out = _run_cli_block(
+        tmp_path,
+        {"PATH": f"{bindir}:{os.environ['PATH']}", "PYTHONPATH": str(pkg.parent)},
+    )
+    assert ",cli:/roots/cli" in out
+    assert not stale.exists()
+
+
+# --- the signature reaching the container spec -------------------------------
+#
+# The refresh replaces cli-python-root's inode, so without the signature in
+# the container spec a `precis` upgrade leaves the running backend bind-mounted
+# on the deleted directory (EMPTY on virtiofs — gr520147 again). These run the
+# cli block and the ENVS/RUN_ARGS/ENV_HASH section together, with a stub
+# `docker` for the image id.
+
+
+def _args_block() -> str:
+    text = _ENSURE.read_text(encoding="utf-8")
+    m = re.search(r"^ENVS=\(\n.*?^ENV_HASH=\"\$\(\n.*?\n\)\"\n", text, re.S | re.M)
+    assert m, "ENVS..ENV_HASH section not found in ensure script"
+    return m.group(0)
+
+
+def _run_cli_and_args(tmp_path: Path, env_extra: dict[str, str]) -> str:
+    block = tmp_path / "block.sh"
+    block.write_text(_cli_block(), encoding="utf-8")
+    args = tmp_path / "args.sh"
+    args.write_text(_args_block(), encoding="utf-8")
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(exist_ok=True)
+    docker = fakebin / "docker"
+    docker.write_text("#!/bin/sh\nprintf 'sha256:fakeimage\\n'\n", encoding="utf-8")
+    docker.chmod(0o755)
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/bash
+            set -euo pipefail
+            STATE_DIR="{tmp_path}/state"
+            LOG="$STATE_DIR/ensure.log"
+            HOME="{tmp_path}/home"
+            mkdir -p "$HOME"
+            log() {{ mkdir -p "$STATE_DIR"; printf '%s\\n' "$*" >> "$LOG"; }}
+            note() {{ log "$*"; printf 'precis-mcp: %s\\n' "$*" >&2; }}
+            PY_ROOTS="${{PY_ROOTS:-precis:/app,main:/main}}"
+            cli_sig=""
+            EXTRA_MOUNTS=()
+            PY_ROOT_CHECKS=()
+            . "{block}"
+            TOOL_CONCURRENCY=12 POOL_MIN=4 POOL_MAX=16 SCHEMA_GATE=warn
+            WT_ENVS=() TOPO_ENVS=()
+            MAIN_CHECKOUT="{tmp_path}/checkout" SRC_REPO="{tmp_path}/checkout"
+            NET=test-net DB_HOST=db DB_IP=203.0.113.10 BACKEND_PORT=8765
+            SECRETS_OUT="{tmp_path}/secrets" CACHE_DIR="{tmp_path}/cache"
+            UV_CACHE_VOLUME=test-uv ENTRYPOINT=/entry
+            TOKEN=test-token IMAGE=test-image RUN_CMD='true'
+            . "{args}"
+            printf 'ENV_HASH=%s\\n' "$ENV_HASH"
+            printf 'ARGS=%s\\n' "${{RUN_ARGS[*]}}"
+            """
+        ),
+        encoding="utf-8",
+    )
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path / "home"),
+        **env_extra,
+    }
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
+    r = subprocess.run(
+        ["bash", str(runner)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _env_hash(out: str) -> str:
+    m = re.search(r"^ENV_HASH=(\w+)$", out, re.M)
+    assert m, out
+    return m.group(1)
+
+
+def test_cli_sig_label_recreates_the_backend_on_upgrade(tmp_path: Path) -> None:
+    """precis.cli_sig rides in RUN_ARGS, so a changed package signature is
+    a changed ENV_HASH — a `precis` upgrade recreates the backend instead
+    of leaving it mounted on the deleted copy."""
+    bindir, pkg = _fake_cli(tmp_path)
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "PYTHONPATH": str(pkg.parent),
+    }
+    out = _run_cli_and_args(tmp_path, env)
+    first = _env_hash(out)
+    assert re.search(r"precis\.cli_sig=[0-9a-f]{8,}", out)
+    (pkg / "newmod.py").write_text("X = 1\n", encoding="utf-8")
+    out = _run_cli_and_args(tmp_path, env)
+    assert _env_hash(out) != first
+    # An unchanged package keeps the hash: no recreate per session start.
+    assert _env_hash(_run_cli_and_args(tmp_path, env)) != first
+
+
+def test_cli_sig_follows_symlinked_files(tmp_path: Path) -> None:
+    """find -L signs the same tree cp -RL copies: a symlink's target
+    content. Re-pointing a symlink inside the package must move the
+    signature (find -type f alone never sees it)."""
+    bindir, pkg = _fake_cli(tmp_path)
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "PYTHONPATH": str(pkg.parent),
+    }
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    a = outside / "a.py"
+    a.write_text("A = 1\n", encoding="utf-8")
+    b = outside / "b.py"
+    b.write_text("B = 2\n", encoding="utf-8")
+    link = pkg / "linked.py"
+    link.symlink_to(a)
+    first = _env_hash(_run_cli_and_args(tmp_path, env))
+    link.unlink()
+    link.symlink_to(b)
+    assert _env_hash(_run_cli_and_args(tmp_path, env)) != first
 
 
 # --- scripts/mcp-http-install --apply ------------------------------------------

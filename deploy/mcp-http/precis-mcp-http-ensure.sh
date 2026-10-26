@@ -524,6 +524,11 @@ fi
 
 PY_ROOTS="precis:/app,main:/main"
 EXTRA_MOUNTS=()
+# Container paths that must show .py files once the backend serves —
+# check_python_root_mounts inspects them after a start so a bind mount of
+# a host dir the docker VM does not share (empty inside, gr520147) is
+# named loudly instead of surfacing as a bare 0-file corpus.
+PY_ROOT_CHECKS=(/src /main)
 if [ -f "${STATE_DIR}/python-roots" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%%#*}"
@@ -538,6 +543,7 @@ if [ -f "${STATE_DIR}/python-roots" ]; then
         fi
         PY_ROOTS="${PY_ROOTS},${root_name}:/roots/${root_name}"
         EXTRA_MOUNTS+=(-v "${root_path}:/roots/${root_name}:ro")
+        PY_ROOT_CHECKS+=("/roots/${root_name}")
     done < "${STATE_DIR}/python-roots"
 fi
 
@@ -545,36 +551,119 @@ fi
 # serves the image and `main` the checkout, but neither is the venv this
 # host's console script runs. Resolve its package dir by asking the console
 # script's own shebang interpreter (never PATH alone — `command -v precis`
-# can hit a shim or a stale symlink) and mount it read-only at
-# /roots/cli/precis. The extra path level keeps qualnames `precis.*` —
+# can hit a shim or a stale symlink), then COPY it into the ensure state
+# dir and mount the copy read-only at /roots/cli/precis: the discovered
+# path can live outside the dirs the docker VM shares with the host (colima
+# shares $HOME; a venv outside it is not), and such a bind mount comes up
+# EMPTY inside the container — the first cli root mounted exactly that and
+# indexed zero files while reporting a healthy-looking alias. The copy
+# refreshes when the source's content hash moves (a `precis` upgrade) or
+# the source path changes; a failed copy falls back to the direct mount
+# with a note. The signature also reaches the backend as the
+# precis.cli_sig label: the refresh REPLACES cli-python-root's inode, so
+# without a spec change the running backend keeps a bind mount on the
+# deleted directory — empty on virtiofs, gr520147 all over again. The
+# extra path level keeps qualnames `precis.*` —
 # _qualname_for_file names the top package after its directory, so
 # `cli::precis.<mod>.<sym>` lines up with `main::precis.<mod>.<sym>`.
 # A `cli` line in python-roots wins; PRECIS_MCP_CLI_PYTHON=<interpreter>
-# overrides discovery, =off disables.
+# overrides discovery, =off disables. Every outcome logs — a silent
+# fallthrough is how the empty mount shipped unnoticed.
+cli_sig=""
 case ",${PY_ROOTS}," in
     *,cli:*) : ;; # operator-defined cli root wins
     *)
         cli_setting="${PRECIS_MCP_CLI_PYTHON:-auto}"
-        if [ "${cli_setting}" != off ]; then
-            cli_py=""
+        if [ "${cli_setting}" = off ]; then
+            log "python-roots: no cli root (PRECIS_MCP_CLI_PYTHON=off)"
+        else
+            cli_py="" cli_why=""
             if [ "${cli_setting}" = auto ]; then
                 cli_bin="$(command -v precis 2>/dev/null || true)"
                 if [ -n "${cli_bin}" ]; then
                     cli_py="$(head -n 1 "${cli_bin}" 2>/dev/null | sed -n 's|^#!\([^[:space:]]*\).*|\1|p')"
+                    [ -n "${cli_py}" ] || cli_why="${cli_bin} has no interpreter shebang"
+                else
+                    cli_why="no 'precis' console script on PATH"
                 fi
             else
                 cli_py="${cli_setting}"
             fi
             cli_pkg=""
-            if [ -n "${cli_py}" ] && [ -x "${cli_py}" ]; then
-                cli_pkg="$("${cli_py}" -c 'import os, precis; print(os.path.dirname(precis.__file__))' 2>/dev/null || true)"
+            if [ -n "${cli_py}" ]; then
+                if [ -x "${cli_py}" ]; then
+                    cli_pkg="$("${cli_py}" -c 'import os, precis; print(os.path.dirname(precis.__file__))' 2>/dev/null || true)"
+                    if [ -z "${cli_pkg}" ]; then
+                        cli_why="no importable precis package for ${cli_py}"
+                    elif [ ! -d "${cli_pkg}" ]; then
+                        cli_why="imported precis is not a directory: ${cli_pkg}"
+                        cli_pkg=""
+                    fi
+                else
+                    cli_why="interpreter ${cli_py} is not executable"
+                fi
             fi
-            if [ -n "${cli_pkg}" ] && [ -d "${cli_pkg}" ]; then
+            if [ -z "${cli_pkg}" ]; then
+                if [ "${cli_setting}" = auto ]; then
+                    log "python-roots: no cli root (${cli_why})"
+                else
+                    note "PRECIS_MCP_CLI_PYTHON: no cli root (${cli_why})"
+                fi
+            else
+                cli_state="${STATE_DIR}/cli-python-root"
+                cli_stamp="${cli_state}/.source"
+                # Staging dirs a run killed mid-copy leaves behind.
+                rm -rf "${cli_state}".new.* 2>/dev/null || true
+                # __pycache__/.pyc are excluded from the signature: our own
+                # `import precis` probe can (re)write them, which would force
+                # a recopy on every run without ever changing served content.
+                # find -L signs the same tree cp -RL copies — a symlink's
+                # target content — so a re-pointed symlink moves the sig.
+                # An empty signature (no hasher on the host, or a failed
+                # pipeline under pipefail) is the direct mount below, never
+                # an abort of the ensure.
+                if command -v shasum >/dev/null 2>&1; then
+                    cli_sig="$(cd "${cli_pkg}" && find -L . -type f \
+                        ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
+                        | sort -z | xargs -0 shasum -a 256 2>/dev/null \
+                        | shasum -a 256 | cut -d' ' -f1)" || cli_sig=""
+                elif command -v sha256sum >/dev/null 2>&1; then
+                    cli_sig="$(cd "${cli_pkg}" && find -L . -type f \
+                        ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
+                        | sort -z | xargs -0 sha256sum 2>/dev/null \
+                        | sha256sum | cut -d' ' -f1)" || cli_sig=""
+                fi
+                if [ -z "${cli_sig}" ]; then
+                    note "python-roots: cannot sign ${cli_pkg} (no shasum/sha256sum, or the hash pipeline failed)"
+                elif [ "$(cat "${cli_stamp}" 2>/dev/null)" != "${cli_pkg} ${cli_sig}" ]; then
+                    cli_new="${cli_state}.new.$$"
+                    rm -rf "${cli_new}"
+                    if mkdir -p "${cli_new}" \
+                        && cp -RL "${cli_pkg}" "${cli_new}/precis" 2>/dev/null; then
+                        rm -rf "${cli_state}"
+                        mv "${cli_new}" "${cli_state}"
+                        printf '%s %s\n' "${cli_pkg}" "${cli_sig}" > "${cli_stamp}"
+                        log "python-roots: refreshed cli copy from ${cli_pkg}"
+                    else
+                        rm -rf "${cli_new}"
+                        if [ -d "${cli_state}/precis" ]; then
+                            note "python-roots: refresh from ${cli_pkg} FAILED; keeping the previous copy (stale)"
+                        fi
+                    fi
+                fi
+                if [ -n "${cli_sig}" ] && [ -d "${cli_state}/precis" ]; then
+                    # The state dir is under $HOME — inside every docker
+                    # VM's host share on the dev machines.
+                    cli_mount="${cli_state}:/roots/cli"
+                else
+                    cli_mount="${cli_pkg}:/roots/cli/precis"
+                    note "python-roots: no state copy of ${cli_pkg};" \
+                        "mounting the host path directly (mounts EMPTY if the docker VM does not share it)"
+                fi
                 PY_ROOTS="${PY_ROOTS},cli:/roots/cli"
-                EXTRA_MOUNTS+=(-v "${cli_pkg}:/roots/cli/precis:ro")
-                log "python-roots: cli -> ${cli_pkg} (installed precis CLI)"
-            elif [ "${cli_setting}" != auto ]; then
-                note "PRECIS_MCP_CLI_PYTHON: no importable precis at '${cli_py}'"
+                EXTRA_MOUNTS+=(-v "${cli_mount}:ro")
+                PY_ROOT_CHECKS+=("/roots/cli")
+                log "python-roots: cli -> ${cli_mount%%:*} (installed precis CLI)"
             fi
         fi
         ;;
@@ -755,6 +844,10 @@ ENTRYPOINT="${PRECIS_MCP_ENTRYPOINT:-/usr/local/bin/docker-entrypoint.sh}"
 RUN_ARGS=(
     --restart unless-stopped
     --network "$NET"
+    # The cli copy's content signature: a `precis` upgrade refreshes the
+    # copy by replacing the directory, and the sig in the spec is what
+    # makes that a recreate instead of a stale (or empty) mount.
+    --label "precis.cli_sig=${cli_sig}"
     --add-host "${DB_HOST}:${DB_IP}"
     --add-host host.docker.internal:host-gateway
     -v "${HOME}/work/corpus:/data/corpus:ro"
@@ -992,6 +1085,47 @@ create_backend() {  # $1 = colour; created and started, not yet verified
     log "backend: started ${name} env=${ENV_HASH} $(now)"
 }
 
+# A bind mount of a host dir the docker VM does not share comes up EMPTY
+# inside the container — the python kind then serves a healthy-looking
+# alias with a 0-file corpus (gr520147's cli root). Once a backend
+# answers ready, find one .py under each mounted source path; a root with
+# none is named loudly. Detection only — the fix is mounting a state-dir
+# copy (cli) or a path the VM shares (operator roots).
+PY_ROOT_CHECK_TIMEOUT=10
+# The check runs inside wait_backend_ready; a `docker exec` against a
+# wedged daemon or container would hang the whole ensure there. Bound it:
+# `timeout` where the host ships it (macOS does not), else a background
+# exec killed after the same limit.
+bounded_docker_exec() {
+    local name="$1" pid killer rc
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${PY_ROOT_CHECK_TIMEOUT}" docker exec "$name" "$@"
+        return
+    fi
+    docker exec "$name" "$@" &
+    pid=$!
+    ( sleep "${PY_ROOT_CHECK_TIMEOUT}"; kill -9 "$pid" 2>/dev/null ) &
+    killer=$!
+    wait "$pid" 2>/dev/null
+    rc=$?
+    kill "$killer" 2>/dev/null || true
+    wait "$killer" 2>/dev/null || true
+    if [ "$rc" -eq 124 ] || [ "$rc" -gt 128 ]; then
+        note "python-roots: docker exec ${name} timed out after ${PY_ROOT_CHECK_TIMEOUT}s"
+    fi
+    return "$rc"
+}
+check_python_root_mounts() {
+    local name="$1" r
+    for r in "${PY_ROOT_CHECKS[@]+"${PY_ROOT_CHECKS[@]}"}"; do
+        if ! bounded_docker_exec "$name" sh -c \
+            "find '$r' -name '*.py' -print -quit 2>/dev/null | grep -q ."; then
+            note "python-roots: ${r} has NO .py files inside ${name} — its host dir is probably not shared into the docker VM"
+        fi
+    done
+}
+
 # Wait (bounded) for backend ${1} to answer 401. On failure print its logs.
 wait_backend_ready() {
     local name="$1" deadline code
@@ -1003,7 +1137,10 @@ wait_backend_ready() {
             return 1
         fi
         code="$(probe_backend "$name")"
-        [ "$code" = 401 ] && return 0
+        if [ "$code" = 401 ]; then
+            check_python_root_mounts "$name"
+            return 0
+        fi
         sleep 1
     done
     echo "precis-mcp: ${name} did not answer 401 within ${READY_TIMEOUT}s; its log:" >&2

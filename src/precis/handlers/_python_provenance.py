@@ -236,6 +236,26 @@ def _parse_errors(idx: RepoIndex) -> int:
     return sum(mod.parse_error is not None for mod in idx._by_file.values())
 
 
+def empty_root_reason(root: Path) -> str:
+    """Why an existing root can index zero modules (gr520147).
+
+    The dir exists (construction rejects non-dirs) yet holds nothing an
+    agent can see: either literally no entries — the signature of a host
+    path bind-mounted into a container VM that does not share it — or
+    files but not a single ``.py``.
+    """
+    try:
+        next(root.iterdir())
+    except StopIteration:
+        return (
+            "directory is empty (a host path the container VM does not "
+            "share bind-mounts as an empty dir)"
+        )
+    except OSError:
+        return "directory cannot be listed"
+    return "no .py files under it"
+
+
 def _render_summary(
     alias: str,
     root: Path,
@@ -266,10 +286,13 @@ def _render_summary(
             freshness = "stat-checked"
         errors = _parse_errors(idx)
         errtxt = f"PARSE ERRORS {errors}" if errors else "0 parse errors"
-        corpus = (
-            f"corpus {fingerprint[:8] if fingerprint != 'unknown' else 'UNKNOWN'} "
-            f"({len(idx._by_file)} files, {freshness}, {errtxt})"
-        )
+        if not idx._by_file:
+            corpus = f"corpus EMPTY (0 files, {freshness}: {empty_root_reason(root)})"
+        else:
+            corpus = (
+                f"corpus {fingerprint[:8] if fingerprint != 'unknown' else 'UNKNOWN'} "
+                f"({len(idx._by_file)} files, {freshness}, {errtxt})"
+            )
         if len(touched) == 1:
             path, mod = touched[0]
             corpus += f" file {path} {(mod.bytes_sha256 or 'UNKNOWN')[:8]}"
@@ -298,6 +321,8 @@ def _render_root(
             f"files={len(idx._by_file)}; framing=precis-python-corpus-v1/uint64-path-length/UTF8-path/raw-SHA256; "
             "excludes symlinks, hidden/skip directories and non-Python files; not a Git tree hash"
         )
+        if not idx._by_file:
+            lines.append(f"Root EMPTY: {empty_root_reason(root)}")
         if observation is None:
             lines.append("Index freshness: unknown (no cache observation)")
         else:

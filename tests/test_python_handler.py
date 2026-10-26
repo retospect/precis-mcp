@@ -503,6 +503,61 @@ def test_search_scope_unknown_alias_raises(handler: PythonHandler) -> None:
         handler.search(q="x", scope="missing-alias")
 
 
+# ---------------------------------------------------------------------------
+# Empty root (gr520147)
+# ---------------------------------------------------------------------------
+# A host dir bind-mounted into a container VM that does not share it comes
+# up EMPTY inside — the alias then served a bare 0-file corpus and plain
+# not-founds. Every surface now says the root is empty, and why.
+
+
+@pytest.fixture
+def empty_handler(tmp_path: Path) -> PythonHandler:
+    (tmp_path / "cli").mkdir()
+    return PythonHandler(hub=Hub(), roots={"cli": tmp_path / "cli"})
+
+
+def test_get_symbol_on_empty_root_says_why(empty_handler: PythonHandler) -> None:
+    with pytest.raises(NotFound, match="root 'cli' is empty"):
+        empty_handler.get(id="cli::precis.cli.convert_draft_lists")
+
+
+def test_get_file_on_empty_root_says_why(empty_handler: PythonHandler) -> None:
+    with pytest.raises(NotFound, match="root 'cli' is empty"):
+        empty_handler.get(id="cli/precis/mcp.py")
+
+
+def test_eye_on_empty_root_says_why(empty_handler: PythonHandler) -> None:
+    with pytest.raises(NotFound, match="root 'cli' is empty"):
+        empty_handler.eye(id="cli::precis.cli.anything")
+
+
+def test_search_scoped_to_empty_root_reports_it(
+    empty_handler: PythonHandler,
+) -> None:
+    out = empty_handler.search(q="anything", scope="cli")
+    assert "root 'cli' is empty" in out.body
+    # The per-root provenance summary line stops reading as a healthy
+    # 0-file corpus too.
+    assert "corpus EMPTY" in out.body
+
+
+def test_empty_root_overview_names_the_empty_corpus(
+    empty_handler: PythonHandler,
+) -> None:
+    out = empty_handler.get(id="cli")
+    assert "corpus EMPTY" in out.body
+
+
+def test_empty_root_reason_no_py_files(tmp_path: Path) -> None:
+    """A root holding files but no .py gets the other reason."""
+    (tmp_path / "cli").mkdir()
+    (tmp_path / "cli" / "README.txt").write_text("x\n", encoding="utf-8")
+    handler = PythonHandler(hub=Hub(), roots={"cli": tmp_path / "cli"})
+    out = handler.search(q="anything", scope="cli")
+    assert "no .py files" in out.body
+
+
 def test_search_page_size_limits_results(repo: Path) -> None:
     """page_size caps the result count even when many symbols match."""
     # Add a noisy file so we have plenty of matches for 'def'.

@@ -42,11 +42,16 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
 - The installed `precis` CLI on the host is a third copy of the code —
   `precis` serves the image, `main` the checkout, neither is the venv the
   console script runs. The ensure script resolves the console script's
-  shebang interpreter (`import precis; dirname(__file__)`) and mounts that
-  package dir read-only at `/roots/cli/precis`, so `cli::precis.<mod>.<sym>`
-  answers "what is my CLI actually running" (gr520147). A `cli` line in
-  `python-roots` wins; `PRECIS_MCP_CLI_PYTHON=<interpreter>` overrides
-  discovery, `=off` disables it.
+  shebang interpreter (`import precis; dirname(__file__)`), copies the
+  package into `cli-python-root/` under the state dir (the discovered path
+  can sit outside the dirs the docker VM shares — a bind mount of one
+  reads EMPTY inside the container) and mounts the copy read-only at
+  `/roots/cli/precis`, so `cli::precis.<mod>.<sym>` answers "what is my
+  CLI actually running" (gr520147). The copy refreshes when the source's
+  content changes; every discovery outcome is logged, and a backend that
+  comes up with no `.py` under any mounted source path is named loudly.
+  A `cli` line in `python-roots` wins; `PRECIS_MCP_CLI_PYTHON=<interpreter>`
+  overrides discovery, `=off` disables it.
 - Git worktrees of the main checkout (mounted at `/main`) appear dynamically
   as `wt-<tree name>` roots in the python and md kinds, discovered from
   `/main/.git/worktrees`

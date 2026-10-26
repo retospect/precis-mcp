@@ -59,6 +59,7 @@ from precis.handlers import _python_write as write
 from precis.handlers._eye import EYE_NEXT
 from precis.handlers._mode_help import require_mode
 from precis.handlers._python_provenance import (
+    empty_root_reason,
     indexed_file,
     note_file,
     note_index,
@@ -448,6 +449,17 @@ class PythonHandler(Handler):
         root = self._resolve_alias(parsed.alias)
         idx = self._index(parsed.alias, root)
 
+        # A configured root that indexed zero modules is empty on disk —
+        # name that with the reason instead of a bare not-found whose
+        # "search for it" advice can only mislead (gr520147).
+        if idx.n_modules == 0 and (
+            parsed.qualname is not None or parsed.file is not None
+        ):
+            raise NotFound(
+                f"python root {parsed.alias!r} is empty: {empty_root_reason(root)}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
+
         # Validate view eagerly — gives a sharp error with options.
         if view is not None and view not in _SUPPORTED_VIEWS:
             raise Unsupported(
@@ -618,6 +630,11 @@ class PythonHandler(Handler):
             )
         root = self._resolve_alias(parsed.alias)
         idx = self._index(parsed.alias, root)
+        if idx.n_modules == 0:
+            raise NotFound(
+                f"python root {parsed.alias!r} is empty: {empty_root_reason(root)}",
+                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
         if parsed.qualname is not None:
             sym = idx.symbol(parsed.qualname)
             if sym is None:
@@ -763,8 +780,11 @@ class PythonHandler(Handler):
         demote: dict[int, float] = {}
         scoped: list[tuple[str, Symbol]] = []
         hits: list[tuple[float, str, Symbol]] = []
+        empty_roots: list[str] = []
         for alias, root in roots.items():
             idx = self._index(alias, root)
+            if idx.n_modules == 0:
+                empty_roots.append(alias)
             for mod in idx.modules.values():
                 if scope_file and mod.file != scope_file:
                     continue
@@ -867,6 +887,13 @@ class PythonHandler(Handler):
             body = f"no python symbols match {q!r}\n"
             if sem_note:
                 body += f"({sem_note})\n"
+            # An in-scope root that indexed zero modules is empty on disk —
+            # the likely reason the query missed (gr520147).
+            for empty_alias in empty_roots:
+                body += (
+                    f"python root {empty_alias!r} is empty: "
+                    f"{empty_root_reason(roots[empty_alias])}\n"
+                )
             body += "\n"
             body += render_next_section(hints)
             # Fully-qualified symbol shape (`::` separator or dotted
