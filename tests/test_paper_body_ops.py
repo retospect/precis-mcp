@@ -1396,6 +1396,43 @@ class TestBodyOpTxTimeout:
                 )
         assert exc.value.next and "retry" in exc.value.next
 
+    @pytest.mark.parametrize("door", ["drop_body", "move_body_to", "split_body"])
+    def test_oversized_body_refused_up_front(
+        self,
+        store: Store,
+        handler: PaperHandler,
+        monkeypatch: pytest.MonkeyPatch,
+        door: str,
+    ) -> None:
+        """The gripe's second arm: a body too large for even the lifted
+        bound is refused at probe time with ``next=``, not left to die
+        on the statement timeout mid-transaction."""
+        from precis.handlers.paper import _BODY_OP_MAX_CHUNKS
+        from precis.ingest import body_ops
+
+        src = _seed(store, f"big{door.replace('_', '')}2020", year=2020)
+        _body(store, src, 2)
+        tgt = _seed(store, f"big{door.replace('_', '')}tgt2020", year=2020)
+        args: dict[str, Any]
+        if door == "drop_body":
+            args = {"drop_body": True, "reason": "x"}
+        elif door == "move_body_to":
+            args = {"move_body_to": tgt, "reason": "x"}
+        else:
+            args = {"split_body": {"title": "Split-off work"}, "reason": "x"}
+        monkeypatch.setattr(
+            body_ops,
+            "probe_body",
+            lambda conn, ref_id: body_ops.BodyReport(chunks=_BODY_OP_MAX_CHUNKS + 1),
+        )
+        # Real run and dry run both refuse — the door can't do this at
+        # all, so a dry report promising it would mislead.
+        for kw in ({}, {"dry_run": True}):
+            with pytest.raises(BadInput, match="body chunk") as exc:
+                _edit(handler, src, args, **kw)
+            assert exc.value.next is not None
+        assert _ords(store, src) == [0, 1]
+
 
 class TestBodyOpLockContention:
     """gr516772: a second body op on a ref whose row lock another session

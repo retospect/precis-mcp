@@ -200,6 +200,30 @@ def _body_op_tx(store: Store, door: str) -> Iterator[Any]:
         ) from exc
 
 
+#: The most live body chunks a door re-homes in one transaction
+#: (gr516498): the lifted ``_body_op_tx`` bound (600 s) covers ~28 k
+#: chunks at the worst observed prod rate — the 5,724-chunk split that
+#: outran the 120 s ``agent_rw`` bound, i.e. ≥21 ms/chunk. 20 k keeps
+#: ~30% headroom under that rate; past it the door refuses up front
+#: rather than dying mid-transaction on the timeout.
+_BODY_OP_MAX_CHUNKS = 20_000
+
+
+def _refuse_oversized_body(probe: Any, door: str, handle: str) -> None:
+    """Refuse a body door whose chunk count can't fit the lifted
+    ``_body_op_tx`` bound — up front, with ``next=``, instead of a
+    mid-transaction ``QueryCanceled`` (gr516498)."""
+    if probe.chunks <= _BODY_OP_MAX_CHUNKS:
+        return
+    raise BadInput(
+        f"{handle} holds {probe.chunks} body chunk(s) — over the "
+        f"{_BODY_OP_MAX_CHUNKS}-chunk ceiling, {door} cannot finish "
+        "inside one transaction's statement_timeout",
+        next="a body this size needs a batched path the body doors do "
+        "not have yet — file a gripe naming the ref",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public spec
 # ---------------------------------------------------------------------------
@@ -3861,6 +3885,7 @@ class PaperHandler(Handler):
                     conn, ref.id, named=named
                 )
             undo = paper_dump.undo_line(conn, ref.id, handle)
+        _refuse_oversized_body(probe, "drop_body", handle)
         # A stub carrying stale content ids / body meta is still a drop
         # target — detach_body cleans exactly those (gr515106 LOW).
         if probe.is_stub and not probe.identifiers and not probe.meta_keys:
@@ -4142,6 +4167,7 @@ class PaperHandler(Handler):
             src_probe = body_ops.probe_body(conn, donor.id)
             tgt_probe = body_ops.probe_body(conn, tgt.id)
             undo = paper_dump.undo_line(conn, donor.id, donor_h)
+        _refuse_oversized_body(src_probe, "move_body_to", donor_h)
         if src_probe.is_stub:
             return Response(
                 body=f"no change: {donor_h} holds no body and no PDF to move."
@@ -4355,6 +4381,7 @@ class PaperHandler(Handler):
         with self.store.pool.connection() as conn:
             probe = body_ops.probe_body(conn, donor.id)
             undo = paper_dump.undo_line(conn, donor.id, donor_h)
+        _refuse_oversized_body(probe, "split_body", donor_h)
         if probe.is_stub:
             raise BadInput(
                 f"{donor_h} holds no body and no PDF — nothing to split off",

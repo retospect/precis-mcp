@@ -25,7 +25,7 @@ AI agents design molecular machines and check every step against what has been
 published. They then test the designs on a droplet chip that the same system
 designs and drives. The target is graphene-like carbon machine parts, assembled
 in water at room temperature by a light-controlled assembler built from
-self-assembling cubes about 7 nm across.
+self-assembling cubes under 4 nm across.
 
 ![A carbon valve shell built from a hexfold recipe, turning](assets/molecular-machines/valve.svg)
 
@@ -67,7 +67,7 @@ precis takes a different approach in four ways:
 ```mermaid
 flowchart LR
   P["Carbon parts<br/>(hexfold: bearings, valves, joints)"]
-  A["Assembler<br/>(boxels: self-assembling ~7 nm cubes,<br/>light-instructed arm)"]
+  A["Assembler<br/>(boxels: self-assembling sub-4 nm cubes,<br/>light-instructed arm)"]
   C["Droplet chip<br/>(EWOD: move, mix, heat, illuminate)"]
   E["Evidence graph<br/>(papers, simulations, measurements)"]
   P -- "what the assembler must place" --> A
@@ -95,7 +95,7 @@ violet. These are the defects a hexfold recipe places.*
 
 ### The assembler (boxels)
 
-A boxel is a rigid covalent cage about 7 nm on a side. DNA face codes on its six
+A boxel is a rigid covalent cage under 4 nm on a side. DNA face codes on its six
 walls program which neighbours it binds, and a cassette inside it does the work: a
 switch, a photochromic unit or a conjugated bridge. Cascade assembly builds larger
 structures in self-terminating stages, with purification between stages. The
@@ -133,11 +133,11 @@ flowchart LR
 - **One small interface.** Seven verbs (get, search, put, edit, delete, tag, link)
   over about sixty kinds of object: papers, patents, drafts, CAD parts, circuit
   boards, molecules, findings.
-- **Reads less, finds more.** About 9,000 full-text papers are ingested, about
-  1.5 million searchable passages (mid-2026). Each paper carries precomputed
-  keywords, summaries and a clustered table of contents, so an agent reads the
-  paragraph it needs instead of the whole paper. Fisheye views show one object in
-  full with its neighbourhood compressed.
+- **Reads less, finds more.** About 56,000 papers are catalogued — over 30,000
+  in full text — and about 4.5 million searchable passages (October 2026). Each
+  paper carries precomputed keywords, summaries and a clustered table of
+  contents, so an agent reads the paragraph it needs instead of the whole paper.
+  Fisheye views show one object in full with its neighbourhood compressed.
 - **Grounded claims.** Claims live as hubs with evidence edges. Drafts cite them
   live, and a published claim can be signed as a nanopublication.
 - **A model ladder.** Cheap and local models handle volume, and frontier models
