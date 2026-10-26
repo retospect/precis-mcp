@@ -187,3 +187,8 @@ excerpts.
 - v1 strictness: is "comment content is only handles" too narrow for the
   LLM, which will want to write a gloss from day one? (The extension
   syntax exists for this; moving it into v1 costs a few lines in slice 1.)
+- The layer-1 convention that already shipped (829d68a10, live in r107)
+  writes `# <handle> (<why>)` — a handle inside free text — which this
+  spec's v1 grammar explicitly does not parse. Either slice 1 accepts the
+  shipped form (handle anywhere, rest of comment = gloss) or the landed
+  skill text is tightened to handles-only; decide before the parser.
