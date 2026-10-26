@@ -493,6 +493,7 @@ def test_canary_path_pins_a_local_sha(fx: Fixture, tmp_path: Path) -> None:
 # Records each ansible-playbook argv; the migrate-only call prints the marker
 # unless FAKE_MIGRATE_FAIL is set (then it exits red, as a failed migration).
 _FAKE_PLAYBOOK_RECORDING = """#!/usr/bin/env bash
+[ "$*" = "--version" ] && { echo 'ansible-playbook [fake]'; exit 0; }
 printf '%s\\n' "$*" >> "$PB_RECORD"
 case "$*" in
   *07-precis-migrate.yml*)

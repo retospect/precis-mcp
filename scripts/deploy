@@ -212,6 +212,31 @@ fi
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# ── which ansible runs ─────────────────────────────────────────────────────
+# scripts/release and scripts/round run under `uv run --no-project`; with a
+# project .venv in the cwd uv prepends that venv's bin to PATH, and since the
+# dev group carries ansible-core (gr519391) the bare `ansible-playbook` below
+# resolved to a collection-less core install (r110: "couldn't resolve
+# module/action 'community.general.homebrew'"). Drop every .venv/bin entry so
+# the full `ansible` package wins; PRECIS_ANSIBLE_BIN_DIR pins one explicitly.
+# BEGIN _deploy_sanitize_path (tests/test_deploy_ansible_path.py extracts this)
+_deploy_sanitize_path() {
+    local _out="" _e _rest="${PATH}:"
+    while [[ -n "$_rest" ]]; do
+        _e="${_rest%%:*}"
+        _rest="${_rest#*:}"
+        case "$_e" in
+            */.venv/bin) continue ;;
+        esac
+        _out="${_out:+${_out}:}${_e}"
+    done
+    PATH="${PRECIS_ANSIBLE_BIN_DIR:+${PRECIS_ANSIBLE_BIN_DIR}:}${_out}"
+    export PATH
+    unset VIRTUAL_ENV
+}
+# END _deploy_sanitize_path
+_deploy_sanitize_path
+
 # ── the gated pin is a ONE-SHOT TOKEN: ship mints it, deploy consumes it ───
 # `--pinned` only helps if the caller actually types the pinned sha, and /go
 # is executed by an agent following prose in .claude/commands/go.md. One run
@@ -1318,6 +1343,14 @@ fi
 # code change. Unresolvable -> EMPTY -> _is_critical treats every host as
 # critical and nothing is ever auto-skipped (the pre-2026-10-14 abort-all
 # behaviour — the fail-safe direction).
+# Which ansible ran, in the log; and refuse early when it is ansible-core.
+command -v ansible-playbook >/dev/null 2>&1 \
+    || die "ansible-playbook not found on PATH — install the full 'ansible' package (or set PRECIS_ANSIBLE_BIN_DIR)"
+say "ansible: $(command -v ansible-playbook) — $(ansible-playbook --version 2>/dev/null | head -n 1)"
+if ! ansible-doc -t module community.general.homebrew >/dev/null 2>&1; then
+    die "ansible cannot resolve community.general.homebrew — the deploy needs the full 'ansible' package, not ansible-core. Next: install it (e.g. brew install ansible, or uv tool install ansible) and re-run, or set PRECIS_ANSIBLE_BIN_DIR to its bin dir."
+fi
+
 say "resolving the serving-critical host set (inventory groups data+gateway)"
 _crit_out="$(ansible 'data:gateway' --list-hosts ${INV_ARGS[@]+"${INV_ARGS[@]}"} 2>/dev/null)" || true
 CRITICAL_HOSTS="$(awk '/^  hosts \(/ {f=1; next} f && NF {print $1}' <<< "$_crit_out")"
