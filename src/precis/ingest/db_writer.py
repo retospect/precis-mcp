@@ -108,6 +108,11 @@ class PaperToWrite:
     paper_id: str = ""
     pub_id: str | None = None
     cite_key_prefix: str = ""
+    #: A *whole-slug* request (datasheet `<vendor>-<part>` / filename
+    #: kebabs, gr520126) — resolved by :func:`resolve_slug` with `-2`
+    #: style suffixes instead of the author+year prefix's letters. When
+    #: unset, ``cite_key_prefix`` drives minting as before.
+    slug: str | None = None
 
     # PDF (None for metadata-only ingests)
     pdf_sha256: str | None = None
@@ -313,6 +318,36 @@ def _suffix_progression():
         width += 1
 
 
+def resolve_slug(slug: str, *, conn: Connection, limit: int = 1000) -> str:
+    """Pick the free ``cite_key`` for a whole-slug base — ``-2``/``-3`` style.
+
+    The datasheet counterpart of :func:`resolve_cite_key`: the base is
+    already the full slug (``<vendor>-<part>``, kebabed from the
+    filename or title — gr520126), so collisions get a numeric suffix,
+    the same policy :func:`precis.ingest.pres._resolve_pres_slug` uses
+    for pres slugs, not ``make_cite_key``'s ``a``/``b`` letters. The
+    probe grabs ``slug`` plus ``slug-*`` once so the pick is one
+    round-trip.
+    """
+    if not slug:
+        raise ValueError("slug must be non-empty")
+    rows = conn.execute(
+        "SELECT id_value FROM ref_identifiers "
+        "WHERE id_kind = 'cite_key' AND (id_value = %s OR id_value LIKE %s)",
+        (slug, slug + "-%"),
+    ).fetchall()
+    taken = {row[0] for row in rows}
+    if slug not in taken:
+        return slug
+    for n in range(2, limit + 1):
+        candidate = f"{slug}-{n}"
+        if candidate not in taken:
+            return candidate
+    raise RuntimeError(
+        f"slug suffix progression exhausted for {slug!r} (>{limit} collisions)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # write_paper — the atomic INSERT cascade
 # ---------------------------------------------------------------------------
@@ -342,8 +377,14 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     if not paper.cite_key_prefix:
         raise ValueError("paper.cite_key_prefix is required")
 
-    # 1. Resolve cite_key
-    cite_key = resolve_cite_key(paper.cite_key_prefix, conn=conn)
+    # 1. Resolve cite_key — a whole-slug request (datasheets) resolves
+    # with the ``-2`` policy; papers take the author+year prefix's
+    # letter suffixes.
+    cite_key = (
+        resolve_slug(paper.slug, conn=conn)
+        if paper.slug
+        else resolve_cite_key(paper.cite_key_prefix, conn=conn)
+    )
 
     # 2. PDF row (if any)
     if paper.pdf_sha256 is not None:
@@ -976,5 +1017,6 @@ __all__ = [
     "probe_existing",
     "register_aliases_and_maybe_upgrade",
     "resolve_cite_key",
+    "resolve_slug",
     "write_paper",
 ]

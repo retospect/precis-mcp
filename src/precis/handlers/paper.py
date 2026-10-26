@@ -5533,7 +5533,7 @@ class PaperHandler(Handler):
                     f"{self._convert_notes(probe)} a 'converted' "
                     f"ref_event logged. New handle {new_handle}; "
                     f"pa{ref.id} redirects to it (converted_from_kind "
-                    "stamp); the cite_key slug keeps resolving."
+                    f"stamp). The cite_key slug is kept as-is."
                 )
             )
         with _body_op_tx(self.store, "convert_to") as conn:
@@ -5594,8 +5594,8 @@ class PaperHandler(Handler):
                 f"(ref_event 'converted' logged). Address it as "
                 f"get(kind='datasheet', id='{ref.slug or new_handle}') "
                 f"or {new_handle} — pa{ref.id} keeps resolving through "
-                "the converted_from_kind redirect; the cite_key slug and "
-                "every identifier keep working."
+                "the converted_from_kind redirect; the cite_key slug "
+                "and every other identifier keep working."
             )
         )
 

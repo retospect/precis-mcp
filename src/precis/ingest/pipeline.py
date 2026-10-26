@@ -216,6 +216,33 @@ def _title_cite_key(title: str, year: int | None) -> str:
     return f"{base}{yy}"
 
 
+#: ``datasheet_pull`` downloads land under a synthetic
+#: ``datasheet-<sha12>.pdf`` name so they can never collide with a paper
+#: stub's cite_key — that stem is noise, not a slug source (gr520126).
+_GENERIC_DS_STEM_RE = re.compile(r"^datasheet-[0-9a-f]{8,}$")
+
+
+def datasheet_slug_base(
+    slug_hint: str | None, stem: str, title: str | None
+) -> str | None:
+    """The readable slug a datasheet mints — ``<vendor>-<part>`` style.
+
+    Priority: the caller's hint (``datasheet_pull`` knows the part's
+    mfr/mpn), then the dropped file's stem (a human-named
+    ``KXOB121K04F.pdf`` is already the right handle), then the document
+    title. ``None`` when nothing readable exists — the writer falls
+    back to the author+year ``cite_key_prefix``. Kebabed via
+    :func:`precis.ingest.pres.kebab_slug`, capped at 48 chars.
+    """
+    from precis.ingest.pres import kebab_slug
+
+    for raw in (slug_hint, stem, title or ""):
+        slug = kebab_slug(raw or "")[:48].rstrip("-")
+        if slug and not _GENERIC_DS_STEM_RE.fullmatch(slug):
+            return slug
+    return None
+
+
 def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
     """Map Marker blocks → :class:`ChunkToWrite` body chunks.
 
@@ -471,6 +498,7 @@ def extract_paper(
     kind: str = "paper",
     target_title: str = "",
     target_doi: str | None = None,
+    slug_hint: str | None = None,
 ) -> PaperToWrite:
     """Build a :class:`PaperToWrite` from a local PDF.
 
@@ -586,6 +614,16 @@ def extract_paper(
 
     provider = _PROVIDER_MAP.get(metadata.doi_provenance, "embedded")
 
+    # gr520126: a datasheet mints a readable whole slug
+    # (``<vendor>-<part>`` / filename / title kebab, ``-2`` suffix on
+    # collision) instead of the author+year cite_key — junk like
+    # ``anon00fw`` was the old outcome.
+    slug = (
+        datasheet_slug_base(slug_hint, pdf_path.stem, metadata.title)
+        if kind == "datasheet"
+        else None
+    )
+
     extra: dict[str, Any] = {}
     if metadata.abstract:
         extra["abstract"] = metadata.abstract
@@ -609,6 +647,7 @@ def extract_paper(
         paper_id=paper_id,
         pub_id=pub_id,
         cite_key_prefix=cite_key_prefix,
+        slug=slug,
         pdf_sha256=pdf_sha256,
         content_hash=content_hash,
         pdf_pages_first=pdf_pages_first,

@@ -48,6 +48,7 @@ from fastapi.responses import (
 from precis.backfill.citation_recall import ensure_s2_neighbors
 from precis.corpus_layout import corpus_pdf_dest
 from precis.errors import BadInput, NotFound
+from precis.export.latex import DATASHEET_SUBTYPE_LABELS
 from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
 from precis.identity import normalize_doi
 from precis.store.si_links import queue_si_on_attention
@@ -587,6 +588,10 @@ def _render_detail(
         # options — drives which control (select vs free-text escape) the
         # edit form's Alpine state opens on.
         "entry_type_is_known": (not entry_type) or entry_type in ENTRY_TYPE_LABELS,
+        # (value, label) options for the edit form's datasheet sub-type
+        # <select> — rendered only when the kind flip to datasheet is
+        # offered (papers/_meta_forms.html.j2, gr520127).
+        "ds_subtypes": list(DATASHEET_SUBTYPE_LABELS.items()),
         # Retraction banner (display-only — see _retraction_notice).
         "retraction": _retraction_notice(ref),
         # Identifiers beyond DOI/arXiv (PubMed/OpenAlex/S2/MAG/DBLP),
@@ -1987,6 +1992,10 @@ async def edit(
     cite_key: str = Form(""),
     journal: str = Form(""),
     entry_type: str = Form(""),
+    doc_kind: str = Form(""),
+    ds_subtype: str = Form(""),
+    ds_vendor: str = Form(""),
+    ds_part_lcsc: str = Form(""),
 ) -> RedirectResponse | HTMLResponse:
     """Update editable paper metadata.
 
@@ -2031,8 +2040,23 @@ async def edit(
     new_slug = cite_key.strip().lower()
     slug_changed = bool(new_slug) and new_slug != current_slug
     has_meta = len(payload) > 2  # anything beyond kind + id
+    # gr520127: the form's "Record kind" select reclassifies a misfiled
+    # datasheet — the convert_to door (refuses to share a call with the
+    # metadata fields), then the datasheet editor for vendor / part.
+    want_datasheet = doc_kind.strip().lower() == "datasheet"
+    if want_datasheet and (ref is None or ref.kind != "paper"):
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "Edit error",
+                "detail": "only a paper can be reclassified as a datasheet.",
+                "status": 400,
+            },
+            status_code=400,
+        )
 
-    if not has_meta and not slug_changed:
+    if not has_meta and not slug_changed and not want_datasheet:
         return templates.TemplateResponse(
             request,
             "error.html.j2",
@@ -2044,7 +2068,77 @@ async def edit(
             status_code=400,
         )
 
-    if has_meta:
+    # A cite_key rename runs BEFORE the convert: after the kind flip the
+    # form's old slug is still the ref's cite_key (convert never re-mints),
+    # but renaming the datasheet mid-flight would leave the redirect below
+    # pointing at a stale handle.
+    if slug_changed:
+        err = await _rename_slug_bounded(request, ref_id, current_slug, new_slug)
+        if err is not None:
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {"title": "Rename error", "detail": err, "status": 400},
+                status_code=400,
+            )
+
+    if want_datasheet:
+        conv_body, conv_err = await await_dispatch(
+            request,
+            "edit",
+            {
+                "kind": "paper",
+                "id": ref_id,
+                "__extras__": {
+                    "convert_to": "datasheet",
+                    "subtype": ds_subtype.strip() or "datasheet",
+                    "reason": "web meta edit: reclassified as a datasheet",
+                },
+            },
+        )
+        if conv_err:
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {"title": "Edit error", "detail": conv_body, "status": 400},
+                status_code=400,
+            )
+        # The datasheet editor forwards bibliographic fields to the paper
+        # one, so the whole form's payload can ride a single second call.
+        ds_payload: dict[str, Any] = {"kind": "datasheet", "id": ref_id}
+        for field in (
+            "title",
+            "year",
+            "abstract",
+            "journal",
+            "entry_type",
+            "authors",
+            "doi",
+            "arxiv",
+        ):
+            if field in payload:
+                ds_payload[field] = payload[field]
+        if ds_vendor.strip():
+            ds_payload["vendor"] = ds_vendor.strip()
+        if ds_part_lcsc.strip():
+            ds_payload["part_lcsc"] = ds_part_lcsc.strip()
+        if len(ds_payload) > 2:
+            ds_body, ds_err = await await_dispatch(request, "edit", ds_payload)
+            if ds_err:
+                return templates.TemplateResponse(
+                    request,
+                    "error.html.j2",
+                    {
+                        "title": "Edit error",
+                        "detail": (
+                            f"converted to datasheet, but the metadata edit "
+                            f"failed: {ds_body}"
+                        ),
+                        "status": 400,
+                    },
+                    status_code=400,
+                )
+    elif has_meta:
         body, is_error = await await_dispatch(request, "edit", payload)
         if is_error:
             conflict = _parse_identifier_conflict(body)
@@ -2080,24 +2174,19 @@ async def edit(
                 status_code=400,
             )
 
-    if slug_changed:
-        err = await _rename_slug_bounded(request, ref_id, current_slug, new_slug)
-        if err is not None:
-            return templates.TemplateResponse(
-                request,
-                "error.html.j2",
-                {"title": "Rename error", "detail": err, "status": 400},
-                status_code=400,
-            )
-
     # A successful edit that lands a real title resolves a triaged paper —
     # clear the needs-triage tag so it leaves the queue. Idempotent: the
-    # tag verb's remove is a no-op when the tag isn't present.
+    # tag verb's remove is a no-op when the tag isn't present. After a
+    # reclassify the ref is a datasheet, so name its live kind.
     if store.has_tag(ref_id, "OPEN", _TRIAGE_TAG):
         await await_dispatch(
             request,
             "tag",
-            {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
+            {
+                "kind": "datasheet" if want_datasheet else "paper",
+                "id": ref_id,
+                "remove": [_TRIAGE_TAG],
+            },
         )
     # A review can't cover metadata that has since changed — clear any
     # existing sign-off. Idempotent: clearing an unset stamp is a no-op.
@@ -2110,6 +2199,13 @@ async def edit(
     # `initial_tab`) — reused here rather than inventing a second one; a
     # plain `/papers/<id>` load (no param) still gets the usual
     # triage-or-Navigate default.
+    if want_datasheet:
+        # The ref is a datasheet now — land on its reader by the LIVE
+        # slug, read back after the convert + rename, not the slug the
+        # form was POSTed against.
+        live = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+        ds_slug = (live.slug if live is not None else "") or str(ref_id)
+        return RedirectResponse(url=f"/datasheets/{ds_slug}?tab=Meta", status_code=303)
     return RedirectResponse(url=f"/papers/{ref_id}?tab=Meta", status_code=303)
 
 

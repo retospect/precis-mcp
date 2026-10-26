@@ -203,6 +203,92 @@ def test_datasheet_edit_dispatches_edit_verb(client, runtime) -> None:
     assert args["part_lcsc"] == "C2934569"
 
 
+def test_paper_edit_form_offers_datasheet_reclassify(client) -> None:
+    """gr520127: the paper edit form gains a Record kind select whose
+    datasheet option reveals the datasheet meta fields (vendor /
+    sub-type / part) — a datasheet ingested as a paper had no web door."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'name="doc_kind"' in body
+    assert 'value="datasheet"' in body
+    assert 'name="ds_subtype"' in body
+    assert 'name="ds_vendor"' in body
+    assert 'name="ds_part_lcsc"' in body
+
+
+def test_paper_edit_doc_kind_datasheet_dispatches_convert(client, runtime) -> None:
+    """Two dispatches: the convert_to door (its own call — it refuses to
+    share with metadata fields), then the datasheet edit carrying the
+    datasheet meta + any bibliographic fields. Lands on /datasheets."""
+    resp = client.post(
+        "/papers/10/edit",
+        data={
+            "doc_kind": "datasheet",
+            "ds_subtype": "app-note",
+            "ds_vendor": "Espressif Systems",
+            "ds_part_lcsc": "C2934569",
+            "title": "ESP32-C3 Datasheet",
+            # The form's DOI input posts the stored value back.
+            "doi": "10.1234/example.2024",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/datasheets/")
+    # The redirect target must resolve — the route re-reads the live slug
+    # after the convert rather than trusting the POSTed one (gr520127
+    # review fix: it used to land on the dead pre-convert slug). The fake
+    # runtime records but doesn't apply the convert, so flip the ref's
+    # pool by hand to stand in for it.
+    ref10 = next(r for r in runtime.store.papers if r.id == 10)
+    ref10.kind = "datasheet"
+    runtime.store.datasheets.append(ref10)
+    assert client.get(resp.headers["location"]).status_code == 200
+    edits = [(v, a) for (v, a) in runtime.calls if v == "edit"]
+    assert len(edits) == 2
+    _, conv = edits[0]
+    assert conv["kind"] == "paper"
+    assert conv["id"] == 10
+    assert conv["__extras__"]["convert_to"] == "datasheet"
+    assert conv["__extras__"]["subtype"] == "app-note"
+    _, ds = edits[1]
+    assert ds["kind"] == "datasheet"
+    assert ds["id"] == 10
+    assert ds["vendor"] == "Espressif Systems"
+    assert ds["part_lcsc"] == "C2934569"
+    assert ds["title"] == "ESP32-C3 Datasheet"
+    assert ds["doi"] == "10.1234/example.2024"
+
+
+def test_paper_edit_doc_kind_datasheet_convert_only(client, runtime) -> None:
+    """A bare kind flip (no other fields) is still a change — dispatches
+    just the convert door with the default sub-type."""
+    resp = client.post(
+        "/papers/90/edit",
+        data={"doc_kind": "datasheet"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    edits = [(v, a) for (v, a) in runtime.calls if v == "edit"]
+    assert len(edits) == 1
+    assert edits[0][1]["__extras__"]["convert_to"] == "datasheet"
+    assert edits[0][1]["__extras__"]["subtype"] == "datasheet"
+
+
+def test_paper_edit_doc_kind_datasheet_refused_on_nonpaper(client, runtime) -> None:
+    """The door only flips paper → datasheet; a non-paper ref errors
+    before anything dispatches."""
+    resp = client.post(
+        "/papers/95/edit",
+        data={"doc_kind": "datasheet"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "only a paper" in resp.text
+    assert all(v != "edit" for v, _ in runtime.calls)
+
+
 def test_pres_reader_renders_shared_shell_and_attribution(client) -> None:
     """The /pres editor renders the shared two-pane reader (Navigate/Jump
     via paperDoc) with the pres attribution Meta panel. Guards the shared

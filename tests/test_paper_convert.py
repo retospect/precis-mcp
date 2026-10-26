@@ -227,10 +227,14 @@ class TestConvertToDatasheet:
         chunk_id = _chunk_ids(store, ref)[0]
         resp = _convert(handler, ref, {})
         assert "converted" in resp.body
-        # the kind flipped; the cite_key slug resolves as a datasheet
+        # the kind flipped; the cite_key is NEVER re-minted — the old
+        # slug keeps resolving (gr520126 ruling: readable slugs apply at
+        # mint time only, a convert keeps identity)
         assert _kind(store, ref) == "datasheet"
         assert store.get_ref(kind="datasheet", id="convds2018") is not None
-        assert store.get_ref(kind="paper", id="convds2018") is None
+        assert store.get_ref(kind="datasheet", id="title-of-convds2018") is None
+        owner = store.live_slug_owner("convds2018")
+        assert owner is not None and owner.id == ref
         # the computed handle re-mints under the new kind, and the OLD
         # kind's handle redirects to it via converted_from_kind
         assert store.resolve_handle(f"da{ref}") is not None
@@ -274,6 +278,28 @@ class TestConvertToDatasheet:
         _convert(handler, ref, {})
         resp = DatasheetHandler(hub=hub).get(id="convread2020")
         assert "convread2020" in resp.body or "Title of convread2020" in resp.body
+
+    def test_old_slug_resolves_after_convert(
+        self, store: Store, runtime_with_store: Any
+    ) -> None:
+        """The cite_key is never renamed by a convert: the old slug
+        resolves to the datasheet afterwards — kind-agnostically via
+        ``get(id=slug)`` and through the ``pa<id>`` redirect under
+        ``kind='paper'`` (gr520126 review fix)."""
+        ref = _seed(store, "convslug2024", year=2024)
+        _body(store, ref, 2)
+        _convert(PaperHandler(hub=runtime_with_store.hub), ref, {})
+        out = runtime_with_store.dispatch(
+            "get", {"kind": "datasheet", "id": "convslug2024"}
+        )
+        assert "[error:" not in out
+        # no kind= — the bare slug infers the ref's live kind
+        out = runtime_with_store.dispatch("get", {"id": "convslug2024"})
+        assert "[error:" not in out
+        # the paper-kind handle redirects through converted_from_kind
+        out = runtime_with_store.dispatch("get", {"kind": "paper", "id": f"pa{ref}"})
+        assert "[error:" not in out
+        assert "converted to" in out
 
     def test_paper_only_tags_stripped(
         self, store: Store, handler: PaperHandler

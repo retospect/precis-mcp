@@ -23,8 +23,10 @@ from precis.ingest.db_writer import (
     probe_existing,
     register_aliases_and_maybe_upgrade,
     resolve_cite_key,
+    resolve_slug,
     write_paper,
 )
+from precis.ingest.pipeline import datasheet_slug_base
 from precis.store.types import Tag
 
 # ---------------------------------------------------------------------------
@@ -145,6 +147,56 @@ class TestResolveCiteKey:
     def test_empty_prefix_raises(self, store):
         with store.pool.connection() as conn, pytest.raises(ValueError):
             resolve_cite_key("", conn=conn)
+
+
+# ---------------------------------------------------------------------------
+# resolve_slug + datasheet_slug_base — whole-slug minting (gr520126)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSlug:
+    def test_free_slug_returned(self, store):
+        with store.pool.connection() as conn:
+            assert resolve_slug("kemet-fc", conn=conn) == "kemet-fc"
+
+    def test_collision_suffixes_dash_number(self, store):
+        _seed_ref(store, identifiers={"cite_key": "kemet-fc"})
+        with store.pool.connection() as conn:
+            assert resolve_slug("kemet-fc", conn=conn) == "kemet-fc-2"
+
+    def test_second_collision_increments(self, store):
+        _seed_ref(store, identifiers={"cite_key": "kemet-fc"})
+        _seed_ref(store, identifiers={"cite_key": "kemet-fc-2"})
+        with store.pool.connection() as conn:
+            assert resolve_slug("kemet-fc", conn=conn) == "kemet-fc-3"
+
+    def test_empty_raises(self, store):
+        with store.pool.connection() as conn, pytest.raises(ValueError):
+            resolve_slug("", conn=conn)
+
+
+class TestDatasheetSlugBase:
+    def test_hint_wins(self):
+        assert (
+            datasheet_slug_base("Yageo KEMET FC", "x", "Some title") == "yageo-kemet-fc"
+        )
+
+    def test_filename_stem_second(self):
+        assert datasheet_slug_base(None, "KXOB121K04F", "Some title") == "kxob121k04f"
+
+    def test_generic_pull_stem_falls_to_title(self):
+        # datasheet_pull's synthetic datasheet-<sha>.pdf name is noise
+        assert (
+            datasheet_slug_base(None, "datasheet-a1b2c3d4e5f6", "FC Supercap")
+            == "fc-supercap"
+        )
+
+    def test_nothing_readable_returns_none(self):
+        assert datasheet_slug_base(None, "datasheet-deadbeef00", None) is None
+
+    def test_capped_at_48_chars(self):
+        slug = datasheet_slug_base("x " * 40, "", None)
+        assert slug is not None and len(slug) <= 48
 
 
 # ---------------------------------------------------------------------------

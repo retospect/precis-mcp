@@ -115,6 +115,11 @@ class PdfInput:
     #: into it, never registers the parent's DOI on it. See
     #: :func:`_ingest_supplement`.
     supplement_of: int | None = None
+    #: Whole-slug request for a ``as_kind='datasheet'`` mint (gr520126) —
+    #: e.g. ``datasheet_pull``'s ``<mfr> <mpn>``. Kebabed downstream; the
+    #: writer's ``resolve_slug`` suffixes ``-2``/``-3`` on collision.
+    #: Ignored for other kinds.
+    slug_hint: str | None = None
     #: ``source`` / ``url`` / ``component_doi`` provenance from the sidecar,
     #: recorded on the minted ref's ``meta.si_parent``.
     supplement_info: dict[str, str] | None = None
@@ -2713,6 +2718,7 @@ def _build_paper(
             kind=input.as_kind,
             target_title=target_title,
             target_doi=target_doi,
+            slug_hint=input.slug_hint,
         )
         # DRY: the identical pipeline lands the doc under whichever kind
         # the caller asked for (``paper`` default, ``cfp`` for the

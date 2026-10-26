@@ -322,13 +322,20 @@ def _require_pdf(head: bytes) -> None:
         raise _Failed("not_pdf", f"not a PDF (head={head[:8]!r})")
 
 
-def _ingest(store: Store, path: Path) -> tuple[int, bool]:
+def _ingest(
+    store: Store, path: Path, *, slug_hint: str | None = None
+) -> tuple[int, bool]:
     """The datasheet ingest path (what ``<inbox>/datasheets/`` and
-    ``precis add --as datasheet`` run). Returns ``(ref_id, inserted)``."""
+    ``precis add --as datasheet`` run). Returns ``(ref_id, inserted)``.
+    ``slug_hint`` is the ``<mfr> <mpn>`` base the minted ref's cite_key
+    derives from (gr520126)."""
     from precis.ingest.add import PdfInput, precis_add
 
     try:
-        result = precis_add(PdfInput(pdf_path=path, as_kind="datasheet"), store=store)
+        result = precis_add(
+            PdfInput(pdf_path=path, as_kind="datasheet", slug_hint=slug_hint),
+            store=store,
+        )
     except psycopg.Error:
         raise  # infrastructure: the executor's normal handling retries
     except Exception as exc:  # a poison PDF must not re-run Marker on every put
@@ -365,6 +372,23 @@ def _kind_title(store: Store, ref_id: int) -> tuple[str, str]:
 
 def _squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _mpn_slug_hint(store: Store, lcsc: str) -> str | None:
+    """``'<mfr> <mfr_part>'`` as the cite_key base for the minted
+    datasheet (gr520126) — the catalog row's identity is known-good even
+    when the PDF's own metadata is junk. ``None`` when the part isn't
+    catalogued (the pipeline falls back to the filename/title)."""
+    row = store.part_row(lcsc) or {}
+    parts = [
+        p
+        for p in (
+            str(row.get("mfr") or "").strip(),
+            str(row.get("mfr_part") or "").strip(),
+        )
+        if p
+    ]
+    return " ".join(parts) or None
 
 
 def _mpn_title(store: Store, lcsc: str, minted_title: str) -> str | None:
@@ -443,7 +467,9 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
                 # A name that cannot collide with a paper stub's cite_key.
                 named = path.with_name(f"datasheet-{sha[:12]}.pdf")
                 path.rename(named)
-                ds_id, inserted = _ingest(store, named)
+                ds_id, inserted = _ingest(
+                    store, named, slug_hint=_mpn_slug_hint(store, lcsc)
+                )
                 kind, minted_title = _kind_title(store, ds_id)
                 if kind != "datasheet":
                     # the ingest's own dedupe resolved to another kind of ref
