@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -88,52 +87,20 @@ def _pose_vec(inst: dict[str, Any]) -> tuple[list[float], list[float]]:
     return loc, rot
 
 
-def _rot_axis(axis: np.ndarray, rad: float) -> Transform:
-    a = axis / np.linalg.norm(axis)
-    ux = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
-    R = np.eye(3) + math.sin(rad) * ux + (1.0 - math.cos(rad)) * (ux @ ux)
-    return Transform(R=R, t=np.zeros(3))
-
-
 def _array_members(inst: dict[str, Any]) -> list[tuple[str, Transform]]:
     """Expand an instance's ``linear``/``polar`` array spec into
     ``(name#k, local transform)`` members — one unarrayed instance is a
     single member. The step is in the instance's own frame (``pga.tile``
     packs copies in the Geom's frame; the instance pose applies outside).
-    Polar mirrors the cad ``polar:nNrR`` convention: member k rotated
-    ``2πk/count`` about ``axis`` then offset ``radius`` along a fixed
-    perpendicular (axis=+z → +x)."""
+    The expansion itself is :func:`precis.cad.fit.array_member_transforms`
+    — one implementation, shared with the ``precis_se.fit`` adapter."""
     name = str(inst["name"])
     spec = inst.get("linear") or inst.get("polar")
     if not spec:
         return [(name, identity())]
-    count = int(spec["count"])
-    if spec.get("kind") == "linear":
-        step = np.asarray(spec["axis"], dtype=float) * float(spec["pitch"])
-        return [
-            (
-                f"{name}#{k + 1}",
-                Transform(R=np.eye(3), t=k * step),
-            )
-            for k in range(count)
-        ]
-    axis = np.asarray(spec["axis"], dtype=float)
-    radius = float(spec["radius"])
-    ref = (
-        np.array([1.0, 0.0, 0.0])
-        if abs(float(axis[0])) < 0.9
-        else np.array([0.0, 1.0, 0.0])
-    )
-    u = ref - axis * float(ref @ axis)
-    u = u / np.linalg.norm(u)
     return [
-        (
-            f"{name}#{k + 1}",
-            _rot_axis(axis, 2.0 * math.pi * k / count).compose(
-                Transform(R=np.eye(3), t=u * radius)
-            ),
-        )
-        for k in range(count)
+        (f"{name}#{k + 1}", xf)
+        for k, xf in enumerate(_engine.array_member_transforms(spec))
     ]
 
 

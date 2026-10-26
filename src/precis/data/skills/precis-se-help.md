@@ -533,6 +533,7 @@ script (gr514049).
 
 - [[precis-se-dtree-help]] — the design knowledge graph: walk a function tree to a leaf, axis + principles sweeps
 - [[precis-se-check-help]] — checking views: stability, drc, fasten, clearance, surface_deviation
+- [[precis-se-fit-help]] — view='fit': mesh fit/interference check on real cad, the import diff
 - [[precis-se-atomic-help]] — atomic-mode block trees over real chemistry
 - [[precis-se-chain-help]] — nucleic-acid helices, strands, domains, pairing
 - [[precis-se-states-help]] — discrete states, transitions, the derived swing, view='sweep'

@@ -2168,6 +2168,10 @@ class SeHandler(Handler):
             return Response(body=self._render_order(tree, ref.id))
         if v == "fasten":
             return Response(body=_render_fasten(tree))
+        if v == "fit":
+            from precis_se import fit as se_fit
+
+            return Response(body=se_fit.render_fit(self.store, tree, ref, args))
         if v == "interview":
             return Response(body=_render_interview(tree))
         if v == "freedom":
@@ -8039,6 +8043,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "bom": frozenset(),
     "order": frozenset(),
     "fasten": frozenset(),
+    "fit": frozenset({"recompute"}),
     "interview": frozenset(),
     "freedom": frozenset(),
     "assembly_check": frozenset(),
@@ -9298,7 +9303,7 @@ _VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
     (
         "checks",
         "validate drc clearance sites sweep stations pick stability "
-        "assembly_check mechanics kinematics surface flow fret",
+        "assembly_check mechanics kinematics surface flow fret fit",
     ),
     ("build", "bom order fasten print fab ray rays literature"),
 )

@@ -124,7 +124,7 @@ from precis.errors import BadInput, NotFound
 from precis.store.types import ChunkInsert
 from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
 from precis.utils.md_parse import _normalize_segment
-from precis.utils.units import UnitRequiredError
+from precis.utils.units import UnitRequiredError, parse_quantity
 from precis_geom import trace_schema
 from precis_se import persist, traceview
 from precis_se.atomic.generate import (
@@ -181,6 +181,8 @@ _TOP_KEYS = frozenset(
         "scenario",
         "status",
         "error",
+        "fit",
+        "fit_rules",
     }
 )
 #: An ``out.ray`` entry (structure-workspaces 2r): ``frame`` is the
@@ -605,6 +607,56 @@ def _vet_manifest(
         if rname in ray_names:
             raise BadInput(f"manifest {where}: duplicate ray name {rname!r}")
         ray_names.add(rname)
+    fit = data.get("fit")
+    if fit is not None and not isinstance(fit, dict):
+        raise BadInput(
+            "manifest.json: 'fit' must be an object when present — the "
+            "run's own fit report (recomputed on import, never trusted)",
+            next="omit 'fit', or pass the run's out/fit.json object "
+            "({'rows': […], …}); the server recomputes it either way",
+        )
+    fit_rules = data.get("fit_rules")
+    if fit_rules is not None:
+        if not isinstance(fit_rules, dict):
+            raise BadInput(
+                "manifest.json: 'fit_rules' must be an object",
+                next="e.g. {'min_clearance': [{'pair': ['ia', 'ib'], "
+                "'value': '2 mm'}]}",
+            )
+        mc = fit_rules.get("min_clearance")
+        if mc is not None:
+            if not isinstance(mc, list):
+                raise BadInput(
+                    "manifest.json: 'fit_rules.min_clearance' must be a list",
+                    next="e.g. [{'pair': ['ia', 'ib'], 'value': '2 mm'}]",
+                )
+            for j, row in enumerate(mc):
+                if (
+                    not isinstance(row, dict)
+                    or not isinstance(row.get("pair"), list)
+                    or len(row["pair"]) != 2
+                    or row.get("value") is None
+                ):
+                    raise BadInput(
+                        f"manifest.json: fit_rules.min_clearance[{j}] must be "
+                        "{'pair': ['a', 'b'], 'value': '<length>'}",
+                        next="e.g. {'pair': ['ia', 'ib'], 'value': '2 mm'}",
+                    )
+                try:
+                    clr = parse_quantity(row["value"], "length", require_unit=False)
+                except Exception as exc:
+                    raise BadInput(
+                        f"manifest.json: fit_rules.min_clearance[{j}].value "
+                        f"{row['value']!r} is not a valid length ({exc})",
+                        next="a length string like '2 mm', or a bare number "
+                        "in metres; e.g. {'pair': ['ia', 'ib'], 'value': '2 mm'}",
+                    ) from exc
+                if not math.isfinite(clr) or clr < 0.0:
+                    raise BadInput(
+                        f"manifest.json: fit_rules.min_clearance[{j}].value "
+                        f"{row['value']!r} must be a finite length ≥ 0",
+                        next="e.g. {'pair': ['ia', 'ib'], 'value': '2 mm'}",
+                    )
     scenario = data.get("scenario")
     if scenario is not None and not str(scenario).strip():
         raise BadInput(
@@ -620,6 +672,8 @@ def _vet_manifest(
         "rays": [dict(x) for x in rays_raw],
         "notes": data.get("notes"),
         "scenario": str(scenario).strip() if scenario is not None else None,
+        "fit": fit,
+        "fit_rules": fit_rules,
     }
 
 
@@ -1877,6 +1931,56 @@ def import_workspace_run(
             f"({len(result.imported)} blocks)",
             conn=conn,
         )
+        # se-fit-check-and-probe Decisions 8/9: the manifest's own ``fit``
+        # payload is untrusted input — the importer recomputes on the
+        # just-applied tree and stores the server's report at
+        # ``workspaces[<ws>].fit`` (JSON, no migration). Specs come from
+        # ``parsed``: the cad_saves above are still uncommitted in this
+        # transaction, so ``store.cad_load`` could not see them. A failed
+        # recompute is a finding, never a skipped silent store.
+        fit_record: dict[str, Any] | None = None
+        try:
+            from precis_se import fit as se_fit
+
+            specs_by_slug = {
+                f"{design}-{e.name}": parsed[e.name][1]
+                for e in manifest["blocks"]
+                if parsed[e.name][0] == "macro"
+            }
+
+            def _fit_spec_of(owner: Any) -> tuple[Any, dict[str, Any] | None]:
+                spec = specs_by_slug.get(owner.bound or "")
+                if spec is None:
+                    return None, None
+                return spec, dict(spec.meta or {})
+
+            fit_sites = se_fit.entry_sites(
+                manifest, trace.frames if trace is not None else None
+            )
+            fit_run = se_fit.compute(
+                store,
+                tree,
+                spec_of=_fit_spec_of,
+                site_of=lambda f: (
+                    traceview.site(_tv, int(f))
+                    if (_tv is not None and f is not None)
+                    else None
+                ),
+                sites=fit_sites,
+                min_clearance=se_fit.min_clearance_of(manifest["fit_rules"]),
+            )
+            prev_fit = prev.get("fit")
+            fit_record = se_fit.stored_record(
+                fit_run.report.to_json(),
+                workspace=workspace,
+                run_job=run_job,
+                fit_rules=manifest["fit_rules"],
+                prev=prev_fit if isinstance(prev_fit, dict) else None,
+                sites=fit_sites,
+            )
+        except Exception as exc:
+            result.findings.append(f"fit: recompute failed: {exc}")
+
         # Ownership record for the next import's drop set.
         conn.execute(
             "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
@@ -1900,6 +2004,7 @@ def import_workspace_run(
                                 ),
                                 "run_job": run_job,
                                 "script_sha": script_sha,
+                                **({"fit": fit_record} if fit_record else {}),
                             }
                         }
                     }

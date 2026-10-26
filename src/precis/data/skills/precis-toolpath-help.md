@@ -131,6 +131,7 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Atomistic cell + bonds | `kind='structure'` (DFT ladder) | `precis-structure-help` |
 | Molecular-machine block tree (rotaxane, motor) | `kind='se'`, `mode='atomic'` (blocks, ports, connects, threading, `bind_structure` into a `structure` design) | `precis-se-help` |
 | Turn an `se` block into a printed part (STL/3MF) | `realize` (mint the cad implementation) → `view='print'` (build orientation, process DRC, export) → `view='fab'` (the whole design's fabrication plan) | `precis-se-print-help` |
+| Check a design's fit/interference | `get(kind='se', id=..., view='fit')` — mesh check on real cad; `args={'recompute': true}` forces live, else the stored import report + new/cleared diff | `precis-se-fit-help` |
 | PCB netlist + placement | `kind='pcb'` + `kind='part'` / `kind='datasheet'` | `precis-pcb-help` |
 
 ## Authoring artifacts — materials, components, reactions

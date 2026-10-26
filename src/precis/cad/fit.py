@@ -25,6 +25,7 @@ Units: everything internal is SI metres — the report prints mm rounded to
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -377,6 +378,44 @@ def _xf_to_m34(xf: Transform) -> list[list[float]]:
     ]
 
 
+def _rot_axis(axis: np.ndarray, rad: float) -> Transform:
+    a = axis / np.linalg.norm(axis)
+    ux = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+    R = np.eye(3) + math.sin(rad) * ux + (1.0 - math.cos(rad)) * (ux @ ux)
+    return Transform(R=R, t=np.zeros(3))
+
+
+def array_member_transforms(spec: Mapping[str, Any]) -> list[Transform]:
+    """Per-member local transforms of a canonical array spec
+    (``{'kind': 'linear'|'polar', 'count', …}`` — the shape
+    ``precis_geom.assembly.array_spec`` normalises, and the manifest
+    ``linear``/``polar`` keys carry). The step is in the instance's own
+    frame; the instance pose applies outside. Polar mirrors the cad
+    ``polar:nNrR`` convention: member k rotated ``2πk/count`` about
+    ``axis`` then offset ``radius`` along a fixed perpendicular (axis=+z
+    → +x). Shared by the ``precis_geom.fit`` and ``precis_se.fit``
+    adapters — each adds its own ``name#k`` labels."""
+    count = int(spec["count"])
+    if spec.get("kind") == "linear":
+        step = np.asarray(spec["axis"], dtype=float) * float(spec["pitch"])
+        return [Transform(R=np.eye(3), t=k * step) for k in range(count)]
+    axis = np.asarray(spec["axis"], dtype=float)
+    radius = float(spec["radius"])
+    ref = (
+        np.array([1.0, 0.0, 0.0])
+        if abs(float(axis[0])) < 0.9
+        else np.array([0.0, 1.0, 0.0])
+    )
+    u = ref - axis * float(ref @ axis)
+    u = u / np.linalg.norm(u)
+    return [
+        _rot_axis(axis, 2.0 * math.pi * k / count).compose(
+            Transform(R=np.eye(3), t=u * radius)
+        )
+        for k in range(count)
+    ]
+
+
 def place(
     solids: Any,
     xf: Transform,
@@ -629,6 +668,10 @@ class FitReport:
     n_connected: int = 0
     chord_m: float = CHORD_MAX_M
     mass_rows: list[str] = field(default_factory=list)
+    #: Total mass in kg when every solid part resolved a density; ``None``
+    #: when the section refused or there was nothing to weigh. The
+    #: previous-build diff's mass delta reads this (Decision 8).
+    mass_kg: float | None = None
 
     @property
     def errors(self) -> list[Row]:
@@ -663,6 +706,7 @@ class FitReport:
             "chord_m": self.chord_m,
             "findings": list(self.findings),
             "report": self.text(),
+            "mass_kg": self.mass_kg,
         }
 
 
@@ -922,7 +966,7 @@ def fit(
             )
 
     # -- mass (item 5): per block, total, CoG, world bbox ------------------
-    rep.mass_rows = _mass_section(parts, notes, materials)
+    rep.mass_rows, rep.mass_kg = _mass_section(parts, notes, materials)
 
     rep.findings.sort(key=lambda f: (f["rule"], f["pair"]))
     return rep
@@ -986,7 +1030,7 @@ def _centroid(solid: Any) -> tuple[np.ndarray, float] | None:
 
 def _mass_section(
     parts: list[Placed], notes: list[Placed], materials: Mapping[str, float] | None
-) -> list[str]:
+) -> tuple[list[str], float | None]:
     """Per-block mass + CoG + world bbox lines. ``materials`` maps slug →
     kg/m³; without it (or with a missing slug) the section carries one
     refusal naming every offending block.component — the other checks
@@ -1046,7 +1090,7 @@ def _mass_section(
             f"total | {total:.4f} kg | CoG [{_mm(c[0]):.3f}, {_mm(c[1]):.3f}, "
             f"{_mm(c[2]):.3f}] mm"
         )
-    return lines
+    return lines, (total if any_mass else None)
 
 
 __all__ = [
@@ -1057,6 +1101,7 @@ __all__ = [
     "Placed",
     "Row",
     "Rule",
+    "array_member_transforms",
     "component_chord",
     "component_gap",
     "default_rules",

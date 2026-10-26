@@ -1,6 +1,6 @@
 ---
 status: in-progress
-claimed-by: fitcheck-s1
+claimed-by: fitcheck-s2
 title: se: built-in fit / interference / mass check and a probe primitive for scripted designs
 pillar: 3d-design
 prio: high
@@ -217,6 +217,15 @@ v2 rulings on the review:
     takes keyword-only `min_clearance` (per-pair overrides — the manifest
     `fit_rules` rows) and `pair_cache` (the Decision-4 pair memo), both
     caller-supplied data, keeping the engine pure.
+17. **Server made-by labels** (fitcheck-s2, slice 2, spec gap): the spec
+    pins made-by to manifest-entry `frame` stamps ("script lines on both
+    parts", acceptance 2 byte-parity with `fit.check`), but the tree does
+    not persist an instance's `out.instance` frame — only the bound ref's
+    `meta.generated.frame` (the `out.block` core frame) survives import.
+    The importer resolves `precis_se.fit.entry_sites` (block/instance
+    `frame` → `file:line`, the `precis_geom.fit._sites` rule) and stores
+    the map on the fit record; live recomputes reuse it, so stored and
+    live text agree and post-import edits keep their builder's label.
 
 ## Slices
 
@@ -297,36 +306,6 @@ Tests:
   under 300 ms cold.
 - `tests/workspaces/test_geom_wheel_imports.py` passes with the new
   allow-list entry.
-
-### 2. Server `view='fit'`
-
-Files: `src/precis_se/fit.py` (adapter: `SeTree` world poses from
-`ops.compose_world_pose`, bound cad via `tree.cad_designs` as in
-`rays_macro.py::block_geoms`, envelope fallback for blocks with no cad);
-`src/precis_se/handler.py` (register `view='fit'`);
-`src/precis_se/workspace_import.py` (accept top-level `fit` and `fit_rules`
-in `_TOP_KEYS`; recompute on import, Decision 9; store the summary in
-`workspaces[<ws>].fit`, Decision 8).
-
-Live when fast (ruling C): the view computes live if the projected cost
-(cached tessellations plus changed pairs, at the measured ~0.2 ms/pair) is
-under 200 ms. Otherwise it serves the stored report, labelled with its
-build and age, and says how to force a recompute. An envelope-only design
-(no bound cad) runs on posed envelopes and the report says so.
-
-Diff section: new, cleared and changed findings, plus the mass delta.
-
-Tests: `tests/test_se_fit_view.py`: the slice 1 synthetic fixture
-imported; the view text equals `fit.check(run_dir)` apart from the header;
-a second import with the overlap removed shows it under "cleared" with a
-mass delta; with a new overlap it shows under "new"; an envelope-only
-design gets a labelled report.
-
-Post-deploy check (ruling F, not a test): `view='fit'` on prod
-`unicycle-c1` reports gr514251's items as connect-rule findings: axle 5 mm
-short of both cranks (expected 0); bearing_right in or outside
-fork_right; pedal_right not at crank_right's pedal mount (pedals both at
-x=+170, ~340 mm off).
 
 ### 3. Mass from the DSL `material` lines (ruling E)
 
@@ -484,7 +463,10 @@ Slices 1–5, behind `view='fit'`, `out.check()`, `out.probe()` and
    fixtures or docs.
 
 Post-deploy (ruling F): prod `unicycle-c1` shows gr514251's items in
-`view='fit'` (slice 2).
+`view='fit'` (slice 2) as connect-rule findings: axle 5 mm short of both
+cranks (expected 0); bearing_right in or outside fork_right;
+pedal_right not at crank_right's pedal mount (pedals both at x=+170,
+~340 mm off).
 
 ## Fastener and part-library access
 
