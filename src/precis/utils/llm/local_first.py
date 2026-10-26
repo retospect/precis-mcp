@@ -1,8 +1,9 @@
 """Opt-in local attempt, acceptance check, then a metered paid escalation.
 
 No call site is switched here. Off (including master-off) passes the original
-request straight through; shadow stays on that paid path until S2 supplies its
-paired comparison. Acceptance callbacks stay outside serialized requests.
+request straight through. Live shadow preserves the paid answer and measures
+a local attempt; offline-only operations never buy a new shadow baseline.
+Acceptance callbacks stay outside serialized requests.
 
 Master and named job-set modes default off, preserving the caller's exact request.
 ``LOCAL_FIRST_SETS`` maps triage, tables and claims to their operations; an op
@@ -19,12 +20,19 @@ failures bound outage load. Paid checks serialize per op in a process, but
 do not reserve unknown future cost across hosts. ``LocalFirstOp.park`` defers
 table recipes and claim checks on saturation, timeout, transport failure or
 missing local configuration. Their result is paused with a ``deferred`` reason;
-triage still escalates. Shadow pairing remains a later slice; shadow currently
-preserves the paid path.
+triage still escalates. Live shadow runs the original paid arm once, then the
+local arm, always returning the paid answer. It requires a comparator and a
+live paid baseline (triage); table recipes and claims shadow only through the
+offline harness, avoiding an accidental new paid path. Missing comparators
+preserve the original request. Each invocation has a unique telemetry token;
+post-dispatch acceptance/comparison merges only into that call's log rows.
+Shadow forces a full paid log so both arms can link to its request hash.
+Comparison failure leaves agreement unknown and never affects the answer.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import threading
@@ -33,8 +41,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
-from precis import settings
+from precis import route_log, settings
 from precis.budget import meter
 from precis.utils.llm import router
 from precis.utils.llm.operations import LOCAL_FIRST_OPS, LOCAL_FIRST_SETS
@@ -122,11 +131,23 @@ def _spent_usd(op: str) -> float:
 
 
 def _features(
-    req: LlmRequest, *, arm: str, reason: str | None = None
+    req: LlmRequest,
+    *,
+    arm: str,
+    call_id: str,
+    mode: str = "on",
+    reason: str | None = None,
+    pair: str | None = None,
 ) -> dict[str, Any]:
-    stamp: dict[str, Any] = {"mode": "on", "arm": arm}
-    if reason is not None:
-        stamp["escalated"] = reason
+    stamp: dict[str, Any] = {
+        "mode": mode,
+        "arm": arm,
+        "call": call_id,
+        "escalated": reason,
+        "shadow": mode == "shadow",
+        "pair": pair,
+        "agree": None,
+    }
     return {**(req.features or {}), "local_first": stamp}
 
 
@@ -196,6 +217,107 @@ def _paused(req: LlmRequest, reason: str) -> LlmResult:
     )
 
 
+def _mode(op: str) -> str:
+    if not settings.get_bool("llm.local_first.enabled"):
+        return "off"
+    modes = {
+        settings.get_str(f"llm.local_first.set.{name}.mode")
+        for name, members in LOCAL_FIRST_SETS.items()
+        if op in members
+    }
+    return "on" if "on" in modes else "shadow" if "shadow" in modes else "off"
+
+
+def _attempt(
+    req: LlmRequest,
+    *,
+    op: str,
+    call_id: str,
+    mode: str,
+    pair: str | None = None,
+) -> tuple[LlmResult | None, str | None]:
+    reason = _skip_reason()
+    if reason is not None:
+        return None, reason
+    slot = _slots[op]
+    if not slot.acquire(blocking=False):
+        return None, "saturated"
+    try:
+        local = router.route(
+            replace(
+                req,
+                source=f"{op}:local",
+                placement="local",
+                max_tokens=None,
+                features=_features(
+                    req, arm="local", call_id=call_id, mode=mode, pair=pair
+                ),
+                log_call=True,
+            )
+        )
+    finally:
+        slot.release()
+    reason = _failure(local)
+    _observe(reason)
+    return local, reason
+
+
+def _accepted(local: LlmResult, accept: AcceptFn) -> str | None:
+    reason = accept(local)
+    if reason is not None and reason not in _REASONS:
+        raise ValueError(f"Unknown local-first acceptance reason: {reason!r}")
+    return reason
+
+
+def _shadow(
+    req: LlmRequest, *, op: str, accept: AcceptFn, compare: CompareFn
+) -> LocalFirstResult:
+    call_id = uuid4().hex
+    # Full paid logging supplies D7's actual request_hash; the unique token
+    # distinguishes concurrent identical prompts without mutating their blobs.
+    paid = router.route(
+        replace(
+            req,
+            features=_features(req, arm="paid", call_id=call_id, mode="shadow"),
+            log_call=True,
+            log_blobs=True,
+        )
+    )
+    route_log.annotate_local_first(req.source, call_id, {"pair": paid.request_hash})
+    local: LlmResult | None = None
+    try:
+        local, reason = _attempt(
+            req, op=op, call_id=call_id, mode="shadow", pair=paid.request_hash
+        )
+        if local is None:
+            route_log.annotate_local_first(req.source, call_id, {"deferred": reason})
+            # Only the measurement was skipped; the caller has its paid answer
+            # and must not interpret this as D3's paused, retryable operation.
+            return LocalFirstResult(paid)
+        if reason is None:
+            reason = _accepted(local, accept)
+        comparison: dict[str, Any] = {"agree": None, "diff": None}
+        if _failure(local) is None and _failure(paid) is None:
+            agree, diff = compare(local, paid)
+            if not isinstance(agree, bool):
+                raise ValueError("local-first comparison must return a boolean")
+            # Validate before annotating: malformed telemetry must never replace
+            # the baseline answer or silently score as agreement.
+            json.dumps(diff, allow_nan=False)
+            comparison = {"agree": agree, "diff": diff}
+        route_log.annotate_local_first(
+            f"{op}:local",
+            call_id,
+            {"accepted": reason is None, "rejected": reason, **comparison},
+        )
+    except Exception:
+        log.warning("local-first %s: shadow comparison failed", op, exc_info=True)
+        route_log.annotate_local_first(
+            f"{op}:local", call_id, {"agree": None, "comparison_error": True}
+        )
+    return LocalFirstResult(paid, local=local)
+
+
 def run(
     req: LlmRequest,
     *,
@@ -206,47 +328,31 @@ def run(
     """Try the registered local arm and escalate a rejected answer once.
 
     Each op's ``park`` reasons defer without paid dispatch; live consumers
-    arrive in S3–S5. ``compare`` is reserved for S2; shadow currently returns
-    only today's paid answer. Invalid modes fail dark, like ``off``.
+    arrive in S3–S5. Live shadow requires a comparator and an existing paid
+    baseline; otherwise it preserves the original path. Invalid modes fail
+    dark, like ``off``. A shadow failure never replaces the paid answer.
     """
     cfg = LOCAL_FIRST_OPS[op]
-    if not settings.get_bool("llm.local_first.enabled") or not any(
-        settings.get_str(f"llm.local_first.set.{name}.mode") == "on"
-        for name, members in LOCAL_FIRST_SETS.items()
-        if op in members
-    ):
+    mode = _mode(op)
+    if mode == "off" or (mode == "shadow" and (not cfg.live_shadow or compare is None)):
         return LocalFirstResult(router.route(req))
+    if mode == "shadow":
+        assert compare is not None
+        return _shadow(req, op=op, accept=accept, compare=compare)
 
-    reason = _skip_reason()
-    local: LlmResult | None = None
-    if reason is None:
-        slot = _slots[op]
-        if not slot.acquire(blocking=False):
-            reason = "saturated"
-        else:
-            try:
-                local = router.route(
-                    replace(
-                        req,
-                        source=f"{op}:local",
-                        placement="local",
-                        max_tokens=None,
-                        features=_features(req, arm="local"),
-                        log_call=True,
-                    )
-                )
-            finally:
-                slot.release()
-            reason = _failure(local)
-            _observe(reason)
-            if reason is None:
-                reason = accept(local)
-                if reason is not None and reason not in _REASONS:
-                    raise ValueError(
-                        f"Unknown local-first acceptance reason: {reason!r}"
-                    )
-            if reason is None:
-                return LocalFirstResult(local, local=local)
+    call_id = uuid4().hex
+    local, reason = _attempt(req, op=op, call_id=call_id, mode=mode)
+    if local is not None:
+        if reason is None:
+            reason = _accepted(local, accept)
+        route_log.annotate_local_first(
+            f"{op}:local",
+            call_id,
+            {"accepted": reason is None, "rejected": reason},
+        )
+        if reason is None:
+            return LocalFirstResult(local, local=local)
+    assert reason is not None
 
     if reason == "no_local_rung":
         with _lock:
@@ -271,8 +377,11 @@ def run(
             replace(
                 req,
                 source=cfg.paid_source,
-                features=_features(req, arm="paid", reason=reason),
+                features=_features(req, arm="paid", call_id=call_id, reason=reason),
                 log_call=True,
             )
         )
+    from precis.utils.llm.local_first_stats import maybe_post_alert
+
+    maybe_post_alert(op)
     return LocalFirstResult(paid, local=local, escalated=reason)

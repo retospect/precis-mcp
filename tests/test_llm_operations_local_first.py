@@ -90,7 +90,7 @@ def _stub_route(
 def test_disabled_set_mode_preserves_serialized_request(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    """Shadow has its paid passthrough until S2 adds the paired local call."""
+    """Shadow without a comparator preserves the original paid path."""
     monkeypatch.setattr(settings, "get_str", lambda *args, **kwargs: mode)
     req = _request()
     before = router._serialize_request(req)
@@ -219,7 +219,8 @@ def test_accepted_local_request_unpins_tokens_and_preserves_caller(
     assert calls[0].prompt == req.prompt
     assert calls[0].messages == req.messages
     assert calls[0].features is not None
-    assert calls[0].features["local_first"] == {"mode": "on", "arm": "local"}
+    assert calls[0].features["local_first"]["mode"] == "on"
+    assert calls[0].features["local_first"]["arm"] == "local"
     assert router._serialize_request(req) == before
     assert req.features == {"caller": {"trace": "kept"}}
 

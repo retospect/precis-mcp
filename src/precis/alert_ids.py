@@ -103,6 +103,15 @@ def _nursery(
 
 
 ALERT_RULES: tuple[AlertRule, ...] = (
+    AlertRule(
+        "local-first:escalation",
+        "{op}",
+        "Local-first escalation rate exceeds 40% of helper calls.",
+        "warn",
+        None,
+        triage="Inspect the op stats and consider switching its set off.",
+        budget="24h; once per op/UTC day",
+    ),
     # ── health_digest: curated Layer-1 outcome checks ──────────────────
     _watchdog(
         "ingest",

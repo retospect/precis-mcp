@@ -18,6 +18,7 @@ reconcile worker). This handler is the MCP surface: ``get`` (with model-slug res
 
 from __future__ import annotations
 
+import logging
 from typing import Any, ClassVar
 
 from precis import llm_catalog
@@ -27,6 +28,8 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.utils import handle_registry
+
+log = logging.getLogger(__name__)
 
 
 class LlmHandler(NumericRefHandler):
@@ -341,10 +344,19 @@ class LlmHandler(NumericRefHandler):
     def _render_op_stats(self, source: str, *, window_days: int = 30) -> str:
         """``id='op:<source>', view='stats'`` — the per-op tote rollup over
         ``llm_call_log`` plus a per-model split (gr502653)."""
+        from precis.utils.llm.local_first_stats import render_stats
+
+        try:
+            local_first = render_stats(self.store, source, window_days=window_days)
+        except Exception:
+            log.warning("local-first stats unavailable for %s", source, exc_info=True)
+            local_first = "local-first stats unavailable."
         tote = llm_catalog.llm_op_tote(self.store, source, window_days=window_days)
         lines = [f"# llm op stats — {source} (last {window_days}d)"]
         if tote.calls == 0:
             lines.append(f"no llm_call_log rows for source {source!r} in the window.")
+            if local_first:
+                lines += ["", local_first]
             return "\n".join(lines)
         lines.append(f"calls: {tote.calls}")
         lines.append(f"realized cost: ${tote.cost_usd:.4f}")
@@ -366,6 +378,8 @@ class LlmHandler(NumericRefHandler):
             for model, r in by_model:
                 err = f", err {r.error_rate:.0%}" if r.error_rate is not None else ""
                 lines.append(f"  {model}: {r.calls} calls, ${r.cost_usd:.4f}{err}")
+        if local_first:
+            lines += ["", local_first]
         return "\n".join(lines)
 
     def _render_placement(

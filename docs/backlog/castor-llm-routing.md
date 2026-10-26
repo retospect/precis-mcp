@@ -197,12 +197,12 @@ or `off`, and the numbers go into this file's decisions log.
   {mode, arm, escalated, shadow, pair, agree}`.
 - `get(kind='llm', id='op:<source>', view='stats')` gains a local-first
   block: local attempts, accepted, escalated, the escalation rate
-  (escalated paid rows ÷ local attempts) by reason; shadow agreement
-  with a Wilson bound; `spent_usd` (escalated rows' `cost_usd`);
+  (escalated helper calls ÷ all helper calls) by reason; shadow agreement
+  with a Wilson bound and the local answer rate; `spent_usd` (escalated rows' `cost_usd`);
   `saved_usd` (accepted local calls' tokens at the paid model's catalog
   price; counts reasoning tokens, so it overstates, and the view says so).
 - `/placement` already shows the local share. An escalation rate above
-  40 % over 24 h on an `on` op posts one board line per day. The line is
+  40 % over 24 h on an `on` op raises one precis alert per UTC day. The alert is
   the signal for Reto to flip the op back. The helper never writes a
   setting itself.
 
@@ -352,6 +352,43 @@ slice-2 merge), `cli/conventions.py` plus a new checker module beside
 `app_settings` op rows and the flips (Reto).
 
 ## Open questions / decisions log
+
+### Builder picks (S2)
+
+- Live shadow requires `compare` and an existing paid baseline (triage).
+  Without either, preserve the caller's original path; table recipe and
+  dtree use the offline harness, never an implicit new paid baseline.
+- Paid shadow runs first and remains the returned answer even if the local
+  call, acceptance callback or comparator fails. Caps and the local circuit
+  still apply; a skipped local call records a deferral, not agreement.
+  No shadow call consumes the escalation budget. A full paid request blob
+  supplies the pair hash; a unique invocation token isolates post-dispatch
+  annotations from concurrent identical prompts, including lite local rows.
+- Savings are an estimate using the latest observed paid model in the window,
+  falling back to the configured cloud rung's catalog price. Missing prices
+  or token telemetry are reported; reasoning-token overstatement is explicit.
+- **GRIPE_FIX 2026-10-26 — D8 alert:** use the existing in-process
+  `precis.alerts.raise_alert` writer, registered as
+  `local-first:escalation/{op}`. `scripts/board` is absent from the production
+  image and is no longer the delivery path. Claim the UTC day in an escalated
+  log row under a DB lock before raising; a failed write consumes the claim
+  (at most once), and missing accounting emits no alert.
+- **GRIPE_FIX 2026-10-26 — escalation denominator:** count all recorded
+  helper calls for the op, deduplicating both arms by invocation token.
+  Circuit-skip and saturation escalations count even without a local row;
+  a fully escalated window reports 100% and can alert. On-mode alerts use
+  the same denominator within their trailing 24h window.
+- **GRIPE_FIX 2026-10-26 — shadow quality:** keep `agree` null when either
+  arm fails. Report accepted local answers divided by all shadow helper
+  calls next to agreement over comparable pairs, so failures and skipped
+  local arms remain visible in the answer rate.
+- The offline harness defaults to planning only. Execution needs explicit
+  `--run` and supplied JSONL samples with source evidence; no census file or
+  source-fetch pipeline is assumed. Table execution refuses until the shared
+  recipe validator from table extraction slice 2 is available. Missing or
+  invalid paid cost telemetry stops further paid dispatch.
+
+### Remaining rulings
 
 - **[open, Reto] Flip authority and order.** Proposed: the coordinator
   writes the `:local` op rows (harmless while the master is off); Reto

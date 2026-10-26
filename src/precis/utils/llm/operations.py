@@ -94,6 +94,7 @@ class LocalFirstOp:
     cap: int
     default_budget: float
     park: frozenset[str] = frozenset()
+    live_shadow: bool = False
 
 
 # Table recipes already run one chunk at a time per job; a process slot keeps
@@ -101,7 +102,14 @@ class LocalFirstOp:
 LOCAL_FIRST_OPS: dict[str, LocalFirstOp] = {
     entry.op: entry
     for entry in (
-        LocalFirstOp("triage", "gripe_triage:tick", "gripe_triage:tick", 6, 3.0),
+        LocalFirstOp(
+            "triage",
+            "gripe_triage:tick",
+            "gripe_triage:tick",
+            6,
+            3.0,
+            live_shadow=True,
+        ),
         LocalFirstOp(
             "table_recipe",
             "survey_extract:table_recipe",

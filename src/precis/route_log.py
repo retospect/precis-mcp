@@ -69,6 +69,32 @@ def enabled() -> bool:
     return _STORE is not None
 
 
+def annotate_local_first(source: str, call_id: str, values: dict[str, Any]) -> None:
+    """Merge post-dispatch outcomes into exactly one helper invocation.
+
+    Acceptance and shadow comparison happen after the router logs its row.
+    A unique caller token, rather than a reusable prompt hash, prevents a
+    concurrent/repeated request from acquiring another call's verdict. Lite
+    rows also carry the token. Blobs remain immutable; this is telemetry only.
+    """
+    import json
+
+    if _STORE is None:
+        return
+    try:
+        with _STORE.pool.connection() as conn:
+            conn.execute(
+                "UPDATE llm_call_log SET features = jsonb_set(features, "
+                "'{local_first}', features->'local_first' || %s::jsonb) "
+                "WHERE source = %s AND ts > now() - interval '1 day' "
+                "AND features->'local_first'->>'call' = %s",
+                (json.dumps(values), source, call_id),
+            )
+            conn.commit()
+    except Exception:
+        log.debug("route_log: local-first annotation failed", exc_info=True)
+
+
 @dataclass(frozen=True, slots=True)
 class LlmCallRecord:
     """One dispatch call to log: full request/response text + metadata. The
@@ -444,6 +470,7 @@ __all__ = [
     "RETENTION_DAYS_ENV",
     "LlmCallRecord",
     "SpendRow",
+    "annotate_local_first",
     "bind_store",
     "enabled",
     "gc",
