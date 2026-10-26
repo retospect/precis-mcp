@@ -101,6 +101,44 @@ def test_llm_call_log_hash_indexes_and_foreign_keys_kept(fresh_db: str) -> None:
     }.issubset({row["conname"] for row in foreign_keys})
 
 
+def test_refs_title_tsv_gin_index(fresh_db: str) -> None:
+    # gr514956: v2 dropped refs.title_tsv, so every title lexical leg
+    # recomputes to_tsvector over title_plain_sql per row — the
+    # empty-search title pointer cost ~1.6 s on prod and ran capped at
+    # 250 ms. 0255 adds a GIN index on that exact expression. The
+    # EXPLAIN pins the match: if title_plain_sql's emitted text ever
+    # changes the index stops matching the query and the planner falls
+    # back to a seq scan (seq + plain index scans disabled, so the GIN
+    # bitmap path is the only plan the expression can produce even on
+    # an empty table). The bare @@ predicate also bars the partial
+    # btrees — they have no index qual to offer, so only an expression
+    # match can produce any index path.
+    Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
+    rows = _fetch(
+        fresh_db,
+        "SELECT i.indisvalid FROM pg_index i "
+        "JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE c.relname = 'refs_title_tsv_gin_idx'",
+    )
+    assert rows and rows[0]["indisvalid"]
+
+    from precis.utils.title_views import title_plain_sql
+
+    expr = "to_tsvector('english', " + title_plain_sql("r.title") + ")"
+    with psycopg.connect(fresh_db) as conn:
+        conn.execute("SET enable_seqscan = off")
+        conn.execute("SET enable_indexscan = off")
+        plan = "\n".join(
+            r[0]
+            for r in conn.execute(
+                "EXPLAIN SELECT r.ref_id FROM refs r, "
+                "websearch_to_tsquery('english', 'x') qq(qq) "
+                f"WHERE {expr} @@ qq.qq"
+            ).fetchall()
+        )
+    assert "refs_title_tsv_gin_idx" in plan
+
+
 def test_seeds_populated(fresh_db: str) -> None:
     Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
     actors = {r["slug"] for r in _fetch(fresh_db, "SELECT slug FROM actors")}

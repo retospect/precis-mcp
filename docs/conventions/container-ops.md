@@ -302,9 +302,13 @@ that isn't implemented — this change only surfaces the lag.
   `.claude/fleet/generated/footer-<tier>.txt` plus
   `.claude/fleet/builder-workflow.txt` with the coordinator and release
   owner filled from `FLEET_*` env or flags), `peek WIN…`, `ctx`
-  (context % per Claude pane, from the status line), `prompts` (panes at a
+  (context % per agent pane, from the status line), `prompts` (panes at a
   dialog, with the command), `send-line WIN TEXT` (refuses a pane with a
-  dialog open or unsent text in its input box), `watch-done NAME…` and
+  dialog open or unsent text in its input box, and refuses fresh
+  instructions to a pane at/above 85% ctx — slash commands and `--force`
+  pass), `ctx-guard [NAME…]` (types the handoff instruction once when a
+  pane crosses 70% ctx, re-arms when ctx drops below `--rearm`; a FORCED
+  HANDOFF line at `--hard`, default 85%), `watch-done NAME…` and
   `stuck-watch [NAME…]` (Monitor-friendly, one line per transition), and
   `close NAME…` (kill the window, `git worktree remove` without `--force`,
   delete the branch only after a clean removal, log it). It calls tmux with

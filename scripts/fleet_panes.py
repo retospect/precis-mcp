@@ -54,21 +54,24 @@ CODEX_PERMISSION_RE = re.compile(
 
 
 def ctx_percent(pane: str) -> int | None:
-    """Context fill % used, any agent; the last footer match wins.
+    """Context fill % used, any agent; the bottom-most footer wins.
 
     Devin ``Context: 212k / 262k tokens (81%)``, Claude ``Opus 5.5 19% ctx``
-    (both % used), Codex ``Context 87% left`` (% left → inverted).
+    (both % used), Codex ``Context 87% left`` (% left → inverted). Footer
+    text of another agent shown higher up (a fixture on screen) loses to
+    the real status line at the bottom.
     """
+    best: tuple[int, float] | None = None
     for pat, used in (
         (r"Context:[^\n()]*\((\d+)%\)", True),
         (r"(\d+)%\s*ctx\b", True),
         (r"Context\s+(\d+)%\s*left", False),
     ):
-        hits = list(re.finditer(pat, pane, re.I))
-        if hits:
-            pct = float(hits[-1].group(1))
-            return round(pct if used else 100 - pct)
-    return None
+        for m in re.finditer(pat, pane, re.I):
+            if best is None or m.start() >= best[0]:
+                pct = float(m.group(1))
+                best = (m.start(), pct if used else 100 - pct)
+    return None if best is None else round(best[1])
 
 
 def nonempty_tail(pane: str, n: int) -> list[str]:

@@ -1908,8 +1908,9 @@ class NumericRefHandler(Handler):
         return prefix in self.store.tag_namespaces()
 
     #: ``_title_match_pointer`` probe cap: the title tsvector is computed
-    #: inline with no index (~1.6 s over prod's refs table), so the hint
-    #: gets a small slice of the search budget and drops silently past it.
+    #: inline (indexed since migration 0255 — ~1.6 s unfenced before it),
+    #: so the hint gets a small slice of the search budget and drops
+    #: silently past it.
     _TITLE_POINTER_TIMEOUT_MS: ClassVar[int] = 250
 
     def _title_match_pointer(
@@ -1928,8 +1929,9 @@ class NumericRefHandler(Handler):
         that comes up empty should point at the quest/todo whose *title*
         matches, not read as "nothing anywhere". Costs one
         ``search_refs_lexical`` probe capped at
-        ``_TITLE_POINTER_TIMEOUT_MS`` (the title tsvector is inline and
-        unindexed, so it is deliberately cheap-or-nothing) and only fires
+        ``_TITLE_POINTER_TIMEOUT_MS`` (the title tsvector is inline —
+        indexed since migration 0255 — so it stays cheap-or-nothing) and
+        only fires
         on the empty path, so hit pages pay nothing. The probe is
         restricted to the kinds the cross-kind search surfaces
         (``supports_search_hits``) and carries the same

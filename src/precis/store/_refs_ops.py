@@ -3773,9 +3773,10 @@ class RefsMixin:
         ``kinds`` restricts to a kind set (``r.kind = ANY``) — the
         cross-kind-surface restriction the empty-search pointer uses.
         ``timeout_ms`` sets a SET LOCAL ``statement_timeout`` for the
-        probe — the title tsvector is computed inline with no index, so
-        an unfenced call over the whole refs table costs ~1.6 s on prod;
-        callers that only want a hint cap it here. ``fence`` applies the
+        probe — the title tsvector is computed inline and indexed by
+        ``refs_title_tsv_gin_idx`` (migration 0255, gr514956), but an
+        unfenced call still fans out over every kind's titles; callers
+        that only want a hint cap it here. ``fence`` applies the
         same speculative/wiki/refuted fences ``search_chunks`` applies
         by default (same lift rules via ``tags``/``include_speculative``
         opt-ins) so agentlog/email/conv/message-class content never

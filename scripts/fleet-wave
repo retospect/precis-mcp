@@ -20,13 +20,18 @@ The thread-session fleet (one window per roadmap thread) is
                                         /clear it and send the resume line
     fleet-wave cites ID...              unlanded branch commits naming gr<ID>
     fleet-wave peek [WIN...] [-n N]     last N non-empty lines per window
-    fleet-wave ctx                      context % per Claude pane
+    fleet-wave ctx                      context % per agent pane
     fleet-wave prompts                  panes at a dialog: window, type, command
     fleet-wave send-line WIN TEXT       type TEXT + Enter; refuses unsent input,
                                         waits out a compacting pane, retries a
-                                        swallowed Enter (gr515698)
+                                        swallowed Enter (gr515698), and refuses
+                                        fresh instructions past the ctx ceiling
     fleet-wave watch-done NAME...       emit when <tree>/.claude/purpose finishes
     fleet-wave stuck-watch [NAME...]    emit on prompt / quiet / done / gone
+    fleet-wave ctx-guard [NAME...]      send the WIP+handoff instruction once
+                                        when a pane's ctx hits --ceiling
+                                        (default 70%), re-arm below --rearm;
+                                        FORCED HANDOFF line at --hard (85%)
     fleet-wave close NAME...            kill window, remove tree, drop branch;
                                         refuses a tree with unlanded commits
     fleet-wave approve TREE SHA[,SHA...] [--note ".."]   grant landing these shas
@@ -56,6 +61,20 @@ can't be pushed is rolled back rather than left diverging local main.
 ``launch`` also warns (never blocks) when the brief cites a commit that
 is not an ancestor of ``origin/main`` — a cite of unlanded or
 squash-landed work (gr515489, gr515506).
+
+``ctx-guard`` (gr515267) enforces the context ceiling briefs ask for but
+builders ignore: it polls each named wave window (every ``claude-`` /
+``devin-`` window when no names are given) and, once a pane's context
+fill reaches ``--ceiling`` (default 70%), sends the WIP+handoff
+instruction one time through the same machinery as ``send-line``
+(compaction wait, dialog/unsent-input refusal, Enter retry) and marks it
+sent under ``$FLEET_STATE/ctx-guard/``. A pane that drops below
+``--rearm`` (default 40% — i.e. after a ``/clear``) re-arms its marker.
+At or above ``--hard`` (default 85% — where ``send-line`` refuses fresh
+instructions) the guard also prints one FORCED HANDOFF line per episode
+for the coordinator; that marker re-arms on the same ``--rearm`` drop.
+``--message`` / ``--message-file`` override the default instruction;
+``{name}`` inside it fills with the wave name.
 
 Launch tiers are authority v2's R and W (.claude/fleet/authority.md);
 ``readonly`` and ``qland`` are aliases for R and W. Launch creates the
@@ -158,6 +177,13 @@ from fleet_panes import (
 #: paste (typed text loses its head in a Claude pane; see scripts/fleet).
 PASTE_MIN = 200
 PREFIXES = ("claude-", "devin-", "codex-")
+
+#: The wave's context refuse line in % used (gr515267). Brief text alone
+#: did not hold the 70% handoff ceiling — five builders ran to 85-99% on
+#: 2026-10-24. At/above CTX_HARD send-line refuses fresh instructions —
+#: slash commands (/compact, /clear are the remediation) and --force
+#: pass — and ctx-guard prints FORCED HANDOFF for the coordinator.
+CTX_HARD = 85
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 try:
@@ -204,6 +230,12 @@ class Fleet:
         return proc.stdout
 
     def target(self, win: str) -> str:
+        # A %N pane id is already a global target — wrapping it in
+        # "=<session>:" makes tmux look for a window literally named %N
+        # (gr515267: `fleet-wave ctx` printed nothing at all under
+        # FLEET_TMUX_SESSION because every capture used =session:%N).
+        if win.startswith("%"):
+            return win
         return f"={self.session}:{win}" if self.session else win
 
     def windows(self) -> list[str]:
@@ -455,29 +487,55 @@ def _wait_out_compaction(
         time.sleep(poll)
 
 
-def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
-    win = f.resolve(a.win)
-    if not win:
-        print(f"fleet-wave: no window {a.win}", file=sys.stderr)
-        return 2
+def _send_text(
+    f: Fleet,
+    win: str,
+    text: str,
+    *,
+    wait: float,
+    poll: float,
+    retries: int,
+    pause: float,
+    refuse_ctx: int | None = None,
+) -> tuple[int, str]:
+    """Type ``text`` + Enter into ``win``; return ``(rc, note)``.
+
+    rc 0 — sent (note ``sent`` or ``sent (retried Enter)``); 2 — the pane
+    cannot be read; 3 — refused before typing (note is the reason:
+    compacting, dialog open, unsent input, past ``refuse_ctx`` % ctx);
+    4 — typed but the Enter could not be verified. Shared by
+    ``send-line`` (which prints and passes ``refuse_ctx``) and
+    ``ctx-guard`` (which acts on the rc and is never ceiling-gated — its
+    send is the remediation).
+    """
     # An Enter sent while the pane is compacting is swallowed — the text
     # lands in the input box but never submits (gr515698: a brief sat
     # idle ~30 min that way). Wait the compaction out before typing.
-    pane, still = _wait_out_compaction(f, win, a.wait, a.poll)
+    pane, still = _wait_out_compaction(f, win, wait, poll)
     if pane is None:
-        print(f"fleet-wave: cannot read {win}", file=sys.stderr)
-        return 2
+        return 2, "cannot read pane"
     if still:
-        print(f"REFUSED {win}: still compacting after {a.wait:g}s")
-        return 3
+        return 3, f"still compacting after {wait:g}s"
     plain = ANSI_RE.sub("", pane)
     if dialog_type(plain):
-        print(f"REFUSED {win}: a dialog is open ({dialog_command(plain)})")
-        return 3
+        return 3, f"a dialog is open ({dialog_command(plain)})"
     if pending := unsent_input(pane):
-        print(f"REFUSED {win}: input box holds unsent text: {pending[:60]}")
-        return 3
-    text = a.text
+        return 3, f"input box holds unsent text: {pending[:60]}"
+    # Fresh instructions do not belong in a pane already at/past the ctx
+    # ceiling (gr515267). Slash commands (/compact, /clear) are the
+    # remediation and pass the gate.
+    pct = ctx_percent(plain)
+    if (
+        refuse_ctx is not None
+        and pct is not None
+        and pct >= refuse_ctx
+        and not text.lstrip().startswith("/")
+    ):
+        return (
+            3,
+            f"{pct}% ctx — at/past the {refuse_ctx}% ceiling; hand it the "
+            "WIP+handoff with --force (/compact and /clear pass the gate)",
+        )
     t = f.target(win)
     if len(text) > PASTE_MIN or "\n" in text:
         buf = f"fleet-wave-{os.getpid()}"
@@ -486,7 +544,7 @@ def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
     else:
         f.tmux("send-keys", "-t", t, "-l", "--", text)
     # An Enter arriving with the text is swallowed by the paste: pause first.
-    time.sleep(a.pause)
+    time.sleep(pause)
     f.tmux("send-keys", "-t", t, "Enter")
     # A compaction can also start between the check above and the Enter —
     # verify the box cleared and retry Enter a bounded number of times. A
@@ -494,24 +552,51 @@ def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
     # busy pane queues — Devin's `○` list, not the ❭ box — so a second
     # Enter would flush the queue early, not re-submit).
     note = "sent"
-    for attempt in range(1 + a.retries):
-        time.sleep(a.pause)
-        pane, still = _wait_out_compaction(f, win, a.wait, a.poll)
+    for attempt in range(1 + retries):
+        time.sleep(pause)
+        pane, still = _wait_out_compaction(f, win, wait, poll)
         if pane is None or still:
             break  # cannot verify — window gone or compaction outlived --wait
         plain = ANSI_RE.sub("", pane)
         if not unsent_input(pane) or BUSY_RE.search(plain) or dialog_type(plain):
-            print(f"{note}: {win}")
-            return 0
-        if attempt < a.retries:
+            return 0, note
+        if attempt < retries:
             f.tmux("send-keys", "-t", t, "Enter")
             note = "sent (retried Enter)"
-    print(
-        f"UNVERIFIED {win}: cannot confirm the Enter landed — check the "
-        "window and submit it by hand if the text still sits in the box",
-        file=sys.stderr,
+    return 4, "cannot confirm the Enter landed"
+
+
+def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
+    win = f.resolve(a.win)
+    if not win:
+        print(f"fleet-wave: no window {a.win}", file=sys.stderr)
+        return 2
+    rc, note = _send_text(
+        f,
+        win,
+        a.text,
+        wait=a.wait,
+        poll=a.poll,
+        retries=a.retries,
+        pause=a.pause,
+        # --force is how the handoff instruction itself is delivered
+        # through this command once a pane is over the ceiling.
+        # Namespaces built in code (reassign, handoff-wait) carry no force.
+        refuse_ctx=None if getattr(a, "force", False) else CTX_HARD,
     )
-    return 4
+    if rc == 0:
+        print(f"{note}: {win}")
+    elif rc == 2:
+        print(f"fleet-wave: cannot read {win}", file=sys.stderr)
+    elif rc == 3:
+        print(f"REFUSED {win}: {note}")
+    else:
+        print(
+            f"UNVERIFIED {win}: {note} — check the "
+            "window and submit it by hand if the text still sits in the box",
+            file=sys.stderr,
+        )
+    return rc
 
 
 def _fill_footer(text: str, fills: dict[str, str]) -> str:
@@ -1342,6 +1427,102 @@ def cmd_stuck_watch(f: Fleet, a: argparse.Namespace) -> int:
     return 0
 
 
+#: The instruction ctx-guard sends when --message/--message-file is not
+#: given — the same three steps the GRIPE_FIX stopgap used (gr515267).
+_CTX_GUARD_MESSAGE = (
+    "You are past the context ceiling. Stop feature work now. Do only "
+    "these three things, briefly:\n"
+    "1. Commit the files you changed (wip(scope): <what>, naming the gripe).\n"
+    "2. Write your handoff file: what is done and tested, what remains in "
+    "order, failing tests and their causes.\n"
+    "3. Reply DONE-HANDOFF.\n"
+    "Do not run tests and do not read more files."
+)
+
+
+def _ctx_guard_message(a: argparse.Namespace) -> str:
+    if a.message_file:
+        return Path(a.message_file).read_text(encoding="utf-8").rstrip("\n")
+    return a.message or _CTX_GUARD_MESSAGE
+
+
+def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
+    """Nudge each watched pane once when its ctx reaches ``--ceiling``.
+
+    The marker lives in ``$FLEET_STATE/ctx-guard/<name>`` — a successful
+    send writes it; a pane that drops below ``--rearm`` (after a /clear)
+    loses it and is armed again. A refused send retries on the next poll
+    and reports each time: a guard that cannot deliver is itself worth a
+    line. ``{name}`` in the message fills with the wave name.
+
+    At or above ``--hard`` — the same line where send-line refuses fresh
+    instructions — a ``<name>.hard`` marker makes the guard print one
+    FORCED HANDOFF line per episode for the coordinator; it re-arms on
+    the same ``--rearm`` drop. A pane that jumps straight past the
+    ceiling still gets the instruction through ``_send_text``.
+    """
+    if a.rearm >= a.ceiling:
+        print(
+            f"fleet-wave: --rearm ({a.rearm}) must be below --ceiling "
+            f"({a.ceiling}); the guard would oscillate",
+            file=sys.stderr,
+        )
+        return 2
+    st_dir = f.state / "ctx-guard"
+    st_dir.mkdir(parents=True, exist_ok=True)
+    text = _ctx_guard_message(a)
+    for k, _ in enumerate(_ticks(a)):
+        if k:
+            time.sleep(a.interval)
+        names = a.names or [w.split("-", 1)[1] for w in f.wave_windows()]
+        for name in names:
+            win = f.resolve(name)
+            pane = f.capture(win) if win else None
+            if pane is None:
+                continue
+            pct = ctx_percent(ANSI_RE.sub("", pane))
+            if pct is None:
+                continue
+            marker = st_dir / name
+            hard = st_dir / f"{name}.hard"
+            if pct < a.rearm:
+                marker.unlink(missing_ok=True)
+                hard.unlink(missing_ok=True)
+                continue
+            if pct >= a.ceiling and not marker.exists():
+                rc, note = _send_text(
+                    f,
+                    win,
+                    text.replace("{name}", name),
+                    wait=a.wait,
+                    poll=a.poll,
+                    retries=2,
+                    pause=a.pause,
+                )
+                # rc 4: text typed, Enter unconfirmed — count it as sent so
+                # the guard neither resends nor nags every poll.
+                if rc in (0, 4):
+                    marker.write_text(f"{pct} {utc_stamp()}\n", encoding="utf-8")
+                if rc == 0:
+                    outcome = "sent WIP+handoff"
+                elif rc == 4:
+                    outcome = f"sent WIP+handoff, UNVERIFIED ({note})"
+                else:
+                    outcome = f"send refused ({note})"
+                print(
+                    f"{utc_stamp()} ctx-guard: {win} at {pct}% — {outcome}",
+                    flush=True,
+                )
+            if pct >= a.hard and not hard.exists():
+                hard.write_text(f"{pct} {utc_stamp()}\n", encoding="utf-8")
+                print(
+                    f"{utc_stamp()} ctx-guard: {win} at {pct}% — FORCED "
+                    "HANDOFF — send-line refuses new instructions",
+                    flush=True,
+                )
+    return 0
+
+
 def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
     log = f.state / "dropped-branches.log"
     f.state.mkdir(parents=True, exist_ok=True)
@@ -1498,6 +1679,11 @@ def parser() -> argparse.ArgumentParser:
         help="extra Enter attempts when the first was swallowed",
     )
     s.add_argument("--pause", type=float, default=1.0, help=argparse.SUPPRESS)
+    s.add_argument(
+        "--force",
+        action="store_true",
+        help=f"send even past the {CTX_HARD}%% ctx ceiling (the handoff itself)",
+    )
     s.set_defaults(fn=cmd_send_line)
 
     for cmd, fn, nargs in (
@@ -1531,6 +1717,53 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("cites", help="unlanded branch commits naming gr<ID>")
     s.add_argument("ids", nargs="+")
     s.set_defaults(fn=cmd_cites)
+
+    s = sub.add_parser(
+        "ctx-guard",
+        help="send the WIP+handoff instruction once when a pane's ctx "
+        "reaches --ceiling; re-arms below --rearm",
+    )
+    s.add_argument("names", nargs="*")
+    s.add_argument("--interval", type=float, default=60.0)
+    s.add_argument("--ticks", type=int, default=0, help="stop after N polls")
+    s.add_argument(
+        "--ceiling",
+        type=int,
+        default=70,
+        help="context %% at or above which the pane is nudged (default 70)",
+    )
+    s.add_argument(
+        "--rearm",
+        type=int,
+        default=40,
+        help="context %% below which a nudged pane re-arms (default 40)",
+    )
+    s.add_argument(
+        "--hard",
+        type=int,
+        default=CTX_HARD,
+        help="context %% at or above which the guard prints FORCED "
+        "HANDOFF for the coordinator (default 85)",
+    )
+    s.add_argument(
+        "--message",
+        default="",
+        help="instruction to send; {name} fills with the wave name",
+    )
+    s.add_argument(
+        "--message-file",
+        default="",
+        help="file to read the instruction from (overrides --message)",
+    )
+    s.add_argument(
+        "--wait",
+        type=float,
+        default=30.0,
+        help="seconds to wait out a compacting pane before sending",
+    )
+    s.add_argument("--poll", type=float, default=2.0, help=argparse.SUPPRESS)
+    s.add_argument("--pause", type=float, default=1.0, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_ctx_guard)
 
     s = sub.add_parser(
         "close",

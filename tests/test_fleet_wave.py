@@ -276,6 +276,245 @@ def test_peek_ctx_prompts(env: dict[str, str]) -> None:
         )
 
 
+# Devin's footer (layout from tests/fixtures/panes/devin-working.txt).
+DEVIN_CTX76 = (
+    "⏺ earlier output\n"
+    "❭ \n"
+    "SWE-2 High                                     Context: 200k / 262k tokens (76%)\n"
+)
+
+
+def test_ctx_under_a_session_targets_pane_ids(env: dict[str, str]) -> None:
+    """gr515267: `fleet-wave ctx` printed nothing under FLEET_TMUX_SESSION —
+    the pane id was wrapped in `=session:` and tmux looked for a window
+    literally named %N. Pane ids are global targets and must go bare."""
+    _windows(env, {"devin-d": DEVIN_CTX76, "claude-a": IDLE})
+    env = {**env, "FLEET_TMUX_SESSION": "w"}
+    out = _run(env, "ctx").stdout
+    assert "w:devin-d\t76%\n" in out
+    assert "w:claude-a\t12%\n" in out
+    targets = [c[c.index("-t") + 1] for c in _tmux_calls(env) if c[0] == "capture-pane"]
+    assert targets and all(t.startswith("%") for t in targets)
+
+
+def _ctx_guard_marker(env: dict[str, str], name: str) -> Path:
+    return Path(env["FLEET_STATE"]) / "ctx-guard" / name
+
+
+def test_ctx_guard_nudges_once_then_rearms(env: dict[str, str]) -> None:
+    _windows(env, {"devin-g": DEVIN_CTX76})
+    args = ("ctx-guard", "g", "--ticks", "1", "--wait", "0",
+            "--poll", "0", "--pause", "0")  # fmt: skip
+    proc = _run(env, *args)
+    assert proc.returncode == 0
+    assert "ctx-guard: devin-g at 76% — sent WIP+handoff" in proc.stdout
+    sent = [c for c in _tmux_calls(env) if c[0] == "set-buffer"]
+    assert sent and "context ceiling" in sent[0][-1]
+    marker = _ctx_guard_marker(env, "g")
+    assert marker.exists()
+    # A second poll at the same level does not resend.
+    proc = _run(env, *args)
+    assert proc.stdout == ""
+    assert len([c for c in _tmux_calls(env) if c[0] == "send-keys"]) == 1
+    # Below --rearm the marker clears (the post-/clear state).
+    d = Path(env["FAKE_TMUX_DIR"])
+    (d / "pane-devin-g.txt").write_text(
+        DEVIN_CTX76.replace("(76%)", "(12%)"), encoding="utf-8"
+    )
+    assert _run(env, *args).stdout == ""
+    assert not marker.exists()
+    # Back at the ceiling it is armed again and nudges a second time.
+    (d / "pane-devin-g.txt").write_text(DEVIN_CTX76, encoding="utf-8")
+    proc = _run(env, *args)
+    assert "sent WIP+handoff" in proc.stdout and marker.exists()
+
+
+def test_ctx_guard_refusal_never_marks(env: dict[str, str]) -> None:
+    _windows(env, {"devin-g": PROMPT + "  81% ctx · opus\n"})
+    proc = _run(
+        env,
+        "ctx-guard",
+        "g",
+        "--ticks",
+        "1",
+        "--wait",
+        "0",
+        "--poll",
+        "0",
+        "--pause",
+        "0",
+    )
+    assert "send refused (a dialog is open" in proc.stdout
+    assert not _ctx_guard_marker(env, "g").exists()
+    assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+
+
+def test_ctx_guard_message_fills_name(env: dict[str, str]) -> None:
+    _windows(env, {"devin-g": DEVIN_CTX76})
+    proc = _run(
+        env,
+        "ctx-guard",
+        "g",
+        "--ticks",
+        "1",
+        "--wait",
+        "0",
+        "--poll",
+        "0",
+        "--pause",
+        "0",
+        "--message",
+        "stop {name} now",
+    )
+    assert "sent WIP+handoff" in proc.stdout
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    assert sends[0][-1] == "stop g now"
+
+
+# ── the hard ctx ceiling (gr515267) ─────────────────────────────────
+#: A Claude footer past the refuse line; Devin's own footer shapes.
+HOT = "some output\n\n────\n❯ \n────\n  92% ctx · opus\n"
+DEVIN_HOT = "⏺ still going\nContext: 240k / 262k tokens (92%)\n❭ \n"
+DEVIN_COOL = "⏺ still going\nContext: 20k / 262k tokens (8%)\n❭ \n"
+DEVIN_WARM_UNSENT = "⏺ still going\nContext: 196k / 262k tokens (75%)\n❭ half typed\n"
+
+
+def _typed(env: dict[str, str]) -> list[list[str]]:
+    """tmux calls that put text into a box (set-buffer paste or -l type)."""
+    return [
+        c
+        for c in _tmux_calls(env)
+        if c[0] == "set-buffer" or (c[0] == "send-keys" and "-l" in c)
+    ]
+
+
+def test_send_line_refuses_fresh_work_past_the_hard_ceiling(
+    env: dict[str, str],
+) -> None:
+    _windows(env, {"claude-a": HOT})
+    proc = _run(env, "send-line", "a", "keep building", "--pause", "0")
+    assert proc.returncode == 3
+    assert proc.stdout.startswith("REFUSED claude-a: 92% ctx")
+    # The refusal names the way through — the handoff goes with --force.
+    assert "--force" in proc.stdout
+    assert not _typed(env)
+    # Slash commands are the remediation — /compact and /clear must pass.
+    assert _run(env, "send-line", "a", "/compact", "--pause", "0").returncode == 0
+    proc = _run(env, "send-line", "a", "the handoff", "--force", "--pause", "0")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    texts = [c[-1] for c in _typed(env)]
+    assert "/compact" in texts and "the handoff" in texts
+
+
+def test_ctx_guard_forced_handoff_at_the_hard_ceiling(
+    env: dict[str, str],
+) -> None:
+    _windows(env, {"devin-a": DEVIN_HOT})
+    args = ("ctx-guard", "a", "--ticks", "1", "--wait", "0",
+            "--poll", "0", "--pause", "0")  # fmt: skip
+    out = _run(env, *args).stdout
+    # A straight-to-hard crossing still delivers the instruction, then
+    # flags the episode to the coordinator.
+    assert "at 92% — sent WIP+handoff" in out
+    assert "at 92% — FORCED HANDOFF" in out
+    assert _typed(env)
+    assert _ctx_guard_marker(env, "a").exists()
+    assert _ctx_guard_marker(env, "a.hard").exists()
+    # Both markers dedupe: a second poll at the same level prints nothing.
+    assert _run(env, *args).stdout == ""
+    assert len([c for c in _tmux_calls(env) if c[0] == "send-keys"]) == 1
+
+
+def test_ctx_guard_rearms_the_hard_band_below_rearm(
+    env: dict[str, str],
+) -> None:
+    _windows(env, {"devin-a": DEVIN_HOT})
+    args = ("ctx-guard", "a", "--ticks", "1", "--wait", "0",
+            "--poll", "0", "--pause", "0")  # fmt: skip
+    _run(env, *args)
+    # A /clear drops the footer below --rearm: both markers clear.
+    _windows(env, {"devin-a": DEVIN_COOL})
+    assert _run(env, *args).stdout == ""
+    assert not _ctx_guard_marker(env, "a").exists()
+    assert not _ctx_guard_marker(env, "a.hard").exists()
+    # The next episode nudges and forces the handoff again.
+    _windows(env, {"devin-a": DEVIN_HOT})
+    out = _run(env, *args).stdout
+    assert "sent WIP+handoff" in out and "FORCED HANDOFF" in out
+
+
+def test_ctx_guard_retries_a_busy_input_box(env: dict[str, str]) -> None:
+    _windows(env, {"devin-a": DEVIN_WARM_UNSENT})
+    args = ("ctx-guard", "a", "--ticks", "1", "--wait", "0",
+            "--poll", "0", "--pause", "0")  # fmt: skip
+    proc = _run(env, *args)
+    assert "send refused (input box holds unsent text" in proc.stdout
+    assert not _ctx_guard_marker(env, "a").exists()
+    assert not _typed(env)
+    # Unsent text cleared: the next tick delivers the instruction.
+    _windows(env, {"devin-a": DEVIN_CTX76})
+    assert "sent WIP+handoff" in _run(env, *args).stdout
+
+
+def test_ctx_guard_counts_unverified_enter_as_sent(env: dict[str, str]) -> None:
+    """rc 4 (text typed, Enter unconfirmed) must mark the pane handled."""
+    _windows(env, {"devin-a": ""})
+    # Guard read, send pre-check, then the box keeps holding the text.
+    _seq(env, "devin-a", DEVIN_CTX76, DEVIN_CTX76, DEVIN_WARM_UNSENT)
+    args = ("ctx-guard", "a", "--ticks", "1", "--wait", "0",
+            "--poll", "0", "--pause", "0")  # fmt: skip
+    out = _run(env, *args).stdout
+    assert "sent WIP+handoff, UNVERIFIED" in out
+    assert _ctx_guard_marker(env, "a").exists()
+    # Handled: the next poll neither resends nor nags.
+    n_typed = len(_typed(env))
+    assert _run(env, *args).stdout == ""
+    assert len(_typed(env)) == n_typed
+
+
+def test_ctx_guard_refuses_rearm_at_or_above_ceiling(env: dict[str, str]) -> None:
+    _windows(env, {"devin-a": DEVIN_CTX76})
+    proc = _run(env, "ctx-guard", "a", "--ticks", "1", "--rearm", "80",
+                "--ceiling", "70")  # fmt: skip
+    assert proc.returncode == 2
+    assert "--rearm (80) must be below --ceiling (70)" in proc.stderr
+    assert not _typed(env)
+
+
+def test_send_line_namespace_without_force(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In-code callers (reassign, handoff-wait) build a Namespace with no
+    ``force`` attribute; cmd_send_line must default it to False."""
+    import argparse
+    from types import SimpleNamespace
+
+    m = _module()
+    seen: dict[str, object] = {}
+
+    def fake_send_text(*_a: object, **kw: object) -> tuple[int, str]:
+        seen.update(kw)
+        return 0, "sent"
+
+    monkeypatch.setattr(m, "_send_text", fake_send_text)
+    fleet = SimpleNamespace(resolve=lambda n: f"claude-{n}")
+    ns = argparse.Namespace(
+        win="a", text="hi", wait=0.0, poll=0.0, retries=0, pause=0.0
+    )
+    assert m.cmd_send_line(fleet, ns) == 0
+    assert seen["refuse_ctx"] == m.CTX_HARD
+
+
+def test_ctx_percent_prefers_the_bottom_most_footer() -> None:
+    m = _module()
+    pane = (
+        "SWE-2 High      Context: 200k / 262k tokens (76%)\n"
+        "● editing the fixture above\n"
+        "────\n❯ \n────\n  12% ctx · opus\n"
+    )
+    assert m.ctx_percent(pane) == 12
+    # And the reverse: a Devin footer at the bottom beats Claude text above.
+    assert m.ctx_percent("  12% ctx · opus\n" + DEVIN_CTX76) == 76
+
+
 def test_send_line_types_then_enters(env: dict[str, str]) -> None:
     _windows(env, {"claude-a": IDLE})
     proc = _run(env, "send-line", "a", "rebase and reship", "--pause", "0")
