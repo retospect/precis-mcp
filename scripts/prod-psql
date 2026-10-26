@@ -12,6 +12,11 @@
 #   scripts/prod-psql "SELECT count(*) FROM refs;"    # one-shot query
 #   scripts/prod-psql "\d refs"                        # psql backslash cmds too
 #   echo "SELECT ..." | scripts/prod-psql              # piped SQL (stdin)
+#   scripts/prod-psql -f query.sql                     # SQL from a local file —
+#                                                      # read HERE and fed over
+#                                                      # stdin (the ssh hop never
+#                                                      # sees the path); composes
+#                                                      # with --ro / --explain
 #   scripts/prod-psql                                  # interactive shell
 #   scripts/prod-psql --help                           # usage + schema cheat sheet
 #
@@ -91,11 +96,17 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 usage: scripts/prod-psql [--ro] "SQL"     # one-shot query (or SQL on stdin)
+       scripts/prod-psql [--ro] -f FILE   # SQL from a local file
        scripts/prod-psql                  # interactive psql (agent_rw)
        scripts/prod-psql --help           # this text
 
   --ro   read-only: the agent_ro role inside BEGIN READ ONLY — prefer it for
          reads; it makes writes impossible instead of row-capped.
+
+  -f, --file FILE   read SQL from a local file and run it through the same
+                    checks/stdin path as piped SQL — the file is read here;
+                    the ssh hop never sees the path. Don't pass inline SQL
+                    too. A missing or unreadable file exits 2.
 
   --explain   read-only EXPLAIN: runs "EXPLAIN <sql>" as agent_ro. FOR
               UPDATE/FOR SHARE/SKIP LOCKED tails are stripped (agent_ro
@@ -128,10 +139,23 @@ EOF
 
 RO=0
 EXPLAIN=0
+FILE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ro) RO=1 ;;
         --explain) EXPLAIN=1; RO=1 ;;
+        -f|--file)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "prod-psql: $1 needs a FILE path." >&2
+                exit 2
+            fi
+            FILE="$2"; shift ;;
+        --file=*)
+            FILE="${1#--file=}"
+            if [[ -z "$FILE" ]]; then
+                echo "prod-psql: --file needs a path." >&2
+                exit 2
+            fi ;;
         --help|-h) usage; exit 0 ;;
         *) break ;;
     esac
@@ -387,7 +411,21 @@ run_sql() {
     fi
 }
 
-if [[ $# -gt 0 ]]; then
+if [[ -n "$FILE" ]]; then
+    # -f FILE (gr517627): the file is read HERE — a local path means nothing
+    # after the ssh hop — and its text runs through run_sql exactly like
+    # piped stdin, so --ro's BEGIN READ ONLY / --explain and the refusals
+    # apply unchanged. -f and inline SQL in one call is ambiguous: refuse.
+    if [[ $# -gt 0 ]]; then
+        echo "prod-psql: -f/--file already supplies the SQL — do not pass inline SQL too." >&2
+        exit 2
+    fi
+    if [[ ! -f "$FILE" || ! -r "$FILE" ]]; then
+        echo "prod-psql: cannot read SQL file '$FILE'." >&2
+        exit 2
+    fi
+    run_sql "$(cat "$FILE")"
+elif [[ $# -gt 0 ]]; then
     # One-shot: the SQL goes over ssh via psql's STDIN, never interpolated into
     # the remote command line — so any quotes/`$`/`;` in the SQL are safe.
     run_sql "$*"
