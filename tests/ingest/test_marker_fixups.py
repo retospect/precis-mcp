@@ -67,3 +67,50 @@ def test_no_context_leaves_prompts_stock(monkeypatch: pytest.MonkeyPatch) -> Non
     saved = _apply_surya_ocr_context(None)
     assert saved == {}
     assert prompts.PROMPT_MAPPING["block"] == "OCR this block image to HTML."
+
+
+def _fake_marker_schema(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
+    """A fake ``marker.schema`` tree: ``BlockTypes`` as a members-dict and
+    ``labels.SURYA_LABEL_TO_BLOCK_TYPE`` as a plain dict."""
+    blocktypes = types.SimpleNamespace(
+        __members__={"Equation": "EQ", "ChemicalBlock": "CB"}
+    )
+    labels = types.SimpleNamespace(
+        SURYA_LABEL_TO_BLOCK_TYPE={"ChemicalBlock": "CB", "Table": "TB"}
+    )
+    marker = types.ModuleType("marker")
+    schema = types.ModuleType("marker.schema")
+    monkeypatch.setattr(schema, "BlockTypes", blocktypes, raising=False)
+    monkeypatch.setattr(schema, "labels", labels, raising=False)
+    monkeypatch.setattr(marker, "schema", schema, raising=False)
+    monkeypatch.setitem(sys.modules, "marker", marker)
+    monkeypatch.setitem(sys.modules, "marker.schema", schema)
+    monkeypatch.setitem(sys.modules, "marker.schema.labels", labels)
+    return labels
+
+
+def test_chem_block_gate_retargets_datasheet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr520327: on a datasheet the Chemical-Block layout label retypes
+    as Equation — a resistor equation can never render as chem data."""
+    from precis.ingest.marker import (
+        _apply_chem_label_gate,
+        _chem_block_retarget,
+        _restore_chem_label_gate,
+    )
+
+    labels = _fake_marker_schema(monkeypatch)
+    assert _chem_block_retarget("datasheet") == "Equation"
+    assert _chem_block_retarget("paper") is None
+    saved = _apply_chem_label_gate("datasheet")
+    assert labels.SURYA_LABEL_TO_BLOCK_TYPE["ChemicalBlock"] == "EQ"
+    _restore_chem_label_gate(saved)
+    assert labels.SURYA_LABEL_TO_BLOCK_TYPE["ChemicalBlock"] == "CB"
+
+
+def test_chem_block_gate_leaves_papers_stock(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.ingest.marker import _apply_chem_label_gate
+
+    labels = _fake_marker_schema(monkeypatch)
+    saved = _apply_chem_label_gate("paper")
+    assert saved == {}
+    assert labels.SURYA_LABEL_TO_BLOCK_TYPE["ChemicalBlock"] == "CB"

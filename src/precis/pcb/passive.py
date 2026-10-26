@@ -21,15 +21,22 @@ from typing import Any
 
 #: ``100nF`` / ``0.1uF`` / ``22pF`` — the value token in a capacitor
 #: description. Longer unit spellings first so ``mF`` beats ``F``.
-_CAP_VALUE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(pF|nF|µF|μF|uF|mF|F)\b")
+#: Case-insensitive — ``100nf`` is the same capacitor ask as ``100nF``
+#: (gr520325); ``mF`` still precedes ``F`` in the alternation.
+CAP_VALUE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(pF|nF|µF|μF|uF|mF|F)\b", re.IGNORECASE)
 
-#: ``16V`` / ``6.3V`` / ``25VDC`` — the rated-voltage token. The
-#: lookbehind refuses a digit-V run inside a longer token (the ``5V`` of
-#: the ``Y5V`` dielectric must never read as a 5 V rating); the lookahead
-#: refuses a ``V`` that starts a longer word (``16Volt``, ``16VAC``) but
-#: allows the ``VDC`` spelling. The first match in a description is the
-#: rating, later ones would be test conditions.
-_CAP_VOLT_RE = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*V(?:DC)?(?![\w.])")
+#: Pre-public-name alias — kept for callers that imported the private
+#: spelling (gr520325 r2).
+_CAP_VALUE_RE = CAP_VALUE_RE
+
+#: ``16V`` / ``6.3V`` / ``25VDC`` / ``1.25kV`` — the rated-voltage token.
+#: The lookbehind refuses a digit-V run inside a longer token (the ``5V``
+#: of the ``Y5V`` dielectric must never read as a 5 V rating); the
+#: lookahead refuses a ``V`` that starts a longer word (``16Volt``,
+#: ``16VAC``) but allows the ``VDC`` spelling. An optional ``k`` scales
+#: the number by 1000 (``1.25kV`` → 1250 V). The first match in a
+#: description is the rating, later ones would be test conditions.
+_CAP_VOLT_RE = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*([kK]?)V(?:DC)?(?![\w.])")
 
 #: The dielectric classes ``CAP_DIELECTRIC_RANK`` knows, as a word in a
 #: description. Case-insensitive — vendor text writes ``x7r`` often
@@ -92,7 +99,7 @@ def parse_passive_description(description: str | None) -> dict[str, Any] | None:
         return None
     low = description.lower()
     if "capacitor" in low or "mlcc" in low:
-        value = _CAP_VALUE_RE.search(description)
+        value = CAP_VALUE_RE.search(description)
         volt = _CAP_VOLT_RE.search(description)
         diel = _DIELECTRIC_RE.search(description)
         if value is None and volt is None and diel is None:
@@ -105,7 +112,9 @@ def parse_passive_description(description: str | None) -> dict[str, Any] | None:
                 if value
                 else None
             ),
-            "rated_v": float(volt.group(1)) if volt else None,
+            "rated_v": (
+                float(volt.group(1)) * (1e3 if volt.group(2) else 1.0) if volt else None
+            ),
             "dielectric": diel.group(1).lower() if diel else None,
         }
     if "resistor" in low:

@@ -410,6 +410,13 @@ class PartHandler(Handler):
         # JLCPCB-native selector: hard-filter to assemblable parts; rank
         # Basic-first then turnover (store.parts_search).
         rows = self.store.parts_search(q, limit=page_size)
+        # gr520325: soft-only rows are near-misses, not a hit — a query
+        # with no row satisfying every soft term still reaches the live
+        # lookup, as it did before the terms went soft. The store returns
+        # every full match in its fetched window (even past the page
+        # cut), so ``any(all_soft)`` here answers for the window, not
+        # just the page.
+        near_miss = bool(rows) and not any(r.get("all_soft", True) for r in rows)
         if not rows:
             # A C-number query is a point lookup — the selector's
             # description-only tsv never matches one.
@@ -428,7 +435,7 @@ class PartHandler(Handler):
             partial = bool(rows)
         live_rows: list[dict[str, Any]] | None = None
         live_err: str | None = None
-        if not rows:
+        if not rows or near_miss:
             # Live fallback (gr485250): one bounded keyword query against
             # the public listing endpoint; hits are catalogued on the way
             # out. A wedged endpoint degrades to the catalog's own answer
@@ -452,14 +459,29 @@ class PartHandler(Handler):
                 "fallback) — it may be empty until that has run."
             )
         out = []
-        shown = rows or sorted(live_rows or [], key=lambda r: not (r["stock"] or 0))
+        # Live-merge ruling (gr520325 r2): when no local row satisfies
+        # every soft term and the live lookup answers, the results MERGE —
+        # live hits first, then the catalog near-misses, each labelled
+        # with the soft term it failed. Local rows are never discarded.
+        live_sorted = sorted(live_rows or [], key=lambda r: not (r["stock"] or 0))
+        if near_miss:
+            # A live hit that is already a catalog row would render as a
+            # duplicate line — the local near-miss keeps its label.
+            local_lcsc = {r["lcsc"] for r in rows}
+            live_sorted = [r for r in live_sorted if r["lcsc"] not in local_lcsc]
+        merged = near_miss and bool(live_sorted)
+        shown = (live_sorted + rows) if merged else (rows or live_sorted)
         for r in shown:
             price = min_unit_price(r.get("price"))
+            desc = (r["description"] or "")[:50]
+            miss = r.get("soft_miss")
+            if miss:
+                desc += " — near miss: " + " ".join(miss).upper()
             out.append(
                 {
                     "lcsc": r["lcsc"],
                     "mfr_part": r["mfr_part"] or "—",
-                    "description": (r["description"] or "")[:50],
+                    "description": desc,
                     "basic": "yes" if r["basic"] else "no",
                     "stock": r["stock"] if r["stock"] is not None else "—",
                     "restocks": r.get("restock_count", "—"),
@@ -471,6 +493,11 @@ class PartHandler(Handler):
             f"# {len(out)} PARTIAL match(es) for {q!r} — no part matches every "
             "term; ranked in-stock first, then by terms matched"
             if partial
+            else f"# {len(out)} part(s) for {q!r} — {len(live_sorted)} LIVE "
+            "from jlcpcb.com's listing just now (catalogued, not yet "
+            "turnover-ranked) + the nearest catalog rows, no local part "
+            "satisfying every term"
+            if merged
             else f"# {len(out)} assemblable part(s) for {q!r} "
             "(in stock, Basic + high-turnover first)"
             if rows
@@ -478,6 +505,20 @@ class PartHandler(Handler):
             "jlcpcb.com's listing just now and catalogued (not yet ranked by "
             "turnover; these include Extended parts the catalog lacks)"
         )
+        tail = ""
+        if near_miss and not live_rows:
+            # The full ask missed locally AND live — the near-misses are
+            # still the best answer; name the live outcome.
+            tail = (
+                f"\n\n(the live jlcpcb.com lookup failed: {live_err})"
+                if live_err is not None
+                else "\n\n(the live jlcpcb.com listing found nothing "
+                "either — these are the nearest catalog rows)"
+            )
+        elif near_miss and live_rows and not live_sorted:
+            # Live answered but every hit was already a catalog row —
+            # the dedup emptied the merge; still name the live outcome.
+            tail = f"\n\n(live lookup: {len(live_rows)} hit(s), all already listed)"
         return Response(
             body=head
             + "\n"
@@ -494,6 +535,7 @@ class PartHandler(Handler):
                     "$ea",
                 ],
             )
+            + tail
         )
 
 

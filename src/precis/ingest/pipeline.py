@@ -406,6 +406,7 @@ def extract_body(
     target_title: str = "",
     target_doi: str | None = None,
     ocr_context: str | None = None,
+    kind: str = "paper",
 ) -> BodyExtraction:
     """Run the body leg of :func:`extract_paper` alone: Marker → blocks →
     mojibake repair → body chunks (+ reference re-tagging), with the
@@ -442,6 +443,7 @@ def extract_body(
         fallback_info=fallback_info,
         glyph_health=glyph_health_info,
         ocr_context=ocr_context,
+        kind=kind,
     )
     blocks = _repair_mojibake(blocks)
     # Page stats stay on the whole PDF: a trimmed spread is not a preview.
@@ -591,6 +593,7 @@ def extract_paper(
             target_title=target_title or metadata.title or "",
             target_doi=target_doi or doi,
             ocr_context=ocr_context(metadata.title or "", metadata.abstract or ""),
+            kind=kind,
         )
         blocks = body.blocks
         if not metadata.title and not online:

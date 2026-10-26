@@ -391,6 +391,409 @@ def test_search_live_empty_says_so(store):
     assert "live jlcpcb.com listing found nothing" in body
 
 
+# ── soft dielectric/voltage terms (gr520325) ────────────────────────
+
+#: C52923-like: basic, 9.5M stock — description carries a *different*
+#: dielectric/voltage (50V X5R) than the query asks (10V X7R).
+_BASIC_CAP = {
+    "lcsc": "C52923",
+    "mfr_part": "CL05A105KP5NNNC",
+    "description": "1uF ±10% 50V X5R 0402 Multilayer Ceramic "
+    "Capacitors MLCC - SMD RoHS",
+    "jlcpcb_assemblable": True,
+    "basic": True,
+    "stock": 9548000,
+    "package": "0402",
+}
+_EXT_CAP = {
+    "lcsc": "C7500381",
+    "mfr_part": "GRM155R71A105KE01D",
+    "description": "1uF ±10% 10V X7R 0402 Multilayer Ceramic "
+    "Capacitors MLCC - SMD RoHS",
+    "jlcpcb_assemblable": True,
+    "basic": False,
+    "stock": 2,
+    "package": "0402",
+}
+
+
+def test_search_dielectric_voltage_are_soft_terms(store):
+    """gr520325: 'X7R 10V' used to AND into the description tsv and drop
+    the basic 9.5M-stock 50V X5R reel; now they only re-rank, so the
+    basic part surfaces and basic + stock still outrank the literal
+    match."""
+    store.parts_import([_EXT_CAP, _BASIC_CAP])
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="1uF 0402 X7R 10V").body
+    assert "C52923" in body and "C7500381" in body
+    assert body.index("C52923") < body.index("C7500381")
+    # An all-soft query keeps the AND semantics — no unfiltered scan.
+    body = part.search(q="X7R 10V").body
+    assert "C7500381" in body and "C52923" not in body
+
+
+def test_soft_term_floor_semantics():
+    """The gr520325 split + scorer: dielectric is equal-or-better class,
+    voltage is a rating floor (a 16 V part answers a 10V ask)."""
+    from precis.store._pcb_ops import _part_query_soft, _part_soft_hits
+
+    hard, diels, volts = _part_query_soft("1uF 0402 X7R 10V")
+    assert hard == "1uF 0402"
+    assert diels == ["x7r"]
+    assert volts == [("10v", 10.0)]
+    # 50V X5R: voltage floor met, worse dielectric is not — one hit.
+    assert _part_soft_hits(str(_BASIC_CAP["description"]), diels, volts) == 1
+    # 10V X7R literal: both satisfied.
+    assert _part_soft_hits(str(_EXT_CAP["description"]), diels, volts) == 2
+    # 16V C0G: a higher rating and a better class both count.
+    assert _part_soft_hits("1uF 16V C0G 0402 MLCC capacitor", diels, volts) == 2
+    # 6.3V X7R: below the floor — only the dielectric counts.
+    assert _part_soft_hits("1uF 6.3V X7R 0402 MLCC capacitor", diels, volts) == 1
+    # All-soft: the whole query stays the hard text.
+    hard, diels, volts = _part_query_soft("X7R 10V")
+    assert hard == "X7R 10V" and diels == ["x7r"] and volts == [("10v", 10.0)]
+    # Off a capacitor ask a voltage token is identity, not a floor.
+    hard, diels, volts = _part_query_soft("LDO 3.3V")
+    assert hard == "LDO 3.3V" and diels == [] and volts == []
+    # A capacitance value token alone makes it a capacitor ask.
+    hard, diels, volts = _part_query_soft("1uF 50V")
+    assert hard == "1uF" and diels == [] and volts == [("50v", 50.0)]
+
+
+def test_voltage_stays_hard_off_a_capacitor_ask(store):
+    """gr520325 fix: an IC's output voltage is its identity — 'LDO 3.3V'
+    keeps ``3.3V`` in the hard tsquery, so in-stock 5V/adjustable LDOs
+    never enter the candidate set at all."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C58069",
+                "mfr_part": "LDO-5V-1A",
+                "description": "5V 1A LDO Voltage Regulators SOT-23-5 RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 9000000,
+            },
+            {
+                "lcsc": "C75510",
+                "mfr_part": "LDO-ADJ-1A",
+                "description": "Adjustable 1A LDO Voltage Regulators SOT-223 RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 8000000,
+            },
+            {
+                "lcsc": "C10333",
+                "mfr_part": "LDO-3V3-1A",
+                "description": "3.3V 1A LDO Voltage Regulators SOT-23-5 RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": False,
+                "stock": 3,
+            },
+        ]
+    )
+    called = []
+
+    def live(*_a, **_k):
+        called.append(1)
+        return []
+
+    part = PartHandler(hub=Hub(store=store), live_search=live)
+    body = part.search(q="LDO 3.3V").body
+    assert "C10333" in body
+    assert "C58069" not in body and "C75510" not in body
+    assert called == []
+
+
+def test_voltage_floor_drops_under_rated_and_ranks_exact_first(store):
+    """gr520325 fix: '1uF X7R 100V' — a parsed rating below the floor is
+    a wrong answer, not a near miss: under-rated rows drop outright while
+    a no-parse row stays, and the exact 100V match ranks first."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C100016",
+                "mfr_part": "CAP-1UF-16V",
+                "description": "1uF ±10% 16V X7R 0402 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 9000000,
+            },
+            {
+                "lcsc": "C100050",
+                "mfr_part": "CAP-1UF-50V",
+                "description": "1uF ±10% 50V X7R 0402 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 8000000,
+            },
+            {
+                "lcsc": "C100100",
+                "mfr_part": "CAP-1UF-100V",
+                "description": "1uF ±10% 100V X7R 0402 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": False,
+                "stock": 5,
+            },
+            {
+                "lcsc": "C100999",
+                "mfr_part": "CAP-1UF-NOSPEC",
+                "description": "1uF 0402 Multilayer Ceramic Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": False,
+                "stock": 100,
+            },
+        ]
+    )
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="1uF X7R 100V").body
+    assert "C100100" in body and "C100999" in body
+    assert body.index("C100100") < body.index("C100999")
+    assert "C100016" not in body and "C100050" not in body
+
+
+def test_soft_only_miss_reaches_the_live_lookup(store):
+    """gr520325 ruling: a query with no FULL local match still reaches
+    the live listing — soft matches don't count as a hit."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C200001",
+                "mfr_part": "CAP-1UF-X7R",
+                "description": "1uF ±10% 50V X7R 0402 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 1000,
+            }
+        ]
+    )
+    calls = []
+    post = _post_with([C2655145])
+
+    def live(s, q, page_size=25):
+        calls.append(q)
+        return jlc_library.live_search(s, q, post=post, page_size=page_size)
+
+    part = PartHandler(hub=Hub(store=store), live_search=live)
+    # 'C0G' can't be satisfied by the X7R row — a near-miss, not a hit.
+    body = part.search(q="1uF 0402 C0G 50V").body
+    assert calls == ["1uF 0402 C0G 50V"]
+    assert "LIVE" in body and "C2655145" in body
+
+
+def test_soft_only_miss_with_live_empty_shows_near_misses(store):
+    """The ruling's other half: live finds nothing either, so the local
+    near-misses still surface with the empty live answer named."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C200001",
+                "mfr_part": "CAP-1UF-X7R",
+                "description": "1uF ±10% 50V X7R 0402 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 1000,
+            }
+        ]
+    )
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="1uF 0402 C0G 50V").body
+    assert "C200001" in body
+    assert "live jlcpcb.com listing found nothing" in body
+
+
+def test_full_match_past_the_page_cut_still_suppresses_live(store):
+    """gr520325 r3: '10uF X7R 10V' at page_size=5 — six basic in-stock
+    near-misses outrank the extended full matches in the ladder, but
+    ``all_soft`` is judged over the whole fetched window: the full
+    matches replace the trailing near-misses and lead a page that never
+    exceeds page_size, and the live lookup never fires (prod lost
+    C14860 to exactly this)."""
+    near = [
+        {
+            "lcsc": f"C910{i:04d}",
+            "mfr_part": f"CAP-10UF-X5R-{i}",
+            "description": "10uF ±10% 50V X5R 0603 Multilayer Ceramic "
+            "Capacitors MLCC - SMD RoHS",
+            "jlcpcb_assemblable": True,
+            "basic": True,
+            "stock": 9_000_000 - i,
+        }
+        for i in range(6)
+    ]
+    full = [
+        {
+            "lcsc": f"C920{i:04d}",
+            "mfr_part": f"CAP-10UF-X7R-{i}",
+            "description": "10uF ±10% 25V X7R 0603 Multilayer Ceramic "
+            "Capacitors MLCC - SMD RoHS",
+            "jlcpcb_assemblable": True,
+            "basic": False,
+            "stock": 900_000 - i,
+        }
+        for i in range(2)
+    ]
+    store.parts_import(near + full)
+    called = []
+
+    def live(*_a, **_k):
+        called.append(1)
+        return []
+
+    part = PartHandler(hub=Hub(store=store), live_search=live)
+    body = part.search(q="10uF X7R 10V", page_size=5).body
+    assert called == []
+    # The page stays at page_size and the extended X7R full matches
+    # lead: they replaced the trailing near-misses.
+    assert "# 5 assemblable part(s)" in body
+    assert "C9200000" in body and "C9200001" in body
+    assert "C9100000" in body  # the surviving near-misses still list
+    assert body.index("C9200001") < body.index("C9100000")
+
+
+def test_below_floor_drop_grows_the_window_until_the_page_fills(store):
+    """gr520325 r2: '1uF X7R 100V' — the under-rated drop runs after
+    SQL's LIMIT, so a first window full of 16 V basics leaves a short
+    page; the refetch grows the window until the satisfying rows fill
+    it."""
+    under = [
+        {
+            "lcsc": f"C911{i:04d}",
+            "mfr_part": f"CAP-1UF-16V-{i}",
+            "description": "1uF ±10% 16V X7R 0402 Multilayer Ceramic "
+            "Capacitors MLCC - SMD RoHS",
+            "jlcpcb_assemblable": True,
+            "basic": True,
+            "stock": 9_000_000 - i,
+        }
+        for i in range(150)
+    ]
+    full = [
+        {
+            "lcsc": f"C921{i:04d}",
+            "mfr_part": f"CAP-1UF-100V-{i}",
+            "description": "1uF ±10% 100V X7R 1206 Multilayer Ceramic "
+            "Capacitors MLCC - SMD RoHS",
+            "jlcpcb_assemblable": True,
+            "basic": False,
+            "stock": 50_000 + i,
+        }
+        for i in range(25)
+    ]
+    store.parts_import(under + full)
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="1uF X7R 100V", page_size=20).body
+    assert "# 20 assemblable part(s)" in body
+    assert "CAP-1UF-100V" in body
+    assert "CAP-1UF-16V" not in body  # no under-rated row survived
+
+
+def test_near_miss_merges_live_then_labelled_local_rows(store):
+    """gr520325 r2 ruling: no full local match + a live answer MERGES —
+    the live row leads, the local near-miss follows labelled with the
+    soft term it failed; local rows are never discarded."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C200001",
+                "mfr_part": "CAP-1UF-X7R",
+                "description": "1uF ±10% 50V X7R 0402 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 1000,
+            }
+        ]
+    )
+    calls = []
+    post = _post_with([C2655145])
+
+    def live(s, q, page_size=25):
+        calls.append(q)
+        return jlc_library.live_search(s, q, post=post, page_size=page_size)
+
+    part = PartHandler(hub=Hub(store=store), live_search=live)
+    body = part.search(q="1uF 0402 C0G 50V").body
+    assert calls == ["1uF 0402 C0G 50V"]
+    # Live leads; the X7R row follows, labelled with the failed term.
+    assert body.index("C2655145") < body.index("C200001")
+    assert "near miss: C0G" in body
+    assert "LIVE" in body
+
+
+def test_live_dedup_emptied_still_names_the_lookup(store):
+    """gr520325 r3: live answers but every hit is already a catalog
+    near-miss — the dedup empties the merge, and the page still names
+    the live outcome instead of the plain header."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C200001",
+                "mfr_part": "CAP-1UF-X7R",
+                "description": "1uF ±10% 50V X7R 0402 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": True,
+                "stock": 1000,
+            }
+        ]
+    )
+    part = PartHandler(
+        hub=Hub(store=store),
+        live_search=lambda *a, **k: [{"lcsc": "C200001", "stock": 9}],
+    )
+    body = part.search(q="1uF 0402 C0G 50V").body
+    assert "C200001" in body
+    assert "live lookup: 1 hit(s), all already listed" in body
+
+
+def test_kv_rating_counts_against_the_voltage_floor(store):
+    """gr520325 r3: kV ratings parse — '1.25kV'/'1kV' used to come back
+    ``rated_v=None``, so a 1250 V cap was labelled 'near miss: 250V' on
+    a 250V ask."""
+    from precis.pcb.passive import parse_passive_description
+
+    spec = parse_passive_description(
+        "1uF ±10% 1.25kV X7R 2220 Multilayer Ceramic Capacitors MLCC - SMD RoHS"
+    )
+    assert spec is not None and spec["rated_v"] == 1250.0
+    spec = parse_passive_description(
+        "1uF ±10% 1kV X7R 1210 Multilayer Ceramic Capacitors MLCC - SMD RoHS"
+    )
+    assert spec is not None and spec["rated_v"] == 1000.0
+    store.parts_import(
+        [
+            {
+                "lcsc": "C9301250",
+                "mfr_part": "CAP-1UF-1250V",
+                "description": "1uF ±10% 1.25kV X7R 2220 Multilayer Ceramic "
+                "Capacitors MLCC - SMD RoHS",
+                "jlcpcb_assemblable": True,
+                "basic": False,
+                "stock": 100,
+            }
+        ]
+    )
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="1uF 250V").body
+    assert "C9301250" in body
+    assert "near miss" not in body
+
+
+def test_lowercase_cap_value_still_softens_voltage():
+    """CAP_VALUE_RE is case-insensitive (gr520325 r2): '100nf 250v' is
+    the same capacitor ask as '100nF 250V' — the voltage softens."""
+    from precis.store._pcb_ops import _part_query_soft
+
+    hard, diels, volts = _part_query_soft("100nf 250v")
+    assert hard == "100nf" and diels == [] and volts == [("250v", 250.0)]
+
+
 # ── C-number recognition everywhere ─────────────────────────────────
 
 

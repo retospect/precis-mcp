@@ -32,6 +32,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import math
+import re
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
@@ -61,6 +62,7 @@ from precis.pcb import padplace as pcb_padplace
 from precis.pcb import route_state as pcb_route_state
 from precis.pcb import rows as pcb_rows
 from precis.pcb.capabilities import capability_for, conductor_spacing_mm
+from precis.pcb.passive import CAP_VALUE_RE, parse_passive_description
 from precis.pcb.rows import (
     first_present as _first_present,
 )
@@ -429,6 +431,116 @@ _PCB_REVISION_SQL = "SELECT md5(concat_ws('|', {}))".format(
         for expr, frm, order, where in _REVISION_PARTS
     )
 )
+
+
+#: A ``<n>V`` / ``<n>VDC`` query token — a rated-voltage *floor* on a
+#: capacitor ask, an identity everywhere else (gr520325): a 50 V cap
+#: answers a ``10V`` ask so the token softens, but on ``LDO 3.3V`` the
+#: output voltage IS the part and the token stays hard.
+_VOLT_TOKEN_RE = re.compile(r"^(\d+(?:\.\d+)?)v(?:dc)?$", re.IGNORECASE)
+
+
+def _part_query_soft(q: str) -> tuple[str, list[str], list[tuple[str, float]]]:
+    """Split a part-search query into its hard tsquery text and soft
+    ranking terms (gr520325).
+
+    Dielectric classes (``X7R``/``C0G``/… — the ``CAP_DIELECTRIC_RANK``
+    keys) are preferences, not filters: the strict path used to AND every
+    token into the description tsv, which dropped basic, high-stock parts
+    whose description carries a *different-but-satisfying* rating
+    (``50V X5R`` for a ``10V X7R`` ask). Voltage tokens soften ONLY on a
+    capacitor ask — a dielectric or a ``CAP_VALUE_RE`` value token in
+    the query: everywhere else the voltage is the part's identity
+    (``LDO 3.3V``), so it stays hard. Value/package/kind tokens stay hard
+    either way. ``hard_q`` falls back to the whole ``q`` when every token
+    was soft — an all-soft query keeps the old AND semantics rather than
+    scanning the catalog unfiltered.
+    """
+    toks = q.split()
+    cap_ask = any(
+        t.lower() in CAP_DIELECTRIC_RANK or CAP_VALUE_RE.search(t) for t in toks
+    )
+    hard: list[str] = []
+    diels: list[str] = []
+    volts: list[tuple[str, float]] = []
+    for tok in toks:
+        low = tok.lower()
+        if low in CAP_DIELECTRIC_RANK:
+            diels.append(low)
+        elif cap_ask and (m := _VOLT_TOKEN_RE.match(tok)):
+            volts.append((low, float(m.group(1))))
+        else:
+            hard.append(tok)
+    return (" ".join(hard) or q, diels, volts)
+
+
+def _part_soft_misses(
+    description: str | None,
+    diels: list[str],
+    volts: list[tuple[str, float]],
+) -> list[str]:
+    """The query's soft terms one catalog row does NOT satisfy — the
+    near-miss label ``parts_search`` attaches as ``soft_miss`` (gr520325:
+    "near miss: <which soft term failed>").
+
+    A dielectric token fails when the parsed class is worse than asked
+    (``X5R`` misses an ``x7r`` ask) AND the literal word is absent from
+    the description. A voltage token is a floor: it fails when the
+    parsed rating is under the ask — though ``_part_rated_ok`` drops
+    those rows first — or when nothing parses and the literal token is
+    absent. Returns the raw (lowercased) query tokens that missed.
+    """
+    desc = description or ""
+    spec = parse_passive_description(desc)
+    low = desc.lower()
+    missed: list[str] = []
+    for d in diels:
+        have = spec.get("dielectric") if spec else None
+        ok = (
+            CAP_DIELECTRIC_RANK.get(have, 99) <= CAP_DIELECTRIC_RANK[d]
+            if have is not None
+            else bool(re.search(rf"\b{re.escape(d)}\b", low))
+        )
+        if not ok:
+            missed.append(d)
+    for raw, want in volts:
+        rated = spec.get("rated_v") if spec else None
+        ok = (
+            rated >= want
+            if rated is not None
+            else bool(re.search(rf"(?<![a-z0-9.]){re.escape(raw)}(?![a-z0-9.])", low))
+        )
+        if not ok:
+            missed.append(raw)
+    return missed
+
+
+def _part_soft_hits(
+    description: str | None,
+    diels: list[str],
+    volts: list[tuple[str, float]],
+) -> int:
+    """How many of a query's soft terms one catalog row satisfies —
+    the re-rank signal ``parts_search`` sorts on after in-stock/Basic.
+
+    A dielectric token is satisfied by an equal-or-better parsed class
+    (``X7R``/``C0G`` answers an ``x7r`` ask; ``X5R`` does not, but stays
+    eligible) or by the literal word in the description. A voltage token
+    is a floor: satisfied when the parsed rating meets-or-exceeds it
+    (:func:`parse_passive_description` — a 16 V part still matches a
+    ``10V`` ask), else by the literal token."""
+    return len(diels) + len(volts) - len(_part_soft_misses(description, diels, volts))
+
+
+def _part_rated_ok(description: str | None, volts: list[tuple[str, float]]) -> bool:
+    """The below-floor drop (gr520325): a parsed ``rated_v`` under the
+    asked voltage disqualifies the row — an under-rated part is a wrong
+    answer, not a weaker one (a 16 V cap must not surface for a ``100V``
+    ask). Rows whose description parses no rating stay eligible — the
+    literal soft-hit can still satisfy the term."""
+    spec = parse_passive_description(description)
+    rated = spec.get("rated_v") if spec else None
+    return rated is None or all(rated >= want for _, want in volts)
 
 
 class PcbMixin:
@@ -6124,46 +6236,126 @@ class PcbMixin:
         (restock frequency + healthy EWMA stock) — prefer parts that keep
         being available, not the last reel.
 
+        Dielectric and voltage tokens are SOFT ranking terms (gr520325):
+        ``1uF 0402 X7R 10V`` hard-filters on ``1uF``/``0402`` only, then
+        ranks satisfied soft terms after in-stock and Basic — a basic
+        ``50V X5R`` reel answers the ask where the old all-token AND
+        dropped it. Voltage softens only on a capacitor ask (a dielectric
+        or a capacitance token — an IC's output voltage is its identity,
+        ``LDO 3.3V`` stays hard) and is a floor: a parsed rating below it
+        drops the row outright, a higher rating still matches. Rows carry
+        ``all_soft`` — every soft term satisfied — so the caller can tell
+        a full match from a near-miss (the live fallback still wants the
+        latter to miss); ``soft_miss`` names the terms a near-miss
+        failed. When the page would carry no full match but the fetched
+        window has some, the full matches replace the trailing
+        near-misses and lead — the result never exceeds ``limit`` — so
+        the caller's near-miss check sees the window, not just the page.
+
         ``partial`` ORs the query terms instead of ANDing them (catalog
         descriptions say ``16P`` where a query says ``16pin``): in-stock
         first, then the number of terms matched, then the usual ranking.
         """
+        volts: list[tuple[str, float]] = []
+        diels: list[str] = []
+        exact = ""
         if partial:
             tsq = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
             rank = "round(ts_rank(p.description_tsv, q.tsq)::numeric, 3) DESC, "
             frm = f"FROM (SELECT {tsq} AS tsq) q, parts p "
             cond = "p.description_tsv @@ q.tsq"
+            sql_q, fetch = q, limit
         else:
             rank = ""
             frm = "FROM parts p "
             cond = "p.description_tsv @@ plainto_tsquery('english', %s)"
-        with self._pcb_conn() as conn:
-            rows = conn.execute(
-                "SELECT p.lcsc, p.mfr_part, p.description, p.basic, p.stock, "
-                "       p.package, p.price, coalesce(a.restock_count, 0), "
-                "       a.ewma_stock "
-                f"{frm}LEFT JOIN part_availability a ON a.lcsc = p.lcsc "
-                f"WHERE p.jlcpcb_assemblable AND {cond} "
-                f"ORDER BY coalesce(p.stock, 0) > 0 DESC, {rank}"
-                "         p.basic DESC, coalesce(a.restock_count, 0) DESC, "
-                "         coalesce(a.ewma_stock, p.stock, 0) DESC "
-                "LIMIT %s",
-                (q, limit),
-            ).fetchall()
-        return [
-            {
-                "lcsc": r[0],
-                "mfr_part": r[1],
-                "description": r[2],
-                "basic": bool(r[3]),
-                "stock": r[4],
-                "package": r[5],
-                "price": r[6],
-                "restock_count": int(r[7]),
-                "ewma_stock": r[8],
-            }
-            for r in rows
-        ]
+            sql_q, diels, volts = _part_query_soft(q)
+            # Soft terms re-rank in Python (the rating-floor parse is not
+            # SQL-expressible): overfetch the SQL-ranked candidate set so
+            # a Basic part that satisfies them can rise into the window,
+            # and push full-query literal matches into that window ahead
+            # of broader near-misses via the ``exact`` ORDER BY tier.
+            fetch = max(limit * 5, 100) if (volts or diels) else limit
+            if volts or diels:
+                exact = "(p.description_tsv @@ plainto_tsquery('english', %s)) DESC, "
+        # The below-floor drop runs after SQL's LIMIT, so a page can come
+        # back short while satisfying rows sit deeper in the hard set:
+        # refetch with a growing window — 3 rounds bounded — until the
+        # page fills or the set is exhausted (gr520325 r2).
+        out: list[dict[str, Any]] = []
+        for _round in range(3):
+            with self._pcb_conn() as conn:
+                rows = conn.execute(
+                    "SELECT p.lcsc, p.mfr_part, p.description, p.basic, p.stock, "
+                    "       p.package, p.price, coalesce(a.restock_count, 0), "
+                    "       a.ewma_stock "
+                    f"{frm}LEFT JOIN part_availability a ON a.lcsc = p.lcsc "
+                    f"WHERE p.jlcpcb_assemblable AND {cond} "
+                    f"ORDER BY coalesce(p.stock, 0) > 0 DESC, {rank}"
+                    f"         p.basic DESC, {exact}"
+                    "         coalesce(a.restock_count, 0) DESC, "
+                    "         coalesce(a.ewma_stock, p.stock, 0) DESC "
+                    "LIMIT %s",
+                    (sql_q, q, fetch) if exact else (sql_q, fetch),
+                ).fetchall()
+            out = [
+                {
+                    "lcsc": r[0],
+                    "mfr_part": r[1],
+                    "description": r[2],
+                    "basic": bool(r[3]),
+                    "stock": r[4],
+                    "package": r[5],
+                    "price": r[6],
+                    "restock_count": int(r[7]),
+                    "ewma_stock": r[8],
+                }
+                for r in rows
+            ]
+            if volts:
+                out = [r for r in out if _part_rated_ok(r["description"], volts)]
+            if len(rows) < fetch or len(out) >= limit:
+                break
+            fetch *= 4
+        if volts or diels:
+            # Same ladder as the SQL ORDER BY, with satisfied soft terms
+            # slotted after Basic (gr520325: basic + stock outrank a mere
+            # dielectric/voltage literal match). ``soft_miss`` names the
+            # terms each near-miss failed, for the handler's "near miss:"
+            # label. ``all_soft`` is judged over the WHOLE scored window,
+            # not the page: a page filled by ranked near-misses still
+            # surfaces the deeper full matches, or the handler's
+            # near-miss check — and the user — never sees them (r2:
+            # page_size=5 '10uF X7R 10V' lost C14860). The r3 ruling on
+            # HOW they surface: full matches replace the page's trailing
+            # near-misses and lead — the result never exceeds ``limit``.
+            need = len(diels) + len(volts)
+            scored = []
+            for r in out:
+                miss = _part_soft_misses(r["description"], diels, volts)
+                r["all_soft"] = not miss
+                r["soft_miss"] = miss
+                scored.append((need - len(miss), r))
+            scored.sort(
+                key=lambda t: (
+                    (t[1]["stock"] or 0) > 0,
+                    t[1]["basic"],
+                    t[0],
+                    t[1]["restock_count"],
+                    t[1]["ewma_stock"] or t[1]["stock"] or 0,
+                ),
+                reverse=True,
+            )
+            page_full = any(h == need for h, _ in scored[:limit])
+            out = (
+                [r for _, r in scored[:limit]]
+                if page_full
+                else (
+                    [r for h, r in scored if h == need]
+                    + [r for h, r in scored if h != need]
+                )[:limit]
+            )
+        return out
 
     def part_row(self, lcsc: str) -> dict[str, Any] | None:
         with self._pcb_conn() as conn:

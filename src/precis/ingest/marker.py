@@ -416,6 +416,7 @@ def _marker_extract_subprocess(
     timeout_s: float,
     *,
     ocr_context: str | None = None,
+    kind: str = "paper",
 ) -> list[dict[str, Any]]:
     """Run :func:`_marker_extract` in a spawned child, killed if it hangs.
 
@@ -430,7 +431,7 @@ def _marker_extract_subprocess(
     return _run_in_subprocess_with_timeout(
         _marker_extract,
         args=(pdf_path, paper_id),
-        kwargs={"ocr_context": ocr_context},
+        kwargs={"ocr_context": ocr_context, "kind": kind},
         timeout_s=timeout_s,
         label=f"Marker extraction of {pdf_path.name}",
     )
@@ -444,6 +445,7 @@ def extract_blocks_marker(
     fallback_info: dict[str, Any] | None = None,
     glyph_health: dict[str, Any] | None = None,
     ocr_context: str | None = None,
+    kind: str = "paper",
 ) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
@@ -484,10 +486,12 @@ def extract_blocks_marker(
     try:
         if timeout_s and timeout_s > 0:
             blocks = _marker_extract_subprocess(
-                pdf_path, paper_id, timeout_s, ocr_context=ocr_context
+                pdf_path, paper_id, timeout_s, ocr_context=ocr_context, kind=kind
             )
         else:
-            blocks = _marker_extract(pdf_path, paper_id, ocr_context=ocr_context)
+            blocks = _marker_extract(
+                pdf_path, paper_id, ocr_context=ocr_context, kind=kind
+            )
     except TimeoutError as exc:
         log.warning(
             "Marker timed out after %ss on %s (%s), using fitz fallback",
@@ -679,8 +683,79 @@ def _restore_surya_prompts(saved: dict[str, str]) -> None:
         log.debug("surya prompt restore failed", exc_info=True)
 
 
+#: Ref kinds whose PDFs may legitimately carry chemical-reaction regions.
+#: Surya's layout model labels any equation-ish block ``Chemical-Block``,
+#: and the block OCR then renders it with its chem-reaction table
+#: template — a fabricated ``Chemical Reaction Data (Rev. X)`` caption
+#: over a ``Reactant Identifier | Reaction Equation (RE)`` header — which
+#: hallucinated a BQ25504 resistor equation into a reaction table on a
+#: datasheet (gr520327). Outside these kinds the label is retargeted to
+#: ``Equation`` for the convert, so the region is OCR'd as math — and
+#: ``EquationProcessor.fix_latex``'s ``<math>``-only filter can never
+#: emit the fabricated table anyway.
+_CHEM_CAPABLE_KINDS = frozenset({"paper"})
+
+
+def _chem_block_retarget(kind: str) -> str | None:
+    """The marker ``BlockTypes`` member surya ``ChemicalBlock`` boxes are
+    retyped as for this document kind — ``"Equation"`` off the
+    chem-capable kinds (gr520327); ``None`` keeps vendor behavior."""
+    return None if kind in _CHEM_CAPABLE_KINDS else "Equation"
+
+
+def _apply_chem_label_gate(kind: str) -> dict[str, Any]:
+    """Retype surya ``ChemicalBlock`` layout boxes for non-chem kinds
+    (gr520327).
+
+    Same process-global patch/restore shape as
+    :func:`_apply_surya_ocr_context`: mutates marker's
+    ``SURYA_LABEL_TO_BLOCK_TYPE`` (read at box-map time by both the
+    layout and OCR builders) and returns the saved entries for
+    :func:`_restore_chem_label_gate`. ``{}`` for a chem-capable kind, a
+    missing marker import, or an unknown retarget — the mapping stays
+    stock.
+    """
+    saved: dict[str, Any] = {}
+    target = _chem_block_retarget(kind)
+    if target is None:
+        return saved
+    try:
+        from marker.schema import BlockTypes
+        from marker.schema import labels as marker_labels
+    except ImportError:
+        return saved
+    mapping = getattr(marker_labels, "SURYA_LABEL_TO_BLOCK_TYPE", None)
+    new_type = BlockTypes.__members__.get(target)
+    if (
+        not isinstance(mapping, dict)
+        or "ChemicalBlock" not in mapping
+        or new_type is None
+    ):
+        return saved
+    saved["ChemicalBlock"] = mapping["ChemicalBlock"]
+    mapping["ChemicalBlock"] = new_type
+    return saved
+
+
+def _restore_chem_label_gate(saved: dict[str, Any]) -> None:
+    """Undo :func:`_apply_chem_label_gate` — never leaks one document's
+    label remap into the next ingest."""
+    if not saved:
+        return
+    try:
+        from marker.schema import labels as marker_labels
+
+        marker_labels.SURYA_LABEL_TO_BLOCK_TYPE.update(saved)
+    except Exception:  # pragma: no cover — restore is best-effort
+        log.debug("chem-label gate restore failed", exc_info=True)
+
+
 def _marker_extract(
-    pdf_path: Path, paper_id: str, *, ocr_context: str | None = None
+    pdf_path: Path,
+    paper_id: str,
+    *,
+    ocr_context: str | None = None,
+    kind: str = "paper",
 ) -> list[dict[str, Any]]:
     """Run Marker and parse its MarkdownOutput into block schema."""
     import warnings
@@ -693,11 +768,15 @@ def _marker_extract(
     from marker.models import create_model_dict
 
     converter = PdfConverter(artifact_dict=create_model_dict())
-    _saved_prompts = _apply_surya_ocr_context(ocr_context)
+    _saved_prompts: dict[str, str] = {}
+    _saved_labels: dict[str, Any] = {}
     try:
+        _saved_prompts = _apply_surya_ocr_context(ocr_context)
+        _saved_labels = _apply_chem_label_gate(kind)
         rendered = converter(str(pdf_path))
     finally:
         _restore_surya_prompts(_saved_prompts)
+        _restore_chem_label_gate(_saved_labels)
 
     # Marker's per-PDF output sometimes contains mojibake even after
     # marker's own internal ``ftfy`` passes (e.g. on PDFs whose

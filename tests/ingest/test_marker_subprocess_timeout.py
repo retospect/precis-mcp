@@ -71,7 +71,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
         pdf_path.write_bytes(b"%PDF-1.4 fake")
 
         def _fake_marker_extract_subprocess(
-            pdf_path, paper_id, timeout_s, ocr_context=None
+            pdf_path, paper_id, timeout_s, ocr_context=None, kind="paper"
         ):
             raise TimeoutError(
                 f"Marker extraction of {pdf_path.name} timed out after {timeout_s}s"
@@ -110,7 +110,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
 
         monkeypatch.setattr(
             "precis.ingest.marker._marker_extract_subprocess",
-            lambda pdf_path, paper_id, timeout_s, ocr_context=None: (
+            lambda pdf_path, paper_id, timeout_s, ocr_context=None, kind="paper": (
                 _ for _ in ()
             ).throw(TimeoutError(f"Marker extraction of {pdf_path.name} timed out")),
         )
@@ -133,7 +133,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
         pdf_path = tmp_path / "corrupt.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
 
-        def _raise(pdf_path, paper_id, ocr_context=None):
+        def _raise(pdf_path, paper_id, ocr_context=None, kind="paper"):
             raise RuntimeError("llama-server binary not found")
 
         monkeypatch.setattr("precis.ingest.marker._marker_extract", _raise)
@@ -158,7 +158,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
 
         monkeypatch.setattr(
             "precis.ingest.marker._marker_extract",
-            lambda pdf_path, paper_id, ocr_context=None: [],
+            lambda pdf_path, paper_id, ocr_context=None, kind="paper": [],
         )
         monkeypatch.setattr("precis.ingest.marker._release_marker_caches", lambda: None)
 
@@ -175,7 +175,7 @@ class TestExtractBlocksMarkerTimeoutFallback:
 
         calls: list[str] = []
 
-        def _fake_marker_extract(pdf_path, paper_id, ocr_context=None):
+        def _fake_marker_extract(pdf_path, paper_id, ocr_context=None, kind="paper"):
             calls.append("in_process")
             return []
 
@@ -199,9 +199,16 @@ class TestExtractBlocksMarkerTimeoutFallback:
 
 
 def test_marker_extract_subprocess_signature_matches_spec():
-    """Documents the exact contract P2-3 specified: ``(pdf_path, paper_id,
-    timeout_s) -> list[dict]``, forwarding to the generic helper."""
+    """Documents the contract: ``(pdf_path, paper_id, timeout_s) ->
+    list[dict]``, forwarding to the generic helper; ``kind`` (gr520327)
+    selects the surya label gate."""
     import inspect
 
     sig = inspect.signature(_marker_extract_subprocess)
-    assert list(sig.parameters) == ["pdf_path", "paper_id", "timeout_s", "ocr_context"]
+    assert list(sig.parameters) == [
+        "pdf_path",
+        "paper_id",
+        "timeout_s",
+        "ocr_context",
+        "kind",
+    ]

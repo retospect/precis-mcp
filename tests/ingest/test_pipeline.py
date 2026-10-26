@@ -624,6 +624,7 @@ class TestExtractPaperMarkerFallbackMeta:
             fallback_info=None,
             glyph_health=None,
             ocr_context=None,
+            kind=None,
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -667,6 +668,7 @@ class TestExtractPaperMarkerFallbackMeta:
             fallback_info=None,
             glyph_health=None,
             ocr_context=None,
+            kind=None,
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -707,6 +709,7 @@ class TestExtractPaperMarkerFallbackMeta:
             fallback_info=None,
             glyph_health=None,
             ocr_context=None,
+            kind=None,
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -741,6 +744,7 @@ class TestExtractPaperMarkerFallbackMeta:
             fallback_info=None,
             glyph_health=None,
             ocr_context=None,
+            kind=None,
         ):
             return [{"type": "paragraph", "text": "Body text.", "page": 0}]
 
