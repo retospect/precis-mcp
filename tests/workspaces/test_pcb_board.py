@@ -279,6 +279,59 @@ def test_net_domain_is_electrical_only() -> None:
         b.net("BRACKET", domain="mechanical")
 
 
+def test_part_kwarg_catalog_ref() -> None:
+    """gr514215: ``part=`` takes a catalog-ref — lcsc, the footprint name
+    (its ``package``) and ``height_mm`` come off the CatalogPart; an lcsc
+    string is read through ``b.catalog`` so the manifest can record it."""
+    cp = pcb.CatalogPart(
+        lcsc="C25804",
+        resolved=True,
+        package="0402",
+        height_mm=0.5,
+        pins=["1", "2"],
+        part_id="pn1",
+        footprint_sha="abc123",
+        read_at="2026-10-26T00:00:00+00:00",
+    )
+    b = Board("t7b")
+    c1 = b.part("C1", part=cp)
+    assert c1.lcsc == "C25804" and c1.footprint == "0402"
+    assert c1.height_mm == 0.5
+    row = b.to_batch()["components"][0]
+    assert row["part"] == "C25804" and row["footprint"] == "0402"
+    # the read's manifest entry binds to THIS board
+    assert b.manifest()["parts"] == [
+        {
+            "lcsc": "C25804",
+            "part_id": "pn1",
+            "footprint_sha": "abc123",
+            "read_at": "2026-10-26T00:00:00+00:00",
+        }
+    ]
+    # explicit kwargs win over the ref
+    c2 = b.part("C2", part=cp, footprint="0603", height_mm=1.0)
+    assert c2.footprint == "0603" and c2.height_mm == 1.0
+    with pytest.raises(PcbBuilderError, match="lcsc="):
+        b.part("C3", part=cp, lcsc="C9")
+    # an lcsc string goes through b.catalog — unresolved with no sandbox
+    # client, but the refdes still carries the C-number (and is counted
+    # as catalog-checked, not NOT-CHECKED)
+    c4 = b.part("C4", part="C999")
+    assert c4.lcsc == "C999" and c4.footprint is None
+    assert "C4" not in b.check().not_checked
+    # an unresolved CatalogPart leaves footprint unset but still sets lcsc
+    c5 = b.part("C5", part=pcb.CatalogPart(lcsc="C7"))
+    assert c5.lcsc == "C7" and c5.footprint is None
+    assert b.manifest()["parts"] == [
+        {
+            "lcsc": "C25804",
+            "part_id": "pn1",
+            "footprint_sha": "abc123",
+            "read_at": "2026-10-26T00:00:00+00:00",
+        }
+    ]
+
+
 def test_refdes_net_and_footprint_reuse_refused() -> None:
     b = Board("t7")
     b.part("U1")

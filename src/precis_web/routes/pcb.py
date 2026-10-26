@@ -108,6 +108,17 @@ router = APIRouter(tags=["pcb"])
 
 log = logging.getLogger(__name__)
 
+#: gr518348 — a fab render is model assembly + gerber export + reparse,
+#: seconds on a real board, and the workbench re-requests it on every
+#: flip/focus round-trip. Keyed on the shown snapshot token — a sha over
+#: every board table — so a hit is provably the render of that exact
+#: board state; the 4th element keeps the bare (no ``?shown=``) render
+#: apart from the selection-manifest one.
+_FAB_SVG_CACHE: collections.OrderedDict[tuple[int, str, bool, bool], str] = (
+    collections.OrderedDict()
+)
+_FAB_SVG_CACHE_MAX = 8
+
 
 def _handler(store: Store) -> PcbHandler:
     # Hub is a light composition object; per-request construction is the
@@ -529,6 +540,16 @@ async def pcb_board_svg(
             view = pcb_design.capture_view(store, ref, conn=conn)
             if shown is not None and shown != view.token:
                 return RawResponse(status_code=409, content="shown PCB changed; reload")
+            cache_key = (
+                int(ref.id),
+                shown if shown is not None else view.token,
+                bool(flip),
+                shown is not None,
+            )
+            cached_body = _FAB_SVG_CACHE.get(cache_key)
+            if cached_body is not None:
+                _FAB_SVG_CACHE.move_to_end(cache_key)
+                return _svg_response(cached_body)
             manifest = None
             if shown is not None:
                 manifest = {
@@ -546,6 +567,10 @@ async def pcb_board_svg(
                     selection_manifest=manifest,
                     flip=flip,
                 )
+            _FAB_SVG_CACHE[cache_key] = resp.body
+            _FAB_SVG_CACHE.move_to_end(cache_key)
+            while len(_FAB_SVG_CACHE) > _FAB_SVG_CACHE_MAX:
+                _FAB_SVG_CACHE.popitem(last=False)
     except ValueError as exc:
         return RawResponse(status_code=409, content=str(exc))
     except Exception:

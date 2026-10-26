@@ -873,6 +873,7 @@ class CatalogPart:
     resolved: bool = False
     pins: list[str] = field(default_factory=list)
     package: str | None = None
+    height_mm: float | None = None
     pads: list[dict[str, Any]] = field(default_factory=list)
     pin_map: dict[str, Any] = field(default_factory=dict)
     courtyard: Any = None
@@ -983,6 +984,8 @@ def _catalog_read(lcsc: str) -> CatalogPart:
     part.centroid = row.get("centroid")
     part.holes = list(row.get("holes") or [])
     part.package = row.get("package")
+    hm = row.get("height_mm")
+    part.height_mm = float(hm) if hm is not None else None
     part.part_id = row.get("part_id")
     part.footprint_sha = row.get("sha")
     part.read_at = datetime.now(UTC).isoformat()
@@ -1168,6 +1171,7 @@ class Board:
         refdes: str,
         *,
         lcsc: str | None = None,
+        part: CatalogPart | str | None = None,
         label: str | None = None,
         footprint: str | Footprint | None = None,
         value: str | None = None,
@@ -1179,6 +1183,34 @@ class Board:
         supplies: Any = None,
         pin_swap_groups: Any = None,
     ) -> Part:
+        """``part=`` is a catalog-ref (gr514215): a :class:`CatalogPart`
+        from :meth:`catalog`/``pcb.catalog``, or an lcsc string — read
+        through :meth:`catalog` so the manifest records it. The ref
+        supplies ``lcsc``, the ``footprint`` name (its ``package``) and
+        ``height_mm``; explicit kwargs win, a conflicting ``lcsc=``
+        refuses. An unresolved ref still sets ``lcsc`` (it resolves
+        server-side on apply); only a resolved one can supply the
+        footprint name."""
+        if isinstance(part, str):
+            part = self.catalog(part)
+        if part is not None:
+            if lcsc is not None and lcsc != part.lcsc:
+                raise PcbBuilderError(
+                    f"part= reads {part.lcsc!r} but lcsc={lcsc!r} was also "
+                    f"given — pass one"
+                )
+            lcsc = part.lcsc
+            if footprint is None and part.package:
+                footprint = part.package
+            if height_mm is None and part.height_mm is not None:
+                height_mm = part.height_mm
+            # The read's manifest entry binds to this board here too —
+            # a CatalogPart made by an unbound module-level ``catalog()``
+            # (pending in _CATALOG_READS) must not escape to whatever
+            # board next writes a manifest.
+            if part.resolved or part.error is not None:
+                self._catalog_reads[part.lcsc] = _manifest_entry(part)
+                _CATALOG_READS.pop(part.lcsc, None)
         qualified = self._qualify(refdes, ".")
         if qualified in self._parts:
             raise PcbBuilderError(

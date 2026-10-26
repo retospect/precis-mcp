@@ -233,6 +233,66 @@ def test_board_svg_flip_renders_the_bottom_view(pcb_client, runtime_with_store) 
     assert bottom.text.index('id="layer-B_Cu"') > bottom.text.index('id="layer-F_Cu"')
 
 
+def test_board_svg_caches_on_the_shown_token(
+    pcb_client, runtime_with_store, monkeypatch
+) -> None:
+    """gr518348 — the fab render (model + gerber export + reparse) is
+    cached on the shown snapshot token: a reload of an unchanged board
+    is a hit, flip is a separate entry, and a board change mints a new
+    token so nothing stale is ever served."""
+    from precis.handlers.pcb import PcbHandler
+    from precis_web import pcb_design
+    from precis_web.routes import pcb as pcb_routes
+
+    pcb_routes._FAB_SVG_CACHE.clear()
+    _seed(runtime_with_store)
+    assert 'id="pcb-board-loading"' in pcb_client.get("/pcb/web_pcb").text
+    store = runtime_with_store.hub.store
+    ref = store.get_ref(kind="pcb", id="web_pcb")
+    with store.pcb_view_tx() as conn:
+        token = pcb_design.capture_view(store, ref, conn=conn).token
+
+    calls: list[int] = []
+    real = PcbHandler._render_fab_svg
+
+    def counting(self, *args, **kwargs):
+        calls.append(1)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(PcbHandler, "_render_fab_svg", counting)
+
+    top = pcb_client.get("/pcb/web_pcb/board.svg", params={"shown": token})
+    again = pcb_client.get("/pcb/web_pcb/board.svg", params={"shown": token})
+    assert top.status_code == 200 and again.status_code == 200
+    assert again.text == top.text and len(calls) == 1
+
+    bottom = pcb_client.get(
+        "/pcb/web_pcb/board.svg", params={"shown": token, "flip": "1"}
+    )
+    assert bottom.status_code == 200 and len(calls) == 2
+    again2 = pcb_client.get("/pcb/web_pcb/board.svg", params={"shown": token})
+    assert again2.text == top.text and len(calls) == 2
+
+    # a board change mints a new token: the stale one 409s before any
+    # render, the new one renders fresh
+    assert (
+        pcb_client.post(
+            "/pcb/web_pcb/pin", data={"refdes": "U1", "pinned": "1"}
+        ).status_code
+        == 200
+    )
+    with store.pcb_view_tx() as conn:
+        token2 = pcb_design.capture_view(store, ref, conn=conn).token
+    assert token2 != token
+    assert (
+        pcb_client.get("/pcb/web_pcb/board.svg", params={"shown": token}).status_code
+        == 409
+    )
+    pinned = pcb_client.get("/pcb/web_pcb/board.svg", params={"shown": token2})
+    assert pinned.status_code == 200 and len(calls) == 3
+    pcb_routes._FAB_SVG_CACHE.clear()
+
+
 def test_detail_title_uses_the_captured_read_transaction(
     pcb_client, runtime_with_store, monkeypatch
 ) -> None:

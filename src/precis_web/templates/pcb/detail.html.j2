@@ -56,7 +56,16 @@
   #pcb-sheet-tabs button[aria-pressed="true"] { font-weight: 600;
     color: rgb(var(--fg-secondary)); border-bottom-color: transparent;
     background: rgb(var(--bg-surface-emphasis)); }
-  #pcb-workbench .pcb-pane { display: flex; flex-direction: column; min-width: 0; }
+  #pcb-workbench .pcb-pane { display: flex; flex-direction: column; min-width: 0;
+    position: relative; }
+  /* gr518348: the fab SVG is a gerber export + reparse — seconds on a
+     real board, so the pane shows an elapsed-time note until the object
+     loads (pcb-workbench.js owns show/hide). */
+  #pcb-board-loading { position: absolute; right: 0.75rem; bottom: 0.5rem;
+    border: 1px solid rgb(var(--border-line)); border-radius: 4px;
+    background: rgb(var(--bg-surface)); color: rgb(var(--fg-secondary));
+    font-size: 11px; font-family: inherit; padding: 2px 8px; z-index: 5; }
+  #pcb-board-loading[hidden] { display: none; }
   #pcb-pane-schematic { flex: 0 0 50%; }
   #pcb-pane-layout { flex: 1 1 auto; }
   #pcb-workbench object { flex: 1 1 auto; min-height: 0; width: 100%; }
@@ -130,6 +139,8 @@
             data-base="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}">
       board render unavailable
     </object>
+    <div id="pcb-board-loading" role="status" hidden
+         title="the fab view re-exports the gerbers and renders them back — the first paint is the slow one">rendering board · <span>0</span>s</div>
   </section>
 </div>
 {# gr496860: a row-resize handle under the panes, mirroring #pcb-divider —

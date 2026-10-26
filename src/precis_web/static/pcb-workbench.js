@@ -41,6 +41,44 @@
     }
   }
 
+  // gr518348: a fab render is model assembly + gerber export + reparse —
+  // seconds on a real board. Show an elapsed-time note over the pane
+  // while the <object> is in flight: on first paint and again whenever
+  // its data URL is swapped (flip, focus). Hidden again on load/error.
+  const loadNote = el('pcb-board-loading');
+  if (boardObj && loadNote) {
+    const secs = loadNote.querySelector('span');
+    let t0 = 0;
+    let timer = null;
+    const show = () => {
+      t0 = Date.now();
+      secs.textContent = '0';
+      loadNote.hidden = false;
+      if (timer) clearInterval(timer);
+      timer = setInterval(() => {
+        secs.textContent = String(Math.round((Date.now() - t0) / 1000));
+      }, 500);
+    };
+    const hide = () => {
+      loadNote.hidden = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    boardObj.addEventListener('load', hide);
+    boardObj.addEventListener('error', hide);
+    new MutationObserver(show).observe(boardObj, {
+      attributes: true,
+      attributeFilter: ['data'],
+    });
+    // A fast first load can beat this deferred script — only show when
+    // the document is not in yet.
+    if (!(boardObj.contentDocument && boardObj.contentDocument.documentElement)) {
+      show();
+    }
+  }
+
   // gr497528: the layer legend is pinned and fixed-size by viewport.js; this
   // button hides/shows it, remembered per user. The board <object> reloads
   // on flip, so the stored state is re-applied on every load.

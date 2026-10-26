@@ -14,10 +14,11 @@ Readability within byte-equality:
 
 * Pads shared verbatim by several footprints become one ``_pads_*``
   binding per distinct pad set, referenced by name.
-* A catalog reference spells ``lcsc=`` (``Board.part`` takes no
-  ``part=catalog(...)`` — ``pcb.catalog`` is the unresolved stub); a
-  catalog *footprint* name is a plain ``footprint="…"`` string. Both
-  round-trip verbatim through ``to_batch``.
+* A catalog reference spells ``lcsc=`` — never ``part=``, which would
+  fire a catalog read at rebuild time and break byte-equality on a
+  client-less run; a catalog *footprint* name is a plain
+  ``footprint="…"`` string. Both round-trip verbatim through
+  ``to_batch``.
 * Pads carrying ``rot``/``layer``/``slot`` emit as raw dicts —
   ``pcb.pad()``'s signature cannot express them.
 * ``<prefix>.`` refdes blocks that sit contiguous in batch order become
