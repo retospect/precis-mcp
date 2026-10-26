@@ -1265,7 +1265,6 @@ def _initialise_test_db(request: pytest.FixtureRequest) -> Iterator[None]:
                         PG_TEST_DSN, Migrator.discover_sources(MIGRATIONS_DIR)
                     ).apply_all(rebuild_on_checksum_mismatch=True)
                     _truncate_data_tables(PG_TEST_DSN)
-                    _ensure_vocab_seeds(PG_TEST_DSN)
                     _stamp_template_fp(adm, fp)
                     try:
                         _write_schema_dump(fp)

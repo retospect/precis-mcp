@@ -353,16 +353,18 @@ def test_fisheye_split_opens_the_eye_chunk_within_its_cluster() -> None:
     ]
     clusters = cluster_blocks(blocks)
     out = _fisheye_split("paper", clusters, eye_ord=5, ext=Extent.FULL)
-    # the eye chunk: marked + full verbatim text
-    assert "▸ pc405" in out
+    # the eye chunk: marked + full verbatim text; ``~<ord>`` prints like
+    # the chunk-get header so a range read needs no TOC trip (gr520328)
+    assert "▸ pc405 ~5" in out
     assert "VERBATIM5" in out
     # a same-cluster neighbour appears as a summary line (its keywords), not text
-    assert "pc404" in out
+    assert "· pc404 ~4" in out
     assert "VERBATIM4" not in out
     # the far cluster is collapsed to one drillable label, not expanded
     assert "pc420" in out
     assert "VERBATIM25" not in out
-    assert "~" not in out
+    # the cluster label keeps its bare lead handle — no ``~`` there
+    assert "pc420 ~" not in out
 
 
 def test_fisheye_split_collapses_a_big_home_clusters_far_tail() -> None:

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from itertools import takewhile
 from typing import Any
 
 import pytest
@@ -103,8 +104,13 @@ class TestQuestFisheyeLadder:
         store.add_link(src_ref_id=sub.id, dst_ref_id=q.id, relation="serves")
 
         out = _handler(store).get(id=q.id, view="fisheye+1hop").body
+        # Slice to the served-by block first — 4-space rows in other
+        # groups would otherwise leak into the assertion.
+        tail = out.split("  served-by (", 1)[1].splitlines()[1:]
         served = [
-            ln for ln in out.splitlines() if ln.startswith("    ") and " — " in ln
+            ln
+            for ln in takewhile(lambda ln: ln.startswith("    "), tail)
+            if " — " in ln
         ]
 
         assert len(served) == 8

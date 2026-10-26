@@ -17,7 +17,9 @@ Coverage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
+from precis.store.types import Tag
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -928,3 +930,69 @@ def test_keywords_shape_bare_int_stays_last_resort_for_codeless_kind() -> None:
     )
     assert "7" in out.body
     assert "thing" in out.body
+
+
+# ---------------------------------------------------------------------------
+# Tag chips on the hit surfaces (gr520321): ``SearchHit.tags`` rendered
+# verbatim — ``##`` line suffix, toon ``tags`` column, browse ``tags`` column.
+# ---------------------------------------------------------------------------
+
+
+def test_render_hit_appends_tag_chips_to_the_headline() -> None:
+    """``hit.tags`` lands on the ``##`` line after the handle + reach label."""
+    hit = SearchHit(
+        score=0.9,
+        kind="gripe",
+        title="t",
+        preview="p",
+        ref_id=7,
+        uhandle="gr7",
+        tags="[PRIO:high] [pcb-dogfood]",
+    )
+    out = merge_and_render([[hit]], page_size=10, query="q", mode="priority")
+    assert "## 1. gr7  [gripe]  [PRIO:high] [pcb-dogfood]" in out.body
+
+
+def test_toon_table_tags_column_when_a_hit_carries_chips() -> None:
+    """The ``tags`` column appears only when some hit carries chips; rows
+    without them render an empty cell."""
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="todo",
+            title="t",
+            preview="p",
+            ref_id=5,
+            tags="[PRIO:high]",
+        ),
+        SearchHit(score=0.8, kind="paper", title="t", preview="p", slug="x", ref_id=9),
+    ]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "{id\tsummary\tremaining_words\tlinks\ttags}" in out.body
+    todo_row = next(ln for ln in out.body.splitlines() if ln.startswith("td5\t"))
+    assert todo_row.endswith("[PRIO:high]")
+    paper_row = next(ln for ln in out.body.splitlines() if ln.startswith("paper:x\t"))
+    assert paper_row.endswith("\t")  # empty tags cell
+
+
+def test_browse_table_tags_column_drops_the_dup_status(hub: Any) -> None:
+    """The ``_render_hits_table`` browse table has its own ``status``
+    column for lifecycle kinds — a ``STATUS:`` tag does not re-render as
+    a chip alongside it."""
+    from precis.handlers.gripe import GripeHandler
+    from tests._refs import insert_gripe
+
+    handler = GripeHandler(hub=hub)
+    gid = int(
+        insert_gripe(handler.store, "browse chips probe\nbody", status="triaged").id
+    )
+    handler.store.add_tag(gid, Tag.closed("PRIO", "high"), set_by="system")
+
+    body = handler.search(tags=["STATUS:triaged"]).body
+    header = next(ln for ln in body.splitlines() if ln.startswith("{kind\t"))
+    assert "status\ttags" in header
+    row = next(ln for ln in body.splitlines() if ln.startswith(f"gripe\tgr{gid}\t"))
+    assert "[PRIO:high]" in row
+    assert "[STATUS" not in row

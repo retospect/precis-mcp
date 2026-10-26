@@ -418,7 +418,9 @@ def _fisheye_split(
     if lo > 0:
         lines.append(f"  ⋯ {lo} more ⋯")
     for b in home_bucket[lo:hi]:
-        h = _chunk_handle(kind, b)
+        # ``pc<N> ~<ord>`` like the ``#`` chunk-get header — the decimal
+        # handle alone hides the block's ``~ord`` selector (gr520328).
+        h = f"{_chunk_handle(kind, b)} ~{b.ord}"
         if b.ord == eye_ord:
             if ext is Extent.SUMMARY:
                 lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
@@ -629,7 +631,13 @@ def _render_ring(
     """:func:`_render_first_hop` with the hub listing switched on for a
     ``section:index`` memory (its ``contains`` members are not capped)."""
     notes = _hub_member_notes(store, ref_id, hop1, refs)
-    chips = _row_chips(store, refs, ring=ring)
+    # Chips only for the ids the ring prints — ``refs`` holds every
+    # fetched neighbour (retired and ring-filtered included).
+    chips = _row_chips(
+        store,
+        {o: refs[o] for oids in hop1.values() for o in oids if o in refs},
+        ring=ring,
+    )
     return _render_first_hop(
         hop1,
         refs,

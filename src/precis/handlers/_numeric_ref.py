@@ -3860,8 +3860,21 @@ class NumericRefHandler(Handler):
         link_counts = self.store.count_links_for_refs([r.id for r in refs])
         lifecycle = self.kind in _BROWSE_TERMINALS
         tag_rows = self.store.ref_tags_bulk([r.id for r in refs])
+        chip_rows = tag_rows
+        if lifecycle:
+            # The status column already carries the lifecycle tag;
+            # repeating it as a chip says nothing new.
+            chip_rows = {
+                rid: [
+                    (ns, v)
+                    for ns, v in pairs
+                    if ns != "STATUS"
+                    and not (self.kind == "alert" and v.startswith("alert-state:"))
+                ]
+                for rid, pairs in tag_rows.items()
+            }
         chip_map = tag_chips.chips_bulk(
-            self.store, {int(r.id): self.kind for r in refs}, tagged=tag_rows
+            self.store, {int(r.id): self.kind for r in refs}, tagged=chip_rows
         )
         any_chips = bool(chip_map)
         now = datetime.now(UTC)

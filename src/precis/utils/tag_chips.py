@@ -55,12 +55,12 @@ _AXIS_RANKS: weakref.WeakKeyDictionary[Any, dict[str, float]] = (
 def _axis_ranks(store: Any) -> dict[str, float]:
     """``{namespace: display_rank}`` from ``tag_axes``, cached per store
     for its lifetime — the registry is static once migrations have run
-    ("read once per process"). A failed read caches ``{}`` so every tag
-    sorts free-form/unlisted rather than failing again per row."""
+    ("read once per process"). A failed read is *not* cached: a process
+    up before the migration lands retries next call rather than pinning
+    the degraded order for the store's lifetime."""
     cached = _AXIS_RANKS.get(store)
     if cached is not None:
         return cached
-    ranks: dict[str, float] = {}
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(
@@ -70,6 +70,7 @@ def _axis_ranks(store: Any) -> dict[str, float]:
     except Exception:
         # The axes table is an ordering hint, never a render gate.
         log.debug("tag_axes read failed", exc_info=True)
+        return {}
     _AXIS_RANKS[store] = ranks
     return ranks
 
