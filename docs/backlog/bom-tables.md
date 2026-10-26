@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: bom-1
 pillar: 3d-design
 title: BOM tables — table views over the component assembly tree, promote scratch tables, pinned revisions
 model: opus
