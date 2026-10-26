@@ -50,26 +50,41 @@ independent manufacturer evidence and links it to the component; ordinary
 values cite that datasheet. Farnell/Mouser remain live-only. TME, RS and Nexar
 were surveyed and declined by Reto on 2026-10-05; do not re-propose them.
 
+**Exact vendor lookups** (spreadsheet-tables §6, Reto 2026-10-26 option 3):
+``Adapter.lookup`` answers one part number with a :class:`PartRecord`, and
+``vendor()`` resolves what a user types (``lcsc``, ``LCSC.com`` → ``jlcpcb``).
+``may_store`` is the licence flag: identity fields persist for any vendor;
+stock/price persist only for JLCPCB, the ``may_store`` vendor — the rest stay
+attributed live reads.
+
 """
 
 from __future__ import annotations
 
 from precis.supply.base import (
+    VENDOR_ALIASES,
     Adapter,
+    LookupUnsupported,
+    PartRecord,
     QuoteResult,
     StockQuote,
     SupplierOutcome,
     adapters,
     quote,
     unavailable_reason,
+    vendor,
 )
 
 __all__ = [
+    "VENDOR_ALIASES",
     "Adapter",
+    "LookupUnsupported",
+    "PartRecord",
     "QuoteResult",
     "StockQuote",
     "SupplierOutcome",
     "adapters",
     "quote",
     "unavailable_reason",
+    "vendor",
 ]

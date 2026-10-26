@@ -411,6 +411,87 @@ class ComponentMixin:
             )
             return True
 
+    def component_find_by_part(
+        self,
+        *,
+        supplier: str | None = None,
+        supplier_part_number: str | None = None,
+        mpn: str | None = None,
+        manufacturer: str | None = None,
+        conn: Connection | None = None,
+    ) -> list[int]:
+        """The ``promote_to`` matching rule (bom-tables §2): candidate
+        component ``ref_id``s for a sourcing row, ordered by ``ref_id`` —
+        ``[]`` zero, ``[id]`` a unique hit, ``[id, …]`` ambiguous.
+
+        1. ``(supplier, supplier_part_number)`` case-insensitively against
+           each ``meta.supplier_links[]`` entry; the vendor is normalised
+           through the supply alias map first (``LCSC.com``/``lcsc`` →
+           ``jlcpcb``), and an unmapped name is used as-typed, casefolded.
+        2. Only when that finds nothing: ``(mpn, manufacturer)``
+           case-insensitively against the entity's own ``meta.mpn`` /
+           ``meta.manufacturer``. Both are required — an mpn alone
+           over-matches (same part number, different maker).
+
+        The array is walked with ``jsonb_array_elements`` + ``lower()``:
+        link entries are stored verbatim, so no plain GIN index can serve
+        a case-folded match (a functional one is a migration). The
+        ``kind='component'`` filter bounds the scan and this runs at
+        promote time, not on a read path — no index is warranted.
+        """
+        from precis.supply.base import VENDOR_ALIASES
+
+        def _run(c: Connection) -> list[int]:
+            ids: list[int] = []
+            spn = (supplier_part_number or "").strip()
+            if supplier and spn:
+                # .lower() on the Python side matches SQL lower()'s fold —
+                # casefold() would diverge on e.g. 'ß'.
+                key = supplier.strip().lower()
+                canon = VENDOR_ALIASES.get(key, key)
+                ids = [
+                    row["ref_id"]
+                    for row in _fetchall(
+                        c,
+                        "SELECT ref_id FROM refs "
+                        "WHERE kind='component' AND retired_at IS NULL "
+                        "AND EXISTS ("
+                        "  SELECT 1 FROM jsonb_array_elements("
+                        "    CASE "
+                        "      WHEN jsonb_typeof(meta->'supplier_links') = 'array' "
+                        "      THEN meta->'supplier_links' "
+                        "      ELSE '[]'::jsonb "
+                        "    END) AS link "
+                        "  WHERE lower(link->>'supplier') = %s "
+                        "  AND lower(link->>'supplier_part_number') = %s"
+                        ") ORDER BY ref_id",
+                        (canon, spn.lower()),
+                    )
+                ]
+            if ids:
+                return ids
+            mpn_key = (mpn or "").strip().lower()
+            mfr_key = (manufacturer or "").strip().lower()
+            if not (mpn_key and mfr_key):
+                return ids
+            return [
+                row["ref_id"]
+                for row in _fetchall(
+                    c,
+                    "SELECT ref_id FROM refs "
+                    "WHERE kind='component' AND retired_at IS NULL "
+                    "AND lower(meta->>'mpn') = %s "
+                    "AND lower(meta->>'manufacturer') = %s "
+                    "ORDER BY ref_id",
+                    (mpn_key, mfr_key),
+                )
+            ]
+
+        if conn is not None:
+            return _run(conn)
+        with self.pool.connection() as c:
+            return _run(c)
+
     def component_values_for_ref(
         self, component_ref_id: int
     ) -> list[ComponentValueRowWithSource]:

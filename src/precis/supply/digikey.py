@@ -40,7 +40,13 @@ import httpx
 
 from precis.secrets import get_secret
 from precis.supply._http import polite_send
-from precis.supply.base import StockQuote, SupplierError, now
+from precis.supply.base import (
+    LookupUnsupported,
+    PartRecord,
+    StockQuote,
+    SupplierError,
+    now,
+)
 from precis.supply.catalog import metric_parameters, validate_filters
 from precis.utils.http import polite_user_agent
 
@@ -96,6 +102,9 @@ class DigiKeyAdapter:
     """Access-token memo only; supplier response data is never cached."""
 
     name = "digikey"
+    #: Licence: persisted API enrichment is refused (module docstring) —
+    #: attributed live reads only, never written to a table.
+    may_store = False
 
     def __init__(self) -> None:
         self.site = os.environ.get("PRECIS_DIGIKEY_SITE", "IE").strip().upper()
@@ -402,6 +411,13 @@ class DigiKeyAdapter:
             raise IdentityRefused("supplier product category path unavailable")
         product["precis_category_path"] = path
         return product, payload.get("SearchLocaleUsed") or {}, confidence
+
+    def lookup(self, sku: str) -> PartRecord | None:
+        """No exact-SKU endpoint is wired — keyword ``search`` and
+        ``record`` are the whole surface today."""
+        raise LookupUnsupported(
+            "digikey has no exact part-number lookup — keyword search only"
+        )
 
     def record(
         self, mpn: str, *, supplier_part_number: str | None = None

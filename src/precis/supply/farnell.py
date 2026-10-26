@@ -17,7 +17,13 @@ import httpx
 
 from precis.secrets import get_secret
 from precis.supply._http import polite_send, protect_request_logs
-from precis.supply.base import StockQuote, SupplierError, now
+from precis.supply.base import (
+    LookupUnsupported,
+    PartRecord,
+    StockQuote,
+    SupplierError,
+    now,
+)
 from precis.utils.http import polite_user_agent
 
 _URL = "https://api.element14.com/catalog/products"
@@ -26,6 +32,9 @@ _STORES = {"ie.farnell.com": "IE", "uk.farnell.com": "GB", "de.farnell.com": "DE
 
 class FarnellAdapter:
     name = "farnell"
+    #: Licence: API terms prohibit content storage (module docstring) —
+    #: attributed live reads only, never written to a table.
+    may_store = False
 
     def __init__(self) -> None:
         self.store = os.environ.get("PRECIS_FARNELL_STORE", "ie.farnell.com").strip()
@@ -81,6 +90,13 @@ class FarnellAdapter:
         if not isinstance(products, list):
             raise ValueError("missing supplier products")
         return products
+
+    def lookup(self, sku: str) -> PartRecord | None:
+        """No exact-SKU endpoint is wired — keyword ``search`` and
+        ``record`` are the whole surface today."""
+        raise LookupUnsupported(
+            "farnell has no exact part-number lookup — keyword search only"
+        )
 
     def record(
         self, mpn: str, *, supplier_part_number: str | None = None

@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from precis.supply.catalog import FilterUnavailable
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +34,21 @@ class SupplierError(RuntimeError):
         self.status = status
         self.detail = detail
         super().__init__(reason or f"HTTP {status} at {stage}")
+
+
+class LookupUnsupported(SupplierError):
+    """The vendor has no exact part-number endpoint wired.
+
+    Deliberately distinct from a miss (the vendor answered and the SKU is
+    absent — ``lookup`` returns ``None``, which a caller may
+    negative-cache) and from a transport error: this means "ask
+    differently", not "try again". It is a ``SupplierError`` — a caller
+    distinguishing it catches ``LookupUnsupported`` BEFORE
+    ``SupplierError`` in its ``except`` chain.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__("lookup", None, reason=reason)
 
 
 @dataclass(frozen=True)
@@ -125,11 +143,65 @@ class StockQuote:
         )
 
 
+@dataclass(frozen=True)
+class PartRecord:
+    """One vendor's exact answer about one part number.
+
+    Unlike :class:`StockQuote` (a keyword search's best guess, with the
+    match-confidence caveat), a record answers an exact SKU: ``supplier``
+    and ``sku`` say who and which part number. The identity fields
+    (``manufacturer`` … ``datasheet_url``, ``lifecycle``) may persist for
+    any vendor; ``stock``/``price_breaks`` may persist only where
+    ``Adapter.may_store`` — the licence ruling (Reto 2026-10-26, option
+    3): JLCPCB may be stored, the rest are attributed live reads.
+
+    ``price_breaks`` are ``(min_qty, unit_price)`` pairs ascending.
+    ``extra`` holds vendor-only flags (JLCPCB's ``basic``) that don't
+    deserve a column on every vendor's shape. ``retrieved`` is when we
+    asked — a stock figure without a timestamp reads as a property of
+    the part rather than a snapshot of a warehouse.
+    """
+
+    supplier: str
+    sku: str
+    manufacturer: str | None = None
+    mpn: str | None = None
+    description: str = ""
+    package: str | None = None
+    datasheet_url: str | None = None
+    lifecycle: str | None = None
+    stock: int | None = None
+    price_breaks: tuple[tuple[int, float], ...] = ()
+    currency: str | None = None
+    retrieved: datetime = field(default_factory=lambda: datetime.now(UTC))
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def unit_price_at(self, quantity: int) -> float | None:
+        """The unit price at ``quantity``: the largest break at or below
+        it (the ``price@qty`` pull), or the first break's price when the
+        quantity sits below every break — the lowest rung of a vendor's
+        ladder is the only price it offers. ``None`` when there are no
+        prices."""
+        if not self.price_breaks:
+            return None
+        chosen = self.price_breaks[0][1]
+        for qty, price in self.price_breaks:
+            if qty > quantity:
+                break
+            chosen = price
+        return chosen
+
+
 @runtime_checkable
 class Adapter(Protocol):
     """A supplier that can be asked about a standards designation."""
 
     name: str
+    #: Per-vendor store policy (the licence ruling): ``True`` only where
+    #: stock and price may be persisted — JLCPCB. ``False`` vendors are
+    #: attributed live reads: fetched for a view or an export, never
+    #: written. Identity fields may persist regardless.
+    may_store: bool
 
     def configured(self) -> str | None:
         """``None`` when ready; otherwise the sentence naming what is
@@ -142,21 +214,84 @@ class Adapter(Protocol):
         Network errors raise; an empty list means this keyword returned no
         products with stock data, never that nobody stocks the part."""
 
+    def lookup(self, sku: str) -> PartRecord | None:
+        """An exact part number → its :class:`PartRecord`; ``None`` on a
+        real miss (the vendor answered and this SKU is not in its
+        catalogue). A vendor with no exact endpoint raises
+        :class:`LookupUnsupported` — never ``None``, which a caller
+        might cache as absence."""
 
-def adapters() -> list[Adapter]:
-    """Every adapter, configured or not. Import is local so a missing
+
+def _vendor_adapters(store: Store | None) -> list[Adapter]:
+    """One instance of every adapter. Import is local so a missing
     optional dependency narrows the list instead of breaking the import
     of anything that merely mentions stock."""
+    from precis.supply.digikey import DigiKeyAdapter
+    from precis.supply.farnell import FarnellAdapter
+    from precis.supply.jlcpcb import JlcPcbAdapter
+    from precis.supply.mouser import MouserAdapter
+
+    return [
+        DigiKeyAdapter(),
+        FarnellAdapter(),
+        MouserAdapter(),
+        JlcPcbAdapter(store=store),
+    ]
+
+
+def adapters(*, store: Store | None = None) -> list[Adapter]:
+    """Every adapter, configured or not.
+
+    ``store`` is handed to adapters whose exact lookup persists rows —
+    JLCPCB's ``live_lookup`` upserts into ``parts``, so it joins the list
+    only when a caller (the table-refresh path) supplies one. Without it
+    the adapter stays out: keyword aggregation is not its surface, and a
+    store-less instance could only report "no store" on every search.
+    :func:`vendor` resolves it by name when naming that gap is the point.
+    """
     out: list[Adapter] = []
     try:
-        from precis.supply.digikey import DigiKeyAdapter
-        from precis.supply.farnell import FarnellAdapter
-        from precis.supply.mouser import MouserAdapter
-
-        out.extend([DigiKeyAdapter(), FarnellAdapter(), MouserAdapter()])
+        out = _vendor_adapters(store)
     except ImportError:  # pragma: no cover — httpx is a core dep today
         pass
+    if store is None:
+        out = [a for a in out if not getattr(a, "needs_store", False)]
     return out
+
+
+#: What a user types for a vendor → the adapter's ``name`` (compared
+#: casefolded). A new vendor is one adapter class plus the alias lines.
+VENDOR_ALIASES: dict[str, str] = {
+    "digi-key": "digikey",
+    "digikey": "digikey",
+    "digikey.com": "digikey",
+    "element14": "farnell",
+    "farnell": "farnell",
+    "farnell.com": "farnell",
+    "newark": "farnell",
+    "jlc": "jlcpcb",
+    "jlcpcb": "jlcpcb",
+    "jlcpcb.com": "jlcpcb",
+    "lcsc": "jlcpcb",
+    "lcsc.com": "jlcpcb",
+    "mouser": "mouser",
+    "mouser.com": "mouser",
+}
+
+
+def vendor(name: str, *, store: Store | None = None) -> Adapter | None:
+    """Resolve what a user typed for a vendor — ``'LCSC.com'``,
+    ``'lcsc'``, ``'JLCPCB'`` all reach the JLCPCB adapter — or ``None``
+    for a name the alias map doesn't know. ``store`` reaches lookup
+    adapters that persist rows; a store-less JLCPCB still resolves so
+    ``configured()`` can name the gap."""
+    canonical = VENDOR_ALIASES.get(name.strip().casefold())
+    if canonical is None:
+        return None
+    for adapter in _vendor_adapters(store):
+        if adapter.name == canonical:
+            return adapter
+    return None
 
 
 def unavailable_reason() -> str | None:

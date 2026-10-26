@@ -18,7 +18,13 @@ import httpx
 
 from precis.secrets import get_secret
 from precis.supply._http import polite_send, protect_request_logs
-from precis.supply.base import StockQuote, SupplierError, now
+from precis.supply.base import (
+    LookupUnsupported,
+    PartRecord,
+    StockQuote,
+    SupplierError,
+    now,
+)
 from precis.utils.http import polite_user_agent
 
 _URL = "https://api.mouser.com/api/v1/search/keyword"
@@ -26,6 +32,9 @@ _URL = "https://api.mouser.com/api/v1/search/keyword"
 
 class MouserAdapter:
     name = "mouser"
+    #: Licence: terms prohibit storing results (module docstring) —
+    #: attributed live reads only, never written to a table.
+    may_store = False
 
     def configured(self) -> str | None:
         if not get_secret("PRECIS_MOUSER_API_KEY"):
@@ -109,6 +118,13 @@ class MouserAdapter:
         if not isinstance(parts, list):
             raise ValueError("missing supplier parts")
         return parts
+
+    def lookup(self, sku: str) -> PartRecord | None:
+        """No exact-SKU endpoint is wired — keyword ``search`` and
+        ``record`` are the whole surface today."""
+        raise LookupUnsupported(
+            "mouser has no exact part-number lookup — keyword search only"
+        )
 
     def record(
         self, mpn: str, *, supplier_part_number: str | None = None
