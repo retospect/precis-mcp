@@ -12,12 +12,14 @@ returns the row; free-text search still uses the keyword listing
 from __future__ import annotations
 
 import json
+import typing
+from typing import Any
 
 import httpx
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.handlers.part import PartHandler
 from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
@@ -635,3 +637,41 @@ def test_availability_live_refresh_is_bounded(store, creds):
     assert len(calls) == jlc_api._LIVE_BATCH_MAX  # 12, not 15
     assert "skipped (bounded)" in body
     assert body.count("not in catalog") >= 3
+
+
+# ── batch get (gr520100) ──────────────────────────────────────────
+
+
+def test_get_batch_returns_every_id_in_order(runtime_with_store, store, monkeypatch):
+    """gr520100: a list id used to stringify and regex out the first
+    C-number — every later id silently dropped. The batch maps the
+    single-id read over all of them, in order; a miss is a named
+    per-id block, not an error for the call."""
+    store.parts_import(
+        [
+            {"lcsc": "C25804", "mfr_part": "RC0603FR-0710KL", "stock": 100},
+            {"lcsc": "C2655145", "mfr_part": "AS7341-DLGT", "stock": 492},
+        ]
+    )
+    # The miss must not depend on credentials/network — pin the live seam.
+    monkeypatch.setattr(jlc_api, "live_lookup", lambda *a, **k: None)
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "part", "id": ["C2655145", "C99999999", "C25804"]}
+    )
+    assert "[error:" not in body
+    assert "AS7341-DLGT" in body and "RC0603FR-0710KL" in body
+    assert "C99999999" in body and "not found" in body
+    assert body.index("C2655145") < body.index("C99999999") < body.index("C25804")
+
+
+def test_get_batch_dedupes_and_validates(store):
+    part = PartHandler(hub=Hub(store=store))
+    store.parts_import([{"lcsc": "C25804", "stock": 1}])
+    body = part.get(id=["c25804", "C25804"]).body
+    assert body.startswith("# 1 parts (batch)")  # spellings fold to one id
+    with pytest.raises(BadInput, match="empty"):
+        part.get(id=[])
+    with pytest.raises(BadInput, match="at most"):
+        part.get(id=[f"C{i + 100}" for i in range(51)])
+    with pytest.raises(BadInput, match=r"id\[0\]"):
+        part.get(id=typing.cast(Any, [{"lcsc": "C25804"}]))

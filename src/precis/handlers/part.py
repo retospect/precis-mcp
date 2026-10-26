@@ -66,10 +66,11 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Gone, NotFound
 from precis.format import render_agent_table
 from precis.handlers._eye import is_eye_view
 from precis.handlers._links_render import render_links_section
+from precis.handlers._numeric_ref import BATCH_ID_CAP, BATCH_VIEW_PAGE_CHARS
 from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
@@ -172,8 +173,14 @@ class PartHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
     def get(
-        self, *, id: str | int | None = None, view: str | None = None, **_kw: Any
+        self,
+        *,
+        id: str | int | list[str | int] | None = None,
+        view: str | None = None,
+        **_kw: Any,
     ) -> Response:
+        if isinstance(id, (list, tuple)):
+            return self._get_batch(list(id), view=view)
         if view is not None:
             if is_eye_view(view):
                 return self.eye(id=id, extent=view)
@@ -258,6 +265,66 @@ class PartHandler(Handler):
             body += f"\nref: {handle_registry.format_handle('part', ref.id)}"
             body += render_links_section(self.store, ref, limit=12)
         return Response(body=body)
+
+    def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
+        """``get(id=[...])``: the single-id read mapped over every id, in
+        the order given (gr520100).
+
+        The shared batch path (``_numeric_ref._get_batch``) covers the
+        integer-id ref kinds; a part's public id is its LCSC C-number —
+        catalog data, not a ``refs`` row — so the batch lives here. Each
+        element takes the same spellings the singleton form does (``C…``
+        any case, a pasted lcsc.com/jlcpcb.com URL); a miss is a one-line
+        ``not found`` block, never a dropped id or an error for the whole
+        call. Whole blocks page under :data:`BATCH_VIEW_PAGE_CHARS`,
+        same as the numeric batch's view form — the unread tail is named
+        as the ``next:`` call's id list.
+        """
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next="get(kind='part', id='C25804')  or  id=['C…', 'C…']",
+            )
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+            )
+        lcses: list[str] = []
+        for pos, raw in enumerate(ids):
+            if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+                raise BadInput(
+                    f"id[{pos}] must be a C-number string, got {type(raw).__name__}",
+                    next="get(kind='part', id=['C25804', ...])",
+                )
+            lcsc = catalog.lcsc_id(raw) or str(raw).strip().upper()
+            if lcsc not in lcses:
+                lcses.append(lcsc)
+        blocks: list[str] = []
+        for lcsc in lcses:
+            try:
+                blocks.append(self.get(id=lcsc, view=view).body)
+            except NotFound:
+                blocks.append(f"{lcsc}  not found")
+            except Gone:
+                blocks.append(f"{lcsc}  deleted")
+        shown: list[str] = []
+        used = 0
+        for block in blocks:
+            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+                break
+            shown.append(block)
+            used += len(block) + 2  # the "\n\n" join
+        rest = lcses[len(shown) :]
+        body = f"# {len(lcses)} parts (batch"
+        body += f", view={view!r})\n\n" if view is not None else ")\n\n"
+        body += "\n\n".join(shown)
+        if rest:
+            body += (
+                f"\n\n{len(rest)} more — next: get(kind='part', "
+                f"id=[{', '.join(repr(c) for c in rest)}])"
+            )
+        return Response(body=body, result_count=len(shown))
 
     def _footprint_view(self, lcsc: str) -> Response:
         """``view='footprint'`` — the cached ``part_footprints`` row as a

@@ -372,7 +372,7 @@ _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 #: :data:`precis._pagination.DEFAULT_FOLD_BODY_BYTES`) with headroom
 #: for the batch header and the ``next:`` id list; a single block over
 #: budget still renders whole (same as a singleton ``get``).
-_BATCH_VIEW_PAGE_CHARS = 3500
+BATCH_VIEW_PAGE_CHARS = 3500
 
 
 @lru_cache(maxsize=1)
@@ -3455,7 +3455,7 @@ class NumericRefHandler(Handler):
         form. A view-level error (unknown view for the kind) raises on
         the first live id instead of stamping one refusal per id.
 
-        Pages whole blocks under :data:`_BATCH_VIEW_PAGE_CHARS`
+        Pages whole blocks under :data:`BATCH_VIEW_PAGE_CHARS`
         (gr515524): a batch whose join would overflow emits the ids that
         fit and names the unread rest as the ``next:`` call's id list —
         a self-describing cursor, instead of letting the transport fold
@@ -3473,7 +3473,7 @@ class NumericRefHandler(Handler):
         shown: list[str] = []
         used = 0
         for block in blocks:
-            if shown and used + len(block) > _BATCH_VIEW_PAGE_CHARS:
+            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
                 break
             shown.append(block)
             used += len(block) + 2  # the "\n\n" join
