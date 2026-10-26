@@ -1301,9 +1301,10 @@ def test_launch_codex_tier_w_uses_the_tier_flags_verbatim(
     assert nw[nw.index("-n") + 1] == "codex-castor-s2"
     # exactly scripts/fleet-authority's tier-W codex flags, nothing appended
     assert nw[-1].startswith(
-        "codex --sandbox workspace-write --ask-for-approval on-request 'Read "
+        "codex --sandbox workspace-write --ask-for-approval never 'Read "
     )
-    assert "never" not in nw[-1] and "scratch/codex-brief.md" in nw[-1]
+    assert nw[-1].count("--ask-for-approval") == 1
+    assert "scratch/codex-brief.md" in nw[-1]
     tree = Path(env["FLEET_WORKTREES"]) / "castor-s2"
     brief = (tree / "scratch" / "codex-brief.md").read_text(encoding="utf-8")
     assert brief.startswith("# batch castor-s2") and "NO precis MCP access" in brief

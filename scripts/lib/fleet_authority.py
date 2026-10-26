@@ -147,7 +147,7 @@ def codex_flags(data: dict[str, Any], tier: str) -> str:
     flags = (
         "--sandbox read-only"
         if tier == "R"
-        else "--sandbox workspace-write --ask-for-approval on-request"
+        else "--sandbox workspace-write --ask-for-approval never"
     )
     return f"# {HEADER}\n{flags}\n"
 
