@@ -1,0 +1,28 @@
+# Eval cases for precis-cite-resolve-help (schema: precis.skill_eval.cases).
+skill: precis-cite-resolve-help
+cases:
+  - id: resolve-numeric-marker
+    prompt: |
+      I'm reading pc1024 of pa40 and it says "as shown before [32]".
+      What does [32] refer to?
+    expect:
+      calls:
+        # the citing paper's existing cites edges come first — the
+        # cite_resolve pass may already have written the link
+        - {verb: get, kind: paper, args: {id: 're:pa40', view: links}}
+        # the bib entry lives in the citing paper's (unembedded) tail —
+        # scoped lexical search, not a corpus-wide or semantic hunt
+        - {verb: search, kind: paper, args: {scope: 're:pa40', mode: lexical}}
+    forbid:
+      calls:
+        - {verb: put}              # never request before checking held
+    fake:
+      calls:
+        - {verb: get, kind: paper, args: {id: pa40, view: links}}
+        - {verb: search, kind: paper, args: {q: '[32]', scope: pa40, mode: lexical}}
+        - {verb: search, kind: paper, args: {q: 'Miller transition metal catalysis'}}
+      record: null
+      answer: >
+        Check existing links first (get view='links'), find entry 32 in
+        the citing paper's tail via scoped lexical search, then look the
+        cited work up by its title/DOI — link it if held, request it if not.

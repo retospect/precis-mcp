@@ -79,9 +79,10 @@ Pipeline, deterministic first:
    ref-level on the cited side, written with `add_link(relation='cites',
    src_pos=<chunk ord>, set_by=…, meta={'marker': …, 'marker_order': …})`.
    Cheap and idempotent, so safe to run for any accessed paper.
-4. **Passage match (LLM, castor local). BLOCKED: writes of `cites` by a
-   model-identity writer are on hold pending Reto's ruling on the
-   machine-edge gate (open question 1).** Deterministic layers proceed.
+4. **Passage match (LLM, castor local). Gate ruled (Reto 2026-10-24):
+   `cites` is exempt from the machine-edge co-retrievable refusal;
+   `meta.evidence` + writer annotation stay required — see decisions log.**
+   Deterministic layers proceed.
    Input: citing sentence plus the
    top-5 body chunks of the cited paper (semantic search scoped to that
    paper; body chunks are embedded, reference chunks are not). A small model
@@ -151,8 +152,8 @@ the entry's paper (or a stub) within one pass; author-year markers resolve
 on a fixture set at precision ≥ 0.95 (unmatched is acceptable, wrong is
 not); every chunk-sourced `cites` link carries `meta.marker_order` and a
 chunk's links render in occurrence order; author-year parse leaves no stored
-row anywhere; an access never triggers `bib_parse`. The LLM pass (blocked on
-the machine-edge ruling) writes no link without a `meta.evidence` pin and
+row anywhere; an access never triggers `bib_parse`. The LLM pass (gate ruled
+— `cites` is exempt; evidence + annotation stand) writes no link without a `meta.evidence` pin and
 runs only on the castor chain (`llm_call_log.model` shows the local model).
 
 ## Slices (smallest first)
@@ -164,7 +165,7 @@ runs only on the castor chain (`llm_call_log.model` shows the local model).
 | 3 | Skill `precis-cite-resolve-help` + skill-lint pass; recipe only, over existing calls. | `get(kind='skill', id='precis-cite-resolve-help')` served; `search(kind='skill', q='what does [32] refer to')` ranks it first; every call in the recipe runs against the dev DB. |
 | 4 | OpenAlex hop for entries without DOI (title/year lookup via the shared `openalex` limiter) and stub request through the gr513755 trickle budget. | Entry with no DOI resolves or records a stamped miss; no direct stub mint from this path; refusal by the limiter defers, never errors the pass. |
 | 5 | Access trigger (`CITERES:pending`, drain pass, per-chunk version marker). Never bumps `bib_parse`. | Reading a paper marks it once; the pass processes only marked papers; ship dark; an unmarked paper is never touched (test on the claim query); a paper with no entries is skipped, no parse enqueued. |
-| 6 | **BLOCKED on the machine-edge gate ruling.** Passage layer: `cite_resolve:passage` op, top-5 candidate pick, chunk→chunk upgrade, `none` memo. | Registered in `LLM_OPERATIONS` (registry test passes); with the castor row set, calls log to the local model; link carries `meta.evidence` + `why`; `none` is memoized and not retried. |
+| 6 | **Machine-edge gate ruled (exempt — see decisions log); the eval question stays open.** Passage layer: `cite_resolve:passage` op, top-5 candidate pick, chunk→chunk upgrade, `none` memo. | Registered in `LLM_OPERATIONS` (registry test passes); with the castor row set, calls log to the local model; link carries `meta.evidence` + `why`; `none` is memoized and not retried. |
 | 7 | On-request job with ETA ("deep link this set"); the only path that bumps `bib_parse` for a named paper lacking entries. | Job over N papers reports queued/ETA, outranks the access queue, bumps `bib_parse` only for the named papers, finishes with a per-paper count of resolved/ambiguous/unheld. |
 
 ## Target + blast radius
@@ -188,28 +189,26 @@ Decided (Reto 2026-10-24, relayed by COORDINATOR):
   `links.meta` and render in occurrence order.
 - `bib_parse` is bumped on access only for goal-driven on-request
   resolution, never for backfill or plain access.
+- **Machine-edge gate (Reto 2026-10-24, gr513768 comment, "Ruling #1").**
+  `cites` is exempt from the machine-edge co-retrievable refusal for
+  LLM-written links — add it to `MACHINE_EDGE_STANCE` (or the equivalent).
+  The evidence requirement (bib entry or DOI match plus the source passage)
+  and the writer annotation stay on every LLM-written `cites` link.
+  Deterministic writes carry no model identity and were never gated. The
+  exemption itself is built with slice 6, not here.
+- **`set_by` for the deterministic layer (GRIPE_FIX ruling, 2026-10-25).**
+  `set_by='system'` with a writer annotation naming the pass and version:
+  `meta={'source': 'cite_resolve', 'writer': 'cite_resolve:<CITERES_VERSION>'}`.
+- **Range markers (GRIPE_FIX ruling, 2026-10-25).** A range `[3-5]` writes
+  one link per cited paper (three links), each stamped `meta.marker='[3-5]'`
+  with its own `meta.marker_order` position in expansion order — no
+  `markers`-list form.
 
 Open:
 
-1. **Machine-edge gate — ON HOLD, Reto has not ruled.** The LLM passage layer
-   (slice 6) may not write `cites` links until he does; deterministic layers
-   proceed. `cites` is not in `MACHINE_EDGE_STANCE`
-   (`src/precis/store/_links_ops.py`). A write with a model identity (the LLM
-   layer) therefore needs `meta.evidence` + a writer annotation and is
-   refused when the two papers sit inside the `+recall` card-distance floor
-   (`machine-edge-co-retrievable`) — which a citing/cited pair often does.
-   Add `cites` to the stance set (or exempt it), or write the LLM-layer link
-   through another door? Deterministic writes carry no model identity and are
-   unaffected. Reto's rule to change; not mine.
-2. **Who is `set_by` for the deterministic layer?** `system` vs `agent`;
-   decides whether the link shows as machine-authored and whether the gate
-   in question 1 applies.
-3. **Chunk-level `dst` granularity for numeric ranges.** `[3–5]` yields three
-   links from one chunk; is that the wanted rendering or one link with a
-   `markers` list in `meta`?
-4. **Request surface.** Is "deep link this set now" a new job kind or an
+1. **Request surface.** Is "deep link this set now" a new job kind or an
    existing generic job with a `kind` payload? Needs a pointer to the job
    conventions before slice 7 is `ready`.
-5. **Eval.** Passage-layer precision on castor gpt-oss vs a frontier judge
+2. **Eval.** Passage-layer precision on castor gpt-oss vs a frontier judge
    (see `llm-judge-reliability.md`): is a sampled review gate wanted before
    the link is shown, as for `chase:verify`?

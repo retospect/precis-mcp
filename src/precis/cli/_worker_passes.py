@@ -140,6 +140,26 @@ def build_ref_passes(
 
         ref_passes.append(_bib_mark_pass)
 
+    # cite_resolve — chunk→paper `cites` links from inline citation
+    # markers (gr513768 slices 1-2). DARK: no default_profiles, so
+    # `_register` only wires it when a service_config row names it —
+    # run deliberately via `--only cite_resolve`. It also only claims
+    # `CITERES:pending`-tagged papers, so even enabled it is inert
+    # until the access trigger ships. Pure regex — no LLM, no external
+    # call, no embedder.
+    if _register("cite_resolve"):
+        from precis.workers.cite_resolve import run_cite_resolve_pass
+        from precis.workers.runner import BatchResult as _CrBatchResult
+
+        def _cite_resolve_pass(batch_size: int) -> _CrBatchResult:
+            r = run_cite_resolve_pass(store, batch_size=batch_size)
+            return _CrBatchResult.from_dict(
+                "cite_resolve",
+                {**r, "claimed": r["papers_swept"], "ok": r["papers_swept"]},
+            )
+
+        ref_passes.append(_cite_resolve_pass)
+
     # bib_retag — Layer-2 corpus remediation (gripe 196447). Retypes
     # mis-typed `chunk_kind='paragraph'` bibliography chunks to
     # `references` (content-detected via bib_parse's shared detector) and

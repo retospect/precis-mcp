@@ -959,6 +959,27 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-search-help",
     ),
     ServiceSpec(
+        # citation-resolution-skill (gr513768 slices 1-2): mints
+        # chunk→paper `cites` links from a citing paper's inline
+        # markers — numeric via `chunk_citations` + `held_ref_id`,
+        # author-year matched in memory. DARK by design: claims only
+        # `CITERES:pending` papers (the first-`get` trigger is a later
+        # slice) and registers behind `enable_env`, so a service_config
+        # row (or `--only cite_resolve`) is the only door. Converges on
+        # a `CITERES:<version>` chunk tag. Pure regex — no LLM, no
+        # external call.
+        name="cite_resolve",
+        label="Chunk→paper cites links",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_CITE_RESOLVE_ENABLED",
+        cost_sources=("cite_resolve",),
+        one_line="Mint chunk→paper cites links from inline markers "
+        "(access-marked papers only).",
+        doc_skill="precis-cite-resolve-help",
+    ),
+    ServiceSpec(
         name="hub_refine",
         label="Taproot hub refine",
         category="discovery",
