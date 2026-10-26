@@ -87,12 +87,17 @@ run's failure, refused naming the key)::
   to the same spec.
 
 Ownership/replace: the design's ``refs.meta['workspaces'][<slug>]``
-records what the last import made (``{blocks, instances, connects}``).
-What the new manifest omits is retired — block rows via ``save_tree``,
-the bound structure/cad ref via ``retire_ref``; ``restore_ref`` brings it
-back. A same-named block takes over: its structure ref is rewritten in
-place (version bump) and ports/connects re-resolve — a port that vanished
-is a ``port.missing`` echo finding, never a silent drop.
+records what the last import made (``{blocks, instances, connects,
+ports}``). What the new manifest omits is retired — block rows via
+``save_tree``, the bound structure/cad ref via ``retire_ref``;
+``restore_ref`` brings it back. A same-named block takes over: its
+structure ref is rewritten in place (version bump) and ports/connects
+re-resolve — a port that vanished is a ``port.missing`` echo finding,
+never a silent drop. A port that survives has its ``roles``/``direction``/
+``annotations`` re-synced from the manifest every import (``update_port``);
+its ``pose`` moves too, UNLESS something changed it since the last import
+(the per-port ``pose`` recorded under ``ports``) — then the live pose is
+kept and the echo carries ``port.pose_kept`` instead of a silent overwrite.
 """
 
 from __future__ import annotations
@@ -1375,6 +1380,15 @@ def import_workspace_run(
             tuple(sorted((str(c.get("a")), str(c.get("b")))))
             for c in prev.get("connects") or []
         }
+        # Per-port pose snapshot as of the last import — the only way to
+        # tell "nothing touched this since we wrote it" from "an agent
+        # moved it" when both write pose_source='declared' (§2r follow-up
+        # (a)). Keyed by block, then port name; refreshed below after each
+        # block's ops land, off the live tree, so a pose we deliberately
+        # kept (agent edit) still snapshots as itself, not as the manifest's
+        # unapplied intent.
+        prev_ports: dict[str, dict[str, dict[str, Any]]] = prev.get("ports") or {}
+        ports_snapshot: dict[str, dict[str, dict[str, Any]]] = {}
 
         manifest_blocks = set(block_entries)
         manifest_connects = {
@@ -1533,8 +1547,57 @@ def import_workspace_run(
                     )
             for p, po in port_ops:
                 atom = po.pop("atom", None)
-                if existing is not None and p["name"] in existing.ports:
-                    continue  # port exists; binding refreshed below
+                pname = p["name"]
+                if existing is not None and pname in existing.ports:
+                    # Re-import of a port already on this block: roles,
+                    # direction and annotations re-sync in full (the
+                    # manifest re-declares them, same as desc) — but pose
+                    # only moves if nothing wrote it since the LAST import;
+                    # an agent's own set_port_pose since then is kept, never
+                    # silently overwritten (§2r follow-up (a)). Binding
+                    # (the atom map) refreshes below regardless.
+                    ann = dict(p.get("annotations") or {})
+                    if p.get("frame") is not None:
+                        ann["frame"] = int(p["frame"])
+                    ops.append(
+                        {
+                            "op": "update_port",
+                            "block": entry.name,
+                            "name": pname,
+                            "roles": p.get("roles") or [],
+                            "direction": p.get("direction"),
+                            "annotations": ann or None,
+                        }
+                    )
+                    new_pose = p.get("pose")
+                    if new_pose is not None:
+                        live_port = existing.ports[pname]
+                        live_pose = (
+                            list(live_port.pose) if live_port.pose is not None else None
+                        )
+                        last_rec = (prev_ports.get(entry.name) or {}).get(pname) or {}
+                        last_pose = (
+                            list(last_rec["pose"])
+                            if last_rec.get("pose") is not None
+                            else None
+                        )
+                        if live_pose is None or live_pose == last_pose:
+                            ops.append(
+                                {
+                                    "op": "set_port_pose",
+                                    "block": entry.name,
+                                    "name": pname,
+                                    "pose": new_pose,
+                                }
+                            )
+                        else:
+                            result.findings.append(
+                                f"port.pose_kept: {entry.name}.{pname} — the "
+                                "manifest moved this port but its pose was "
+                                "changed since the last import; the live "
+                                f"pose is kept (manifest wants pose={new_pose!r})"
+                            )
+                    continue
                 ops.append(po)
             if kind == "atomic":
                 ops.append({"op": "set_mode", "block": entry.name, "mode": "atomic"})
@@ -1583,6 +1646,18 @@ def import_workspace_run(
             note_decls.extend((entry, n) for n in entry.notes)
             _apply(tree, ops, what=f"block {entry.name!r}", at=bsite)
             node = tree.blocks[entry.name]
+            # Snapshot every manifest port's pose as it now stands (just
+            # written, or deliberately kept) — the next import's "did
+            # anything touch this since we wrote it" check.
+            ports_snapshot[entry.name] = {
+                p["name"]: (
+                    {"pose": list(live_pose)}
+                    if (live_pose := node.ports[p["name"]].pose) is not None
+                    else {}
+                )
+                for p in entry.ports
+                if p["name"] in node.ports
+            }
             if kind == "atomic":
                 scene = payload
                 struct_slug = f"{design}-{entry.name}"
@@ -2005,6 +2080,7 @@ def import_workspace_run(
                                 "run_job": run_job,
                                 "script_sha": script_sha,
                                 **({"fit": fit_record} if fit_record else {}),
+                                "ports": ports_snapshot,
                             }
                         }
                     }

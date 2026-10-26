@@ -376,7 +376,7 @@ class SeHandler(Handler):
             "cad-DSL envelopes in METRES, poses, read-time template "
             "instancing, and first-class arrays. put/edit take typed ops "
             "(add_block/instance_block/array_block/set_pose/set_envelope/"
-            "remove_block/add_port/remove_port/set_port_pose/connect/disconnect/"
+            "remove_block/add_port/remove_port/update_port/set_port_pose/connect/disconnect/"
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
             "add_pocket/set_pocket/remove_pocket/"
             "add_ray/set_ray/remove_ray/observe_ray/"

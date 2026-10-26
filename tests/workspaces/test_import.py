@@ -543,6 +543,76 @@ def test_reimport_reports_changed_unchanged_and_moved(
     assert "block sources unknown (no prior sha): t_a, t_b" in res3.echo()
 
 
+def _edit_port_pose(store: Store, block: str, name: str, pose: str) -> None:
+    """Simulate an agent's own ``set_port_pose`` between two imports of the
+    same workspace — the thing a re-import must not silently clobber."""
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    apply_ops(
+        tree, [{"op": "set_port_pose", "block": block, "name": name, "pose": pose}]
+    )
+    persist.save_tree(
+        store, ref_id=se_ref.id, tree=tree, card_text="test: agent moved a port"
+    )
+
+
+def _out_with_plate_pose(tmp_path: Path, rel: str, pose: str) -> Path:
+    out = tmp_path / rel
+    shutil.copytree(FIXTURE, out)
+    m = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    m["blocks"][1]["ports"][0]["pose"] = pose
+    (out / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    return out
+
+
+def test_reimport_moves_untouched_port_pose(store: Store, tmp_path: Path) -> None:
+    _design(store)
+    _import(store, _out_with_plate_pose(tmp_path, "run1", "[0 0 10] mm"))
+    res2 = _import(store, _out_with_plate_pose(tmp_path, "run2", "[0 0 20] mm"))
+
+    assert not any(f.startswith("port.pose_kept") for f in res2.findings)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    assert tree.blocks["plate"].ports["top"].pose == pytest.approx([0.0, 0.0, 0.02])
+
+
+def test_reimport_keeps_agent_moved_port_pose(store: Store, tmp_path: Path) -> None:
+    _design(store)
+    _import(store, _out_with_plate_pose(tmp_path, "run1", "[0 0 10] mm"))
+
+    _edit_port_pose(store, "plate", "top", "[0 0 500] mm")
+
+    res2 = _import(store, _out_with_plate_pose(tmp_path, "run2", "[0 0 20] mm"))
+
+    assert any(f.startswith("port.pose_kept: plate.top") for f in res2.findings)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    assert tree.blocks["plate"].ports["top"].pose == pytest.approx([0.0, 0.0, 0.5])
+
+
+def test_reimport_syncs_roles_and_annotations(store: Store, tmp_path: Path) -> None:
+    _design(store)
+    _import(store, FIXTURE)
+
+    out2 = tmp_path / "run2"
+    shutil.copytree(FIXTURE, out2)
+    m2 = json.loads((out2 / "manifest.json").read_text(encoding="utf-8"))
+    m2["blocks"][1]["ports"][0]["roles"] = ["mate", "fastener"]
+    m2["blocks"][1]["ports"][0]["annotations"] = {"thread": "M5x0.8"}
+    (out2 / "manifest.json").write_text(json.dumps(m2), encoding="utf-8")
+    _import(store, out2)
+
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    port = tree.blocks["plate"].ports["top"]
+    assert port.roles == ["mate", "fastener"]
+    assert port.annotations.get("thread") == "M5x0.8"
+
+
 def test_unknown_key_refuses_naming_it(store: Store, tmp_path: Path) -> None:
     _design(store)
     bad = tmp_path / "out"

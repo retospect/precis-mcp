@@ -8,7 +8,7 @@
 subclasses everywhere, while :mod:`precis.blocktree.ops`'s helpers still
 operate over the generic base. Construction of a fresh block instance goes
 through :meth:`Tree.make_block` (overridden by the domain subclass) rather
-than a hardcoded ``BlockNode(...)`` call, so the 9 shared ops in
+than a hardcoded ``BlockNode(...)`` call, so the 10 shared ops in
 :mod:`precis.blocktree.ops` mint the *domain's* block type, not the bare
 core one.
 """
@@ -252,7 +252,7 @@ class Tree[TBlock: BlockNode, TConnect: Connect]:
         """Construct a new block row for this tree. The base
         implementation mints a bare :class:`BlockNode`; a domain ``Tree``
         subclass overrides this to mint its own ``BlockNode`` subclass
-        instead — the hook the 9 shared ops in :mod:`precis.blocktree.ops`
+        instead — the hook the 10 shared ops in :mod:`precis.blocktree.ops`
         use so they never hardcode a concrete block class."""
         return BlockNode(**kwargs)  # type: ignore[return-value]
 

@@ -125,6 +125,14 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
   unconnected (antenna); `validate`'s `unconnected_port` downgrades it
   to `info`.
 - `remove_port` — `block`, `name`
+- `update_port` — `block`, `name` (req) + `roles`/`direction`/
+  `annotations`, each rewriting in full (a key absent leaves the stored
+  value alone; pass `null`/`[]`/`{}` to clear one). Never touches `pose`/
+  `rot` — `set_port_pose` owns those. A workspace re-import uses this to
+  re-sync a surviving port's non-pose fields every run; the pose itself
+  moves only when nothing changed it since the last import (an agent's
+  own `set_port_pose` since then is kept — `port.pose_kept` in the echo
+  instead of a silent overwrite).
 
 ## Ops — connect, disconnect, joints
 

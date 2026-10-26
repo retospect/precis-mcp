@@ -215,11 +215,12 @@ def test_moving_base_h2_is_ray_changed_on_bolt_a2(store: Store, tmp_path: Path) 
     assert not rays["bolt-a1"].digests[-1].get("changed")
     findings = se.get(id="mount-mv", view="validate").body
     assert "bracket.bolt-a2" in findings and "bracket.bolt-a1" not in findings
-    # observation only: the port the manifest moved is NOT synced on
-    # re-import (that is import sync, a follow-up) — the hole moved, so
-    # the ray read it through the cad geometry
+    # import sync (sw-2r-port-sync): the manifest-declared port pose
+    # itself moves too, since nothing touched it since the last import —
+    # independent of the "axis offset" finding above, which reads the
+    # hole through the cad geometry regardless of the port's own pose
     assert _tree(store, "mount-mv").blocks["base"].ports["h2"].pose[0] == pytest.approx(
-        -0.005
+        -0.004
     )
     # an unchanged third import: validate reads the NEWEST digest, clean
     import_workspace_run(store, workspace="mount", design="mount-mv", out_dir=out)

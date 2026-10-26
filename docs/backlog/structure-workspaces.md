@@ -1089,11 +1089,15 @@ observations (`MAX_BUNDLE`), and a macro-only design skips the atomic
 leg; an import observes each ray twice — before the write (the old
 list `ray.changed` needs, unrecoverable once cad refs are rewritten) and
 after commit (the digest it stores) — so ≤ 2 × 64 ray probes per ray per
-import. Follow-up (import sync, not observation): re-importing a
-manifest whose port moved does not move the existing port — the ray
-reads the moved hole through the cad geometry instead; syncing a port's
-pose/direction/roles/annotations on re-import (without overwriting a
-pose an agent set) is its own item.
+import; a ray's own geometry hits always tracked a moved cad hole
+through the bound cad geometry, independent of the port object.
+**Import sync done (2026-10-24):** a surviving port's `roles`/
+`direction`/`annotations` now re-sync from the manifest every import
+(`update_port`, the shared ops' 10th); its `pose` moves too unless
+something changed it since the last import (`refs.meta['workspaces']
+[<slug>].ports`, the per-port snapshot `set_port_pose`/add_port writes
+read back), in which case the live pose is kept and the echo carries
+`port.pose_kept` instead of a silent overwrite.
 Left: field samples along a ray (`von-mises`/`utilisation`/`temperature`)
 wait for a stored solver outcome — absent, never estimated;
 `against='v<n>'` refuses until the checkpoint replay is wired; `against`
@@ -1161,8 +1165,8 @@ rewritten in place, so only structure versions are addressable);
 ## MCP surface
 
 Ops that **stay** (small edits, placement, declarations): `add_block`,
-`remove_block`, `set_pose`, `set_desc`, `add_port`/`remove_port`,
-`instance_block`, `array_block`, `connect`/`disconnect`, `set_joint`,
+`remove_block`, `set_pose`, `set_desc`, `add_port`/`remove_port`/
+`update_port`, `instance_block`, `array_block`, `connect`/`disconnect`, `set_joint`,
 `set_load`, measures, pockets, `set_mode`, `set_binding`, bom, notes,
 `declare_*`, states, chain ops, `formfind`, `set_envelope` with a DSL
 string (a one-line macro edit is not a script).
@@ -1182,7 +1186,7 @@ else to build with). Pose, connect and the small edits stay.
 
 **Script-made rows are read-only to construction ops** (Reto,
 2026-10-22). A surviving op that would change geometry a workspace run
-produced (`set_pose`, `add_port`/`remove_port`, `set_envelope`,
+produced (`set_pose`, `add_port`/`remove_port`/`update_port`, `set_envelope`,
 `array_block`, `instance_block` on a block whose `generated.generator ==
 'workspace'`, or any op on its ports/pockets/measures the manifest
 owns) refuses with `next=` naming the workspace param or script edit

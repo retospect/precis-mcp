@@ -6,10 +6,10 @@ typed ops; :func:`apply_ops` mutates a :class:`~precis.blocktree.types.Tree`
 in place; an unknown op or a bad reference raises :class:`~precis.
 blocktree.types.OpError`. A domain plugin (``precis_se``) registers its
 own extra ops alongside :data:`CORE_OPS` in the table it passes to
-:func:`apply_ops`, and may override any of the 9 core entries outright —
+:func:`apply_ops`, and may override any of the 10 core entries outright —
 ``apply_ops`` never hardcodes which ops exist, the caller's table does.
 
-The 9 shared ops:
+The 10 shared ops:
 
 - ``add_block``      — mint a new block, optionally nested under an
   existing ``parent``, with an optional envelope (validated through the
@@ -58,6 +58,10 @@ The 9 shared ops:
 - ``remove_port``     — drop a port; refused while any live ``connect``
   still references it, *including* one stored against an instance of this
   block.
+- ``update_port``     — rewrite an existing port's ``roles``/``direction``/
+  ``annotations`` in place; a key absent from the op leaves the stored
+  value untouched. Never touches ``pose``/``rot`` or their provenance —
+  ``set_port_pose`` owns those.
 - ``set_port_pose``   — rewrite (or ``clear``) a port's OWN ``pose``/
   ``rot`` in the block's local frame — ``set_pose`` one level down. The
   slot is nullable by design and stays null until someone fills it
@@ -855,6 +859,61 @@ def op_remove_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     del node.ports[name]
 
 
+def op_update_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
+    """Rewrite an existing port's ``roles``/``direction``/``annotations`` in
+    place — ``set_port_pose`` for everything except ``pose``/``rot``. A key
+    absent from ``op`` leaves the stored value untouched (pass ``None``, or
+    an empty list/dict, to clear one); ``pose``/``rot`` and their
+    ``*_source`` stamps stay ``set_port_pose``'s alone — this op restates a
+    port's capability/orientation metadata, never its placement or
+    provenance."""
+    block = _require_block(tree, op, "block", "update_port")
+    node = tree.blocks[block]
+    if node.template is not None:
+        raise OpError(
+            f"block {block!r} is an instance (of {node.template!r}) — an "
+            "instance resolves its ports from its template at read time "
+            "(same rule as add_port); update_port on "
+            f"{node.template!r} instead"
+        )
+    name = _require_name(op, "name", "update_port")
+    port = node.ports.get(name)
+    if port is None:
+        roster = ", ".join(sorted(node.ports)) if node.ports else "(none)"
+        raise OpError(
+            f"no such port on block {block!r}: {name!r}. Available ports: {roster}"
+        )
+    if "roles" in op:
+        roles_raw = op.get("roles")
+        if roles_raw is None:
+            port.roles = []
+        elif not isinstance(roles_raw, list) or not all(
+            isinstance(r, str) for r in roles_raw
+        ):
+            raise OpError(
+                f"update_port 'roles' must be a list of strings, got {roles_raw!r}"
+            )
+        else:
+            port.roles = [r.strip() for r in roles_raw if r.strip()]
+    if "direction" in op:
+        direction_raw = op.get("direction")
+        if direction_raw is None:
+            port.direction = None
+        else:
+            raw_vec = _as_vec3(direction_raw, "update_port direction")
+            port.direction = _unit_vec(
+                raw_vec, what=f"update_port direction for {block}.{name}"
+            )
+    if "annotations" in op:
+        annotations_raw = op.get("annotations")
+        if annotations_raw is not None and not isinstance(annotations_raw, dict):
+            raise OpError(
+                f"update_port 'annotations' must be a JSON object, got "
+                f"{annotations_raw!r}"
+            )
+        port.annotations = dict(annotations_raw) if annotations_raw else {}
+
+
 def op_set_port_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     """Rewrite an existing port's own ``pose``/``rot`` — :func:`op_set_pose`
     for ports, and the only way to fill the slot after ``add_port``.
@@ -970,7 +1029,7 @@ def op_disconnect(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     )
 
 
-#: The 9 shared ops, keyed by op name — a domain merges this with its own
+#: The 10 shared ops, keyed by op name — a domain merges this with its own
 #: extra ops (and may override any entry) to build the table it passes to
 #: :func:`apply_ops`.
 CORE_OPS: OpsTable = {
@@ -980,6 +1039,7 @@ CORE_OPS: OpsTable = {
     "remove_block": op_remove_block,
     "add_port": op_add_port,
     "remove_port": op_remove_port,
+    "update_port": op_update_port,
     "set_port_pose": op_set_port_pose,
     "connect": op_connect,
     "disconnect": op_disconnect,

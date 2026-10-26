@@ -1047,7 +1047,7 @@ def apply_ops(
     tree: SeTree, ops: list[dict[str, Any]], *, notes: list[str] | None = None
 ) -> SeTree:
     """Apply a list of typed ops to ``tree`` in order, mutating it —
-    dispatches through :data:`_OPS` (the core's 9 shared ops, 8 of them
+    dispatches through :data:`_OPS` (the core's 10 shared ops, 8 of them
     overridden here, plus se's own — :func:`known_ops` is the roster), via
     the core's generic :func:`~precis.blocktree.ops.apply_ops`. ``notes``
     is the echo-on-write list (``understood:`` lines) the core's

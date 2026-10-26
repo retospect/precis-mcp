@@ -193,6 +193,7 @@ _SE_OP_SIGNATURES: dict[str, str] = {
     "set_desc": "set_desc{block,desc?,use?}",
     "add_port": "add_port{block,name,roles?:[…],direction?:[x,y,z],pose?,rot?,annotations?,expected_element?,expected_hybridization?}",
     "remove_port": "remove_port{block,name}",
+    "update_port": "update_port{block,name,roles?:[…],direction?:[x,y,z],annotations?}",
     "set_port_pose": "set_port_pose{block,name,pose?,rot?,clear?}",
     "connect": "connect{a:'block.port',b:'block.port',joint?:{class,axis?,mechanism?,params?},kind?:bond|interaction,objectives?}",
     "disconnect": "disconnect{a,b}",
