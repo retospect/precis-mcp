@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import BadInput
+from precis.errors import BadInput, Unsupported
 from precis.utils.units import op_notes_scope
 from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import (
@@ -46,6 +46,7 @@ from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.mold import PendingMold, finish_mold, prepare_mold
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 from precis_se.persist import structure_scene_resolver, structure_version_resolver
+from precis_se.pocket_realize import PocketRealizeRequest
 from precis_se.properties import pocket_spec
 from precis_se.properties.measurand import measurand_resolver
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
@@ -64,7 +65,7 @@ REALIZE_STRATEGIES = ("analytic", "simp", "manufacture")
 
 #: What ``pending_jobs`` carries: one entry per realize op the handler
 #: runs or enqueues after its own save commits.
-PendingJob = SimpRequest | ManufactureRequest
+PendingJob = SimpRequest | ManufactureRequest | PocketRealizeRequest
 
 #: The store-aware ops intercepted in :func:`apply_ops_with_atomic` — they
 #: never reach :func:`precis_se.ops.apply_ops`, so
@@ -406,7 +407,29 @@ def apply_ops_with_atomic(
             if name == "pocket_realize":
                 from precis_se import pocket_realize as se_pocket_realize
 
-                echoes.append(se_pocket_realize.op_pocket_realize(store, tree, op))
+                outcome = se_pocket_realize.op_pocket_realize(store, tree, op)
+                if isinstance(outcome, PocketRealizeRequest):
+                    # No GFN2 backend on this host (Q13): the relaxes go
+                    # to an se_pocket_realize job on the compute lane —
+                    # minted by the caller AFTER its save commits, like
+                    # realize(strategy='simp'). No pending_jobs ⇒ the
+                    # caller can't enqueue, so refuse rather than drop
+                    # the request on the floor.
+                    if pending_jobs is None:
+                        raise Unsupported(
+                            "pocket_realize needs GFN2 (tblite): absent "
+                            "here, and this caller can't enqueue the "
+                            "compute-lane job",
+                            next="run it through put/edit on kind='se'",
+                        )
+                    pending_jobs.append(outcome)
+                    echoes.append(
+                        "pocket_realize: no GFN2 backend here — the "
+                        "candidate relaxes queue for the compute lane as "
+                        "an se_pocket_realize job once this call commits."
+                    )
+                    continue
+                echoes.append(outcome)
                 continue
             if name == "wall_rate":
                 from precis_se.wall_rate import op_wall_rate

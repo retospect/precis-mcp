@@ -484,9 +484,27 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     **Decided (Reto, 2026-10-25):** both — run the surface read as a
     job (the stored result serves reads too big for inline) AND add
     the tblite wheel to the MCP image so small reads run inline.
-    Filed as gr519389. Until it ships, `pocket_realize` cannot run on
-    the prod MCP image — the op runs its GFN2 join inline and the
-    image has no tblite.
+    Filed as gr519389.
+    **Partly built (2026-10-26).** The realize relaxes run as the
+    `se_pocket_realize` job_type (`src/precis_se/pocket_realize_job.py`
+    — `ssh_node`, `has_gpaw`, pinned through
+    `struct_relax.target_node_for('xtb')` so the claim lands on a
+    wheelhouse-tblite compute host). The op probes the backend: present
+    ⇒ inline as before; absent ⇒ a `PocketRealizeRequest` rides the
+    pending-jobs path and the handler mints the job post-commit — its
+    `job_summary` chunk carries the same report, the `job_result` chunk
+    the full JSON (`get(kind='job', id=<job>)` shows a capped head;
+    `view='result'` returns it whole). No configured lane ⇒ the
+    up-front `Unsupported` refusal stays. The image half is
+    `docker/Dockerfile`'s `deps-lite-xtb` stage: the wheelhouse wheel
+    via the `tblite-wheel` build context on aarch64 (the lock-pinned,
+    hash-checked PyPI wheel on x86_64), staged by playbook 33
+    from the controller's `tblite_wheel`; an empty context keeps the
+    no-tblite posture rather than failing the build. Remaining —
+    gr519389 stays open: `view='surface'`'s own job half is still
+    unbuilt (small reads run inline per the ruling; a too-big inline
+    surface read remains a follow-up), and `pocket_from_molecule` is
+    still inline-only.
 
 - **Decided (Reto, 2026-10-18), from the readiness judge's proposal:**
   Q8 and Q9 as above. Slice 2 fixes the migration number (next free core

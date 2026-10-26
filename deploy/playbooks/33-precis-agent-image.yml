@@ -515,6 +515,20 @@
             path: "{{ _agent_build_wrapper }}"
             mode: "0755"
 
+        - name: Stage the linux-aarch64 tblite wheel for the build context (Q13, gr519389)
+          # The serve/agent image's deps-lite-xtb stage installs an
+          # aarch64 tblite wheel when the `tblite-wheel` build context
+          # carries one — PyPI ships none. The wheel is the same
+          # controller-side file wheelhouse_seed pushes to compute hosts
+          # (scripts/build-tblite-wheel → -e tblite_wheel=<path>); unset
+          # ⇒ nothing staged and the Dockerfile keeps the old no-tblite
+          # posture rather than failing the build.
+          when: tblite_wheel | default('') | length > 0
+          ansible.builtin.copy:
+            src: "{{ tblite_wheel }}"
+            dest: "{{ _agent_build_dir }}/tblite-wheel/"
+            mode: "0644"
+
         - name: docker build --target agent (BuildKit; label stamps the built sha)
           # When the pre-pull fell back to mirror.gcr.io, point the build's two
           # registry fetches there too: BUILDKIT_SYNTAX overrides the
@@ -540,6 +554,9 @@
               --target agent
               -t {{ _agent_image }}
               --label org.precis.sha={{ _agent_image_ref }}
+              {% if tblite_wheel | default('') | length > 0 %}
+              --build-context tblite-wheel={{ _agent_build_dir }}/tblite-wheel
+              {% endif %}
               {% if _agent_pull_via_mirror | default(false) | bool %}
               --build-arg BUILDKIT_SYNTAX={{ _agent_mirror_refs[0] }}
               --build-arg PYTHON_IMAGE={{ _agent_mirror_refs[1] | regex_replace('@.*$', '') }}

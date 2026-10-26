@@ -211,6 +211,7 @@ from precis_se.ops import (
     resolve_template,
     template_names,
 )
+from precis_se.pocket_realize import PocketRealizeRequest
 from precis_se.pockets import region_measures as se_region_measures
 from precis_se.properties import COMPUTERS, is_checked
 from precis_se.state_arg import merged_occupancy, resolve_state_arg
@@ -739,6 +740,9 @@ class SeHandler(Handler):
             if isinstance(req, se_manufacture.ManufactureRequest):
                 bodies.append(self._run_manufacture(ref, tree, req))
                 continue
+            if isinstance(req, PocketRealizeRequest):
+                bodies.append(self._enqueue_pocket_realize(ref, req))
+                continue
             # The SAME hash the job re-checks before binding
             # (simp_bridge.inputs_sha: envelope, objectives, pose, effective
             # ports incl. a load_at/fixed_at port's pose) — one function, so
@@ -778,6 +782,55 @@ class SeHandler(Handler):
                 "(the block reads unrealized until then)."
             )
         return "\n\n".join(bodies)
+
+    def _enqueue_pocket_realize(self, ref: Any, req: PocketRealizeRequest) -> str:
+        """Mint the ``se_pocket_realize`` job a ``PocketRealizeRequest``
+        prepared — the ``pocket_realize`` op's no-tblite path (Q13,
+        gr519389). Post-commit like ``se_simp``: the job reloads the
+        tree this call saved, so minting here — not inside the op —
+        means ``load_tree`` sees the pocket this call may have added.
+        A failed enqueue does NOT raise: the tree edits already
+        committed, and the caller can re-run the op alone."""
+        params: dict[str, Any] = {
+            "se_ref_id": int(ref.id),
+            "slug": str(ref.slug),
+            "wall": req.wall,
+            "pocket": req.pocket,
+            "candidates": list(req.candidates),
+            "target_node": req.target_node,
+        }
+        if req.cap is not None:
+            params["cap"] = req.cap
+        if req.dft is not None:
+            params["dft"] = req.dft
+        try:
+            job_resp = self.hub.sibling("job").put(
+                job_type="se_pocket_realize",
+                executor="ssh_node",
+                parent_id=int(ref.id),
+                params=params,
+                idem_key=f"se_pocket_realize:{ref.id}:{req.digest}",
+            )
+        except Exception as exc:
+            log.warning(
+                "se_pocket_realize: enqueue failed for %s.%s: %s",
+                ref.slug,
+                req.wall,
+                exc,
+            )
+            return (
+                f"## pocket_realize — {req.wall} NOT queued\n"
+                f"relax job NOT queued for pocket {req.pocket!r} on "
+                f"{req.wall!r}: {exc} — the tree edits in this call were "
+                "saved; re-run pocket_realize on its own"
+            )
+        return (
+            f"## pocket_realize — {req.wall} enqueued\n{job_resp.body}\n\n"
+            f"Next: get(kind='job', id={job_resp.ref_id}) once the job "
+            "lands — its job_summary chunk carries the ranking "
+            "pocket_realize echoes inline, its job_result chunk the "
+            "full JSON (the card caps it; view='result' returns all)."
+        )
 
     def _run_manufacture(
         self, ref: Any, tree: SeTree, req: se_manufacture.ManufactureRequest

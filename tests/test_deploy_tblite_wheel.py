@@ -72,3 +72,28 @@ def test_reapply_runs_on_the_group_xtb_jobs_pin_to() -> None:
 
     assert "xtb" in struct_relax._INPROC_FIDELITIES
     assert struct_relax._AUTOCATPATH_NODES_ENV == "PRECIS_AUTOCATPATH_ROUTE_NODE"
+
+
+def test_agent_image_takes_the_wheel_via_a_build_context() -> None:
+    """Q13 (gr519389): the same controller-side wheel reaches the
+    linux-aarch64 serve/agent MCP image — the Dockerfile's
+    ``tblite-wheel`` build context feeds ``deps-lite-xtb`` (empty ⇒ the
+    old no-tblite posture, never a failed build), and playbook 33 stages
+    ``tblite_wheel`` into the build dir + threads ``--build-context``."""
+    dockerfile = (REPO / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    assert "FROM scratch AS tblite-wheel" in dockerfile
+    assert "FROM deps-lite AS deps-lite-xtb" in dockerfile
+    assert "FROM deps-lite-xtb AS builder-lite" in dockerfile
+    # aarch64: only a cp312-tagged wheelhouse wheel — a wrong-tag wheel
+    # must fail the RUN loudly, not install a wheel python3.12 can't load
+    assert "tblite-*cp312*aarch64*.whl" in dockerfile
+    # x86_64: the lock-pinned PyPI wheel installed with lock hashes, not
+    # a bare `uv pip install tblite==…` re-resolve
+    assert "--require-hashes" in dockerfile
+    assert "uv export --frozen --extra estimate" in dockerfile
+
+    playbook = (REPO / "deploy" / "playbooks" / "33-precis-agent-image.yml").read_text(
+        encoding="utf-8"
+    )
+    assert 'src: "{{ tblite_wheel }}"' in playbook
+    assert "--build-context tblite-wheel=" in playbook

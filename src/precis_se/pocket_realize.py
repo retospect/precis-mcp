@@ -180,6 +180,27 @@ class CandidateResult:
 
 
 @dataclass
+class PocketRealizeRequest:
+    """The op's answer when GFN2 is absent locally (the prod MCP image's
+    aarch64 case, open question 13 / gr519389): mint an
+    ``se_pocket_realize`` job once the call's tree commits — the
+    pending-jobs path ``SimpRequest`` already rides, because the job
+    reloads the pocket from the saved design and a job minted mid-walk
+    could dispatch against a tree that never lands. ``target_node`` is
+    resolved at op time (the lane check is part of the up-front
+    refusal); ``digest`` is the idem key's tail — same wall + pocket +
+    candidate set collapses onto the in-flight job."""
+
+    wall: str
+    pocket: str
+    candidates: list[str]
+    cap: int | None
+    dft: dict[str, Any] | None
+    target_node: str
+    digest: str
+
+
+@dataclass
 class RealizeResult:
     """The loop's output: the ranked candidates, the loop metadata and
     whether the best met every hard band. ``evaluated`` counts the
@@ -780,7 +801,60 @@ def _report(result: RealizeResult) -> str:
     return "\n".join(lines)
 
 
-def op_pocket_realize(store: Any, tree: Any, op: dict[str, Any]) -> str:
+def _request_realize_job(
+    wall: str,
+    pocket_name: str,
+    slugs: list[str],
+    cap: int | None,
+    dft: dict[str, Any] | None,
+) -> PocketRealizeRequest:
+    """GFN2 is absent locally: build the pending-job request the handler
+    mints post-commit as ``se_pocket_realize`` on a tblite host. The
+    up-front refusal stays for the case where no host has the lane —
+    ``target_node_for('xtb', …)`` empty means no compute node is
+    configured (``PRECIS_MLIP_NODES`` / ``PRECIS_AUTOCATPATH_ROUTE_NODE``
+    / ``PRECIS_DFT_NODE`` all unset), so the job could never be claimed."""
+    import hashlib
+    import json as _json
+
+    from precis.workers.job_types.struct_relax import target_node_for
+
+    key_src = _json.dumps(
+        {
+            "wall": wall,
+            "pocket": pocket_name,
+            "candidates": slugs,
+            "cap": cap,
+            "dft": dft,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    digest = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:16]
+    target = target_node_for("xtb", key=digest)
+    if not target:
+        raise Unsupported(
+            "pocket_realize needs GFN2 (tblite): no local backend, and no "
+            "compute node is configured — PRECIS_MLIP_NODES, "
+            "PRECIS_AUTOCATPATH_ROUTE_NODE and PRECIS_DFT_NODE are all "
+            "unset, so an se_pocket_realize job would have nowhere to run",
+            next="run on a host with tblite, or have deploy render a "
+            "compute node for the xtb lane (precis_capabilities)",
+        )
+    return PocketRealizeRequest(
+        wall=wall,
+        pocket=pocket_name,
+        candidates=list(slugs),
+        cap=cap,
+        dft=dft,
+        target_node=target,
+        digest=digest,
+    )
+
+
+def op_pocket_realize(
+    store: Any, tree: Any, op: dict[str, Any]
+) -> str | PocketRealizeRequest:
     """``pocket_realize`` (handler-level, like ``pocket_from_molecule``:
     it needs the store for candidate structures and GFN2 for the join).
 
@@ -793,7 +867,14 @@ def op_pocket_realize(store: Any, tree: Any, op: dict[str, Any]) -> str:
 
     Writes nothing: a research loop's answer is its ranking, echoed
     here (the spec's ranked candidate list with per-region mismatch,
-    energies and provenance per pick)."""
+    energies and provenance per pick). When the host has no GFN2
+    backend (Q13 — the prod MCP image is linux-aarch64, which PyPI has
+    no tblite wheel for), the op returns a
+    :class:`PocketRealizeRequest` instead: the caller enqueues
+    ``se_pocket_realize`` on the compute lane after its tree commits,
+    and the job's ``job_summary`` chunk carries this same report. The
+    up-front ``Unsupported`` refusal stays for the case where no host
+    has the lane at all."""
     opname = "pocket_realize"
     allowed = {"op", "wall", "pocket", "candidates", "cap", "dft"}
     strays = sorted(set(op) - allowed)
@@ -867,6 +948,15 @@ def op_pocket_realize(store: Any, tree: Any, op: dict[str, Any]) -> str:
                 next="name an existing structure design in 'candidates'",
             )
         candidates.append(got)
+    try:
+        _require_gfn2()
+    except Unsupported:
+        # No tblite here (the prod MCP image, Q13): hand the relaxes to
+        # the compute lane. The probe runs AFTER the arg vetting above so
+        # a malformed call still refuses by name rather than as a lane
+        # decision; _request_realize_job keeps the up-front refusal when
+        # no host has the lane either.
+        return _request_realize_job(wall, pocket_name, list(raw), cap, dft)
     result = realize_pocket(tree, wall, pocket, candidates, cap=cap, dft=dft)
     return _report(result)
 
@@ -879,6 +969,7 @@ __all__ = [
     "RELAX_STEPS",
     "CandidateResult",
     "MeasureScore",
+    "PocketRealizeRequest",
     "RealizeResult",
     "WallCandidate",
     "evaluate_candidate",

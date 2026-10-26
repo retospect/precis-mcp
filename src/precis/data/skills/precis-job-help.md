@@ -276,6 +276,9 @@ def456), confirmed by ls-remote. 3 files changed, 47 insertions(+),
 12 deletions(-). Took 84s."), searchable via `search(kind='job', q=...)`.
 `job_event` chunks (lease renewals, llm_output excerpts,
 commit_made markers) are forensic; default search excludes them.
+A `job_result` chunk (a job's structured deliverable — a ranking or
+proposal JSON) shows as a capped head on the card;
+`get(kind='job', id=<job>, view='result')` returns it in full.
 
 ## What jobs have run on this gripe?
 ## History of fix attempts for a gripe

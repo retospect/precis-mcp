@@ -268,6 +268,16 @@ complex over the 160-atom bound) is reported, never silent. It is a
 research loop, not a solver: a run can end with no candidate inside
 every band.
 
+**No tblite on this host?** (Q13 — the prod MCP image is linux-aarch64,
+which PyPI has no wheel for): the op then enqueues an
+`se_pocket_realize` job on the compute lane and the echo names the job;
+`get(kind='job', id=<job ref>)` shows the run — its `job_summary`
+chunk carries the same ranking the op echoes inline, and the
+`job_result` chunk holds the full result JSON (capped on the card;
+`view='result'` returns it whole). If no compute
+node is configured at all the op refuses up front instead of queuing a
+job nothing could claim.
+
 ## Read regions back
 
 ```python

@@ -283,6 +283,7 @@ def _idem_lock_key(idem: str) -> int:
 
 _JOB_SUMMARY_KIND = "job_summary"
 _JOB_EVENT_KIND = "job_event"
+_JOB_RESULT_KIND = "job_result"
 
 # A job's parent is polymorphic. ``todo`` is the intent lane
 # (rotation + ``child-failed`` bubble); the artifact kinds are the compute
@@ -346,6 +347,11 @@ def _is_logs_path(id: str) -> bool:
 #: Cap on the final-report text ``view='transcript'`` appends — the whole
 #: point of the view is staying small (gr504491).
 _TRANSCRIPT_FINAL_CAP = 2000
+
+#: Cap on each ``job_result`` chunk's head in the default status card —
+#: the full JSON (a ranking, a proposal payload) can run to tens of KB;
+#: ``view='result'`` returns every ``job_result`` chunk uncapped.
+_JOB_RESULT_HEAD_CAP = 4000
 
 
 def _tool_call_digest(name: str, args: dict[str, Any]) -> str:
@@ -582,6 +588,9 @@ class JobHandler(NumericRefHandler):
         if view == "transcript":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(self._render_transcript_view(ref), readings)
+        if view == "result":
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return interpreted(self._render_result_view(ref), readings)
         # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is
         # declared here, not read off the query string alone, so
         # ``get(kind='job', id='/builds', args={'sha': ...})`` passes the
@@ -651,6 +660,27 @@ class JobHandler(NumericRefHandler):
         if transcript:
             return Response(body=transcript, result_count=1)
         return Response(body=f"job {ref.id} has no recorded transcript", result_count=0)
+
+    def _render_result_view(self, ref: Any) -> Response:
+        """``view='result'`` — every ``job_result`` chunk in full.
+
+        The default status card shows each ``job_result`` only as a
+        ``_JOB_RESULT_HEAD_CAP`` head; this view is the uncapped read a
+        too-big inline answer's stored JSON needs (e.g. an
+        ``se_pocket_realize`` ranking, a ``cad_propose`` payload)."""
+        blocks = [
+            b
+            for b in self.store.chunks.list_chunks_for_ref(ref.id)
+            if b.chunk_kind == _JOB_RESULT_KIND
+        ]
+        if not blocks:
+            return Response(
+                body=f"job {ref.id} has no job_result chunk", result_count=0
+            )
+        lines = [f"# job {ref.id} — {len(blocks)} job_result chunk(s)"]
+        for block in blocks:
+            lines += ["", f"## result {block.ord}", block.text]
+        return Response(body="\n".join(lines), result_count=1)
 
     def _render_cadence_view(self, name: str | None) -> Response:
         """``id='/cadence[/<name>]'`` — the ``scheduler_leases`` lease
@@ -2625,6 +2655,17 @@ class JobHandler(NumericRefHandler):
                 lines.append("")
                 lines.append(f"## event {block.ord}")
                 lines.append(block.text)
+            elif kind == _JOB_RESULT_KIND:
+                lines.append("")
+                lines.append(f"## result {block.ord}")
+                text = block.text
+                if len(text) > _JOB_RESULT_HEAD_CAP:
+                    lines.append(text[:_JOB_RESULT_HEAD_CAP])
+                    lines.append(
+                        f"… ({len(text)} chars total — view='result' for the full body)"
+                    )
+                else:
+                    lines.append(text)
         return "\n".join(lines)
 
     def _queue_lines(self, ref: Ref) -> list[str]:

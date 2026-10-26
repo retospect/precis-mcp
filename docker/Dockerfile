@@ -66,6 +66,16 @@ ARG UV_VERSION=0.11.14
 # the multi-GB HF / datalab download. See Stage `models` below.
 FROM scratch AS premodels
 
+# Default empty stage for `tblite-wheel` — same pattern as `premodels`.
+# Override with `--build-context tblite-wheel=<dir>` holding the
+# wheelhouse wheel (scripts/build-tblite-wheel;
+# deploy/playbooks/33-precis-agent-image.yml stages it from the
+# controller's `tblite_wheel` var) to give the linux-aarch64
+# serve/agent image its GFN2 backend. Absent ⇒ the stage mounts empty
+# and `deps-lite-xtb` no-ops on it — the credential-less GHCR build
+# and a bare `docker build` stay green with the old no-tblite posture.
+FROM scratch AS tblite-wheel
+
 # =============================================================================
 # Stage: deps — install dependencies from the lockfile into /opt/venv.
 # Inputs are ONLY pyproject.toml + uv.lock — touching any `.py` under
@@ -555,10 +565,48 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv sync --frozen --no-install-project
 
 # -----------------------------------------------------------------------------
+# Stage: deps-lite-xtb — deps-lite + tblite (pocket-from-molecule Q13,
+# gr519389): the serve/agent MCP image's `precis serve` must run the se
+# pocket surface read and small GFN2 joins inline — everything bigger
+# goes to the se_pocket_realize job lane. PyPI ships no linux-aarch64
+# tblite wheel, so that arch takes the wheelhouse build via the
+# `tblite-wheel` build context; x86_64 (and any arch PyPI covers)
+# installs the lock-pinned version hash-checked off uv.lock's exported
+# requirements. An aarch64 build with an empty context keeps the old
+# no-tblite posture — the ops then refuse up front or enqueue per Q13,
+# which beats a failed image build — but a context carrying wheels
+# with no cp312 tag fails loudly instead of installing a wheel this
+# image's python3.12 cannot load.
+# -----------------------------------------------------------------------------
+FROM deps-lite AS deps-lite-xtb
+
+RUN --mount=type=bind,from=tblite-wheel,target=/tmp/wheels \
+    arch="$(uname -m)"; \
+    if [ "$arch" = "aarch64" ]; then \
+        whl="$(ls /tmp/wheels/tblite-*cp312*aarch64*.whl 2>/dev/null | head -1)"; \
+        if [ -n "$whl" ]; then \
+            uv pip install --python /opt/venv "$whl"; \
+        elif ls /tmp/wheels/tblite-*.whl >/dev/null 2>&1; then \
+            echo "deps-lite-xtb: tblite wheels in the context but none tagged cp312 (this image is python3.12): $(ls /tmp/wheels/tblite-*.whl | xargs -n1 basename | tr '\n' ' ')" >&2; \
+            exit 1; \
+        else \
+            echo "deps-lite-xtb: empty tblite-wheel context — image keeps the no-tblite posture"; \
+        fi; \
+    else \
+        # The lock-pinned PyPI wheel, hash-checked: `uv export` emits \
+        # every locked artifact hash; the awk keeps only the tblite \
+        # stanza, and --no-deps reuses the base venv's locked \
+        # cffi/numpy/pycparser. \
+        uv export --frozen --extra estimate --no-emit-project -o /tmp/req-locked.txt && \
+        awk '/^tblite==/{f=1} f{print; if ($0 !~ /\\$/) exit}' /tmp/req-locked.txt > /tmp/req-tblite.txt && \
+        uv pip install --python /opt/venv --no-deps --require-hashes -r /tmp/req-tblite.txt; \
+    fi
+
+# -----------------------------------------------------------------------------
 # Stage: builder-lite — install precis-mcp (base only, --no-deps) into the
 # torch-free venv. Source edits invalidate from here; deps stay cached.
 # -----------------------------------------------------------------------------
-FROM deps-lite AS builder-lite
+FROM deps-lite-xtb AS builder-lite
 
 COPY . /build/precis-mcp/
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
