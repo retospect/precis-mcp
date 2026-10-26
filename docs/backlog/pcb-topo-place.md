@@ -374,6 +374,14 @@ longer a hand-off — topo grows its own realiser (§5). Until it lands a
 placed board reports every fanout `unrouted` and routed copper is not
 available.
 
+2026-10-26 — `precis_geom.pcb.objective(**shares)` landed: the
+script-level builder for `pcb.local.topo_place(objective=...)`'s mapping,
+validating against `ObjectiveShares`'s five terms (`crossings`/
+`ratsnest`/`vias`/`overlap`/`spread`). `ref='seed'` only — a named
+earlier run and route-stage terms (`wirelength` — no router to price
+them against) are still GAPs, and the `pcb_place` job's `placer='topo'`
+path above still forwards nothing but `PRESETS['compact']`.
+
 ### 0. Prerequisites (folded gripes)
 
 **0a — gr514458, lint-clean alias.**

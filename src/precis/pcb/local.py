@@ -658,6 +658,33 @@ class TopoRun:
         return str(self.files["summary.txt"])
 
 
+def _objective_shares(objective: Any, preset: str) -> Any:
+    """``objective=`` resolved to an ``ObjectiveShares`` — ``None`` keeps
+    today's preset lookup bit-for-bit (pcb-intent-api slice 1: the house
+    default is unchanged); a mapping (e.g. from :func:`precis_geom.pcb.
+    objective`) fills only the terms it names at ``0.0``, never an
+    ``ObjectiveShares`` class default, so ``{"ratsnest": 1.0}`` is
+    literally all-ratsnest, not ratsnest topped up against a hidden
+    0.8 crossings floor."""
+    from precis.pcb import topoplace as _tp
+
+    if objective is None:
+        if preset not in _tp.PRESETS:
+            raise LocalError(
+                f"unknown topo-place preset {preset!r} — known: {sorted(_tp.PRESETS)}"
+            )
+        return _tp.PRESETS[preset]
+    if isinstance(objective, _tp.ObjectiveShares):
+        return objective
+    return _tp.ObjectiveShares(
+        crossings=float(objective.get("crossings", 0.0)),
+        ratsnest=float(objective.get("ratsnest", 0.0)),
+        vias=float(objective.get("vias", 0.0)),
+        overlap=float(objective.get("overlap", 0.0)),
+        spread=float(objective.get("spread", 0.0)),
+    )
+
+
 def topo_place(
     board: Any,
     *,
@@ -674,28 +701,17 @@ def topo_place(
     ``pins.json``/``summary.txt``/``placement.svg``, byte-deterministic
     per Decision 22). ``preset`` names a share vector
     (:data:`~precis.pcb.topoplace.design.PRESETS`); ``objective=``
-    overrides it with an ``ObjectiveShares`` or a ``{crossings,
-    ratsnest}`` mapping. ``catalog=`` supplies LCSC-keyed footprint
-    rows, exactly as :func:`place`. A :class:`PinConflict` surfaces
-    unchanged — it is the board script's error, not the run's."""
+    overrides it with an ``ObjectiveShares`` or the mapping
+    :func:`precis_geom.pcb.objective` builds (``crossings``, ``ratsnest``,
+    ``vias``, ``overlap``, ``spread`` — pcb-intent-api §Weights).
+    ``catalog=`` supplies LCSC-keyed footprint rows, exactly as
+    :func:`place`. A :class:`PinConflict` surfaces unchanged — it is the
+    board script's error, not the run's."""
     from precis.pcb import topoplace as _tp
     from precis.pcb.topoplace import runstore as _runstore
     from precis.pcb.topoplace import summary as _tpsummary
 
-    if objective is None:
-        if preset not in _tp.PRESETS:
-            raise LocalError(
-                f"unknown topo-place preset {preset!r} — known: {sorted(_tp.PRESETS)}"
-            )
-        obj = _tp.PRESETS[preset]
-    elif isinstance(objective, _tp.ObjectiveShares):
-        obj = objective
-    else:
-        obj = _tp.ObjectiveShares(
-            crossings=float(objective.get("crossings", 0.8)),
-            ratsnest=float(objective.get("ratsnest", 0.2)),
-            overlap=float(objective.get("overlap", 0.0)),
-        )
+    obj = _objective_shares(objective, preset)
 
     design = _design(board, catalog)
     ir = _build_ir(design)

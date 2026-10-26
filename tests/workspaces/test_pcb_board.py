@@ -398,6 +398,24 @@ def test_measures_net_class_role_generator() -> None:
     assert batch["generators"] == [g]
 
 
+def test_objective_shares() -> None:
+    """``pcb.objective(...)`` (pcb-intent-api §Weights, slice 1): a plain
+    shares mapping over the terms the topo-place objective actually
+    prices today — an unknown term, a route-stage term (no router to
+    price it against), a non-seed ``ref=``, or no terms at all raise;
+    a valid call carries the kwargs through unchanged."""
+    assert pcb.objective(ratsnest=0.8, crossings=0.2) == {
+        "ratsnest": 0.8,
+        "crossings": 0.2,
+    }
+    with pytest.raises(PcbBuilderError, match="unknown term"):
+        pcb.objective(wirelength=0.7, vias=0.3)
+    with pytest.raises(PcbBuilderError, match="at least one term"):
+        pcb.objective()
+    with pytest.raises(PcbBuilderError, match="ref="):
+        pcb.objective(ratsnest=1.0, ref="run-42")
+
+
 def test_footprint_registration_order_and_dedup() -> None:
     b = Board("t11")
     late = Footprint("LATE", [pad("1", "rect", 0, 0, w=1, h=1)])
