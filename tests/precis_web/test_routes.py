@@ -2420,8 +2420,10 @@ def test_paper_replace_pdf_swaps_file_bypassing_ocr(client, runtime, tmp_path) -
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    # Replace-pdf lives on the Meta tab — the redirect keeps the user there.
-    assert resp.headers["location"] == "/papers/10?tab=Meta"
+    # Replace-pdf lives on the Meta tab — the redirect keeps the user there
+    # and flashes what the swap did (gr519746: no more silent outcome).
+    loc = resp.headers["location"]
+    assert "tab=Meta" in loc and "pdf_note=" in loc
     dest = tmp_path / "s" / "smith2024.pdf"
     assert dest.read_bytes() == good
     # pointer refreshed for the paper's sha ("abc") to the path we wrote.
@@ -2438,6 +2440,102 @@ def test_paper_replace_pdf_rejects_non_pdf(client, runtime, tmp_path) -> None:
     )
     assert resp.status_code == 400
     assert not (tmp_path / "s" / "smith2024.pdf").exists()
+
+
+def test_paper_replace_pdf_shaless_ref_stages_and_queues_attach(
+    client, runtime, tmp_path, monkeypatch
+) -> None:
+    """gr519746: paper 90 (slug ``javey2003``) has ``pdf_sha256 NULL`` —
+    there is no pdfs row to repoint, so a byte swap would attach nothing.
+    The upload instead stages under ``PRECIS_UPLOAD_STAGING`` (outside the
+    watched inbox), queues a ``paper_pull`` attach job carrying the sha,
+    journals a ref_event, and lands back on Meta with a visible note."""
+    import hashlib
+
+    from precis.ingest import pdf_upload
+    from precis.workers.job_types import paper_pull
+
+    staging = tmp_path / "staging"
+    monkeypatch.setenv("PRECIS_UPLOAD_STAGING", str(staging))
+    # The fake pool answers "not a live ref"; stand the gate down so the
+    # staging/queue path is what's exercised here.
+    monkeypatch.setattr(paper_pull, "target_problem", lambda *a: None)
+    good = b"%PDF-1.7\nuploaded body\n"
+    resp = client.post(
+        "/papers/90/replace-pdf",
+        files={"file": ("paper.pdf", good, "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    loc = resp.headers["location"]
+    assert "tab=Meta" in loc and "pdf_note=" in loc
+
+    sha = hashlib.sha256(good).hexdigest()
+    staged = staging / pdf_upload.staged_name(90, sha)
+    assert staged.read_bytes() == good
+
+    # The attach went through the job door — params carry the sha so the
+    # worker's pull resolves this staging and sets refs.pdf_sha256 on fold.
+    puts = [a for v, a in runtime.calls if v == "put"]
+    assert len(puts) == 1
+    job = puts[0]
+    assert job["kind"] == "job" and job["job_type"] == "paper_pull"
+    assert job["params"]["ref_id"] == 90
+    assert job["params"]["upload_sha"] == sha
+
+    # A ref_event journals the staged upload immediately.
+    assert any(
+        e["event"] == "pdf_upload_staged" and e["payload"]["sha"] == sha
+        for e in runtime.store.appended_events
+    )
+    # Neither half of the old swap ran: no corpus write, no repoint.
+    assert runtime.store.storage_path_writes == []
+    assert not (tmp_path / "j" / "javey2003.pdf").exists()
+
+
+def test_paper_replace_pdf_shaless_bad_target_refuses_visibly(
+    client, runtime, tmp_path, monkeypatch
+) -> None:
+    """gr519746 review: the route's raw ``put(kind='job')`` skipped the
+    paper handler's target gate, so a sha-less non-paper doc-family ref
+    (pres/cfp/datasheet) got a "queued" flash then failed unseen as
+    ``bad_target``. The check now runs before staging — a visible
+    pdf_note refusal, no staged file, no job."""
+    from precis.workers.job_types import paper_pull
+
+    staging = tmp_path / "staging"
+    monkeypatch.setenv("PRECIS_UPLOAD_STAGING", str(staging))
+    monkeypatch.setattr(
+        paper_pull,
+        "target_problem",
+        lambda *a: "is a pres, not a paper",
+    )
+    resp = client.post(
+        "/papers/90/replace-pdf",
+        files={"file": ("deck.pdf", b"%PDF-1.7\nx\n", "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    loc = resp.headers["location"]
+    assert "tab=Meta" in loc and "pdf_note=" in loc
+    assert "refused" in loc and "pres" in loc
+    assert not list(staging.glob("*"))
+    assert not any(v == "put" for v, _ in runtime.calls)
+
+
+def test_paper_replace_pdf_shaless_refuses_without_staging(
+    client, runtime, monkeypatch
+) -> None:
+    """Staging unconfigured (``PRECIS_UPLOAD_STAGING`` unset) refuses
+    visibly — a 400 naming the var, not a silent redirect."""
+    monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
+    resp = client.post(
+        "/papers/90/replace-pdf",
+        files={"file": ("paper.pdf", b"%PDF-1.7\nx\n", "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "PRECIS_UPLOAD_STAGING" in resp.text
 
 
 def test_paper_edit_duplicate_identifier_renders_resolver(

@@ -947,7 +947,8 @@ class PaperHandler(Handler):
         if problem is not None:
             raise BadInput(
                 f"{slug} {problem}",
-                next="pdf_url feeds a stub with no body and no PDF; "
+                next="pdf_url feeds a paper that still needs a PDF or a "
+                "body (a sha-less or bodiless ref); "
                 "get(kind='paper', id=...) to check its state",
             )
         hub = self.hub if self.hub is not None else Hub(store=self.store)
@@ -988,7 +989,8 @@ class PaperHandler(Handler):
         if problem is not None:
             raise BadInput(
                 f"{slug} {problem}",
-                next="pdf_upload_link feeds a stub with no body and no PDF; "
+                next="pdf_upload_link feeds a paper that still needs a PDF "
+                "or a body (a sha-less or bodiless ref); "
                 "get(kind='paper', id=...) to check its state",
             )
         _uploads.require_uploads_dir()
@@ -1060,7 +1062,8 @@ class PaperHandler(Handler):
         if problem is not None:
             raise BadInput(
                 f"{slug} {problem}",
-                next="pdf_upload attaches to a stub with no body and no PDF; "
+                next="pdf_upload attaches to a paper that still needs a PDF "
+                "or a body (a sha-less or bodiless ref); "
                 "get(kind='paper', id=...) to check its state",
             )
         _uploads.require_uploads_dir()

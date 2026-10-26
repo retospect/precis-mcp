@@ -28,6 +28,7 @@ triage prefill, backlinks panel (incoming ``links`` edges by
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 from collections.abc import Callable
@@ -464,6 +465,7 @@ def _render_detail(
     triage: bool = False,
     prefill: dict[str, Any] | None = None,
     triage_msg: str = "",
+    pdf_note: str = "",
     cited: dict[str, Any] | None = None,
     initial_tab: str = "",
     meta_panel: str | None = None,
@@ -555,6 +557,9 @@ def _render_detail(
         "is_triage": has_triage,
         "prefill": prefill,
         "triage_msg": triage_msg,
+        # Replace-PDF outcome banner (?pdf_note= on the post-redirect land —
+        # a URL query value, so it stays capped like design_chat's flash).
+        "pdf_note": pdf_note[:400],
         # "Reviewed" sign-off (refs.human_verified_at/by) — the Meta tab's
         # mark-reviewed / undo row.
         "is_reviewed": bool(verified_at),
@@ -784,12 +789,14 @@ async def detail(
     triage: int = 0,
     chunk: str | None = None,
     tab: str = "",
+    pdf_note: str = "",
 ) -> HTMLResponse | RedirectResponse:
     """Paper detail: metadata sidebar + PDF.js reader. ``?chunk=N`` (a
     citation click) surfaces that chunk's text as a highlighted card.
     ``?tab=Meta`` (or Navigate / Jump) opens that sidebar tab; with no
     ``tab`` given the page opens on Meta (gr351776b) — that's what an
-    operator checking or fixing a record wants first.
+    operator checking or fixing a record wants first. ``?pdf_note=`` is the
+    Replace-PDF post's outcome flash, rendered on the Meta tab.
 
     Addressable by cite_key slug (canonical) or numeric id; a numeric id
     that owns a slug 301-redirects to the slug URL so links settle on the
@@ -828,6 +835,7 @@ async def detail(
         ref,
         triage=bool(triage),
         cited=_cited_chunk(store, ref.id, chunk),
+        pdf_note=pdf_note,
         initial_tab=tab.strip().capitalize() or "Meta",
         template="_reader/reader.html.j2" if in_pane else "papers/detail.html.j2",
         in_pane=in_pane,
@@ -1678,44 +1686,58 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
     )
 
 
+def _replace_pdf_redirect(ref_id: int, note: str) -> RedirectResponse:
+    """303 back to the Meta tab with the outcome in the query string — a
+    POST/redirect pair is how the upload's result stays visible (the old
+    silent redirect made a no-op upload look successful, gr519746)."""
+    query = urlencode({"tab": "Meta", "pdf_note": note})
+    return RedirectResponse(url=f"/papers/{ref_id}?{query}", status_code=303)
+
+
 @router.post("/{ref_id}/replace-pdf", response_model=None)
 async def replace_pdf(
     request: Request,
     ref_id: int,
     file: UploadFile = File(...),
 ) -> Response:
-    """Overwrite a paper's on-disk PDF with an operator-uploaded copy —
-    **without** re-ingesting or re-OCRing.
+    """Handle an operator PDF upload — two different repairs under one button.
 
-    Some stored PDFs are corrupted (the bytes won't render) even though the
-    text chunks + metadata extracted at ingest are fine. This is the repair:
-    a straight file swap so the viewer (:func:`pdf`) streams good bytes,
-    leaving chunks/embeddings/metadata untouched. Safe because the viewer
-    and the ``corpus_reconcile`` worker both resolve a PDF by *path /
-    existence*, never by re-hashing the file against the stored
-    ``pdf_sha256`` — so a swapped file is served immediately and still
-    counts as "held".
+    * **Ref holds a ``pdf_sha256``** — a straight file swap, **without**
+      re-ingesting or re-OCRing. Some stored PDFs are corrupted (the bytes
+      won't render) even though the text chunks + metadata extracted at
+      ingest are fine; swapping the bytes under the held sha is the repair
+      (the viewer and ``corpus_reconcile`` resolve by path/existence, never
+      by re-hashing). Writes to the file's currently-resolved location when
+      it has one, else the canonical ``corpus_pdf_dest`` under the primary
+      corpus root, atomically (sibling temp + ``os.replace``), and refreshes
+      the authoritative ``storage_path`` pointer so the resolver prefers the
+      path just written. ``pdf_sha256`` stays as-is — the swap is a bypass.
+      Needs a cite_key to name the corpus file.
+    * **Ref has no ``pdf_sha256``** (a stub, or a ``drop_body``/
+      ``pdf_cleared`` survivor — gr519746) — there is no ``pdfs`` row to
+      repoint, so the swap silently did nothing. The upload instead goes
+      through the feat-a2 attach lane: bytes stage under
+      ``$PRECIS_UPLOAD_STAGING/<ref_id>-<sha>.pdf`` (OUTSIDE the watched
+      inbox — never write there directly), a ``paper_pull`` job is queued
+      with ``upload_sha``, and the worker runs the same ``check_pdf``
+      identity gate + sidecar + inbox drop as an agent upload. The ingest
+      fold then lands the ``pdfs`` row, ``refs.pdf_sha256``, the
+      ``pdf_uploaded`` ref_event and, for a bodiless stub, the extracted
+      body — attach-only when a markup body already exists. A
+      ``pdf_upload_staged`` ref_event journals the web half immediately.
+    """
+    from precis.ingest import pdf_upload
+    from precis.workers.job_types import paper_pull
 
-    Writes to the file's currently-resolved location when it has one (so a
-    PDF filed off-convention stays put), else to the canonical
-    ``corpus_pdf_dest`` under the primary corpus root. Requires a cite_key
-    to name the file; rejects a non-PDF upload (``%PDF`` magic). The stored
-    ``pdf_sha256`` is intentionally left as-is (the swap is a bypass), but
-    the authoritative ``storage_path`` pointer is refreshed so the resolver
-    prefers the path we just wrote."""
     store = get_store(request)
     refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
     ref = refs.get(ref_id)
     if ref is None or ref.kind not in _DOC_FAMILY:
         raise NotFound(f"document id={ref_id} not found")
-    cite_key = ref.slug or ""
-    if not cite_key:
-        raise BadInput(
-            f"paper id={ref_id} has no cite_key to name a PDF file — "
-            "mint a short handle (Edit metadata) before replacing the PDF."
-        )
 
-    data = await file.read()
+    # Read at most cap+1 bytes — an oversized body 400s after the first
+    # chunk instead of buffering the whole upload before the size check.
+    data = await file.read(pdf_upload.MAX_UPLOAD_BYTES + 1)
     if not data:
         raise BadInput("no file uploaded — choose a PDF to replace with.")
     if not data.startswith(b"%PDF"):
@@ -1723,25 +1745,98 @@ async def replace_pdf(
             "uploaded file is not a PDF (missing %PDF header) — "
             "this replaces the stored file verbatim, so it must be a PDF."
         )
+    if len(data) > pdf_upload.MAX_UPLOAD_BYTES:
+        raise BadInput(
+            f"uploaded file is too large — the upload cap is "
+            f"{pdf_upload.MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+        )
 
-    cfg = get_web_config(request)
-    dest = _resolve_pdf_for_ref(store, cfg.corpus_dirs, ref)
-    if dest is None:
-        dest = corpus_pdf_dest(cite_key, cfg.corpus_dirs[0])
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic swap: write a sibling temp then os.replace, so a viewer never
-    # sees a half-written file (and a failed write leaves the old bytes).
-    tmp = dest.with_name(dest.name + ".upload.tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, dest)
-
-    # Keep pdf_sha256 as-is (bypass), but point the authoritative resolver
-    # at the path we just wrote so it never re-guesses a stale shard.
     sha = getattr(ref, "pdf_sha256", None)
-    if sha:
-        store.set_pdf_storage_path(sha, str(dest))
+    cfg = get_web_config(request)
 
-    return RedirectResponse(url=f"/papers/{ref_id}?tab=Meta", status_code=303)
+    if sha:
+        cite_key = ref.slug or ""
+        if not cite_key:
+            raise BadInput(
+                f"paper id={ref_id} has no cite_key to name a PDF file — "
+                "mint a short handle (Edit metadata) before replacing the PDF."
+            )
+        dest = _resolve_pdf_for_ref(store, cfg.corpus_dirs, ref)
+        if dest is None:
+            dest = corpus_pdf_dest(cite_key, cfg.corpus_dirs[0])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic swap: write a sibling temp then os.replace, so a viewer
+        # never sees a half-written file (and a failed write leaves the
+        # old bytes).
+        tmp = dest.with_name(dest.name + ".upload.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, dest)
+        # Keep pdf_sha256 as-is (bypass), but point the authoritative
+        # resolver at the path we just wrote so it never re-guesses a
+        # stale shard.
+        store.set_pdf_storage_path(sha, str(dest))
+        return _replace_pdf_redirect(
+            ref_id,
+            f"PDF bytes swapped at {dest.name} — the held sha is unchanged; "
+            "chunks, embeddings and metadata were left alone.",
+        )
+
+    # Sha-less ref: stage the bytes and queue the attach job. Staging is a
+    # deploy-time contract (never an inbox fallback); unset it refuses here
+    # rather than after the bytes are anywhere.
+    directory = pdf_upload.require_uploads_dir()
+    # Re-check the attach target contract before writing the staged file —
+    # this route queues a raw ``put(kind='job')``, which skips the paper
+    # handler's up-front gate, so a bad target (a sha-less pres/cfp/
+    # datasheet, a ref that quietly completed) would otherwise get the
+    # "queued" flash and then fail as ``bad_target`` with no visible sign.
+    problem = await asyncio.to_thread(paper_pull.target_problem, store, ref_id)
+    if problem is not None:
+        return _replace_pdf_redirect(
+            ref_id, f"PDF upload refused — the upload target {problem}."
+        )
+    upload_sha = hashlib.sha256(data).hexdigest()
+    await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
+    staged = directory / pdf_upload.staged_name(ref_id, upload_sha)
+    tmp = staged.with_name(staged.name + ".upload.tmp")
+    await asyncio.to_thread(tmp.write_bytes, data)
+    await asyncio.to_thread(os.replace, tmp, staged)
+
+    body, is_error = await await_dispatch(
+        request,
+        "put",
+        {
+            "kind": "job",
+            "parent_id": ref_id,
+            "job_type": paper_pull.JOB_TYPE,
+            "executor": "job_inproc",
+            "params": {
+                "ref_id": ref_id,
+                "upload_sha": upload_sha,
+                "reason": "web replace-pdf upload",
+            },
+            "idem_key": paper_pull.idem_key(ref_id, f"upload:{upload_sha}"),
+        },
+    )
+    if is_error:
+        # Nothing was queued — drop the staging now rather than leaving it
+        # for the sweep, and surface the handler's own refusal.
+        staged.unlink(missing_ok=True)
+        return _paper_error(request, "Replace PDF", body, 400)
+    await asyncio.to_thread(
+        store.append_event,
+        ref_id,
+        source=cfg.source,
+        event="pdf_upload_staged",
+        payload={"sha": upload_sha, "bytes": len(data)},
+    )
+    return _replace_pdf_redirect(
+        ref_id,
+        f"PDF upload queued for attach (sha256 {upload_sha[:16]}…) — a "
+        "paper_pull job will identity-check the file and attach it to this "
+        "paper; the outcome lands on meta.paper_pull and the pdf_uploaded "
+        "ref_event.",
+    )
 
 
 # ---- Edit + delete ----------------------------------------------------

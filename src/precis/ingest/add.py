@@ -253,6 +253,14 @@ class IngestResult:
     #: the body source and belongs in the corpus) from a genuine
     #: duplicate re-drop on an already-bodied ref (attach-only → 0).
     body_chunks_written: int = 0
+    #: gr519746 — ``True`` when this call promoted ``refs.pdf_sha256`` to
+    #: this ingest's file (``register_aliases_and_maybe_upgrade``'s
+    #: promotion leg: the ref carried no ``pdf_sha256``, or a bodiless
+    #: re-point). Lets the watcher tell an *attach-only* drop — the file
+    #: just became the ref's canonical printable and must take the
+    #: cite_key corpus path — from a byte-different re-drop on a ref that
+    #: already holds a PDF (a genuine duplicate → ``errors/duplicates``).
+    pdf_promoted: bool = False
 
 
 class MarkupTriggerSpent(Exception):
@@ -763,8 +771,29 @@ def _ingest_pdf(
             # §"Stub upgrade" for the rationale (chase findings
             # waiting on this stub resume on the next chase pass
             # without any extra plumbing).
+            # gr519746: capture the ref's stored ``pdf_sha256`` around the
+            # upgrade so the result can tell the watcher whether this call
+            # *promoted* the canonical sha to this ingest's file
+            # (attach-only onto a bodied/sha-less ref, or the bodiless
+            # re-point) — as opposed to merely registering an alias on a
+            # ref that already held a PDF (a real duplicate re-drop).
+            pre_sha_row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                (existing,),
+            ).fetchone()
+            pre_sha = pre_sha_row[0] if pre_sha_row else None
             chunks_written = register_aliases_and_maybe_upgrade(
                 existing, paper, conn=conn
+            )
+            post_sha_row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                (existing,),
+            ).fetchone()
+            pdf_promoted = bool(
+                paper.pdf_sha256
+                and post_sha_row
+                and post_sha_row[0] == paper.pdf_sha256
+                and pre_sha != paper.pdf_sha256
             )
             # A ``pa<id>``-named file that de-duped against a different live
             # ref: the named stub wins; the twin merges into it (gr479362).
@@ -811,6 +840,7 @@ def _ingest_pdf(
                         if chunks_written
                         else 0
                     ),
+                    pdf_promoted=pdf_promoted,
                 ),
                 kind=stored_kind,
             )
@@ -2820,6 +2850,7 @@ def _hit_result_from_db(
     fallback: PaperToWrite | None = None,
     chunks_written: int = 0,
     body_chunks_written: int = 0,
+    pdf_promoted: bool = False,
 ) -> IngestResult:
     """Build an ``inserted=False`` result by re-fetching the existing
     ref's identifiers from the DB.
@@ -2877,6 +2908,7 @@ def _hit_result_from_db(
         ),
         ref_has_body=_ref_has_body(ref_id, conn=conn),
         body_chunks_written=body_chunks_written,
+        pdf_promoted=pdf_promoted,
     )
 
 

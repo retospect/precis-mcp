@@ -54,9 +54,19 @@
     </form>
   </div>
 
+  {# Replace-PDF outcome flash — the POST redirects back with ?pdf_note= so
+     a queued attach / completed swap is announced instead of looking like a
+     silent no-op (gr519746). #}
+  {% if pdf_note %}
+  <div class="mt-2 rounded-lg border border-info-strong bg-info-subtle p-3 text-xs">
+    <p class="text-info-deep">{{ pdf_note }}</p>
+  </div>
+  {% endif %}
+
   {# Replace a corrupted PDF with a good copy — a straight file swap that
-     skips OCR/ingest (chunks + metadata are kept). Needs a cite_key to name
-     the file on disk. #}
+     skips OCR/ingest (chunks + metadata are kept) when the paper already
+     holds a sha; a sha-less paper's upload goes through the staged
+     paper_pull attach instead. Needs a cite_key to name the file on disk. #}
   {% if paper.slug %}
   <form method="post" action="/papers/{{ paper.id }}/replace-pdf"
         enctype="multipart/form-data" class="mt-2 border-t border-line-subtle pt-2"

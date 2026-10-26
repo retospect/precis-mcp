@@ -5,9 +5,11 @@ The enqueued half of ``put(kind='paper', id=<stub>, args={'pdf_url': ...})``
 find (author / institution hosts). Steps:
 
 1. **Re-check the target** (the put checked too; the state may have moved):
-   a live ``paper`` with no body chunks and ``pdf_sha256 IS NULL`` — the only
-   shape the ingest fold promotes in place
-   (``precis.ingest.add._valid_fold_stub``).
+   a live ``paper`` the ingest fold can still take — ``pdf_sha256 IS NULL``
+   (in-place promote, or attach-only onto a markup-built body) or bodiless
+   with a held preview — mirroring ``precis.ingest.add._valid_fold_stub``.
+   A complete ref (body AND a held PDF) refuses: its drop would mint a
+   duplicate.
 2. **Fetch** through ``safe_stream`` (an agent-supplied URL is external
    input), capped at 50 MB, ``%PDF`` magic required — the same bounded
    download ``datasheet_pull`` uses.
@@ -165,22 +167,32 @@ def validate(store: Store, params: dict[str, Any]) -> None:
 
 def target_problem(store: Store, ref_id: int) -> str | None:
     """Why ``ref_id`` cannot take a pulled PDF, else ``None``. Shared by the
-    put (immediate refusal) and the job (state may have moved)."""
+    put (immediate refusal) and the job (state may have moved).
+
+    The gate mirrors the ingest fold's own target contract
+    (:func:`precis.ingest.add._valid_fold_stub`): a ref still takes a pulled
+    file while ``pdf_sha256 IS NULL`` — the fold promotes a stub in place or,
+    for a ref that already has a body (e.g. markup-ingested full text), folds
+    attach-only and keeps its chunks (gr519746, the web upload repair case)
+    — or while bodiless (a held preview gets re-pointed, 5d95cb2fc/gr465474).
+    Only a *complete* ref (body AND a held PDF) refuses: a drop would mint a
+    duplicate ref instead of folding."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            f"SELECT r.kind, {has_body_sql('r')} FROM refs r "
-            "WHERE r.ref_id = %s AND r.retired_at IS NULL",
+            f"SELECT r.kind, {has_body_sql('r')}, r.pdf_sha256 IS NOT NULL "
+            "FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL",
             (ref_id,),
         ).fetchone()
     if row is None:
         return "is not a live ref"
-    kind, has_body = row
+    kind, has_body, has_pdf = row
     if kind != "paper":
         return f"is a {kind}, not a paper"
-    if has_body:
-        return "already has a body (chunks); pdf_url only feeds body-less stubs"
-    # A bodiless ref that already holds a PDF (e.g. a 1-page preview) is a
-    # valid sidecar fold target since 5d95cb2fc (gr465474).
+    if has_body and has_pdf:
+        return (
+            "already has a body and a held PDF — a pulled file can't fold "
+            "onto a complete ref"
+        )
     return None
 
 
@@ -196,12 +208,13 @@ def blocked_host(url: str) -> str | None:
     return None
 
 
-def _stub_facts(store: Store, ref_id: int) -> tuple[str, str | None, str]:
-    """``(title, doi, entry_type)`` of the stub; empty string / ``None``."""
+def _stub_facts(store: Store, ref_id: int) -> tuple[str, str | None, str, bool]:
+    """``(title, doi, entry_type, has_body)`` of the stub."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT coalesce(title, ''), coalesce(meta->>'entry_type', '') "
-            "FROM refs WHERE ref_id = %s",
+            f"SELECT coalesce(title, ''), coalesce(meta->>'entry_type', ''), "
+            f"{has_body_sql('r')} "
+            "FROM refs r WHERE r.ref_id = %s",
             (ref_id,),
         ).fetchone()
         doi = conn.execute(
@@ -209,8 +222,10 @@ def _stub_facts(store: Store, ref_id: int) -> tuple[str, str | None, str]:
             "WHERE ref_id = %s AND id_kind = 'doi' ORDER BY id_value LIMIT 1",
             (ref_id,),
         ).fetchone()
-    title, etype = (row[0], row[1]) if row else ("", "")
-    return str(title), (str(doi[0]) if doi else None), str(etype)
+    title, etype, has_body = (
+        (str(row[0]), str(row[1]), bool(row[2])) if row else ("", "", False)
+    )
+    return title, (str(doi[0]) if doi else None), etype, has_body
 
 
 def check_pdf(
@@ -325,7 +340,7 @@ def pull(
                     raise _dl._Failed("blocked_host", f"redirected to {bad}")
             else:
                 raise _dl._Failed("bad_source", "paper_pull needs url or upload_sha")
-            title, doi, etype = _stub_facts(store, ref_id)
+            title, doi, etype, has_body = _stub_facts(store, ref_id)
             checks = check_pdf(staged, title=title, doi=doi, entry_type=etype)
             write_sidecar(
                 staged,
@@ -337,6 +352,10 @@ def pull(
                     else SIDECAR_SOURCE
                 ),
                 url=final_url,
+                # A bodied target takes the file attach-only — skipping the
+                # Marker run whose chunks the fold would discard anyway
+                # (gr519746's repair case: markup body + cleared PDF).
+                printable_only=has_body,
             )
             # Sidecar first, PDF last: the watcher keys off the ``.pdf``.
             os.replace(sidecar_path(staged), sidecar_path(target))

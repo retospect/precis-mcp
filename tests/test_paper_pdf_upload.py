@@ -22,6 +22,7 @@ import hashlib
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 
@@ -69,18 +70,31 @@ def paper(store):
     return handler
 
 
-def _stub(store, *, body: bool = False, doi: str = "10.1234/stub") -> int:
+def _stub(
+    store, *, body: bool = False, pdf: bool = False, doi: str = "10.1234/stub"
+) -> int:
     ref_id, _ = store.upsert_stub_paper(
         identifiers=[("doi", doi)], title="A stub paper"
     )
-    if body:
-        with store.pool.connection() as conn:
+    with store.pool.connection() as conn:
+        if body:
             conn.execute(
                 "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
                 "VALUES (%s, 0, 'paragraph', 'body', '{}'::jsonb)",
                 (ref_id,),
             )
-            conn.commit()
+        if pdf:
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/stub') "
+                "ON CONFLICT (pdf_sha256) DO NOTHING",
+                ("ab" * 32, "ab" * 32),
+            )
+            conn.execute(
+                "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s",
+                ("ab" * 32, ref_id),
+            )
+        conn.commit()
     return ref_id
 
 
@@ -181,8 +195,10 @@ def test_mint_returns_single_use_url(paper, store, dirs, link_key):
     assert "'pdf_upload': '<sha256>'" in body
 
 
-def test_mint_refuses_bodied_target(paper, store, dirs, link_key):
-    ref_id = _stub(store, body=True)
+def test_mint_refuses_complete_target(paper, store, dirs, link_key):
+    """A ref holding BOTH a body and a PDF can't take an upload — its drop
+    would mint a duplicate rather than fold (gr519746)."""
+    ref_id = _stub(store, body=True, pdf=True)
     with pytest.raises(BadInput, match="already has a body"):
         paper.put(id=ref_id, args={"pdf_upload_link": True})
 
@@ -294,11 +310,22 @@ def test_attach_refuses_without_reason(paper, store, staging):
     assert _jobs(store) == []
 
 
-def test_attach_refuses_bodied_target(paper, store, staging):
-    ref_id = _stub(store, body=True)
+def test_attach_refuses_complete_target(paper, store, staging):
+    ref_id = _stub(store, body=True, pdf=True)
     _stage_upload(staging, ref_id)
     with pytest.raises(BadInput, match="already has a body"):
         paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "r"})
+
+
+def test_attach_accepts_shaless_bodied_target(paper, store, staging):
+    """A sha-less ref that already has a body (the gr519746 repair case:
+    markup-ingested body, pdf cleared) takes the upload attach — the fold
+    lands it attach-only, keeping the body."""
+    ref_id = _stub(store, body=True)
+    _stage_upload(staging, ref_id)
+    body = paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "r"}).body
+    assert "queued" in body
+    assert len(_jobs(store)) == 1
 
 
 def test_attach_dry_run_writes_nothing(paper, store, staging):
@@ -360,6 +387,8 @@ def test_pull_from_upload_drops_pdf_and_sidecar(store, inbox, staging):
     sc = read_sidecar(pdfs[0])
     assert sc is not None
     assert (sc.ref_id, sc.source) == (ref_id, "agent_upload")
+    # A bodiless stub needs the Marker run — not a printable attach.
+    assert sc.printable_only is False
     # The staging is consumed — moved into the inbox proper.
     assert not staged.exists()
     events = _events(store, ref_id, "pdf_uploaded")
@@ -408,11 +437,161 @@ def test_pull_upload_identity_mismatch_drops_nothing(store, inbox, staging):
 
 
 def test_pull_upload_rechecks_target(store, inbox, staging):
-    ref_id = _stub(store, body=True)
+    ref_id = _stub(store, body=True, pdf=True)
     _stage_upload(staging, ref_id)
     rec = paper_pull.pull(store, ref_id, upload_sha=_SHA)
     assert rec["reason"] == "bad_target"
     assert list(inbox.glob("*.pdf")) == []
+
+
+def test_pull_upload_drops_for_shaless_bodied_ref(store, inbox, staging):
+    """The gr519746 target shape — sha-less ref WITH a body: the drop
+    proceeds; the fold attaches the file printable-side (attach-only)."""
+    ref_id = _stub(store, body=True)
+    _stage_upload(staging, ref_id)
+    rec = paper_pull.pull(store, ref_id, upload_sha=_SHA, reason="mine")
+    assert rec["status"] == "dropped"
+    pdfs = list(inbox.glob("*.pdf"))
+    assert len(pdfs) == 1
+    sc = read_sidecar(pdfs[0])
+    assert sc is not None and sc.ref_id == ref_id
+    # The target already carries a body → the drop is marked attach-only
+    # so the watcher skips the Marker run the fold would discard.
+    assert sc.printable_only is True
+    events = _events(store, ref_id, "pdf_uploaded")
+    assert len(events) == 1 and events[0]["status"] == "dropped"
+
+
+def test_replace_pdf_web_to_corpus_end_to_end(
+    store, dirs, runtime_with_store, tmp_path, monkeypatch
+):
+    """gr519746 acceptance, all three legs on the real store:
+
+    1. ``POST /papers/<id>/replace-pdf`` on a sha-less BODIED ref stages
+       the bytes, queues the ``paper_pull`` job, journals
+       ``pdf_upload_staged`` and flashes ``pdf_note`` on the redirect;
+    2. ``paper_pull.pull`` moves the staging into the watch inbox with an
+       ``agent_upload`` sidecar marked ``printable_only`` (the target has
+       a body — no wasted Marker run) and journals ``pdf_uploaded``;
+    3. the watcher's ``process_pdf`` fold attaches the file: it lands at
+       the cite_key corpus path, the stale ``pdf_cleared`` survivor moves
+       to ``errors/superseded/``, ``refs.pdf_sha256`` is set, the ``pdfs``
+       row points at the corpus path, the body is untouched, and
+       ``pdf_superseded`` is journaled.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from precis.cli.watch import process_pdf
+    from precis.ingest.db_writer import PaperToWrite
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    inbox, staging = dirs
+    corpus = tmp_path / "corpus"
+    ref_id = _stub(store, body=True)
+    with store.pool.connection() as conn:
+        cite_key = conn.execute(
+            "SELECT id_value FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = 'cite_key'",
+            (ref_id,),
+        ).fetchone()[0]
+
+    # The stale corpus file the attach must displace (never delete).
+    old_bytes = b"%PDF-1.4\nstale pdf_cleared survivor\n"
+    old = corpus / cite_key[0].lower() / f"{cite_key}.pdf"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(old_bytes)
+    old_tag = hashlib.sha256(old_bytes).hexdigest()[:8]
+
+    # ── leg 1: the web upload ──────────────────────────────────────────
+    client = TestClient(
+        create_app(runtime=runtime_with_store, web_config=WebConfig(corpus_dir=corpus))
+    )
+    resp = client.post(
+        f"/papers/{ref_id}/replace-pdf",
+        files={"file": ("paper.pdf", _PDF, "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    loc = resp.headers["location"]
+    assert "tab=Meta" in loc and "pdf_note=" in loc
+    assert "queued" in unquote(loc)
+    assert (staging / pdf_upload.staged_name(ref_id, _SHA)).read_bytes() == _PDF
+    assert _jobs(store) == [
+        {"ref_id": ref_id, "upload_sha": _SHA, "reason": "web replace-pdf upload"}
+    ]
+    staged_events = _events(store, ref_id, "pdf_upload_staged")
+    assert len(staged_events) == 1 and staged_events[0]["sha"] == _SHA
+
+    # ── leg 2: the paper_pull job ──────────────────────────────────────
+    rec = paper_pull.pull(
+        store, ref_id, upload_sha=_SHA, reason="web replace-pdf upload"
+    )
+    assert rec["status"] == "dropped"
+    dropped = list(inbox.glob("*.pdf"))
+    assert len(dropped) == 1 and dropped[0].read_bytes() == _PDF
+    sc = read_sidecar(dropped[0])
+    assert sc is not None
+    assert (sc.ref_id, sc.source, sc.printable_only) == (
+        ref_id,
+        "agent_upload",
+        True,
+    )
+
+    # ── leg 3: the watcher drop ────────────────────────────────────────
+    # Marker is not the seam under test — extract_paper is faked with the
+    # file's real sha so the fold's promotion detection runs for real.
+    def _fake_extract(pdf_path, **_kw):
+        return PaperToWrite(
+            title="A stub paper",
+            authors=[],
+            year=None,
+            provider="embedded",
+            cite_key_prefix=cite_key,
+            pdf_sha256=_SHA,
+            pdf_storage_path=str(pdf_path),
+            pdf_page_count=len(_BODY),
+            pdf_size_bytes=len(_PDF),
+        )
+
+    monkeypatch.setattr("precis.ingest.pipeline.extract_paper", _fake_extract)
+    dest = process_pdf(
+        dropped[0],
+        store=store,
+        watch_dir=inbox,
+        corpus_dir=corpus,
+        corpus_pres_dir=tmp_path / "corpus_pres",
+        errors_dir=inbox / "errors",
+        duplicates_dir=inbox / "errors" / "duplicates",
+        debounce=0.01,
+        user="owner",
+    )
+
+    assert dest == corpus / cite_key[0].lower() / f"{cite_key}.pdf"
+    assert dest is not None
+    assert dest.read_bytes() == _PDF
+    assert not dropped[0].exists()
+    superseded = inbox / "errors" / "superseded" / f"{cite_key}-{old_tag}.pdf"
+    assert superseded.read_bytes() == old_bytes
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+        assert row[0] == _SHA
+        row = conn.execute(
+            "SELECT storage_path FROM pdfs WHERE pdf_sha256 = %s", (_SHA,)
+        ).fetchone()
+        assert row[0] == str(dest)
+        bodies = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0", (ref_id,)
+        ).fetchall()
+        assert [r[0] for r in bodies] == ["body"]
+    assert _events(store, ref_id, "pdf_uploaded")
+    superseded_events = _events(store, ref_id, "pdf_superseded")
+    assert len(superseded_events) == 1
+    assert superseded_events[0]["superseded"] == superseded.name
 
 
 # -- sweep ------------------------------------------------------------------

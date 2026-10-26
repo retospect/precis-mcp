@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import getpass
+import hashlib
 import logging
 import os
 import shutil
@@ -397,6 +398,9 @@ def watch(
     duplicates_dir = errors_dir / "duplicates"
     errors_dir.mkdir(exist_ok=True)
     duplicates_dir.mkdir(exist_ok=True)
+    # ``errors/superseded/`` holds the corpus occupant an attach-only drop
+    # displaced (gr519746) — moved aside, never deleted.
+    (errors_dir / "superseded").mkdir(exist_ok=True)
     corpus_dir.mkdir(parents=True, exist_ok=True)
     corpus_pres_dir.mkdir(parents=True, exist_ok=True)
 
@@ -936,9 +940,12 @@ def process_pdf(
     level — ``printable_only`` companions and SI files are exempt since
     they carry no body by design; (5) on ``inserted=False`` move to
     ``errors/duplicates`` — unless the corpus lacks the file
-    (``status=recovered``) or this call wrote the ref's first body chunks
+    (``status=recovered``), this call wrote the ref's first body chunks
     (``status=filled``, gr510690: a bodiless ref is fillable, not a
-    duplicate); (6) on exception write ``.error.txt`` next to
+    duplicate), or this call promoted ``refs.pdf_sha256`` onto a
+    previously sha-less ref (``status=attached``, gr519746: the new file
+    takes the cite_key corpus path and the displaced occupant moves to
+    ``errors/superseded/``); (6) on exception write ``.error.txt`` next to
     the PDF in ``errors/<ts>/`` and swallow — contained so the watcher
     loop survives a single bad PDF.
     """
@@ -1200,6 +1207,8 @@ _CORPUS_PLACING_STATUSES = frozenset(
         "recovered_pres",
         "filled",
         "filled_pres",
+        "attached",
+        "attached_pres",
     }
 )
 
@@ -1272,6 +1281,13 @@ def _handle_success(
         #      the corpus (``status=filled``) instead of parking under
         #      errors/duplicates while the earlier, extraction-empty copy
         #      stays canonical.
+        #  (d) this call promoted ``refs.pdf_sha256`` onto a ref that held
+        #      no PDF sha (``result.pdf_promoted``) while writing no body
+        #      chunks — the gr519746 attach-only case: the dropped file IS
+        #      the ref's new canonical printable, so it takes the cite_key
+        #      corpus path and the file sitting there (an older, superseded
+        #      copy — e.g. the ``drop_body``/``pdf_cleared`` survivor)
+        #      moves aside to ``errors/superseded/``, never deleted.
         target_root = corpus_pres_dir if is_pres else corpus_dir
         corpus_dest = (
             _corpus_pdf_dest(result.cite_key, target_root) if result.cite_key else None
@@ -1320,6 +1336,58 @@ def _handle_success(
                 result.body_chunks_written,
                 result.kind,
             )
+        elif result.pdf_promoted and corpus_dest is not None:
+            # (d) above — the corpus_dest check in the ``recovered`` branch
+            # guarantees a file sits at the cite_key path here.
+            superseded, superseded_sha = _move_aside_superseded(
+                corpus_dest,
+                cite_key=result.cite_key,
+                # ``errors/superseded/``, next to ``errors/duplicates/``.
+                dest_dir=duplicates_dir.parent / "superseded",
+            )
+            if is_pres:
+                dest = _move_to_pres_corpus(
+                    pdf, slug=result.cite_key, corpus_pres_dir=corpus_pres_dir
+                )
+            else:
+                dest = _move_to_corpus(
+                    pdf, cite_key=result.cite_key, corpus_dir=corpus_dir
+                )
+            status = "attached_pres" if is_pres else "attached"
+            log.info(
+                "precis ingest: attached %s as %s (ref_id=%d was sha-less; "
+                "superseded prior corpus file to %s, kind=%s)",
+                pdf.name,
+                result.cite_key,
+                result.ref_id,
+                superseded,
+                result.kind,
+            )
+            # Journal the displacement — the moved-aside file keeps its
+            # bytes addressable for forensics even though no pdfs row
+            # points at it anymore.
+            try:
+                # The old sha's pdfs row (when one exists) followed its
+                # bytes — repoint it at the superseded spot so it no
+                # longer names the corpus path the new file now holds.
+                if superseded_sha is not None:
+                    store.set_pdf_storage_path(superseded_sha, str(superseded))
+                store.append_event(
+                    result.ref_id,
+                    source="ingest:watch",
+                    event="pdf_superseded",
+                    payload={
+                        "superseded": superseded.name,
+                        "superseded_sha256": superseded_sha,
+                        "attached": dest.name,
+                        "pdf_sha256": result.pdf_sha256,
+                    },
+                )
+            except Exception:  # journalling is best-effort post-commit
+                log.warning(
+                    "precis ingest: could not journal pdf_superseded for ref_id=%d",
+                    result.ref_id,
+                )
         else:
             dest = _move_to(pdf, duplicates_dir)
             status = "existed_pres" if is_pres else "existed"
@@ -1846,6 +1914,47 @@ def _retire_markup_trigger(pdf: Path, watch_dir: Path) -> Path:
     the file for forensics rather than deleting it. Returns the post-move
     path; tolerates a concurrent multi-host move like :func:`_move_to`."""
     return _move_to(pdf, watch_dir.joinpath(*_MARKUP_UNPARSED_SUBDIR))
+
+
+def _move_aside_superseded(
+    old: Path, *, cite_key: str, dest_dir: Path
+) -> tuple[Path, str | None]:
+    """Park the displaced corpus occupant under ``errors/superseded/`` as
+    ``<cite_key>-<sha8|mtime>.pdf`` — moved, never deleted (gr519746).
+
+    The tag is the old file's own content sha8 when its bytes still read
+    (the name stays meaningfully tied to the superseded copy), else its
+    mtime — matching the "old sha8 or mtime" ruling for the web-upload
+    attach lane. A same-name collision (the same bytes superseded twice)
+    timestamp-disambiguates like :func:`_move_to`. Tolerates the
+    multi-host vanish race the same way: logs and reports the would-be
+    destination. Returns ``(dest, old_sha256)`` — the full content sha
+    when the old bytes read, else ``None`` (mtime tag path), so the
+    caller can repoint the old sha's ``pdfs.storage_path`` at the
+    superseded spot it now actually lives."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    old_sha: str | None = None
+    try:
+        old_sha = hashlib.sha256(old.read_bytes()).hexdigest()
+        tag = old_sha[:8]
+    except OSError:
+        try:
+            stamp = old.stat().st_mtime
+        except OSError:
+            stamp = time.time()
+        tag = datetime.fromtimestamp(stamp, UTC).strftime("%Y%m%d%H%M%S")
+    dest = dest_dir / f"{cite_key}-{tag}.pdf"
+    if dest.exists():
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        dest = dest_dir / f"{cite_key}-{tag}_{ts}.pdf"
+    try:
+        shutil.move(str(old), str(dest))
+    except FileNotFoundError:
+        log.info(
+            "precis ingest: superseded %s already moved by another host",
+            old.name,
+        )
+    return dest, old_sha
 
 
 def _move_to_pres_corpus(pdf: Path, *, slug: str, corpus_pres_dir: Path) -> Path:

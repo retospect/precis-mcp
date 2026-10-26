@@ -136,11 +136,22 @@ def test_put_refuses_non_paper(paper, store):
     assert _jobs(store) == []
 
 
-def test_put_refuses_bodied_stub(paper, store):
-    ref_id = _stub(store, body=True)
+def test_put_refuses_complete_ref(paper, store):
+    """A ref holding BOTH a body and a PDF can't take a pull — its drop
+    would mint a duplicate rather than fold (gr519746)."""
+    ref_id = _stub(store, body=True, pdf=True)
     with pytest.raises(BadInput, match="already has a body"):
         paper.put(id=ref_id, args={"pdf_url": _URL})
     assert _jobs(store) == []
+
+
+def test_put_accepts_shaless_bodied_ref(paper, store):
+    """A sha-less ref that already has a body (e.g. markup-ingested)
+    folds the pulled file attach-only — valid target since the fold's
+    own ``_valid_fold_stub`` admits ``pdf_sha256 IS NULL`` (gr519746)."""
+    ref_id = _stub(store, body=True)
+    paper.put(id=ref_id, args={"pdf_url": _URL})
+    assert len(_jobs(store)) == 1
 
 
 def test_put_accepts_bodiless_ref_holding_a_pdf(paper, store):
@@ -191,10 +202,23 @@ def test_pull_refuses_non_pdf_response(store, serve, inbox):
 
 
 def test_pull_rechecks_target_state(store, serve, inbox):
-    ref_id = _stub(store, body=True)
+    ref_id = _stub(store, body=True, pdf=True)
     rec = paper_pull.pull(store, ref_id, _URL)
     assert rec["reason"] == "bad_target"
     assert list(inbox.glob("*.pdf")) == []
+
+
+def test_pull_drops_for_shaless_bodied_ref(store, serve, inbox):
+    """Job-time mirror of the put acceptance: a sha-less ref with a body
+    takes the drop (the fold attaches it printable-side, keeping its
+    body) — the gr519746 web-upload repair case."""
+    ref_id = _stub(store, body=True)
+    rec = paper_pull.pull(store, ref_id, _URL)
+    assert rec["status"] == "dropped"
+    pdfs = list(inbox.glob("*.pdf"))
+    assert len(pdfs) == 1
+    sc = read_sidecar(pdfs[0])
+    assert sc is not None and sc.ref_id == ref_id
 
 
 def test_pull_without_inbox_env_fails_recorded(store, serve, monkeypatch):

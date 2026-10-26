@@ -16,6 +16,7 @@ smoke test the existing ``test_cli.py`` uses for ``add``.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -1321,6 +1322,279 @@ class TestProcessPdf:
         assert "\tfilled\t" in log_text
         # A corpus placement rewrites storage_path to the new file.
         store.set_pdf_storage_path.assert_called_once_with("5" * 64, str(dest))
+
+    def test_attach_only_supersedes_corpus_file(self, tmp_path: Path):
+        """gr519746: an attach-only drop (``inserted=False``, 0 body
+        chunks written, ``pdf_promoted=True`` — the ingest promoted
+        ``refs.pdf_sha256`` onto a sha-less ref) is NOT a duplicate. The
+        uploaded file takes the cite_key corpus path; the file sitting
+        there (a stale ``drop_body``/``pdf_cleared`` survivor) moves
+        aside to ``errors/superseded/<cite_key>-<sha8>.pdf``, never
+        deleted."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "upload.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nuploaded full text")
+
+        old_bytes = b"%PDF-1.4\nstale survivor bytes"
+        old = corpus_dir / "j" / "javey2003.pdf"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(old_bytes)
+        old_tag = hashlib.sha256(old_bytes).hexdigest()[:8]
+
+        fake_result = IngestResult(
+            ref_id=90,
+            inserted=False,
+            paper_id="ee00ff11",
+            pub_id="doi:10.1/j",
+            cite_key="javey2003",
+            pdf_sha256="9" * 64,
+            content_hash="8" * 64,
+            chunks_written=0,
+            identifiers={"doi": "10.1/j", "cite_key": "javey2003"},
+            ref_has_body=True,
+            body_chunks_written=0,
+            pdf_promoted=True,
+        )
+
+        store = MagicMock()
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=store,
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        # The upload IS the new canonical printable at the cite_key path.
+        assert dest == corpus_dir / "j" / "javey2003.pdf"
+        assert dest.read_bytes() == b"%PDF-1.7\nuploaded full text"
+        assert not pdf.exists()
+        # The displaced occupant was moved aside, content-tagged.
+        superseded = errors_dir / "superseded" / f"javey2003-{old_tag}.pdf"
+        assert superseded.read_bytes() == old_bytes
+        # Not a duplicate — nothing parked under errors/duplicates.
+        assert list(duplicates_dir.iterdir()) == []
+        # Corpus placement → storage_path rewritten to the corpus dest,
+        # and the superseded sha's row repointed at its new home.
+        old_sha = hashlib.sha256(old_bytes).hexdigest()
+        store.set_pdf_storage_path.assert_any_call(old_sha, str(superseded))
+        store.set_pdf_storage_path.assert_any_call("9" * 64, str(dest))
+        # The move is journaled on the ref.
+        store.append_event.assert_called_once()
+        call = store.append_event.call_args
+        assert call.args[0] == 90
+        assert call.kwargs["event"] == "pdf_superseded"
+        assert call.kwargs["payload"]["superseded"] == superseded.name
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
+        assert "\tattached\t" in log_text
+
+    def test_attach_without_corpus_occupant_recovers(self, tmp_path: Path):
+        """The same attach-only drop with NO file at the cite_key path is
+        a ``recovered`` placement (nothing to supersede) — the ``filled``
+        branch above already proved ordering; this pins that promotion
+        alone doesn't bypass the missing-file case."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "upload.pdf"
+        pdf.write_bytes(b"%PDF-1.7\nattached bytes")
+
+        fake_result = IngestResult(
+            ref_id=91,
+            inserted=False,
+            paper_id="ee00ff11",
+            pub_id="doi:10.1/j",
+            cite_key="javey2003",
+            pdf_sha256="7" * 64,
+            content_hash="6" * 64,
+            chunks_written=0,
+            identifiers={"doi": "10.1/j", "cite_key": "javey2003"},
+            ref_has_body=True,
+            body_chunks_written=0,
+            pdf_promoted=True,
+        )
+
+        store = MagicMock()
+        with patch("precis.cli.watch.precis_add", return_value=fake_result):
+            dest = process_pdf(
+                pdf,
+                store=store,
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest == corpus_dir / "j" / "javey2003.pdf"
+        assert dest.exists()
+        assert not (errors_dir / "superseded").exists()
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
+        assert "\trecovered\t" in log_text
+        store.set_pdf_storage_path.assert_called_once_with("7" * 64, str(dest))
+
+
+class TestProcessPdfAttachRealDB:
+    """gr519746 — the attach-only drop against a real store.
+
+    The stubbed ``precis_add`` tests above pin the watcher-side routing;
+    this pins the DB side of the same shape: a sha-less ref that already
+    carries a body (the markup-ingested / ``pdf_cleared`` repair case),
+    an old file at its cite_key corpus path, then the upload's staged
+    drop (``printable_only`` sidecar, exactly what ``paper_pull`` writes
+    for a bodied target). ``extract_paper`` is faked — Marker is not the
+    seam under test — with the file's *real* sha so the fold's promotion
+    detection runs for real.
+    """
+
+    def _layout(self, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+        watch_dir = tmp_path / "inbox"
+        watch_dir.mkdir()
+        errors_dir = watch_dir / "errors"
+        duplicates_dir = errors_dir / "duplicates"
+        errors_dir.mkdir()
+        duplicates_dir.mkdir()
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        return watch_dir, errors_dir, duplicates_dir, corpus_dir
+
+    def test_attach_only_drop_on_shaless_bodied_ref(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.ingest.db_writer import PaperToWrite
+
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+
+        # Sha-less bodied stub (markup body, PDF cleared).
+        ref_id, _ = store.upsert_stub_paper(
+            identifiers=[("doi", "10.1234/javey")],
+            title="Ballistic carbon nanotube field-effect transistors",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 0, 'paragraph', 'the markup body', '{}'::jsonb)",
+                (ref_id,),
+            )
+            cite_key_row = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key'",
+                (ref_id,),
+            ).fetchone()
+            assert cite_key_row is not None
+            cite_key = str(cite_key_row[0])
+            conn.commit()
+
+        # The stale ``pdf_cleared`` survivor at the cite_key corpus path.
+        old_bytes = b"%PDF-1.4\nstale corpus occupant\n"
+        old = corpus_dir / cite_key[0].lower() / f"{cite_key}.pdf"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(old_bytes)
+        old_sha = hashlib.sha256(old_bytes).hexdigest()
+        old_tag = old_sha[:8]
+        # Its stale ``pdfs`` row still names the corpus path — the attach
+        # must repoint it at the superseded spot, not leave it claiming
+        # the path the new file now holds.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO pdfs "
+                "(pdf_sha256, content_hash, page_count, size_bytes, storage_path) "
+                "VALUES (%s, %s, 1, %s, %s)",
+                (old_sha, old_sha, len(old_bytes), str(old)),
+            )
+            conn.commit()
+
+        # The upload's drop: PDF + attach-only sidecar, as paper_pull writes.
+        pdf_bytes = b"%PDF-1.7\nthe uploaded printable\n"
+        pdf = watch_dir / "upload.pdf"
+        pdf.write_bytes(pdf_bytes)
+        sha = hashlib.sha256(pdf_bytes).hexdigest()
+        write_sidecar(
+            pdf,
+            ref_id=ref_id,
+            identifiers={"cite_key": cite_key, "doi": "10.1234/javey"},
+            source="agent_upload",
+            printable_only=True,
+        )
+
+        def _fake_extract(pdf_path: Path, **_kw: Any) -> PaperToWrite:
+            return PaperToWrite(
+                title="Ballistic carbon nanotube field-effect transistors",
+                authors=[{"family": "Javey", "given": "Ali"}],
+                year=2003,
+                provider="embedded",
+                cite_key_prefix=cite_key,
+                pdf_sha256=sha,
+                pdf_storage_path=str(pdf_path),
+                pdf_page_count=1,
+                pdf_size_bytes=len(pdf_bytes),
+            )
+
+        monkeypatch.setattr("precis.ingest.pipeline.extract_paper", _fake_extract)
+        dest = process_pdf(
+            pdf,
+            store=store,
+            watch_dir=watch_dir,
+            corpus_dir=corpus_dir,
+            corpus_pres_dir=tmp_path / "corpus_pres",
+            errors_dir=errors_dir,
+            duplicates_dir=duplicates_dir,
+            debounce=0.01,
+            user="owner",
+        )
+
+        # The uploaded file IS the new canonical printable at cite_key path.
+        assert dest == corpus_dir / cite_key[0].lower() / f"{cite_key}.pdf"
+        assert dest is not None
+        assert dest.read_bytes() == pdf_bytes
+        assert not pdf.exists()
+        # The displaced occupant moved aside — never deleted.
+        superseded = errors_dir / "superseded" / f"{cite_key}-{old_tag}.pdf"
+        assert superseded.read_bytes() == old_bytes
+        assert list(duplicates_dir.iterdir()) == []
+
+        with store.pool.connection() as conn:
+            # The sha promoted onto the ref…
+            sha_row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            assert sha_row is not None and sha_row[0] == sha
+            # …and the pdfs row's authoritative path is the corpus dest
+            # (not the stale inbox path gr519746 left behind).
+            pdfs_row = conn.execute(
+                "SELECT storage_path FROM pdfs WHERE pdf_sha256 = %s", (sha,)
+            ).fetchone()
+            assert pdfs_row is not None and pdfs_row[0] == str(dest)
+            # …while the superseded sha's row followed ITS bytes into
+            # errors/superseded.
+            old_row = conn.execute(
+                "SELECT storage_path FROM pdfs WHERE pdf_sha256 = %s", (old_sha,)
+            ).fetchone()
+            assert old_row is not None and old_row[0] == str(superseded)
+            # The markup body is untouched — attach-only wrote nothing.
+            bodies = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (ref_id,),
+            ).fetchall()
+            assert [r[0] for r in bodies] == ["the markup body"]
+            # The displacement is journaled on the ref.
+            events = conn.execute(
+                "SELECT event, payload FROM ref_events "
+                "WHERE ref_id = %s AND event = 'pdf_superseded'",
+                (ref_id,),
+            ).fetchall()
+        assert len(events) == 1
+        assert events[0][1]["superseded"] == superseded.name
+        assert events[0][1]["superseded_sha256"] == old_sha
+        assert events[0][1]["pdf_sha256"] == sha
+
+        log_text = (corpus_dir / "ingest.log").read_text(encoding="utf-8")
+        assert "\tattached\t" in log_text
 
 
 # ---------------------------------------------------------------------------
