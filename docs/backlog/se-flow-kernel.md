@@ -368,7 +368,7 @@ commit carrying this line; `git log` has the sha.*
      of one module). The chamber is the smallest demo; the builds
      that cost minutes are macro — booleans on bodies with many
      features, fillets, the cylinder wrap + mold negative
-     ([se-cylinder-wrap-mold](se-cylinder-wrap-mold.md)), lattices,
+     (`cad/primitives.py::CylRelief`, `cad/mold.py`), lattices,
      assemblies of frozen modules — and, at Å, relax over pre-relaxed
      modules (below). Named heavy example: the filleted
      bracket (se-native-fields §Bracket example) — a rib edit rebuilds

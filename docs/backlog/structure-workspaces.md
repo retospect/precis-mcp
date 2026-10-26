@@ -1011,7 +1011,7 @@ as the worked case:
 | `bolt_axis` | a fastener port, along its direction, through the stack | air → clearance hole (radial clearance) → gap → threaded hole | engagement length ≥ 1.5 `d`; stack thickness → screw length (the BOM) |
 | `tool_access` | the bolt head outward along the axis | must hit nothing within the tool length | a wrench or socket needs a tube: a **ray bundle** (`pga.ray.bundle`, `N` rays on a circle of the tool radius) is one probe whose report is the union of hits |
 | `load_path` | a payload pad to an anchor pad through the part | stress profile, thinnest crossing, peak location | utilisation along the path |
-| `manufacturability` | surface normals (wall thickness vs `min_wall`); tool-axis rays per process (3-axis: ±z) | wall thickness; undercuts (a solid re-entered after exiting along the tool axis) | links the pull-direction analysis of [se-cylinder-wrap-mold](se-cylinder-wrap-mold.md)/`cad/mold.py` where the specs touch |
+| `manufacturability` | surface normals (wall thickness vs `min_wall`); tool-axis rays per process (3-axis: ±z) | wall thickness; undercuts (a solid re-entered after exiting along the tool axis) | links the pull-direction analysis of `cad/mold.py` where the specs touch |
 
 Rendered, a bolt-axis ray on the bracket (`view='ray'`, `args={'name':
 'bolt-a1'}`). A screw fits when stack + 1.5 d ≤ L ≤ stack + thread depth —
