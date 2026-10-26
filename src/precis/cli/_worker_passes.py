@@ -145,14 +145,18 @@ def build_ref_passes(
     # `_register` only wires it when a service_config row names it —
     # run deliberately via `--only cite_resolve`. It also only claims
     # `CITERES:pending`-tagged papers, so even enabled it is inert
-    # until the access trigger ships. Pure regex — no LLM, no external
-    # call, no embedder.
+    # until the access trigger ships. Deterministic layers are pure
+    # regex — no LLM, no embedder — but the slice-4 leg may call
+    # OpenAlex, so it takes the polite-pool contact like bib_parse
+    # (mailto → OpenAlex's fast pool; never a made-up one).
     if _register("cite_resolve"):
         from precis.workers.cite_resolve import run_cite_resolve_pass
         from precis.workers.runner import BatchResult as _CrBatchResult
 
+        _cr_email = (settings.get_str("contact.polite_email") or "").strip()
+
         def _cite_resolve_pass(batch_size: int) -> _CrBatchResult:
-            r = run_cite_resolve_pass(store, batch_size=batch_size)
+            r = run_cite_resolve_pass(store, batch_size=batch_size, email=_cr_email)
             return _CrBatchResult.from_dict(
                 "cite_resolve",
                 {**r, "claimed": r["papers_swept"], "ok": r["papers_swept"]},

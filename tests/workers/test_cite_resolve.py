@@ -19,6 +19,8 @@ import pytest
 
 import precis.workers.cite_resolve as cite_resolve
 from precis.store.types import ChunkInsert, Tag
+from precis.utils.rate_limit import RateLimited
+from precis.workers import ref_lease
 from precis.workers.bib_mark import run_bib_mark_pass
 from precis.workers.cite_resolve import (
     CITERES_VERSION,
@@ -32,6 +34,16 @@ from tests.factories import seed_paper_ref
 _NO_AY: dict[Any, Any] = {}
 
 
+@pytest.fixture(autouse=True)
+def _no_live_openalex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slice 4's live title lookup never touches the network here —
+    the default fake finds nothing (a miss); slice-4 tests re-patch
+    per case. The shared limiter row is equally never consulted."""
+    monkeypatch.setattr(
+        cite_resolve.openalex_meta, "search_openalex_works", lambda *a, **k: []
+    )
+
+
 def _seed_entry(
     store: Any,
     ref_id: int,
@@ -40,13 +52,30 @@ def _seed_entry(
     *,
     authors: str | None = None,
     year: int | None = None,
+    raw_text: str | None = None,
+    doi: str | None = None,
+    openalex_id: str | None = None,
+    source: str = "bib_parse",
+    match_conf: float | None = None,
 ) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             "INSERT INTO paper_bib_entries "
-            "(ref_id, marker, raw_text, authors, year, held_ref_id, "
-            "parse_version) VALUES (%s, %s, %s, %s, %s, %s, 1) RETURNING id",
-            (ref_id, marker, f"entry {marker}", authors, year, held_ref_id),
+            "(ref_id, marker, raw_text, authors, year, held_ref_id, doi, "
+            " openalex_id, source, match_conf, parse_version) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1) RETURNING id",
+            (
+                ref_id,
+                marker,
+                raw_text if raw_text is not None else f"entry {marker}",
+                authors,
+                year,
+                held_ref_id,
+                doi,
+                openalex_id,
+                source,
+                match_conf,
+            ),
         ).fetchone()
         conn.commit()
     assert row is not None
@@ -440,10 +469,12 @@ def test_unswept_pending_papers_skip_batch_slots(store: Any) -> None:
 def test_failing_paper_rolls_back_only_itself(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec ruling: per-paper isolation — each paper sweeps in a
-    savepoint; a failing paper rolls back only itself, is tagged
-    ``CITERES:error`` and backed off (not re-claimed first next pass);
-    the rest of the batch commits."""
+    """Spec ruling: per-paper isolation — a failing paper rolls back
+    only itself, is tagged ``CITERES:error`` and backed off (not
+    re-claimed first next pass); the rest of the batch commits.
+    ``ATTEMPT_COOLDOWN_MIN=0`` expires each attempt lease at once so
+    the retry assertions aren't braked by the 60-min lease."""
+    monkeypatch.setattr(ref_lease, "ATTEMPT_COOLDOWN_MIN", 0)
     cited = seed_paper_ref(store, slug="cr-iso-cited")
     bad = seed_paper_ref(store, slug="cr-iso-bad")
     good = seed_paper_ref(store, slug="cr-iso-good")
@@ -501,7 +532,10 @@ def test_terminal_after_max_error_attempts(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Retry cap: the third failure stamps ``error:terminal`` and the
-    paper is never claimed again — even after the defect is gone."""
+    paper is never claimed again — even after the defect is gone.
+    ``ATTEMPT_COOLDOWN_MIN=0`` so the three attempts aren't spread
+    60 minutes apart by the lease brake."""
+    monkeypatch.setattr(ref_lease, "ATTEMPT_COOLDOWN_MIN", 0)
     cited = seed_paper_ref(store, slug="cr-term-cited")
     bad = seed_paper_ref(store, slug="cr-term-bad")
     _seed_entry(store, bad, 1, cited)
@@ -533,59 +567,392 @@ def test_terminal_after_max_error_attempts(
     assert _cites_links(store, bad) == []
 
 
-def test_batch_rollback_recounts_and_restamps(
+def test_claim_failure_aborts_cleanly(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A commit-level rollback loses the batch's error stamps — the
-    pass re-stamps them so the record survives, and ``failed`` counts
-    each paper once (two paper failures + rollback = 2, not 3)."""
-    import psycopg
-
-    cited = seed_paper_ref(store, slug="cr-rb-cited")
-    bad_a = seed_paper_ref(store, slug="cr-rb-bad-a")
-    bad_b = seed_paper_ref(store, slug="cr-rb-bad-b")
-    good = seed_paper_ref(store, slug="cr-rb-good")
-    bads = {bad_a, bad_b}
-    for paper in (bad_a, bad_b, good):
-        _seed_entry(store, paper, 1, cited)
-        _seed_chunk(store, paper, 0, "prior [1].")
+    """A claim-level failure processes nothing: the pass returns
+    ``failed: 1`` and stamps no error tags — there is no batch
+    transaction to roll back (per-paper commits since the OpenAlex
+    leg: one paper's commit failure can only strand that paper)."""
+    paper = seed_paper_ref(store, slug="cr-cf")
+    _seed_entry(store, paper, 1, seed_paper_ref(store, slug="cr-cf-cited"))
+    _seed_chunk(store, paper, 0, "prior [1].")
     run_bib_mark_pass(store, batch_size=50)
-    for paper in (bad_a, bad_b, good):
-        _mark_pending(store, paper)
+    _mark_pending(store, paper)
 
-    real = cite_resolve.ensure_chunk_cites_links
+    def _boom(conn: Any, *, limit: int) -> list[int]:
+        raise RuntimeError("claim failed")
 
-    def _boom(store_: Any, ref_id: int, *args: Any, **kwargs: Any) -> int:
-        if ref_id in bads:
-            raise RuntimeError("injected failure")
-        return real(store_, ref_id, *args, **kwargs)
-
-    monkeypatch.setattr(cite_resolve, "ensure_chunk_cites_links", _boom)
-
-    # The first commit of the run raises — the batch rolls back, taking
-    # the two error stamps with it.
-    real_commit = psycopg.Connection.commit
-    commits = {"n": 0}
-
-    def _flaky_commit(self: Any) -> None:
-        commits["n"] += 1
-        if commits["n"] == 1:
-            raise RuntimeError("commit failed")
-        real_commit(self)
-
-    monkeypatch.setattr(psycopg.Connection, "commit", _flaky_commit)
+    monkeypatch.setattr(cite_resolve, "_claim_pending_papers", _boom)
 
     result = run_cite_resolve_pass(store, batch_size=10)
-    assert result["failed"] == 2  # the rollback doesn't add a phantom third
-    assert result["papers_swept"] == 0  # good's sweep rolled back too
-    for bad in bads:
-        # re-stamped in the fresh transaction after the rollback
-        assert store.has_tag(bad, "CITERES", "error:1") is True
-        assert store.has_tag(bad, "CITERES", "pending") is True
-        assert store.has_tag(bad, "CITERES", "swept") is False
-    assert store.has_tag(good, "CITERES", "swept") is False
+    assert result == {
+        "papers_swept": 0,
+        "chunks_swept": 0,
+        "links_ensured": 0,
+        "entries_resolved": 0,
+        "entries_missed": 0,
+        "deferred": 0,
+        "failed": 1,
+    }
+    assert store.has_tag(paper, "CITERES", "pending") is True
+    assert store.has_tag(paper, "CITERES", "swept") is False
 
     monkeypatch.undo()
     retry = run_cite_resolve_pass(store, batch_size=10)
-    assert retry["papers_swept"] == 3
+    assert retry["papers_swept"] == 1
     assert retry["failed"] == 0
+
+
+def test_lease_excludes_and_success_clears(store: Any) -> None:
+    """The attempt lease is the durable claim: a pending paper under an
+    unexpired ``CITERESATTEMPT`` lease is never claimed; a swept paper
+    carries no lease (``clear_attempt`` rides the success write)."""
+    cited = seed_paper_ref(store, slug="cr-lease-cited")
+    leased = seed_paper_ref(store, slug="cr-lease-leased")
+    free = seed_paper_ref(store, slug="cr-lease-free")
+    for paper in (leased, free):
+        _seed_entry(store, paper, 1, cited)
+        _seed_chunk(store, paper, 0, "prior [1].")
+    run_bib_mark_pass(store, batch_size=50)
+    for paper in (leased, free):
+        _mark_pending(store, paper)
+    ref_lease.stamp_attempt(store, leased, "CITERES", conn=None)
+
+    result = run_cite_resolve_pass(store, batch_size=10)
+    assert result["papers_swept"] == 1
+    assert store.has_tag(free, "CITERES", "swept") is True
+    assert store.has_tag(leased, "CITERES", "pending") is True
+    # the swept paper's lease was cleared in the success transaction
+    assert store.has_tag(free, "CITERESATTEMPT", "1") is False
+    # the braked paper's own lease is still up
+    assert store.has_tag(leased, "CITERESATTEMPT", "1") is True
+
+
+# ── the OpenAlex leg (slice-4 acceptance) ────────────────────────────
+
+
+def _add_identifier(store: Any, ref_id: int, id_kind: str, id_value: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES (%s, %s, %s, %s)",
+            (id_kind, id_value, ref_id, "test"),
+        )
+        conn.commit()
+
+
+def _entry_row(store: Any, entry_id: int) -> dict[str, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT held_ref_id, openalex_id, doi, match_conf "
+            "FROM paper_bib_entries WHERE id = %s",
+            (entry_id,),
+        ).fetchone()
+    assert row is not None
+    return {
+        "held_ref_id": row[0],
+        "openalex_id": row[1],
+        "doi": row[2],
+        "match_conf": row[3],
+    }
+
+
+def _ref_level_cites(store: Any, ref_id: int) -> list[Any]:
+    return [l for l in _cites_links(store, ref_id) if l.src_chunk_id is None]
+
+
+def _oa_work(
+    wid: str, title: str, year: int, first_author: str, doi: str | None = None
+) -> dict[str, Any]:
+    return {
+        "id": f"https://openalex.org/{wid}",
+        "title": title,
+        "display_name": title,
+        "publication_year": year,
+        "doi": f"https://doi.org/{doi}" if doi else None,
+        "authorships": [{"author": {"display_name": first_author}}],
+    }
+
+
+def _pending_swept_paper(store: Any, slug: str, **entry_kw: Any) -> int:
+    """A citing paper with one bib entry that bib_mark has swept,
+    tagged CITERES:pending — the entry is seeded before the mark pass
+    (bib_mark only stamps chunks of a paper that has entries, and the
+    cite_resolve claim needs that stamp)."""
+    paper = seed_paper_ref(store, slug=slug)
+    _seed_entry(store, paper, 1, **entry_kw)
+    _seed_chunk(store, paper, 0, "prior work [1].")
+    run_bib_mark_pass(store, batch_size=50)
+    _mark_pending(store, paper)
+    return paper
+
+
+def test_oa_cached_refs_match_needs_no_lookup(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 1 of the hop: the citing paper's cached ``referenced_works``
+    resolve to held refs and the entry matches on title/year — zero
+    live calls, the link lands and the entry carries the w-id."""
+    cited = seed_paper_ref(store, slug="cr-oa-cited")
+    store.update_paper_fields(
+        cited, title="The Seminal Result", year=1921, source="test"
+    )
+    _add_identifier(store, cited, "openalex", "w100")
+    paper = seed_paper_ref(store, slug="cr-oa-citing")
+    store.update_paper_fields(
+        paper,
+        meta_patch={"openalex": {"referenced_works": ["W100"]}},
+        source="test",
+    )
+    entry = _seed_entry(
+        store,
+        paper,
+        1,
+        authors="Miller, A.",
+        year=1921,
+        raw_text="Miller, A. The Seminal Result. J. Phys. 1921, 1, 2.",
+        match_conf=0.0,
+    )
+    _seed_chunk(store, paper, 0, "as shown before [1].")
+    run_bib_mark_pass(store, batch_size=50)
+    _mark_pending(store, paper)
+
+    calls = {"n": 0}
+
+    def _counting(*a: Any, **k: Any) -> list[Any]:
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(cite_resolve.openalex_meta, "search_openalex_works", _counting)
+    result = run_cite_resolve_pass(store, batch_size=10)
+
+    assert calls["n"] == 0  # resolved locally, no live call
+    assert result["entries_resolved"] == 1
+    row = _entry_row(store, entry)
+    assert row["held_ref_id"] == cited
+    assert row["openalex_id"] == "W100"
+    # chunk-scope link from the sweep + paper-level edge from the leg
+    assert len(_cites_links(store, paper)) == 2
+    assert len(_ref_level_cites(store, paper)) == 1
+
+
+def test_oa_live_lookup_held_resolves(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 2: no cached refs — the live ``/works?search=`` hit is
+    verified (title in raw_text, year, first-author surname), resolved
+    to held by its w-id, and the chunk links."""
+    cited = seed_paper_ref(store, slug="cr-oa-live-cited")
+    _add_identifier(store, cited, "openalex", "w200")
+    paper = seed_paper_ref(store, slug="cr-oa-live-citing")
+    entry = _seed_entry(
+        store,
+        paper,
+        1,
+        authors="Miller, A.",
+        year=1921,
+        raw_text="Miller, A. Surface Kinetics. J. Phys. 1921, 1, 2.",
+        match_conf=0.0,
+    )
+    _seed_chunk(store, paper, 0, "as shown before [1].")
+    run_bib_mark_pass(store, batch_size=50)
+    _mark_pending(store, paper)
+
+    monkeypatch.setattr(
+        cite_resolve.openalex_meta,
+        "search_openalex_works",
+        lambda *a, **k: [_oa_work("W200", "Surface Kinetics", 1921, "A. Miller")],
+    )
+    result = run_cite_resolve_pass(store, batch_size=10)
+
+    assert result["entries_resolved"] == 1
+    row = _entry_row(store, entry)
+    assert row["held_ref_id"] == cited
+    assert row["openalex_id"] == "W200"
+    assert len(_cites_links(store, paper)) == 2
+
+
+def test_oa_live_lookup_unheld_is_the_stub_request(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verified hit on an unheld work writes ``openalex_id`` (+ its
+    DOI) on the entry — the stub request the gr513755 trickle mints
+    under its own budget. No stub, no link, from this path."""
+    paper = seed_paper_ref(store, slug="cr-oa-unheld")
+    entry = _seed_entry(
+        store,
+        paper,
+        1,
+        authors="Miller, A.",
+        year=1921,
+        raw_text="Miller, A. Surface Kinetics. J. Phys. 1921, 1, 2.",
+        match_conf=0.0,
+    )
+    _seed_chunk(store, paper, 0, "as shown before [1].")
+    run_bib_mark_pass(store, batch_size=50)
+    _mark_pending(store, paper)
+
+    calls = {"n": 0}
+
+    def _fake(*a: Any, **k: Any) -> list[Any]:
+        calls["n"] += 1
+        return [_oa_work("W300", "Surface Kinetics", 1921, "A. Miller", "10.9/x")]
+
+    monkeypatch.setattr(cite_resolve.openalex_meta, "search_openalex_works", _fake)
+    result = run_cite_resolve_pass(store, batch_size=10)
+
+    assert calls["n"] == 1
+    assert result["entries_resolved"] == 1
+    row = _entry_row(store, entry)
+    assert row["openalex_id"] == "W300"
+    assert row["doi"] == "10.9/x"
+    assert row["held_ref_id"] is None
+    assert _cites_links(store, paper) == []
+
+
+def test_oa_miss_stamps_decided_entry_only(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stamped miss: a decided row (``match_conf`` non-NULL) gets
+    ``-2.0``; a crossref-undecided row (NULL) stays NULL so
+    ``run_bib_rematch_sweep`` keeps its retry."""
+    paper = seed_paper_ref(store, slug="cr-oa-miss")
+    decided = _seed_entry(
+        store, paper, 1, raw_text="Miller, A. Untitled. J. 1921.", match_conf=0.0
+    )
+    undecided = _seed_entry(
+        store, paper, 2, raw_text="Smith, B. Other. J. 1922.", match_conf=None
+    )
+    _seed_chunk(store, paper, 0, "cf. [1] and [2].")
+    run_bib_mark_pass(store, batch_size=50)
+    _mark_pending(store, paper)
+
+    calls = {"n": 0}
+
+    def _none(*a: Any, **k: Any) -> list[Any]:
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(cite_resolve.openalex_meta, "search_openalex_works", _none)
+    result = run_cite_resolve_pass(store, batch_size=10)
+
+    assert calls["n"] == 2
+    assert result["entries_missed"] == 2
+    assert _entry_row(store, decided)["match_conf"] == -2.0
+    assert _entry_row(store, undecided)["match_conf"] is None
+
+
+def test_oa_ambiguous_hit_writes_nothing(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two candidates through the verify gate = ambiguous → the miss
+    stamp, no link (wrong is the only unacceptable outcome)."""
+    paper = seed_paper_ref(store, slug="cr-oa-ambig")
+    entry = _seed_entry(
+        store,
+        paper,
+        1,
+        authors="Miller, A.",
+        year=1921,
+        raw_text="Miller, A. Surface Kinetics. J. Phys. 1921, 1, 2.",
+        match_conf=0.0,
+    )
+    _seed_chunk(store, paper, 0, "as shown before [1].")
+    run_bib_mark_pass(store, batch_size=50)
+    _mark_pending(store, paper)
+
+    monkeypatch.setattr(
+        cite_resolve.openalex_meta,
+        "search_openalex_works",
+        lambda *a, **k: [
+            _oa_work("W301", "Surface Kinetics", 1921, "A. Miller"),
+            _oa_work("W302", "Surface Kinetics", 1921, "A. Miller"),
+        ],
+    )
+    result = run_cite_resolve_pass(store, batch_size=10)
+
+    assert result["entries_missed"] == 1
+    assert result["entries_resolved"] == 0
+    row = _entry_row(store, entry)
+    assert row["match_conf"] == -2.0
+    assert row["openalex_id"] is None
+    assert _cites_links(store, paper) == []
+
+
+def test_oa_doi_recheck_needs_no_lookup(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An identifier-carrying unheld entry re-checks locally only: a
+    ``doi`` entry whose target became held since matching resolves
+    without any OpenAlex call."""
+    cited = seed_paper_ref(store, slug="cr-oa-doi-cited")
+    _add_identifier(store, cited, "doi", "10.9/recheck")
+    paper = seed_paper_ref(store, slug="cr-oa-doi-citing")
+    entry = _seed_entry(store, paper, 1, doi="10.9/recheck", match_conf=0.8)
+    _seed_chunk(store, paper, 0, "prior [1].")
+    run_bib_mark_pass(store, batch_size=50)
+    _mark_pending(store, paper)
+
+    calls = {"n": 0}
+
+    def _counting(*a: Any, **k: Any) -> list[Any]:
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(cite_resolve.openalex_meta, "search_openalex_works", _counting)
+    result = run_cite_resolve_pass(store, batch_size=10)
+
+    assert calls["n"] == 0
+    assert result["entries_resolved"] == 1
+    row = _entry_row(store, entry)
+    assert row["held_ref_id"] == cited
+    assert len(_cites_links(store, paper)) == 2
+
+
+def test_oa_ratelimited_defers_never_errors(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Limiter refusal defers: the refused paper keeps ``pending`` and
+    its lease (it was attempted — the brake), takes no error stamp;
+    papers never attempted get their lease back and re-claim next
+    pass."""
+    first = _pending_swept_paper(
+        store,
+        "cr-oa-rl-first",
+        raw_text="Miller, A. Surface Kinetics. J. Phys. 1921.",
+        match_conf=0.0,
+    )
+    second = _pending_swept_paper(
+        store,
+        "cr-oa-rl-second",
+        raw_text="Miller, A. Surface Kinetics. J. Phys. 1921.",
+        match_conf=0.0,
+    )
+    assert first < second  # claim order — the first paper is refused
+
+    def _refused(*a: Any, **k: Any) -> list[Any]:
+        raise RateLimited("openalex")
+
+    monkeypatch.setattr(cite_resolve.openalex_meta, "search_openalex_works", _refused)
+    result = run_cite_resolve_pass(store, batch_size=10)
+
+    assert result["deferred"] == 1
+    assert result["failed"] == 0
+    assert result["papers_swept"] == 0
+    assert store.has_tag(first, "CITERES", "pending") is True
+    assert store.has_tag(first, "CITERES", "error:1") is False
+    # the attempted paper keeps its brake; the untouched one is free
+    assert store.has_tag(first, "CITERESATTEMPT", "1") is True
+    assert store.has_tag(second, "CITERESATTEMPT", "1") is False
+
+    # Next pass with the limiter back: the untouched paper claims and
+    # sweeps (its live lookup misses); the braked one still waits out
+    # its lease.
+    monkeypatch.setattr(
+        cite_resolve.openalex_meta, "search_openalex_works", lambda *a, **k: []
+    )
+    result = run_cite_resolve_pass(store, batch_size=10)
+    assert result["papers_swept"] == 1
+    assert store.has_tag(second, "CITERES", "swept") is True
+    assert store.has_tag(first, "CITERES", "pending") is True

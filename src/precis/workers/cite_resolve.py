@@ -1,5 +1,5 @@
 """cite_resolve — chunk→paper ``cites`` links from in-text citation
-markers (gr513768, docs/backlog/citation-resolution-skill.md slices 1–2).
+markers (gr513768, docs/backlog/citation-resolution-skill.md slices 1–2, 4).
 
 Where ``bib_mark`` (``workers/bib_mark.py``) records *which* inline
 ``[N]`` markers a body chunk uses (``chunk_citations``) and
@@ -25,6 +25,17 @@ Two deterministic layers (no LLM, no external call):
   year counts only when it matches exactly one of the citing paper's
   own ``paper_bib_entries`` (``authors`` / ``year``); a zero or
   two-plus match writes nothing.
+- **OpenAlex hop** (slice 4): an entry the matcher left DOI-less and
+  unheld resolves against the citing paper's cached
+  ``meta.openalex.referenced_works`` (held refs, matched on
+  title/year), else a live :func:`search_openalex_works` title lookup
+  through the shared ``openalex`` limiter. A held hit writes
+  ``held_ref_id`` (the sweep then links it); an unheld hit writes only
+  ``openalex_id`` — the stub *request*, which the gr513755 trickle
+  mints under its own budget (this path never calls
+  ``upsert_stub_paper``); a miss stamps ``match_conf``
+  :data:`_MATCH_CONF_OPENALEX_MISS` on rows already decided. A limiter
+  refusal defers the paper — it is never error-stamped.
 
 **Marker order (decided).** Every link carries ``meta.marker`` (the
 label as written — ``"32"``, ``"[3-5]"``, ``"Miller 1921"``) and
@@ -59,14 +70,22 @@ can't starve a ready paper out of a batch slot. It sweeps their body
 chunks lacking a ``CITERES:<version>`` chunk tag (the
 drain-and-converge done-marker idiom — bumping
 :data:`CITERES_VERSION` re-sweeps lazily), then transitions the paper
-``CITERES:pending → CITERES:swept``. Per-paper isolation: each paper
-runs in its own savepoint — a failure rolls back only that paper and
-stamps ``CITERES:error:<n>`` (the durable record; the claim sorts
-error-tagged papers last — the backoff) while the rest of the batch
-commits. After :data:`_MAX_ERROR_ATTEMPTS` failures the paper is
-stamped ``CITERES:error:terminal``, logged once at the transition,
-and never claimed again (the ``pending → swept`` ``replace_prefix``
-flip clears every ``CITERES`` tag, so a recovered paper — say after a
+``CITERES:pending → CITERES:swept``.
+
+**Claim = lease, not lock.** Since slice 4 the pass spends network
+per paper, so a transaction can never span the work: the claim
+transaction commits after stamping each claimed paper's
+``ref_lease`` attempt lease (``CITERESATTEMPT`` — the durable claim a
+sibling's claim ``WHERE`` respects, mirroring ``bib_parse``'s
+documented pattern), then each paper resolves and sweeps in its own
+short transactions. Success clears the lease in the same write as the
+``pending → swept`` flip; failure leaves it to brake re-billing for
+:data:`ref_lease.ATTEMPT_COOLDOWN_MIN` (self-healing on a crash), and
+also stamps ``CITERES:error:<n>`` — the counted backoff record; the
+claim sorts error-tagged papers last and at
+:data:`_MAX_ERROR_ATTEMPTS` ``error:terminal`` stops the paper being
+claimed at all (the ``pending → swept`` ``replace_prefix`` flip
+clears every ``CITERES`` tag, so a recovered paper — say after a
 ``CITERES_VERSION`` bump by hand — loses its error history too).
 DEFAULT-OFF: registered via ``enable_env`` with no
 ``default_profiles``, so a ``service_config`` row (or ``--only
@@ -83,7 +102,11 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
+from precis.ingest import openalex_meta
 from precis.store.types import Tag
+from precis.utils.db_retry import retry_locked
+from precis.utils.rate_limit import RateLimited
+from precis.workers import ref_lease
 from precis.workers.bib_mark import (
     _BIBMARK_NS,
     _CITE_GROUP_RE,
@@ -91,6 +114,7 @@ from precis.workers.bib_mark import (
     _RANGE_RE,
     BIBMARK_VERSION,
 )
+from precis.workers.bib_parse import _held_ref_for_doi, ensure_bib_cites_links
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -119,6 +143,23 @@ _MAX_ERROR_ATTEMPTS = 3
 #: machine writer's claim queries and audits stay disjoint.
 _LINK_SOURCE = "cite_resolve"
 
+#: ``paper_bib_entries.match_conf`` sentinel for "the OpenAlex hop ran
+#: and resolved nothing" — the stamped miss (spec slice 4). It is only
+#: ever written over a non-NULL ``match_conf`` (a decided row): a NULL
+#: row is crossref-undecided and stays NULL so
+#: ``bib_parse.run_bib_rematch_sweep`` keeps its retry; its OA outcome
+#: is simply re-derived on a re-sweep.
+_MATCH_CONF_OPENALEX_MISS = -2.0
+
+#: Live-lookup cap per paper per sweep — a pathology bibliography of
+#: DOI-less entries can't burn unbounded shared-limiter tokens inside
+#: one paper's leg; the remainder resolves on later sweeps.
+_OA_SEARCH_MAX_PER_PAPER = 25
+
+#: ``raw_text`` slice sent to ``/works?search=`` — a citation line is
+#: short; the cap just keeps a pathological blob off the wire.
+_OA_QUERY_MAX_CHARS = 300
+
 
 @dataclass(frozen=True, slots=True)
 class BibEntry:
@@ -129,6 +170,11 @@ class BibEntry:
     authors: str | None
     year: int | None
     held_ref_id: int | None
+    raw_text: str = ""
+    doi: str | None = None
+    openalex_id: str | None = None
+    source: str = "bib_parse"
+    match_conf: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,17 +464,20 @@ def ensure_chunk_cites_links(
 def _claim_pending_papers(conn: Connection, *, limit: int) -> list[int]:
     """Up to ``limit`` claimable ``CITERES:pending`` paper ref_ids,
     locked for the duration of the caller's transaction (``SKIP
-    LOCKED`` keeps sibling workers off the same batch — the tag flip
-    to ``swept`` is the durable claim, so the lock need only span the
-    write).
+    LOCKED`` keeps sibling claimants off the same batch while their
+    attempt leases are stamped in that same transaction — the lease,
+    not the lock, is the durable claim once the lock releases at
+    commit).
 
-    The ``WHERE`` carries both gates, so unclaimable papers never take
+    The ``WHERE`` carries every gate, so unclaimable papers never take
     a batch slot: ``bib_mark`` must have swept the paper first (every
     live body chunk carries ``BIBMARK:<version>``, or the paper has no
     ``paper_bib_entries`` at all — spec ruling: the
     ``chunk_citations`` rows are the numeric whitelist and sweeping
-    earlier would mint a permanent gap) and the paper must not be
-    ``error:terminal`` (the retry cap). Papers carrying an ``error:*``
+    earlier would mint a permanent gap), the paper must not be
+    ``error:terminal`` (the retry cap), and it must not sit under an
+    unexpired ``ref_lease`` attempt lease (a sibling's in-flight sweep
+    or a braked failure). Papers carrying an ``error:*``
     tag (a previous failed attempt) sort last — the backoff: a
     once-failed paper is never re-claimed ahead of a clean pending
     one."""
@@ -469,6 +518,9 @@ def _claim_pending_papers(conn: Connection, *, limit: int) -> list[int]:
                         WHERE pbe.ref_id = r.ref_id
                      )
                )
+         """
+        + ref_lease.exclude_clause("r.ref_id", "attempt_ns")
+        + """
          ORDER BY EXISTS (
                  SELECT 1 FROM ref_tags et JOIN tags etg USING (tag_id)
                   WHERE et.ref_id = r.ref_id
@@ -485,6 +537,7 @@ def _claim_pending_papers(conn: Connection, *, limit: int) -> list[int]:
             "bns": _BIBMARK_NS,
             "bver": BIBMARK_VERSION,
             "errorlike": f"{_ERROR}%",
+            "attempt_ns": ref_lease.attempt_ns(_CITERES_NS),
             "limit": limit,
         },
     ).fetchall()
@@ -512,7 +565,8 @@ def _error_stamp(conn: Connection, ref_id: int) -> str:
 
 def _paper_entries(conn: Connection, ref_id: int) -> list[BibEntry]:
     rows = conn.execute(
-        "SELECT id, marker, authors, year, held_ref_id "
+        "SELECT id, marker, authors, year, held_ref_id, raw_text, doi, "
+        "openalex_id, source, match_conf "
         "FROM paper_bib_entries WHERE ref_id = %s",
         (ref_id,),
     ).fetchall()
@@ -523,6 +577,11 @@ def _paper_entries(conn: Connection, ref_id: int) -> list[BibEntry]:
             authors=r[2],
             year=int(r[3]) if r[3] is not None else None,
             held_ref_id=int(r[4]) if r[4] is not None else None,
+            raw_text=str(r[5] or ""),
+            doi=r[6],
+            openalex_id=r[7],
+            source=str(r[8] or "bib_parse"),
+            match_conf=float(r[9]) if r[9] is not None else None,
         )
         for r in rows
     ]
@@ -568,6 +627,273 @@ def _chunk_marker_map(
     return out
 
 
+# ── the OpenAlex leg (slice 4) ───────────────────────────────────────
+
+_TITLE_NORM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _norm_title(text: str) -> str:
+    """Title compare key: NFKD-folded, lowercased, alphanumeric words —
+    a title quoted verbatim into a citation line survives markup,
+    case, accents and punctuation differences."""
+    folded = (
+        unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    )
+    return _TITLE_NORM_RE.sub(" ", folded).strip()
+
+
+def _work_first_surname(work: dict[str, Any]) -> str | None:
+    """Normalised first-author surname of an OpenAlex work object, or
+    ``None`` when the payload carries no authorships."""
+    authorships = work.get("authorships")
+    if not isinstance(authorships, list) or not authorships:
+        return None
+    first = authorships[0]
+    name = str(((first or {}).get("author") or {}).get("display_name") or "")
+    name = name.split()[-1].strip() if name.split() else ""
+    return _norm_name(name) if name else None
+
+
+def _entry_matches(
+    entry: BibEntry,
+    norm_raw: str,
+    *,
+    title: str | None,
+    year: int | None,
+    surname: str | None,
+) -> bool:
+    """The conservative resolve gate shared by the cached-refs and
+    live-lookup legs: the candidate title must appear verbatim
+    (post-normalisation) inside the citation's raw text, the year must
+    equal the entry's when both sides carry one, and a first-author
+    surname parseable on both sides must agree. A title-less citation
+    style simply never matches — the miss is stamped rather than a
+    wrong link written (spec: unmatched is acceptable, wrong is not).
+    """
+    norm_title = _norm_title(title or "")
+    if not norm_title or norm_title not in norm_raw:
+        return False
+    if entry.year is not None and year is not None and entry.year != year:
+        return False
+    entry_surname = _first_surname(entry.authors)
+    if entry_surname is not None and surname is not None:
+        if _norm_name(entry_surname) != surname:
+            return False
+    return True
+
+
+def _held_candidates(
+    conn: Connection, ref_id: int
+) -> list[tuple[int, str, str | None, int | None]]:
+    """``(held_ref_id, w_id, title, year)`` — the citing paper's cached
+    ``meta.openalex.referenced_works`` resolved to live held refs (the
+    ``openalex`` identifier kind, lowercased probes per the
+    ``ref_identifiers`` canonical-case rule)."""
+    row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)).fetchone()
+    meta = (row[0] if row else None) or {}
+    oa = meta.get("openalex") if isinstance(meta, dict) else None
+    w_ids = [str(w) for w in ((oa or {}).get("referenced_works") or []) if w]
+    if not w_ids:
+        return []
+    w_form = {w.lower(): w for w in w_ids}
+    rows = conn.execute(
+        "SELECT DISTINCT ON (lower(ri.id_value)) "
+        "lower(ri.id_value), ri.ref_id, r.title, r.year "
+        "FROM ref_identifiers ri "
+        "JOIN refs r ON r.ref_id = ri.ref_id "
+        "WHERE ri.id_kind = 'openalex' "
+        "AND lower(ri.id_value) = ANY(%s) "
+        "AND r.kind = 'paper' AND r.retired_at IS NULL "
+        "ORDER BY lower(ri.id_value), ri.ref_id",
+        (list(w_form),),
+    ).fetchall()
+    return [
+        (
+            int(r[1]),
+            w_form.get(str(r[0]), str(r[0])),
+            r[2],
+            int(r[3]) if r[3] is not None else None,
+        )
+        for r in rows
+    ]
+
+
+def _held_for_openalex_id(conn: Connection, openalex_id: str) -> int | None:
+    """Live held paper carrying ``openalex_id`` (``ref_identifiers``,
+    case-insensitive probe), else ``None``."""
+    row = conn.execute(
+        "SELECT ri.ref_id FROM ref_identifiers ri "
+        "JOIN refs r ON r.ref_id = ri.ref_id "
+        "WHERE ri.id_kind = 'openalex' AND lower(ri.id_value) = %s "
+        "AND r.retired_at IS NULL",
+        (openalex_id.lower(),),
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _write_oa_outcome(
+    store: Store,
+    ref_id: int,
+    entry_id: int,
+    *,
+    openalex_id: str | None = None,
+    doi: str | None = None,
+    held_ref_id: int | None = None,
+    missed: bool = False,
+) -> None:
+    """One entry's OA-leg outcome in its own short transaction
+    (:func:`retry_locked`-wrapped, the ``bib_parse`` match-write idiom —
+    the leg holds no connection across its lookups, so a sibling's
+    write can collide for an instant).
+
+    ``missed=True`` stamps :data:`_MATCH_CONF_OPENALEX_MISS` — but only
+    on a row whose ``match_conf`` is already non-NULL (the WHERE keeps
+    a crossref-undecided row NULL so the rematch sweep still owns it).
+    A held target also mints the paper-level ``cites`` edge through the
+    shared gr513755 writer, exactly as ``bib_parse``'s match write
+    does.
+    """
+
+    def _write() -> None:
+        with store.pool.connection() as conn:
+            if missed:
+                conn.execute(
+                    "UPDATE paper_bib_entries SET match_conf = %s "
+                    "WHERE id = %s AND match_conf IS NOT NULL",
+                    (_MATCH_CONF_OPENALEX_MISS, entry_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE paper_bib_entries "
+                    "SET openalex_id = COALESCE(openalex_id, %s), "
+                    "    doi = COALESCE(doi, %s), "
+                    "    held_ref_id = %s "
+                    "WHERE id = %s",
+                    (openalex_id, doi, held_ref_id, entry_id),
+                )
+            if held_ref_id is not None:
+                ensure_bib_cites_links(
+                    store, ref_id, [(entry_id, held_ref_id)], conn=conn
+                )
+            conn.commit()
+
+    retry_locked(_write, label=f"cite_resolve oa entry_id={entry_id}")
+
+
+def _resolve_paper_openalex(
+    store: Store, ref_id: int, *, email: str = ""
+) -> dict[str, int]:
+    """Resolve one paper's unheld bib entries through the OpenAlex leg
+    (spec slice 4). Holds no connection across a lookup: each leg
+    phase reads in its own short transaction, each outcome writes in
+    its own. Returns ``{resolved, missed, looked_up}`` —
+    ``looked_up`` counts the live ``search_openalex_works`` calls.
+    :class:`RateLimited` propagates so the pass can defer the paper
+    unstamped; it is never an error.
+    """
+    with store.pool.connection() as conn:
+        unresolved = [e for e in _paper_entries(conn, ref_id) if e.held_ref_id is None]
+        held_cands = _held_candidates(conn, ref_id) if unresolved else []
+        conn.commit()
+
+    resolved = missed = looked_up = 0
+    for entry in unresolved:
+        # Identifier-carrying rows (a ``doi`` from the matcher, an
+        # ``openalex_id`` from the oa_refs backfill or an earlier hit)
+        # need only a local re-check — the target may have become held
+        # since the identifier was recorded.
+        if entry.doi or entry.openalex_id:
+            with store.pool.connection() as conn:
+                held = _held_ref_for_doi(conn, entry.doi) if entry.doi else None
+                if held is None and entry.openalex_id:
+                    held = _held_for_openalex_id(conn, entry.openalex_id)
+                conn.commit()
+            if held is not None and held != ref_id:
+                _write_oa_outcome(
+                    store,
+                    ref_id,
+                    entry.id,
+                    openalex_id=entry.openalex_id,
+                    doi=entry.doi,
+                    held_ref_id=held,
+                )
+                resolved += 1
+            continue
+
+        if entry.source != "bib_parse" or (
+            entry.match_conf is not None
+            and entry.match_conf == _MATCH_CONF_OPENALEX_MISS
+        ):
+            continue
+
+        norm_raw = _norm_title(entry.raw_text)
+
+        # Step 1 — the citing paper's cached ``referenced_works`` ∩ held
+        # refs, matched on title/year (zero network).
+        hits = [
+            c
+            for c in held_cands
+            if c[0] != ref_id
+            and _entry_matches(entry, norm_raw, title=c[2], year=c[3], surname=None)
+        ]
+        if len(hits) == 1:
+            _write_oa_outcome(
+                store,
+                ref_id,
+                entry.id,
+                openalex_id=hits[0][1],
+                held_ref_id=hits[0][0],
+            )
+            resolved += 1
+            continue
+        if len(hits) > 1:
+            _write_oa_outcome(store, ref_id, entry.id, missed=True)
+            missed += 1
+            continue
+
+        # Step 2 — the live title lookup through the existing client.
+        if looked_up >= _OA_SEARCH_MAX_PER_PAPER:
+            continue  # unstamped — a later sweep retries it
+        works = openalex_meta.search_openalex_works(
+            entry.raw_text[:_OA_QUERY_MAX_CHARS], year=entry.year, email=email
+        )
+        looked_up += 1
+        w_hits = [
+            w
+            for w in works
+            if _entry_matches(
+                entry,
+                norm_raw,
+                title=str(w.get("title") or w.get("display_name") or ""),
+                year=w.get("publication_year"),
+                surname=_work_first_surname(w),
+            )
+        ]
+        if len(w_hits) != 1:
+            _write_oa_outcome(store, ref_id, entry.id, missed=True)
+            missed += 1
+            continue
+
+        work = w_hits[0]
+        w_id = str(work.get("id") or "").rstrip("/").rsplit("/", 1)[-1]
+        w_doi = str(work.get("doi") or "").removeprefix("https://doi.org/").lower()
+        with store.pool.connection() as conn:
+            held = _held_ref_for_doi(conn, w_doi) if w_doi else None
+            if held is None and w_id:
+                held = _held_for_openalex_id(conn, w_id)
+            conn.commit()
+        _write_oa_outcome(
+            store,
+            ref_id,
+            entry.id,
+            openalex_id=w_id or None,
+            doi=w_doi or None,
+            held_ref_id=held if held != ref_id else None,
+        )
+        resolved += 1
+    return {"resolved": resolved, "missed": missed, "looked_up": looked_up}
+
+
 def _sweep_paper(store: Store, ref_id: int, conn: Connection) -> tuple[int, int]:
     """Sweep one claimed paper inside the caller's savepoint: write its
     chunks' ``cites`` links, stamp ``CITERES:<version>`` per chunk,
@@ -606,109 +932,153 @@ def _sweep_paper(store: Store, ref_id: int, conn: Connection) -> tuple[int, int]
 
 
 def run_cite_resolve_pass(
-    store: Store, *, batch_size: int | None = None
+    store: Store, *, batch_size: int | None = None, email: str = ""
 ) -> dict[str, int]:
-    """One pass: claim ``CITERES:pending`` papers, write their chunks'
-    ``cites`` links, stamp ``CITERES:<version>`` per chunk, flip each
-    paper to ``CITERES:swept``.
+    """One pass: claim ``CITERES:pending`` papers, run each through the
+    OpenAlex leg then write its chunks' ``cites`` links, stamp
+    ``CITERES:<version>`` per chunk, flip the paper to
+    ``CITERES:swept``.
 
-    ``batch_size`` bounds *papers* claimed (default 8 — a landmark
-    paper's chunks all process in its own savepoint, so the claim, not
-    the chunk count, is the batch unit). Each paper sweeps inside its
-    own ``conn.transaction()`` savepoint (spec ruling): a failing
-    paper rolls back only itself — links, chunk stamps and the flip
-    alike — is stamped ``CITERES:error:<n>`` (the durable record; the
-    claim sorts it last next pass — the backoff — and at
-    :data:`_MAX_ERROR_ATTEMPTS` ``error:terminal`` stops it being
-    claimed at all), and the batch still commits the survivors. Only a
-    claim- or commit-level failure rolls the whole batch back — and
-    takes the batch's error stamps with it, so they are re-stamped in
-    a fresh transaction (the stamp counts committed ``error:<n>``
-    tags, so the re-stamp re-derives the same value).
+    ``batch_size`` bounds *papers* claimed (default 8). The claim
+    transaction stamps each claimed paper's :mod:`ref_lease` attempt
+    lease and commits — the ``FOR UPDATE`` lock never spans the
+    OpenAlex lookups; the lease is the durable claim a sibling's claim
+    excludes and the failure brake (:mod:`ref_lease`'s contract). Each
+    paper then resolves and sweeps in its own short transactions, so
+    one failing paper costs itself alone: it is stamped
+    ``CITERES:error:<n>`` (the claim sorts it last — the backoff — and
+    at :data:`_MAX_ERROR_ATTEMPTS` ``error:terminal`` stops it being
+    claimed at all) while the batch still processes the survivors.
 
-    Returns ``{papers_swept, chunks_swept, links_ensured, failed}`` —
-    ``failed`` counts each failed paper once (a batch-level rollback
-    adds one only when no per-paper failure already accounted for it).
+    A :class:`RateLimited` refusal from the shared ``openalex`` limiter
+    defers the whole rest of the batch (every later paper would be
+    refused too): the refused paper keeps its pending tag and its
+    lease — it *was* attempted, the lease brakes re-billing — while
+    the papers never attempted get their leases back so they re-claim
+    next pass (``bib_parse``'s documented idiom). Deferred is never
+    error-stamped.
+
+    Returns ``{papers_swept, chunks_swept, links_ensured,
+    entries_resolved, entries_missed, deferred, failed}``.
     """
-    papers_swept = 0
-    chunks_swept = 0
-    links_ensured = 0
+    papers_swept = chunks_swept = links_ensured = 0
+    entries_resolved = entries_missed = 0
     failed_ids: list[int] = []
-    batch_failed = False
+    deferred = 0
     try:
         with store.pool.connection() as conn:
             claimed = _claim_pending_papers(conn, limit=batch_size or 8)
             for ref_id in claimed:
-                try:
-                    with conn.transaction():  # savepoint: isolate this paper
-                        swept, ensured = _sweep_paper(store, ref_id, conn)
-                except Exception:
-                    stamp = _error_stamp(conn, ref_id)
-                    if stamp == _ERROR_TERMINAL:
-                        log.warning(
-                            "cite_resolve: paper %s failed %d sweeps -- "
-                            "tagged %s:%s, no longer claimed",
-                            ref_id,
-                            _MAX_ERROR_ATTEMPTS,
-                            _CITERES_NS,
-                            _ERROR_TERMINAL,
-                            exc_info=True,
-                        )
-                    else:
-                        log.warning(
-                            "cite_resolve: paper %s failed -- rolled "
-                            "back, tagged %s:%s, backed off behind "
-                            "clean papers",
-                            ref_id,
-                            _CITERES_NS,
-                            stamp,
-                            exc_info=True,
-                        )
-                    failed_ids.append(ref_id)
-                    store.add_tag(
-                        ref_id,
-                        Tag.closed(_CITERES_NS, stamp),
-                        set_by="system",
-                        conn=conn,
-                    )
-                    continue
-                papers_swept += 1
-                chunks_swept += swept
-                links_ensured += ensured
+                ref_lease.stamp_attempt(store, ref_id, _CITERES_NS, conn=conn)
             conn.commit()
     except Exception:
-        batch_failed = True
         log.warning(
-            "cite_resolve: sweep batch failed -- rolled back, retried next pass",
+            "cite_resolve: claim failed -- nothing processed, retried next pass",
             exc_info=True,
         )
-        # The rollback took this batch's error stamps with it —
-        # re-stamp them so the backoff/terminal record survives.
-        if failed_ids:
+        return {
+            "papers_swept": 0,
+            "chunks_swept": 0,
+            "links_ensured": 0,
+            "entries_resolved": 0,
+            "entries_missed": 0,
+            "deferred": 0,
+            "failed": 1,
+        }
+
+    def _error_tag(ref_id: int) -> None:
+        try:
+            with store.pool.connection() as econn:
+                stamp = _error_stamp(econn, ref_id)
+                store.add_tag(
+                    ref_id,
+                    Tag.closed(_CITERES_NS, stamp),
+                    set_by="system",
+                    conn=econn,
+                )
+                econn.commit()
+        except Exception:
+            log.warning(
+                "cite_resolve: error-stamp failed for %s", ref_id, exc_info=True
+            )
+            failed_ids.append(ref_id)
+            return
+        if stamp == _ERROR_TERMINAL:
+            log.warning(
+                "cite_resolve: paper %s failed %d sweeps -- "
+                "tagged %s:%s, no longer claimed",
+                ref_id,
+                _MAX_ERROR_ATTEMPTS,
+                _CITERES_NS,
+                _ERROR_TERMINAL,
+            )
+        else:
+            log.warning(
+                "cite_resolve: paper %s failed -- tagged %s:%s, "
+                "backed off behind clean papers",
+                ref_id,
+                _CITERES_NS,
+                stamp,
+            )
+        failed_ids.append(ref_id)
+
+    for i, ref_id in enumerate(claimed):
+        try:
+            leg = _resolve_paper_openalex(store, ref_id, email=email)
+            entries_resolved += leg["resolved"]
+            entries_missed += leg["missed"]
+        except RateLimited:
+            log.info(
+                "cite_resolve: shared openalex limiter refused at ref_id=%s; "
+                "deferring the rest of the batch",
+                ref_id,
+            )
+            deferred += 1
             try:
                 with store.pool.connection() as conn:
-                    for ref_id in failed_ids:
-                        store.add_tag(
-                            ref_id,
-                            Tag.closed(_CITERES_NS, _error_stamp(conn, ref_id)),
-                            set_by="system",
-                            conn=conn,
+                    for skipped_id in claimed[i + 1 :]:
+                        ref_lease.clear_attempt(
+                            store, skipped_id, _CITERES_NS, conn=conn
                         )
                     conn.commit()
             except Exception:
                 log.warning(
-                    "cite_resolve: could not re-stamp error tags",
+                    "cite_resolve: could not release skipped leases",
                     exc_info=True,
                 )
-        papers_swept = 0
-        chunks_swept = 0
-        links_ensured = 0
+            break
+        except Exception:
+            log.warning(
+                "cite_resolve: openalex leg failed for paper %s",
+                ref_id,
+                exc_info=True,
+            )
+            _error_tag(ref_id)
+            continue
+        try:
+            with store.pool.connection() as conn:
+                with conn.transaction():
+                    swept, ensured = _sweep_paper(store, ref_id, conn)
+                    ref_lease.clear_attempt(store, ref_id, _CITERES_NS, conn=conn)
+            papers_swept += 1
+            chunks_swept += swept
+            links_ensured += ensured
+        except Exception:
+            log.warning(
+                "cite_resolve: sweep failed for paper %s -- rolled back",
+                ref_id,
+                exc_info=True,
+            )
+            _error_tag(ref_id)
 
     return {
         "papers_swept": papers_swept,
         "chunks_swept": chunks_swept,
         "links_ensured": links_ensured,
-        "failed": max(len(failed_ids), 1) if batch_failed else len(failed_ids),
+        "entries_resolved": entries_resolved,
+        "entries_missed": entries_missed,
+        "deferred": deferred,
+        "failed": len(failed_ids),
     }
 
 

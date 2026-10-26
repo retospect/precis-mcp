@@ -160,10 +160,6 @@ runs only on the castor chain (`llm_call_log.model` shows the local model).
 
 | # | Slice | Acceptance |
 |---|---|---|
-| 1 | Chunk→paper `cites` writer from `chunk_citations` where `held_ref_id` is set (extends the gr513755 writer to chunk scope on the citing side). Dark flag, version marker. | Fixture paper: each swept marker yields one link with `meta.marker` + `meta.marker_order`; a chunk's links list in occurrence order (a marker cited twice keeps its first position); re-run inserts nothing; `get` of the chunk shows the links; unheld entries write nothing. |
-| 2 | Author-year marker extraction in memory (no table) + match to `paper_bib_entries` authors/year, with the `bib_mark` whitelist rule; writes `cites` links with marker order. | Fixture of ≥30 labelled author-year sentences: precision ≥ 0.95; ambiguous → no link; "et al.", `2004a/b`, parenthetical and narrative forms covered; no new table or `chunk_citations` row; mixed numeric + author-year chunk orders by text position. |
-| 3 | Skill `precis-cite-resolve-help` + skill-lint pass; recipe only, over existing calls. | `get(kind='skill', id='precis-cite-resolve-help')` served; `search(kind='skill', q='what does [32] refer to')` ranks it first; every call in the recipe runs against the dev DB. |
-| 4 | OpenAlex hop for entries without DOI (title/year lookup via the shared `openalex` limiter) and stub request through the gr513755 trickle budget. | Entry with no DOI resolves or records a stamped miss; no direct stub mint from this path; refusal by the limiter defers, never errors the pass. |
 | 5 | Access trigger (`CITERES:pending`, drain pass, per-chunk version marker). Never bumps `bib_parse`. | Reading a paper marks it once; the pass processes only marked papers; ship dark; an unmarked paper is never touched (test on the claim query); a paper with no entries is skipped, no parse enqueued. |
 | 6 | **Machine-edge gate ruled (exempt — see decisions log); the eval question stays open.** Passage layer: `cite_resolve:passage` op, top-5 candidate pick, chunk→chunk upgrade, `none` memo. | Registered in `LLM_OPERATIONS` (registry test passes); with the castor row set, calls log to the local model; link carries `meta.evidence` + `why`; `none` is memoized and not retried. |
 | 7 | On-request job with ETA ("deep link this set"); the only path that bumps `bib_parse` for a named paper lacking entries. | Job over N papers reports queued/ETA, outranks the access queue, bumps `bib_parse` only for the named papers, finishes with a per-paper count of resolved/ambiguous/unheld. |
@@ -179,6 +175,36 @@ bounded by accessed papers × citations per paper; the LLM lane is bounded
 by the castor slot the router takes.
 
 ## Open questions / decisions log
+
+### Builder picks (S4)
+
+Decisions the spec left open, taken conservative while building slice 4:
+
+- **Stub request = `openalex_id` on the entry.** A verified unheld hit
+  writes `paper_bib_entries.openalex_id` (+ `doi`) and nothing else — no
+  `upsert_stub_paper` call. The gr513755 trickle census owns minting
+  under its own budget; the recorded id is the request it picks up.
+- **Stamped miss = `match_conf=-2.0`, decided rows only.** The miss is
+  written only where `match_conf` is already non-NULL; a NULL row is
+  crossref-undecided and stays NULL so `bib_parse`'s rematch sweep keeps
+  its retry (the OA outcome is simply re-derived on a re-sweep).
+- **Verify gate is title-containment.** A candidate resolves only when
+  its normalised title appears verbatim inside the normalised
+  `raw_text`, the year matches when both sides carry one, and a
+  first-author surname parseable on both sides agrees — and only when
+  exactly one candidate passes (2+ = ambiguous = the stamped miss; 0 =
+  the miss). Citation styles that don't quote the title never match —
+  unmatched is acceptable, wrong is not.
+- **Claim lease restructure (network spend).** The claim transaction
+  commits right after stamping `CITERESATTEMPT` per paper — the
+  `FOR UPDATE` lock never spans an OpenAlex lookup; the lease is the
+  durable claim and failure brake. Each paper's OA leg holds no
+  connection across a lookup (per-phase short transactions); its sweep
+  + `clear_attempt` commit in one short transaction. A `RateLimited`
+  refusal defers the rest of the batch: the refused paper keeps pending
+  + lease, never-attempted papers get their lease back.
+- **Cap: 25 live lookups per paper per sweep** — the remainder resolves
+  unstamped on later sweeps.
 
 Decided (Reto 2026-10-24, relayed by COORDINATOR):
 

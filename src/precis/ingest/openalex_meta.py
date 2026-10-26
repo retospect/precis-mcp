@@ -203,6 +203,43 @@ def fetch_openalex_work_by_id(
     return _fetch_work(oid, email=email, timeout=timeout)
 
 
+def search_openalex_works(
+    query: str,
+    *,
+    year: int | None = None,
+    per_page: int = 5,
+    email: str = "",
+    timeout: float = _TIMEOUT_S,
+) -> list[dict[str, Any]]:
+    """``GET /works?search=<query>`` — the live title/bibliographic lookup.
+
+    Returns the ``results`` list (top ``per_page`` relevance-ranked work
+    objects), ``[]`` when the response carries none. ``year`` pins the
+    search to ``filter=publication_year:<year>``. Same client /
+    ``call_with_backoff`` / shared ``openalex`` limiter row as
+    :func:`_fetch_work`: a first-attempt limiter refusal raises
+    :class:`precis.utils.rate_limit.RateLimited` (the caller defers);
+    HTTP errors raise after the politeness core's retries.
+    """
+    params = _params(email)
+    params["search"] = query
+    params["per-page"] = str(per_page)
+    if year is not None:
+        params["filter"] = f"publication_year:{year}"
+
+    def once() -> Any:
+        with http_client(timeout=timeout, headers={"User-Agent": _ua(email)}) as client:
+            resp = request_with_deadline(
+                client, 2 * timeout, lambda: client.get(_OPENALEX_WORKS, params=params)
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    data = call_with_backoff(once, service="openalex")
+    results = (data or {}).get("results") if isinstance(data, dict) else None
+    return results if isinstance(results, list) else []
+
+
 def _short_id(openalex_url: str | None) -> str:
     """``https://openalex.org/W123`` → ``W123`` (bare id)."""
     if not openalex_url:
@@ -421,4 +458,5 @@ __all__ = [
     "fetch_openalex_work_by_id",
     "fetch_openalex_work_by_identifier",
     "normalize",
+    "search_openalex_works",
 ]
