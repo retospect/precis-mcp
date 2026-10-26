@@ -3321,3 +3321,108 @@ class TestEditBody:
         h = _make_handler(store)
         with pytest.raises(BadInput, match="endpoint"):
             h.edit(id=fid, find="overreaching", text="narrower")
+
+
+# ── search view='count' (gr518170) ───────────────────────────────────
+
+
+class TestCountView:
+    """``search(view='count')`` — the filtered finding total plus the
+    live claim-graph census: hubs by publish state and trust tier,
+    edges by relation."""
+
+    def _graph(self, store) -> None:
+        """One tracing finding, two unminted hubs, and one edge of each
+        census bucket — establishes + contradicts (evidence), refines
+        (claim), derived-from (lineage)."""
+        from precis.taproot.hub import attach_evidence, link_claims
+
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="the claim", body="claim body", scope={}, cited_in="miller23a~0"
+        )
+        hub1 = mint_hub(
+            store, CanonicalClaim(sentence="Hub one claim sentence.", scope={})
+        )
+        hub2 = mint_hub(
+            store,
+            CanonicalClaim(sentence="Hub two, a different claim.", scope={}),
+        )
+        paper = _seed_paper(store, cite_key="ev23a")
+        attach_evidence(
+            store,
+            hub_ref_id=hub1,
+            paper_ref_id=paper,
+            role="establishes",
+            meta={"support": "yes", "verified_by": "test"},
+            set_by="system",
+        )
+        attach_evidence(
+            store,
+            hub_ref_id=hub2,
+            paper_ref_id=paper,
+            role="contradicts",
+            meta={"support": "no", "verified_by": "test"},
+            set_by="system",
+        )
+        link_claims(
+            store,
+            from_hub_ref_id=hub2,
+            to_hub_ref_id=hub1,
+            relation="refines",
+            set_by="system",
+        )
+        store.add_link(
+            src_ref_id=hub1,
+            dst_ref_id=paper,
+            relation="derived-from",
+            set_by="system",
+        )
+
+    def test_count_view_reports_total_and_census(self, store) -> None:
+        self._graph(store)
+        out = _make_handler(store).search(view="count")
+        assert "# 3 finding entries" in out.body
+        assert "claim hubs: 2 live" in out.body
+        assert "unminted 2" in out.body
+        assert "verified 1" in out.body
+        assert "disputed 1" in out.body
+        assert "edges on live hubs: 4" in out.body
+        assert "establishes 1" in out.body
+        assert "contradicts 1" in out.body
+        assert "refines 1" in out.body
+        assert "derived-from 1" in out.body
+        assert out.result_count == 3
+
+    def test_count_view_status_narrows_head_not_census(self, store) -> None:
+        """``status=`` desugars on the ref total; the hub census is
+        corpus-level by design (a hub census filtered by a finding query
+        would mislabel)."""
+        self._graph(store)
+        out = _make_handler(store).search(view="count", status="tracing")
+        assert "# 1 finding entry" in out.body
+        assert "claim hubs: 2 live" in out.body
+
+    def test_count_view_group_by_state(self, store) -> None:
+        self._graph(store)
+        out = _make_handler(store).search(view="count", group_by="state")
+        assert "state:" in out.body
+        assert "  STATUS:tracing: 1" in out.body
+        assert "  STATUS:canonical: 2" in out.body
+
+    def test_count_view_refuses_trust(self, store) -> None:
+        with pytest.raises(BadInput, match="trust="):
+            _make_handler(store).search(view="count", trust="signed")
+
+    def test_count_view_refuses_unknown_view(self, store) -> None:
+        with pytest.raises(BadInput, match="unknown view"):
+            _make_handler(store).search(view="bogus")
+
+    def test_count_view_q_filters_on_body_chunks(self, store) -> None:
+        """``q=`` on the count matches ``finding_body`` chunks
+        (``q_in_chunks=True`` — the hybrid legs rank over chunk text,
+        so the count must filter it), not just titles."""
+        self._graph(store)
+        out = _make_handler(store).search(view="count", q="claim body")
+        assert "# 1 finding entry" in out.body

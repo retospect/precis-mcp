@@ -4,7 +4,8 @@ the plain-lexical universe.
 
 Store-level: :meth:`Store.chunks.count_chunks_keywords` (the
 ``mode='verbatim'`` companion to ``count_chunks_lexical``) counts the same
-``c.keywords @> terms`` pool :meth:`Store.chunks.search_chunks_keywords`
+``_verbatim_pred`` pool (``c.keywords @> terms``, plus a phrase substring
+fallback when ref-scoped, gr518172) :meth:`Store.chunks.search_chunks_keywords`
 retrieves from.
 
 Handler-level: :class:`~precis.handlers._paper_search.FusedBlockSearch`
@@ -58,6 +59,28 @@ def test_count_chunks_keywords_matches_search(store: Store) -> None:
     total = store.chunks.count_chunks_keywords(terms=terms, kind="paper")
     all_hits = store.chunks.search_chunks_keywords(terms=terms, kind="paper", limit=100)
     assert total == len(all_hits) == 3
+
+
+def test_count_chunks_keywords_substring_only_when_scoped(store: Store) -> None:
+    """gr518172 ruling: count and search share one predicate — the phrase
+    substring fallback applies under a ref scope, never over a whole kind."""
+    tag = uuid4().hex[:8]
+    rid = _seed(
+        store,
+        slug=f"cnt-sc-{tag}",
+        blocks=[f"the zz{tag}.one cell {i}" for i in range(2)],
+    )
+    q = f"zz{tag}.one"
+    assert store.chunks.count_chunks_keywords(terms=[q], kind="paper") == 0
+    assert (
+        store.chunks.count_chunks_keywords(terms=[q], kind="paper", scope_ref_id=rid)
+        == len(
+            store.chunks.search_chunks_keywords(
+                terms=[q], kind="paper", scope_ref_id=rid, limit=100
+            )
+        )
+        == 2
+    )
 
 
 def test_count_chunks_keywords_empty_terms_is_zero(store: Store) -> None:

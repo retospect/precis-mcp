@@ -541,3 +541,77 @@ def hub_rows(
         )
         for r in rows
     ]
+
+
+def hub_edge_census(store: Store) -> dict[str, dict[str, int]]:
+    """Edge census over live claim hubs — ``search(kind='finding',
+    view='count')``'s "…and N edges" half (gr518170).
+
+    Three buckets, one pass:
+
+    * ``evidence`` — inbound ``establishes``/``corroborates``/
+      ``contradicts``/``disputes`` edges whose **dst is a live hub** and
+      whose source is a live ref of any kind. Unlike
+      :func:`hub_tree`'s leaf filter this counts finding-sourced
+      ``establishes``/``corroborates`` rows too — a census answers "how
+      many edges exist", and the tree's display choice (finding sources
+      shown only for the dispute pair) is irrelevant to the number.
+    * ``claim`` — the no-evidence-flow advisory links outbound **from**
+      a live hub: ``refines``/``conjunct-of``/``explains``/
+      ``motivated-by`` (:mod:`precis.store.types` — motivated-by's dst
+      may be a paper/patent, so the bucket keys on the hub side, not on
+      both ends). ``contradicts``/``disputes`` between hubs stay under
+      ``evidence``, matching :func:`hub_tree`'s leaf placement — no row
+      counts twice.
+    * ``lineage`` — outbound ``derived-from`` from a live hub to a live
+      ref (the provenance shape :func:`hub_tree` renders as evidence
+      leaves).
+
+    Returns ``{bucket: {relation: n}}``; absent keys mean zero, not
+    "not counted".
+    """
+    hub_d = claim_hub_predicate_sql(ref_alias="d")
+    hub_s = claim_hub_predicate_sql(ref_alias="s")
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT bucket, relation, count(*) FROM (
+                SELECT 'evidence' AS bucket, l.relation AS relation
+                  FROM links l
+                  JOIN refs d ON d.ref_id = l.dst_ref_id
+                             AND d.retired_at IS NULL
+                  JOIN refs s ON s.ref_id = l.src_ref_id
+                             AND s.retired_at IS NULL
+                 WHERE l.relation = ANY(%(ev)s)
+                   AND {hub_d}
+                UNION ALL
+                SELECT 'claim', l.relation
+                  FROM links l
+                  JOIN refs d ON d.ref_id = l.dst_ref_id
+                             AND d.retired_at IS NULL
+                  JOIN refs s ON s.ref_id = l.src_ref_id
+                             AND s.retired_at IS NULL
+                 WHERE l.relation = ANY(%(cl)s)
+                   AND {hub_s}
+                UNION ALL
+                SELECT 'lineage', l.relation
+                  FROM links l
+                  JOIN refs d ON d.ref_id = l.dst_ref_id
+                             AND d.retired_at IS NULL
+                  JOIN refs s ON s.ref_id = l.src_ref_id
+                             AND s.retired_at IS NULL
+                 WHERE l.relation = 'derived-from'
+                   AND {hub_s}
+            ) x
+            GROUP BY bucket, relation
+            """,
+            {
+                "ev": ["establishes", "corroborates", "contradicts", "disputes"],
+                "cl": ["refines", "conjunct-of", "explains", "motivated-by"],
+                **CLAIM_HUB_PREDICATE_PARAMS,
+            },
+        ).fetchall()
+    out: dict[str, dict[str, int]] = {}
+    for bucket, rel, n in rows:
+        out.setdefault(str(bucket), {})[str(rel)] = int(n)
+    return out

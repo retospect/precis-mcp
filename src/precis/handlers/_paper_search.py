@@ -1234,7 +1234,7 @@ class FusedBlockSearch:
             # smaller than the lexical FTS pool for the same query).
             # ``mode='verbatim'`` gets its own honest count
             # (count_chunks_keywords mirrors search_chunks_keywords's
-            # ``c.keywords @> terms`` clause); ``mode='semantic'`` has no
+            # ``_verbatim_pred`` clause); ``mode='semantic'`` has no
             # honest count available (cosine hits aren't gated by the
             # lexical tsquery at all) so it gets ``total=None`` — same
             # "no of-K header, gate nav on presence" treatment broad mode

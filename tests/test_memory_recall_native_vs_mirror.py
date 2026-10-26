@@ -39,7 +39,10 @@ RECALL_SET = json.loads(
 #: 2026-10-17 on the title + hook snapshots (3/36 each: the hash test
 #: embedder has no semantics, so only queries whose every term is in the
 #: snapshot hit). Raise it when a fix lands; never lower it.
-SET_FLOOR = {"mirror": 3, "native": 3}
+#: 2026-10-26: 6/36 — the gr515867 prod title edits (query-verbatim
+#: titles on me494842/me478000) synced into the snapshots lifted two
+#: more entries over the hash scorer's term bar.
+SET_FLOOR = {"mirror": 6, "native": 6}
 
 
 def _set_topics() -> list[Topic]:

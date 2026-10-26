@@ -2689,7 +2689,11 @@ class PaperHandler(Handler):
 
         Same store query and facet grammar as the numeric-ref kinds
         (``_numeric_ref._count_view``); ``q=`` matches titles or any live
-        body chunk. ``group_by='tag:<axis>'`` / ``'meta.<key>'`` facet.
+        body chunk. ``group_by='tag:<axis>'`` / ``'meta.<key>'`` /
+        ``'fulltext'`` facet — ``'fulltext'`` buckets papers
+        ``full-text | card-only | stub`` (the ``view='status'``
+        vocabulary) and trails a ``passages:`` line counting live body
+        chunks over the same filtered set (gr518168).
         """
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
@@ -2737,6 +2741,21 @@ class PaperHandler(Handler):
                 parts.append(f"  {label}: {n}")
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
+            if any(ft == "fulltext" for ft, _k in facets):
+                # The facet counts *papers*; a grant-style "how many
+                # full-text papers and passages" also wants the passage
+                # total over the same filtered set (gr518168).
+                passages = self.store.count_body_chunks(
+                    kind=kind,
+                    tags=normalized,
+                    q=q,
+                    q_in_chunks=True,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    since=since_dt,
+                    until=until_dt,
+                )
+                parts.append(f"  passages: {passages} live body chunks")
         else:
             parts.append(
                 render_next_section(

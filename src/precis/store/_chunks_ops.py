@@ -624,6 +624,37 @@ def _or_corroborates(q: str) -> bool:
     return len(re.findall(r"\w+", q)) > 1
 
 
+def _ilike_contains(term: str) -> str:
+    """``%term%`` with the ``ILIKE`` metachars escaped for ``ESCAPE '\\'``."""
+    return (
+        "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    )
+
+
+def _verbatim_pred(terms: list[str], *, scoped: bool = False) -> tuple[str, list[Any]]:
+    """The ``mode='verbatim'`` match predicate as ``(sql, params)``.
+
+    ``c.keywords @> terms`` (KeyBERT containment, GIN-indexed). When
+    ``scoped`` (a single ref or an explicit ref-id set bounds the scan),
+    OR the whole query phrase as one literal ``text`` ILIKE substring —
+    the backstop for a term the keyword extractor never stored
+    (gr518172: 'MSEP' returned 1 of 5 matching chunks). Unscoped
+    searches keep containment only: the chunks table has no trigram
+    index, so a substring leg would seq-scan millions of rows. The
+    phrase is matched contiguously, so '7 nm' never matches a chunk with
+    "7" and "nm" apart. One predicate shared by
+    :meth:`ChunkStore.search_chunks_keywords` and
+    :meth:`ChunkStore.count_chunks_keywords` so results and the "N of K"
+    header can never diverge.
+    """
+    if not scoped:
+        return "c.keywords @> %s::text[]", [terms]
+    return "(c.keywords @> %s::text[] OR c.text ILIKE %s ESCAPE '\\')", [
+        terms,
+        _ilike_contains(" ".join(terms)),
+    ]
+
+
 def header_card_text(title: str | None, hook: str | None) -> str:
     """``title\nhook`` with empty parts skipped (migration 0198 mirrors it)."""
     parts = [(p or "").strip() for p in (title, hook)]
@@ -948,11 +979,12 @@ class ChunkStore:
         year_to: int | None = None,
         chunk_kinds: list[str] | None = None,
     ) -> int:
-        """Count chunks matching the ``mode='verbatim'`` keyword-
-        containment filter (no LIMIT). Companion to
-        :meth:`search_chunks_keywords` for the "N of K" header — same
-        ``keywords @>`` WHERE clause (noise-floor guard, ``card_kinds``
-        opt-in, control-tag fences, year range) so a verbatim search's
+        """Count chunks matching the ``mode='verbatim'`` filter (no
+        LIMIT). Companion to :meth:`search_chunks_keywords` for the
+        "N of K" header — same :func:`_verbatim_pred` clause (keyword
+        containment OR per-term text substring, noise-floor guard,
+        ``card_kinds`` opt-in, control-tag fences, year range) so a
+        verbatim search's
         header reports *its own* universe rather than
         :meth:`count_chunks_lexical`'s FTS one (gr311338 — the header
         used to always report the lexical count regardless of the mode
@@ -980,15 +1012,18 @@ class ChunkStore:
         norm = [t.lower() for t in terms if t.strip()]
         if not norm:
             return 0
+        pred, pred_params = _verbatim_pred(
+            norm, scoped=scope_ref_id is not None or include_ref_ids is not None
+        )
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
             "r.retired_at IS NULL",
             "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
-            "c.keywords @> %s::text[]",
+            pred,
             *_chunk_noise_clauses(text_alias="c.text"),
         ]
-        params: list[Any] = [norm]
+        params: list[Any] = list(pred_params)
         if kinds is not None:
             params.append(list(kinds))
             clauses.append("r.kind = ANY(%s)")
@@ -1283,28 +1318,36 @@ class ChunkStore:
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Verbatim keyword search — chunks whose ``keywords`` array contains
         **all** of ``terms`` (GIN ``@>`` containment against the per-chunk
-        KeyBERT terms, F20). The ``search(mode='verbatim')`` leg: exact,
+        KeyBERT terms, F20) OR whose ``text`` literally carries each term
+        as a substring. The ``search(mode='verbatim')`` leg: exact,
         embedder-independent term matching for when an agent wants a literal
-        keyword rather than fuzzy relevance. Shares every filter with the
-        lexical leg (kind/date/scope/tags/fences/year/chunk-scope/exclude).
+        keyword rather than fuzzy relevance. The substring backstop covers
+        terms KeyBERT never extracted — a bulk-edit pass trusting verbatim
+        to find every occurrence must not leave stale text behind
+        (gr518172). Shares every filter with the lexical leg
+        (kind/date/scope/tags/fences/year/chunk-scope/exclude).
 
-        Terms are lowercased (KeyBERT stores lowercased); empty ``terms``
-        returns nothing — an empty ``@>`` matches every row, never what a
-        search wants. No relevance gradient (containment is all-or-nothing),
-        so hits are ordered newest-chunk-first (``chunk_id`` DESC) and the
-        score is a constant ``0.0``.
+        Terms are lowercased (KeyBERT stores lowercased; ILIKE is
+        case-insensitive); empty ``terms`` returns nothing — an empty
+        ``@>`` matches every row, never what a search wants. No relevance
+        gradient (containment is all-or-nothing), so hits are ordered
+        newest-chunk-first (``chunk_id`` DESC) and the score is a
+        constant ``0.0``.
         """
         norm = [t.lower() for t in terms if t.strip()]
         if not norm:
             return []
+        pred, pred_params = _verbatim_pred(
+            norm, scoped=scope_ref_id is not None or include_ref_ids is not None
+        )
         clauses = [
             "r.retired_at IS NULL",
             "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
-            "c.keywords @> %s::text[]",
+            pred,
             *_chunk_noise_clauses(text_alias="c.text"),
         ]
-        params: list[Any] = [norm]
+        params: list[Any] = list(pred_params)
         kd_clauses, kd_params = _kind_date_where(kinds, kind, created_from, created_to)
         clauses.extend(kd_clauses)
         params.extend(kd_params)
@@ -1393,11 +1436,7 @@ class ChunkStore:
         needle = q.strip()
         if not needle:
             return []
-        pattern = (
-            "%"
-            + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            + "%"
-        )
+        pattern = _ilike_contains(needle)
         clauses = [
             "r.retired_at IS NULL",
             "c.retired_at IS NULL",

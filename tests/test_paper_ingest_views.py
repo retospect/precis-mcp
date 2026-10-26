@@ -88,6 +88,22 @@ class TestCount:
         assert "studytype:review: 1" in body or "review: 1" in body, body
         assert "(none): 1" in body, body
 
+    def test_group_by_fulltext(self, papers: PaperHandler, store: Store) -> None:
+        """gr518168: ``group_by='fulltext'`` buckets papers full-text /
+        card-only / stub and trails a passages line — the "how many
+        full-text papers and passages" question needed prod-psql."""
+        _paper(store, "ft2024a", body=2, card=True, refs=1)  # references ≠ full
+        _paper(store, "co2024b", card=True)
+        _paper(store, "st2024c")
+        body = papers.search(view="count", group_by="fulltext").body
+        assert body.startswith("# 3 paper entries"), body
+        assert "fulltext:" in body
+        assert "  full-text: 1" in body
+        assert "  card-only: 1" in body
+        assert "  stub: 1" in body
+        # passages = live body chunks (ord>=0, non-references): 2.
+        assert "passages: 2 live body chunks" in body
+
     def test_via_dispatch(
         self, runtime_with_store: PrecisRuntime, store: Store
     ) -> None:

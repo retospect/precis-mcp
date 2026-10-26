@@ -259,6 +259,7 @@ Pagination mechanics (defaults, `page_size=` cap): `precis-search-help`.
 search(kind="paper", view="count")                                  # total
 search(kind="paper", view="count", tags=["studytype:review"],
        args={"group_by": "tag:studytype"}, since="2026-10-01")      # filtered + facets
+search(kind="paper", view="count", args={"group_by": "fulltext"})   # full-text vs card-only vs stub + passages
 search(kind="paper", view="ingest", args={"days": 14})              # landings per UTC day
 search(kind="paper", view="status", args={"ids": ["pa123", "wang2020state"]})
 ```

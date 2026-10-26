@@ -207,10 +207,11 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
     ``'state'``/``'status'`` → the ``STATUS`` tag axis; ``meta.<key>`` →
     a ``refs.meta`` JSONB scalar; ``tag:<axis>`` → a closed namespace
     when all-caps (``tag:STATUS``) or an open ``prefix:*`` tag family
-    otherwise (``tag:area``). Comma-separated string or list; order is
-    preserved (rendered left-to-right as ``a | b`` groups). Raises
-    :class:`BadInput` on an unrecognized term rather than silently
-    counting the wrong axis.
+    otherwise (``tag:area``); ``'fulltext'`` → the ref's body state
+    (``full-text``/``card-only``/``stub``, gr518168). Comma-separated
+    string or list; order is preserved (rendered left-to-right as
+    ``a | b`` groups). Raises :class:`BadInput` on an unrecognized term
+    rather than silently counting the wrong axis.
     """
     if group_by is None:
         return []
@@ -222,6 +223,8 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
             continue
         if t in ("state", "status"):
             spec = ("axis", "STATUS")
+        elif t == "fulltext":
+            spec = ("fulltext", "")
         elif m := _COUNT_GROUP_BY_META.match(t):
             spec = ("meta", m.group(1))
         elif m := _COUNT_GROUP_BY_TAG.match(t):
@@ -230,7 +233,7 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
         else:
             raise BadInput(
                 f"unknown group_by term {t!r}",
-                options=["state", "meta.<key>", "tag:<axis>"],
+                options=["state", "meta.<key>", "tag:<axis>", "fulltext"],
                 next=(
                     "e.g. args={'group_by': 'meta.job_type,state'} or "
                     "'tag:area' — comma-separated, max "
@@ -252,6 +255,8 @@ def _count_facet_label(spec: tuple[str, str]) -> str:
     ftype, key = spec
     if ftype == "meta":
         return f"meta.{key}"
+    if ftype == "fulltext":
+        return "fulltext"
     if key == "STATUS":
         return "state"
     return f"tag:{key}"

@@ -103,6 +103,41 @@ def test_verbatim_mode_requires_all_keywords_present(store: Store) -> None:
     assert store.chunks.search_chunks(q="   ", mode="verbatim", kind="paper") == []
 
 
+def test_verbatim_matches_text_when_keywords_miss(store: Store) -> None:
+    """gr518172: KeyBERT extraction is lossy — a chunk whose ``text``
+    literally carries the term must match ``mode='verbatim'`` even when
+    its ``keywords`` array lacks it (or was never populated). A bulk-edit
+    pass trusting verbatim must not leave stale occurrences behind."""
+    tag = uuid4().hex[:8]
+    rid = _seed(
+        store,
+        slug=f"vt{tag}",
+        blocks=[
+            f"the {tag}-MSEP stack and its MSEP.one variant",
+            "an unrelated paragraph",
+        ],
+        embed=False,
+    )
+    # Keywords never ran on these chunks — every hit is the text path.
+    # Unscoped: keyword containment only (no trigram index → no ILIKE).
+    hits = store.chunks.search_chunks(q=f"{tag}-MSEP", mode="verbatim", kind="paper")
+    assert [b for b, r, _s in hits if r.id == rid] == []
+
+    # Scoped to the ref: the substring fallback applies.
+    hits = store.chunks.search_chunks(
+        q=f"{tag}-MSEP", mode="verbatim", kind="paper", scope_ref_id=rid
+    )
+    ours = [b for b, r, _s in hits if r.id == rid]
+    assert len(ours) == 1
+    assert f"{tag}-MSEP" in ours[0].text
+
+    # Substring semantics: 'MSEP.one' and punctuation-adjacent hits count.
+    hits = store.chunks.search_chunks(
+        q="MSEP.one", mode="verbatim", kind="paper", scope_ref_id=rid
+    )
+    assert [b.id for b, r, _s in hits if r.id == rid] == [ours[0].id]
+
+
 def test_count_chunks_keywords_mirrors_search_chunks_keywords_predicate(
     store: Store,
 ) -> None:

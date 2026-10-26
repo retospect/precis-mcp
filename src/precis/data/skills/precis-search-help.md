@@ -122,7 +122,7 @@ X". Pin the ranking with `mode=` when you know better:
 | `'hybrid'` *(default)* | Lexical + semantic, fused into one order. | General recall — concepts *and* keywords. |
 | `'lexical'` | Full-text match only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
 | `'semantic'` | Embedding-similarity match only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does. No embedder wired → degrades to lexical; embedder wired but failing → a loud error, never a silent zero-hit answer — when the cause is the service at capacity (queue timeout, not down), the error carries a retry-after hint in seconds; capacity ≠ absence, so wait and retry rather than concluding the hit doesn't exist. |
-| `'verbatim'` | Chunks whose extracted keywords contain **all** your query words (keyword containment — **not** the chunk text; embedder-independent). No relevance gradient — newest chunk first. | A topical filter tighter than full-text — chunks already keyword-tagged with your term(s). Each word must appear as a *distinct* keyword, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). Empty query returns nothing. |
+| `'verbatim'` | Chunks whose extracted keywords contain **all** your query words. Scoped to one ref, chunk text containing the whole query as one substring also matches (a backstop for terms extraction never stored). Embedder-independent; newest chunk first. | A topical filter tighter than full-text. Each word must appear as a *distinct* term, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). Empty query returns nothing. |
 | `'literal'` | Exact substring match over the chunk text itself (`ILIKE`, case-insensitive; `%`/`_` are data, not wildcards). Newest chunk first. | The "is this exact string still anywhere" hunt — a filename like `./src/precis/cli/memory_mirror.py`, a flag spelling, a sha, a quoted phrase. `get(id=N, q='…')` is the same literal check scoped to one node. |
 
 ```python
@@ -420,7 +420,9 @@ search(kind="job", view="count", link="gripe:472990")
 
 `group_by` terms: `state` (the `STATUS:` axis), `meta.<key>` (a
 `refs.meta` scalar like `meta.job_type`), `tag:<axis>` (closed axis
-when uppercase — `tag:STATUS` — else the open `prefix:*` tag family).
+when uppercase — `tag:STATUS` — else the open `prefix:*` tag family),
+`fulltext` (the ref's body state — `full-text` / `card-only` / `stub`;
+paper's count also trails a `passages:` line of live body chunks).
 Comma-separate up to 3 for a cross facet (`a | b` rows). Refs missing
 the facet land in `(none)`. The totals are exact `COUNT`s over the same
 WHERE as the listing, so they match the "N of K" page headers; `folder=`

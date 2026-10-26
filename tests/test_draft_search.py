@@ -147,6 +147,47 @@ def test_semantic_mode_runs(draft: DraftHandler, hub: Hub) -> None:
     assert "draft:d1" in out  # returns ranked matches over embedded chunks
 
 
+def test_verbatim_finds_every_literal_occurrence(draft: DraftHandler, hub: Hub) -> None:
+    """gr518172: verbatim reported 1 of 5 chunks carrying 'MSEP' and none
+    for '7 nm' — keyword containment misses terms extraction never
+    stored. Draft chunks' ``keywords`` stay NULL until the worker runs,
+    so every hit here is the text-substring backstop."""
+    draft.put(id="dv", title="MSEP notes", project=_proj(hub, "dv proj"))
+    h1 = draft.put(id="dv", chunk_kind="paragraph", text="MSEP stack A")
+    h2 = draft.put(id="dv", chunk_kind="paragraph", text="the MSEP.one cell")
+    h3 = draft.put(id="dv", chunk_kind="paragraph", text="a 7 nm pitch")
+    h4 = draft.put(id="dv", chunk_kind="paragraph", text="7 samples, 40 nm film")
+    draft.put(id="dv", chunk_kind="paragraph", text="unrelated prose")
+
+    out = draft.search(q="MSEP", mode="verbatim", scope="dv").body
+    assert _handle_of(h1.body) in out
+    assert _handle_of(h2.body) in out
+    assert _handle_of(h3.body) not in out
+
+    out = draft.search(q="MSEP.one", mode="verbatim", scope="dv").body
+    assert _handle_of(h2.body) in out
+    assert _handle_of(h1.body) not in out
+
+    # The phrase must match contiguously: h4 carries "7" and "nm" apart.
+    out = draft.search(q="7 nm", mode="verbatim", scope="dv").body
+    assert _handle_of(h3.body) in out
+    assert _handle_of(h4.body) not in out
+
+
+def test_verbatim_pred_substring_only_when_scoped() -> None:
+    """gr518172 ruling: the chunks table has no trigram index, so the
+    ILIKE fallback is scoped-only and matches the phrase as one substring."""
+    from precis.store._chunks_ops import _verbatim_pred
+
+    sql, params = _verbatim_pred(["7", "nm"])
+    assert "ILIKE" not in sql
+    assert params == [["7", "nm"]]
+
+    sql, params = _verbatim_pred(["7", "nm"], scoped=True)
+    assert sql.count("ILIKE") == 1
+    assert params == [["7", "nm"], "%7 nm%"]
+
+
 def test_unknown_subtree_handle_raises(draft: DraftHandler, hub: Hub) -> None:
     _seed_draft(draft, hub, slug="d1")
     with pytest.raises(NotFound):

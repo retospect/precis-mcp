@@ -54,4 +54,32 @@ def unusable_body_tag_sql(alias: str = "r") -> str:
     )
 
 
-__all__ = ["UNUSABLE_BODY_TAGS", "has_body_sql", "unusable_body_tag_sql"]
+def body_state_sql(alias: str = "r") -> str:
+    """``CASE`` expression → ``'full-text'`` | ``'card-only'`` | ``'stub'``.
+
+    'full-text' = a live non-card, non-``references`` body chunk exists
+    (``ord >= 0`` — stricter than :func:`has_body_sql`, which counts any
+    body chunk including ``references``); 'card-only' = only ``card_*``
+    chunks (``ord < 0``); 'stub' = no live chunks at all. The same
+    three-way vocabulary :meth:`Store.paper_fetch_status` reports per
+    paper — kept here so facet/grouping SQL shares it. References
+    ``<alias>.ref_id``; contains no ``%``, safe inside parameterised
+    queries.
+    """
+    return (
+        "CASE WHEN EXISTS (SELECT 1 FROM chunks f "
+        f"WHERE f.ref_id = {alias}.ref_id AND f.retired_at IS NULL "
+        "AND f.ord >= 0 AND f.chunk_kind <> 'references') THEN 'full-text' "
+        "WHEN EXISTS (SELECT 1 FROM chunks cd "
+        f"WHERE cd.ref_id = {alias}.ref_id AND cd.retired_at IS NULL "
+        "AND cd.ord < 0) THEN 'card-only' "
+        "ELSE 'stub' END"
+    )
+
+
+__all__ = [
+    "UNUSABLE_BODY_TAGS",
+    "body_state_sql",
+    "has_body_sql",
+    "unusable_body_tag_sql",
+]

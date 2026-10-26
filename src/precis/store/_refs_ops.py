@@ -40,7 +40,11 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput, Conflict, NotFound
 from precis.hints import Hint, converted_redirect_hint, merged_redirect_hint
-from precis.store._body_predicate import has_body_sql, unusable_body_tag_sql
+from precis.store._body_predicate import (
+    body_state_sql,
+    has_body_sql,
+    unusable_body_tag_sql,
+)
 from precis.store._mappers import (
     _REFS_COLS,
     _REFS_COLS_ALIASED,
@@ -3894,7 +3898,10 @@ class RefsMixin:
           renders its bare value);
         * ``("open_axis", prefix)`` — group by each ``prefix:*`` open
           tag the ref carries (a ref with two ``area:`` tags counts in
-          both groups).
+          both groups);
+        * ``("fulltext", _)`` — group by the ref's body state
+          (``'full-text'`` / ``'card-only'`` / ``'stub'``, the
+          :func:`body_state_sql` vocabulary; gr518168).
 
         Tag facets LEFT-JOIN so refs with no tag in the axis still count
         under a NULL label (rendered ``(none)``). Returns ``(total,
@@ -3930,6 +3937,11 @@ class RefsMixin:
             if ftype == "meta":
                 select_exprs.append("r.meta ->> %s")
                 select_params.append(key)
+                continue
+            if ftype == "fulltext":
+                # 'full-text' | 'card-only' | 'stub' — the
+                # paper_fetch_status vocabulary (gr518168).
+                select_exprs.append(body_state_sql("r"))
                 continue
             if ftype == "axis":
                 label = (
@@ -3976,6 +3988,65 @@ class RefsMixin:
                 ).fetchall()
                 groups = [(tuple(r[:n]), int(r[n])) for r in rows]
         return total, groups
+
+    def count_body_chunks(
+        self,
+        *,
+        kind: str,
+        tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
+        q: str | None = None,
+        q_in_chunks: bool = False,
+        q_card_kinds: tuple[str, ...] | None = None,
+        link_ref_id: int | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        since: Any = None,
+        until: Any = None,
+        meta_eq: tuple[str, str] | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
+    ) -> int:
+        """Live body-chunk (passage) count over the same filtered ref set
+        :meth:`count_refs_facets` describes — the "passages" figure a
+        ``view='count'`` full-text facet can't express (gr518168: "how
+        many full-text papers AND passages"). Body here means
+        ``ord >= 0 AND chunk_kind <> 'references'`` — bibliography chunks
+        are not passages, matching the ``'full-text'`` bucket of
+        :func:`body_state_sql`.
+        """
+        clauses, params = filtered_ref_clauses(
+            kind=kind,
+            tags=tags,
+            exclude_tags=exclude_tags,
+            q=q,
+            q_in_chunks=q_in_chunks,
+            q_card_kinds=q_card_kinds,
+            link_ref_id=link_ref_id,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            since=since,
+            until=until,
+            meta_eq=meta_eq,
+            id_min=id_min,
+            id_max=id_max,
+        )
+        clauses.extend(
+            [
+                "bc.retired_at IS NULL",
+                "bc.ord >= 0",
+                "bc.chunk_kind <> 'references'",
+            ]
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM refs r "
+                "JOIN chunks bc ON bc.ref_id = r.ref_id "
+                f"WHERE {' AND '.join(clauses)}",
+                params,
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
 
 
 def filtered_ref_clauses(

@@ -1294,6 +1294,17 @@ class FindingHandler(NumericRefHandler):
         tags: list[str] | None = None,
         page_size: int = 10,
         mode: str | None = None,
+        # ``view='count'`` (gr518170): the filtered finding total plus
+        # the live claim-graph census — hub totals by publish state and
+        # trust axis, evidence/claim/lineage edge counts by relation —
+        # so "1,552 hubs and 2,059 edges" is one call, not prod-psql.
+        # ``group_by=`` facets the ref total (same grammar as the other
+        # numeric-ref kinds); ``since=``/``until=`` bound
+        # ``refs.created_at`` on it.
+        view: str | None = None,
+        group_by: str | list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Hybrid search across findings with a status-axis default.
@@ -1346,6 +1357,12 @@ class FindingHandler(NumericRefHandler):
         so the page can come back short when little is settled; ordering
         (relevance) is untouched.
 
+        ``view='count'`` short-circuits to :meth:`_finding_count_view`:
+        the filtered finding total (``status=``/``tags=``/``q=``/
+        ``since=``/``until=``/``group_by=``, same contract as the other
+        numeric-ref kinds) plus the live claim-graph census — hubs by
+        publish state and trust axis, edges by relation (gr518170).
+
         Renders a TOON table (``id | title | setup | primary``, plus
         ``state | support | flags`` once any hit is a claim hub);
         ``get(kind='finding', id=N)`` for the full begat chain.
@@ -1360,6 +1377,26 @@ class FindingHandler(NumericRefHandler):
                     "search(kind='finding', q='…', trust='signed') for claims "
                     "a human key stands behind"
                 ),
+            )
+
+        if view is not None:
+            if view != "count":
+                raise BadInput(
+                    f"unknown view {view!r} for search(kind={self.kind!r})",
+                    options=["count"],
+                    next=(
+                        f"search(kind={self.kind!r}, view='count', "
+                        "args={'group_by': 'state'})"
+                    ),
+                )
+            return self._finding_count_view(
+                q=q,
+                status=status,
+                trust=resolved_trust,
+                tags=base_tags,
+                group_by=group_by,
+                since=since,
+                until=until,
             )
 
         if status is None:
@@ -1534,6 +1571,167 @@ class FindingHandler(NumericRefHandler):
             return Response(body=body)
 
         return self._render_finding_table(refs, query=q)
+
+    #: Publish-state display order for the count view — the trust ladder
+    #: most-settled first; ``unminted`` (no publish row) closes it.
+    #: Unknown states (future machine additions) append alphabetically.
+    _COUNT_STATE_ORDER: ClassVar[tuple[str, ...]] = (
+        "published",
+        "publishing",
+        "anchored",
+        "signed",
+        "reviewed",
+        "candidate",
+        "unminted",
+    )
+
+    def _finding_count_view(
+        self,
+        *,
+        q: str | None,
+        status: str | None,
+        trust: str | None,
+        tags: list[str],
+        group_by: Any,
+        since: str | None,
+        until: str | None,
+    ) -> Response:
+        """``search(kind='finding', view='count')`` — filtered total +
+        the live claim-graph census (gr518170).
+
+        The head line honours the shared count-view contract
+        (:meth:`NumericRefHandler._count_view`): ``status=`` desugars to
+        the ``STATUS:`` tag like the hit path, ``q=`` matches
+        ``finding_body`` chunks (``q_in_chunks=True`` — the hybrid legs
+        rank over chunk text, so the count must filter it), and
+        ``group_by=`` takes the same ``state``/``meta.<key>``/
+        ``tag:<axis>``/``fulltext`` grammar.
+
+        The census below it is **corpus-level** — the filters above do
+        not narrow it (edge/hub totals filtered by a finding query
+        would mislabel; the gripe's "1,552 hubs and 2,059 edges" figure
+        is whole-corpus). Hubs by publish state and by the
+        :data:`FINDING_TRUST_TIERS` predicates come from one
+        :func:`~precis.nanopub.overview.hub_rows` pass — the canonical
+        posture read, so the tier numbers mean exactly what
+        ``trust=`` does on the hit path (they overlap: a signed hub
+        usually also answers ``verified``). Edge counts are
+        :func:`~precis.nanopub.overview.hub_edge_census`.
+
+        ``trust=`` refuses rather than silently drops — a trust-tier
+        read already stands in for the filter, and narrowing edges by
+        tier would need a per-hub posture join the census deliberately
+        doesn't carry.
+        """
+        from collections import Counter
+
+        from precis.handlers._numeric_ref import (
+            _COUNT_GROUP_LIMIT,
+            _count_facet_label,
+            _parse_count_facets,
+            _parse_window_bound,
+        )
+        from precis.nanopub.overview import (
+            hub_edge_census,
+            hub_rows,
+            passes_trust,
+        )
+
+        if trust is not None:
+            raise BadInput(
+                "trust= doesn't apply to view='count' — the census "
+                "already breaks hubs down by tier",
+                next=(
+                    "search(kind='finding', view='count') and read the 'trust:' line"
+                ),
+            )
+        facets = _parse_count_facets(group_by)
+        since_dt = _parse_window_bound(since, "since")
+        until_dt = _parse_window_bound(until, "until")
+
+        effective = list(tags)
+        resolved_status = (status or "").strip()
+        if resolved_status and resolved_status != "*":
+            tag_str = f"{_STATUS_NAMESPACE}:{resolved_status}"
+            if tag_str not in effective:
+                effective.append(tag_str)
+        normalized = Tag.normalize_filter(
+            effective or None, kind=self.kind, axis_in_use=self._axis_in_use
+        )
+
+        total, groups = self.store.count_refs_facets(
+            kind=self.kind,
+            tags=normalized,
+            q=q,
+            q_in_chunks=True,
+            facets=facets,
+            group_limit=_COUNT_GROUP_LIMIT,
+            since=since_dt,
+            until=until_dt,
+        )
+        filters: list[str] = []
+        if q and q.strip():
+            filters.append(f"q={q!r}")
+        if normalized:
+            filters.append(f"tags={normalized!r}")
+        if since_dt is not None or until_dt is not None:
+            lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
+            hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
+            filters.append(f"created [{lo}, {hi})")
+        head = f"# {total} {self._sense()} entr{'y' if total == 1 else 'ies'}"
+        if filters:
+            head += f" ({', '.join(filters)})"
+        parts = [head]
+        if facets:
+            parts.append("")
+            parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
+            for vals, n in groups:
+                label = " | ".join(v if v is not None else "(none)" for v in vals)
+                parts.append(f"  {label}: {n}")
+            if len(groups) == _COUNT_GROUP_LIMIT:
+                parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
+
+        rows = hub_rows(self.store)
+        states: Counter[str] = Counter(r.state or "unminted" for r in rows)
+        order = {s: i for i, s in enumerate(self._COUNT_STATE_ORDER)}
+        state_pairs = sorted(
+            states.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0])
+        )
+        tiers = {
+            t: sum(1 for r in rows if passes_trust(r, t))
+            for t in FINDING_TRUST_TIERS
+            if t != "any"
+        }
+        census = hub_edge_census(self.store)
+        edge_total = sum(n for rels in census.values() for n in rels.values())
+        parts.append("")
+        parts.append(f"claim hubs: {len(rows)} live")
+        if state_pairs:
+            parts.append(
+                "  publish state: " + " · ".join(f"{s} {n}" for s, n in state_pairs)
+            )
+            parts.append(
+                "  trust: "
+                + " · ".join(f"{t} {n}" for t, n in tiers.items())
+                + " (tiers overlap — a hub may clear several)"
+            )
+        parts.append(f"edges on live hubs: {edge_total}")
+        for bucket, label in (
+            ("evidence", "evidence"),
+            ("claim", "claim links"),
+            ("lineage", "lineage"),
+        ):
+            rels = census.get(bucket)
+            if not rels:
+                continue
+            parts.append(
+                f"  {label}: "
+                + " · ".join(
+                    f"{rel} {n}"
+                    for rel, n in sorted(rels.items(), key=lambda kv: (-kv[1], kv[0]))
+                )
+            )
+        return Response(body="\n".join(parts), result_count=total)
 
     def _render_finding_table(self, refs: list[Ref], *, query: str | None) -> Response:
         """Render the finding-search TOON table.
