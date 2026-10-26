@@ -21,6 +21,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from precis.budget.work_class import WorkClass, work_class_scope
+from precis_web.access_log import install_access_token_redaction
 from precis_web.bootsha import BOOT_SHA, BOOT_SHA_HEADER
 from precis_web.config import WebConfig
 from precis_web.errors import register_error_handlers
@@ -56,6 +57,7 @@ def create_app(
     one from the environment at startup and closes it at shutdown.
     ``web_config`` — defaults to :meth:`WebConfig.from_env`.
     """
+    install_access_token_redaction()
     cfg = web_config or WebConfig.from_env()
 
     @asynccontextmanager

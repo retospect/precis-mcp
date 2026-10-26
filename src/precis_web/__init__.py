@@ -69,6 +69,14 @@ row stores only the podcast token digest, so the vault is the other source.
 Sign-out sends a fresh 401 challenge (evicting cached Basic credentials) and
 deletes the session cookie.
 
+**Access logs.** ``access_log.py`` masks every ``t`` query value in
+``uvicorn.access`` records, including repeated and encoded parameter names,
+without changing the request used for authentication. ``create_app`` installs
+it through the active log-record factory: Uvicorn can reset logger filters
+after app construction, alternate entry points may skip the CLI, and lifespan
+can be disabled. The factory chains existing secret scrubbing and preserves
+Uvicorn's five formatter arguments.
+
 **Secrets.** Elsevier checks fixed OA Article Retrieval metadata;
 ScienceDirect Search has a separate entitlement and can falsely reject valid
 retrieval keys. CORE preserves HTTP 429. Secret controls are write-only;
