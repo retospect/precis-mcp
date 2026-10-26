@@ -1,0 +1,7 @@
+[{"page":1,"pages":1,"per_page":200,"total":6,"sourceid":"2","lastupdated":"2026-10-08"},
+[{"indicator":{"id":"FP.CPI.TOTL","value":"Consumer price index (2010 = 100)"},"country":{"id":"US","value":"United States"},"countryiso3code":"USA","date":"2025","value":null,"unit":"","obs_status":"","decimal":1},
+{"indicator":{"id":"FP.CPI.TOTL","value":"Consumer price index (2010 = 100)"},"country":{"id":"US","value":"United States"},"countryiso3code":"USA","date":"2024","value":143.857336014607,"unit":"","obs_status":"","decimal":1},
+{"indicator":{"id":"FP.CPI.TOTL","value":"Consumer price index (2010 = 100)"},"country":{"id":"US","value":"United States"},"countryiso3code":"USA","date":"2022","value":134.21120616846,"unit":"","obs_status":"","decimal":1},
+{"indicator":{"id":"FP.CPI.TOTL","value":"Consumer price index (2010 = 100)"},"country":{"id":"US","value":"United States"},"countryiso3code":"USA","date":"2021","value":124.266413825837,"unit":"","obs_status":"","decimal":1},
+{"indicator":{"id":"FP.CPI.TOTL","value":"Consumer price index (2010 = 100)"},"country":{"id":"US","value":"United States"},"countryiso3code":"USA","date":"2020","value":118.690501577197,"unit":"","obs_status":"","decimal":1},
+{"indicator":{"id":"FP.CPI.TOTL","value":"Consumer price index (2010 = 100)"},"country":{"id":"US","value":"United States"},"countryiso3code":"USA","date":"1960","value":13.5630607803976,"unit":"","obs_status":"","decimal":1}]]

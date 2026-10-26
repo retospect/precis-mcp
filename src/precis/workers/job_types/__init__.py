@@ -434,6 +434,13 @@ def _load_news_poll() -> JobTypeSpec:
     return news_poll.SPEC
 
 
+def _load_money_refresh() -> JobTypeSpec:
+    # Deterministic FX/CPI cache refresh (runs via plugin dispatch).
+    from precis.workers.job_types import money_refresh
+
+    return money_refresh.SPEC
+
+
 def _load_pourbaix_bulk() -> JobTypeSpec:
     # Deterministic bulk Pourbaix verdict for a quest candidate (runs via
     # plugin dispatch under claude_inproc; needs the [pourbaix] extra).
@@ -821,6 +828,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "news_poll":
         _REGISTRY["news_poll"] = _load_news_poll()
         return _REGISTRY["news_poll"]
+    if name == "money_refresh":
+        _REGISTRY["money_refresh"] = _load_money_refresh()
+        return _REGISTRY["money_refresh"]
     if name == "pourbaix_bulk":
         _REGISTRY["pourbaix_bulk"] = _load_pourbaix_bulk()
         return _REGISTRY["pourbaix_bulk"]
@@ -963,6 +973,7 @@ def known_job_types() -> list[str]:
         "remarkable_papers_send",
         "remarkable_reading_send",
         "news_poll",
+        "money_refresh",
         "pourbaix_bulk",
         "briefing",
         "reading_brief",

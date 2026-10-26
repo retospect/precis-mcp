@@ -119,8 +119,11 @@ Labels read `USD(2025)/t`.
   `wb:FP.CPI.TOTL:USA`.
 
 These are caches, not append-only. An upsert updates a changed value (a CPI
-revision) and bumps `fetched_at`. Reads recompute, so a revision applies
-everywhere.
+revision); unchanged rows are not rewritten (`IS DISTINCT FROM`), so a row's
+`fetched_at` marks the last change and a quiet week costs zero dead tuples.
+Freshness — the last successful poll — is recorded separately in
+`money_refresh_log`, one row per source. Reads recompute, so a revision
+applies everywhere.
 
 **Fetch.** Job type `money_refresh`, in `src/precis/workers/money_refresh.py`
 plus `src/precis/workers/job_types/money_refresh.py`, is registered like
@@ -131,10 +134,11 @@ with params `{sources: ['ecb', 'worldbank']}`.
   one GET. Cells hold `N/A` for gaps.
 - World Bank: the v2 API, `country/USA/indicator/FP.CPI.TOTL?format=json`.
   It is keyless and annual from 1960.
-- Both use `http_client(timeout=30)` + `polite_safe_get`. These are public
-  source hosts in module constants (like `workers/weather.py`), not cluster
-  addresses. Host rows auto-seed as `scraped-host`, so no outbound-policy
-  migration is needed.
+- Both use `http_client(timeout=30)` + `safe_stream` under
+  `call_with_backoff` (the same politeness rules `polite_safe_get`
+  wraps). These are public source hosts in module constants (like
+  `workers/weather.py`), not cluster addresses. Host rows auto-seed as
+  `scraped-host`, so no outbound-policy migration is needed.
 - Size caps: response ≤ 20 MB, unzipped ≤ 60 MB.
 - One transaction per source. A fetch or parse fault records the job
   failure and leaves the tables untouched.
@@ -182,20 +186,6 @@ Each slice lands alone; none writes prod data. Take the next free
 migration number at build time (S1 took 0249 after vault took 0248).
 Slices 1–2
 need the Opus review before land.
-
-**S2 — rate tables + `money_refresh` job.**
-
-- Migration for `fx_rates`, `fx_rates_annual` and `price_index`.
-- Pure parsers: `parse_ecb_hist(bytes)` and `parse_worldbank_cpi(json)`.
-- The upsert, the truncation guard and the job-type registration.
-- Fixtures go in `tests/fixtures/money/`:
-  - `eurofxref-hist-sample.zip`: covers 2012-06-29, a weekend gap, `N/A`
-    cells and the ISK gap.
-  - `worldbank-cpi-usa.json`.
-- Tests: `tests/test_money_refresh.py` covers the parse; idempotent and
-  revision upserts; truncation refusal; a fetch fault leaving the tables
-  unchanged; size caps; and the job's dispatch with an injected fetch. No
-  network.
 
 **S3 — conversion + display.**
 
@@ -253,8 +243,10 @@ search and ranking, and a read-only backfill candidate list.
 - Existing shas are unchanged by the migrations, and the 44 legacy rows
   read as before.
 - The weekly job fills `fx_rates`/`price_index` from fixtures in tests;
-  reads never call the network; fetches use `polite_safe_get` with
-  timeouts and size caps.
+  reads never call the network; fetches stream via `safe_stream` under
+  the politeness core with timeouts and a wire-level size cap. An
+  unchanged row is not rewritten; refresh freshness lives in
+  `money_refresh_log`.
 - A EUR 2015 figure reads as USD at the canonical year, showing the rate,
   the rate year and day count, the CPI years and the factor, beside the
   reported figure.
@@ -290,6 +282,39 @@ Decided:
   is the PCB measuring-tape skill, not the measure kind.
 - **S1 comparisons** group by `(currency, price_year)`; a NULL year is its
   own group (Opus review, 2026-10-25).
+
+Builder picks (S2):
+
+- Migration **0253** (`0253_fx_rates_price_index.sql`): the next free
+  number on main at landing (renumbered from 0255 while sibling
+  branches held 0253-0254).
+- `price_index.year` is `bigint`, not the spec's `smallint` — the
+  squawk-clean rule is bigint, never smallint.
+- `fx_rates.currency` is `text` + `CHECK (currency ~ '^[A-Z]{3}$')`,
+  not the spec's `char(3)` — squawk `ban-char-field` (the regex already
+  pins length; `varchar(3)` would trip `prefer-text-field`).
+- The World Bank URL carries `per_page=200`: the default page (50 rows)
+  is shorter than the series (~66 observations since 1960), and one GET
+  must return the whole history.
+- Provenance stamps: `source` is `ecb:eurofxref-hist` /
+  `worldbank:v2`; the CPI `series` is `wb:FP.CPI.TOTL:USA` as specced.
+- `money_refresh` is a job_type only — no `--only` worker pass; the
+  recurring todo is the driver. `_dispatch(ctx, spec, fetch=None)`
+  carries the injection seam (the executor calls it with two args).
+- The 20 MB wire cap is enforced twice: `_default_fetch` streams via
+  `safe_stream` under `call_with_backoff` and aborts on a declared
+  `Content-Length` or a stream crossing the cap (never buffers
+  unbounded), and `run_money_refresh` re-checks the returned body so
+  injected fetches are capped too; the 60 MB cap guards both the
+  declared and the real unzipped size.
+- `parse_worldbank_cpi` faults on `meta.pages > 1` or a row count
+  under `meta.total` — a silent short read becomes an error.
+- Upserts carry `WHERE <value> IS DISTINCT FROM EXCLUDED.<value>`
+  (GRIPE_FIX ruling on churn: the weekly poll no longer rewrites
+  ~170k unchanged rows). `fetched_at` therefore marks the last value
+  CHANGE; poll freshness is recorded in `money_refresh_log` (one row
+  per source, bumped every successful run) rather than job meta, so
+  "is the cache fresh" is a plain SELECT.
 
 Non-blocking (defaults apply unless Reto overrides):
 
