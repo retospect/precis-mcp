@@ -118,6 +118,8 @@ SEED_TABLES: tuple[str, ...] = (
     "resource_slots",
     # default RSS/Atom feed registry (0033): standalone.
     "news_sources",
+    # tag display-rank registry (0256): standalone.
+    "tag_axes",
 )
 
 #: Extensions ``pg_dump --schema=public`` omits; prepended manually so a
