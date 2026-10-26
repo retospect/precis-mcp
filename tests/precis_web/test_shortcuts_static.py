@@ -56,7 +56,7 @@ def test_list_templates_emit_scope_and_rows():
     for name in (
         "drive/index.html.j2",
         "todo/dashboard.html.j2",
-        "gripes/list.html.j2",
+        "gripes/_rows.html.j2",
         "agentlogs/list.html.j2",
     ):
         src = _tpl(name)

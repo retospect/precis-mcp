@@ -4555,12 +4555,12 @@ def test_alerts_ack_and_unack_redirect_to_list(client) -> None:
 
 
 def test_gripes_page_renders_empty(client) -> None:
-    """Under the fake store (empty pool) the live view is all-clear."""
+    """Under the fake store (empty pool) the open chip renders at 0."""
     resp = client.get("/gripes")
     assert resp.status_code == 200
     assert "Gripes" in resp.text
-    assert "No live gripes" in resp.text
-    assert "0 live" in resp.text
+    assert "No open gripes" in resp.text
+    assert 'data-status="open" open' in resp.text
 
 
 def test_gripes_list_carries_the_filing_form(client) -> None:

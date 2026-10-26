@@ -1,0 +1,36 @@
+{# One status's gripe rows — shared by the list's inline open section
+   and the /gripes/rows fragment every other chip lazy-loads (gr520298).
+   Context: ``rows`` (the _rows dicts) and ``rows_status`` (for the
+   empty-state line). #}
+{% if rows %}
+<div class="overflow-hidden rounded-md border border-line">
+  <table class="w-full text-sm" data-shortcut-scope="list">
+    <tbody>
+      {% for gr in rows %}
+      <tr data-row class="border-t border-line-subtle first:border-t-0 align-top">
+        <td class="px-3 py-2 w-14 text-fg-faint font-mono text-xs">#{{ gr.ref_id }}</td>
+        <td class="px-3 py-2">
+          <div class="font-medium text-fg">
+            <a href="/gripes/{{ gr.ref_id }}" data-row-open class="hover:underline">{{ gr.title_preview }}</a>
+          </div>
+          <div class="text-[12px] text-fg-faint mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+            {% if gr.prio %}<span class="font-mono">PRIO:{{ gr.prio }}</span>{% endif %}
+            <span>filed {{ gr.created }}</span>
+            <span>updated {{ gr.updated }}</span>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="rounded-md border border-line px-3 py-2 text-sm text-fg-faint">
+  {% if rows_status == 'open' %}
+  ✓ No open gripes. File friction as you hit it — use the form above, or
+  <span class="font-mono">put(kind='gripe', text='…')</span>.
+  {% else %}
+  No gripes with status {{ rows_status }}.
+  {% endif %}
+</div>
+{% endif %}

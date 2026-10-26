@@ -8,10 +8,14 @@ data-layer work: every mutation dispatches an existing verb (``tag`` /
 ``put`` / ``delete``) through the in-process runtime so validation and
 tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
-* ``GET /gripes`` — live gripes (default: everything but the terminal
-  ``STATUS:done`` / ``STATUS:wontfix``), grouped by status,
-  workflow-stage then recency ordered. ``?status=wontfix`` /
-  ``?status=all`` widen the view. Carries the filing form.
+* ``GET /gripes`` — open gripes inline plus one status chip per other
+  status (gr520298). The load is a single ``COUNT … GROUP BY`` status
+  plus the open rows; every other status's rows lazy-load on the chip's
+  first expand. Retired gripes (merged/duplicate/junk soft-deletes)
+  bucket under a ``retired`` pseudo-status chip; carries the filing form.
+* ``GET /gripes/rows?status=<s>`` — the chips' shared lazy-rows
+  fragment: one status's rows, on the same ``_rows`` query the list
+  used to run for every status at page load.
 * ``POST /gripes`` — ``put`` verb create. The filed text gets an
   attribution line naming the signed-in user appended to it (see
   ``_attribute``): a gripe's stored text *is* its whole record, and
@@ -94,7 +98,9 @@ _STATUS_RANK_SQL = " ".join(
 )
 
 #: Badge colour per status, distinct from Alerts' severity palette so
-#: the two tabs don't visually blur together.
+#: the two tabs don't visually blur together. ``retired`` is the
+#: pseudo-status the grouped count gives soft-deleted rows (merged/
+#: duplicate/junk) — greyed further than open since those are gone.
 _STATUS_BADGE: dict[str, str] = {
     "open": "bg-surface-muted text-fg border-line-strong",
     "triaged": "bg-info-muted text-info-deep border-info-strong",
@@ -103,6 +109,7 @@ _STATUS_BADGE: dict[str, str] = {
     "verify": "bg-teal-muted text-teal-deep border-teal-strong",
     "done": "bg-success-muted text-success-deep border-success-strong",
     "wontfix": "bg-danger-muted text-danger-deep border-danger-strong",
+    "retired": "bg-surface-muted text-fg-faint border-line",
 }
 
 #: Chunk-kind slugs the gripe handler seeds (migration
@@ -188,23 +195,32 @@ def _attribute(text: str, who: str) -> str:
 def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     """Live gripes with their STATUS/PRIO tags, workflow- then recency-sorted.
 
-    ``status_filter``: ``'live'`` (default — everything but the
-    TERMINAL_VALUES), ``'wontfix'``, or ``'all'``. Shape mirrors
-    ``alerts.py::_rows`` — one ``refs``/``ref_tags``/``tags`` join keyed
-    on the STATUS axis, plus a correlated subquery for the optional
-    ``PRIO:`` tag (a plain join would duplicate rows for a
+    ``status_filter``: ``'live'`` (everything but the TERMINAL_VALUES),
+    ``'all'``, ``'retired'`` (the soft-deleted merged/duplicate/junk
+    bucket), or any one status value — the chips pass whatever the
+    grouped count reported, so off-vocabulary drift round-trips too.
+    The status value is always a bind parameter, never interpolated.
+    Shape mirrors ``alerts.py::_rows`` — one ``refs``/``ref_tags``/``tags``
+    join keyed on the STATUS axis, plus a correlated subquery for the
+    optional ``PRIO:`` tag (a plain join would duplicate rows for a
     multi-PRIO-tagged gripe).
     """
     # A gripe with no STATUS tag counts as ``open`` (the migration-0176
     # trigger makes that unreachable, but the list must never hide one).
-    clauses = ["r.kind = 'gripe'", "r.retired_at IS NULL"]
-    terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
+    clauses = ["r.kind = 'gripe'"]
     params: list[Any] = []
-    if status_filter in _RANKED_VALUES:
+    if status_filter == "all":
+        pass
+    elif status_filter == "live":
+        clauses.append("r.retired_at IS NULL")
+        clauses.append("NOT (COALESCE(t.value, 'open') = ANY(%s))")
+        params.append(list(TERMINAL_VALUES))
+    elif status_filter == "retired":
+        clauses.append("r.retired_at IS NOT NULL")
+    else:
+        clauses.append("r.retired_at IS NULL")
         clauses.append("COALESCE(t.value, 'open') = %s")
         params.append(status_filter)
-    elif status_filter != "all":
-        clauses.append(f"COALESCE(t.value, 'open') NOT IN ({terminals})")
     sql = f"""
         SELECT r.ref_id,
                left(ltrim(r.title, E' \\t\\r\\n'), {_PREVIEW_FETCH_CHARS}),
@@ -240,41 +256,72 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     return out
 
 
-def _group_by_status(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Group by STATUS, sections in workflow order (open → … → wontfix)."""
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for r in rows:
-        groups.setdefault(r["status"], []).append(r)
+def _status_counts(store: Store) -> list[dict[str, Any]]:
+    """One ``COUNT … GROUP BY`` over every gripe's effective status —
+    the chip counts (gr520298). Retired rows bucket under the
+    ``'retired'`` pseudo-status; a live gripe with no STATUS counts as
+    ``open``. Every value present gets a chip — the vocabulary is
+    app-level, so off-vocabulary drift shows up rather than hiding
+    rows. Workflow order first, unknowns alphabetical last."""
+    sql = """
+        SELECT CASE WHEN r.retired_at IS NOT NULL THEN 'retired'
+                    ELSE COALESCE(t.value, 'open') END,
+               COUNT(*)
+          FROM refs r
+          LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id
+               AND rt.tag_id IN (SELECT tag_id FROM tags WHERE namespace = 'STATUS')
+          LEFT JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE r.kind = 'gripe'
+         GROUP BY 1
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql).fetchall()
     rank = {v: i for i, v in enumerate(_RANKED_VALUES)}
     return [
-        {
-            "status": status,
-            "gripes": items,
-            "count": len(items),
-            "badge": _status_badge(status),
-        }
-        for status, items in sorted(
-            groups.items(), key=lambda kv: rank.get(kv[0], len(_RANKED_VALUES))
+        {"status": status, "count": count, "badge": _status_badge(status)}
+        for status, count in sorted(
+            ((str(r[0]), int(r[1])) for r in rows),
+            key=lambda kv: (rank.get(kv[0], len(_RANKED_VALUES)), kv[0]),
         )
     ]
 
 
 @router.get("", response_class=HTMLResponse)
-async def gripes(request: Request, status: str = "live") -> HTMLResponse:
-    """List gripes — default view excludes ``wontfix`` (the "live" queue)."""
+async def gripes(request: Request) -> HTMLResponse:
+    """Open gripes inline + one chip per other status (gr520298).
+
+    Two queries at load: the grouped count and the open rows — the
+    terminal/retired cohort (thousands of rows in prod) never leaves
+    the DB until its chip is expanded."""
     store = get_store(request)
-    status = status if status in ("live", "all", *_RANKED_VALUES) else "live"
-    rows = _rows(store, status_filter=status)
+    chips = _status_counts(store)
+    if not any(c["status"] == "open" for c in chips):
+        chips.insert(
+            0,
+            {"status": "open", "count": 0, "badge": _status_badge("open")},
+        )
     return templates.TemplateResponse(
         request,
         "gripes/list.html.j2",
         {
             "active_tab": "gripes",
-            "status": status,
-            "groups": _group_by_status(rows),
-            "total": len(rows),
+            "chips": chips,
+            "open_rows": _rows(store, status_filter="open"),
             "filed_by": _filed_by(request),
         },
+    )
+
+
+@router.get("/rows", response_class=HTMLResponse)
+async def status_rows(request: Request, status: str = "open") -> HTMLResponse:
+    """One status's rows — the shared lazy fragment every chip loads on
+    first expand (gr520298). ``status`` round-trips whatever the grouped
+    count reported, including ``retired`` and off-vocabulary values."""
+    store = get_store(request)
+    return templates.TemplateResponse(
+        request,
+        "gripes/_rows.html.j2",
+        {"rows": _rows(store, status_filter=status), "rows_status": status},
     )
 
 
@@ -310,7 +357,9 @@ async def file_gripe(request: Request, text: str = Form(...)) -> Response:
 async def detail(request: Request, id: int) -> HTMLResponse:
     """Body + comment timeline + status controls + comment box."""
     store = get_store(request)
-    refs = store.fetch_refs_by_ids([id], include_deleted=False)
+    # include_deleted: the retired chip's rows must land somewhere —
+    # a merged/duplicate gripe's body stays readable, controls hidden.
+    refs = store.fetch_refs_by_ids([id], include_deleted=True)
     ref = refs.get(id)
     if ref is None or ref.kind != "gripe":
         raise NotFound(f"gripe id={id} not found")
@@ -345,6 +394,7 @@ async def detail(request: Request, id: int) -> HTMLResponse:
             "status": status,
             "status_values": STATUS_VALUES,
             "status_badge": _status_badge(status),
+            "retired": getattr(ref, "retired_at", None) is not None,
             "prio": _prio_of(tags),
         },
     )

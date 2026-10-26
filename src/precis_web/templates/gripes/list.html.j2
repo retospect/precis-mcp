@@ -4,24 +4,6 @@
 
 <div class="flex items-center gap-3 mb-4">
   <h1 class="text-lg font-semibold">Gripes</h1>
-  {# live (default) vs wontfix vs everything toggle #}
-  <div class="inline-flex rounded-md border border-line-strong overflow-hidden text-sm">
-    <a href="/gripes"
-       class="px-3 py-1 {% if status == 'live' %}bg-accent-solid text-on-solid{% else %}bg-surface text-fg-muted hover:bg-surface-subtle{% endif %}">
-      live
-    </a>
-    <a href="/gripes?status=wontfix"
-       class="px-3 py-1 {% if status == 'wontfix' %}bg-accent-solid text-on-solid{% else %}bg-surface text-fg-muted hover:bg-surface-subtle{% endif %}">
-      wontfix
-    </a>
-    <a href="/gripes?status=all"
-       class="px-3 py-1 {% if status == 'all' %}bg-accent-solid text-on-solid{% else %}bg-surface text-fg-muted hover:bg-surface-subtle{% endif %}">
-      all
-    </a>
-  </div>
-  <span class="text-sm text-fg-subtle">
-    <a href="/gripes?status={{ status }}" class="hover:underline">{{ total }} {{ status }}</a>{% if status == 'live' %}{% for g in groups %} · <a href="/gripes?status={{ g.status }}" class="hover:underline">{{ g.count }} {{ g.status }}</a>{% endfor %}{% endif %}
-  </span>
   <a href="https://github.com/retospect/precis-mcp/tree/main/docs/backlog" target="_blank" rel="noopener"
      class="text-sm text-fg-faint hover:text-fg-muted hover:underline">
     repo backlog ↗
@@ -52,55 +34,29 @@
   </form>
 </details>
 
-{% if not groups %}
-  <div class="rounded-md border border-success-strong bg-success-subtle px-4 py-3 text-sm text-success-deep">
-    {% if status == 'wontfix' %}
-    ✓ Nothing marked won't-fix.
-    {% elif status == 'all' %}
-    ✓ No gripes filed yet.
-    {% elif status == 'live' %}
-    ✓ No live gripes. File friction as you hit it — use the form above, or
-    <span class="font-mono">put(kind='gripe', text='…')</span>.
-    {% else %}
-    ✓ No gripes with status {{ status }}.
-    {% endif %}
-  </div>
-{% endif %}
-
-{# One collapsible panel per status. The live view starts collapsed so
-   every status header (and its count) sits at the top of the page — a
-   long open section used to push triaged/in_review/verify below the
-   fold. A
-   single-status view has one panel, so it starts open. #}
-{% for g in groups %}
-<details class="mb-3 group" data-status="{{ g.status }}"{% if status != 'live' %} open{% endif %}>
+{# One <details> chip per status, workflow order (gr520298). Only the
+   open panel carries rows at page load — every other status fires ONE
+   /gripes/rows request on its first expand (``toggle once``), on the
+   shared code path; counts come from the load-time GROUP BY, so a
+   1.9k-row done bucket costs a number, not a table. ``retired`` is the
+   pseudo-status the count gives soft-deleted rows (merged/duplicate/
+   junk). #}
+{% for c in chips %}
+<details class="mb-3 group" data-status="{{ c.status }}"{% if c.status == 'open' %} open{% endif %}
+  {%- if c.status != 'open' %} hx-get="/gripes/rows?status={{ c.status | urlencode }}" hx-trigger="toggle once" hx-target="#gripe-rows-{{ loop.index }}" hx-swap="innerHTML"{% endif %}>
   <summary class="cursor-pointer select-none text-sm font-semibold text-fg-secondary py-1 flex items-center gap-2">
     <span class="text-fg-faint transition group-open:rotate-90">&#9656;</span>
-    <span class="inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase {{ g.badge }}">
-      {{ g.status }}
+    <span class="inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase {{ c.badge }}">
+      {{ c.status }}
     </span>
-    <span class="text-fg-faint font-normal">{{ g.count }}</span>
+    <span class="text-fg-faint font-normal">{{ c.count }}</span>
   </summary>
-  <div class="mt-2 overflow-hidden rounded-md border border-line">
-    <table class="w-full text-sm" data-shortcut-scope="list">
-      <tbody>
-        {% for gr in g.gripes %}
-        <tr data-row class="border-t border-line-subtle first:border-t-0 align-top">
-          <td class="px-3 py-2 w-14 text-fg-faint font-mono text-xs">#{{ gr.ref_id }}</td>
-          <td class="px-3 py-2">
-            <div class="font-medium text-fg">
-              <a href="/gripes/{{ gr.ref_id }}" data-row-open class="hover:underline">{{ gr.title_preview }}</a>
-            </div>
-            <div class="text-[12px] text-fg-faint mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-              {% if gr.prio %}<span class="font-mono">PRIO:{{ gr.prio }}</span>{% endif %}
-              <span>filed {{ gr.created }}</span>
-              <span>updated {{ gr.updated }}</span>
-            </div>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div id="gripe-rows-{{ loop.index }}" class="mt-2">
+    {% if c.status == 'open' %}
+      {% set rows = open_rows %}{% set rows_status = c.status %}{% include "gripes/_rows.html.j2" %}
+    {% else %}
+      <div class="rounded-md border border-line px-3 py-2 text-sm text-fg-faint">loading…</div>
+    {% endif %}
   </div>
 </details>
 {% endfor %}

@@ -14,8 +14,14 @@
       {% if prio %}· <span class="font-mono">PRIO:{{ prio }}</span>{% endif %}
     </p>
   </div>
-  {% include "gripes/_gripe_status.html.j2" %}
+  {% if not retired %}{% include "gripes/_gripe_status.html.j2" %}{% endif %}
 </div>
+
+{% if retired %}
+<div class="mb-4 rounded-md border border-line bg-surface-subtle px-4 py-3 text-sm text-fg-muted">
+  Retired — kept on record (merged / duplicate / junk soft-delete); controls are off.
+</div>
+{% endif %}
 
 {# Body is immutable by design (the audit-trail record of what was
    filed) — no edit affordance here on purpose; corrections/context
@@ -40,6 +46,7 @@
 </section>
 {% endif %}
 
+{% if not retired %}
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2 text-fg-secondary">Add a comment</h2>
   <form method="post" action="/gripes/{{ id }}/comment" class="space-y-2">
@@ -72,4 +79,5 @@
     </form>
   </div>
 </section>
+{% endif %}
 {% endblock %}
