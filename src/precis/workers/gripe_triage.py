@@ -374,14 +374,30 @@ _DEPLOYED_HISTORY_NAME = "deployed_history.txt"
 _DEPLOYED_HISTORY_LABEL = "deployed_history.txt"
 
 
+#: A squash-list bullet counts only when it reads as a conventional-commit
+#: subject, ``type(scope): …`` with a type other than ``docs`` (gr518160).
+#: Mirrored by the awk prefilter in ``deploy/redeploy-precis.yml``.
+_CONVENTIONAL_SUBJECT = re.compile(
+    r"(?!docs\b)[A-Za-z]+(?:\([^)]*\))?!?:\s", re.IGNORECASE
+)
+
+
 def _cite_line(gid: int, subject: str, body: str) -> str | None:
     """The line that makes a commit fix evidence for ``gr<gid>``, or
     ``None`` (Opus-review strict rule): the subject when it names the
     id, else a body line in closing form (``fixes|closes|resolves
-    gr<id>``). A ``Refs``/``see``/``after`` mention is not evidence —
-    and neither is a ``docs(`` commit, whose id cite is paperwork, not
-    a fix (round-2 review residual)."""
-    if re.match(r"\s*docs\(", subject, re.IGNORECASE):
+    gr<id>``), else a squash-list line — a ``- ``/``* `` bullet whose
+    text is a conventional-commit subject (``type(scope): …``, type
+    not ``docs``) naming the id, which is how this repo's squash-merge bodies carry
+    the squashed commits' own subjects (``- fix(se): … (grNNN)``,
+    ``- grNNN: …``; gr518160). A bullet's ``docs(`` item is paperwork
+    like a ``docs(`` subject and does not count — the same rule the
+    subject check applies (and a deployed-history row IS a body line
+    re-read as a subject, so the check there takes the bullet form
+    too). A ``Refs``/``see``/``after`` mention is not evidence — and
+    neither is a ``docs(`` commit, whose id cite is paperwork, not a
+    fix (round-2 review residual)."""
+    if re.match(r"\s*(?:[-*+]\s+)?docs\(", subject, re.IGNORECASE):
         return None
     if re.search(rf"gr{int(gid)}(?![0-9])", subject, re.IGNORECASE):
         return _one_line(subject)[:120]
@@ -390,8 +406,21 @@ def _cite_line(gid: int, subject: str, body: str) -> str | None:
         rf"gr{int(gid)}(?![0-9])",
         re.IGNORECASE,
     )
+    bullet = re.compile(r"^\s*[-*+]\s+(?P<rest>\S.*)$")
     for line in str(body).splitlines():
         if closing.match(line):
+            return _one_line(line)[:120]
+        m = bullet.match(line)
+        if m is None:
+            continue
+        rest = m.group("rest")
+        # A squash-list line cites like a subject: a conventional-commit
+        # subject (``type(scope): …``, type not docs) naming the id.
+        # Anything else in a body — a ``- Refs gr<id>`` / ``- see gr<id>``
+        # bullet, a bare id mid-sentence — stays a mention, not evidence.
+        if _CONVENTIONAL_SUBJECT.match(rest) and re.search(
+            rf"gr{int(gid)}(?![0-9])", rest, re.IGNORECASE
+        ):
             return _one_line(line)[:120]
     return None
 

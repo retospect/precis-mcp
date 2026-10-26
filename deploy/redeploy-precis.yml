@@ -1647,6 +1647,15 @@
                   low = tolower(lines[i])
                   if (low ~ /^[[:space:]]*(fix(es|ed)?|close[sd]?|resolve[sd]?)[: ]+gr[0-9]+/)
                     printf "%s\t%s\n", sha, lines[i]
+                  # squash-list bullets cite like subjects too (gr518160):
+                  # a - /* /+ line naming grN whose text is a
+                  # conventional subject, type(scope): ..., type not
+                  # docs — a Refs grN / see grN mention or a docs
+                  # bullet is not evidence (same rule as the reader).
+                  else if (low ~ /^[[:space:]]*[-*+][[:space:]]+[a-z]+(\([^)]*\))?!?:[[:space:]]/ && \
+                           low ~ /gr[0-9]+/ && \
+                           low !~ /^[[:space:]]*[-*+][[:space:]]+docs[(:!]/)
+                    printf "%s\t%s\n", sha, lines[i]
                 }
               }'); then
               echo "SKIP: git log failed for $sha"

@@ -1179,9 +1179,12 @@ def test_limiter_host_cap_fires_only_when_full_of_live_rows(
             )
 
 
-def _refuse_row(store: Store, n: int, last: str = "now()") -> str:
-    """A provider row showing ``n`` durable refusals (S2b's
-    ``refused_today``/``last_refused_at``); returns its unique name."""
+def _refuse_row(
+    store: Store, n: int, last: str = "now()", used: int = 0, day: str = "CURRENT_DATE"
+) -> str:
+    """A provider row showing ``n`` durable refusals against ``used``
+    granted calls (S2b's ``refused_today``/``last_refused_at``, counted
+    since ``day_start``); returns its unique name."""
     provider = f"test-cond-refuse-{uuid.uuid4().hex[:8]}"
     with store.pool.connection() as conn:
         conn.execute(
@@ -1192,8 +1195,9 @@ def _refuse_row(store: Store, n: int, last: str = "now()") -> str:
         )
         conn.execute(
             "UPDATE external_rate_limits SET refused_today = %s, "
+            f"day_used = %s, day_start = {day}, "
             f"last_refused_at = {last} WHERE provider = %s",
-            (n, provider),
+            (n, used, provider),
         )
     return provider
 
@@ -1213,6 +1217,35 @@ def test_limiter_refusing_fires_over_floor_and_resolves(store: Store) -> None:
                 "UPDATE external_rate_limits SET refused_today = 0 WHERE provider = %s",
                 (provider,),
             )
+        assert all(not f.key.endswith(provider) for f in _probe_limiter_refusing(store))
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = %s",
+                (provider,),
+            )
+
+
+def test_limiter_refusing_quiet_when_refusals_are_a_drip(store: Store) -> None:
+    """gr517747: a deliberately tight cap sheds routine overflow — dozens
+    refused against a busy day's grants is the cap working, not a stuck
+    lane; refusals must be the majority of demand to fire."""
+    provider = _refuse_row(store, 50, used=200)
+    try:
+        assert all(not f.key.endswith(provider) for f in _probe_limiter_refusing(store))
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = %s",
+                (provider,),
+            )
+
+
+def test_limiter_refusing_rollover_counts_as_zero(store: Store) -> None:
+    """A row untouched since the day rolled over reads both counters as
+    0 via the ``day_start`` CASE — stale counts can never fire."""
+    provider = _refuse_row(store, 50, day="CURRENT_DATE - 1")
+    try:
         assert all(not f.key.endswith(provider) for f in _probe_limiter_refusing(store))
     finally:
         with store.pool.connection() as conn:

@@ -12,6 +12,7 @@ schema surprise in one query degrades to an empty panel instead of a 500.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterator
@@ -1115,11 +1116,18 @@ def _quota_view(store: Store) -> dict[str, Any]:
     }
 
 
-def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
-    """Health sub-tab: the old Status page's telemetry + the reconciled
-    host strip (WS3 folds factory's capability chips + 6h error samples
-    onto the same heartbeat row instead of a second, separate strip on
-    ``/factory`` — see the module docstring on the host-strip merge)."""
+def _health_panels_ctx(store: Store, cfg: Any) -> dict[str, Any]:
+    """The Health sub-tab's top block — the Papers card + kind chips,
+    the corpus strip, the Machines host strip, the Health-checks table
+    and Background health — served as the lazy ``GET
+    /status/health-panels`` fragment (gr518161).
+
+    Prod profiling put ``failed_passes`` ≈1.8s, ``paper_summary``'s
+    bodiless EXISTS ≈1.3s, the ``worker_logs`` hosts rollup ≈0.6s and
+    ``spin_loops`` ≈0.2s — serial on the one request connection they
+    were most of the tab's latency, so they load like ``backlog``: the
+    page paints its cheap sections first and htmx fetches this block.
+    """
     heartbeats = _safe(lambda: _heartbeats(store)) or []
     host_logs = {h["host"]: h for h in (_safe(lambda: _hosts(store)) or [])}
     # factory's own `_hosts` reads `host_heartbeat` too (a second, capability-
@@ -1145,21 +1153,7 @@ def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
     return {
         "kind_counts": _safe(lambda: _kind_counts(store)) or [],
         "papers": _safe(lambda: _paper_summary(store)) or {},
-        "todo_status": _safe(lambda: _todo_status(store)) or [],
-        "events": _safe(lambda: _recent_events(store)) or [],
-        "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
-        "insight_count": _safe(lambda: _synthetic_insights_count(store)) or 0,
-        "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
-        "recent_passes": _safe(lambda: _recent_passes(store)) or [],
-        "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
-        "automations": _safe(lambda: _automations(store)) or [],
-        # NB ``backlog`` is intentionally absent here — it is the
-        # slowest section (full-table ``chunks`` scans) and is
-        # lazy-loaded by the template via ``GET /status/backlog``
-        # (the ``_backlog`` fragment below) so it never blocks the
-        # initial page render.
         "health": _safe(lambda: _health_panel(store)) or {},
-        "usage": _safe(lambda: _claude_usage(store)) or {},
         "heartbeats": heartbeats,
         "extra_hosts": extra_hosts,
         "bg_health": _safe(lambda: _background_anomalies(store))
@@ -1174,6 +1168,41 @@ def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
         )
         or {"n_sampled": 0, "n_mismatch": 0, "n_tagged": 0},
     }
+
+
+def _health_fast_ctx(store: Store) -> dict[str, Any]:
+    """The Health sub-tab's cheap tail sections — todos, events, dreams,
+    passes, agents, automations, Claude usage — what ``?tab=health``
+    renders inline. The slow top block lazy-loads; see
+    :func:`_health_panels_ctx`. ``backlog`` stays absent here too — it
+    has its own fragment (``GET /status/backlog``)."""
+    return {
+        "todo_status": _safe(lambda: _todo_status(store)) or [],
+        "events": _safe(lambda: _recent_events(store)) or [],
+        "recent_dreams": _safe(lambda: _recent_dreams(store)) or [],
+        "insight_count": _safe(lambda: _synthetic_insights_count(store)) or 0,
+        "recent_todo_done": _safe(lambda: _recent_todo_done(store)) or [],
+        "recent_passes": _safe(lambda: _recent_passes(store)) or [],
+        "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
+        "automations": _safe(lambda: _automations(store)) or [],
+        "usage": _safe(lambda: _claude_usage(store)) or {},
+    }
+
+
+def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
+    """Health sub-tab: the whole page context — the old Status page's
+    telemetry + the reconciled host strip (WS3 folds factory's
+    capability chips + 6h error samples onto the same heartbeat row
+    instead of a second, separate strip on ``/factory`` — see the module
+    docstring on the host-strip merge).
+
+    The route splits this in two: ``?tab=health`` renders
+    :func:`_health_fast_ctx` inline and lazy-loads
+    :func:`_health_panels_ctx` via ``GET /status/health-panels``
+    (gr518161); this composition exists for direct callers/tests."""
+    ctx = _health_fast_ctx(store)
+    ctx.update(_health_panels_ctx(store, cfg))
+    return ctx
 
 
 def _setup_ctx(store: Store, cfg: Any) -> dict[str, Any]:
@@ -1755,11 +1784,13 @@ async def index(
         # reuses it (see ``_request_conn``) instead of checking out ~15
         # separate pooled connections — that per-section round-trip
         # fan-out, not any single query, was the bulk of the page's
-        # latency.
+        # latency. Only the cheap tail renders inline: the profiled-slow
+        # top block lazy-loads via ``GET /status/health-panels``
+        # (gr518161), same shape as the backlog fragment.
         with store.pool.connection() as conn:
             token = _request_conn.set(conn)
             try:
-                ctx.update(_health_ctx(store, cfg))
+                ctx.update(_health_fast_ctx(store))
             finally:
                 _request_conn.reset(token)
     elif tab == "services":
@@ -1795,6 +1826,34 @@ async def backlog_fragment(request: Request) -> HTMLResponse:
         "_status_backlog.html.j2",
         {"backlog": _safe(lambda: _backlog_counts(store)) or {}},
     )
+
+
+@router.get("/health-panels", response_class=HTMLResponse)
+async def health_panels_fragment(request: Request) -> HTMLResponse:
+    """Lazy-loaded top block of the Health sub-tab (htmx fragment).
+
+    Papers, Machines, Health checks and Background health carry the
+    profiled-slow queries (``failed_passes`` ≈1.8s, the bodiless-EXISTS
+    count ≈1.3s, the hosts rollup ≈0.6s, ``spin_loops`` ≈0.2s — serial,
+    gr518161), so the page ships a shell and the template fetches this
+    fragment via ``hx-get="/status/health-panels"`` on load — the same
+    deferral shape as ``/status/backlog``.
+    """
+    store = get_store(request)
+    cfg = get_web_config(request)
+
+    def _build() -> dict[str, Any]:
+        # Connection + ContextVar live entirely in the worker thread: the
+        # ~4s of serial queries must not block the event loop (gr518161).
+        with store.pool.connection() as conn:
+            token = _request_conn.set(conn)
+            try:
+                return _health_panels_ctx(store, cfg)
+            finally:
+                _request_conn.reset(token)
+
+    ctx = await asyncio.to_thread(_build)
+    return templates.TemplateResponse(request, "_status_health_panels.html.j2", ctx)
 
 
 @router.get("/now", response_class=HTMLResponse)

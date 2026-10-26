@@ -34,7 +34,7 @@ def llm_client(runtime_with_store: Any, tmp_path: Any) -> TestClient:
 
 def test_llm_pages_render_fake(client: TestClient) -> None:
     """Every /llm page renders on the FakeStore (degraded ctx paths)."""
-    for path in ("/llm", "/llm/", "/llm/chain", "/llm/op"):
+    for path in ("/llm", "/llm/", "/llm/chain", "/llm/chain/panel", "/llm/op"):
         resp = client.get(path)
         assert resp.status_code == 200, (path, resp.status_code)
 
@@ -42,15 +42,20 @@ def test_llm_pages_render_fake(client: TestClient) -> None:
 def test_llm_pages_render_real(llm_client: TestClient) -> None:
     """Same against real PG — exercises ``_llm_op_stats``'s SQL and the
     live ``resolve_chain`` walk (no rows needed; defaults render)."""
-    for path in ("/llm/chain", "/llm/op"):
+    for path in ("/llm/chain", "/llm/chain/panel", "/llm/op"):
         resp = llm_client.get(path)
         assert resp.status_code == 200, (path, resp.status_code)
 
 
 def test_llm_chain_shows_rungs(llm_client: TestClient) -> None:
     """The chain page is the rung/placement/slot baseline the gripe asked
-    for: one card per capability tier, rung slots numbered in order."""
+    for: one card per capability tier, rung slots numbered in order. The
+    page itself is a shell — the cards lazy-load via ``/llm/chain/panel``
+    so the resolve walks don't block the render (gr518162)."""
     resp = llm_client.get("/llm/chain")
+    assert resp.status_code == 200
+    assert 'hx-get="/llm/chain/panel"' in resp.text
+    resp = llm_client.get("/llm/chain/panel")
     assert resp.status_code == 200
     for tier in ("frontier", "big", "medium", "small"):
         assert tier in resp.text

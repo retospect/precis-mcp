@@ -49,12 +49,14 @@ was invisible for 4 days):
   are at ``rate_limit.MAX_SEEDED_HOST_ROWS`` with none idle enough to
   evict, so a newly seen host runs unpaced (gr507345).
 * ``limiter-refusing`` — a provider's
-  ``external_rate_limits`` row has refused calls past a daily floor
-  (``refused_today``/``last_refused_at``, migration 0233 — written by
-  every counted refusal: a starved bucket, a spent daily cap, a full
-  ``llm-api`` slot hold, or a live Retry-After park). Demand the shared
-  limiter could not admit; self-clears once refusals stop or at the day
-  rollover.
+  ``external_rate_limits`` row has refused calls past a daily floor AND
+  past half of the day's demand (``refused_today``/``day_used``/
+  ``last_refused_at``, migration 0233 — written by every counted
+  refusal: a starved bucket, a spent daily cap, a full ``llm-api``
+  slot hold, or a live Retry-After park). The majority arm keeps a
+  deliberately tight cap's routine overflow drip quiet (gr517747).
+  Demand the shared limiter could not admit; self-clears once refusals
+  stop or at the day rollover.
 * ``local-serving-pressure`` — llm-lane-scheduler slice S0: sustained
   KV-cache use over threshold, retractions ticking, or host swap-in
   rising on a serving box, read from the ``serving_*`` columns the
@@ -963,11 +965,20 @@ def _probe_limiter_host_cap(store: Store) -> list[ConditionFinding]:
 
 
 _LIMITER_REFUSING_SQL = """
-SELECT provider, refused_today, last_refused_at
-  FROM external_rate_limits
- WHERE refused_today >= %(min_refusals)s
+WITH cur AS (
+  SELECT provider, last_refused_at,
+         CASE WHEN day_start < CURRENT_DATE THEN 0 ELSE refused_today END
+           AS refused_now,
+         CASE WHEN day_start < CURRENT_DATE THEN 0 ELSE day_used END
+           AS used_now
+    FROM external_rate_limits
+)
+SELECT provider, refused_now, used_now, last_refused_at
+  FROM cur
+ WHERE refused_now >= %(min_refusals)s
+   AND refused_now > %(max_fraction)s * (used_now + refused_now)
    AND last_refused_at > now() - make_interval(secs => %(recent_s)s)
- ORDER BY refused_today DESC, provider
+ ORDER BY refused_now DESC, provider
 """
 
 
@@ -976,33 +987,44 @@ def _probe_limiter_refusing(store: Store) -> list[ConditionFinding]:
     demand the shared limiter could not admit — a starved token bucket, a
     spent daily cap, a full ``llm-api`` slot hold, or a live Retry-After
     park (every counted refusal writes ``refused_today``/
-    ``last_refused_at``). The recency arm keeps a morning burst from
-    holding the check red all day; ``refused_today``'s own day rollover
-    bounds staleness regardless. Green on a pre-S1 schema (the columns
-    don't exist yet)."""
+    ``last_refused_at``). The refusals must also be the majority of the
+    day's demand: a deliberately tight cap (crossref's 1 rps is a
+    ruling) sheds a routine overflow drip — dozens refused against
+    thousands granted — that is the cap working, not a stuck lane
+    (gr517747). Both counters read through the ``day_start`` rollover
+    the writers apply, so a row untouched since yesterday counts as 0.
+    The recency arm keeps a morning burst from holding the check red
+    all day. Green on a pre-S1 schema (the columns don't exist yet)."""
     from precis.utils import rate_limit
 
     min_refusals = int(_env_f("PRECIS_COND_LIMITER_REFUSALS_MIN", 25))
+    max_fraction = _env_f("PRECIS_COND_LIMITER_REFUSAL_FRACTION", 0.5)
     recent_s = _env_f("PRECIS_COND_LIMITER_REFUSAL_RECENT_S", 2 * 3600.0)
     with store.pool.connection() as conn:
         if not rate_limit.s1_columns_present(conn):
             return []
         rows = conn.execute(
             _LIMITER_REFUSING_SQL,
-            {"min_refusals": min_refusals, "recent_s": recent_s},
+            {
+                "min_refusals": min_refusals,
+                "max_fraction": max_fraction,
+                "recent_s": recent_s,
+            },
         ).fetchall()
     return [
         ConditionFinding(
             key=f"limiter-refusing:{provider}",
             detail=(
-                f"external_rate_limits[{provider}] refused {int(n)} call(s) "
-                f"today (last {last:%Y-%m-%d %H:%MZ}) — the shared limiter "
-                "could not admit the demand: the bucket, daily cap, or "
-                "llm-api hold is undersized, or a caller is looping (the "
-                "worker's rate-limited WARNING names the reason)"
+                f"external_rate_limits[{provider}] refused {int(n)} of "
+                f"{int(n) + int(used)} call(s) today "
+                f"(last {last:%Y-%m-%d %H:%MZ}) — the shared limiter "
+                "could not admit most of the demand: the bucket, daily "
+                "cap, or llm-api hold is undersized, or a caller is "
+                "looping (the worker's rate-limited WARNING names the "
+                "reason)"
             ),
         )
-        for provider, n, last in rows
+        for provider, n, used, last in rows
     ]
 
 

@@ -17,8 +17,9 @@ so the guessed GETs 404'd. ``/llm/chain`` renders the same live rung
 table as the Models tab header (``_active_routing_ctx`` — resolved via
 the same ``resolve_chain``/``resolve_model`` dispatch walks, so it can't
 drift) plus the operator-override JSON; ``/llm/op`` the per-operation
-routing rollup (``_llm_ops_ctx``). Editing stays on
-``/status?tab=services`` — these pages link there.
+routing rollup (``_llm_ops_ctx``). The chain table lazy-loads — the
+shell paints, htmx fetches ``/llm/chain/panel`` (gr518162). Editing
+stays on ``/status?tab=services`` — these pages link there.
 """
 
 from __future__ import annotations
@@ -96,15 +97,26 @@ async def llm_index(request: Request) -> RedirectResponse:
 
 @pages.get("/chain", response_class=HTMLResponse)
 async def llm_chain(request: Request) -> HTMLResponse:
-    """Per-tier live placement chains: every rung's slot, model,
-    transport and placement, as ``dispatch`` would walk them right now
-    (``_active_routing_ctx``) — plus the cloud dial and any operator
-    ``llm.chain.<tier>`` override JSON (``_llm_chain_ctx``)."""
+    """Per-tier live placement chains — the page is a shell: the rung
+    cards lazy-load via ``GET /llm/chain/panel`` so the per-tier
+    ``resolve_chain``/``resolve_model`` walks and the operator-override
+    reads don't block the render (gr518162)."""
+    return templates.TemplateResponse(
+        request, "llm/chain.html.j2", {"active_tab": "llm"}
+    )
+
+
+@pages.get("/chain/panel", response_class=HTMLResponse)
+async def llm_chain_panel(request: Request) -> HTMLResponse:
+    """The chain cards themselves (htmx fragment): every rung's slot,
+    model, transport and placement, as ``dispatch`` would walk them
+    right now (``_active_routing_ctx``) — plus the cloud dial and any
+    operator ``llm.chain.<tier>`` override JSON (``_llm_chain_ctx``)."""
     store = get_store(request)
-    ctx: dict[str, Any] = {"active_tab": "llm"}
+    ctx: dict[str, Any] = {}
     ctx.update(await asyncio.to_thread(_active_routing_ctx, store))
     ctx.update(await asyncio.to_thread(_llm_chain_ctx, store))
-    return templates.TemplateResponse(request, "llm/chain.html.j2", ctx)
+    return templates.TemplateResponse(request, "llm/_chain_panel.html.j2", ctx)
 
 
 @pages.get("/op", response_class=HTMLResponse)

@@ -1,0 +1,65 @@
+{# Lazy panel for /llm/chain — rendered by GET /llm/chain/panel,
+   fetched via htmx on page load: the per-tier resolve_chain /
+   resolve_model walks and the operator-override reads are the
+   page's cost, so the shell paints first (gr518162). Context:
+   precis_web.routes.status._active_routing_ctx + _llm_chain_ctx. #}
+
+{% if llm_chains %}
+<div class="mb-4 flex items-center gap-2">
+  {% if llm_chains.cloud_enabled %}
+  <span class="rounded px-1.5 py-0.5 text-[11px] bg-success-subtle text-success-strong">cloud ON</span>
+  {% else %}
+  <span class="rounded px-1.5 py-0.5 text-[11px] bg-warning-subtle text-warning-strong">cloud OFF (local only)</span>
+  {% endif %}
+  <span class="text-xs text-fg-faint">cloud backend <span class="font-mono">{{ active_backend }}</span></span>
+</div>
+{% endif %}
+
+<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+  {% for r in active_routing %}
+  <div class="rounded-lg border border-line bg-surface p-4">
+    <div class="flex items-center justify-between gap-2">
+      <span class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide
+        {% if r.tier == 'frontier' %}bg-accent-subtle text-accent-strong
+        {% elif r.tier == 'big' %}bg-info-subtle text-info-strong
+        {% elif r.tier == 'medium' %}bg-teal-subtle text-teal-strong
+        {% else %}bg-surface-muted text-fg-muted{% endif %}">{{ r.tier }}</span>
+      <span class="text-[10px] rounded px-1.5 py-0.5
+        {% if r.source == 'operator chain' %}bg-warning-subtle text-warning-strong{% else %}bg-surface-subtle text-fg-faint{% endif %}"
+        title="{% if r.source == 'operator chain' %}an operator llm.chain.{{ r.tier }} override is set{% else %}the compiled default chain (no operator override){% endif %}">{{ r.source }}</span>
+    </div>
+    <table class="mt-2 w-full text-[11px]">
+      <thead class="text-[10px] uppercase tracking-wide text-fg-faint">
+        <tr>
+          <th class="text-left font-medium">slot</th>
+          <th class="text-left font-medium">model</th>
+          <th class="text-left font-medium">placement</th>
+          <th class="text-left font-medium">transport</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-line-subtle">
+        {% for rung in r.rungs %}
+        <tr>
+          <td class="pr-2 tabular-nums text-fg-faint">{{ loop.index }}</td>
+          <td class="pr-2 font-mono truncate" title="{{ rung.model }}">{{ rung.model }}</td>
+          <td class="pr-2 {% if rung.placement == 'cloud' %}text-warning{% else %}text-success{% endif %}">{{ rung.placement }}</td>
+          <td class="font-mono text-fg-subtle">{{ rung.transport }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-fg-faint">—</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% set ov = (llm_chains.tiers | selectattr('tier', 'equalto', r.tier) | first) if llm_chains else none %}
+    {% if ov and ov.chain_json %}
+    <details class="mt-2 pt-2 border-t border-line-subtle">
+      <summary class="text-[10px] uppercase tracking-wide text-fg-faint cursor-pointer">operator override</summary>
+      <pre class="mt-1 text-[10px] font-mono text-fg-subtle whitespace-pre-wrap">{{ ov.chain_json }}</pre>
+    </details>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% if not active_routing %}
+<p class="text-sm text-fg-faint">No routing information available.</p>
+{% endif %}

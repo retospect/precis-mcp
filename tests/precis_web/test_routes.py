@@ -1297,7 +1297,7 @@ def test_status_kind_chips_link_into_drive(client, monkeypatch) -> None:
     monkeypatch.setattr(
         status_mod, "_kind_counts", lambda store: [{"kind": "paper", "count": 7}]
     )
-    resp = client.get("/status?tab=health")
+    resp = client.get("/status/health-panels")
     assert resp.status_code == 200
     # folder=* rides along so the list's total matches the count on the chip
     # (drafts/todos mostly live inside folders, which the landing hides).
@@ -1318,7 +1318,7 @@ def test_status_health_renders_registry_title_mismatch_line(
         "registry_title_mismatch_check",
         lambda store: {"n_sampled": 1234, "n_mismatch": 3, "n_tagged": 2},
     )
-    resp = client.get("/status?tab=health")
+    resp = client.get("/status/health-panels")
     assert resp.status_code == 200
     assert "registry title mismatch" in resp.text
     assert "3/1234" in resp.text
@@ -4588,17 +4588,30 @@ def test_status_page_renders(client) -> None:
     resp = client.get("/status")
     assert resp.status_code == 200
     assert "Status" in resp.text
-    # New telemetry panels render (empty states under the fake store).
-    assert "Machines" in resp.text
+    # The cheap tail renders inline (empty states under the fake store).
     assert "Claude usage" in resp.text
+    # The slow top block (Papers/Machines/Health checks/Background
+    # health) is lazy-loaded — the page ships only the htmx shell.
+    assert 'hx-get="/status/health-panels"' in resp.text
+    assert "loading health panels" in resp.text
+    assert "Machines" not in resp.text
+    # The slow backlog panel is lazy-loaded too — the page ships only
+    # the htmx placeholder, not the full-table-scan counts.
+    assert 'hx-get="/status/backlog"' in resp.text
+    assert "loading backlog" in resp.text
+
+
+def test_status_health_panels_fragment_renders(client) -> None:
+    """``GET /status/health-panels`` carries the deferred top block —
+    Papers, Machines, Health checks, Background health — with every
+    section's empty state under the fake store (gr518161)."""
+    resp = client.get("/status/health-panels")
+    assert resp.status_code == 200
+    assert "Machines" in resp.text
     assert "precis heartbeat" in resp.text  # empty-state hint
     # Background-health panel: empty under the fake store → green all-clear.
     assert "Background health" in resp.text
     assert "No spin loops or failed passes" in resp.text
-    # The slow backlog panel is lazy-loaded — the page ships only the
-    # htmx placeholder, not the full-table-scan counts.
-    assert 'hx-get="/status/backlog"' in resp.text
-    assert "loading backlog" in resp.text
 
 
 def test_status_health_checks_render_the_agent_panel_object(
@@ -4660,7 +4673,7 @@ def test_status_health_checks_render_the_agent_panel_object(
     )
 
     agent_body = AlertHandler(hub=Hub(store=runtime.store)).get(id="/health").body
-    resp = client.get("/status?tab=health")
+    resp = client.get("/status/health-panels")
     assert resp.status_code == 200
     page = resp.text
 
@@ -4692,7 +4705,7 @@ def test_status_health_checks_empty_without_a_snapshot(client, monkeypatch) -> N
             "open_alerts": {},
         },
     )
-    resp = client.get("/status?tab=health")
+    resp = client.get("/status/health-panels")
     assert resp.status_code == 200
     assert "no health_digest eval yet" in resp.text
     assert "No health checks yet" in resp.text
@@ -4762,10 +4775,13 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
     )
     resp = client.get("/status")
     assert resp.status_code == 200
-    assert "caspar" in resp.text
-    assert "91.5 °C" in resp.text  # hot temp rendered
     assert "$1.23" in resp.text  # 24h cost
     assert "claude-sonnet-4-6" in resp.text
+    # The Machines strip deferred onto the lazy panels fragment (gr518161).
+    resp = client.get("/status/health-panels")
+    assert resp.status_code == 200
+    assert "caspar" in resp.text
+    assert "91.5 °C" in resp.text  # hot temp rendered
     assert "4 err/warn 24h" in resp.text
 
 
@@ -4795,7 +4811,7 @@ def test_status_background_health_panel_renders_anomalies(client, monkeypatch) -
             ],
         },
     )
-    resp = client.get("/status")
+    resp = client.get("/status/health-panels")
     assert resp.status_code == 200
     assert "Spin loops" in resp.text
     assert "#34814" in resp.text
@@ -4841,11 +4857,13 @@ def test_status_default_tab_is_health(client) -> None:
     assert 'href="/status?tab=health"' in resp.text
     assert 'href="/status?tab=services"' in resp.text
     assert 'href="/status?tab=budget"' in resp.text
-    assert "Machines" in resp.text  # Health content renders by default
+    # Health content renders by default — the panels block via its shell.
+    assert 'hx-get="/status/health-panels"' in resp.text
 
     bogus = client.get("/status?tab=bogus")
     assert bogus.status_code == 200
-    assert "Machines" in bogus.text  # unknown tab degrades to Health
+    # unknown tab degrades to Health
+    assert 'hx-get="/status/health-panels"' in bogus.text
 
 
 def test_status_services_tab_lists_registry_services(client) -> None:
@@ -4948,6 +4966,9 @@ def test_status_health_tab_renders_with_no_reserve_or_errors(client) -> None:
     """Health tab still renders cleanly with the new reserve/top_cpu wiring
     when the FakeStore's SQL degrades to empty (no template regression)."""
     resp = client.get("/status?tab=health")
+    assert resp.status_code == 200
+    assert 'hx-get="/status/health-panels"' in resp.text
+    resp = client.get("/status/health-panels")
     assert resp.status_code == 200
     assert "Machines" in resp.text
 

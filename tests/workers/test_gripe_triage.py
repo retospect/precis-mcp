@@ -1618,6 +1618,83 @@ class TestFixEvidence:
         monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: sha)
         return hist
 
+    def test_squash_list_body_line_counts(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A squash-merge body carries the squashed commits' subjects
+        as bullets — a ``- fix(…): … (gr<id>)`` line cites like a
+        subject (gr518160)."""
+        _commit(
+            repo,
+            "Merge branch 'side' into main",
+            body="- fix(thing): repair the widget (gr109)\n- chore: tidy",
+        )
+        _g(repo, "branch", "prod")
+        monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_REF", "prod")
+        idx = gripe_triage.collect_fix_evidence(repo, [109])
+        assert idx.by_gripe[109][0].deployed is True
+
+    def test_docs_bullet_in_squash_list_is_not_evidence(self, repo: Path) -> None:
+        """A bullet's ``docs(`` item is paperwork like a ``docs(``
+        subject — no cite (gr518160)."""
+        _commit(
+            repo,
+            "Merge branch 'side' into main",
+            body="- docs(backlog): spec for gr110\n- chore: tidy",
+        )
+        idx = gripe_triage.collect_fix_evidence(repo, [110])
+        assert idx.by_gripe == {}
+
+    def test_mention_bullets_are_not_evidence(self, repo: Path) -> None:
+        """``- Refs gr<id>`` / ``- see gr<id>`` bullets are mentions —
+        only a conventional-commit subject bullet counts (gr518160)."""
+        _commit(
+            repo,
+            "Merge branch 'side' into main",
+            body="- Refs gr114\n- see gr115\n- fix(x): y (gr116)",
+        )
+        idx = gripe_triage.collect_fix_evidence(repo, [114, 115, 116])
+        assert 114 not in idx.by_gripe and 115 not in idx.by_gripe
+        assert idx.by_gripe[116][0].matched == "- fix(x): y (gr116)"
+
+    def test_plain_body_line_naming_id_is_not_evidence(self, repo: Path) -> None:
+        """A non-bullet, non-closing body line naming the id stays a
+        mention — the squash-list rule does not loosen it (gr518160)."""
+        _commit(repo, "feat(thing): partial work", body="work for gr111 continues")
+        idx = gripe_triage.collect_fix_evidence(repo, [111])
+        assert idx.by_gripe == {}
+
+    def test_history_file_docs_bullet_row_is_not_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deployed-history row is a body line re-read as a subject —
+        a ``- docs(`` row is paperwork there too, so generator and
+        reader stay symmetric (gr518160)."""
+        self._write_history(
+            tmp_path,
+            monkeypatch,
+            "deadbee1234567890abcdef0123456789abcdef\t"
+            "- docs(backlog): spec for gr112\n",
+        )
+        idx = gripe_triage.collect_fix_evidence(None, [112])
+        assert idx.by_gripe == {}
+
+    def test_history_file_bullet_row_counts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """…and a ``- fix(`` squash-list row DOES cite: the generator's
+        bullet-line prefilter lands the line verbatim, the subject
+        search matches it (gr518160)."""
+        self._write_history(
+            tmp_path,
+            monkeypatch,
+            "deadbee1234567890abcdef0123456789abcdef\t"
+            "- fix(thing): repair the widget (gr113)\n",
+        )
+        idx = gripe_triage.collect_fix_evidence(None, [113])
+        (ev,) = idx.by_gripe[113]
+        assert ev.deployed is True
+
     def test_history_file_counts_as_deployed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1771,6 +1848,19 @@ class TestFixEvidence:
         )
         _commit(repo, "fix(thing): repair the widget (gr120)")
         _commit(repo, "feat(thing): squash-merged fix", body="Fixes gr121")
+        # A squash-merge body carries the squashed subjects as bullets —
+        # the prefilter passes a citing bullet verbatim but drops a
+        # ``docs(`` bullet the same way the reader does (gr518160).
+        _commit(
+            repo,
+            "feat(thing): squash-merge a branch",
+            body="- fix(thing): repair the other widget (gr122)\n"
+            "- docs(backlog): spec for gr123\n"
+            "- Refs gr124\n"
+            "- see gr125\n"
+            "- fix(x): y (gr126)\n"
+            "- chore: notes, no id",
+        )
         head = _g(repo, "rev-parse", "HEAD")
         out = tmp_path / "deployed_history.txt"
         script = (
@@ -1790,10 +1880,27 @@ class TestFixEvidence:
         assert out.read_text(encoding="utf-8").startswith(f"# sha {head}\n")
         monkeypatch.setenv("PRECIS_TRIAGE_DEPLOYED_HISTORY", str(out))
         monkeypatch.setattr(gripe_triage, "_installed_commit", lambda: head)
-        idx = gripe_triage.collect_fix_evidence(None, [120, 121])
+        idx = gripe_triage.collect_fix_evidence(
+            None, [120, 121, 122, 123, 124, 125, 126]
+        )
         assert idx.by_gripe[120][0].deployed is True
         ev = idx.by_gripe[121][0]
         assert ev.deployed is True and ev.matched == "Fixes gr121"
+        ev = idx.by_gripe[122][0]
+        assert (
+            ev.deployed is True
+            and ev.matched == "- fix(thing): repair the other widget (gr122)"
+        )
+        assert 123 not in idx.by_gripe
+        # Mentions are not evidence, even as bullets; a conventional
+        # subject bullet is (gr518160).
+        assert 124 not in idx.by_gripe and 125 not in idx.by_gripe
+        assert idx.by_gripe[126][0].matched == "- fix(x): y (gr126)"
+        # The prefilter itself dropped the mention bullets (not just
+        # the reader): they never reach the file.
+        text = out.read_text(encoding="utf-8")
+        assert "gr124" not in text and "gr125" not in text
+        assert "gr126" in text
 
     def test_play_generator_skip_never_rewrites_the_file(
         self, repo: Path, tmp_path: Path
