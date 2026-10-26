@@ -22,13 +22,20 @@ earlier revision in git history.
    args={'op':'import_epro', 'source':'export:<slug>'})`: the server
    re-imports a board's own export. No web upload form and no base64 or
    URL `put`.
+   **Superseded for copies (gr519745, 2026-10-26):** the op now refuses a
+   board source — the .epro2 round-trip is lossy (part/LCSC fields,
+   routed copper, sub-2-pin nets) — and its `next=` points at
+   `put(kind='pcb', args={'op':'fork','from':'<slug>'})`, the lossless
+   copy. A real `.epro2` file still imports via the CLI / web upload.
 
 Built on these (gr495289 slices 2–4): `view='epro' args={'verify': true}`
 (`precis.pcb.epro_verify`), the sha256 and download path in every epro
-response, `PcbHandler.epro_build` (the one in-memory build the view, the
-route and the import share), the route in `precis_web/routes/pcb.py` with
+response, `PcbHandler.epro_build` (the one in-memory build the view and
+the route share), the route in `precis_web/routes/pcb.py` with
 a link on the board page, `op='import_epro'`
-(`PcbHandler._op_import_epro`), and the `precis-pcb-fab-help` section.
+(`PcbHandler._op_import_epro` — kept as the refusal that names
+`op='fork'`), `op='fork'` (`PcbHandler._op_fork`), and the
+`precis-pcb-fab-help` section.
 
 ## Decisions (Reto 2026-10-21)
 
@@ -45,8 +52,9 @@ a link on the board page, `op='import_epro'`
   board into a 409; a test pins view sha == route sha.
 - **No caller bytes reach the reader.** `epro.read_archive` has no
   member-count or uncompressed-size caps. That is safe only because the
-  CLI (operator files) and `op='import_epro'` (precis's own writer) are
-  its only inputs. Any future path that hands it caller-supplied bytes or
+  CLI / web upload (operator files) are its only inputs —
+  `op='import_epro'` no longer feeds it (it refuses board copies,
+  gr519745). Any future path that hands it caller-supplied bytes or
   a fetched URL needs caps first (precedent: `ingest/markup.py`'s 16 MiB
   per member / 64 MiB total) and `safe_stream` for the fetch. Under the
   rulings there is no such path.
@@ -71,7 +79,7 @@ a link on the board page, `op='import_epro'`
   rebuilds the zip with a `?sha=` guard (see Decisions).
 - **Export dir confinement** stays its own item
   ([pcb-export-dir-confinement](pcb-export-dir-confinement.md)); the
-  route and the import never touch `args['dir']`.
+  route never touches `args['dir']`.
 
 ## Not covered here (stays on gr495289)
 

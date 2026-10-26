@@ -2914,73 +2914,48 @@ def test_epro_view_names_the_download_path_for_these_bytes(pcb, tmp_path):
     assert build.filename == "eprotest.epro2"
 
 
-def test_import_epro_dry_run_writes_nothing(pcb):
+def test_import_epro_refuses_a_board_copy_and_names_fork(pcb):
+    """gr519745: the .epro2 round-trip is the lossy copy path, so the MCP
+    op refuses a board source (dry run or not) with a ``next=`` naming
+    ``op='fork'``; a real ``.epro2`` file still imports through the ingest
+    importer (the CLI / web upload path)."""
     _seed(pcb)
-    body = pcb.put(
-        id="eprotest-copy", args={"op": "import_epro", "source": "export:eprotest"}
-    ).body
-    assert "would import 2 component(s)" in body
-    assert "dry run — nothing was written" in body
+    for args in (
+        {"op": "import_epro", "source": "export:eprotest"},
+        {"op": "import_epro", "source": "export:eprotest", "dry_run": False},
+    ):
+        with pytest.raises(BadInput, match="refuses a board-to-board copy") as exc:
+            pcb.put(id="eprotest-copy", args=args)
+        nxt = exc.value.next
+        assert isinstance(nxt, str)
+        assert "'op':'fork'" in nxt
+        assert "'from':'eprotest'" in nxt
     assert pcb.store.get_ref(kind="pcb", id="eprotest-copy") is None
 
+    from precis.ingest import pcb_epro
 
-def test_import_epro_re_imports_the_export_into_a_new_board(pcb):
-    slug = _seed(pcb)
-    body = pcb.put(
-        id="eprotest-copy",
-        args={"op": "import_epro", "source": "export:eprotest", "dry_run": False},
-    ).body
-    assert "imported 2 component(s)" in body, body
-    build = pcb.epro_build(pcb.store.get_ref(kind="pcb", id=slug).id)
-    assert build is not None and f"source sha256: {build.sha256}" in body
-    src = {i["refdes"]: i for i in pcb.store.pcb_graph(_ref_id(pcb, slug))["instances"]}
-    copy_id = _ref_id(pcb, "eprotest-copy")
-    got = {i["refdes"]: i for i in pcb.store.pcb_graph(copy_id)["instances"]}
-    assert set(got) == set(src) == {"U1", "C1"}
-    for r, inst in src.items():
-        assert abs(got[r]["x"] - inst["x"]) < _TOL_MM
-        assert abs(got[r]["y"] - inst["y"]) < _TOL_MM
-        assert got[r]["layer"] == inst["layer"]
-    nets = {n["name"] for n in pcb.store.pcb_graph(copy_id)["nets"]}
-    assert {"VCC3V3", "GND"} <= nets
-    # the copy is a board in its own right: it exports and verifies clean
-    again = pcb.get(id="eprotest-copy", view="epro", args={"verify": True}).body
-    assert "\nFAIL " not in again, again
-
-
-def _ref_id(pcb, slug: str) -> int:
-    ref = pcb.store.get_ref(kind="pcb", id=slug)
-    assert ref is not None
-    return int(ref.id)
-
-
-def test_import_epro_refuses_a_taken_slug(pcb):
-    _seed(pcb)
-    pcb.put(
-        id="eprotest-copy",
-        args={"op": "import_epro", "source": "export:eprotest", "dry_run": False},
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in ("project2.json", "board.epru"):
+            zf.writestr(name, (fixture / name).read_bytes())
+    result = pcb_epro.import_epro(
+        pcb.store, buf.getvalue(), slug="epro-file-copy", title="Tiny"
     )
-    with pytest.raises(BadInput) as exc:
-        pcb.put(
-            id="eprotest-copy",
-            args={"op": "import_epro", "source": "export:eprotest", "dry_run": False},
-        )
-    assert exc.value.next and "eprotest-copy-2" in exc.value.next
+    assert result.ref_id is not None
+    assert pcb.store.get_ref(kind="pcb", id="epro-file-copy") is not None
 
 
-@pytest.mark.parametrize(
-    ("target", "source", "match"),
-    [
+def test_import_epro_refuses_a_bad_source(pcb):
+    _seed(pcb)
+    for target, source, match in (
         ("x-copy", "eprotest", "needs source='export:<board slug>'"),
         ("x-copy", "export:", "needs source='export:<board slug>'"),
         ("eprotest", "export:eprotest", "writes a NEW board"),
-    ],
-)
-def test_import_epro_refuses_a_bad_source(pcb, target, source, match):
-    _seed(pcb)
-    with pytest.raises(BadInput, match=match) as exc:
-        pcb.put(id=target, args={"op": "import_epro", "source": source})
-    assert exc.value.next
+    ):
+        with pytest.raises(BadInput, match=match) as exc:
+            pcb.put(id=target, args={"op": "import_epro", "source": source})
+        assert exc.value.next
 
 
 def test_import_epro_unknown_source_board_is_not_found(pcb):

@@ -55,9 +55,9 @@ hand-authored pads), and the pattern playbooks [[precis-decoupling-help]],
 accepted source LINE/ARC track and ordinary through via as authored fixed
 copper by default. Arc centres, handedness, nets and layers survive;
 `view='svg'` shows the source routing. This does not infer a route sketch
-or certify the source DRC. Real files stay local: the only MCP import is
-a board's own export, `put(id='<new slug>', args={'op':'import_epro',
-'source':'export:<slug>'})` ([[precis-pcb-fab-help]]).
+or certify the source DRC. Real files stay local — there is no MCP
+import; copying a board is `op='fork'` (below), and `op='import_epro'`
+refuses a board source.
 `--dry-run` writes nothing. `--copper none` retains measurement-only intake;
 partial `--update` defaults to none and refuses fixed (changed copper may
 not match the deliberately retained netlist/outline). `--update` keeps the
@@ -78,8 +78,10 @@ The copy is a new independent design — branch/checkpoint/revision
 history (`design_*` rows) does not carry.
 `args={'dry_run': true}` reports the per-table counts without writing.
 `op='import_epro'` is LOSSY by comparison — part/LCSC fields, routed
-copper and nets under two pins fall off the .epro2 round-trip — use it
-only for EasyEDA interop, never to copy a precis board.
+copper and nets under two pins fall off the .epro2 round-trip — so the
+MCP op refuses a board source outright and names `fork`; the importer is
+for EasyEDA interop only (the CLI / web upload take a real `.epro2`
+file).
 
 ## Author a design — `put(id=<slug>, args={…})`
 

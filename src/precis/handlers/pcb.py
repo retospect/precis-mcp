@@ -304,9 +304,10 @@ _FOOTPRINT_OPS = ("footprint",)
 #: Cheap request-building plus bounded HTTP, not worker compute — inline
 #: like ``footprint``, guarded by ``dry_run``/``confirm='add-to-cart'``.
 _ORDER_OPS = ("order",)
-#: gr495289 (Reto's ruling: option 2a) — re-import a board's OWN ``.epro2``
-#: export into a new preview slug, server-side. Addresses a slug that does
-#: not exist yet, so ``put`` routes it before the existing-design lookup.
+#: gr519745 — the epro round-trip is lossy on a board-to-board copy, so
+#: the op only refuses and names ``op='fork'`` (a real ``.epro2`` file
+#: imports via the CLI / web upload). It addresses a slug that does not
+#: exist yet, so ``put`` routes it before the existing-design lookup.
 _IMPORT_OPS = ("import_epro",)
 #: gr517199 — the lossless board copy; like _IMPORT_OPS it addresses a
 #: slug that does not exist yet, so ``put`` routes it before the
@@ -1019,8 +1020,9 @@ class PcbHandler(Handler):
             "dir; view='epro' writes an EasyEDA Pro .epro2 (outline, "
             "parts, pads, nets, copper, pours; no schematic; "
             "args={'verify':true} re-reads it and diffs it against the "
-            "board; put(id=<new slug>, args={'op':'import_epro','source':"
-            "'export:<slug>'}) re-imports it, dry run by default)), all "
+            "board; put(id=<new slug>, args={'op':'fork','from':'<slug>'}) "
+            "clones the board losslessly — op='import_epro' is the lossy "
+            "EasyEDA-interop path and refuses a board copy)), all "
             "with args={...}; "
             "put(args={'op':'place'}) ENQUEUES a worker "
             "job (never inline; idempotent per design+op+content-hash; "
@@ -4754,9 +4756,9 @@ class PcbHandler(Handler):
         self, ref_id: int, *, allow_synthesized: bool = False
     ) -> EproBuild | None:
         """The ``.epro2`` bytes for a board, in memory — ``None`` when it has
-        no board yet. The one build :meth:`_render_epro` (the MCP view),
-        ``op='import_epro'`` and the web UI's ``GET /pcb/{slug}/export.epro2``
-        all share: the writer is deterministic, so the same board state
+        no board yet. The one build :meth:`_render_epro` (the MCP view)
+        and the web UI's ``GET /pcb/{slug}/export.epro2``
+        share: the writer is deterministic, so the same board state
         gives the same bytes and sha256 on every surface, with nothing
         stored (docs/backlog/pcb-epro-mcp-roundtrip.md, Reto's ruling)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
@@ -4824,113 +4826,42 @@ class PcbHandler(Handler):
 
     def _op_import_epro(self, slug: str, args: dict[str, Any]) -> Response:
         """``put(id=<new slug>, args={'op':'import_epro',
-        'source':'export:<board>'})`` — rebuild ``<board>``'s ``.epro2``
-        server-side (:meth:`epro_build`) and run the CLI's own importer
-        (:func:`precis.ingest.pcb_epro.import_epro`) on those bytes into a
-        new preview slug. A dry run unless ``'dry_run': False``.
+        'source':'export:<board>'})`` — REFUSED (gr519745): re-importing a
+        board's own ``.epro2`` is a board-to-board copy through the lossy
+        round-trip — part/LCSC fields, routed copper and nets under two
+        pins fall off it. ``op='fork'`` (gr517199) is the lossless copy, so
+        the op stays only as the signpost that names it.
 
-        Reto's ruling (gr495289, option 2a): the only source is precis's
-        own export, so no caller-supplied bytes or URLs reach the reader —
-        no base64, no fetch, no upload. Real ``.epro2`` files stay on the
-        CLI. Never ``--update``: the target must be a new slug, and a
-        synthesized-pad board is refused (its bounds would import as real
-        footprints)."""
-        from precis.ingest.pcb_epro import EproImportError, import_epro
-        from precis.pcb import copper_report
-        from precis.pcb.epro import EproError
-
+        Reto's ruling (gr495289, option 2a) stands: the only source was
+        precis's own export, so no caller-supplied bytes or URLs reach the
+        reader — a real EasyEDA ``.epro2`` file still imports, through the
+        CLI (``precis pcb import-epro <file>``) or the web UI upload, both
+        of which call :func:`precis.ingest.pcb_epro.import_epro` directly."""
         source = str(args.get("source") or "").strip()
         src_slug = source.removeprefix("export:").strip()
-        example = (
-            f"put(kind='pcb', id='{slug}', args={{'op':'import_epro', "
-            "'source':'export:<existing board slug>'}})"
-        )
         if not source.startswith("export:") or not src_slug:
             raise BadInput(
-                f"op='import_epro' needs source='export:<board slug>', got {source!r}",
-                next=example,
+                f"op='import_epro' needs source='export:<board slug>', got {source!r}; "
+                "a real .epro2 file imports with the CLI: "
+                "precis pcb import-epro <file> --slug <slug>",
+                next=f"put(kind='pcb', id='{slug}', args={{'op':'fork', "
+                "'from':'<existing board slug>'}}) copies a board losslessly",
                 options=["export:<board slug>"],
             )
         if src_slug == slug:
             raise BadInput(
                 f"op='import_epro' writes a NEW board; id={slug!r} is its source",
-                next=f"put(kind='pcb', id='{slug}-reimport', args={{'op':'import_epro', "
-                f"'source':'export:{src_slug}'}})",
+                next=f"put(kind='pcb', id='{slug}-fork', args={{'op':'fork', "
+                f"'from':'{src_slug}'}})",
             )
-        src_ref = resolve_live_slug_ref(self.store, kind="pcb", id=src_slug)
-        build = self.epro_build(int(src_ref.id))
-        if build is None:
-            raise BadInput(
-                f"pcb {src_slug!r} has no board yet; there is nothing to export",
-                next=f"get(kind='pcb', id='{src_slug}') shows what it holds",
-            )
-        dry_run = args.get("dry_run") is not False
-        try:
-            result = import_epro(
-                self.store,
-                build.blob,
-                slug=slug,
-                title=f"{build.slug} re-import",
-                source_name=f"export:{build.slug}",
-                dry_run=dry_run,
-            )
-        except EproError as exc:
-            raise BadInput(
-                f"the export of {src_slug!r} does not read back: {exc}",
-                next=f"get(kind='pcb', id='{src_slug}', view='epro', "
-                "args={'verify': True}) names what the file loses",
-            ) from exc
-        except EproImportError as exc:
-            # A taken slug or a board precis cannot hold (e.g. its layer
-            # count); the importer's own message names which.
-            raise BadInput(
-                f"op='import_epro': {exc}",
-                next=f"a taken slug needs a new id=, e.g. put(kind='pcb', "
-                f"id='{slug}-2', args={{'op':'import_epro', "
-                f"'source':'export:{src_slug}'}})",
-            ) from exc
-
-        queued = facts = 0
-        if not dry_run and result.ref_id:
-            # The import writes through pcb_apply, not this put's batch
-            # path, so it queues the datasheet work itself (as the CLI does).
-            queued, facts = self._queue_datasheets(result.ref_id)
-        s = result.stats
-        verb = "would import" if dry_run else "imported"
-        lines = [
-            f"# import_epro export:{build.slug} → {slug}: {verb} "
-            f"{s['components']} component(s), {s['footprints']} footprint(s), "
-            f"{s['nets']} net(s), {s['connections']} connection(s), "
-            f"{s['mounting_holes']} mounting hole(s)",
-            f"source sha256: {build.sha256} (the bytes view='epro' writes)",
-            "stackup: " + ", ".join(str(layer.get("name")) for layer in result.stackup),
-        ]
-        if result.planes:
-            lines.append(
-                "planes: "
-                + ", ".join(f"{k}={v}" for k, v in sorted(result.planes.items()))
-            )
-        # Every warning, never a count standing in for them: each is a thing
-        # the re-imported board does NOT carry.
-        lines += [f"⚠️  {w}" for w in result.warnings]
-        lines += result.dropped_lines()
-        if result.copper is not None:
-            lines += copper_report.render(result.copper)
-        if queued or facts:
-            lines.append(
-                f"{queued} datasheet pull(s), {facts} facts extraction(s) queued"
-            )
-        if dry_run:
-            lines.append(
-                "dry run — nothing was written. Next: the same put with "
-                "'dry_run': False writes it."
-            )
-        else:
-            lines.append(
-                f"Next: get(kind='pcb', id='{slug}'). Locked parts stay locked; "
-                "op='place' re-places the unlocked ones first."
-            )
-        return Response(body="\n".join(lines))
+        resolve_live_slug_ref(self.store, kind="pcb", id=src_slug)
+        raise BadInput(
+            "op='import_epro' refuses a board-to-board copy — the .epro2 "
+            "round-trip drops part/LCSC fields, routed copper and nets "
+            "under two pins",
+            next=f"put(kind='pcb', id='{slug}', args={{'op':'fork', "
+            f"'from':'{src_slug}'}}) copies the board losslessly",
+        )
 
     def _op_fork(
         self,
@@ -4952,8 +4883,9 @@ class PcbHandler(Handler):
         branch/checkpoint/revision history does NOT carry. The source is
         never written. ``'dry_run': True`` reports the per-table counts
         without writing. The ``import_epro`` round-trip is the LOSSY path
-        — parts/LCSC, copper and sub-2-pin nets fall off it; use it only
-        for EasyEDA interop."""
+        — parts/LCSC, copper and sub-2-pin nets fall off it — so the MCP
+        op refuses a board copy and points here (gr519745); the importer
+        is for EasyEDA interop only (CLI / web upload)."""
         src = str(args.get("from") or "").strip()
         example = (
             f"put(kind='pcb', id='{slug}', args={{'op':'fork', "
@@ -5098,9 +5030,8 @@ class PcbHandler(Handler):
             head += (
                 "\nThe file is on the server, not readable through the MCP; "
                 "args={'verify': true} re-reads it and diffs it against the board, "
-                f"and put(kind='pcb', id='<new-slug>', args={{'op': 'import_epro', "
-                f"'source': 'export:{slug}'}}) re-imports it (a dry run unless "
-                "'dry_run': False)."
+                f"and put(kind='pcb', id='<new-slug>', args={{'op': 'fork', "
+                f"'from': '{slug}'}}) copies the board losslessly."
             )
         listing = "\n".join(sorted(exported.files))
         return Response(body=head + "\n\n```\n" + listing + "\n```")

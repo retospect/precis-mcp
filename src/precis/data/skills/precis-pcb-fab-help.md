@@ -6,7 +6,7 @@ summary: take a routed pcb design to fabrication — the export views (bom/cpl/n
 answers:
   - how do I export gerbers / a BOM / a CPL / a DSN from a pcb design?
   - how do I export a board to EasyEDA Pro and check the file is right?
-  - how do I download or re-import a board's .epro2 export?
+  - how do I download a board's .epro2 export, or copy a board?
   - how do I order a board at JLCPCB (view='fab', op='order')?
   - how do I check BOM stock and lifecycle before ordering (view='availability')?
   - how do I hand board outline + heights to a cad enclosure?
@@ -132,15 +132,20 @@ browser: it rebuilds the same bytes on request, and answers 409 once the
 board has changed. Agents cannot fetch web UI paths (401); hand the path
 to the human. The board page links the same download.
 
-Re-import a board's own export into a new board, server-side:
+Copy a board — `op='fork'`, not a re-import:
 
 ```python
-put(kind="pcb", id="s-copy", args={"op": "import_epro", "source": "export:s"})
+put(kind="pcb", id="s-copy", args={"op": "fork", "from": "s"})
 ```
 
-It is a dry run (counts, stackup, every warning) unless `'dry_run':
-False`. The target slug must be new. The source can only be an existing
-board's export: a real `.epro2` file is imported with the CLI
+`fork` is the lossless copy: every pcb table row (parts with
+LCSC/footprint/poses, pins, all nets — single-pin ones included —,
+routed copper, vias, zones, stackup, rules) in one transaction, with
+`derived-from` provenance and the source untouched.
+`args={'dry_run': True}` reports the per-table counts without writing.
+`op='import_epro'` refuses a board source — the .epro2 round-trip drops
+part/LCSC fields, routed copper and sub-2-pin nets. It is for EasyEDA
+interop only: a real `.epro2` file imports with the CLI
 (`precis pcb import-epro`, see [[precis-pcb-help]]).
 
 ## Check the BOM is still buyable — `view='availability'` (the EOL sweep)
