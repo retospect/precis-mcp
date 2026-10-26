@@ -13,6 +13,10 @@ requests is suppressed; after that it can re-fire. So "same old advice"
 naturally dampens out, but persistent conditions resurface on schedule.
 
 Hints are non-breaking. Breaking hints live on `PrecisError.next`.
+Required supersede receipts are emitted only on link/edit/put/tag, bypass
+advice caps and cooldown, and deduplicate within the request. They remain in
+the hint footer even on a failed call. Reads retain the ordinary cooled-down
+"was merged into" note in the footer instead of the write receipt.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 HintLevel = Literal["tip", "info", "warn"]
@@ -36,19 +40,19 @@ class Hint:
     topic: str  # dedup key; dotted preferred ('cache.stale')
     level: HintLevel = "tip"
     cooldown: int = 10  # suppress if topic shown within N requests
+    required: bool = False  # operation receipts bypass advice caps/cooldowns
+    read_text: str | None = None  # ordinary advice alternative on read requests
 
 
 def merged_redirect_hint(old: str, new: str) -> Hint:
     """Non-breaking nudge after a merged/superseded ref transparently
     redirected to its live survivor (handle outliving a dedup)."""
     return Hint(
-        text=(
-            f"{old} was merged into {new} — it still resolved, but please "
-            f"update your reference to {new} going forward. Sorry for the "
-            "trouble."
-        ),
+        text=f"resolved {old} -> {new} (superseded)",
         topic=f"handle.redirect.{old}",
         level="info",
+        required=True,
+        read_text=f"{old} was merged into {new} — please use that handle going forward.",
     )
 
 
@@ -112,10 +116,13 @@ class HintBus:
         self._req: int = 0
         self._max = max_per_response
         self._pending: ContextVar[list[Hint]] = ContextVar("precis_hints")
+        self._verb: ContextVar[str | None] = ContextVar(
+            "precis_hint_verb", default=None
+        )
         self._lock = threading.Lock()
 
     @contextmanager
-    def request(self) -> Iterator[int]:
+    def request(self, *, verb: str | None = None) -> Iterator[int]:
         """Open a request scope. Hints emitted inside are collected here.
 
         Yields the monotonically increasing request id (useful for tests
@@ -124,22 +131,34 @@ class HintBus:
             self._req += 1
             req = self._req
         token = self._pending.set([])
+        verb_token = self._verb.set(verb)
         try:
             yield req
         finally:
+            self._verb.reset(verb_token)
             self._pending.reset(token)
 
     def emit(self, hint: Hint) -> None:
         """Append a hint to the current request's collector. No-op outside
         a request scope (so module-import-time emissions don't leak)."""
+        if hint.required and self._verb.get() not in {"link", "edit", "put", "tag"}:
+            if hint.read_text is None or self._verb.get() not in {
+                None,
+                "get",
+                "search",
+            }:
+                return
+            hint = replace(hint, text=hint.read_text, required=False)
         try:
             self._pending.get().append(hint)
         except LookupError:
             return
 
-    def collect(self) -> list[Hint]:
-        """Drain pending hints, dedup by topic, cap, record into recent ring.
+    def collect(self, *, required_only: bool = False) -> list[Hint]:
+        """Drain pending hints; dedup by topic and cap/cool down advice only.
 
+        Failed calls use ``required_only``: discarded advice must not enter
+        the recent ring because the caller never saw it.
         Idempotent within a single request scope (calling collect() twice
         returns the same set the first time, then an empty list)."""
         try:
@@ -157,16 +176,28 @@ class HintBus:
         if current_scope() == "read":
             pending[:] = [h for h in pending if not is_write_call(h.text)]
         out: list[Hint] = []
+        seen: set[str] = set()
+        advice_count = 0
         with self._lock:
             req = self._req
             for h in pending:
-                if self._recently_shown_locked(h.topic, h.cooldown, req):
+                if required_only and not h.required:
                     continue
+                dedup_request = h.required or h.read_text is not None
+                if dedup_request and h.topic in seen:
+                    continue
+                if not h.required:
+                    if advice_count >= self._max or self._recently_shown_locked(
+                        h.topic, h.cooldown, req
+                    ):
+                        continue
+                    advice_count += 1
                 out.append(h)
-                if len(out) == self._max:
-                    break
+                if dedup_request:
+                    seen.add(h.topic)
             for h in out:
-                self._recent.append((h.topic, req))
+                if not h.required:
+                    self._recent.append((h.topic, req))
         # Clear pending so a second call returns []
         pending.clear()
         return out

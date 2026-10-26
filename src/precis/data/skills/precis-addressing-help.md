@@ -45,8 +45,14 @@ chunk), never a bare id.
 When two refs are found to be duplicates (paper dedup) or a memory is
 consolidated, the loser is soft-deleted and stamped `meta.superseded_by =
 <survivor>`. Its handle still works: `get(id='pa36264')` or `link=` on a merged
-handle **transparently resolves to the survivor** and returns a note like
-*"pa36264 was merged into pa44457 — please use that handle going forward."*
+handle **transparently resolves to the survivor**. Write calls (`link`, `edit`,
+`put`, `tag`) return a hint-footer receipt once per request:
+`[info] resolved pa36264 -> pa44457 (superseded)`.
+Reads retain the ordinary cooled-down footer note:
+`[info] pa36264 was merged into pa44457 — please use that handle going forward.`
+The payload stays first, including machine views. `delete` on a superseded
+handle refuses and names the survivor's explicit delete call; it never retires
+the survivor by following the stale address.
 Nothing breaks, but take the hint: update your stored reference to the survivor
 handle so you stop carrying the stale one. This is one universal behavior across
 every kind — there is no per-kind variant to learn.

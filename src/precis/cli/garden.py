@@ -19,6 +19,10 @@ acts:
   merge from the reversal record on the loser (``meta.garden_merge``),
   or delete the edge a relink wrote (``links.meta.garden_relink``,
   ids ``garden-relink:…``).
+* ``precis garden restore <slug-or-id>`` — revive a superseded paper
+  without reversing migrated content. This operator-only CLI resolves the
+  original row, bypassing redirects; garden merges must use ``undo`` so
+  their recorded link reversal stays intact.
 * ``precis garden review [--per-day N] [--min-age-days N]`` — the
   sampled reviewer burn-down: a frontier-tier model verdict on the
   oldest open proposals, recorded as non-terminal ``garden-reviewer``
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 
 from precis.cli._common import resolve_dsn
@@ -86,6 +91,19 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             help="Actor recorded on the verdict/merge (default: $USER).",
         )
         sp.add_argument("--dsn", default=None, help="Database URL override.")
+
+    restore = gp.add_parser(
+        "restore", help="Restore a superseded paper without moving content back."
+    )
+    restore.add_argument(
+        "ref", metavar="slug-or-id", help="Cite key, pa handle or ref id."
+    )
+    restore.add_argument("--by", default=None, help="Recorded actor (default: $USER).")
+    restore.add_argument("--dsn", default=None, help="Database URL override.")
+    restore.add_argument("--reason", default=None, help="Reason for restoration.")
+    restore.add_argument(
+        "--dry-run", action="store_true", help="Validate without writes."
+    )
 
     rev = gp.add_parser(
         "review",
@@ -202,6 +220,86 @@ def _undo(args: argparse.Namespace, store: Store) -> None:
     )
 
 
+def _restore(args: argparse.Namespace, store: Store) -> None:
+    from precis.store.revision_context import revision_context
+
+    address = args.ref.strip()
+    numeric = re.fullmatch(r"(?:pa)?([0-9]+)", address)
+    scope = (
+        "retired_at, meta.superseded_by and meta.dedup cleared; "
+        "incoming supersedes edges removed. Identifiers, body/PDF, "
+        "bibliography references and ordinary links are not moved back; "
+        "audit history is preserved."
+    )
+    with (
+        revision_context(
+            args.reason,
+            actor=_actor(args),
+            trust_origin="human",
+            trust_actor_type="operator",
+        ),
+        store.tx() as conn,
+    ):
+        # Resolve and lock the original row together: normal handle resolution
+        # follows the redirect and would restore the winner instead.
+        row = conn.execute(
+            "SELECT r.ref_id, r.kind, r.retired_at, r.meta FROM refs r WHERE "
+            + (
+                "r.ref_id = %s"
+                if numeric
+                else "r.kind = 'paper' AND EXISTS ("
+                "SELECT 1 FROM ref_identifiers i WHERE i.ref_id = r.ref_id "
+                "AND i.id_kind = 'cite_key' AND i.id_value = %s)"
+            )
+            + " FOR UPDATE OF r",
+            (int(numeric[1]) if numeric else address,),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"no paper ref for {address!r}")
+        ref_id, kind, retired_at, meta = row
+        if kind != "paper":
+            raise BadInput(f"ref {ref_id} is {kind}, not paper")
+        handle = f"pa{ref_id}"
+        # Validate even on dry runs; the store repeats this guard for callers
+        # that enter through other operator paths.
+        if "garden_merge" in meta:
+            record = meta["garden_merge"]
+            merge_id = (
+                record.get("merge_id", "<merge-id>")
+                if isinstance(record, dict)
+                else "<merge-id>"
+            )
+            raise BadInput(
+                f"{handle} has a garden merge reversal record",
+                next=f"precis garden undo {merge_id}",
+            )
+        if retired_at is None:
+            print(f"no change: {handle} is already live.")
+            return
+        if meta.get("superseded_by") is None:
+            raise BadInput(
+                f"{handle} is retired but not superseded",
+                next=f"edit(kind='paper', id='{handle}', "
+                "args={'retire': False, 'reason': '<why>'})",
+            )
+        if args.dry_run:
+            print(f"DRY RUN (no write) — would restore {handle}: {scope}")
+            return
+        store.restore_superseded_ref(ref_id, conn=conn)
+        store.append_event(
+            ref_id,
+            source="garden.restore",
+            event="restored_superseded",
+            payload={
+                "superseded_by": meta["superseded_by"],
+                "reason": args.reason,
+                "actor": _actor(args),
+            },
+            conn=conn,
+        )
+    print(f"restored {handle}: {scope}")
+
+
 def _review(args: argparse.Namespace, store: Store) -> None:
     from precis.graph.garden.reviewer import review_sample
 
@@ -259,6 +357,7 @@ def run(args: argparse.Namespace) -> None:
             "apply": _apply,
             "reject": _reject,
             "undo": _undo,
+            "restore": _restore,
             "review": _review,
             "stats": _stats,
         }[args.garden_cmd](args, store)

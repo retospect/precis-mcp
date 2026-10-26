@@ -9,6 +9,16 @@ Public surface:
     Ref, ChunkRow, Link, Tag, CacheEntry, ChunkInsert  — frozen row types
     Density, CacheFreshness, Namespace, Relation, ActorSlug  — type aliases
 
+Superseded-ref restoration removes only retirement, the merge pointer/dedup
+markers and incoming supersedes edges. Garden merges are refused so their
+reversal records survive for ``precis garden undo`` to restore original links.
+Identifier, content and ordinary-link
+transfers cannot be inferred backwards safely, so they and audit history stay
+put. The raw-id store door locks the loser and sets transaction-local operator
+trust itself; ``precis garden restore`` supplies the operator context and
+resolves the raw loser. No MCP/web restore door is exposed, and the store
+and worker layers never import handlers.
+
 Typing the seam: functions that need only a sliver of the Store take a
 role protocol from :mod:`precis.store.protocols` (import-light, no
 cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed

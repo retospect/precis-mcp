@@ -190,6 +190,37 @@ See [[precis-paper-ref-help]] — identifier repair, `merge_into`,
 `split_body`/`clear_abstract`), `clear_stamp`, and `put` with
 `args={'pdf_url': …}` to attach a legal open copy to a body-less stub.
 
+## Restore a paper that was merged into another ref (operator only)
+
+An operator can make the retired loser independently addressable again:
+
+```
+precis garden restore pa509714 --reason 'wrong merge' --dry-run
+precis garden restore pa509714 --reason 'wrong merge'
+```
+
+Use the loser's `pa` handle or numeric ref id (its retained cite-key slug
+also works). This operator CLI command bypasses the supersede redirect and
+sets human/operator trust inside the transaction. There is no MCP or web
+restore-superseded door; no `args` key grants operator access.
+
+The transaction clears `retired_at`, `meta.superseded_by` and `meta.dedup`,
+removes incoming `supersedes` edges, and records the restoration. A live ref is
+an explicit no-op. Garden-merged refs are refused: use the returned
+`precis garden undo <merge-id>` command to restore their original links.
+A plain retired ref instead uses
+`edit(kind='paper', id='pa509714', args={'retire': False, 'reason': 'undo retirement'})`.
+
+This is a limited un-merge: identifiers, body/PDF, bibliography references and
+ordinary links stay where the merge put them. Audit history stays intact.
+It does not reject a source, refresh from DOI, or move identifiers back.
+
+`edit`, `link`, `put` and `tag` calls that follow a superseded handle announce
+the actual target once in each response's hint footer:
+`[info] resolved pa509714 -> pa512121 (superseded)`.
+Reads keep a cooled-down `was merged into pa512121` note in the footer.
+Deleting a superseded handle refuses and names the survivor's delete call.
+
 ## Get a paper's supplementary information (SI)
 ## The SI / supporting-information PDF is missing — how do I pull it?
 ## Does a search hit in SI text cite the SI or the paper?

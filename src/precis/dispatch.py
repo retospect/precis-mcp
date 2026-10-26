@@ -410,7 +410,7 @@ class Hub:
         """
         self.hints.emit(hint)
 
-    def request_scope(self) -> Any:
+    def request_scope(self, *, verb: str | None = None) -> Any:
         """Open a hint-collection request scope. Use as a context manager.
 
         ``with hub.request_scope(): ...`` — hints emitted inside the
@@ -418,7 +418,7 @@ class Hub:
         verb result. The runtime owns this; handlers shouldn't need
         to call it directly.
         """
-        return self.hints.request()
+        return self.hints.request(verb=verb)
 
 
 # ---------------------------------------------------------------------------

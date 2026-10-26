@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
-from precis.errors import PrecisError
-from precis.hints import Hint, HintBus
+from precis.errors import BadInput, PrecisError
+from precis.hints import Hint, HintBus, merged_redirect_hint
+from precis.response import Response
+from precis.runtime import PrecisRuntime
 
 
 @pytest.fixture
@@ -43,6 +47,107 @@ def test_max_per_response_caps(bus: HintBus) -> None:
             bus.emit(Hint(f"h{i}", topic=f"t{i}"))
         out = bus.collect()
     assert len(out) == 2  # max_per_response
+
+
+def test_failure_does_not_cool_down_unseen_advice(
+    runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def dispatch(verb: str, args: dict[str, Any]) -> Response:
+        nonlocal calls
+        calls += 1
+        runtime.hints.emit(Hint("advice still available", topic="test.failure"))
+        if calls == 1:
+            raise BadInput(
+                "test refusal", next="get(kind='skill', id='precis-overview')"
+            )
+        return Response(body="success")
+
+    monkeypatch.setattr(runtime, "_dispatch_with_retry", dispatch)
+    body, is_error = runtime.dispatch_with_status("edit", {"kind": "paper"})
+    assert is_error
+    assert "advice still available" not in body
+    body, is_error = runtime.dispatch_with_status("edit", {"kind": "paper"})
+    assert not is_error
+    assert "[tip] advice still available" in body
+
+
+def test_advice_keeps_existing_same_request_behavior(bus: HintBus) -> None:
+    with bus.request():
+        bus.emit(Hint("first", topic="same"))
+        bus.emit(Hint("second", topic="same"))
+        assert [hint.text for hint in bus.collect()] == ["first", "second"]
+
+
+def test_redirect_receipts_survive_caps_and_repeat_requests(bus: HintBus) -> None:
+    for _ in range(2):
+        with bus.request(verb="link"):
+            for i in range(4):
+                bus.emit(Hint(f"advice {i}", topic=f"advice.{i}"))
+            # A source and target can resolve the same loser in one call.
+            bus.emit(merged_redirect_hint("pa1", "pa2"))
+            bus.emit(merged_redirect_hint("pa1", "pa2"))
+            bus.emit(merged_redirect_hint("pa3", "pa4"))
+            out = bus.collect()
+        assert [h.text for h in out if h.required] == [
+            "resolved pa1 -> pa2 (superseded)",
+            "resolved pa3 -> pa4 (superseded)",
+        ]
+        assert len([h for h in out if not h.required]) <= 2
+
+
+@pytest.mark.parametrize("verb", [None, "get", "search"])
+def test_reads_keep_cooled_down_merge_advice(bus: HintBus, verb: str | None) -> None:
+    with bus.request(verb=verb):
+        bus.emit(merged_redirect_hint("pa1", "pa2"))
+        bus.emit(merged_redirect_hint("pa1", "pa2"))
+        hints = bus.collect()
+        assert len(hints) == 1
+        assert (
+            hints[0].text
+            == "pa1 was merged into pa2 — please use that handle going forward."
+        )
+        assert not hints[0].required
+    with bus.request(verb=verb):
+        bus.emit(merged_redirect_hint("pa1", "pa2"))
+        assert bus.collect() == []
+
+
+@pytest.mark.parametrize(
+    "view,payload", [("bibtex", "@article{x}"), ("json", '{"id": 2}')]
+)
+def test_machine_reads_keep_payload_first_with_merge_advice(
+    runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch, view: str, payload: str
+) -> None:
+    def dispatch(verb: str, args: dict[str, Any]) -> Response:
+        runtime.hints.emit(merged_redirect_hint("pa1", "pa2"))
+        return Response(body=payload)
+
+    monkeypatch.setattr(runtime, "_dispatch_with_retry", dispatch)
+    body, is_error = runtime.dispatch_with_status(
+        "get", {"kind": "paper", "view": view}
+    )
+    assert not is_error
+    assert body == (
+        f"{payload}\n[info] pa1 was merged into pa2 — please use that handle going forward."
+    )
+
+
+@pytest.mark.parametrize("verb", ["link", "edit", "put", "tag"])
+def test_write_redirect_receipt_is_once_in_footer(
+    runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    def dispatch(verb: str, args: dict[str, Any]) -> Response:
+        runtime.hints.emit(merged_redirect_hint("pa1", "pa2"))
+        runtime.hints.emit(merged_redirect_hint("pa1", "pa2"))
+        return Response(body="write receipt")
+
+    monkeypatch.setattr(runtime, "_dispatch_with_retry", dispatch)
+    for _ in range(2):
+        body, is_error = runtime.dispatch_with_status(verb, {"kind": "paper"})
+        assert not is_error
+        assert body == "write receipt\n[info] resolved pa1 -> pa2 (superseded)"
 
 
 def test_collect_is_idempotent_within_a_request() -> None:

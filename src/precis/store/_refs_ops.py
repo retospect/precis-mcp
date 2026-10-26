@@ -2617,6 +2617,68 @@ class RefsMixin:
                 rowcount = c.execute(sql, (ref_id,)).rowcount
         return rowcount > 0
 
+    def restore_superseded_ref(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+    ) -> bool:
+        """Restore a merge loser; callers must authorize an operator first.
+
+        Invert the tombstone bookkeeping written by ``merge_duplicate``
+        and ``_reconcile_orphan_stub``, not their data transfers. Garden
+        merges must use their full undo path: its record holds the only
+        copy of the original links. Identifiers,
+        body/PDF, ordinary links and audit history stay where the merge put
+        them. Inverse ``superseded-by`` edges are read-time projections.
+        Missing, live and plain-retired refs return False without writes.
+
+        The supplied connection joins the caller's transaction; the explicit
+        transaction/savepoint makes the operation atomic even on autocommit.
+        Trust settings remain local to that transaction, including subsequent
+        operator link repairs on the same connection.
+        """
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            with c.transaction():
+                row = c.execute(
+                    "SELECT retired_at, meta->>'superseded_by', meta FROM refs "
+                    "WHERE ref_id = %s FOR UPDATE",
+                    (ref_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                meta = row[2] or {}
+                if "garden_merge" in meta:
+                    record = meta["garden_merge"]
+                    merge_id = (
+                        record.get("merge_id", "<merge-id>")
+                        if isinstance(record, dict)
+                        else "<merge-id>"
+                    )
+                    raise BadInput(
+                        "garden-merged refs require the recorded full reversal",
+                        next=f"precis garden undo {merge_id}",
+                    )
+                if row[0] is None or row[1] is None:
+                    return False
+                c.execute(
+                    "SELECT set_config('precis.trust_origin', 'human', true), "
+                    "set_config('precis.trust_actor_type', 'operator', true)"
+                )
+                c.execute(
+                    "DELETE FROM links WHERE dst_ref_id = %s "
+                    "AND relation = 'supersedes'",
+                    (ref_id,),
+                )
+                c.execute(
+                    "UPDATE refs SET retired_at = NULL, "
+                    "meta = meta - 'superseded_by' - 'dedup', "
+                    "updated_at = now() "
+                    "WHERE ref_id = %s",
+                    (ref_id,),
+                )
+                return True
+
     def retire_todo_subtree(self, ref_id: int) -> int:
         """Soft-delete a todo and every live ``kind='todo'`` descendant.
         Cascading form of :meth:`retire_ref` for the scheduling

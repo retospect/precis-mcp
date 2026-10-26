@@ -83,6 +83,7 @@ from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis._pagination import RecipeSeed
+    from precis.store.types import ResolvedHandle
 
 log = logging.getLogger(__name__)
 
@@ -1159,7 +1160,7 @@ class DispatchMixin(RuntimeShape):
         pagination applies either way.
         """
         started = time.monotonic()
-        with self.hub.request_scope():
+        with self.hub.request_scope(verb=verb):
             try:
                 if verb not in _VERBS:
                     raise BadInput(
@@ -1261,7 +1262,7 @@ class DispatchMixin(RuntimeShape):
                 self._maybe_add_skill_hint(e, verb, args)
                 self._maybe_add_schema_drift_hint(e)
                 self._maybe_add_kind_skills_hint(e, verb, args)
-                body = self.render_error(e)
+                body = self._render_failure(e)
                 self._record_tool_call(verb, args, body, True, started)
                 return body, True
             except Exception as e:
@@ -1278,10 +1279,10 @@ class DispatchMixin(RuntimeShape):
                 mapped = map_boundary_exception(e)
                 if mapped is not None:
                     self._maybe_add_skill_hint(mapped, verb, args)
-                    body = self.render_error(mapped)
+                    body = self._render_failure(mapped)
                     self._record_tool_call(verb, args, body, True, started)
                     return body, True
-                body = self.render_error(
+                body = self._render_failure(
                     Internal(
                         f"internal error in {verb}: {type(e).__name__} "
                         "(see server log)",
@@ -2160,6 +2161,49 @@ class DispatchMixin(RuntimeShape):
         merged = set(ids) if existing is None else set(existing) & set(ids)
         args["include_ref_ids"] = sorted(merged)
 
+    def _refuse_superseded_delete(self, args: dict[str, Any]) -> None:
+        """Require an explicit survivor address before any destructive redirect.
+
+        Check every original address before normalization (and before a batch
+        can write). Same-row kind conversions are not merges.
+        """
+        if self.store is None:
+            return
+        identifiers = args.get("id")
+        for ident in (
+            identifiers if isinstance(identifiers, (list, tuple)) else [identifiers]
+        ):
+            if not isinstance(ident, str):
+                continue
+            raw = ident.strip()
+            prefix, sep, rest = raw.partition(":")
+            if sep and prefix in self.hub.kinds:
+                raw = rest
+            if raw.startswith("§"):
+                raw = raw[1:]
+            base = handle_registry.normalize(re.split(r"[~/]", raw, maxsplit=1)[0])
+            parsed = handle_registry.parse(base)
+            if parsed is None or parsed[1]:
+                continue
+            resolved = self.store.resolve_handle(base)
+            if resolved is not None:
+                self._check_delete_redirect(base, resolved)
+
+    @staticmethod
+    def _check_delete_redirect(original: str, resolved: ResolvedHandle) -> None:
+        """Check the exact resolution that would rewrite the delete target."""
+        parsed = handle_registry.parse(original)
+        if (
+            parsed is not None
+            and resolved.redirected_from is not None
+            and resolved.ref_id != parsed[2]
+        ):
+            survivor = handle_registry.format_handle(resolved.kind, resolved.ref_id)
+            raise BadInput(
+                f"{original} was merged into {survivor}; delete requires the survivor's handle",
+                next=f"delete(kind={resolved.kind!r}, id={survivor!r})",
+            )
+
     def _dispatch_inner_core(self, verb: str, args: dict[str, Any]) -> Response:
         """Orchestrate one verb call.
 
@@ -2177,7 +2221,9 @@ class DispatchMixin(RuntimeShape):
         # helper. Output stays kind-explicit — this is an *input*
         # convenience that mirrors the canonical ``kind:identifier``
         # grammar already used by ``link=`` / ``unlink=``.
-        self._maybe_split_prefixed_id(args)
+        if verb == "delete":
+            self._refuse_superseded_delete(args)
+        self._maybe_split_prefixed_id(args, verb=verb)
         kind = args.pop("kind", None)
 
         # Broad usability pass 2026-05-30 (#6): when an agent passes a
@@ -3555,6 +3601,13 @@ class DispatchMixin(RuntimeShape):
                 missing.append(name)
         return missing
 
+    def _render_failure(self, err: PrecisError) -> str:
+        """Keep the error envelope first, then any required resolution receipts."""
+        body = self.render_error(err)
+        return body + "".join(
+            f"\n[{h.level}] {h.text}" for h in self.hints.collect(required_only=True)
+        )
+
     def _render(self, response: Response) -> str:
         out = [response.body]
         hints = self.hints.collect()
@@ -3779,7 +3832,9 @@ class DispatchMixin(RuntimeShape):
             return declared
         return public_id != str(ref_id)
 
-    def _maybe_infer_kind_from_handle(self, args: dict[str, Any], ident: str) -> bool:
+    def _maybe_infer_kind_from_handle(
+        self, args: dict[str, Any], ident: str, *, verb: str | None = None
+    ) -> bool:
         """Universal-handle surface dispatch: route a universal handle.
 
         If ``ident`` is a well-formed, resolvable record handle, sets
@@ -3815,6 +3870,10 @@ class DispatchMixin(RuntimeShape):
         resolved = self.store.resolve_handle(normalized)
         if resolved is None:
             return self._maybe_route_unresolved_record_handle(args, normalized, suffix)
+        if verb == "delete":
+            # A merge can commit after preflight. Never rewrite a delete from
+            # this exact resolution without checking it as well.
+            self._check_delete_redirect(normalized, resolved)
         explicit = args.get("kind")
         if explicit is not None and explicit != resolved.kind:
             # A converted ref resolves under its NEW kind
@@ -3957,7 +4016,9 @@ class DispatchMixin(RuntimeShape):
         args["id"] = str(pk) + suffix
         return True
 
-    def _infer_batch_kind(self, args: dict[str, Any], idents: Any) -> None:
+    def _infer_batch_kind(
+        self, args: dict[str, Any], idents: Any, *, verb: str | None = None
+    ) -> None:
         """``get(id=['pc1', 'pc2'])`` with no ``kind=``: infer the kind per
         handle via the single-id path. One shared kind → that kind's batch
         get with the rewritten public ids; mixed kinds → ``BadInput``
@@ -3970,7 +4031,7 @@ class DispatchMixin(RuntimeShape):
         rewritten: list[str] = []
         for ident in idents:
             sub: dict[str, Any] = {"id": ident}
-            self._maybe_split_prefixed_id(sub)
+            self._maybe_split_prefixed_id(sub, verb=verb)
             if sub.get("kind") is None:
                 return
             kinds.append(sub["kind"])
@@ -3985,7 +4046,9 @@ class DispatchMixin(RuntimeShape):
         args["kind"] = distinct[0]
         args["id"] = rewritten
 
-    def _maybe_split_prefixed_id(self, args: dict[str, Any]) -> None:
+    def _maybe_split_prefixed_id(
+        self, args: dict[str, Any], *, verb: str | None = None
+    ) -> None:
         """D1: extract a self-identifying kind from ``id=`` into
         ``args['kind']``.
 
@@ -4004,7 +4067,7 @@ class DispatchMixin(RuntimeShape):
         """
         ident = args.get("id")
         if isinstance(ident, (list, tuple)):
-            self._infer_batch_kind(args, ident)
+            self._infer_batch_kind(args, ident, verb=verb)
             return
         if not isinstance(ident, str):
             return
@@ -4036,7 +4099,7 @@ class DispatchMixin(RuntimeShape):
             # a universal handle (``<2-char code><decimal id>``)
             # self-identifies — resolve it to (kind, public_id) before the
             # bare-slug fallback, so it isn't mis-read as a slug.
-            if self._maybe_infer_kind_from_handle(args, ident):
+            if self._maybe_infer_kind_from_handle(args, ident, verb=verb):
                 return
             # No ``kind:`` prefix and no sigil — try resolving a bare
             # slug (optionally with a ``~selector`` / ``/view``) to its

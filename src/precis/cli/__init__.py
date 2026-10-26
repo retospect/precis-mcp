@@ -15,6 +15,11 @@ consumed externally by ``from precis.cli import X`` should break.
 ``_parse_interval`` resolves on first access, so importing the console
 script does not import :mod:`precis.cli.patent`.
 
+``garden restore`` is the operator-only limited restoration of superseded
+papers: raw loser lookup and human/operator trust share the write transaction.
+It is deliberately absent from MCP/web. Garden merges retain their reversal
+record and require ``garden undo`` to recover the original links.
+
 Memory file coexistence has an explicit ``memory mirror`` namespace. Import
 locks refs and compares saved body/metadata/link state; old cutover sync cannot
 offer that contract because it retires absent files and drops YAML. Export

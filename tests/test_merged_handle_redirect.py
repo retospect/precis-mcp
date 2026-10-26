@@ -75,12 +75,14 @@ def test_link_target_redirects_merged_prefixed(store: Store, hub: Hub) -> None:
     survivor = _seed_paper(store, "survivor2023")
     loser = _seed_paper(store, "loser2023")
     _merge(store, loser, survivor)
-    with hub.request_scope():
+    with hub.request_scope(verb="link"):
         tgt = parse_link_target(f"paper:pa{loser}", store=store)
         assert tgt.ref_id == survivor
         assert tgt.redirected_from is not None
         hints = hub.hints.collect()
-    assert any("merged into" in h.text for h in hints)
+    assert any(
+        h.text == f"resolved pa{loser} -> pa{survivor} (superseded)" for h in hints
+    )
 
 
 def test_link_target_redirects_bare_handle(store: Store) -> None:

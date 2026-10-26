@@ -5,6 +5,13 @@ declares its verb surface via :class:`precis.protocol.KindSpec`; handlers
 register with the :class:`precis.dispatch.Hub` at boot (contract + failure
 modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
+Superseded paper restoration is CLI-only (``precis garden restore``);
+MCP/web handlers expose no restore-superseded write door.
+Superseded-handle resolution on link/edit/put/tag emits a per-call footer
+receipt through the shared hint bus, exempt from advice cooldown/caps because
+it names the ref actually changed. Reads keep a cooled-down merge note in the
+footer. Delete refuses superseded handles before normalization and names the
+survivor's explicit delete call, so a stale address cannot retire its survivor.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace
