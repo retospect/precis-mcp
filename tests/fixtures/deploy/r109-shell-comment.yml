@@ -1,0 +1,13 @@
+# Fixture for tests/test_deploy_split_args.py — the r109 shape (gr519391):
+# an apostrophe inside a `#` comment in a free-form shell block unbalances
+# ansible's split_args, which runs over the string at task-parse time.
+# Mirrors deploy/redeploy-precis.yml's deployed-history task pre-f508f42e0.
+- name: fixture play
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: write a header over existing rows
+      ansible.builtin.shell: |
+        out=/tmp/rows.txt
+        # A SKIP never rewrites the on-disk file's header.
+        printf '# sha %s\n%s\n' "$sha" "$rows" > "$out"

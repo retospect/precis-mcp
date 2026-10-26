@@ -116,6 +116,33 @@
     });
   }
 
+  // gr519469: a stale shown token answers board.svg with a 409 whose text
+  // body the <object> paints raw. When the loaded document isn't the svg
+  // and its text says the board changed, offer a page reload — reloading
+  // just the object would leave the embedded selection manifest stale.
+  const stale = el('pcb-board-stale');
+  if (stale && boardObj) {
+    const staleText = /changed|reload/i;
+    const check = () => {
+      let doc = null;
+      try {
+        doc = boardObj.contentDocument;
+      } catch (_) {
+        doc = null;
+      }
+      const root = doc && doc.documentElement;
+      const text = (doc && doc.body && doc.body.textContent) || '';
+      const bad = !(root && root.localName === 'svg') && staleText.test(text);
+      stale.classList.toggle('hidden', !bad);
+    };
+    check();
+    boardObj.addEventListener('load', check);
+    const reloadBtn = el('pcb-board-reload');
+    if (reloadBtn) {
+      reloadBtn.addEventListener('click', () => window.location.reload());
+    }
+  }
+
   // Flip re-requests the same shown snapshot with flip=1: the bottom view,
   // mirrored, B.* layers on top (gerber_view._FLIPPED_STACK). Selection
   // identity is unchanged, so a selection survives the flip.

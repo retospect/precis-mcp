@@ -213,6 +213,26 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
     assert "board.svg?shown=" in r.text
 
 
+def test_detail_carries_a_stale_board_reload_control(
+    pcb_client, runtime_with_store
+) -> None:
+    """gr519469: a stale shown token answers board.svg with a 409 text body
+    the <object> would paint raw. The page carries a hidden 'board changed —
+    reload' control inside the layout pane that pcb-workbench.js unhides when
+    the loaded document isn't the svg."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    assert 'id="pcb-board-stale" class="hidden' in r.text
+    assert 'id="pcb-board-reload"' in r.text
+    # it sits inside the layout pane, right above the board <object>
+    assert (
+        r.text.index('id="pcb-pane-layout"')
+        < r.text.index('id="pcb-board-stale"')
+        < r.text.index('id="pcb-board-object"')
+    )
+
+
 def test_board_svg_flip_renders_the_bottom_view(pcb_client, runtime_with_store) -> None:
     """``board.svg?flip=1`` is the mirrored bottom view (gerber_view's
     ``_FLIPPED_STACK``): B.* layers paint on top, ``data-side`` marks it."""
@@ -775,7 +795,11 @@ def test_pcb_selection_chat_explicit_apply_and_readonly_history(
     assert 'data-pcb-object="pad:' in svg.text and 'id="pcb-objects"' in svg.text
     assert 'id="pcb-object-choice"' in html.text
     assert 'id="pcb-select-component"' in html.text
-    assert pcb_client.get(f"/pcb/{slug}/board.svg?shown=stale").status_code == 409
+    stale_svg = pcb_client.get(f"/pcb/{slug}/board.svg?shown=stale")
+    assert stale_svg.status_code == 409
+    # gr519469: pcb-workbench.js keys its stale-board reload control on the
+    # 409 body saying the board changed — the text is part of the contract.
+    assert "changed" in stale_svg.text
     assert calls == []
     out = pcb_client.post(
         f"/pcb/{slug}/chat",

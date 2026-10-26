@@ -134,6 +134,15 @@
         <button type="button" data-vp="reset" data-shortcut-label="Reset view" title="reset view (0)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reset</button>
       </span>
     </h2>
+    {# gr519469: a stale shown token answers board.svg with a 409 text body,
+       which the <object> paints raw. pcb-workbench.js unhides this when the
+       loaded document isn't the svg; a page reload re-renders against the
+       current snapshot (the embedded selection manifest is stale too). #}
+    <div id="pcb-board-stale" class="hidden mb-1 flex items-center gap-2 px-1 text-xs text-fg-subtle">
+      board changed since this page loaded —
+      <button type="button" id="pcb-board-reload"
+              class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reload</button>
+    </div>
     <object id="pcb-board-object" type="image/svg+xml"
             data="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}"
             data-base="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}">

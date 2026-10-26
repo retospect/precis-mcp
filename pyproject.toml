@@ -648,6 +648,7 @@ dev = [
     # test fails by name with a stack dump instead of stalling its CI shard
     # until the job's timeout-minutes cancels it anonymously (gr503084).
     "pytest-timeout>=2.4.0",
+    "ansible-core>=2.21.5",
 ]
 
 # autocatpath is release-gated off PyPI past 0.13.0; resolve it from the
@@ -1126,6 +1127,10 @@ module = [
     "agox.*",
     "aiohttp",
     "aiohttp.*",
+    # ansible-core is a deploy-tool dep, never in the project venv;
+    # tests/test_deploy_split_args.py importorskips it.
+    "ansible",
+    "ansible.*",
     "anki",
     "anki.*",
     "autocatpath",
