@@ -142,7 +142,7 @@ def fake_ingest(monkeypatch, store, request):
     calls: list[str] = []
     write_chunks = not getattr(request, "param", False)
 
-    def _ingest(st, path):
+    def _ingest(st, path, *, slug_hint=None):
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
         calls.append(sha)
         ref = st.insert_ref(kind="datasheet", slug=f"ds-{sha[:8]}", title="A datasheet")
@@ -396,7 +396,7 @@ def _mint_with_title(monkeypatch, title: str, *, with_card: bool = False):
     """fake_ingest variant: the minted datasheet carries ``title`` (and a
     ``card_title`` chunk when ``with_card``, so a card rewrite shows)."""
 
-    def _ingest(st, path):
+    def _ingest(st, path, *, slug_hint=None):
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
         ref = st.insert_ref(kind="datasheet", slug=f"ds-{sha[:8]}", title=title)
         with st.pool.connection() as conn:
@@ -559,7 +559,9 @@ def test_a_paper_with_the_same_bytes_is_not_the_datasheet(
         conn.commit()
     # the probe ignores the paper, so the ingest runs; its own dedupe then
     # resolves to the paper, which must not become a part's datasheet
-    monkeypatch.setattr(dp, "_ingest", lambda st, path: (paper.id, False))
+    monkeypatch.setattr(
+        dp, "_ingest", lambda st, path, slug_hint=None: (paper.id, False)
+    )
     store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
     rec = dp.pull(store, "C25900")
     assert rec["reason"] == "ingest_failed:sha_matches_paper"
