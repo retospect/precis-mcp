@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 pillar: memory-graph
 title: Spreadsheet tables — stable row/col ids, TOON patch, formulas, pulls from refs/tables/vendors, pin, charts
 model: opus
@@ -8,7 +8,7 @@ model: opus
 # Spreadsheet tables in drafts
 
 Design settled with Reto in conversation 2026-10-26. Follow-on for BOMs:
-[`bom-tables.md`](bom-tables.md) (depends on slices 1–4 here).
+[`bom-tables.md`](bom-tables.md) (depends on slices 1a–5 here).
 
 ## Motivation / why
 
@@ -66,6 +66,12 @@ declared; there is no separate "dumb" table.
   Crockford base-32 (`0-9a-z` minus `i l o u`), minted at creation,
   checked unique within the table (rows and columns share one pool, so an
   id resolves alone), redrawn on collision, **never reused** after delete.
+- **The first character is a letter other than `p`.** The existing
+  selector grammar already owns `~N`, `~N..M` (digits) and `~pN`, so an
+  id like `4821` or `p123` would be ambiguous. Ids match
+  `[a-hjkmnq-tv-z][0-9a-hjkmnp-tv-z]{3,7}`: 4 characters when minted,
+  6–8 when derived deterministically (BOM rows in `bom-tables.md`, paper
+  tables later).
 - **Order is separate from identity**, as for draft chunks: each row and
   column carries a fractional `pos` key (`precis.utils.fractional`,
   `key_between`). Insert-between mints a key; sort rewrites row keys only.
@@ -76,10 +82,15 @@ declared; there is no separate "dumb" table.
   selector does not parse today. `handle_registry.parse` takes only
   `dc678`, and `parse_link_target` (`src/precis/utils/link_target.py`) then
   splits on the first `:`, so `dc678~r2k7:k5f9` would read as kind
-  `dc678~r2k7`. Inline mentions (`REF_PATTERN` in
-  `src/precis/utils/mentions.py`) accept only `~N`, `~N..M`, `~pN`. Slice
-  1 extends both to accept `<handle>~<sel>` with
-  `sel = id | id.id | id..id`; `.` keeps clear of the `kind:` separator.
+  `dc678~r2k7`. Inline mentions: bare bracketed handles go through
+  `BARE_BRACKET_REF_PATTERN` (`\[[a-z]{2}\d+…\]`, no selector group);
+  `REF_PATTERN` (`kind:id~…`) accepts only `~N`, `~N..M`, `~pN`. Slice 1a
+  extends `handle_registry.parse`, `parse_link_target` and
+  `BARE_BRACKET_REF_PATTERN` (a new optional `sel` group) to accept
+  `<handle>~<sel>` with `sel = id | id.id | id..id`; `.` keeps clear of
+  the `kind:` separator. `[dc678~r2k7.k5f9]` in prose renders as a link to
+  the table chunk with the cell named (web chip, LaTeX `\hyperref` to the
+  table label, docx plain text).
 - **Ranges are read-time selections only.** `~r2k7..as12` (rows between,
   in current order) and `~k5f9..m3qa` (columns) work in `get`/views,
   `drop_rows=` and exports. They are refused in stored references (links,
@@ -115,14 +126,16 @@ back-compat readers.
   names bound to the row's column values only; operators arithmetic +
   comparison + boolean; function whitelist (`abs round min max sqrt log
   exp if_`); attribute access, subscripts, comprehensions and string
-  methods disabled; its power and string-length caps on. Aggregates
+  methods disabled (simpleeval has no switch for attribute access: our
+  `SimpleEval` subclass removes the `ast.Attribute` and
+  `ast.Subscript` node handlers); its power and string-length caps on. Aggregates
   (footer, `view='stats'`) are our own numpy calls, not expressions.
   Formula text can arrive from an agent relaying ingested content, so the
   whitelist is the security boundary: a test feeds known simpleeval
   escape payloads and asserts refusal. Caps on cell count and wall-clock.
 - **Evaluation:** on every write, in dependency order within the table;
-  evaluated values are stored in the rows, so renderers, the numerics
-  index and `plots` read plain values unchanged. Errors (`#DIV/0`, cycle,
+  evaluated values are stored in the rows. (Pulled columns are resolved at
+  read time instead — see §5 "Where pulls resolve".) Errors (`#DIV/0`, cycle,
   `#REF`) are stored as the cell value and named in the reply; they don't
   refuse the edit.
 - **`view='stats'`:** per-column n, mean, std, range, empties; computed on
@@ -142,15 +155,35 @@ A column with `from=` fills from somewhere else. Three sources:
 
 **Internal pulls form a DAG of any depth.**
 
-- Each pulled column writes a `pulls-from` link (column address → source
-  column/ref). Defining a pull that would close a cycle is refused,
-  checked by one recursive query over those links; the error names the
-  loop.
+- **One `pulls-from` link per (table chunk, source table chunk)**, not per
+  column: `links_endpoints_relation_idx` is unique on (src ref, src chunk,
+  dst ref, dst chunk, relation). The link's `meta.columns` lists the
+  column pairs (`[{col, source_col}]`). The cycle check runs at column
+  level over those lists (one recursive query), so A pulling `x` from B
+  while B pulls `y` from A is allowed; a real column loop is refused and
+  the error names it.
+- **No `table:` pull on the same table** (`links_check` forbids a
+  self-link, and it is a formula anyway): refused with a `next=` showing
+  the equivalent `formula=`.
+- `ref:` pulls write no `pulls-from` link; the `ref` column's
+  `tabulates`/`cites` link (§8) already connects the two.
 - Reading evaluates only the needed columns up the DAG, each source table
   read once per request, depth cap 8. Pinned tables and stored vendor
   values are leaves.
 - Deleting a column that others pull from is refused, listing dependents;
   with `force=True` they show `#REF`.
+- **Where pulls resolve.** Today `table_payload`, both `_render_table`s and
+  the figure render read `meta.table` only. Slice 3a adds
+  `resolve_table(chunk, store) -> table` (in `table_pull.py`): stored
+  values + internal pulls resolved + formulas that depend on pulled
+  columns re-evaluated. Every consumer goes through it: `get` views, the
+  LaTeX and docx exporters (via `table_payload`), the web smartdraft, and
+  the figure render's `data["tables"]`. A table with no pulls returns
+  `meta.table` unchanged (no store reads).
+- **The derived `text` and the numerics index hold write-time values.**
+  `text` is regenerated on each write of *this* table with pulls resolved
+  at that moment; it is search text, not the display. Display and export
+  always use `resolve_table`.
 - **Chart freshness must follow the DAG:** a figure's render key includes
   the content hashes of every upstream table, not only the plotted one;
   otherwise a chart misses an upstream change.
@@ -161,7 +194,13 @@ A column with `from=` fills from somewhere else. Three sources:
   `Adapter` protocol (`manufacturer, mpn, description, package,
   datasheet_url, lifecycle, stock, price_breaks[(qty, price)], currency,
   retrieved`) and `may_store: bool` per vendor. Wrap `jlc_api.live_lookup`
-  as the `jlcpcb` adapter. An alias map resolves what users type
+  as the `jlcpcb` adapter: `live_lookup` needs a `Store` (it upserts into
+  `parts`), so `adapters(store=None)` gains an optional store argument,
+  passed by the table refresh path, and the adapter maps the
+  `normalize_api_row` dict (`mfr` → manufacturer, `mfr_part` → mpn,
+  `description`, `package`, `datasheet_url`, `stock`, `price` → price
+  breaks; `basic` kept as an extra) onto `PartRecord`; it reports
+  `configured()` as missing when no store or no JLCPCB credentials. An alias map resolves what users type
   (`LCSC.com`, `lcsc`, `jlcpcb` → `jlcpcb`). A new vendor is one adapter
   class plus an alias line.
 - **Licence ruling (Reto 2026-10-26, option 3):** identity fields
@@ -200,13 +239,21 @@ A `ref` column declares `role`:
 - `role='source'` — the value came from the ref (`pa123`): writes `cites`,
   so it reaches the bibliography and citation review.
 
-Both links carry the cell address in link meta; links are synced on every
-write (row delete removes them).
+**One link per (table chunk, target ref, relation)** — the unique index
+`links_endpoints_relation_idx` allows no more. Its `meta.cells` is the
+list of cell addresses (`['r2k7.k5f9', 'h8n3.k5f9']`) that name the
+target. Every write syncs the lists: a row delete removes only its own
+entries, and the link is deleted when its list empties. The same paper
+cited in two cells is one `cites` link with two cells.
+
+New relations (migration, plus the `Relation` literal in
+`src/precis/store/types.py` and `precis-relations`): `tabulates` (inverse
+`tabulated-in`) and `pulls-from` (inverse `pulled-by`).
 
 ### 9. TOON read, patch and replace
 
 ```text
-{#	k5f9:vendor	m3qa:part	x7d2:qty	p0wc:stock <vendor:stock>	h2r8:unit_price [$] <vendor:price@qty>	t6ne:line_cost =unit_price*qty}
+{#	k5f9:vendor	m3qa:part	x7d2:qty	q0wc:stock <vendor:stock>	h2r8:unit_price [$] <vendor:price@qty>	t6ne:line_cost =unit_price*qty}
 r2k7	jlcpcb	C19077769	100	48210	0.0123	1.23
 h8n3	jlcpcb	C25804	50	912004	0.0008	0.04
 ```
@@ -217,6 +264,12 @@ h8n3	jlcpcb	C25804	50	912004	0.0008	0.04
   `where='stock < 1000'`. `view='table'` (GFM, humans and export),
   `view='formulas'`, `view='stats'`. Every read returns a short content
   hash.
+- **Header grammar is new.** `precis.format.toon` handles the braced
+  header and tab rows (`load` returns dicts keyed by header text);
+  `table_toon.py` parses each header cell (`<id>:<name>`, `[unit]`,
+  `<from>`, `=formula`; a bare name is allowed in patches) and the `#`
+  column on top of that. Values with tabs/newlines use the existing TOON
+  quoting.
 - **Patch:** `edit(id='dc<id>', patch='<toon>')` — any subset of columns
   and rows. Columns match by id or name (unknown → refused, valid names
   listed). Rows match by row id, or by the key column if declared. Empty
@@ -274,8 +327,13 @@ contention.
 
 ### 13. Migration of existing tables
 
-- The 68 authored canonical tables get ids in a one-time pass over
-  `meta.table` (before any link can exist).
+- The 68 authored canonical tables get ids in a one-time **Python** pass
+  (ids are random, so not SQL): a script under `scripts/` that walks
+  `chunk_kind='table'` chunks with `meta ? 'table'`, skips any that
+  already have `columns`, and writes ids + `pos` keys through the store's
+  normal chunk-replace path (DELETE + INSERT). Idempotent, `--dry-run`
+  first; runs before any link can exist. A table the pass missed gets ids
+  on its first write.
 - LaTeX-sourced draft tables with no stored grid convert to a stored grid
   with ids on their first structural or cell edit (Reto 2026-10-26); raw
   LaTeX layout is lost, as structured-enrichment restores spans/rules as
@@ -301,6 +359,11 @@ contention.
 - Ids: inserting, sorting and moving rows/columns never changes an id;
   a link to `dc<id>~r.c` still resolves to the same cell afterward; a
   deleted id never reappears.
+- Minted ids always start with a letter other than `p` (property test
+  over 10k mints); `dc<id>~4821` and `dc<id>~p12` still parse as the
+  existing chunk selectors; `get(id='dc<id>~r2k7.k5f9')` returns the one
+  cell; `[dc<id>~r2k7.k5f9]` in prose renders as a link in web, LaTeX and
+  docx.
 - No tool parameter accepts A1 or a positional row/column number;
   `cell='B3'` is refused with a `next=` showing the id form.
 - TOON: `view='toon'` → `edit(toon=…)` round-trips a table unchanged
@@ -315,16 +378,27 @@ contention.
   the ref is renamed; a 3-level table chain resolves; defining a cyclic
   pull is refused naming the loop; dropping a pulled-from column is
   refused listing dependents.
+- Pull resolution: a LaTeX and a docx export of a table with a `ref:`
+  pull show the ref's current value (not the write-time value in `text`);
+  a figure plotting that table receives resolved values; a `table:` pull
+  on its own table is refused with the `formula=` equivalent; two pulled
+  columns from one source table produce one `pulls-from` link whose
+  `meta.columns` lists both.
+- Formula security: known simpleeval escape payloads (attribute access,
+  subscripts, `__class__`, format strings, huge powers) are refused.
 - Chart: a chart over table A re-renders after a change in table C that A
-  pulls from via B.
+  pulls from via B. `chart=` renders each of `line`, `scatter`, `bar` in
+  both LaTeX and docx export.
 - Vendor: `refresh=True` on a JLCPCB table stores stock/price with the
   refresh date; with JLCPCB unconfigured the refresh lands, keeps old
   values and names the reason; Mouser stock is never written to
   `meta.table` (assert on the stored row) but shows on `live=True` and in
   export with the retrieval line.
 - Links: a `subject` ref column writes `tabulates`, a `source` column
-  writes `cites`; deleting the row removes them; the paper's backlinks
-  show the cell address.
+  writes `cites`; one paper in two cells is one `cites` link with two
+  `meta.cells`; deleting one of those rows leaves the link with one cell,
+  deleting both removes it; the paper's backlinks show the cell
+  addresses.
 - Pinned: after `pin`, a source change does not alter the table's values
   on read; unpin restores current values.
 - A table without `columns`/formulas/pulls renders byte-identically to
@@ -347,8 +421,10 @@ contention.
 - `pyproject.toml` / `uv.lock` — `simpleeval`.
 - `src/precis/render/figure.py` — `chart=` compiler; render key over
   upstream hashes.
-- Migrations: `tabulates` and `pulls-from` relations; id backfill for
-  existing tables.
+- Migrations: `tabulates`/`tabulated-in` and `pulls-from`/`pulled-by`
+  relations; `Relation` literal in `src/precis/store/types.py`.
+- `scripts/` — one-time id backfill (Python, idempotent, `--dry-run`).
+- `src/precis/supply/base.py` `adapters()` gains `store=`.
 - Skills: `precis-draft-rich-content-help`, `precis-draft-reference-help`,
   `precis-relations`, `precis-toon`; new `precis-table-help`.
 - Exporters: caption line for refresh dates; read-time vendor fetch at
@@ -356,16 +432,28 @@ contention.
 
 ## Slices
 
-1. Ids + fractional order + migration pass; address grammar
-   (`~id.id`, `~id..id`); TOON view/patch/replace; structure ops; A1
-   removal.
-2. Formulas, footer aggregates, `view='stats'`.
-3. `ref` columns with `tabulates`/`cites`; internal pulls with DAG and
-   cycle check; `rows_from=`; chart render key over upstream hashes.
-4. Vendor adapter `lookup` + JLCPCB adapter; `vendor:` pulls; refresh and
-   dates; read-time-only columns for no-store vendors.
-5. `pinned` mode.
-6. `chart=`; large-table text summary.
+Each slice ships alone, in order; later slices depend on earlier ones.
+
+- **1a.** Column schema, ids (letter-first rule), fractional order, the
+  Python id backfill; address grammar in `handle_registry.parse`,
+  `parse_link_target`, `BARE_BRACKET_REF_PATTERN`; `cell=` moves to ids
+  (both the A1 string and the `{'row','col'}` dict forms of
+  `parse_cell_address`/`set_cell` go); A1 removal in skills.
+- **1b.** TOON view (filters, content hash), header grammar,
+  `patch=`/`toon=`/`base=`/`dry_run`, structure ops. Needs 1a.
+- **2.** Formulas (simpleeval subclass + escape tests), footer
+  aggregates, `view='stats'`.
+- **3a.** `ref` columns with `tabulates`/`cites` (migration for both new
+  relations), `meta.cells` link sync; internal pulls (`ref:`, `table:`),
+  `pulls-from` with column-level cycle check; `resolve_table` wired into
+  views, exporters and figure render; chart render key over upstream
+  hashes.
+- **3b.** `rows_from=`. Needs 3a.
+- **4.** Vendor `lookup` + `PartRecord` + `may_store` + JLCPCB adapter;
+  `vendor:` pulls; refresh and dates; read-time-only columns for no-store
+  vendors.
+- **5.** `pinned` mode. Needs 3a and 4.
+- **6.** `chart=` (line, scatter, bar); large-table text summary.
 
 ## Open questions / decisions log
 
@@ -378,6 +466,13 @@ convert on first edit; paper tables reserve the address form;
 `kind:` parse, checked in code); ranges read-time only; no lists inside
 addresses; `rows_from=` for refs and other tables' rows; large-table text
 summary above 200 rows.
+
+Decided at readiness review (2026-10-26, from code checks): ids start
+with a letter other than `p` (selector collision); one link per
+(chunk, target, relation) with `meta.cells` (unique index); no same-table
+`table:` pull (self-link check); pulls resolve through `resolve_table` for
+every display/export/render consumer, `text` keeps write-time values;
+slice 1 and 3 split.
 
 Open (non-blocking):
 - The 200-row threshold — tune on real tables.
