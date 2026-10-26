@@ -258,6 +258,7 @@ _SUPPORTED_VIEWS = (
     "ops",
     "pdf_link",
     "tables",
+    "measures",
 )
 
 
@@ -5932,6 +5933,11 @@ class PaperHandler(Handler):
             from precis.handlers._paper_tables import render_tables_view
 
             return render_tables_view(self.store, ref, args=args)
+
+        if view == "measures":
+            from precis.handlers._paper_measures import render_measures_view
+
+            return render_measures_view(self.store, ref)
 
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper

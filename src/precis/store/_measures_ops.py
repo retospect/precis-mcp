@@ -341,6 +341,17 @@ _MEASURE_FROM = (
     "LEFT JOIN refs p ON p.ref_id = m.source_ref_id "
     f"{_REBASE_JOIN}"
 )
+_PAPER_SCOPE_SQL = (
+    "(m.subject_ref_id = %(paper)s OR EXISTS ("
+    "SELECT 1 FROM links al JOIN chunks ac ON ac.chunk_id = al.src_chunk_id "
+    "WHERE al.link_id = m.primary_link_id AND ac.ref_id = %(paper)s))"
+)
+_LIVE_MEASURE_SQL = (
+    "m.superseded_by IS NULL AND "
+    "m.measurand_status IS DISTINCT FROM 'ambiguous' AND "
+    "NOT (m.meta ? 'escalation') AND "
+    "NOT (coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL)"
+)
 #: A row's numeric extent as SQL: a point is [v, v], an interval [low, high], an
 #: upper bound ``<x`` runs from -inf to x and a lower bound from x to +inf.
 _LO_SQL = (
@@ -1952,6 +1963,21 @@ class MeasuresMixin:
             ).fetchall()
         return {int(r[0]) for r in rows}
 
+    def measures_for_paper(self, paper_ref_id: int) -> list[dict[str, Any]]:
+        """Every live output about or anchored in this paper.
+
+        Reuse search's live-row eligibility so the paper view does not
+        present ambiguous, escalated or anchor-lost measured outputs.
+        """
+        rows = self._measure_rows(
+            f"m.direction = 'output' AND {_LIVE_MEASURE_SQL} AND {_PAPER_SCOPE_SQL}",
+            {"paper": paper_ref_id},
+        )
+        by_run = self._conditions_by_run([r["run_key"] for r in rows])
+        for row in rows:
+            row["conditions"] = by_run.get(row["run_key"], [])
+        return rows
+
     def live_measure_count(self, measurand_ref_id: int) -> int:
         """Live (unsuperseded) rows keyed on this one measurand — the
         pin count behind the taxon unit guard (ontology-v2 slice 0b): a
@@ -1973,6 +1999,8 @@ class MeasuresMixin:
         max_si: float | None = None,
         conditions: Sequence[ConditionFilter] = (),
         text: str | None = None,
+        paper_ref_id: int | None = None,
+        serving_ref_id: int | None = None,
         include_all: bool = False,
         scan_cap: int = 5000,
         bound_currency: tuple[str, int | None] | None = None,
@@ -1987,6 +2015,11 @@ class MeasuresMixin:
         :meth:`best_measure`; other tiers stay, marked ``anchor_lost``).
         Scans at most ``scan_cap`` candidate rows (``truncated`` says so).
 
+        Paper and quest scopes match either the subject or the anchoring
+        chunk's paper, so promoting a subject keeps its source discoverable.
+        Quest scope reuses the inbound ``serves`` walk of ``best_measure``;
+        both scopes intersect with each other and all other filters.
+
         ``bound_currency`` is the ``(currency, price_year)`` group the bounds
         are stated in: an explicit ``unit=`` token, exact to the year (a
         NULL year is its own group), or the taxon's currency paired with
@@ -1998,15 +2031,18 @@ class MeasuresMixin:
         where = ["m.direction = 'output'"]
         params: dict[str, Any] = {"cap": scan_cap + 1}
         if not include_all:
-            where += [
-                "m.superseded_by IS NULL",
-                "m.measurand_status IS DISTINCT FROM 'ambiguous'",
-                "NOT (m.meta ? 'escalation')",
-                "NOT (coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL)",
-            ]
+            where.append(_LIVE_MEASURE_SQL)
         if measurand is not None:
             where.append("m.measurand_ref_id = ANY(%(cover)s)")
             params["cover"] = self._measurand_cover(measurand)
+        if paper_ref_id is not None:
+            where.append(_PAPER_SCOPE_SQL)
+            params["paper"] = paper_ref_id
+        if serving_ref_id is not None:
+            where.append(
+                "(m.subject_ref_id = ANY(%(serving)s) OR at_.ref_id = ANY(%(serving)s))"
+            )
+            params["serving"] = sorted(self._serving_subjects(serving_ref_id))
         if include_all and (min_si is not None or max_si is not None):
             # a re-based legacy row's stored numbers are in the old unit (see
             # _si_normalise); the SQL range test would compare them as SI. Its
@@ -2030,7 +2066,7 @@ class MeasuresMixin:
                 f"OR at_.text ILIKE %(w{i})s)"
             )
             params[f"w{i}"] = f"%{esc}%"
-        if (text or "").strip():
+        if (text or "").strip() or serving_ref_id is not None:
             # Anchor text = the chunk the measure was quantified by
             # (primary_link_id → links.src_chunk_id → chunks).
             from_ += (

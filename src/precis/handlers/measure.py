@@ -48,7 +48,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _measure_render as render
 from precis.handlers._eye import is_eye_view
 from precis.handlers._measure_write import RunParser, flag_lines
-from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
+from precis.protocol import ArgsSpec, Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store._measures_ops import ANY_YEAR, ConditionFilter
 from precis.store._salience import current_background_actor
@@ -62,6 +62,7 @@ from precis.taxonomy.measure_units import (
 )
 from precis.taxonomy.money import row_currency, split_currency
 from precis.utils import handle_registry
+from precis.utils.slug_ref import resolve_live_slug_ref
 
 _DEFAULT_PAGE_SIZE = 20
 
@@ -128,6 +129,10 @@ def _utc(when: datetime | None) -> str:
 
 
 class MeasureHandler(Handler):
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "search": ArgsSpec({"paper", "serves"}),
+    }
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="measure",
         title="Measure",
@@ -349,16 +354,48 @@ class MeasureHandler(Handler):
         a = r["anchor"]
         if a is None:
             if r["tier"] == "measured":
-                return "anchor: LOST (the anchoring chunk or paper was deleted)"
-            return "anchor: none"
-        paper = handle_registry.format_handle(a["kind"], a["paper_ref_id"])
-        chunk = (
-            handle_registry.try_format(a["kind"], a["chunk_id"], chunk=True)
-            or f"chunk {a['chunk_id']}"
-        )
-        span = f" {r['anchor_scheme']}: {r['span']}" if r["anchor_scheme"] else ""
-        title = f" {a['title']}" if a["title"] else ""
-        return f"anchor: {paper}{title} · {chunk} ·{span}"
+                line = "anchor: LOST (the anchoring chunk or paper was deleted)"
+            else:
+                line = "anchor: none"
+        else:
+            paper = handle_registry.format_handle(a["kind"], a["paper_ref_id"])
+            chunk = (
+                handle_registry.try_format(a["kind"], a["chunk_id"], chunk=True)
+                or f"chunk {a['chunk_id']}"
+            )
+            span = f" {r['anchor_scheme']}: {r['span']}" if r["anchor_scheme"] else ""
+            title = f" {a['title']}" if a["title"] else ""
+            line = f"anchor: {paper}{title} · {chunk} ·{span}"
+
+        lines = [line]
+        meta = r.get("meta") or {}
+        table = meta.get("table")
+        if isinstance(table, dict):
+            chunk_id = table.get("chunk")
+            table_chunk = (
+                handle_registry.try_format(
+                    a["kind"] if a else "paper", chunk_id, chunk=True
+                )
+                if isinstance(chunk_id, int)
+                else None
+            )
+            lines.append(
+                f"table: T{table.get('table') or '?'} · {table_chunk or '?'} "
+                f"row {table.get('row')} col {table.get('col')} "
+                f'"{table.get("header") or ""}"'
+            )
+        if transform := meta.get("transform"):
+            printed = meta.get("printed_value")
+            transform_line = f"transform: {transform}"
+            if printed is not None:
+                printed_text = (
+                    format_number(printed)
+                    if isinstance(printed, (int, float))
+                    else str(printed)
+                )
+                transform_line += f" (printed {printed_text})"
+            lines.append(transform_line)
+        return "\n".join(lines)
 
     # ── put: one run ─────────────────────────────────────────────────
 
@@ -543,6 +580,33 @@ class MeasureHandler(Handler):
 
     # ── search ───────────────────────────────────────────────────────
 
+    def _scope_ref(self, raw: Any, kind: str) -> int:
+        """Resolve a scope without letting a foreign kind widen the search."""
+        key = "paper" if kind == "paper" else "serves"
+        hint = f"search(kind='measure', args={{'{key}': '{kind}:<id>'}})"
+        if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+            raise BadInput(f"{kind} scope needs a handle or id", next=hint)
+        text = str(raw).strip()
+        if text.startswith(f"{kind}:"):
+            text = text[len(kind) + 1 :]
+        if text.isdigit():
+            ref = self.store.get_ref(kind=kind, id=int(text))
+            if ref is not None:
+                return ref.id
+        else:
+            resolved = self.store.resolve_handle(text)
+            if (
+                resolved is not None
+                and resolved.kind == kind
+                and resolved.chunk_id is None
+            ):
+                return resolved.ref_id
+            if kind == "paper" and handle_registry.parse(text) is None:
+                return resolve_live_slug_ref(
+                    self.store, kind=kind, id=text, next_hint=hint
+                ).id
+        raise NotFound(f"no live {kind} for scope {raw!r}", next=hint)
+
     def search(
         self,
         *,
@@ -554,6 +618,7 @@ class MeasureHandler(Handler):
         status: str | None = None,
         page: int = 1,
         page_size: int = _DEFAULT_PAGE_SIZE,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         if status not in (None, "all", "live"):
@@ -576,10 +641,21 @@ class MeasureHandler(Handler):
                 next="swap min=/max=, or drop one bound",
             )
         conditions, text = parse_query(q)
-        if taxon_id is None and not conditions and not text:
+        scopes = args or {}
+        paper = self._scope_ref(scopes["paper"], "paper") if "paper" in scopes else None
+        serving = (
+            self._scope_ref(scopes["serves"], "quest") if "serves" in scopes else None
+        )
+        if (
+            taxon_id is None
+            and not conditions
+            and not text
+            and paper is None
+            and serving is None
+        ):
             raise BadInput(
                 "search(kind='measure') needs property=, or q= with condition terms "
-                "or subject words",
+                "or subject words, or args={'paper': ...} / {'serves': ...}",
                 next="search(kind='measure', property='measurand/faradaic-efficiency', "
                 "min=90, unit='%', q='product=NH3')",
             )
@@ -591,6 +667,8 @@ class MeasureHandler(Handler):
             max_si=max_si,
             conditions=conditions,
             text=text or None,
+            paper_ref_id=paper,
+            serving_ref_id=serving,
             include_all=status == "all",
             bound_currency=self._bound_currency(unit, taxon_meta),
         )
@@ -599,6 +677,10 @@ class MeasureHandler(Handler):
         page = page if page >= 1 else 1
         shown = rows[(page - 1) * size : page * size]
         head = self._header(len(rows), taxon_meta, min, max, unit, q, status)
+        if paper is not None:
+            head += f" · paper: {handle_registry.format_handle('paper', paper)}"
+        if serving is not None:
+            head += f" · serves: {handle_registry.format_handle('quest', serving)}"
         if not rows:
             return Response(body=head)
         lines = [head, *(render.result_line(r, unit=unit) for r in shown)]

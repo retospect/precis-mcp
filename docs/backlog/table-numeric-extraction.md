@@ -457,44 +457,6 @@ Tests: `tests/test_extract_recipes.py` (pure, AC 1–4), additions to
 `tests/test_survey_extract_job.py` (dev DB plus stubbed router via
 `tests/extract_helpers.py`, AC 3–6).
 
-## Slice 3 — paper- and quest-scoped measure reads
-
-- `search(kind='measure', …, args={'paper': <handle|id>})` keeps rows
-  whose `subject_ref_id` is the paper or whose anchor chunk belongs to
-  it (a row promoted later by T3 stays findable).
-  `args={'serves': 'quest:<id>'}` keeps rows whose subject or anchor
-  paper serves the quest. That is the same inbound-`serves` walk
-  `best_measure(serving=)` uses, so reuse it rather than writing a
-  second one. Both relax the "needs property= or q=" rule, so
-  `search(kind='measure', args={'serves': 'quest:500066'})` lists the
-  quest's numbers. Add them as `paper_ref_id` / `serving_ref_id`
-  params on `store/_measures_ops.py::search_measures`. Declare them in
-  `MeasureHandler`'s args spec.
-- `get(kind='paper', id=X, view='measures')` lists the paper's live
-  output measures grouped by `meta.table.table` (then prose), one
-  `render.result_line` each. Add it to `_SUPPORTED_VIEWS`. Slice 1's
-  `view='tables'` count line now reads real counts.
-- `get(kind='measure', id=N)` prints `table: T2 · pc180352 row 1 col 4
-  "Saturation sticking s_rev"` under the anchor line when
-  `meta.table` is set (`handlers/measure.py::_anchor_line`), plus
-  `transform: log10 (printed 13)` when set.
-- Skills: `precis-measure-help` (the table-cell anchor, `meta.table`,
-  `transform`, the new args, the recipe pass), `precis-paper-help`
-  (`view='measures'`).
-
-### Slice 3 acceptance
-
-1. With slice 2's fixture rows on the dev DB, `search(kind='measure',
-   args={'paper': 'pa…'})` returns exactly that paper's outputs.
-   `args={'serves': 'quest:…'}` returns them for a quest the paper
-   serves and nothing for one it does not. `property=` + `min=` +
-   `args={'serves': …}` compose.
-2. `get(kind='paper', view='measures')` groups rows under `T<n>`.
-   `get(kind='measure')` shows the table line and the transform line.
-
-Tests: additions to `tests/test_measure_kind.py` and
-`tests/test_paper_tables_view.py`.
-
 ## Slice 4 — run it for qu500066 (operation on prod, no code)
 
 1. **Mint the surface-kinetics measurand taxa** under `measurand`

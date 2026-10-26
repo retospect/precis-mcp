@@ -14,9 +14,14 @@ import pytest
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput
+from precis.extract.proposals import VocabEntry
+from precis.extract.recipes import expand_recipe
+from precis.extract.tables import parse_table
+from precis.handlers import _measure_render as render
 from precis.handlers.paper import PaperHandler
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
+from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.utils import handle_registry
 
 _GRID_A = """| Source | sticking prefactor (ML) | rate (s <sup>-1</sup>) |
@@ -483,3 +488,204 @@ def test_tables_args_refused_off_the_tables_view(store: Store) -> None:
         h.get(id=pa, args={"table": 1})
     # The tables view itself still accepts them.
     assert "## T1" in h.get(id=pa, view="tables", args={"table": 1}).body
+
+
+@pytest.fixture
+def paper_measures(store: Store) -> tuple[int, list[int], dict[str, int]]:
+    """Mixed inventory: live and superseded outputs, an input, a flagged
+    table value, promoted subject, and an unanchored prose value."""
+    paper, chunks = _seed_paper(store, slug="tblmeasures03")
+    taxon = store.insert_ref(
+        kind="taxon",
+        slug=None,
+        title="Table coefficient",
+        meta={
+            "name": "Table coefficient",
+            "norm_name": "table coefficient",
+            "slug": "table-coefficient",
+            "definition": "A coefficient.",
+            "aliases": [],
+            "status": "proposed",
+            "canonical_unit": "1",
+        },
+    )
+
+    def spec(
+        literal: str,
+        *,
+        table: int | None = None,
+        subject: int = paper,
+        ambiguous: bool = False,
+        supersedes: int | None = None,
+    ) -> MeasureSpec:
+        chunk = chunks[2] if table == 1 else chunks[4]
+        return MeasureSpec(
+            measurand_ref_id=taxon.id,
+            subject_ref_id=subject,
+            literal=literal,
+            reported_unit="1",
+            subject="Table material",
+            anchor=MeasureAnchor(paper, chunk, "sentence", "s1") if table else None,
+            meta={
+                "table": {
+                    "chunk": chunk,
+                    "table": table,
+                    "row": 1,
+                    "col": 2,
+                    "header": "coefficient",
+                }
+            }
+            if table
+            else {},
+            measurand_status="ambiguous" if ambiguous else None,
+            supersedes=supersedes,
+        )
+
+    ids: dict[str, int] = {}
+    first = store.insert_measure(
+        spec("3.2", table=1), [spec("1.1", table=1)], actor="reader"
+    )
+    ids["t1"] = first.output_id
+    ids["input"] = first.input_ids[0]
+    old = store.insert_measure(spec("1.1", table=1), [], actor="reader")
+    ids["old"] = old.output_id
+    ids["replacement"] = store.insert_measure(
+        spec("8.0", table=1, supersedes=old.output_id), [], actor="reader"
+    ).output_id
+    material = store.insert_ref(
+        kind="material", slug="promoted-table-material", title="Promoted material"
+    )
+    ids["t2"] = store.insert_measure(
+        spec("12.4", table=2, subject=material.id), [], actor="reader"
+    ).output_id
+    ids["flagged"] = store.insert_measure(
+        spec("12.4", table=2, ambiguous=True), [], actor="reader"
+    ).output_id
+    ids["promoted"] = store.insert_measure(
+        spec("1.1", table=1, subject=material.id), [], actor="reader"
+    ).output_id
+    ids["prose"] = store.insert_measure(spec("1"), [], actor="reader").output_id
+    return paper, chunks, ids
+
+
+def test_measures_view_groups_live_outputs_then_prose(
+    store: Store, paper_measures: tuple[int, list[int], dict[str, int]]
+) -> None:
+    paper, _chunks, ids = paper_measures
+    response = _handler(store).get(id=f"pa{paper}", view="measures")
+    out = response.body
+    assert response.result_count == 5
+    assert out.startswith(f"# pa{paper} — 5 measure(s)")
+    assert out.index("## T1") < out.index("## T2") < out.index("## prose")
+    sections = out.split("## T1\n", 1)[1].split("## T2\n", 1)
+    for key in ("t1", "replacement", "promoted"):
+        assert f"mx{ids[key]} " in sections[0]
+    assert f"mx{ids['t2']} " in sections[1].split("## prose", 1)[0]
+    assert f"mx{ids['flagged']} " not in out
+    assert f"mx{ids['prose']} " in out.split("## prose", 1)[1]
+    assert f"mx{ids['input']} " not in out and f"mx{ids['old']} " not in out
+    lines = [line for line in out.splitlines() if line.startswith("mx")]
+    rows = store.measures_for_paper(paper)
+    assert sorted(lines) == sorted(render.result_line(row) for row in rows)
+    assert "ambiguous measurand" not in out
+
+
+def test_tables_counts_unsuperseded_outputs_including_flagged_and_promoted(
+    store: Store, paper_measures: tuple[int, list[int], dict[str, int]]
+) -> None:
+    paper, _chunks, _ids = paper_measures
+    out = _handler(store).get(id=f"pa{paper}", view="tables").body
+    t1, remainder = out.split("## T1", 1)[1].split("## T2", 1)
+    t2 = remainder.split("## T3", 1)[0]
+    assert "measures: 3 extracted" in t1
+    assert "measures: 2 extracted" in t2
+
+
+def test_measures_view_empty_and_runtime_dispatch(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.store
+    assert store is not None
+    paper, _chunks = _seed_paper(store, slug="tblmeasureempty03")
+    response = _handler(store).get(id=f"pa{paper}", view="measures")
+    assert response.body == f"no measures in pa{paper}"
+    assert response.result_count == 0
+    out = runtime_with_store.dispatch(
+        "get", {"kind": "paper", "id": f"pa{paper}", "view": "measures"}
+    )
+    assert f"no measures in pa{paper}" in out
+    assert "[error:" not in out
+
+
+def test_recipe_outputs_reach_paper_views_and_runtime(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.store
+    assert store is not None
+    paper = store.insert_ref(kind="paper", slug="tblrecipe03", title="Recipe paper")
+    text = "| Site | probability |\n| --- | --- |\n| Ni | 0.42 |\n"
+    (chunk,) = store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text=text, meta={"chunk_kind": "table"})]
+    )
+    taxon = store.insert_ref(
+        kind="taxon",
+        slug=None,
+        title="Probability",
+        meta={
+            "name": "Probability",
+            "norm_name": "probability",
+            "slug": "probability",
+            "definition": "A probability.",
+            "aliases": [],
+            "status": "proposed",
+            "canonical_unit": "1",
+        },
+    )
+    parsed = parse_table(chunk.id, text)
+    assert parsed is not None
+    runs, drops = expand_recipe(
+        parsed,
+        {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "attribution": "own_work",
+                "tier": "measured",
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "probability",
+                        "unit": "1",
+                        "role": "output",
+                    }
+                ],
+            }
+        },
+        chunk_id=chunk.id,
+        caption=None,
+        paper=paper.id,
+        table=1,
+        chunk_text=text,
+        vocab={
+            taxon.id: VocabEntry(
+                ref_id=taxon.id,
+                slug="probability",
+                name="Probability",
+                aliases=(),
+                canonical_unit="1",
+                display_unit="1",
+                required_conditions=(),
+            )
+        },
+    )
+    assert drops == [] and len(runs) == 1
+    (run,) = runs
+    written = store.insert_measure(run.output, run.inputs, actor="reader")
+    out = runtime_with_store.dispatch(
+        "get", {"kind": "paper", "id": f"pa{paper.id}", "view": "measures"}
+    )
+    assert "## T1" in out and f"mx{written.output_id} " in out and "0.42" in out
+    assert "[error:" not in out
+    assert (
+        "measures: 1 extracted" in _handler(store).get(id=paper.id, view="tables").body
+    )

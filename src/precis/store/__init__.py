@@ -65,6 +65,10 @@ candidate query and excludes rejected rows. Historical or stale rejection
 cannot veto a current approval; proposed and unreviewed values retain the
 numeric ordering. The winning row exposes ``review_state`` so consumers can
 distinguish eligible values from approved ones without another ledger read.
+
+Measure paper/quest searches match subjects and anchor-chunk owners so
+promoting a subject does not hide its source evidence. Quest filtering
+shares the recursive inbound ``serves`` closure with measure ranking.
 """
 
 from __future__ import annotations

@@ -377,13 +377,19 @@ well-formed pipe grid renders raw rather than being guessed at.
 `args={'match': 'sticking prefactor'}` keeps tables whose header,
 caption or row labels hold any of the words.
 
+`view='measures'` lists live outputs grouped by table (`T<n>`), then prose,
+using measure search's live-row filters. It matches the paper as subject or anchor
+owner. `view='tables'` counts unsuperseded outputs anchored in each table chunk.
+Read a result with `get(kind='measure', id=…)` for its table-cell anchor.
+
 ```python
 get(kind="paper", id="pa40", view="tables")
 get(kind="paper", id="pa40", view="tables", args={"table": 2})
 get(kind="paper", id="pa40", view="tables", args={"match": "sticking"})
+get(kind="paper", id="pa40", view="measures")
 ```
 
-Views: `abstract`, `toc`, `summaries`, `tables`, `bibtex` (`cite/bib`), `ris`
+Views: `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
 (`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
 (signed download URL for the held PDF — see precis-paper-ref-help). The

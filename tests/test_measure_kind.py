@@ -657,6 +657,37 @@ class TestCensus:
 
 
 class TestSearchMeasures:
+    def test_scopes_include_subject_or_anchor_and_compose(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        subject = seed_ref(store, title="Promoted material", kind="material")
+        promoted = _put(
+            store,
+            w,
+            "bond",
+            "1.4",
+            unit="Å",
+            subject=subject,
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+        )
+        direct = _put(store, w, "bond", "2", unit="Å", subject=w["paper2"])
+        _put(store, w, "bond", "3", unit="Å", subject=w["stray"])
+        assert {
+            r["id"] for r in store.search_measures(serving_ref_id=w["quest"]).rows
+        } == {promoted.output_id, direct.output_id}
+        assert [
+            r["id"] for r in store.search_measures(paper_ref_id=w["paper"]).rows
+        ] == [promoted.output_id]
+        assert [
+            r["id"] for r in store.search_measures(serving_ref_id=w["sub"]).rows
+        ] == [promoted.output_id]
+        assert (
+            store.search_measures(
+                paper_ref_id=w["stray"], serving_ref_id=w["quest"]
+            ).rows
+            == []
+        )
+
     def test_interval_overlap_in_si(self, store: Store, w: dict[str, Any]) -> None:
         for lit in ("0.9", "1.4", "2.1"):
             _put(store, w, "bond", lit, unit="Å")
@@ -833,6 +864,52 @@ def h(store: Store) -> MeasureHandler:
 
 
 class TestSearchHandler:
+    def test_scope_only_and_composed_search(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        wanted = _put(store, w, "bond", "1.4", unit="Å")
+        _put(store, w, "bond", "0.9", unit="Å")
+        _put(store, w, "bond", "2", unit="Å", subject=w["stray"])
+        _put(store, w, "u_l", "2", unit="V")
+        for paper in (w["paper"], str(w["paper"]), f"pa{w['paper']}"):
+            assert h.search(args={"paper": paper}).body.startswith("# 3 measure(s)")
+        assert h.search(args={"serves": f"quest:{w['quest']}"}).body.startswith(
+            "# 3 measure(s)"
+        )
+        unrelated = store.insert_ref(kind="quest", slug=None, title="Unrelated")
+        assert h.search(args={"serves": f"quest:{unrelated.id}"}).body.startswith(
+            "no measures match"
+        )
+        out = h.search(
+            property=str(w["bond"]),
+            min=1,
+            q="Cu NWA",
+            args={"paper": w["paper"], "serves": f"quest:{w['quest']}"},
+        ).body
+        assert out.startswith("# 1 measure(s)") and f"mx{wanted.output_id} " in out
+
+    def test_paper_scope_resolves_cite_key_slug(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        paper = store.insert_ref(
+            kind="paper", slug="smith2020x", title="Cite-key paper"
+        )
+        wanted = _put(store, w, "bond", "1.4", unit="Å", subject=paper.id)
+        _put(store, w, "bond", "2.1", unit="Å")
+        out = h.search(args={"paper": "smith2020x"}).body
+        assert out.startswith("# 1 measure(s)")
+        assert f"mx{wanted.output_id} " in out
+
+    @pytest.mark.parametrize("key", ["paper", "serves"])
+    def test_invalid_scope_never_widens_search(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler, key: str
+    ) -> None:
+        _put(store, w, "bond", "1.4", unit="Å")
+        wrong_kind = f"quest:{w['quest']}" if key == "paper" else f"pa{w['paper']}"
+        for value in (wrong_kind, "nonsense"):
+            with pytest.raises((BadInput, NotFound)):
+                h.search(property=str(w["bond"]), args={key: value})
+
     def test_range_search_with_unit_and_default_display_unit(
         self, store: Store, w: dict[str, Any], h: MeasureHandler
     ) -> None:
@@ -955,6 +1032,18 @@ class TestDispatchSurface:
         assert "unit" in inspect.signature(core.search).parameters
         assert "`unit=`" in (core.search.__doc__ or "")
 
+    def test_scope_args_through_the_verb(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        run = _put(store, w, "bond", "1.4", unit="Å")
+        out = self._text(
+            mounted.search(
+                kind="measure",
+                args={"paper": f"pa{w['paper']}", "serves": f"quest:{w['quest']}"},
+            )
+        )
+        assert f"mx{run.output_id} " in out and "error" not in out.lower()
+
     def test_search_through_the_verb(
         self, store: Store, w: dict[str, Any], mounted: Any
     ) -> None:
@@ -1031,6 +1120,76 @@ class TestGetRow:
                 _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
             ),
         )
+
+    def test_table_cell_and_transform_under_the_anchor(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        run = _put(
+            store,
+            w,
+            "bond",
+            "1.4",
+            unit="Å",
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            meta={
+                "table": {
+                    "chunk": w["chunk"],
+                    "table": 2,
+                    "row": 1,
+                    "col": 4,
+                    "header": "Saturation sticking s_rev",
+                },
+                "transform": "log10",
+                "printed_value": 13,
+            },
+        )
+        out = h.get(id=run.output_id).body
+        table = f'table: T2 · pc{w["chunk"]} row 1 col 4 "Saturation sticking s_rev"'
+        assert table in out
+        assert "transform: log10 (printed 13)" in out
+        assert out.index("anchor:") < out.index(table) < out.index("transform:")
+
+    @pytest.mark.parametrize(
+        ("extra_meta", "expected"),
+        [
+            pytest.param({}, "transform: log10", id="missing-printed-value"),
+            pytest.param(
+                {"printed_value": None}, "transform: log10", id="null-printed-value"
+            ),
+            pytest.param(
+                {"printed_value": 0},
+                "transform: log10 (printed 0)",
+                id="zero-printed-value",
+            ),
+        ],
+    )
+    def test_transform_printed_value_is_optional(
+        self,
+        store: Store,
+        w: dict[str, Any],
+        h: MeasureHandler,
+        extra_meta: dict[str, Any],
+        expected: str,
+    ) -> None:
+        run = _put(
+            store,
+            w,
+            "bond",
+            "1.4",
+            unit="Å",
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            meta={"transform": "log10", **extra_meta},
+        )
+        lines = h.get(id=run.output_id).body.splitlines()
+        assert [line for line in lines if line.startswith("transform:")] == [expected]
+
+    def test_unanchored_row_keeps_no_anchor_rendering(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        run = _put(store, w, "bond", "1.4", unit="Å")
+        out = h.get(id=run.output_id).body
+        assert "anchor: none" in out
+        assert "table:" not in out and "transform:" not in out
 
     def test_renders_everything_a_review_needs(
         self, store: Store, w: dict[str, Any], h: MeasureHandler

@@ -47,6 +47,11 @@ richer newest-in-full / one-liner policy in
 :mod:`precis.handlers._comment_timeline` (the single-``limit`` shape
 can't express it; both kinds share that one implementation).
 
+Paper ``view='measures'`` groups live outputs by their stored table ordinal
+then prose, through the shared measure row renderer. It shares measure
+search's live-row eligibility; table extraction counters include every
+unsuperseded output, even those excluded from the live view.
+
 Memory authoring reuses ``utils.edit_resolve`` for anchored body edits:
 all handler body writes lock the owning ref, and anchored writes also
 compare the previous body with the resolver's snapshot inside the

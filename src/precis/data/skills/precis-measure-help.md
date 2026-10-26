@@ -42,6 +42,10 @@ search(kind="measure", property="measurand/faradaic-efficiency", min=90, unit="%
        q="product=NH3 potential<-0.5 V")
 search(kind="measure", property="tn42", min=1.4, max=2.0, unit="Å")
 search(kind="measure", q="quant=Q4 decode", property="measurand/decode-speed")
+search(kind="measure", args={"paper": "pa40"})  # rows printed in one paper
+search(kind="measure", args={"serves": "quest:500066"})  # papers serving a quest
+search(kind="measure", property="measurand/activation-barrier", min=50,
+       unit="kJ/mol", args={"serves": "quest:500066"})  # filters compose
 get(kind="quest", id=7, view="measures")  # best live value per measurand, one line per group
 ```
 
@@ -55,6 +59,10 @@ handle, chunk handle, scheme and span), the ledger **reviews** newest first
 the supersession chain. The fisheye ladder is `Unsupported`: a measure is a row,
 not a node.
 
+Table-derived anchors also show the logical table, cell row and column, and
+header from `meta.table`. A transformed table value shows its transform and
+printed value (for example, `transform: log10 (printed 13)`).
+
 **`search(kind='measure', …)`** takes:
 
 | arg | meaning |
@@ -63,7 +71,12 @@ not a node.
 | `min=` / `max=` | numbers, in `unit=` (else the taxon's `display_unit`, else SI); converted to SI, then matched by **interval overlap** on low/high (a point is a one-value interval, `<x` reaches down from x, `>x` up). Need `property=` |
 | `unit=` | the unit of `min`/`max` **and of the output**; a unit of another kind than the measurand is refused, naming both. A currency unit (`unit='EUR/t'`, `unit='USD2015/t'`) bounds within that one currency **and price year** only — no year is its own group. With **no** `unit=` the taxon's currency bounds across *every* price year and each row labels its own (`USD(2010)/t`); either way rows in another currency are left out of the range and counted in a footer line |
 | `q=` | condition terms and subject words (below) |
+| `args={'paper': …}` | subject or anchor chunk belongs to this paper; handle, id or cite-key slug |
+| `args={'serves': 'quest:<id>'}` | subject or anchor paper serves the quest, directly or through sub-quests |
 | `status='all'` | also superseded, ambiguous, escalated and anchor-lost rows, each marked; default is live rows only |
+
+These scope args work without `property=` or `q=` and intersect with each
+other, measurand, range and condition filters.
 
 `q=` terms are `name=value`, `name<value`, `name>value` (also `<=`, `>=`),
 matched against the run's input rows by condition name (the row's own
@@ -362,3 +375,10 @@ overturn and a pre-coverage verdict grants nothing.
 paper's governing verdict passed, the row id sits under the mark, and the
 row keeps its anchor — rows carrying no `extraction_run` token are not
 batch rows and stay.
+
+For parsed pipe tables, the pass makes one table-level recipe call and expands
+its series into cell-anchored runs; an unparsed table or unusable recipe falls
+back to per-cell reading. Table outputs and inputs carry `meta.table` cell
+coordinates, header, orientation and caption link. Log-scale series record
+`meta.transform` (`log10` or `ln`), store the transformed value, and retain the
+printed exponent as `meta.printed_value`.
