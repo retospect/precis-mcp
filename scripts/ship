@@ -1661,10 +1661,10 @@ _release_land() {
             fi
         else
             r1="$(git commit-tree "$t_r" -p "$OLD_REL" -F - <<EOF
-${MSG:-release(r${REL_N}): ${subject}}
+$(printf '%s\n' "${MSG:-release(r${REL_N}): ${subject}}" | ship_msg_body)
 
 Release: r${REL_N}; from ${BRANCH} ${head8}
-${CO_AUTHOR}
+$(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR")
 EOF
 )"
         fi
@@ -1887,9 +1887,9 @@ _squash_and_rebase() {
         git reset -q --soft "$mb"
     elif [[ "$n" -gt 1 ]] || [[ -n "$(git rev-list --merges "$mb..HEAD")" ]]; then
         git reset -q --soft "$mb" \
-            && git commit -q --no-verify -m "${MSG}
+            && git commit -q --no-verify -m "$(printf '%s\n' "$MSG" | ship_msg_body)
 
-${CO_AUTHOR}" \
+$(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR")" \
             || die "could not squash ${BRANCH} onto its merge-base."
     fi
     git rebase -q origin/main \
@@ -2167,6 +2167,16 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else
+            # .devin/hooks.v1.json is a generated mirror of
+            # .claude/settings.json — and settings.json is inside the
+            # docs-only set, so an edit without a re-render sails through
+            # either lint branch below. It drifted twice in one day and
+            # reddened release/r106 (gr517403). Host-side, sub-second, no
+            # container — checked before the DOCS_ONLY split on purpose.
+            if [[ -f scripts/gen-devin-hooks && -f .claude/settings.json ]]; then
+                scripts/gen-devin-hooks render --check \
+                    || die ".devin/hooks.v1.json is stale — it is generated from .claude/settings.json. next=scripts/gen-devin-hooks render, then commit the file and re-run scripts/ship."
+            fi
             setup_gate_infra
             if [[ "$DOCS_ONLY" == 1 ]]; then
                 say "pre-qland lint (docs/config-only: doc-pointer · skill-prose · secret-scan · vocab · paper-text tests) — ${GATE_MODE} gate, no gate slot"
@@ -2447,15 +2457,18 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             shipped=1
             break 2
         fi
-        # The `Gate:` trailer (forward-merged lands only) rides above the
-        # Co-Authored-By line so `git log` tells an exact-tested land from a
-        # forward-merged one.
-        TRAILERS="$CO_AUTHOR"
-        [[ -n "$GATE_TRAILER" ]] && TRAILERS="${GATE_TRAILER}"$'\n'"${CO_AUTHOR}"
+        # The branch commit's trailer block lands verbatim (gr517803 —
+        # a Codex/Devin Co-Authored-By used to be dropped and a Claude one
+        # substituted). The `Gate:` trailer (forward-merged lands only)
+        # rides above it so `git log` tells an exact-tested land from a
+        # forward-merged one; the default Co-Authored-By is minted only
+        # when the resolved message claims none.
+        TRAILERS="$(printf '%s\n' "$MSG" | ship_mint_trailers "$GATE_TRAILER" "$CO_AUTHOR")"
+        MSG_BODY="$(printf '%s\n' "$MSG" | ship_msg_body)"
         git merge-base --is-ancestor "$OLD_MAIN" HEAD \
             || die "internal: HEAD lacks OLD_MAIN (${OLD_MAIN:0:8}) — refusing to squash a tree that would revert main. Lock released, nothing pushed. Re-run scripts/ship and report this."
         NEW="$(git commit-tree "$TREE" -p "$OLD_MAIN" -F - <<EOF
-${MSG}
+${MSG_BODY}
 
 ${TRAILERS}
 EOF

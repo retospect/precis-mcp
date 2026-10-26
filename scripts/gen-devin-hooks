@@ -4,7 +4,9 @@
 # see scripts/lib/devin_hooks.py).
 #
 #   scripts/gen-devin-hooks render   # write .devin/hooks.v1.json
-#   scripts/gen-devin-hooks check    # diff a fresh render vs the file
+#   scripts/gen-devin-hooks render --check   # diff only, nothing written —
+#                                          # the --quick ship lint's form
+#   scripts/gen-devin-hooks check    # same verdict (kept spelling)
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec uv run --frozen python "$here/lib/devin_hooks.py" "$@"

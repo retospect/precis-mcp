@@ -48,6 +48,16 @@ if [[ "${PRECIS_AUTO_N:-0}" == "1" ]]; then
             "$count"
         NP_ARGS=(-n0)
     else
+        # gr517934: positional file selections always run exactly the named
+        # files — but a quiet >cap count (789 parametrized tests in the 4
+        # contract files reads as "the whole suite" and three builders
+        # reported silent widening). Say what collected either way.
+        if [[ "$count" =~ ^[0-9]+$ ]]; then
+            printf 'selection as given: %s tests collected — -n6 (over the %s cap; pass -nN to override)\n' \
+                "$count" "${PRECIS_AUTO_N_MAX:-500}"
+        else
+            printf 'selection as given: item count unavailable — -n6\n'
+        fi
         NP_ARGS=(-n6)
     fi
 fi

@@ -252,6 +252,21 @@ def test_directory_selection_keeps_n6_without_count(tmp_path: Path) -> None:
     assert " -n6 " in f" {line} "
 
 
+def test_multi_file_selection_runs_exactly_those_files(tmp_path: Path) -> None:
+    """gr517934: N explicit test-file positionals must reach pytest verbatim —
+    nothing widens to the suite (three builders read a large parametrized
+    count as "the whole suite" because the >cap path printed nothing). The
+    caller's args are the last words of the compose run vector, so an exact
+    tail match proves no widening was appended or substituted."""
+    files = ("tests/a.py", "tests/b.py", "tests/c.py", "tests/d.py")
+    rc, log, stderr = _run(tmp_path, args=files, files=files)
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert line.rstrip().endswith(" ".join(files)), line
+    # all-files selection still counts for the auto -n0/-n6 decision
+    assert " -e PRECIS_AUTO_N=1 " in f" {line} "
+
+
 def test_missing_path_argument_is_refused(tmp_path: Path) -> None:
     """A positional arg that names no file is refused before any container
     (gr514948) - the auto -n0 heuristic never sees a mistyped path."""

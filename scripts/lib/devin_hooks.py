@@ -10,9 +10,11 @@ generated mirror. ``.devin/config.json`` cannot host it — that file is a
 per-worktree generated authority file (scripts/lib/fleet_authority.py),
 gitignored and deny-listed.
 
-Subcommands: ``render`` (write .devin/hooks.v1.json), ``check`` (diff a
-fresh render against the checked-in file). tests/test_devin_hooks.py runs
-``check`` so the mirror cannot drift.
+Subcommands: ``render`` (write .devin/hooks.v1.json), ``check`` /
+``render --check`` (diff a fresh render against the checked-in file,
+exit 1 with a ``next=`` line on drift). tests/test_devin_hooks.py and the
+``scripts/ship --quick`` pre-qland lint run the check so the mirror cannot
+drift past a land (gr517403).
 
 What the transform does:
 
@@ -187,15 +189,22 @@ def render(settings: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("cmd", choices=("render", "check"))
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="render in memory and diff against the committed file "
+        "(same verdict as the 'check' subcommand; nothing is written)",
+    )
     args = parser.parse_args(argv)
+    shown = OUT.relative_to(REPO) if OUT.is_relative_to(REPO) else OUT
     fresh = render(load())
-    if args.cmd == "render":
+    if args.cmd == "render" and not args.check:
         OUT.write_text(fresh, encoding="utf-8")
-        print(f"wrote {OUT.relative_to(REPO)}")
+        print(f"wrote {shown}")
         return 0
     have = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
     if have == fresh:
-        print(f"{OUT.relative_to(REPO)} is up to date")
+        print(f"{shown} is up to date")
         return 0
     sys.stdout.writelines(
         difflib.unified_diff(
@@ -205,7 +214,10 @@ def main(argv: list[str] | None = None) -> int:
             "fresh render",
         )
     )
-    print("stale: run scripts/gen-devin-hooks render", file=sys.stderr)
+    print(
+        f"stale {shown} — next=scripts/gen-devin-hooks render",
+        file=sys.stderr,
+    )
     return 1
 
 

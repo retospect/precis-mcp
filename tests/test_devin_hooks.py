@@ -53,3 +53,23 @@ def test_dropped_claude_events_are_not_in_devin_events() -> None:
     source_events = set(dh.load()["hooks"])
     data = _parse(dh.OUT)
     assert set(data) == source_events & dh.DEVIN_EVENTS
+
+
+def test_render_check_is_the_check_verdict(tmp_path: Path, monkeypatch) -> None:
+    """`render --check` is the --quick lane's spelling: fresh mirror exits 0
+    and writes nothing; a stale one exits 1 and names the render command
+    (gr517403)."""
+    out = tmp_path / "hooks.v1.json"
+    monkeypatch.setattr(dh, "OUT", out)
+    out.write_text(dh.render(dh.load()), encoding="utf-8")
+    assert dh.main(["render", "--check"]) == 0
+    out.write_text("{}\n", encoding="utf-8")
+    assert dh.main(["render", "--check"]) == 1
+
+
+def test_check_names_the_render_command(tmp_path: Path, monkeypatch, capsys) -> None:
+    out = tmp_path / "hooks.v1.json"
+    monkeypatch.setattr(dh, "OUT", out)
+    out.write_text("{}\n", encoding="utf-8")
+    assert dh.main(["check"]) == 1
+    assert "next=scripts/gen-devin-hooks render" in capsys.readouterr().err

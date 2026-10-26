@@ -388,6 +388,104 @@ def test_checked_lost_race_trailer_names_the_selection(rig: Rig) -> None:
     ), msg
 
 
+def _ship_no_m(rig: Rig, wt: Path, *flags: str) -> tuple[int, str]:
+    """A --quick-family ship that resolves its message from the branch
+    commit (rig.ship always passes -m)."""
+    log = rig.root / f"{wt.name}.log"
+    fh = log.open("w", encoding="utf-8")
+    proc = subprocess.run(
+        [_BASH, "scripts/ship", *flags],
+        cwd=wt,
+        env={**rig.env, "PRECIS_FAKE_LINT_SLEEP": "1"},
+        stdout=fh,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    fh.close()
+    return proc.returncode, log.read_text(encoding="utf-8")
+
+
+def test_quick_ship_keeps_the_branch_commit_footer(rig: Rig) -> None:
+    """gr517803: the squash used to drop a non-Claude builder's trailers and
+    substitute a Claude footer (Codex's 98aee0098 landed as d3c1217f5 with
+    "Co-Authored-By: Claude"). Kept trailers land verbatim."""
+    wt = rig.worktree("trail", {"t.txt": "t\n"})
+    rig.g(
+        wt,
+        "commit",
+        "-q",
+        "--amend",
+        "-m",
+        "fix(ship): keep the author footer\n\n"
+        "Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+        "Claude-Session: none (Devin builder, GRIPE_FIX fleet)",
+    )
+    rc, out = _ship_no_m(rig, wt, "--quick")
+    assert rc == 0, out
+    msg = rig.g(rig.origin, "log", "-1", "--format=%B", "refs/heads/main")
+    assert "Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>" in msg
+    assert "Claude-Session: none (Devin builder, GRIPE_FIX fleet)" in msg
+    # and no substitute footer was minted on top (rig sets PRECIS_CO_AUTHOR)
+    assert "Co-Authored-By: Test <t@example.invalid>" not in msg
+
+
+def test_quick_ship_mints_the_fallback_footer_only_when_absent(rig: Rig) -> None:
+    """The control: a trailerless branch commit still gets the session
+    footer (PRECIS_CO_AUTHOR in the rig is Test <t@example.invalid>)."""
+    wt = rig.worktree("notrail", {"n.txt": "n\n"})
+    rig.g(wt, "commit", "-q", "--amend", "-m", "fix(ship): no trailer at all")
+    rc, out = _ship_no_m(rig, wt, "--quick")
+    assert rc == 0, out
+    msg = rig.g(rig.origin, "log", "-1", "--format=%B", "refs/heads/main")
+    assert re.search(r"^Co-Authored-By: Test <t@example\.invalid>$", msg, re.M), msg
+
+
+def _stage_hooks_mirror(wt: Path, stub_rc: int) -> None:
+    """The .claude/.devin mirror pair as the real repo tracks it, with a
+    stub gen-devin-hooks whose exit code is the verdict."""
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / ".claude" / "settings.json").write_text('{"hooks": {}}\n', encoding="utf-8")
+    (wt / ".devin").mkdir(exist_ok=True)
+    (wt / ".devin" / "hooks.v1.json").write_text("{}\n", encoding="utf-8")
+    stub = wt / "scripts" / "gen-devin-hooks"
+    stub.write_text(f"#!/bin/sh\nexit {stub_rc}\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+
+def test_quick_ship_refuses_a_stale_devin_hooks_mirror(rig: Rig) -> None:
+    """gr517403: render --check belongs to the --quick lint on EVERY diff
+    class — .claude/settings.json is in the docs-only set, so the check runs
+    before the docs/code lint split, or the mirror drift keeps slipping."""
+    wt = rig.worktree("hook", {"h.txt": "h\n"})
+    _stage_hooks_mirror(wt, 1)
+    rig.g(wt, "add", "-f", ".claude/settings.json")
+    rig.g(wt, "add", ".devin/hooks.v1.json", "scripts/gen-devin-hooks")
+    # amend, not a second commit: a 2-commit branch dies earlier at
+    # message resolution ("different type(scope) prefixes") and never
+    # reaches the lint step under test.
+    rig.g(wt, "commit", "-q", "--amend", "-m", "chore(test): stale mirror")
+    rc, out = _ship_no_m(rig, wt, "--quick")
+    assert rc != 0, out
+    assert "hooks.v1.json is stale" in out
+    assert "next=scripts/gen-devin-hooks render" in out
+    # died before any gate leg ran
+    assert not (rig.lintdir / "hook.started").exists()
+
+
+def test_quick_ship_passes_a_fresh_devin_hooks_mirror(rig: Rig) -> None:
+    """The control: an exit-0 check never blocks the lint."""
+    wt = rig.worktree("hookok", {"h.txt": "h\n"})
+    _stage_hooks_mirror(wt, 0)
+    rig.g(wt, "add", "-f", ".claude/settings.json")
+    rig.g(wt, "add", ".devin/hooks.v1.json", "scripts/gen-devin-hooks")
+    rig.g(wt, "commit", "-q", "--amend", "-m", "chore(test): fresh mirror")
+    rc, out = _ship_no_m(rig, wt, "--quick")
+    assert rc == 0, out
+    assert "h.txt" in _tree_files(rig)
+
+
 @pytest.mark.parametrize(
     "flags",
     [["--checked", "--impacted"], ["--checked", "--remote"], ["--checked", "--full"]],
@@ -1015,6 +1113,19 @@ def test_gate_extras_keep_the_web_extra_in_the_locked_env() -> None:
     )
     assert r.returncode == 0, r.stderr
     assert re.search(r"^fastapi==", r.stdout, re.MULTILINE)
+
+
+def test_qland_lint_cmd_runs_mypy_on_src_and_tests() -> None:
+    """gr514402: a func-returns-value slip reached a --quick land because the
+    builder trusted the lint's green; the lane has run `mypy src tests` since
+    9485ab4da. Pin the command so a lint slimming cannot drop it silently —
+    --quick's promise is that the failures that cost hours (ruff-format
+    drift, mypy clusters) are caught locally."""
+    ship = _SHIP_SRC.read_text(encoding="utf-8")
+    cmds = re.findall(r'QLAND_CMD="([^"]+)"', ship)
+    assert cmds, "scripts/ship lost its QLAND_CMD lint commands"
+    # the docs-only command is $HYGIENE alone; a diff carrying .py must pay mypy
+    assert any("uv run mypy src tests" in c for c in cmds), cmds
 
 
 def _expanded_sync_flags(machine: str, tmp_path: Path) -> list[str]:

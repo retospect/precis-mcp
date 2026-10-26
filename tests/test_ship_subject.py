@@ -64,7 +64,10 @@ def _resolve(repo: Path, msg: str = "", **env: str) -> subprocess.CompletedProce
     )
 
 
-def test_single_commit_message_reused_without_trailers(tmp_path: Path) -> None:
+def test_single_commit_message_keeps_its_trailers(tmp_path: Path) -> None:
+    """gr517803: the branch commit's trailer block rides along verbatim —
+    a non-Claude builder's footer must reach main, not be replaced by a
+    substituted Claude one."""
     repo = _repo(
         tmp_path,
         [
@@ -74,7 +77,35 @@ def test_single_commit_message_reused_without_trailers(tmp_path: Path) -> None:
     )
     r = _resolve(repo)
     assert r.returncode == 0, r.stderr
-    assert r.stdout == "fix(ship): derive subject\n\nWhy: placeholders are useless.\n"
+    assert r.stdout == (
+        "fix(ship): derive subject\n\nWhy: placeholders are useless.\n\n"
+        "Co-Authored-By: X <x@example.invalid>\nClaude-Session: https://x\n"
+    )
+
+
+def test_several_commits_carry_their_trailers_deduped(tmp_path: Path) -> None:
+    """The composed multi-commit message is subjects only — carry the
+    commits' trailer blocks over too or a multi-commit branch loses its
+    footer the same way (gr517803)."""
+    repo = _repo(
+        tmp_path,
+        [
+            "fix(a): first\n\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+            "Claude-Session: none (Devin builder, fleet)",
+            "fix(a): second\n\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+            "Signed-off-by: T <t@example.invalid>",
+        ],
+    )
+    r = _resolve(repo)
+    assert r.returncode == 0, r.stderr
+    # shas arrive newest-first from rev-list; each trailer keeps its first
+    # occurrence.
+    assert r.stdout == (
+        "fix(a): first\n\nAlso:\n- fix(a): second\n\n"
+        "Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+        "Signed-off-by: T <t@example.invalid>\n"
+        "Claude-Session: none (Devin builder, fleet)\n"
+    )
 
 
 def test_several_same_prefix_commits_oldest_subject_plus_also(tmp_path: Path) -> None:
@@ -146,6 +177,82 @@ def test_lint_off_via_env(tmp_path: Path) -> None:
     r = _resolve(_repo(tmp_path, []), "whatever", PRECIS_SHIP_SUBJECT_LINT="0")
     assert r.returncode == 0, r.stderr
     assert r.stdout == "whatever\n"
+
+
+def _fn(func: str, msg: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Pipe ``msg`` through a ship-subject.sh helper."""
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; _m="$2"; shift 2; printf "%s" "$_m" | ' + func + ' "$@"',
+            "_",
+            str(LIB),
+            msg,
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def test_msg_body_strips_the_trailer_block() -> None:
+    r = _fn(
+        "ship_msg_body",
+        "fix(ship): x\n\nbody line\n\nCo-Authored-By: D <d@x>\nSigned-off-by: S <s@x>\n",
+    )
+    assert r.returncode == 0
+    assert r.stdout == "fix(ship): x\n\nbody line\n"
+
+
+def test_msg_body_never_eats_a_bare_subject() -> None:
+    """A lone 'fix: x' line matches the trailer regex — the block needs a
+    blank line above it, so it must survive as the body."""
+    r = _fn("ship_msg_body", "fix: x")
+    assert r.returncode == 0
+    assert r.stdout == "fix: x\n"
+
+
+def test_mint_trailers_keeps_author_footer_no_substitute() -> None:
+    """gr517803 verbatim: a Devin footer stays; no Claude footer is minted."""
+    msg = (
+        "fix(ship): x\n\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+        "Claude-Session: none (Devin builder, F)\n"
+    )
+    r = _fn(
+        "ship_mint_trailers", msg, "", "Co-Authored-By: Claude <noreply@anthropic.com>"
+    )
+    assert r.returncode == 0
+    assert r.stdout == (
+        "Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+        "Claude-Session: none (Devin builder, F)\n"
+    )
+
+
+def test_mint_trailers_adds_fallback_only_when_no_coauthor() -> None:
+    r = _fn(
+        "ship_mint_trailers",
+        "fix(ship): x\n",
+        "",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+    )
+    assert r.returncode == 0
+    assert r.stdout == "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+
+
+def test_mint_trailers_prepends_gate_and_drops_stale_gate() -> None:
+    msg = "fix(ship): x\n\nGate: stale from before\nCo-Authored-By: D <d@x>\n"
+    r = _fn(
+        "ship_mint_trailers",
+        msg,
+        "Gate: lint only; forward-merged over 1",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+    )
+    assert r.returncode == 0
+    assert r.stdout == (
+        "Gate: lint only; forward-merged over 1\nCo-Authored-By: D <d@x>\n"
+    )
 
 
 def test_ship_dies_on_wip_only_branch_before_the_gate(tmp_path: Path) -> None:
