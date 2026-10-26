@@ -43,8 +43,8 @@ NULL and builds no index. This command does the rest, in order:
 
 The index phases and ``--reindex-global`` run outside any transaction and
 can take a long time, so the apply session connects with
-``options=-c statement_timeout=0`` (each fill window sets its own
-``statement_timeout`` locally) — which needs a direct Postgres DSN
+``options=-c statement_timeout=0 -c lock_timeout=0`` (each fill window sets
+its own ``statement_timeout`` locally) — which needs a direct Postgres DSN
 (``--database-url``), not a pooler that rejects startup options. The session
 also gets ``maintenance_work_mem`` and ``max_parallel_maintenance_workers``
 (``--maintenance-work-mem``, ``--max-parallel-maintenance-workers``) before
@@ -593,7 +593,11 @@ def run(args: argparse.Namespace) -> None:
         require_direct_connection(dsn)
     connect_kw: dict[str, Any] = {"autocommit": True}
     if needs_direct:
-        connect_kw["options"] = "-c statement_timeout=0"
+        # lock_timeout=0 too: agent_rw's role default (0096) cancels a
+        # CONCURRENTLY build while it waits out the embed worker's open
+        # transactions, and these options replace PGOPTIONS. A CONCURRENTLY
+        # build holds only SHARE UPDATE EXCLUSIVE, so waiting blocks no DML.
+        connect_kw["options"] = "-c statement_timeout=0 -c lock_timeout=0"
     with psycopg.connect(dsn, **connect_kw) as conn:
         pause = autovacuum_paused(conn) if args.apply else nullcontext()
         with pause:
