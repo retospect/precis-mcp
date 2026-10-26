@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: ss-1a
 pillar: memory-graph
 title: Spreadsheet tables — stable row/col ids, TOON patch, formulas, pulls from refs/tables/vendors, pin, charts
 model: opus
