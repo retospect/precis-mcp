@@ -19,6 +19,7 @@ from typing import Any
 
 from precis.extract.anchors import anchored_text
 from precis.extract.proposals import VocabEntry
+from precis.extract.tables import ParsedTable
 from precis.utils.llm.json_reply import extract_json_object
 
 _READER_CONTRACT = """\
@@ -104,6 +105,84 @@ Rules:
 - a measurand not in the list cannot be named.\
 """
 
+_RECIPE_CONTRACT = """\
+Reply with ONE JSON object and nothing else — the mapping recipe for
+THIS table — or {"table": null, "reason": "glossary|setpoints|no results"}
+when the table reports no measured values at all (a glossary, a
+setpoint list, a units key, a figure caption restated as a table).
+
+{"table": {
+  "orientation": "columns | rows",
+  "subject_axis": <0-based index of the column ("columns") or row
+    ("rows") holding the subject labels; null when the column headers
+    themselves are the subjects>,
+  "group": "<table name these results share, or null>",
+  "attribution": "own_work | cited_work | not_established",
+  "tier": "measured | computed | asserted | null",
+  "conditions": [
+    {"condition": "<name>", "measurand": "<slug>",
+     "literal": "<the exact printed string>", "unit": "<or null>",
+     "role": "context | preparation | model",
+     "source": "caption | table", "cell": "r:c"}
+  ],
+  "series": [
+    {"index": <0-based column ("columns") or row ("rows") index>,
+     "measurand": "<slug>", "unit": "<printed unit or null>",
+     "unit_index": <series index carrying the per-cell unit>,
+     "role": "output | input", "condition": "<condition name>",
+     "transform": "log10 | ln",
+     "attribution": "<as above>", "tier": "<as above>"}
+  ],
+  "skip_cells": ["r:c", ...],
+  "overrides": {"r:c": {"measurand": ..., "measurand_status": ...,
+    "reference": ..., "normalization": ..., "unit": ...}}
+}}
+
+Rules:
+- every index is a 0-based GRID coordinate: a column number for
+  "columns", a row number for "rows"; "r:c" keys name a cell by its
+  0-based row and column;
+- "columns" means each series is a column and each row is one subject;
+  "rows" means each series is a row and each column is one subject;
+- one series per measurable axis. role "input" marks a condition axis
+  (a temperature column that conditions the row's outputs, not a
+  result); "output" marks a result axis. The label column / label row
+  is not a series — list its cells in skip_cells;
+- unit is the unit PRINTED for the series — the header's unit hint is
+  the parser's guess, check it against the cell values. null is allowed
+  only for a measurand whose canonical unit is 1 (dimensionless).
+  unit_index points at a series carrying a per-cell unit instead;
+- transform "log10"/"ln" means the cells print the log of the value
+  ('log ν = 13' stores 10^13) — still name the measurand's real unit;
+- conditions are the table-level inputs every output shares — a
+  temperature the caption states, a pressure given for the whole table.
+  source "caption" anchors the literal inside the caption text; source
+  "table" anchors it in a cell and needs "cell": "r:c";
+- skip_cells names cells that are not readings (footer lines, totals,
+  notes the grid kept as cells);
+- overrides repair ONE cell's interpretation — measurand,
+  measurand_status, reference, normalization, unit — never the literal;
+- attribution/tier on the table are defaults a series may override; a
+  column or row whose header or label carries a citation marker is
+  cited_work whatever you claim — the parser detects it;
+- you never copy a literal: the parser reads every cell verbatim.
+  Name only measurands from the list — an axis with no fitting slug is
+  left out of the recipe, not mapped to the closest one.\
+"""
+
+
+def _vocab_lines(vocab: list[VocabEntry]) -> list[str]:
+    lines = ["Measurands you may name (slug — canonical unit):"]
+    for entry in vocab:
+        unit = entry.display_unit or entry.canonical_unit or "-"
+        req = (
+            f" (needs: {', '.join(entry.required_conditions)})"
+            if entry.required_conditions
+            else ""
+        )
+        lines.append(f"- {entry.slug} — {unit}{req}")
+    return lines
+
 
 def reader_prompt(
     *,
@@ -126,20 +205,61 @@ def reader_prompt(
     if section:
         lines.append(f"Section: {section}")
     lines.append("")
-    lines.append("Measurands you may name (slug — canonical unit):")
-    for entry in vocab:
-        unit = entry.display_unit or entry.canonical_unit or "-"
-        req = (
-            f" (needs: {', '.join(entry.required_conditions)})"
-            if entry.required_conditions
-            else ""
-        )
-        lines.append(f"- {entry.slug} — {unit}{req}")
+    lines.extend(_vocab_lines(vocab))
     lines.append("")
     lines.append(_READER_CONTRACT)
     lines.append("")
     lines.append("Chunk (sentences marked [n]):")
     lines.append(anchored_text(chunk_text))
+    return "\n".join(lines)
+
+
+def table_recipe_prompt(
+    *,
+    parsed: ParsedTable,
+    caption: tuple[int, str] | None,
+    vocab: list[VocabEntry],
+    paper_title: str | None = None,
+) -> str:
+    """One parsed table's recipe prompt — the ``survey_extract:table_recipe``
+    op. The model sees the *grid*, not the raw markdown: numbered columns
+    with their headers, unit hints and citation flags, then numbered rows
+    with per-column cells. Its reply maps axes to measurands; the cells
+    themselves are read verbatim by :func:`precis.extract.recipes.expand_recipe`."""
+    lines = [
+        "You are mapping one parsed table of a survey paper for a "
+        "numeric-extraction pass. The grid below is already parsed into "
+        "columns and rows — your job is to name which column (or row) "
+        "carries which measurand, the printed unit, the subject axis and "
+        "the table-level conditions. You never copy a value: every cell "
+        "is read verbatim by the parser.",
+    ]
+    if paper_title:
+        lines.append(f"Paper: {paper_title}")
+    lines.append("")
+    lines.extend(_vocab_lines(vocab))
+    lines.append("")
+    cap_text = caption[1] if caption is not None else None
+    if cap_text:
+        lines.append(f"Caption: {cap_text}")
+    else:
+        lines.append("Caption: (none paired to this table)")
+    lines.append("")
+    lines.append("Columns (index — header [unit hint] [cited]):")
+    for col in parsed.columns:
+        marks = ""
+        if col.header_unit:
+            marks += f" [{col.header_unit}]"
+        if col.cited:
+            marks += " [cited]"
+        lines.append(f"- col {col.index}: {col.header or '(empty)'}{marks}")
+    lines.append("")
+    lines.append("Rows (index — cells, [col] text):")
+    for i, row in enumerate(parsed.rows):
+        cells = " | ".join(f"[{c}] {cell.text}" for c, cell in enumerate(row))
+        lines.append(f"- row {i}: {cells}")
+    lines.append("")
+    lines.append(_RECIPE_CONTRACT)
     return "\n".join(lines)
 
 
@@ -156,8 +276,14 @@ def review_prompt(
     subject_label: str | None,
     span_text: str,
     conditions: list[str] | None = None,
+    table: dict[str, Any] | None = None,
 ) -> str:
-    """The per-row sampler prompt: is this row what the span says?"""
+    """The per-row sampler prompt: is this row what the span says?
+
+    ``table`` carries the row's ``meta.table`` context (recipe-extracted
+    rows only) — its ``T<n>`` number, 1-based row/col, the series label
+    as ``header``, the ``orientation`` and a resolved ``caption`` text —
+    without it the reviewer sees one cell with no column name."""
     bits = [f"measurand: {measurand}", f"literal: {literal}"]
     if reported_unit:
         bits.append(f"reported unit: {reported_unit}")
@@ -165,6 +291,18 @@ def review_prompt(
         bits.append(f"subject: {subject_label}")
     for c in conditions or []:
         bits.append(f"condition: {c}")
+    if table:
+        coord = (
+            f"T{table.get('table')} row {table.get('row')} "
+            f"col {table.get('col')} ({table.get('orientation') or 'columns'})"
+        )
+        bits.append(f"table cell: {coord}")
+        if table.get("header"):
+            bits.append(f"series label: {table['header']}")
+        if table.get("caption"):
+            bits.append(f"table caption: {table['caption']}")
+        if table.get("footnote"):
+            bits.append(f"footnote marker: {table['footnote']}")
     return (
         "A numeric-extraction pass wrote this measure row from a survey "
         "paper. The anchored source span follows the row. Reply with ONE "

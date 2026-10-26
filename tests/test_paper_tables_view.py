@@ -430,6 +430,46 @@ def test_tables_view_budget_counts_groups_not_sections(store: Store) -> None:
     assert one.result_count == 1
 
 
+def test_tables_view_hard_max_tail_uses_the_run_header(store: Store) -> None:
+    """gr506762 r3 A: an ``enforce_hard_max`` continuation opens on a
+    data row — the view parses it against the run head's header, so
+    the rendered grid numbers the same rows ``meta.table`` does:
+    ``pc<tail> row 1 col 2`` is ``60``, not ``30`` under a 'Pd mem'
+    pseudo-header."""
+    ref = store.insert_ref(kind="paper", slug="tblcont07", title="tblcont07")
+    e = MockEmbedder(dim=1024)
+    head = (
+        "| Catalyst | FE NH3 (%) | j_total (A m-2) |\n"
+        "| --- | --- | --- |\n"
+        "| Cu NWA | 95 | 1000 |\n"
+    )
+    tail = "| Pd mem | 60 | 800 |\n| Au film | 30 | 400 |\n"
+    blocks = store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=i,
+                text=text,
+                meta={"chunk_kind": "table"},
+                embedding=e.embed_one(text),
+            )
+            for i, text in enumerate((head, tail))
+        ],
+    )
+    pa = handle_registry.format_handle("paper", ref.id)
+
+    out = _handler(store).get(id=pa, view="tables").body
+
+    assert f"## T1 (part 2) · pc{blocks[1].id}" in out
+    part2 = out.split("## T1 (part 2)", 1)[1]
+    # The head's column labels, not the tail's first data row.
+    assert "FE NH3 (%)" in part2 and "jtotal (A m-2)" in part2
+    assert "Pd mem" not in part2.split("columns:", 1)[1].split("\n", 1)[0]
+    # Row 1 is the tail's first line — meta.table row 1 col 2 == 60.
+    assert "| 1 | Pd mem | 60 | 800 |" in part2
+    assert "| 2 | Au film | 30 | 400 |" in part2
+
+
 def test_tables_args_refused_off_the_tables_view(store: Store) -> None:
     """``args={'table'|'match'}`` on another view (or no view) refuses
     naming ``view='tables'`` instead of being silently dropped."""

@@ -13,21 +13,27 @@ from __future__ import annotations
 import pytest
 
 from precis.extract.tables import (
+    TableSig,
     assign_captions,
+    first_pipe_line,
     has_citation_marker,
     header_unit,
     parse_table,
+    run_headers,
     strip_footnote,
     table_runs,
+    table_sig,
 )
 
-# First-pipe-line headers for the ``(cid, ord, header)`` triples
-# ``table_runs``/``assign_captions`` take: the same header across
-# ord-adjacent chunks is ingest's split_table signature for ONE
-# logical table; a different header means a different table.
-HA = "| Gas | coeff |"
-HB = "| Site | energy |"
-HC = "| adsorbate | rate |"
+# ``TableSig`` evidence for the ``(cid, ord, sig)`` triples
+# ``table_runs``/``assign_captions`` take: the same separator-backed
+# header across ord-adjacent chunks is ingest's split_table signature
+# for ONE logical table; a different header means a different table.
+# ``NOSIG`` is a no-grid fallback piece — it joins any adjacent run.
+HA = TableSig("| Gas | coeff |", 2, False)
+HB = TableSig("| Site | energy |", 2, False)
+HC = TableSig("| adsorbate | rate |", 2, False)
+NOSIG = TableSig(None, 0, False)
 
 # Sample 1: measurands in columns, subjects in rows, units in the
 # headers — one data row.
@@ -252,8 +258,31 @@ class TestCitationMarker:
         assert not has_citation_marker(cell)
 
 
+class TestFirstPipeLine:
+    """A chunk's first ``|`` line is header evidence only when the
+    next ``|`` line is a ``|---|`` separator — anything else is
+    ``None``, so a piece that opens mid-table joins its run instead
+    of reading its first data row as a different table's header."""
+
+    def test_header_when_separator_follows(self) -> None:
+        assert first_pipe_line("prose\n| a | b |\n|---|---|\n| 1 | 2 |") == "| a | b |"
+
+    def test_mid_table_data_row_is_none(self) -> None:
+        # ``enforce_hard_max`` continuation: opens on a data row.
+        assert first_pipe_line("| 3 | 4 |\n| 5 | 6 |") is None
+
+    def test_separatorless_grid_is_none(self) -> None:
+        # A transposed grid without a separator line carries no
+        # header evidence either.
+        assert first_pipe_line("| | expt |\n| rate | 13 |") is None
+
+    def test_no_grid_and_lone_pipe_line(self) -> None:
+        assert first_pipe_line("no pipes here") is None
+        assert first_pipe_line("| only one line |") is None
+
+
 class TestTableRuns:
-    """Logical-table grouping over ``(cid, ord, first_pipe_line)``."""
+    """Logical-table grouping over ``(cid, ord, table_sig)``."""
 
     def test_grouping_rules(self) -> None:
         # Same header + ord-adjacent merges (ingest's split_table
@@ -263,17 +292,101 @@ class TestTableRuns:
             [
                 (1, 1, HA),
                 (2, 2, HA),
-                (3, 3, None),
+                (3, 3, NOSIG),
                 (4, 4, HC),
                 (6, 6, HC),
             ]
         ) == [[(1, 1), (2, 2), (3, 3)], [(4, 4)], [(6, 6)]]
 
+    def test_separatorless_tables_split_on_col_count(self) -> None:
+        # Opus ruling 5(b): two separator-less tables printed back to
+        # back — different column counts break the run even with no
+        # caption between them.
+        t1 = "| a | b |\n| 1 | 2 |\n| 3 | 4 |"
+        t2 = "| x | y | z |\n| 5 | 6 | 7 |"
+        triples = [(10, 10, table_sig(t1)), (11, 11, table_sig(t2))]
+        assert table_runs(triples) == [[(10, 10)], [(11, 11)]]
+
+    def test_separatorless_same_count_still_joins(self) -> None:
+        # The other half of ruling 5: adjacent separator-less chunks
+        # of the same column count and no caption still fuse — an
+        # enforce_hard_max tail of a separator-less table.
+        t1 = "| a | b |\n| 1 | 2 |"
+        t2 = "| 3 | 4 |\n| 5 | 6 |"
+        triples = [(10, 10, table_sig(t1)), (11, 11, table_sig(t2))]
+        assert table_runs(triples) == [[(10, 10), (11, 11)]]
+
+    def test_caption_start_breaks_run(self) -> None:
+        # Opus ruling 5(a): a chunk opening on a "Table N" caption
+        # line is always a new logical table — same column count and
+        # ord-adjacency don't matter.
+        t1 = "| a | b |\n| 1 | 2 |"
+        t2 = "Table 2. Other rates.\n| c | d |\n| 3 | 4 |"
+        triples = [(10, 10, table_sig(t1)), (11, 11, table_sig(t2))]
+        assert table_runs(triples) == [[(10, 10)], [(11, 11)]]
+
+    def test_sig_counts_a_trailing_empty_cell(self) -> None:
+        # Opus r2 C: "| x ||" is a two-cell row (a trailing empty
+        # cell) — the naive ``strip('|').split('|')`` ate it and
+        # counted one, so a tail printed that way broke off as its own
+        # table. The count comes from ``_row_cells`` now.
+        assert table_sig("| x ||\n| y ||").ncols == 2
+        t1 = "| a | b |\n|---|---|\n| 1 | 2 |"
+        tail = "| 3 ||\n| 5 ||"
+        triples = [(10, 10, table_sig(t1)), (11, 11, table_sig(tail))]
+        assert table_runs(triples) == [[(10, 10), (11, 11)]]
+
+    def test_gridless_head_does_not_fuse_unrelated_tails(self) -> None:
+        # Opus r2 D: the run's evidence is its LAST member holding a
+        # grid, not its head — a no-grid head lets a 2-col piece join,
+        # but the 3-col headerless chunk after it is a different table.
+        nogrid = "the rendered grid piece lost its pipes"
+        t2 = "| a | b |\n| 1 | 2 |"
+        t3 = "| x | y | z |\n| 3 | 4 | 5 |"
+        triples = [
+            (10, 10, table_sig(nogrid)),
+            (11, 11, table_sig(t2)),
+            (12, 12, table_sig(t3)),
+        ]
+        assert table_runs(triples) == [[(10, 10), (11, 11)], [(12, 12)]]
+
+    def test_continuation_keeps_the_run_header_for_later_parts(self) -> None:
+        # Opus r3: a hard_max continuation has no header of its own —
+        # the run evidence must keep the head's header so a following
+        # split_table part (same separator-backed header) still joins.
+        t1 = "| a | b |\n|---|---|\n| 1 | 2 |"
+        cont = "| 3 | 4 |\n| 5 | 6 |"
+        part = "| a | b |\n|---|---|\n| 7 | 8 |"
+        triples = [
+            (10, 10, table_sig(t1)),
+            (11, 11, table_sig(cont)),
+            (12, 12, table_sig(part)),
+        ]
+        assert table_runs(triples) == [[(10, 10), (11, 11), (12, 12)]]
+
+    def test_run_headers_comes_from_first_member_with_one(self) -> None:
+        # Opus r3: the header source is the run's first member whose
+        # sig carries a separator-backed header — a gridless head
+        # piece can't supply one, but the run's continuations still
+        # parse against it.
+        nogrid = "the rendered grid piece lost its pipes"
+        head = "| a | b |\n|---|---|\n| 1 | 2 |"
+        tail = "| 3 | 4 |\n| 5 | 6 |"
+        tables = [
+            (10, 10, table_sig(nogrid)),
+            (11, 11, table_sig(head)),
+            (12, 12, table_sig(tail)),
+        ]
+        texts = {10: nogrid, 11: head, 12: tail}
+        out = run_headers(texts, tables, [[(10, 10), (11, 11), (12, 12)]])
+        assert out[12] == ["| a | b |"]
+        assert 11 not in out  # the source parses its own header
+
 
 class TestAssignCaptions:
     """One-to-one pairing of caption chunks to a ref's logical tables.
 
-    ``tables`` is ``(chunk_id, ord, first_pipe_line)`` in ord order —
+    ``tables`` is ``(chunk_id, ord, table_sig)`` in ord order —
     ord-adjacent runs *with the same header* are one logical table
     (ingest's split_table), and the group number is what a numbered
     caption must equal; ``neighbours`` is ``(chunk_id, ord, text)`` of
@@ -315,12 +428,41 @@ class TestAssignCaptions:
             11: (12, "Table 2. B"),
         }
 
+    def test_hard_max_continuation_joins_its_run(self) -> None:
+        # Late slice-1 review repro, end to end through
+        # ``table_sig``: ``enforce_hard_max`` cut Table 1's last
+        # part mid-body, so chunk 12 opens on a *data row*. Read as a
+        # header it formed its own logical table (the second group)
+        # and stole "Table 2. C" from the real Table 2 at chunk 14;
+        # header-less with the same column count, it joins 10/11's
+        # run and the caption lands on 14.
+        t1 = "| a | b |\n|---|---|\n| 1 | 2 |"
+        t1_part = "| a | b |\n|---|---|\n| 3 | 4 |"
+        t1_tail = "| 5 | 6 |\n| 7 | 8 |"
+        t2 = "| c | d |\n|---|---|\n| 9 | 0 |"
+        triples = [
+            (cid, o, table_sig(t))
+            for cid, o, t in [
+                (10, 10, t1),
+                (11, 11, t1_part),
+                (12, 12, t1_tail),
+                (14, 14, t2),
+            ]
+        ]
+        assert table_runs(triples) == [
+            [(10, 10), (11, 11), (12, 12)],
+            [(14, 14)],
+        ]
+        assert assign_captions(triples, [(13, 13, "Table 2. C")]) == {
+            14: (13, "Table 2. C")
+        }
+
     def test_same_header_merges_and_none_joins(self) -> None:
         # 10/11 share a header and 12 is a no-grid piece (None) — all
         # one logical table; 13 is ord-adjacent but headed differently,
         # so it is Table 2 on its own.
         got = assign_captions(
-            [(10, 10, HA), (11, 11, HA), (12, 12, None), (13, 13, HB)],
+            [(10, 10, HA), (11, 11, HA), (12, 12, NOSIG), (13, 13, HB)],
             [
                 (9, 9, "Table 1. A"),
                 (14, 14, "Table 2. B"),

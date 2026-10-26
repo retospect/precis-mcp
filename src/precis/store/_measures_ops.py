@@ -1910,6 +1910,48 @@ class MeasuresMixin:
             ).fetchall()
         return {int(cid): int(n) for cid, n in rows}
 
+    def non_recipe_measure_chunks(
+        self, chunk_ids: list[int], *, prompt: str
+    ) -> set[int]:
+        """Anchor chunks holding live output measures stamped by a
+        *different* prompt contract than ``prompt`` — a table an
+        earlier reader pass already extracted must not be re-read by
+        the recipe op (gr506762: reader and recipe anchor spans
+        differ, so the same value would land twice). Rows with no
+        ``meta.extraction.prompt`` at all count as foreign."""
+        if not chunk_ids:
+            return set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT l.src_chunk_id FROM measures m "
+                "JOIN links l ON l.link_id = m.primary_link_id "
+                "WHERE l.src_chunk_id = ANY(%s) "
+                "AND m.direction = 'output' AND m.superseded_by IS NULL "
+                "AND (m.meta->'extraction'->>'prompt') IS DISTINCT FROM %s",
+                (list(chunk_ids), prompt),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def recipe_measure_chunks(self, chunk_ids: list[int], *, prompt: str) -> set[int]:
+        """Anchor chunks holding live output measures stamped by
+        ``prompt`` — the symmetric half of ruling 6 (gr506762): a
+        table an earlier recipe pass already extracted must not be
+        re-read by the reader fallback either, since the reader's
+        sentence anchors don't dedupe against the recipe's cell spans
+        and the same values would land twice."""
+        if not chunk_ids:
+            return set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT l.src_chunk_id FROM measures m "
+                "JOIN links l ON l.link_id = m.primary_link_id "
+                "WHERE l.src_chunk_id = ANY(%s) "
+                "AND m.direction = 'output' AND m.superseded_by IS NULL "
+                "AND (m.meta->'extraction'->>'prompt') = %s",
+                (list(chunk_ids), prompt),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
     def live_measure_count(self, measurand_ref_id: int) -> int:
         """Live (unsuperseded) rows keyed on this one measurand — the
         pin count behind the taxon unit guard (ontology-v2 slice 0b): a

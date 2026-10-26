@@ -244,6 +244,25 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "chain for the gardener-value slice 5 trial."
         ),
     ),
+    "survey_extract:table_recipe": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Survey extractor — table recipe",
+        description=(
+            "The per-table recipe call inside the `survey_extract` job — "
+            "maps one parsed grid's columns/rows to measurands, units, the "
+            "subject axis and the table-level conditions. One call per "
+            "table chunk whose reply grows with the column count, not the "
+            "cell count; the cells are read verbatim by the parser."
+        ),
+        note=(
+            "MEDIUM by default — a one-shot JSON mapping of ~10 headers "
+            "needs only a haiku-class model, and every value still goes "
+            "through the deterministic parse/anchor checks, so a cheap "
+            "mapping cannot fabricate a number. Steer with an "
+            "`llm.op.survey_extract:table_recipe` row."
+        ),
+    ),
     "graph_garden:propose": OpDefault(
         tier=Tier.MEDIUM,
         model=None,

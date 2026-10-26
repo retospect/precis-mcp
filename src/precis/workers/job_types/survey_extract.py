@@ -82,7 +82,20 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis.extract import accept as _accept
 from precis.extract import prompt as _prompt
-from precis.extract.proposals import VocabEntry, build_runs, vocab_entry
+from precis.extract import recipes as _recipes
+from precis.extract.proposals import (
+    RunProposal,
+    VocabEntry,
+    build_runs,
+    vocab_entry,
+)
+from precis.extract.tables import (
+    assign_captions,
+    parse_table,
+    run_headers,
+    table_runs,
+    table_sig,
+)
 from precis.utils import handle_registry
 from precis.utils.env import env_int
 from precis.utils.glyph_health import glyph_suspected
@@ -319,11 +332,11 @@ def _result_field(results: Any, location: str, key: str) -> Any:
     return raw.get(key) if isinstance(raw, dict) else None
 
 
-def _skippable(chunk: dict[str, Any]) -> bool:
-    """A chunk the reader pass skips by policy: a kind that is not body
-    prose or a table, or a ``section_path`` tail naming a bibliography /
-    admin section."""
-    if chunk["chunk_kind"] not in _EXTRACT_CHUNK_KINDS:
+def _skippable(chunk: dict[str, Any], kinds: frozenset[str]) -> bool:
+    """A chunk the reader pass skips by policy: a kind outside the job's
+    ``chunk_kinds`` selection, or a ``section_path`` tail naming a
+    bibliography / admin section."""
+    if chunk["chunk_kind"] not in kinds:
         return True
     section = chunk.get("section")
     return isinstance(section, str) and bool(_SKIP_SECTION_RE.match(section))
@@ -332,6 +345,39 @@ def _skippable(chunk: dict[str, Any]) -> bool:
 def _escalate(bucket: list[dict[str, Any]], entry: dict[str, Any]) -> None:
     if len(bucket) < _ESCALATION_CAP:
         bucket.append(entry)
+
+
+def _chunk_kinds_sel(store: Store, raw: Any) -> frozenset[str]:
+    """``params.chunk_kinds`` → the chunk kinds the reader sees. Defaults
+    to ``_EXTRACT_CHUNK_KINDS``; an entry the ``chunk_kinds`` table
+    doesn't know refuses the job up front (a typo like ``'tabel'`` would
+    otherwise silently extract nothing)."""
+    if raw is None:
+        return _EXTRACT_CHUNK_KINDS
+    if (
+        not isinstance(raw, (list, tuple))
+        or not raw
+        or not all(isinstance(k, str) and k.strip() for k in raw)
+    ):
+        raise BadInput(
+            f"survey_extract: params.chunk_kinds must be a non-empty list "
+            f"of chunk_kind slugs, got {raw!r}",
+            next="pass chunk_kinds=['paragraph', 'table'] (or omit it)",
+        )
+    want = [k.strip() for k in raw]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT slug FROM chunk_kinds WHERE slug = ANY(%s)", (want,)
+        ).fetchall()
+    known = {str(r[0]) for r in rows}
+    missing = [k for k in want if k not in known]
+    if missing:
+        raise BadInput(
+            f"survey_extract: unknown chunk_kind(s) {missing}",
+            next="pass chunk_kinds entries the chunk_kinds table knows",
+            options=sorted(known | set(_EXTRACT_CHUNK_KINDS)),
+        )
+    return frozenset(want)
 
 
 #: A glyph-lie repair for a refused unit: on a ``glyph_suspected`` paper a
@@ -376,6 +422,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "measurands": {
             "type": ["array", "null"],
             "items": {"type": ["integer", "string"]},
+        },
+        "chunk_kinds": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
         },
         "include_all_sections": {"type": ["boolean", "null"]},
         "run_token": {"type": ["string", "null"]},
@@ -438,6 +488,12 @@ def _fresh_stats() -> dict[str, int]:
         "skipped_short": 0,
         "skipped_section": 0,
         "dropped": 0,
+        "table:recipe": 0,
+        "table:fallback": 0,
+        "table:no_results": 0,
+        "table:ragged": 0,
+        "table:reader_skip": 0,
+        "table:recipe_kept": 0,
         "drop:bad_shape": 0,
         "drop:literal_not_in_span": 0,
         "drop:unknown_measurand": 0,
@@ -447,6 +503,7 @@ def _fresh_stats() -> dict[str, int]:
         "drop:unsupported_bound": 0,
         "drop:bound_direction_mismatch": 0,
         "drop:unsupported_sign": 0,
+        "drop:uncertainty_overflow": 0,
         "unparseable_reply": 0,
         "empty_result": 0,
         "truncated": 0,
@@ -458,51 +515,16 @@ def _fresh_stats() -> dict[str, int]:
     }
 
 
-def _process_chunk(
-    ctx: DispatchContext,
+def _routed(
+    req: LlmRequest,
     *,
     chunk: dict[str, Any],
-    paper: int,
-    paper_title: str | None,
-    glyph_flagged: bool,
-    vocab: dict[int, VocabEntry],
-    run_token: str,
-    tier: Tier,
-    model_pin: str | None,
     stats: dict[str, int],
     escalations: list[dict[str, Any]],
 ) -> tuple[str | None, str | None, Any]:
-    """One chunk end to end — ``(outcome, landed_placement, result)``.
-    Outcome is ``'paused'`` when the router paused (the caller yields for
-    the window rather than burning through it), ``'failed'`` when the
-    consecutive-error cap says the lane is down, ``None`` otherwise. The
-    landed placement is ``result.placement`` (``'local'``/``'cloud'``)
-    when the routed call reports one — the caller's pacing signal;
-    ``None`` when the call never ran or stamped none. ``result`` is the
-    routed reply (``None`` when ``route()`` raised) so the caller can
-    read ``retry_at`` / ``reason_class`` for its park annotation."""
-    req = LlmRequest(
-        tier=tier,
-        prompt=_prompt.reader_prompt(
-            vocab=sorted(vocab.values(), key=lambda e: e.slug),
-            chunk_text=chunk["text"],
-            section=chunk.get("section"),
-            paper_title=paper_title,
-        ),
-        source="survey_extract",
-        ref_id=paper,
-        model=model_pin,
-        placement=None if model_pin else "local",
-        thinking=False,
-        temperature=0.0,
-        # Unpinned on purpose: a caller cap beats the chain rung's
-        # max_tokens, and the prod llm.op.survey_extract row carries 4096
-        # (gpt-oss reasoning tokens eat a small cap and truncation then
-        # reads as unparseable JSON — the mismeasurement this split makes
-        # visible).
-        max_tokens=None,
-        log_blobs=False,
-    )
+    """``route(req)`` plus the paused/exception/error bookkeeping the
+    reader and recipe calls share — ``(outcome, placement, result)`` on
+    ``_process_chunk``'s contract."""
     stats["calls"] += 1
     try:
         result = route(req)
@@ -549,34 +571,20 @@ def _process_chunk(
             result,
         )
     stats["consecutive_errors"] = 0
-    reply = _prompt.parse_reply(result.text)
-    model_used = getattr(result, "model", None) or model_pin
-    if reply is None:
-        stats["dropped"] += 1
-        stop = getattr(result, "stop_reason", None)
-        truncated = stop in _TRUNCATION_STOPS
-        stats["truncated" if truncated else "unparseable_reply"] += 1
-        _escalate(
-            escalations,
-            {
-                "kind": "truncated" if truncated else "unparseable_reply",
-                "chunk": chunk["chunk_id"],
-                "chunk_kind": chunk["chunk_kind"],
-                "stop_reason": stop,
-                "detail": (result.text or "")[:200],
-            },
-        )
-        return None, placement, result
-    outcome = build_runs(
-        reply,
-        chunk_id=chunk["chunk_id"],
-        chunk_text=chunk["text"],
-        paper_ref_id=paper,
-        vocab=vocab,
-        extraction_run=run_token,
-        model=model_used,
-    )
-    for drop in outcome.dropped:
+    return None, placement, result
+
+
+def _record_drops(
+    drops: list[dict[str, Any]],
+    *,
+    chunk: dict[str, Any],
+    stats: dict[str, int],
+    escalations: list[dict[str, Any]],
+) -> None:
+    """The ``dropped`` / ``drop:<reason>`` counters and one escalation
+    per refused element — shared by ``build_runs`` and ``expand_recipe``
+    drops, which carry the same ``location``/``reason``/``detail`` shape."""
+    for drop in drops:
         stats["dropped"] += 1
         reason = str(drop.get("reason") or "unknown")
         stats[f"drop:{reason}"] = stats.get(f"drop:{reason}", 0) + 1
@@ -591,36 +599,25 @@ def _process_chunk(
                 "detail": str(drop.get("detail"))[:200],
             },
         )
-    for oflag in outcome.flags:
-        flag_name = str(oflag.get("flag") or "unknown")
-        stats[f"flag:{flag_name}"] = stats.get(f"flag:{flag_name}", 0) + 1
-        _escalate(
-            escalations,
-            {
-                "kind": "flag",
-                "chunk": chunk["chunk_id"],
-                "chunk_kind": chunk["chunk_kind"],
-                "flag": oflag.get("flag"),
-                "location": oflag.get("location"),
-                "detail": str(oflag.get("detail"))[:200],
-            },
-        )
-    raw_results = reply.get("results") or []
-    if not outcome.proposals and not outcome.dropped:
-        # A parsed reply that produced nothing — no proposals, no named
-        # drops — leaves no trace in the counters otherwise (gr512371:
-        # five approved b1 rows vanished behind a silent results=[]).
-        stats["empty_result"] += 1
-        _escalate(
-            escalations,
-            {
-                "kind": "empty_result",
-                "chunk": chunk["chunk_id"],
-                "chunk_kind": chunk["chunk_kind"],
-                "detail": f"reader reply yielded nothing ({len(raw_results)} results)",
-            },
-        )
-    for proposal in outcome.proposals:
+
+
+def _write_proposals(
+    ctx: DispatchContext,
+    *,
+    proposals: list[RunProposal],
+    chunk: dict[str, Any],
+    stats: dict[str, int],
+    escalations: list[dict[str, Any]],
+    glyph_flagged: bool,
+    model_used: str | None,
+    raw_results: Any,
+) -> None:
+    """The ``insert_measure`` write loop both extraction paths share —
+    per-proposal dup-skip, glyph-unit repair, write-refusal and flag
+    accounting. ``raw_results`` is the reader reply's ``results`` list
+    (``None`` for a recipe run, whose locations are ``table cell r:c``
+    and whose raw fields already live on the spec)."""
+    for proposal in proposals:
         stats["proposals"] += 1
         # gr503034: an emitted value_form that isn't a registered form is
         # dropped so the literal's shape infers one — count it so the
@@ -652,10 +649,12 @@ def _process_chunk(
             if "duplicate of measure" in str(exc):
                 stats["skipped_dup"] += 1
                 continue
+            raw_unit = (
+                _result_field(raw_results, proposal.location, "unit")
+                or proposal.output.reported_unit
+            )
             repaired = (
-                _glyph_repair_unit(
-                    _result_field(raw_results, proposal.location, "unit")
-                )
+                _glyph_repair_unit(raw_unit)
                 if glyph_flagged and "unit" in str(exc)
                 else None
             )
@@ -683,9 +682,7 @@ def _process_chunk(
                             "flag": "glyph_unit_repaired",
                             "location": proposal.location,
                             "measure": repaired_run.output_id,
-                            "detail": f"unit repaired "
-                            f"{_result_field(raw_results, proposal.location, 'unit')!r}"
-                            f" -> {repaired!r}",
+                            "detail": f"unit repaired {raw_unit!r} -> {repaired!r}",
                         },
                     )
                     continue
@@ -701,8 +698,9 @@ def _process_chunk(
                 "chunk_kind": chunk["chunk_kind"],
                 "location": proposal.location,
                 "detail": str(exc)[:200],
-                "literal": _result_field(raw_results, proposal.location, "literal"),
-                "unit": _result_field(raw_results, proposal.location, "unit"),
+                "literal": _result_field(raw_results, proposal.location, "literal")
+                or proposal.output.literal,
+                "unit": raw_unit,
             }
             if glyph_flagged:
                 entry["glyph_suspected"] = True
@@ -722,7 +720,282 @@ def _process_chunk(
                     "measure": run.output_id,
                 },
             )
-    return None, placement, result
+
+
+def _process_chunk(
+    ctx: DispatchContext,
+    *,
+    chunk: dict[str, Any],
+    paper: int,
+    paper_title: str | None,
+    glyph_flagged: bool,
+    vocab: dict[int, VocabEntry],
+    run_token: str,
+    tier: Tier,
+    model_pin: str | None,
+    stats: dict[str, int],
+    escalations: list[dict[str, Any]],
+    caption: tuple[int, str] | None = None,
+    table_no: int | None = None,
+    run_header: list[str] | None = None,
+    reader_measures: bool = False,
+    recipe_measures: bool = False,
+) -> tuple[str | None, str | None, Any]:
+    """One chunk end to end — ``(outcome, landed_placement, result)``.
+    Outcome is ``'paused'`` when the router paused (the caller yields for
+    the window rather than burning through it), ``'failed'`` when the
+    consecutive-error cap says the lane is down, ``None`` otherwise. The
+    landed placement is ``result.placement`` (``'local'``/``'cloud'``)
+    when the routed call reports one — the caller's pacing signal;
+    ``None`` when the call never ran or stamped none. ``result`` is the
+    routed reply (``None`` when ``route()`` raised) so the caller can
+    read ``retry_at`` / ``reason_class`` for its park annotation.
+
+    A ``table`` chunk whose grid parses and isn't ragged takes the recipe
+    path first: one ``survey_extract:table_recipe`` call maps the grid to
+    measurands, ``expand_recipe`` turns it into runs, and the same write
+    loop lands them. A grid that doesn't parse, a ragged table, or a
+    truncated/unparseable recipe reply keeps the per-cell reader path,
+    so nothing regresses."""
+
+    def reader_req() -> LlmRequest:
+        return LlmRequest(
+            tier=tier,
+            prompt=_prompt.reader_prompt(
+                vocab=sorted(vocab.values(), key=lambda e: e.slug),
+                chunk_text=chunk["text"],
+                section=chunk.get("section"),
+                paper_title=paper_title,
+            ),
+            source="survey_extract",
+            ref_id=paper,
+            model=model_pin,
+            placement=None if model_pin else "local",
+            thinking=False,
+            temperature=0.0,
+            # Unpinned on purpose: a caller cap beats the chain rung's
+            # max_tokens, and the prod llm.op.survey_extract row carries 4096
+            # (gpt-oss reasoning tokens eat a small cap and truncation then
+            # reads as unparseable JSON — the mismeasurement this split makes
+            # visible).
+            max_tokens=None,
+            log_blobs=False,
+        )
+
+    if chunk["chunk_kind"] == "table":
+        parsed = parse_table(chunk["chunk_id"], chunk["text"], header=run_header)
+        if parsed is None:
+            stats["table:fallback"] += 1
+        elif parsed.ragged_rows:
+            stats["table:ragged"] += 1
+            _record_drops(
+                [
+                    {
+                        "location": "table",
+                        "reason": "ragged_table",
+                        "detail": (
+                            f"rows {parsed.ragged_rows} have a cell count "
+                            f"other than {len(parsed.columns)} — column "
+                            "alignment is unprovable"
+                        ),
+                    }
+                ],
+                chunk=chunk,
+                stats=stats,
+                escalations=escalations,
+            )
+        elif reader_measures:
+            # Opus ruling 6: this run's chunks already hold reader-path
+            # rows — the recipe would write a second copy (its cell
+            # spans don't dedupe against reader spans), so the recipe
+            # call is skipped and the chunk keeps the reader path.
+            stats["table:reader_skip"] += 1
+            _escalate(
+                escalations,
+                {
+                    "kind": "flag",
+                    "chunk": chunk["chunk_id"],
+                    "chunk_kind": chunk["chunk_kind"],
+                    "flag": "recipe_skip",
+                    "detail": "skipped: reader measures exist",
+                },
+            )
+        else:
+            outcome, landed, result = _routed(
+                LlmRequest(
+                    tier=tier,
+                    prompt=_prompt.table_recipe_prompt(
+                        parsed=parsed,
+                        caption=caption,
+                        vocab=sorted(vocab.values(), key=lambda e: e.slug),
+                        paper_title=paper_title,
+                    ),
+                    source="survey_extract:table_recipe",
+                    ref_id=paper,
+                    # The op is registered — route() resolves its model
+                    # (a call-site pin would be ignored anyway).
+                    model=None,
+                    placement=None if model_pin else "local",
+                    thinking=False,
+                    temperature=0.0,
+                    # Unpinned for the reader's reason — a caller cap
+                    # under the op row's 4096 truncates a many-series
+                    # recipe behind gpt-oss reasoning tokens and reads
+                    # as unparseable (Opus finding 4).
+                    max_tokens=None,
+                    log_blobs=False,
+                ),
+                chunk=chunk,
+                stats=stats,
+                escalations=escalations,
+            )
+            if outcome is not None:
+                return outcome, landed, result
+            reply = _prompt.parse_reply(result.text)
+            model_used = getattr(result, "model", None) or model_pin
+            if reply is None or "table" not in reply:
+                # A truncated or unparseable recipe — including a reply
+                # that isn't a recipe at all (no "table" key) — falls
+                # back to the per-cell reader for this chunk.
+                stats["table:fallback"] += 1
+                stats["dropped"] += 1
+                stop = getattr(result, "stop_reason", None)
+                truncated = stop in _TRUNCATION_STOPS
+                stats["truncated" if truncated else "unparseable_reply"] += 1
+                _escalate(
+                    escalations,
+                    {
+                        "kind": "truncated" if truncated else "unparseable_reply",
+                        "chunk": chunk["chunk_id"],
+                        "chunk_kind": chunk["chunk_kind"],
+                        "stop_reason": stop,
+                        "detail": (result.text or "")[:200],
+                    },
+                )
+            else:
+                stats[
+                    "table:no_results" if reply.get("table") is None else "table:recipe"
+                ] += 1
+                runs, drops = _recipes.expand_recipe(
+                    parsed,
+                    reply,
+                    chunk_id=chunk["chunk_id"],
+                    caption=caption,
+                    vocab=vocab,
+                    paper=paper,
+                    table=table_no,
+                    chunk_text=chunk["text"],
+                    extraction_run=run_token,
+                    model=model_used,
+                )
+                _record_drops(drops, chunk=chunk, stats=stats, escalations=escalations)
+                _write_proposals(
+                    ctx,
+                    proposals=runs,
+                    chunk=chunk,
+                    stats=stats,
+                    escalations=escalations,
+                    glyph_flagged=glyph_flagged,
+                    model_used=model_used,
+                    raw_results=None,
+                )
+                return None, landed, result
+
+    if recipe_measures:
+        # Ruling 6 is symmetric (Opus r2 B): the table already holds
+        # recipe-path rows — the reader's sentence anchors don't
+        # dedupe against the recipe's cell spans, so a reader fallback
+        # (unparseable/truncated recipe reply, unparseable or ragged
+        # grid) would write a second copy. The reader call is skipped;
+        # the recipe rows stand.
+        stats["table:recipe_kept"] += 1
+        _escalate(
+            escalations,
+            {
+                "kind": "flag",
+                "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "flag": "reader_skip",
+                "detail": "skipped: recipe measures exist",
+            },
+        )
+        return None, None, None
+
+    outcome, landed, result = _routed(
+        reader_req(), chunk=chunk, stats=stats, escalations=escalations
+    )
+    if outcome is not None:
+        return outcome, landed, result
+    reply = _prompt.parse_reply(result.text)
+    model_used = getattr(result, "model", None) or model_pin
+    if reply is None:
+        stats["dropped"] += 1
+        stop = getattr(result, "stop_reason", None)
+        truncated = stop in _TRUNCATION_STOPS
+        stats["truncated" if truncated else "unparseable_reply"] += 1
+        _escalate(
+            escalations,
+            {
+                "kind": "truncated" if truncated else "unparseable_reply",
+                "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "stop_reason": stop,
+                "detail": (result.text or "")[:200],
+            },
+        )
+        return None, landed, result
+    outcome_runs = build_runs(
+        reply,
+        chunk_id=chunk["chunk_id"],
+        chunk_text=chunk["text"],
+        paper_ref_id=paper,
+        vocab=vocab,
+        extraction_run=run_token,
+        model=model_used,
+    )
+    _record_drops(
+        outcome_runs.dropped, chunk=chunk, stats=stats, escalations=escalations
+    )
+    for oflag in outcome_runs.flags:
+        flag_name = str(oflag.get("flag") or "unknown")
+        stats[f"flag:{flag_name}"] = stats.get(f"flag:{flag_name}", 0) + 1
+        _escalate(
+            escalations,
+            {
+                "kind": "flag",
+                "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "flag": oflag.get("flag"),
+                "location": oflag.get("location"),
+                "detail": str(oflag.get("detail"))[:200],
+            },
+        )
+    raw_results = reply.get("results") or []
+    if not outcome_runs.proposals and not outcome_runs.dropped:
+        # A parsed reply that produced nothing — no proposals, no named
+        # drops — leaves no trace in the counters otherwise (gr512371:
+        # five approved b1 rows vanished behind a silent results=[]).
+        stats["empty_result"] += 1
+        _escalate(
+            escalations,
+            {
+                "kind": "empty_result",
+                "chunk": chunk["chunk_id"],
+                "chunk_kind": chunk["chunk_kind"],
+                "detail": f"reader reply yielded nothing ({len(raw_results)} results)",
+            },
+        )
+    _write_proposals(
+        ctx,
+        proposals=outcome_runs.proposals,
+        chunk=chunk,
+        stats=stats,
+        escalations=escalations,
+        glyph_flagged=glyph_flagged,
+        model_used=model_used,
+        raw_results=raw_results,
+    )
+    return None, landed, result
 
 
 def _survey_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
@@ -778,11 +1051,52 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     title = _paper_title(ctx.store, paper)
     glyph_flagged = _paper_glyph_flag(ctx.store, paper)
     allow = _measurand_allow(ctx.store, params.get("measurands"))
+    kinds = _chunk_kinds_sel(ctx.store, params.get("chunk_kinds"))
     vocab = _vocab(
         ctx.store,
         (None if allow else _measurand_root(ctx.store, params.get("measurand_root"))),
         allow,
     )
+
+    # The recipe path's caption/table-number lookups, computed once over
+    # the loaded chunks — slice 1's assign_captions pairing (one-to-one,
+    # number-checked) and table_runs' logical-table ordinals (the T<n>
+    # meta.table.table carries).
+    table_seq = [
+        (c["chunk_id"], c["ord"], table_sig(c["text"]))
+        for c in chunks
+        if c["chunk_kind"] == "table"
+    ]
+    captions = assign_captions(
+        table_seq,
+        [
+            (c["chunk_id"], c["ord"], c["text"])
+            for c in chunks
+            if c["chunk_kind"] != "table"
+        ],
+    )
+    runs = table_runs(table_seq)
+    table_no = {cid: g_idx + 1 for g_idx, run in enumerate(runs) for cid, _ord in run}
+    headers = run_headers({c["chunk_id"]: c["text"] for c in chunks}, table_seq, runs)
+    # Opus ruling 6: a table the reader path already extracted keeps
+    # its rows — the recipe call skips it rather than writing a
+    # second copy at spans the reader's anchors don't dedupe against.
+    reader_tables = {
+        table_no[cid]
+        for cid in ctx.store.non_recipe_measure_chunks(
+            [cid for cid, _o, _s in table_seq],
+            prompt=_recipes.RECIPE_PROMPT_VERSION,
+        )
+    }
+    # The ruling is symmetric (Opus r2 B): a table holding recipe-path
+    # rows must not fall back to the reader either — same spans mismatch.
+    recipe_tables = {
+        table_no[cid]
+        for cid in ctx.store.recipe_measure_chunks(
+            [cid for cid, _o, _s in table_seq],
+            prompt=_recipes.RECIPE_PROMPT_VERSION,
+        )
+    }
 
     if ctx.is_cancel_requested():
         return Done(summary="survey_extract cancelled", success=False)
@@ -796,7 +1110,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     while idx < len(chunks) and (processed < per_slice or local_lane):
         chunk = chunks[idx]
         idx += 1
-        if not include_all and _skippable(chunk):
+        if not include_all and _skippable(chunk, kinds):
             stats["skipped_section"] += 1
             continue
         if len(chunk["text"].strip()) < min_chars:
@@ -816,6 +1130,11 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             model_pin=model_pin,
             stats=stats,
             escalations=escalations,
+            caption=captions.get(chunk["chunk_id"]),
+            table_no=table_no.get(chunk["chunk_id"]),
+            run_header=headers.get(chunk["chunk_id"]),
+            reader_measures=(table_no.get(chunk["chunk_id"]) in reader_tables),
+            recipe_measures=(table_no.get(chunk["chunk_id"]) in recipe_tables),
         )
         if landed is not None:
             local_lane = landed == "local"
@@ -1025,6 +1344,20 @@ def _survey_done(
     meta: dict[str, Any] = {
         "extraction_run": run_token,
         "stats": stats,
+        "drops_by_reason": {
+            k[len("drop:") :]: v
+            for k, v in sorted(stats.items())
+            if k.startswith("drop:") and v
+        },
+        "flags_by_kind": {
+            k[len("flag:") :]: v
+            for k, v in sorted(stats.items())
+            if k.startswith("flag:") and v
+        },
+        "tables": {
+            name: stats.get(f"table:{name}", 0)
+            for name in ("recipe", "fallback", "no_results", "ragged")
+        },
         "escalation_count": len(escalations),
         "escalations": escalations,
     }
@@ -1046,6 +1379,7 @@ def validate(store: Store, params: dict[str, Any]) -> None:
             next="pass a live paper ref_id, pa<id> handle or slug",
         )
     _measurand_allow(store, params.get("measurands"))
+    _chunk_kinds_sel(store, params.get("chunk_kinds"))
 
 
 SPEC = JobTypeSpec(
@@ -1108,7 +1442,7 @@ def _batch_rows(
             "SELECT m.id, m.measurand_ref_id, m.literal, m.reported_unit, "
             "       m.subject, m.span, m.anchor_scheme, m.run_key, "
             "       m.conditions, l.src_chunk_id, t.meta->>'slug', "
-            "       m.subject_ref_id "
+            "       m.subject_ref_id, m.meta->'table' "
             "  FROM measures m "
             "  LEFT JOIN links l ON l.link_id = m.primary_link_id "
             "  LEFT JOIN refs t ON t.ref_id = m.measurand_ref_id "
@@ -1133,6 +1467,7 @@ def _batch_rows(
             "anchored": r[9] is not None,
             "measurand": r[10] or str(r[1]),
             "subject_ref_id": int(r[11]),
+            "table_meta": r[12] if isinstance(r[12], dict) else None,
         }
         for r in rows
     ]
@@ -1148,6 +1483,14 @@ def _latest_run_token(store: Store, paper: int) -> str | None:
             (paper,),
         ).fetchone()
     return str(row[0]) if row and row[0] else None
+
+
+def _chunk_text(store: Store, chunk_id: Any) -> str | None:
+    with store.pool.connection() as conn:
+        r = conn.execute(
+            "SELECT text FROM chunks WHERE chunk_id = %s", (chunk_id,)
+        ).fetchone()
+    return str(r[0]) if r and r[0] else None
 
 
 def _span_text(store: Store, row: dict[str, Any]) -> str | None:
@@ -1322,6 +1665,18 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                 "reason": "anchor chunk missing",
             }
             continue
+        table_ctx = measure.get("table_meta")
+        if isinstance(table_ctx, dict):
+            # The reviewer's table context: the series label, the cell's
+            # 1-based coordinates and the paired caption's text —
+            # without them the sample is one bare cell with no column
+            # name.
+            table_ctx = dict(table_ctx)
+            cap_text = _chunk_text(ctx.store, table_ctx.get("caption_chunk"))
+            if cap_text:
+                table_ctx["caption"] = cap_text
+        else:
+            table_ctx = None
         result = route(
             LlmRequest(
                 tier=tier,
@@ -1336,6 +1691,7 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                         str(measure["run_key"] or ""),
                         measure.get("conditions"),
                     ),
+                    table=table_ctx,
                 ),
                 source="measure_accept",
                 ref_id=measure["subject_ref_id"],

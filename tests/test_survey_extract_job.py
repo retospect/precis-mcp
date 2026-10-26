@@ -18,6 +18,8 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
+from precis.extract.proposals import READER_PROMPT_VERSION
+from precis.extract.recipes import RECIPE_PROMPT_VERSION
 from precis.store import Migrator, Store, Tag
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.utils.llm.router import Rung, Transport
@@ -1754,7 +1756,10 @@ class TestR92Units:
             store,
             world["paper"],
             ord_=4,
-            text="| Scenario | Emissions in 2050 |\n| Fossil | −54% |",
+            # A ragged row keeps this table on the per-cell reader path
+            # the gripe pinned — a parseable grid would take the recipe
+            # op instead (gr506762 slice 2).
+            text="| Scenario | Emissions in 2050 |\n| Fossil | −54% | extra |",
             chunk_kind="table",
         )
         measurand = "emission-reduction-potential-fraction-below-baseline"
@@ -2490,6 +2495,492 @@ class TestPausedBound:
         out = dispatch(fake_ctx(store, meta, []), job.SPEC)
         assert isinstance(out, Yield)
         assert out.state["pause_streak"] == 1
+
+
+class TestTableRecipes:
+    """gr506762 slice 2: a parseable, non-ragged table chunk takes one
+    ``survey_extract:table_recipe`` call — the grid-to-measurand mapping —
+    and ``expand_recipe``'s runs land through the same insert_measure
+    loop. A ragged grid, an unparseable grid, or a recipe reply that
+    isn't a recipe keeps the per-cell reader path."""
+
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
+    # Two FE columns print the same literal on one row — the
+    # decision-5 case a row anchor would collapse into a dup refusal.
+    TABLE1 = (
+        "| Catalyst | FE NH3 (%) | j_total (A m-2) | E_ads (eV) | FE dup (%) |\n"
+        "| Cu NWA | 95 | 1000 | -1.87 | 95 |\n"
+        "| Pd mem | 60 | 800 | -0.80 | 60 |"
+    )
+    CAPTION1 = "Table 1. Faradaic efficiencies at 300 K."
+    RAGGED = "| a | b | c |\n|---|---|---|\n| 1 | 2 |\n| 3 | 4 | 5 |"
+    TABLE3 = "| Key | Value |\n|---|---|\n| mode | auto |"
+
+    @staticmethod
+    def _recipe(
+        *series: dict[str, Any], conditions: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        return {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "group": "Table 1",
+                "attribution": "own_work",
+                "tier": "measured",
+                "conditions": conditions or [],
+                "series": list(series),
+            }
+        }
+
+    @staticmethod
+    def _router(
+        recipe_replies: list[str],
+    ) -> tuple[list[Any], Any]:
+        """A route() stub: records every request, answers recipe ops from
+        ``recipe_replies`` in call order, everything else an empty reader."""
+        calls: list[Any] = []
+        it = iter(recipe_replies)
+
+        def _route(req: Any) -> Any:
+            calls.append(req)
+            if req.source == "survey_extract:table_recipe":
+                return llm_result(next(it, '{"table": null}'))
+            return llm_result('{"results": []}')
+
+        return calls, _route
+
+    def test_one_recipe_call_per_table_chunk(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC 3/6: one call on the recipe op (not one per cell); same-
+        literal cells in a row land as distinct cell-anchored rows; the
+        caption's temperature rides every run."""
+        store = world["store"]
+        make_taxon(store, "temperature", unit="K", parent=world["root"])
+        cap_id = _seed_body_chunk(store, world["paper"], ord_=3, text=self.CAPTION1)
+        t_id = _seed_body_chunk(
+            store, world["paper"], ord_=4, text=self.TABLE1, chunk_kind="table"
+        )
+        recipe = self._recipe(
+            {
+                "index": 1,
+                "measurand": "faradaic-efficiency",
+                "unit": "%",
+                "role": "output",
+            },
+            {
+                "index": 2,
+                "measurand": "total-current-density",
+                "unit": "A m-2",
+                "role": "output",
+            },
+            {
+                "index": 3,
+                "measurand": "adsorption-energy",
+                "unit": "eV",
+                "role": "output",
+            },
+            {
+                "index": 4,
+                "measurand": "faradaic-efficiency",
+                "unit": "%",
+                "role": "output",
+            },
+            conditions=[
+                {
+                    "condition": "temperature",
+                    "measurand": "temperature",
+                    "literal": "300 K",
+                    "role": "context",
+                    "source": "caption",
+                }
+            ],
+        )
+        calls, _route = self._router([json.dumps(recipe)])
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        recipe_calls = [r for r in calls if r.source == "survey_extract:table_recipe"]
+        assert len(recipe_calls) == 1
+        # Unpinned like the reader — a caller cap under the op row's
+        # 4096 truncates a many-series recipe (Opus finding 4).
+        assert recipe_calls[0].max_tokens is None
+        rows = store.measures_for(world["paper"], include_superseded=True)
+        outs = [r for r in rows if r["direction"] == "output"]
+        assert len(outs) == 8  # 4 series × 2 rows
+        fe95 = [
+            r
+            for r in outs
+            if r["measurand_ref_id"] == world["fe"] and r["literal"] == "95"
+        ]
+        assert len(fe95) == 2
+        assert fe95[0]["span"] != fe95[1]["span"]  # cell anchors, not row
+        assert all(r["extraction_status"] == "anchor_matched" for r in outs)
+        for r in outs:
+            tm = r["meta"]["table"]
+            assert tm["chunk"] == t_id and tm["table"] == 1
+            assert tm["orientation"] == "columns"
+            assert tm["caption_chunk"] == cap_id
+            assert tm["row"] in (1, 2) and tm["col"] in (2, 3, 4, 5)
+        ins = [r for r in rows if r["direction"] == "input"]
+        assert len(ins) == 8
+        assert all(r["literal"] == "300 K" for r in ins)
+        assert all(r["span"][0] == cap_id for r in ins)
+        assert all(r["extraction_status"] == "anchor_matched" for r in ins)
+
+    def test_tables_buckets_and_drops_by_reason(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC 5: recipe + fallback + no_results + ragged count the table
+        chunks read; drops_by_reason names the escalation reasons."""
+        store = world["store"]
+        _seed_body_chunk(
+            store, world["paper"], ord_=3, text=self.TABLE1, chunk_kind="table"
+        )
+        _seed_body_chunk(
+            store, world["paper"], ord_=4, text=self.RAGGED, chunk_kind="table"
+        )
+        _seed_body_chunk(
+            store, world["paper"], ord_=5, text=self.TABLE3, chunk_kind="table"
+        )
+        recipe = self._recipe(
+            {
+                "index": 1,
+                "measurand": "faradaic-efficiency",
+                "unit": "%",
+                "role": "output",
+            },
+            {
+                "index": 4,
+                "measurand": "no-such-measurand",
+                "unit": "%",
+                "role": "output",
+            },
+        )
+        calls, _route = self._router(
+            [json.dumps(recipe), '{"table": null, "reason": "setpoints"}']
+        )
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        meta = done.summary_meta
+        assert meta["tables"] == {
+            "recipe": 1,
+            "fallback": 0,
+            "no_results": 1,
+            "ragged": 1,
+        }
+        assert sum(meta["tables"].values()) == 3
+        assert meta["drops_by_reason"] == {
+            "unknown_measurand": 1,
+            "ragged_table": 1,
+            "no_results": 1,
+        }
+        # The ragged table fell back to the reader op, never the recipe op.
+        recipe_calls = [r for r in calls if r.source == "survey_extract:table_recipe"]
+        assert len(recipe_calls) == 2
+        outs = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output"
+        ]
+        assert {r["literal"] for r in outs} == {"95", "60"}
+
+    def test_unparseable_recipe_falls_back_to_reader(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recipe reply that isn't a recipe (a truncated blob, or the
+        reader's own shape) is unparseable *as a recipe* — the chunk then
+        keeps the per-cell reader path."""
+        store = world["store"]
+        _seed_body_chunk(
+            store, world["paper"], ord_=3, text=self.TABLE1, chunk_kind="table"
+        )
+        calls, _route = self._router(["{truncated"])
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        meta = done.summary_meta
+        assert meta["tables"]["fallback"] == 1
+        assert meta["stats"]["unparseable_reply"] == 1
+        # One recipe call plus the reader fallback call on the same chunk;
+        # the three paragraphs take the reader op as usual.
+        assert len([r for r in calls if r.source == "survey_extract"]) == 4
+        assert len([r for r in calls if r.source == "survey_extract:table_recipe"]) == 1
+
+    def test_caption_condition_missing_literal_still_writes(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A caption condition whose literal isn't in the caption writes
+        anyway — insert_measure's own computation flags it
+        anchor_mismatch, never refuses."""
+        store = world["store"]
+        temp = make_taxon(store, "temperature", unit="K", parent=world["root"])
+        _seed_body_chunk(
+            store, world["paper"], ord_=3, text="Table 1. Reported values."
+        )
+        _seed_body_chunk(
+            store, world["paper"], ord_=4, text=self.TABLE1, chunk_kind="table"
+        )
+        recipe = self._recipe(
+            {
+                "index": 1,
+                "measurand": "faradaic-efficiency",
+                "unit": "%",
+                "role": "output",
+            },
+            conditions=[
+                {
+                    "condition": "temperature",
+                    "measurand": "temperature",
+                    "literal": "310 K",
+                    "role": "context",
+                    "source": "caption",
+                }
+            ],
+        )
+        _calls, _route = self._router([json.dumps(recipe)])
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        ins = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "input"
+        ]
+        assert ins and all(r["measurand_ref_id"] == temp for r in ins)
+        assert all(r["extraction_status"] == "anchor_mismatch" for r in ins)
+
+    def test_rerun_dup_skips_every_cell(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC 3's dedupe half: a re-run of the job re-derives the same
+        literals on the same cell spans and the store's duplicate
+        refusal turns them all into skips."""
+        store = world["store"]
+        _seed_body_chunk(
+            store, world["paper"], ord_=3, text=self.TABLE1, chunk_kind="table"
+        )
+        recipe = json.dumps(
+            self._recipe(
+                {
+                    "index": 1,
+                    "measurand": "faradaic-efficiency",
+                    "unit": "%",
+                    "role": "output",
+                }
+            )
+        )
+        _calls, _route = self._router([recipe, recipe])
+        monkeypatch.setattr(job, "route", _route)
+        meta = _extract_meta(world, skip_accept=True)
+        drive(meta, store, job.SPEC)
+        before = len(store.measures_for(world["paper"], include_superseded=True))
+        assert before == 2
+        done2, _ = drive(meta, store, job.SPEC)
+        assert done2.success
+        after = store.measures_for(world["paper"], include_superseded=True)
+        assert len(after) == before
+        assert "skipped_dup=2" in done2.summary
+
+    def test_chunk_kinds_tables_only_and_validation(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``params.chunk_kinds`` narrows the pass — ['table'] skips the
+        paragraphs — and an unknown slug refuses at put time."""
+        store = world["store"]
+        job.validate(
+            store,
+            {"paper": world["paper"], "chunk_kinds": ["paragraph", "table"]},
+        )
+        with pytest.raises(BadInput, match="unknown chunk_kind"):
+            job.validate(
+                store,
+                {"paper": world["paper"], "chunk_kinds": ["tabel"]},
+            )
+        _seed_body_chunk(
+            store, world["paper"], ord_=3, text=self.TABLE1, chunk_kind="table"
+        )
+        recipe = self._recipe(
+            {
+                "index": 1,
+                "measurand": "faradaic-efficiency",
+                "unit": "%",
+                "role": "output",
+            }
+        )
+        calls, _route = self._router([json.dumps(recipe)])
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(
+            _extract_meta(world, skip_accept=True, chunk_kinds=["table"]),
+            store,
+            job.SPEC,
+        )
+        assert done.success
+        assert [r.source for r in calls] == ["survey_extract:table_recipe"]
+        assert len(store.measures_for(world["paper"], include_superseded=True)) == 2
+
+    def test_run_header_feeds_a_continuation_chunk(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opus finding 3: an ``enforce_hard_max`` continuation opens
+        mid-table on a data row — no separator, so its own parse would
+        eat row 0 as the header (a lost row, and columns named '60' /
+        '800'). ``_run_headers`` feeds it the run head's header lines
+        instead: every tail line is a data row, the columns carry the
+        head's labels, and the cell anchors slice the TAIL's text."""
+        store = world["store"]
+        head = (
+            "| Catalyst | FE NH3 (%) | j_total (A m-2) |\n"
+            "|---|---|---|\n"
+            "| Cu NWA | 95 | 1000 |"
+        )
+        tail = "| Pd mem | 60 | 800 |\n| Au film | 30 | 400 |"
+        h_id = _seed_body_chunk(
+            store, world["paper"], ord_=3, text=head, chunk_kind="table"
+        )
+        t_id = _seed_body_chunk(
+            store, world["paper"], ord_=4, text=tail, chunk_kind="table"
+        )
+        recipe = json.dumps(
+            self._recipe(
+                {
+                    "index": 1,
+                    "measurand": "faradaic-efficiency",
+                    "unit": "%",
+                    "role": "output",
+                },
+                {
+                    "index": 2,
+                    "measurand": "total-current-density",
+                    "unit": "A m-2",
+                    "role": "output",
+                },
+            )
+        )
+        calls, _route = self._router([recipe, recipe])
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        # Both run members take the recipe op; the run is one logical table.
+        recipe_calls = [r for r in calls if r.source == "survey_extract:table_recipe"]
+        assert len(recipe_calls) == 2
+        assert done.summary_meta["tables"]["recipe"] == 2
+        outs = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output"
+        ]
+        tail_rows = [r for r in outs if r["meta"]["table"]["chunk"] == t_id]
+        assert len(tail_rows) == 4  # 2 series × 2 tail rows, none eaten
+        for r in tail_rows:
+            tm = r["meta"]["table"]
+            assert tm["table"] == 1
+            assert tm["row"] in (1, 2) and tm["col"] in (2, 3)
+            # The head's column labels, not the tail's first data row.
+            assert tm["header"] in ("FE NH3 (%)", "j_total (A m-2)")
+            cid, s, e = r["span"]
+            assert cid == t_id and tail[s:e] == r["literal"]
+        head_rows = [r for r in outs if r["meta"]["table"]["chunk"] == h_id]
+        assert len(head_rows) == 2
+
+    def test_reader_measures_skip_the_recipe_call(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opus finding 6: a table already holding reader-path output
+        rows keeps them — the recipe's cell spans don't dedupe against
+        the reader's sentence anchors, so a recipe write would land the
+        same values twice. The recipe call is skipped ('skipped: reader
+        measures exist') and the chunk keeps the reader path."""
+        store = world["store"]
+        t_id = _seed_body_chunk(
+            store, world["paper"], ord_=3, text=self.TABLE1, chunk_kind="table"
+        )
+        start = self.TABLE1.find("95")
+        seeded = store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["fe"],
+                literal="95",
+                subject_ref_id=world["paper"],
+                reported_unit="%",
+                tier="measured",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"], t_id, "offsets", [t_id, start, start + 2]
+                ),
+                meta={
+                    "extraction_run": "reader-run",
+                    "extraction": {"chunk": t_id, "prompt": READER_PROMPT_VERSION},
+                },
+            ),
+            actor="test",
+        ).output_id
+        calls, _route = self._router(["{unused — the recipe call never runs"])
+        monkeypatch.setattr(job, "route", _route)
+        done, events = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        assert not [r for r in calls if r.source == "survey_extract:table_recipe"]
+        # The chunk still took the reader path — one reader call each for
+        # the three paragraphs and the table.
+        assert len([r for r in calls if r.source == "survey_extract"]) == 4
+        assert done.summary_meta["stats"]["table:reader_skip"] == 1
+        job_summary = next(t for k, t in events if k == "job_summary")
+        assert "skipped: reader measures exist" in job_summary
+        live = store.measures_for(world["paper"])
+        assert [r["id"] for r in live] == [seeded]
+        assert live[0]["superseded_by"] is None
+
+    def test_recipe_measures_skip_the_reader_fallback(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ruling 6 is symmetric (Opus r2 B): a table already holding
+        recipe-path rows keeps them — when a rerun's recipe reply is
+        unparseable, the reader fallback is skipped too ('skipped:
+        recipe measures exist'), since the reader's sentence anchors
+        don't dedupe against the recipe's cell spans."""
+        store = world["store"]
+        t_id = _seed_body_chunk(
+            store, world["paper"], ord_=3, text=self.TABLE1, chunk_kind="table"
+        )
+        start = self.TABLE1.find("95")
+        seeded = store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["fe"],
+                literal="95",
+                subject_ref_id=world["paper"],
+                reported_unit="%",
+                tier="measured",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"], t_id, "offsets", [t_id, start, start + 2]
+                ),
+                meta={
+                    "extraction_run": "recipe-run",
+                    "extraction": {"chunk": t_id, "prompt": RECIPE_PROMPT_VERSION},
+                },
+            ),
+            actor="test",
+        ).output_id
+        calls, _route = self._router(["{truncated"])
+        monkeypatch.setattr(job, "route", _route)
+        done, events = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        # The recipe call ran and was unparseable; the reader fallback
+        # on the table chunk was skipped — only the paragraphs read.
+        assert len([r for r in calls if r.source == "survey_extract:table_recipe"]) == 1
+        assert len([r for r in calls if r.source == "survey_extract"]) == 3
+        assert done.summary_meta["stats"]["table:recipe_kept"] == 1
+        job_summary = next(t for k, t in events if k == "job_summary")
+        assert "skipped: recipe measures exist" in job_summary
+        live = store.measures_for(world["paper"])
+        assert [r["id"] for r in live] == [seeded]
+        assert live[0]["superseded_by"] is None
 
 
 def _seed_body_chunk(

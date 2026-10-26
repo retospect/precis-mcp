@@ -34,9 +34,10 @@ from precis.errors import BadInput
 from precis.extract.tables import (
     ParsedTable,
     assign_captions,
-    first_pipe_line,
     parse_table,
+    run_headers,
     table_runs,
+    table_sig,
 )
 from precis.response import Response
 from precis.utils import handle_registry
@@ -218,8 +219,12 @@ def render_tables_view(
     # Logical tables = runs of ord-adjacent same-header table chunks
     # (ingest splits big tables). ``T<n>`` and ``args={'table': n}``
     # number the runs; a match hit on any part shows the whole run.
-    triples = [(cid, ord_, first_pipe_line(t)) for cid, ord_, t, _sp in tables]
+    triples = [(cid, ord_, table_sig(t)) for cid, ord_, t, _sp in tables]
     runs = table_runs(triples)
+    # A hard_max continuation has no separator header of its own — it
+    # parses against the run head's header so the grid the view shows
+    # numbers the same data rows meta.table carries (gr506762 r3 A).
+    headers = run_headers({cid: t for cid, _o, t, _sp in tables}, triples, runs)
     idx_of = {t[0]: i for i, t in enumerate(tables)}
     part_of = {cid: p for run in runs for p, (cid, _o) in enumerate(run, 1)}
     show: list[int] = list(range(len(runs)))
@@ -247,16 +252,16 @@ def render_tables_view(
             for cid, _o in run:
                 i = idx_of[cid]
                 _c, _o2, text, _sp = tables[i]
-                parsed = parse_table(cid, text)
+                parsed = parse_table(cid, text, header=headers.get(cid))
                 parsed_by_i[i] = parsed
-                headers = (
+                col_headers = (
                     [c.header for c in parsed.columns] if parsed is not None else []
                 )
                 labels = [r[0].text for r in parsed.rows] if parsed is not None else []
                 cap = captions.get(cid)
                 if _match_hit(
                     words,
-                    headers or [text[:200]],
+                    col_headers or [text[:200]],
                     cap[1] if cap is not None else None,
                     labels,
                 ):
@@ -274,7 +279,7 @@ def render_tables_view(
             i = idx_of[cid]
             _c, _o2, text, section_path = tables[i]
             if i not in parsed_by_i:
-                parsed_by_i[i] = parse_table(cid, text)
+                parsed_by_i[i] = parse_table(cid, text, header=headers.get(cid))
             part = part_of[cid]
             label = f"T{g_idx + 1}" if part == 1 else f"T{g_idx + 1} (part {part})"
             sections.append(

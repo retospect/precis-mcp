@@ -23,7 +23,7 @@ header or row label carrying a citation marker (``et al.``,
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from precis.errors import BadInput
@@ -62,6 +62,7 @@ class ParsedTable:
     rows: list[list[Cell]]  # data rows only, separator dropped
     row_spans: list[tuple[int, int]]  # offsets of each data row line
     header_rows: int  # 0, 1 or 2
+    header_lines: list[str]  # the raw header lines — a continuation parses against them
     ragged_rows: list[int]  # data-row indices whose cell count != header's
     row_label_cited: list[bool]  # per row: label cell carries a citation marker
 
@@ -233,27 +234,57 @@ def _caption_number(token: str) -> int | None:
 
 
 def first_pipe_line(text: str) -> str | None:
-    """The chunk's first line that opens ``|`` — a pipe table's header
-    row — or ``None`` when the chunk holds no pipe grid at all (a
-    ``hard_max``/``split_text`` fallback piece). ``split_table``
-    prepends the original header to every part it writes, so equal
-    first pipe lines are the evidence that two adjacent table chunks
-    are parts of one table rather than two tables printed back to
-    back. The exception is ``split_table``'s degenerate path — a
-    corrupted table, an oversized header, or a part still over
-    ``hard_max`` goes through ``split_text`` mid-body, so its
-    continuation pieces open on a *data row*, not the header; those
-    keep their own ``T<n>`` numbers (deliberately conservative — a
-    mis-split tail rendered as its own table beats two real tables
-    merged into one)."""
-    for line in text.split("\n"):
-        if line.lstrip().startswith("|"):
-            return line.strip()
+    """The chunk's table header — its first ``|`` line, returned only
+    when the *next* ``|`` line is a ``|---|`` separator, i.e. the
+    chunk opens on a real header row. ``None`` when the chunk holds
+    no pipe grid at all (a ``hard_max``/``split_text`` fallback
+    piece) or opens mid-table on a data row — ``enforce_hard_max``
+    cuts an oversized part mid-body, and its continuation pieces
+    must join their run (``table_runs`` admits ``None``) rather than
+    split off as a new logical table that can steal the next table's
+    numbered caption. ``split_table`` prepends the original header —
+    row plus separator — to every part it writes, so equal first
+    pipe lines are the evidence that two adjacent table chunks are
+    parts of one table rather than two tables printed back to
+    back."""
+    pipe = _pipe_lines(text)
+    if len(pipe) >= 2 and _is_table_separator(pipe[1]):
+        return pipe[0]
     return None
 
 
+def _pipe_lines(text: str) -> list[str]:
+    return [ln.strip() for ln in text.split("\n") if ln.lstrip().startswith("|")]
+
+
+@dataclass(frozen=True, slots=True)
+class TableSig:
+    """Run evidence for one ``chunk_kind='table'`` chunk — the fields
+    :func:`table_runs` groups on (gr506762)."""
+
+    header: str | None  # separator-backed first pipe line, else None
+    ncols: int  # cell count of the first pipe line; 0 = no pipe grid
+    caption: bool  # the chunk opens on a "Table N" caption line
+
+
+def table_sig(text: str) -> TableSig:
+    """The evidence ``table_runs`` groups on: the separator-backed
+    header (``None`` for a no-grid or mid-table piece), the first
+    pipe line's cell count, and whether the chunk opens on a
+    ``Table N`` caption line — a caption-start chunk is always a new
+    logical table, and a header-less piece joins its run only while
+    it plausibly continues it (same column count). The column count
+    comes from ``_row_cells``, the splitter ``parse_table`` uses —
+    ``"| x ||"`` (a trailing empty cell) counts as two columns, not
+    the one a ``strip('|')`` first loses."""
+    pipe = _pipe_lines(text)
+    header = pipe[0] if len(pipe) >= 2 and _is_table_separator(pipe[1]) else None
+    ncols = len(_row_cells(pipe[0], 0)) if pipe else 0
+    return TableSig(header, ncols, _CAPTION_RE.match(text) is not None)
+
+
 def table_runs(
-    tables: Sequence[tuple[int, int, str | None]],
+    tables: Sequence[tuple[int, int, TableSig]],
 ) -> list[list[tuple[int, int]]]:
     """Group table chunks into logical tables.
 
@@ -261,39 +292,62 @@ def table_runs(
     ``chunk_kind='table'`` chunks (``ingest/marker.py::split_table`` /
     ``enforce_hard_max``), so a chunk's position among the ref's table
     chunks is NOT the paper's table number. ``tables`` is
-    ``(chunk_id, ord, first_pipe_line)`` in ord order — see
-    :func:`first_pipe_line`. A chunk joins the current run only when
-    its ord is adjacent AND its first pipe line either equals the
-    run's (the header ``split_table`` prepends to every part) or is
-    ``None`` (a no-grid fallback piece). Two *different* tables printed
-    back to back have different headers, so they stay separate groups.
+    ``(chunk_id, ord, table_sig)`` in ord order — see
+    :func:`table_sig`. A chunk joins the current run only when its
+    ord is adjacent AND its evidence says it continues the same
+    table — a separator-backed header equal to the run's (the header
+    ``split_table`` prepends to every part), or no header evidence
+    (a no-grid fallback piece, or an ``enforce_hard_max`` continuation
+    opening mid-table on a data row) with a first-pipe-line cell
+    count equal to the run's. The run's evidence is its LAST member
+    holding a grid (``ncols > 0``), not its head: a no-grid head
+    would otherwise let any later header-less chunk join, fusing two
+    different separator-less tables behind it. Two break rules hold
+    either way: a chunk opening on a ``Table N`` caption line always
+    starts a new run, and a header-less piece whose column count
+    differs from the run's is a different table — two separator-less
+    tables printed back to back must not fuse (Opus ruling, gr506762).
 
     Returns the groups in ord order as ``(chunk_id, ord)`` runs; a
     lone chunk is a group of one."""
     runs: list[list[tuple[int, int]]] = []
-    headers: list[str | None] = []
-    for t_id, t_ord, header in tables:
+    sigs: list[TableSig] = []  # per run: the last member's sig holding a grid
+    for t_id, t_ord, sig in tables:
+        base = sigs[-1] if sigs else None
         if (
             runs
             and t_ord == runs[-1][-1][1] + 1
-            and (header is None or header == headers[-1])
+            and not sig.caption
+            and base is not None
+            and (
+                (sig.header is not None and sig.header == base.header)
+                or (
+                    sig.header is None
+                    and (sig.ncols == 0 or base.ncols == 0 or sig.ncols == base.ncols)
+                )
+            )
         ):
             runs[-1].append((t_id, t_ord))
+            if sig.ncols > 0:
+                # The base keeps the run's header evidence: a hard_max
+                # continuation carries ``header=None``, and blanking it
+                # would break the next ``split_table`` part's join.
+                sigs[-1] = TableSig(sig.header or base.header, sig.ncols, base.caption)
         else:
             runs.append([(t_id, t_ord)])
-            headers.append(header)
+            sigs.append(sig)
     return runs
 
 
 def assign_captions(
-    tables: Sequence[tuple[int, int, str | None]],
+    tables: Sequence[tuple[int, int, TableSig]],
     neighbours: Sequence[tuple[int, int, str]],
     window: int = 2,
 ) -> dict[int, tuple[int, str]]:
     """Pair each logical table with at most one caption chunk, one-to-one.
 
-    ``tables`` is ``(chunk_id, ord, first_pipe_line)`` for the ref's
-    table chunks in ord order. Ord-adjacent same-header runs collapse
+    ``tables`` is ``(chunk_id, ord, table_sig)`` for the ref's
+    table chunks in ord order. Ord-adjacent same-evidence runs collapse
     into logical tables via :func:`table_runs` — a table's number is
     its group index, and a
     caption whose number parses (``Table 2``, ``Table IV``) may only
@@ -360,16 +414,26 @@ def _numeric_cell(text: str) -> bool:
     return parse_literal(strip_footnote(text)[0]).form != "categorical"
 
 
-def parse_table(chunk_id: int, text: str) -> ParsedTable | None:
+def parse_table(
+    chunk_id: int, text: str, *, header: Sequence[str] | None = None
+) -> ParsedTable | None:
     """Parse a ``chunk_kind='table'`` chunk's pipe grid, or ``None``
-    when fewer than two lines start with ``|``.
+    when fewer than two lines start with ``|`` (one data row is
+    enough when ``header`` supplies the header externally).
 
-    Line/offset bookkeeping: every cell's ``text`` is a verbatim slice
-    of the chunk — ``text[cell.start:cell.end] == cell.text`` always
-    holds (the recipe slice's anchors depend on it). The separator line
-    marks the end of the header; with no separator, row 0 is the header
-    and row 1 joins it when row 1 has no numeric cell while row 0 has
-    empty cells (the transposed 'sources in columns' shape).
+    ``header`` is the run head's header lines for an
+    ``enforce_hard_max`` continuation: its own text opens mid-table
+    on a data row, so the run's header is supplied rather than letting
+    row 0 be eaten as a header (gr506762 — the recipe path's column
+    names, cited flags and 1-based row numbers all depend on it).
+    Every cell's ``text`` is still a verbatim slice of THIS chunk —
+    ``text[cell.start:cell.end] == cell.text`` always holds (the
+    recipe slice's anchors depend on it); the supplied header lines
+    only build the ``Column`` records and never anchor anything. With
+    no ``header``, the separator line marks the end of the header;
+    with no separator, row 0 is the header and row 1 joins it when
+    row 1 has no numeric cell while row 0 has empty cells (the
+    transposed 'sources in columns' shape).
     """
     pos = 0
     pipe_rows: list[tuple[int, int, str]] = []
@@ -383,27 +447,38 @@ def parse_table(chunk_id: int, text: str) -> ParsedTable | None:
         pos = end + 1
         if line.lstrip().startswith("|"):
             pipe_rows.append((start, end, line))
-    if len(pipe_rows) < 2:
+    if len(pipe_rows) < (1 if header else 2):
         return None
 
-    sep_idx = next(
-        (i for i, (_s, _e, ln) in enumerate(pipe_rows) if _is_table_separator(ln)),
-        None,
-    )
-    if sep_idx is not None:
-        header_rows = min(sep_idx, 2)
+    if header:
+        # The header lives in the run head's text — its cell offsets
+        # index that line, not this chunk, and are only ever used for
+        # ``Column`` records.
+        raw_header = list(header)
+        header_lines = [_row_cells(ln, 0) for ln in raw_header]
+        header_rows = len(header_lines)
+        data_rows = pipe_rows
     else:
-        header_rows = 1
-        r0 = _row_cells(pipe_rows[0][2], pipe_rows[0][0])
-        r1 = _row_cells(pipe_rows[1][2], pipe_rows[1][0])
-        if any(not cell for cell, _s, _e in r0) and not any(
-            _numeric_cell(cell) for cell, _s, _e in r1
-        ):
-            header_rows = 2
+        sep_idx = next(
+            (i for i, (_s, _e, ln) in enumerate(pipe_rows) if _is_table_separator(ln)),
+            None,
+        )
+        if sep_idx is not None:
+            header_rows = min(sep_idx, 2)
+        else:
+            header_rows = 1
+            r0 = _row_cells(pipe_rows[0][2], pipe_rows[0][0])
+            r1 = _row_cells(pipe_rows[1][2], pipe_rows[1][0])
+            if any(not cell for cell, _s, _e in r0) and not any(
+                _numeric_cell(cell) for cell, _s, _e in r1
+            ):
+                header_rows = 2
 
-    header_lines = [
-        _row_cells(pipe_rows[i][2], pipe_rows[i][0]) for i in range(header_rows)
-    ]
+        raw_header = [ln for _s, _e, ln in pipe_rows[:header_rows]]
+        header_lines = [
+            _row_cells(pipe_rows[i][2], pipe_rows[i][0]) for i in range(header_rows)
+        ]
+        data_rows = pipe_rows[header_rows:]
     ncols = len(header_lines[0]) if header_lines else 0
 
     columns: list[Column] = []
@@ -423,7 +498,7 @@ def parse_table(chunk_id: int, text: str) -> ParsedTable | None:
     row_spans: list[tuple[int, int]] = []
     ragged_rows: list[int] = []
     row_label_cited: list[bool] = []
-    for start, end, line in pipe_rows[header_rows:]:
+    for start, end, line in data_rows:
         if _is_table_separator(line):
             continue
         cells: list[Cell] = []
@@ -452,6 +527,40 @@ def parse_table(chunk_id: int, text: str) -> ParsedTable | None:
         rows=rows,
         row_spans=row_spans,
         header_rows=header_rows,
+        header_lines=raw_header,
         ragged_rows=ragged_rows,
         row_label_cited=row_label_cited,
     )
+
+
+def run_headers(
+    texts: Mapping[int, str],
+    tables: Sequence[tuple[int, int, TableSig]],
+    runs: Sequence[Sequence[tuple[int, int]]],
+) -> dict[int, list[str]]:
+    """``chunk_id -> run head's raw header lines`` for the table chunks
+    whose own text lacks a separator-backed header — the
+    ``enforce_hard_max`` continuations that must parse against the
+    head's header (``parse_table(header=…)``) so a first data row
+    isn't eaten as one (gr506762). ``texts`` maps chunk_id → chunk
+    text; ``tables``/``runs`` are the ``table_sig`` triples and the
+    :func:`table_runs` groups. Shared by ``survey_extract`` and the
+    ``view='tables'`` renderer so stored ``meta.table`` row numbers
+    and the view's grid agree."""
+    sig_of = {cid: sig for cid, _o, sig in tables}
+    out: dict[int, list[str]] = {}
+    for run in runs:
+        if len(run) < 2:
+            continue
+        # The header source is the first member that HAS one, not
+        # blindly chunk 1 — a gridless head piece carries none.
+        head = next((cid for cid, _o in run if sig_of[cid].header is not None), None)
+        if head is None:
+            continue
+        parsed = parse_table(head, texts[head])
+        if parsed is None:
+            continue
+        for cid, _o in run:
+            if sig_of[cid].header is None:
+                out[cid] = parsed.header_lines
+    return out
