@@ -107,6 +107,8 @@ Abandoned slots are stolen when the holder pid dies or after 45 min.
 scripts/test                         # full suite (-n6)
 scripts/test tests/test_x.py -k …    # subset; args pass through to pytest
 scripts/test --fast                  # fast set (-m 'not db and not slow'), no Postgres
+scripts/test --skills                # every tests/test_skill*.py — the
+                                     # skill-only change's selector (gr514383)
 scripts/test -m 'not slow'           # full-minus-glacial (skips the heavy cluster)
 scripts/test --impacted              # ONLY tests your change affects (testmon)
 scripts/test --selected              # the `ship --checked` selection via
@@ -220,6 +222,12 @@ Tiers, fastest to most complete — pick by what you changed:
   central-module diff could otherwise pull the heavy cluster into a selection
   that is *also* forced to `-n0`, making impacted mode slower than a plain
   full run. Pass your own `-m` to override.
+- **`--skills`** expands to every `tests/test_skill*.py` file — the quick
+  selector for a change that only touches `src/precis/data/skills/` or the
+  skill machinery (gr514383: an agent used to pick from 22 files by hand).
+  It is a plain file selection — extra pytest args still pass through, and
+  it gets the same small-selection auto `-n0` count as a hand-typed list.
+
 - **`--fast`** runs the **fast set** — `-m 'not db and not slow'`: skips every
   test that touches a `store`/`hub` fixture (auto-marked `db` in
   `tests/conftest.py`) *and* the heavy `slow` compute cluster. Both exclusions

@@ -21,6 +21,8 @@
 #   scripts/test -k "registry or env"         # a -k expression
 #   scripts/test tests/test_foo.py::test_bar -x
 #   scripts/test --fast                       # no-DB fast set (-m 'not db')
+#   scripts/test --skills                     # every tests/test_skill*.py —
+#                                             # the skill-only change's selector
 #   scripts/test --coverage [pytest args…]    # opt-in: run under pytest-cov with
 #                                             # per-test contexts, leaving
 #                                             # .coverage + .coverage.precis.json
@@ -110,6 +112,8 @@ Usage:
   scripts/test --co tests/test_foo.py       # collection list only: serial, no
                                             # test DB, no gate slot (gr515705)
   scripts/test --fast | -f                  # no-DB fast set (-m 'not db and not slow')
+  scripts/test --skills                     # every tests/test_skill*.py —
+                                            # the skill-only change's selector
   scripts/test --coverage [pytest args…]    # per-test .coverage + manifest
   scripts/test --impacted | -i              # ONLY tests your changes affect (testmon)
   scripts/test --selected                   # the ship --checked selection locally:
@@ -272,6 +276,11 @@ fi
 # the full suite).
 IMPACTED=0
 FAST=0
+# --skills (gr514383): a skill-only change's selector — every
+# tests/test_skill*.py, expanded to a real file list below so the
+# missing-path preflight, the auto -n0 count and the DB bring-up see the
+# same selection a hand-typed file list would.
+SKILLS=0
 # --selected : the `scripts/ship --checked` selection, run locally — the
 # CONTRACT invariant tests + PATH_MAP/corpus-coupled tests + python impact
 # (testmon when ./.testmondata exists, else the index's static evidence).
@@ -297,6 +306,7 @@ while :; do
         --coverage) COVERAGE=1; shift ;;
         --impacted|-i) IMPACTED=1; shift ;;
         --fast|-f) FAST=1; shift ;;
+        --skills) SKILLS=1; shift ;;
         --selected) SELECTED=1; shift ;;
         # --serial : the documented single-process mode (gr514400) — -n0,
         # for pdb/-s debugging where xdist workers swallow output. A
@@ -313,6 +323,14 @@ while :; do
         *) break ;;
     esac
 done
+if [[ "$SKILLS" == 1 ]]; then
+    _skill_files=(tests/test_skill*.py)
+    if [[ ! -e "${_skill_files[0]}" ]]; then
+        echo "ERR: --skills matched no tests/test_skill*.py files under ${WORKTREE}" >&2
+        exit 2
+    fi
+    set -- "${_skill_files[@]}" "$@"
+fi
 if [[ "$LIST_ONLY" == 1 && "$SELECTED" != 1 ]]; then
     echo "ERR: --list only previews the --selected selection — usage: scripts/test --selected --list" >&2
     exit 2
