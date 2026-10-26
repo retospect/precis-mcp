@@ -179,7 +179,13 @@ class TopoMesh:
     zone_conflicts: tuple[tuple[int, int, float], ...] = ()
 
 
-def _orient(verts: np.ndarray, a: int, b: int, c: int) -> float:
+# Vertex rows the hot predicates accept — a plain list indexes ~10x
+# faster than ndarray rows, so the recovery/split loops hand down
+# ``varr.tolist()`` snapshots (round-4 perf: _orient was the build cost).
+_Verts = np.ndarray | list[list[float]]
+
+
+def _orient(verts: _Verts, a: int, b: int, c: int) -> float:
     """Signed double area of triangle (a, b, c)."""
     ax, ay = verts[a]
     bx, by = verts[b]
@@ -187,7 +193,7 @@ def _orient(verts: np.ndarray, a: int, b: int, c: int) -> float:
     return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
 
 
-def _proper_cross(verts: np.ndarray, u: int, v: int, p: int, q: int) -> bool:
+def _proper_cross(verts: _Verts, u: int, v: int, p: int, q: int) -> bool:
     """Segments (u,v) and (p,q) properly cross — the same proper-straddle
     predicate as ``geom.segments_cross``, indexed form (shared endpoints
     never count)."""
@@ -200,7 +206,7 @@ def _proper_cross(verts: np.ndarray, u: int, v: int, p: int, q: int) -> bool:
     )
 
 
-def _on_segment(verts: np.ndarray, a: int, w: int, b: int) -> bool:
+def _on_segment(verts: _Verts, a: int, w: int, b: int) -> bool:
     """``w`` collinear with (a, b) and strictly between them."""
     if abs(_orient(verts, a, b, w)) > _EPS:
         return False
@@ -259,11 +265,11 @@ class _Soup:
     def drop(self, tid: int) -> None:
         self._unlink(tid, self.tris.pop(tid))
 
-    def crossed(self, verts: np.ndarray, a: int, b: int) -> list[tuple[int, int]]:
+    def crossed(self, verts: _Verts, a: int, b: int) -> list[tuple[int, int]]:
         return [e for e in self.edge_tris if _proper_cross(verts, a, b, e[0], e[1])]
 
     def crossed_walk(
-        self, verts: np.ndarray, a: int, b: int
+        self, verts: _Verts, a: int, b: int
     ) -> list[tuple[int, int]] | None:
         """The edges properly crossed by (a,b), in path order, by walking
         the triangulation fan→edge→fan — O(path) instead of ``crossed``'s
@@ -302,7 +308,7 @@ class _Soup:
                 return None
             e = exit_e
 
-    def flip(self, verts: np.ndarray, e: tuple[int, int]) -> bool:
+    def flip(self, verts: _Verts, e: tuple[int, int]) -> bool:
         """Replace edge ``e`` by its quadrilateral's other diagonal when
         that diagonal lies strictly inside (strictly convex quad — the
         flip stays a triangulation). Returns False when not flippable."""
@@ -323,7 +329,7 @@ class _Soup:
         return True
 
     def cavity(
-        self, verts: np.ndarray, a: int, b: int, crossed: list[tuple[int, int]]
+        self, verts: _Verts, a: int, b: int, crossed: list[tuple[int, int]]
     ) -> None:
         """Ear-clip fallback when no crossed edge is flippable: the strip
         of triangles the segment passes through is removed and each of
@@ -379,7 +385,7 @@ class _Soup:
             self.add(tri)
 
 
-def _area2(verts: np.ndarray, poly: list[int]) -> float:
+def _area2(verts: _Verts, poly: list[int]) -> float:
     s = 0.0
     for i, v in enumerate(poly):
         w = poly[(i + 1) % len(poly)]
@@ -387,7 +393,7 @@ def _area2(verts: np.ndarray, poly: list[int]) -> float:
     return s
 
 
-def _ear_clip(verts: np.ndarray, poly: list[int]) -> list[tuple[int, int, int]]:
+def _ear_clip(verts: _Verts, poly: list[int]) -> list[tuple[int, int, int]]:
     """Ear-clipped triangulation of a simple polygon (vertex ids, any
     winding — normalised to CCW first). Collinear-on-the-boundary verts
     are pruned, which is what keeps pad-row chains clip-able. Raises
@@ -404,7 +410,9 @@ def _ear_clip(verts: np.ndarray, poly: list[int]) -> list[tuple[int, int, int]]:
             prev, nxt = idx[i - 1], idx[(i + 1) % len(idx)]
             if _on_segment(verts, prev, cur, nxt) or (
                 abs(_orient(verts, prev, cur, nxt)) <= _EPS
-                and np.dot(verts[cur] - verts[prev], verts[nxt] - verts[cur]) > 0
+                and (verts[nxt][0] - verts[cur][0]) * (verts[cur][0] - verts[prev][0])
+                + (verts[nxt][1] - verts[cur][1]) * (verts[cur][1] - verts[prev][1])
+                > 0
             ):
                 # The (prev,nxt) edge the prune leaves behind spans cur —
                 # emit the (possibly zero-area) sliver so the boundary
@@ -488,25 +496,28 @@ def _ring_vids(
 
 
 def _seg_params(
-    varr: np.ndarray, a: int, b: int, p: int, q: int
-) -> tuple[float, float, np.ndarray] | None:
+    varr: _Verts, a: int, b: int, p: int, q: int
+) -> tuple[float, float, tuple[float, float]] | None:
     """Proper crossing of (a,b) × (p,q) → ``(t, u, point)`` — ``t`` the
     fraction along a→b, ``u`` along p→q — else ``None``."""
     if not _proper_cross(varr, a, b, p, q):
         return None
-    pa, pb = varr[a], varr[b]
-    d = pb - pa
-    e = varr[q] - varr[p]
-    denom = d[0] * e[1] - d[1] * e[0]
+    ax, ay = varr[a]
+    bx, by = varr[b]
+    px, py = varr[p]
+    qx, qy = varr[q]
+    dx, dy = bx - ax, by - ay
+    ex, ey = qx - px, qy - py
+    denom = dx * ey - dy * ex
     if abs(denom) <= _EPS:
         return None
-    t = ((varr[p][0] - pa[0]) * e[1] - (varr[p][1] - pa[1]) * e[0]) / denom
-    u = ((varr[p][0] - pa[0]) * d[1] - (varr[p][1] - pa[1]) * d[0]) / denom
-    return t, u, pa + t * d
+    t = ((px - ax) * ey - (py - ay) * ex) / denom
+    u = ((px - ax) * dy - (py - ay) * dx) / denom
+    return t, u, (ax + t * dx, ay + t * dy)
 
 
 def _split_ring_crossings(
-    varr: np.ndarray,
+    varr: _Verts,
     ring_segs: list[tuple[int, list[tuple[int, int]]]],
     add_vert: Any,
 ) -> list[tuple[int, int, int]]:
@@ -527,7 +538,7 @@ def _split_ring_crossings(
         rbbox.append((min(xs), min(ys), max(xs), max(ys)))
         flat += [(u, v, owner) for u, v in segs]
 
-    splits: dict[int, list[tuple[float, np.ndarray]]] = {}
+    splits: dict[int, list[tuple[float, tuple[float, float]]]] = {}
     for i in range(len(ring_segs)):
         ax0, ay0, ax1, ay1 = rbbox[i]
         for j in range(i + 1, len(ring_segs)):
@@ -638,8 +649,9 @@ def _conflict_data(
 
 
 def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
-    """The CDT over pad centres + courtyard corners + outline corners at
-    ``pose`` — spec Decision 1/2.
+    """The CDT over pad centres + pad-outline corners + courtyard
+    corners + outline corners at ``pose`` — spec Decision 1/2, with
+    round-3 seam R3-1's pad polygons so a pad's wall is the pad itself.
 
     Every vertex set is deduplicated by 1e-9-rounded coordinate so a
     pad sitting exactly on a courtyard corner still lands on ONE vertex.
@@ -707,6 +719,42 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         if segs:
             ring_segs.append((part, segs))
 
+    # Pad outline corners (round-3 seam R3-1): each pad's ``pin_wh``
+    # rectangle becomes a constrained ring owned by its part. Without
+    # it a pad's wall is wherever its CDT fan's skinny triangles reach
+    # — a column of close pads leaves no fan-boundary edge a wire may
+    # cross, so a pin with open copper beside it still reports caged.
+    # With the ring constrained the pad vertex's fan is contained by
+    # the pad polygon itself, and the wall is the pad.
+    for pin in range(len(d.pin_xy)):
+        if len(d.pin_wh) <= pin:
+            continue
+        pw, ph = float(d.pin_wh[pin, 0]), float(d.pin_wh[pin, 1])
+        if pw <= _EPS or ph <= _EPS:
+            continue
+        part = int(d.pin_part[pin])
+        cx, cy = float(d.pin_xy[pin, 0]), float(d.pin_xy[pin, 1])
+        wpts = _place(
+            np.asarray(
+                [
+                    [cx - pw / 2, cy - ph / 2],
+                    [cx + pw / 2, cy - ph / 2],
+                    [cx + pw / 2, cy + ph / 2],
+                    [cx - pw / 2, cy + ph / 2],
+                ]
+            ),
+            pose[part],
+        )
+        vids = _ring_vids(wpts, add_vert)
+        m = len(vids)
+        segs = [
+            (vids[i], vids[(i + 1) % m])
+            for i in range(m)
+            if vids[i] != vids[(i + 1) % m]
+        ]
+        if segs:
+            ring_segs.append((part, segs))
+
     # Non-part constrained regions (keepouts, mounting holes, fixed
     # copper) — world-frame already; owner ``n + zone_index``.
     for z, zone in enumerate(d.zones):
@@ -736,10 +784,11 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         ring_segs.append((OWNER_BOARD, osegs))
 
     constraints = _split_ring_crossings(
-        np.asarray(verts, dtype=np.float64), ring_segs, add_vert
+        np.asarray(verts, dtype=np.float64).tolist(), ring_segs, add_vert
     )
 
     varr = np.asarray(verts, dtype=np.float64)
+    vlist = varr.tolist()
     if len(varr) < 3:
         raise MeshConflictError("fewer than 3 mesh vertices — nothing to triangulate")
     try:
@@ -799,9 +848,9 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
             return
         stall = 0
         for _ in range(_MAX_FLIPS):
-            crossed = soup.crossed_walk(varr, a, b)
+            crossed = soup.crossed_walk(vlist, a, b)
             if crossed is None:
-                crossed = soup.crossed(varr, a, b)
+                crossed = soup.crossed(vlist, a, b)
             if not crossed:
                 break
             wall = next((e for e in crossed if e in constrained_pairs), None)
@@ -818,14 +867,14 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
             # edge a later flip undoes); once rounds outpace what honest
             # progress could need, ear-clip the whole strip instead.
             if stall > 4 * len(crossed) + 16:
-                soup.cavity(varr, a, b, crossed)
+                soup.cavity(vlist, a, b, crossed)
                 stall = 0
                 continue
             for e in crossed:
-                if soup.flip(varr, e):
+                if soup.flip(vlist, e):
                     break
             else:
-                soup.cavity(varr, a, b, crossed)
+                soup.cavity(vlist, a, b, crossed)
                 stall = 0
         else:
             raise MeshConflictError(
@@ -851,13 +900,15 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
     inside_poly = [(float(varr[v][0]), float(varr[v][1])) for v in ovids]
     from precis.pcb.geom import point_in_polygon
 
+    trows = np.asarray(list(soup.tris.values()))
+    cents = varr[trows].mean(axis=1)
     kept = [
         tri
-        for tri in soup.tris.values()
-        if point_in_polygon(tuple(varr[list(tri)].mean(axis=0)), inside_poly)
+        for tri, c in zip(trows, cents)
+        if point_in_polygon((float(c[0]), float(c[1])), inside_poly)
     ]
     tris = np.asarray(
-        [t if _orient(varr, *t) > 0 else (t[0], t[2], t[1]) for t in kept],
+        [t if _orient(vlist, *t) > 0 else (t[0], t[2], t[1]) for t in kept],
         dtype=np.int32,
     ).reshape(-1, 3)
 

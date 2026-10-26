@@ -91,13 +91,36 @@ def _zone_blocks_part(z: TopoZone, side: bool, th: bool, n_layers: int) -> bool:
 
 def _part_nets(d: TopoDesign, part: int) -> set[str]:
     """The net names under a part's pins — the same-net fixed-copper
-    exemption the DRC gives an authored via/copper the part belongs to."""
-    nets = set()
+    exemption the DRC gives an authored via/copper the part belongs to.
+
+    ``net_of_pin`` maps pin id → net name. Routed nets come from the
+    compacted ``net_pins`` slots: ``net_name[k]`` names slot ``k``'s
+    pins. Plane and singleton nets are dropped from ``net_pins``, so
+    their pins fall back to the 1b decl tables — the pin's ir net id
+    (``pin_net``) resolves through ``decl_net_ir`` to ``decl_net_name``.
+    That keeps the same-net exemption for a part on a plane net's own
+    authored copper/via (GND and power are normal nets — there are no
+    pours). A pin on a net no declaration names gets no name and cannot
+    match a zone's ``net``."""
+    # ``d.pin_net`` carries IR net ids; ``net_name`` is indexed by the
+    # compacted ``net_pins`` slot (plane and singleton nets are dropped).
+    # A part whose pins' ir ids exceed the routed set crashed the lookup
+    # — and on id-aligned boards it silently read the WRONG net's name.
+    name_of_ir = {
+        int(ir_id): str(d.decl_net_name[j])
+        for j, ir_id in enumerate(d.decl_net_ir)
+        if int(ir_id) >= 0
+    }
+    net_of_pin: dict[int, str] = {}
+    for k, pins in enumerate(d.net_pins):
+        for p in pins:
+            net_of_pin[int(p)] = str(d.net_name[k])
+    out: set[str] = set()
     for p in np.flatnonzero(d.pin_part == part):
-        ni = int(d.pin_net[p])
-        if ni >= 0:
-            nets.add(str(d.net_name[ni]))
-    return nets
+        name = net_of_pin.get(int(p)) or name_of_ir.get(int(d.pin_net[p]))
+        if name:
+            out.add(name)
+    return out
 
 
 def _legalize_zones(

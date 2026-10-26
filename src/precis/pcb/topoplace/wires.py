@@ -60,6 +60,12 @@ from precis.pcb.topoplace.mesh import (
 
 _EPS = 1e-9
 
+#: Default design rules for the pad-gap passability check when the
+#: caller resolves no per-net ``NetRules`` (synth fixtures, boards
+#: without class rows): a 0.15 mm trace and 0.15 mm clearance.
+_DEFAULT_TRACE_MM = 0.15
+_DEFAULT_CLEAR_MM = 0.15
+
 
 @dataclass(frozen=True, slots=True)
 class WirePath:
@@ -85,13 +91,16 @@ class WirePath:
 class Unreachable:
     """A separated component of a net — no dual path links it to the
     net's main component on any candidate layer. ``pin`` names the
-    component's root; ``owners`` names what walls it off, in the
+    component's root and ``pins`` every member, so a certificate can
+    list a multi-pin cut-off group without re-flooding (round-3
+    finding R3-4); ``owners`` names what walls it off, in the
     ``edge_owner`` id space (part id, OWNER_BOARD, or n_parts + zone):
     the colour pass reports it as a certificate input."""
 
     net: int
     pin: int
     owners: tuple[int, ...]
+    pins: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +115,16 @@ class Wires:
     capacity_mm: np.ndarray  # (E,) free crossing length per edge
     net_layers: tuple[frozenset[int], ...]  # candidate outer layers per net
     unreachable: tuple[Unreachable, ...]
+    # slice-4 channel record (round-4): per edge and layer, the stretch
+    # left uncovered by ringed pads buffered at the finest resolved rule
+    # (−1 where no pad reaches the edge), and the TOTAL traces that
+    # stretch takes — floor(free / (trace + clearance)) + 1 where a
+    # centreline survives, 0 where the channel is closed (round-5:
+    # the count is measured in the free width's own frame — a just-
+    # passable gap records 1, not 0).
+    gap_free_mm: np.ndarray  # (E, L) mm, -1 = not a pad-channel edge
+    gap_cap: np.ndarray  # (E, L) int, -1 = not a pad-channel edge
+    order_residual: int = 0  # tied-pair order flips _repair_order left over
 
 
 def _net_layers(d: TopoDesign, k: int, n_layers: int) -> frozenset[int]:
@@ -134,13 +153,38 @@ class _Ctx:
 
     n_layers: int
     all_mask: int  # bitmask of every layer
-    mid: list[tuple[float, float]]  # edge midpoint, python floats
     tri_verts: list[tuple[int, int, int]]
     tri_set: list[frozenset[int]]
     v2t: list[list[int]]  # vertex -> incident triangle ids (ascending)
     fan_boundary: dict[int, frozenset[int]]  # pin -> boundary edges of its fan
     pad_contrib: dict[int, list[tuple[int, int]]]  # edge -> [(pin, mask)]
     zone_contrib: dict[int, list[tuple[int, int]]]  # edge -> [(zone idx, mask)]
+    # Ringed-pad rectangles for the gap rule (round-4 rework): only pins
+    # whose ``pin_wh`` ring the mesh actually built count — a ringless
+    # pad's fan boundary is arbitrary CDT edges, so a box read from it
+    # would invent gaps on synth fixtures. The fan boundary IS the pad
+    # ring, so its endpoint bounding box is the pad's world rect — read
+    # off the mesh, correct under whatever pose built it.
+    pad_pin: np.ndarray  # (Rp,) global pin id per ringed pad
+    pad_lo: np.ndarray  # (Rp, 2) world AABB lo
+    pad_hi: np.ndarray  # (Rp, 2) world AABB hi
+    pad_copper: np.ndarray  # (Rp,) int — layers the pad has copper on
+    pin_pad: dict[int, int]  # pin -> ringed-pad index
+    edge_lo: np.ndarray  # (E, 2) edge AABB lo
+    edge_hi: np.ndarray  # (E, 2) edge AABB hi
+    seg_u: np.ndarray  # (E, 2) edge u endpoint
+    seg_v: np.ndarray  # (E, 2) edge v endpoint
+    seg_len: np.ndarray  # (E,) edge length
+    pin_seg: np.ndarray  # (E, n_pins) pin vertex -> segment distance
+    pad_block_all: np.ndarray  # (E,) int — all pads' blocked-layer OR
+    zone_block: dict[str, np.ndarray]  # net name -> (E,) zone-blocked OR
+    gap_eval_cache: dict[
+        float,
+        tuple[np.ndarray, np.ndarray, dict[int, np.ndarray], dict[int, list[int]]],
+    ]
+    # gap_eval_cache[r] = (blocked (E,) int, free (E, L) mm, edge_pads,
+    # pad_edges) — the all-pads coverage eval; _blocked_masks re-opens
+    # a net's own pads on top of it.
     board: np.ndarray  # (E,) bool — board-outline edges
     vid_of: dict[tuple[float, float], int]  # rounded xy -> vertex id
     eu: list[tuple[float, float]]  # edge u endpoint xy (python floats)
@@ -162,15 +206,6 @@ def _pin_mask(pin_side: int, n_layers: int) -> int:
 
 
 def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
-    mid = [
-        (
-            float(mesh.verts[mesh.edges[e, 0], 0] + mesh.verts[mesh.edges[e, 1], 0])
-            / 2.0,
-            float(mesh.verts[mesh.edges[e, 0], 1] + mesh.verts[mesh.edges[e, 1], 1])
-            / 2.0,
-        )
-        for e in range(len(mesh.edges))
-    ]
     tri_verts = [(int(a), int(b), int(c)) for a, b, c in mesh.tris]
     v2t: list[list[int]] = [[] for _ in range(len(mesh.verts))]
     for t, tri in enumerate(tri_verts):
@@ -192,6 +227,39 @@ def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
         fan_boundary[p] = boundary
         for e in boundary:
             pad_contrib.setdefault(e, []).append((p, mask))
+    # Ringed-pad rectangles (round-4 rework): each pin the mesh built a
+    # pin_wh ring for gets its world AABB off the ring corners — the
+    # fan boundary's endpoints. Pads without a built ring (pin_wh
+    # missing or zero) get NO box: their fan boundary is arbitrary CDT
+    # edges and a box read from them invents false gaps on synth.
+    pad_pin_l: list[int] = []
+    pad_lo_l: list[np.ndarray] = []
+    pad_hi_l: list[np.ndarray] = []
+    pad_copper_l: list[int] = []
+    pin_pad: dict[int, int] = {}
+    for p, ring_edges in fan_boundary.items():
+        if len(d.pin_wh) <= p:
+            continue
+        pw, ph = float(d.pin_wh[p, 0]), float(d.pin_wh[p, 1])
+        if pw <= _EPS or ph <= _EPS:
+            continue
+        vids = np.unique(mesh.edges[sorted(ring_edges)].ravel())
+        pts = mesh.verts[vids]
+        pin_pad[p] = len(pad_pin_l)
+        pad_pin_l.append(p)
+        pad_lo_l.append(pts.min(axis=0))
+        pad_hi_l.append(pts.max(axis=0))
+        pad_copper_l.append(_pin_mask(int(d.pin_side[p]), n_layers))
+    pad_lo = (
+        np.asarray(pad_lo_l, dtype=np.float64).reshape(-1, 2)
+        if pad_lo_l
+        else np.zeros((0, 2))
+    )
+    pad_hi = (
+        np.asarray(pad_hi_l, dtype=np.float64).reshape(-1, 2)
+        if pad_hi_l
+        else np.zeros((0, 2))
+    )
     n_parts = len(d.parts)
     all_mask = (1 << n_layers) - 1
     zone_contrib: dict[int, list[tuple[int, int]]] = {}
@@ -214,6 +282,10 @@ def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
     }
     eu = [(float(xy[0]), float(xy[1])) for xy in mesh.verts[mesh.edges[:, 0]]]
     ev = [(float(xy[0]), float(xy[1])) for xy in mesh.verts[mesh.edges[:, 1]]]
+    eu_arr = mesh.verts[mesh.edges[:, 0]]
+    ev_arr = mesh.verts[mesh.edges[:, 1]]
+    edge_lo = np.minimum(eu_arr, ev_arr)
+    edge_hi = np.maximum(eu_arr, ev_arr)
     edge_ends = [(int(a), int(b)) for a, b in mesh.edges]
     edge_tris = [(int(a), int(b)) for a, b in mesh.edge_tris]
     tri_xy = [
@@ -225,39 +297,106 @@ def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
         for a, b, c in mesh.verts[mesh.tris]
     ]
     tri_edge_list = [(int(a), int(b), int(c)) for a, b, c in mesh.tri_edges]
-    mid_arr = np.asarray(mid, dtype=np.float64)
+    mid_arr = 0.5 * (eu_arr + ev_arr)  # edge midpoints
+    # Step cost through a tri (round-4 finding 4 + round-5 residual):
+    # plain midpoint-to-midpoint distance everywhere EXCEPT the sliver
+    # tris around a ringed pad's ring — the pad-channel tris are the
+    # only place the midpoint metric lies (it priced a legal pad gap
+    # above the wrap-around detour), and everywhere else the portal
+    # metric's segment projection mis-ordered tied wires enough to push
+    # the order residual from 6 to 42 on the n=100 ringless fixture. On
+    # a marked tri a step is charged the symmetric mid→segment
+    # projection — half the wedge altitude for a sliver — so a thin
+    # channel costs what the taut path will actually pay.
+    # Vectorized: pt→seg distance over the (E, 3) in/out pairs of the
+    # per-tri edge lists.
+    ecol = np.asarray(tri_edge_list, dtype=np.int64)  # (T, 3)
+    mid_e = mid_arr[ecol]  # (T, 3, 2)
+
+    def ptseg_mat(
+        pts: np.ndarray, ei: np.ndarray
+    ) -> np.ndarray:  # pts (...,2), ei (...,) -> (...,)
+        su, sv = eu_arr[ei], ev_arr[ei]
+        dd = sv - su
+        ddd = np.maximum((dd * dd).sum(axis=-1), _EPS)
+        tp = np.clip(((pts - su) * dd).sum(axis=-1) / ddd, 0.0, 1.0)
+        return np.linalg.norm(pts - (su + tp[..., None] * dd), axis=-1)
+
+    # wstep[t, i, j] = mid(e_i) -> seg(e_j) distance for the tri's edges
+    T = len(ecol)
+    pts_grid = np.broadcast_to(mid_e[:, :, None, :], (T, 3, 3, 2)).reshape(T, 9, 2)
+    ei_grid = np.broadcast_to(ecol[:, None, :], (T, 3, 3)).reshape(T, 9)
+    w_in = ptseg_mat(pts_grid, ei_grid).reshape(T, 3, 3)
+    w_out = w_in.transpose(0, 2, 1)
+    wstep_portal = 0.5 * (w_in + w_out)
+    wstep_mid = np.linalg.norm(mid_e[:, :, None, :] - mid_e[:, None, :, :], axis=-1)
+    # ring-neighbourhood tris of ringed pads only — tris sharing a
+    # vertex with a fan-boundary edge: the sliver channel around a pad
+    # ring, where the portal metric is needed; midpoints elsewhere
+    # (round-5 residual)
+    fan_tris = np.zeros(T, dtype=bool)
+    for p in pin_pad:
+        for e in fan_boundary[p]:
+            for v in edge_ends[e]:
+                for t2 in v2t[v]:
+                    fan_tris[t2] = True
+    wstep = np.where(fan_tris[:, None, None], wstep_portal, wstep_mid)
+    tris_of = np.asarray(edge_tris, dtype=np.int64)  # (E, 2)
     tri_next: list[dict[int, tuple[tuple[int, int, float], ...]]] = []
     for t, es in enumerate(tri_edge_list):
         row: dict[int, tuple[tuple[int, int, float], ...]] = {}
-        for e_in in es:
-            mx, my = float(mid_arr[e_in, 0]), float(mid_arr[e_in, 1])
+        for i, e_in in enumerate(es):
             nxt = []
-            for e2 in es:
+            for j, e2 in enumerate(es):
                 if e2 == e_in:
                     continue
-                t2a, t2b = edge_tris[e2]
+                t2a, t2b = tris_of[e2]
                 t2 = t2a if t2a != t else t2b
-                nxt.append(
-                    (
-                        e2,
-                        t2,
-                        math.hypot(
-                            mx - float(mid_arr[e2, 0]), my - float(mid_arr[e2, 1])
-                        ),
-                    )
-                )
+                nxt.append((e2, int(t2), float(wstep[t, i, j])))
             row[e_in] = tuple(nxt)
         tri_next.append(row)
+    # (E, n_pins) pin-vertex -> segment distance — every net's A*
+    # heuristic and seed cost are column slices of this matrix (round-4:
+    # rebuilding the rel/proj stack per net dominated _net_tree).
+    n_pins_all = len(mesh.pin_vertex)
+    if n_pins_all:
+        pvv = mesh.verts[np.asarray(mesh.pin_vertex, dtype=np.int64)]
+        dd_all = ev_arr - eu_arr
+        ddd = np.maximum((dd_all * dd_all).sum(axis=1), _EPS)
+        relv = pvv[None, :, :] - eu_arr[:, None, :]
+        tpv = np.clip((relv * dd_all[:, None, :]).sum(axis=2) / ddd[:, None], 0.0, 1.0)
+        projv = eu_arr[:, None, :] + tpv[:, :, None] * dd_all[:, None, :]
+        pin_seg = np.linalg.norm(pvv[None, :, :] - projv, axis=2)
+    else:
+        pin_seg = np.zeros((len(mesh.edges), 0))
+    pad_block_all = np.zeros(len(mesh.edges), dtype=np.int64)
+    for e, lst in pad_contrib.items():
+        for _pin, pm in lst:
+            pad_block_all[e] |= pm
+    zone_block: dict[str, np.ndarray] = {}
     return _Ctx(
         n_layers=n_layers,
         all_mask=all_mask,
-        mid=mid,
         tri_verts=tri_verts,
         tri_set=[frozenset(t) for t in tri_verts],
         v2t=v2t,
         fan_boundary=fan_boundary,
         pad_contrib=pad_contrib,
         zone_contrib=zone_contrib,
+        pad_pin=np.asarray(pad_pin_l, dtype=np.int64),
+        pad_lo=pad_lo,
+        pad_hi=pad_hi,
+        pad_copper=np.asarray(pad_copper_l, dtype=np.int64),
+        pin_pad=pin_pad,
+        edge_lo=edge_lo,
+        edge_hi=edge_hi,
+        seg_u=eu_arr,
+        seg_v=ev_arr,
+        seg_len=np.hypot(*(ev_arr - eu_arr).T),
+        pin_seg=pin_seg,
+        pad_block_all=pad_block_all,
+        zone_block=zone_block,
+        gap_eval_cache={},
         board=board,
         vid_of=vid_of,
         eu=eu,
@@ -285,6 +424,16 @@ def _cand_mask(cand: frozenset[int], n_layers: int) -> int:
 
 # A 2-vector: python-float pair (the hot paths) or an ndarray row.
 _V2 = tuple[float, float] | np.ndarray
+
+
+def _pt_seg(p: _V2, a: _V2, b: _V2) -> float:
+    """Distance from ``p`` to segment ``a→b``."""
+    ex, ey = b[0] - a[0], b[1] - a[1]
+    dd = ex * ex + ey * ey
+    if dd <= _EPS:
+        return math.hypot(p[0] - a[0], p[1] - a[1])
+    t = min(1.0, max(0.0, ((p[0] - a[0]) * ex + (p[1] - a[1]) * ey) / dd))
+    return math.hypot(p[0] - (a[0] + t * ex), p[1] - (a[1] + t * ey))
 
 
 def _cross(u: _V2, v: _V2) -> float:
@@ -665,6 +814,10 @@ def _retrack(
             kind, a_, _b_, r = hit
             if kind == "edge":
                 e = a_
+                # both callers reject a corridor touching a blocked
+                # edge — stop here rather than walking the rest
+                if passable is not None and not passable(e):
+                    raise ValueError("retrack: blocked edge")
                 edges.append(e)
                 t_out.append(_b_)
                 t2a, t2b = ctx.edge_tris[e]
@@ -693,6 +846,8 @@ def _retrack(
                 ctx, w, tri, (q[0] - pos[0], q[1] - pos[1]), d_out, passable
             )
             for e, t2 in swept:
+                if passable is not None and not passable(e):
+                    raise ValueError("retrack: blocked edge")
                 edges.append(e)
                 t_out.append(_edge_param_at(ctx, e, wpos))
                 tris.append(t2)
@@ -761,21 +916,33 @@ def _shortcut(
         return obs
 
     out = list(pts)
+    # a failed removal only becomes worth retrying when a neighbour
+    # moved — key on the candidate triple so the restart scan skips
+    # re-walks it already paid for (round-4 perf: the re-tries were
+    # most of _shortcut's _retrack calls)
+    failed: set[
+        tuple[tuple[float, float], tuple[float, float], tuple[float, float]]
+    ] = set()
     for _ in range(3):
         changed = False
         for i in range(1, len(out) - 1):
             w = _vertex_at(ctx, mesh, out[i])
             if w is None or obstacle(w):
                 continue
+            key = (out[i - 1], out[i], out[i + 1])
+            if key in failed:
+                continue
             cand = out[:i] + out[i + 1 :]
             try:
                 _t2, edges2, _tt = _retrack(ctx, mesh, va, vb, cand, passable)
             except ValueError:
+                failed.add(key)
                 continue
             if all(passable(int(e)) for e in edges2):
                 out = cand
                 changed = True
                 break
+            failed.add(key)
         if not changed:
             return out
     return out
@@ -792,7 +959,7 @@ def _vertex_at(ctx: _Ctx, mesh: TopoMesh, p: _V2) -> int | None:
 
 def _order(
     ctx: _Ctx, mesh: TopoMesh, branches: tuple[WirePath, ...]
-) -> tuple[tuple[int, ...], ...]:
+) -> tuple[tuple[tuple[int, ...], ...], int]:
     """Decision 3's per-edge ordered wire lists: branches sorted by their
     taut crossing parameter. Ties sit at a wrapped vertex ``w`` (t is 0
     or 1); they sort by wrap TIGHTNESS — ``|u_in + u_out|`` over the
@@ -876,8 +1043,8 @@ def _order(
             key = ref[1] * w_at.get(ref[0], 0.0) if ref is not None else 0.0
             order[e].append((float(te), cdir[bi][i] * key, int(cdir[bi][i]) * bi, bi))
     ids: list[list[int]] = [[bi for _t, _k, _c, bi in sorted(lst)] for lst in order]
-    _repair_order(ctx, branches, cdir, ids)
-    return tuple(tuple(lst) for lst in ids)
+    residual = _repair_order(ctx, branches, cdir, ids)
+    return tuple(tuple(lst) for lst in ids), residual
 
 
 def _repair_order(
@@ -885,7 +1052,7 @@ def _repair_order(
     branches: tuple[WirePath, ...],
     cdir: list[list[float]],
     ids: list[list[int]],
-) -> None:
+) -> int:
     """Align tied pairs on a shared run to one normalized order.
 
     The normalized side of two wires on edge ``e`` is their position in
@@ -1028,6 +1195,30 @@ def _repair_order(
                 )
                 if rel_g:
                     lst[i:j] = _topo_group(grp, rel_g)
+    # residual: tied-pair violations the rounds could not settle
+    # (cycle-dropped constraints or the round cap) — 2c's parity check
+    # wants this surfaced, not silent (round-3 finding R3-3)
+    leftover = 0
+    counted: set[tuple[int, int]] = set()
+    for e, lst in enumerate(ids):
+        for i, j in groups(lst, e):
+            for a, b in itertools.combinations(lst[i:j], 2):
+                key = (a, b) if a < b else (b, a)
+                if key in counted:
+                    continue
+                counted.add(key)
+                if branches[key[0]].net == branches[key[1]].net:
+                    continue
+                a, b = key
+                for run in shared_runs(a, b):
+                    want = next(
+                        (norm(e2, a, b) for e2 in run if not tied(e2, a, b)),
+                        norm(run[0], a, b),
+                    )
+                    leftover += sum(
+                        1 for e2 in run if tied(e2, a, b) and norm(e2, a, b) != want
+                    )
+    return leftover
 
 
 def _topo_group(grp: list[int], rel: list[tuple[int, int]]) -> list[int]:
@@ -1152,6 +1343,7 @@ def _wall_owners(
     tree_region: set[int],
     cand_mask: int,
     net_name: str,
+    r: float,
 ) -> tuple[int, ...]:
     """What separates an unreachable component's region from the main
     tree's: owners of the blocked edges on the cut between the two
@@ -1159,6 +1351,7 @@ def _wall_owners(
     ``edge_owner`` id space). Falls back to the region's whole blocked
     boundary when the regions meet only at vertices."""
     n_parts = len(d.parts)
+    _b, _f, gap_pads, _p = _pad_eval(ctx, r)
     cut: set[int] = set()
     boundary: set[int] = set()
     for t in region:
@@ -1180,6 +1373,12 @@ def _wall_owners(
         for z, zm in ctx.zone_contrib.get(e, ()):
             if zm & cand_mask and not (d.zones[z].net and d.zones[z].net == net_name):
                 acc.add(n_parts + z)
+        for pi_ in gap_pads.get(e, ()):
+            pin = int(ctx.pad_pin[pi_])
+            if pin in own:
+                continue
+            if _seg_pad_int(ctx, e, pi_, r) is not None:
+                acc.add(int(d.pin_part[pin]))
 
     owners: set[int] = set()
     for e in cut or boundary:
@@ -1187,28 +1386,221 @@ def _wall_owners(
     return tuple(sorted(owners))
 
 
+def _seg_pad_int(ctx: _Ctx, e: int, pi: int, r: float) -> tuple[float, float] | None:
+    """The parameter interval of edge ``e`` covered by pad ``pi``'s
+    rectangle grown by ``r`` — a slab clip of the segment against the
+    grown AABB. ``None`` when they don't meet (or touch in a
+    zero-measure graze)."""
+    px, py = float(ctx.seg_u[e, 0]), float(ctx.seg_u[e, 1])
+    dx = float(ctx.seg_v[e, 0]) - px
+    dy = float(ctx.seg_v[e, 1]) - py
+    lo = ctx.pad_lo[pi] - r
+    hi = ctx.pad_hi[pi] + r
+    ent, ext = 0.0, 1.0
+    for ax in range(2):
+        dd = dx if ax == 0 else dy
+        pp = px if ax == 0 else py
+        if abs(dd) <= _EPS:
+            if pp < lo[ax] - 1e-12 or pp > hi[ax] + 1e-12:
+                return None
+            continue
+        t0 = (float(lo[ax]) - pp) / dd
+        t1 = (float(hi[ax]) - pp) / dd
+        ent = max(ent, min(t0, t1))
+        ext = min(ext, max(t0, t1))
+        if ent >= ext:
+            return None
+    return (ent, ext) if ext - ent > 1e-12 else None
+
+
+def _merge_len(ints: list[tuple[float, float]]) -> float:
+    """Covered measure of ``[0,1]`` under sorted-merge of intervals."""
+    ints.sort()
+    cov = 0.0
+    ca = cb = -math.inf
+    for a, b in ints:
+        if a <= cb:
+            cb = max(cb, b)
+        else:
+            cov += cb - ca if ca > -math.inf else 0.0
+            ca, cb = a, b
+    if ca > -math.inf:
+        cov += cb - ca
+    return min(cov, 1.0)
+
+
+def _pad_eval(
+    ctx: _Ctx, r: float
+) -> tuple[np.ndarray, np.ndarray, dict[int, np.ndarray], dict[int, list[int]]]:
+    """Coverage of every mesh edge by every ringed pad grown by ``r``
+    (``trace/2 + clearance`` — the exclusion a centreline must keep).
+    Returns ``(blocked, free, edge_pads, pad_edges)``: ``blocked[e]`` is
+    the layer mask where no free stretch of ``e`` survives, ``free[e,
+    l]`` the uncovered length in mm (−1 where no pad reaches ``e``), and
+    the two maps index candidate pads per edge / candidate edges per
+    pad for the per-net own-pad re-eval. Cached per ``r`` — nets sharing
+    a rule share the eval (round-4 rework: the old endpoint-coincidence
+    test missed every channel split by a non-pad vertex, and ran the
+    O(ring²) pair scan per call)."""
+    got = ctx.gap_eval_cache.get(r)
+    if got is not None:
+        return got
+    n_e = len(ctx.board)
+    n_l = ctx.n_layers
+    free = np.full((n_e, n_l), -1.0)
+    blocked = np.zeros(n_e, dtype=np.int64)
+    edge_pads: dict[int, np.ndarray] = {}
+    pad_edges: dict[int, list[int]] = {}
+    out = (blocked, free, edge_pads, pad_edges)
+    ctx.gap_eval_cache[r] = out
+    if not len(ctx.pad_pin):
+        return out
+    # candidate (edge, pad) pairs: the grown pad AABB meets the edge's
+    hit = np.logical_and(
+        ctx.pad_lo[None] <= ctx.edge_hi[:, None] + r,
+        ctx.pad_hi[None] >= ctx.edge_lo[:, None] - r,
+    ).all(axis=2)
+    ei, pi = np.nonzero(hit)
+    if not len(ei):
+        return out
+    # slab clip of every pair's segment against its grown pad box
+    pu = ctx.seg_u[ei]
+    dd = ctx.seg_v[ei] - pu
+    plo = ctx.pad_lo[pi] - r
+    phi = ctx.pad_hi[pi] + r
+    ent = np.zeros(len(ei))
+    ext = np.ones(len(ei))
+    feas = np.ones(len(ei), dtype=bool)
+    for ax in range(2):
+        dax = dd[:, ax]
+        pax = pu[:, ax]
+        big = np.abs(dax) > _EPS
+        t0 = np.empty(len(ei))
+        t1 = np.empty(len(ei))
+        t0[big] = (plo[big, ax] - pax[big]) / dax[big]
+        t1[big] = (phi[big, ax] - pax[big]) / dax[big]
+        ent[big] = np.maximum(ent[big], np.minimum(t0[big], t1[big]))
+        ext[big] = np.minimum(ext[big], np.maximum(t0[big], t1[big]))
+        small = ~big
+        feas[small] &= (pax[small] >= plo[small, ax] - 1e-12) & (
+            pax[small] <= phi[small, ax] + 1e-12
+        )
+    valid = feas & (ext - ent > 1e-12)
+    # per edge, per layer: merge the sorted covered intervals
+    order = np.lexsort((ent, ei))
+    ei_s, ent_s, ext_s = ei[order], ent[order], ext[order]
+    val_s, lm_s = valid[order], ctx.pad_copper[pi][order]
+    pi_s = pi[order]
+    i = 0
+    n = len(order)
+    while i < n:
+        e = int(ei_s[i])
+        j = i
+        while j < n and ei_s[j] == e:
+            j += 1
+        plist = pi_s[i:j]
+        edge_pads[e] = np.asarray(sorted(set(int(x) for x in plist)))
+        for p_ in edge_pads[e]:
+            pad_edges.setdefault(int(p_), []).append(e)
+        for ly in range(n_l):
+            bit = 1 << ly
+            ints = [
+                (float(ent_s[k]), float(ext_s[k]))
+                for k in range(i, j)
+                if val_s[k] and (int(lm_s[k]) & bit)
+            ]
+            cov = _merge_len(ints) if ints else 0.0
+            free[e, ly] = float(ctx.seg_len[e]) * (1.0 - cov)
+            if free[e, ly] <= 1e-9:
+                blocked[e] |= bit
+        i = j
+    return out
+
+
+def _edge_free(
+    ctx: _Ctx, e: int, r: float, drop: frozenset[int], edge_pads
+) -> np.ndarray:
+    """``free`` row for edge ``e`` re-merged without the net's own pads
+    (``drop`` = pad indices) — the own-net exemption applied to the gap
+    rule: a channel off the wire's own pad is measured against foreign
+    copper only."""
+    free = np.empty(ctx.n_layers)
+    cands = [p for p in edge_pads.get(e, ()) if p not in drop]
+    ints: list[tuple[float, float, int]] = []
+    for pi_ in cands:
+        iv = _seg_pad_int(ctx, e, int(pi_), r)
+        if iv is not None:
+            ints.append((iv[0], iv[1], int(ctx.pad_copper[pi_])))
+    for ly in range(ctx.n_layers):
+        bit = 1 << ly
+        cov = _merge_len([(a, b) for a, b, m in ints if m & bit]) if ints else 0.0
+        free[ly] = float(ctx.seg_len[e]) * (1.0 - cov)
+    return free
+
+
 def _blocked_masks(
-    ctx: _Ctx, d: TopoDesign, cand_mask: int, net_name: str, own: frozenset[int]
+    ctx: _Ctx,
+    d: TopoDesign,
+    cand_mask: int,
+    net_name: str,
+    own: frozenset[int],
+    trace_mm: float,
+    clearance_mm: float,
 ) -> np.ndarray:
     """The net's passable mask — an edge is open on a candidate layer
-    unless a pin of ANOTHER net, a foreign-net zone or the board edge
-    blocks it there (R-a + round-2 ruling: exemption keys on the wire's
-    net; a foreign-net pad on an endpoint part stays a wall)."""
-    full_blocked = np.zeros(len(ctx.board), dtype=np.int64)
-    for e, lst in ctx.pad_contrib.items():
-        m = 0
-        for pin, pm in lst:
-            if pin not in own:
-                m |= pm
-        if m:
+    unless a pin of ANOTHER net, a foreign-net zone, a too-narrow
+    foreign pad-to-pad gap or the board edge blocks it there (R-a +
+    round-2 ruling: exemption keys on the wire's net; a foreign-net pad
+    on an endpoint part stays a wall. Reto 2026-10-25: a gap between
+    other-net pads passes only where the geometry fits — each pad is
+    buffered by ``trace/2 + clearance`` and an edge survives a layer
+    only where a free stretch remains, so a channel closes exactly when
+    ``gap < trace + 2·clearance``; the closure applies per LAYER — two
+    top-side pads leave the bottom open — and the net's own pads are
+    dropped from the coverage (own-flanked stays open)."""
+    # base blocked layers: every pad wall, then the own-net exemption
+    # re-merges only edges an own pin's fan boundary touches (round-4
+    # perf — the per-net full contrib scan dominated _blocked_masks);
+    # zones are cached per net name.
+    full_blocked = ctx.pad_block_all.copy()
+    for pin in own:
+        for e in ctx.fan_boundary.get(pin, ()):
+            m = 0
+            for p2, pm in ctx.pad_contrib.get(e, ()):
+                if p2 not in own:
+                    m |= pm
             full_blocked[e] = m
-    for e, lst in ctx.zone_contrib.items():
-        m = 0
-        for z, zm in lst:
-            if not (d.zones[z].net and d.zones[z].net == net_name):
-                m |= zm
-        if m:
-            full_blocked[e] |= m
+    zb = ctx.zone_block.get(net_name)
+    if zb is None:
+        zb = np.zeros(len(ctx.board), dtype=np.int64)
+        for e, lst in ctx.zone_contrib.items():
+            m = 0
+            for z, zm in lst:
+                if not (d.zones[z].net and d.zones[z].net == net_name):
+                    m |= zm
+            if m:
+                zb[e] = m
+        ctx.zone_block[net_name] = zb
+    full_blocked |= zb
+    r = trace_mm / 2.0 + clearance_mm
+    blocked_gap, _free, edge_pads, pad_edges = _pad_eval(ctx, r)
+    if edge_pads:
+        gap_mask = blocked_gap.copy()
+        own_pads = frozenset(ctx.pin_pad[p] for p in own if p in ctx.pin_pad)
+        if own_pads:
+            seen_e: set[int] = set()
+            for pi_ in own_pads:
+                for e in pad_edges.get(pi_, ()):
+                    if e in seen_e:
+                        continue
+                    seen_e.add(e)
+                    free = _edge_free(ctx, e, r, own_pads, edge_pads)
+                    m = 0
+                    for ly in range(ctx.n_layers):
+                        if free[ly] <= 1e-9:
+                            m |= 1 << ly
+                    gap_mask[e] = m
+        full_blocked |= gap_mask
     return ((np.int64(cand_mask) & ~full_blocked) != 0) & ~ctx.board
 
 
@@ -1218,6 +1610,8 @@ def _net_tree(
     d: TopoDesign,
     k: int,
     n_layers: int,
+    trace_mm: float,
+    clearance_mm: float,
 ) -> tuple[list[tuple[int, int, list[int], list[int]]], list[list[int]], np.ndarray]:
     """Geodesic Prim over one net's pins (R-b): per COMPONENT a
     persistent multi-source A* search — the heap carries relax states
@@ -1242,19 +1636,35 @@ def _net_tree(
     vpos = [mesh.verts[v] for v in verts]
     net_name = d.net_name[k] if k < len(d.net_name) else str(k)
     cand_mask = _cand_mask(_net_layers(d, k, n_layers), n_layers)
-    base_pass = _blocked_masks(ctx, d, cand_mask, net_name, frozenset(pins))
+    base_pass = _blocked_masks(
+        ctx, d, cand_mask, net_name, frozenset(pins), trace_mm, clearance_mm
+    )
 
-    # A* heuristic: |mid(e) - pin| per edge per pin — h(e) is the min
-    # over ALL pins, so the frontier chases the nearest goal instead of
-    # growing a uniform disk. The full pin set never shrinks, which
-    # keeps h a consistent underestimate at zero per-attach cost.
-    ed_mid = np.asarray(ctx.mid, dtype=np.float64)
-    pv = np.asarray(vpos, dtype=np.float64)
-    pin_dist = np.hypot(ed_mid[:, 0, None] - pv[:, 0], ed_mid[:, 1, None] - pv[:, 1])
+    # A* heuristic: distance from each pin to the NEAREST POINT of each
+    # crossed edge (segment distance, not midpoint — round-4 finding 4:
+    # sliver-fan midpoints sit millimetres off the channel axis, which
+    # inflated h and g until a legal pad gap cost more than wrapping
+    # the row). h(e) is the min over UNATTACHED pins, raised on each
+    # attach (round-3 finding R3-2): an attached pin left in the min
+    # keeps h ~0 around the growing tree and A* degenerates to Dijkstra
+    # from the whole tree. Raising h leaves already-queued keys as
+    # underestimates, so lazy entries stay correct; only edges whose
+    # min was the attached pin are rescanned. ``pin_dist`` is a slice of
+    # the ctx-wide pin→segment matrix (mutated by retire_pin, so a copy).
+    pin_dist = ctx.pin_seg[:, pins].copy()
     hvec = pin_dist.min(axis=1)
+    # the relax loop reads h per push — a memoryview gives plain-float
+    # reads while retire_pin's numpy writes stay visible (round-4 perf)
+    hview = memoryview(hvec)
+
+    def retire_pin(j: int) -> None:
+        affected = hvec == pin_dist[:, j]
+        pin_dist[:, j] = math.inf
+        if affected.any():
+            hvec[affected] = pin_dist[affected].min(axis=1)
 
     def h(e: int) -> float:
-        return float(hvec[e])
+        return hview[e]
 
     # which net pins sit in each triangle (goal check without scanning)
     tri_pins: dict[int, list[int]] = {}
@@ -1271,6 +1681,7 @@ def _net_tree(
     while unplaced:
         root = min(unplaced)
         unplaced.discard(root)
+        retire_pin(root)
         dist: dict[int, float] = {}
         prev: dict[int, int] = {}
         src: dict[int, int] = {}
@@ -1279,10 +1690,10 @@ def _net_tree(
         # exact total and carry it in b (encoded state) and g (unused).
         heap: list[tuple[float, int, int, int, float]] = []
         in_tree = {root}
-        # attach[j] = (branch length, encoded goal state | None, src pin | None)
-        attach: dict[int, tuple[float, int | None, int | None]] = {
-            root: (0.0, None, None)
-        }
+        # attach[j] = (branch length, (src pin, chain) | None, src pin | None)
+        attach: dict[
+            int, tuple[float, tuple[int, tuple[int, ...]] | None, int | None]
+        ] = {root: (0.0, None, None)}
 
         def push_state(
             e0: int,
@@ -1290,6 +1701,7 @@ def _net_tree(
             cost: float,
             j: int,
             *,
+            prev: dict[int, int] = prev,
             dist: dict[int, float] = dist,
             src: dict[int, int] = src,
             heap: list[tuple[float, int, int, int, float]] = heap,
@@ -1297,6 +1709,12 @@ def _net_tree(
             st = e0 * span + t2
             if cost >= dist.get(st, INF) - 1e-12:
                 return
+            if st in dist:
+                # a cheaper re-seed roots the chain here: dropping the
+                # old parent keeps prev a forest of edges new→old —
+                # without it a descendant could re-parent a seeded
+                # state and close a cycle in the walk (R4)
+                prev.pop(st, None)
             dist[st] = cost
             src[st] = j
             heapq.heappush(heap, (cost + h(e0), 0, e0, t2, cost))
@@ -1304,6 +1722,8 @@ def _net_tree(
         def seed(j: int) -> None:
             # Prim: a fresh attach re-seeds at cost 0 — the heap key is
             # distance-to-tree, not distance-to-root (round-2 finding 3).
+            # pin_dist[:, j] is already retired to inf (R3-2), so the
+            # seed cost is read straight off the geometry.
             vj = vpos[j]
             for t0 in ctx.v2t[verts[j]]:
                 for e0 in ctx.tri_edge_list[t0]:
@@ -1313,7 +1733,7 @@ def _net_tree(
                     t2 = t2a if t2a != t0 else t2b
                     if t2 < 0:
                         continue
-                    push_state(e0, t2, math.dist(vj, ctx.mid[e0]), j)
+                    push_state(e0, t2, _pt_seg(vj, ctx.seg_u[e0], ctx.seg_v[e0]), j)
 
         def push_goals(
             j: int,
@@ -1338,11 +1758,24 @@ def _net_tree(
                     continue
                 unplaced.discard(j2)
                 in_tree.add(j2)
-                attach[j2] = (
-                    key,
-                    b_ if b_ >= 0 else None,
-                    -b_ - 1 if b_ < 0 else None,
-                )
+                retire_pin(j2)
+                if b_ >= 0:
+                    # snapshot the winning chain NOW: later attaches
+                    # re-seed at 0 and can relabel prev/src under a
+                    # recorded goal state (a chain rerouted through the
+                    # attached pin's own seed rebuilt a self-branch)
+                    chain = []
+                    seen: set[int] = set()
+                    s = int(b_)
+                    while s in prev and s not in seen:
+                        seen.add(s)
+                        chain.append(s)
+                        s = prev[s]
+                    chain.append(s)
+                    chain.reverse()
+                    attach[j2] = (key, (src[s], tuple(chain)), None)
+                else:
+                    attach[j2] = (key, None, -b_ - 1)
                 seed(j2)
                 push_goals(j2)
                 continue
@@ -1352,7 +1785,7 @@ def _net_tree(
                 continue
             for j2 in tri_pins.get(t, ()):
                 if j2 in unplaced:
-                    total = g + math.dist(ctx.mid[e], vpos[j2])
+                    total = g + float(pin_dist[e, j2])
                     heapq.heappush(heap, (total, 1, j2, st, total))
             for e2, t2, wstep in ctx.tri_next[t].get(e, ()):
                 if t2 < 0 or not base_pass[e2]:
@@ -1360,9 +1793,9 @@ def _net_tree(
                 nxt = e2 * span + t2
                 nd = g + wstep
                 if nd < dist.get(nxt, INF) - 1e-12:
-                    dist[nxt] = nd
                     prev[nxt] = st
                     src[nxt] = src[st]
+                    dist[nxt] = nd
                     heapq.heappush(heap, (nd + h(e2), 0, e2, t2, nd))
 
         members = sorted(in_tree)
@@ -1377,14 +1810,8 @@ def _net_tree(
                 )
                 branches.append((pins[i], pins[j], [shared], []))
                 continue
-            chain: list[int] = []
-            s = int(enc)
-            while s in prev:
-                chain.append(s)
-                s = prev[s]
-            chain.append(s)
-            chain.reverse()
-            i = src[chain[0]]
+            i, chain_t = enc
+            chain = list(chain_t)
             edges = [s_ // span for s_ in chain]
             first_ta, first_tb = ctx.edge_tris[edges[0]]
             first_t = first_tb if first_ta == chain[0] % span else first_ta
@@ -1467,22 +1894,39 @@ def _portal_t(
     return None
 
 
-def build_wires(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> Wires:
+def build_wires(
+    mesh: TopoMesh,
+    d: TopoDesign,
+    n_layers: int,
+    net_rules: tuple[tuple[float, float], ...] | None = None,
+) -> Wires:
     """Every net's wire tree on the mesh — spec §2's wires. Returns a
     :class:`Wires`; a component of a net no path can link to the net's
     main component on any candidate layer is wired internally and
     named once on :attr:`Wires.unreachable` for the colour pass to
-    report."""
+    report. ``net_rules`` is ``(trace_mm, clearance_mm)`` per net
+    (resolved ``NetRules`` by the caller when the board has classes);
+    ``None`` uses the default pair, under which foreign pad-to-pad gaps
+    price open or closed by geometry (Reto 2026-10-25)."""
     ctx = _make_ctx(mesh, d, n_layers)
     pin_vids = frozenset(int(v) for v in mesh.pin_vertex)
     branches: list[WirePath] = []
     net_layers: list[frozenset[int]] = []
     unreachable: list[Unreachable] = []
+    rules_used: list[tuple[float, float]] = []
     for k, pins_arr in enumerate(d.net_pins):
         net_name = d.net_name[k] if k < len(d.net_name) else str(k)
         cand = _net_layers(d, k, n_layers)
         net_layers.append(cand)
-        found, comps, base_pass = _net_tree(ctx, mesh, d, k, n_layers)
+        trace_mm, clearance_mm = (
+            net_rules[k]
+            if net_rules is not None and k < len(net_rules)
+            else (_DEFAULT_TRACE_MM, _DEFAULT_CLEAR_MM)
+        )
+        rules_used.append((trace_mm, clearance_mm))
+        found, comps, base_pass = _net_tree(
+            ctx, mesh, d, k, n_layers, trace_mm, clearance_mm
+        )
         passable = _make_passable(base_pass)
         for pa, pb, tris, edges in found:
             va, vb = int(mesh.pin_vertex[pa]), int(mesh.pin_vertex[pb])
@@ -1540,15 +1984,51 @@ def build_wires(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> Wires:
                 if ci == main_i:
                     continue
                 owners = _wall_owners(
-                    ctx, mesh, d, own, regions[ci], main_region, cand_mask, net_name
+                    ctx,
+                    mesh,
+                    d,
+                    own,
+                    regions[ci],
+                    main_region,
+                    cand_mask,
+                    net_name,
+                    trace_mm / 2.0 + clearance_mm,
                 )
                 unreachable.append(
-                    Unreachable(net=k, pin=pins_l[comp[0]], owners=owners)
+                    Unreachable(
+                        net=k,
+                        pin=pins_l[comp[0]],
+                        owners=owners,
+                        pins=tuple(pins_l[j] for j in comp),
+                    )
                 )
+    order, residual = _order(ctx, mesh, tuple(branches))
+    # slice-4 channel record at the finest resolved rule — the most
+    # slack a channel ever shows; coarser nets just see less free.
+    n_e = len(mesh.edges)
+    gap_free = np.full((n_e, n_layers), -1.0)
+    gap_cap = np.full((n_e, n_layers), -1, dtype=np.int64)
+    if rules_used:
+        t_ref, c_ref = min(rules_used, key=lambda rc: rc[0] + rc[1])
+        _b, free_ref, edge_pads_ref, _p = _pad_eval(ctx, t_ref / 2.0 + c_ref)
+        for e in edge_pads_ref:
+            f = free_ref[e]
+            gap_free[e] = f
+            # total traces the free stretch takes, in the free width's
+            # own frame: floor(f / (t + c)) + 1 — a just-passable
+            # channel records 1, a closed one 0 (round-5: the earlier
+            # (f + c) / (t + c) form undercounted by up to one trace
+            # and recorded cap 0 on passable gaps)
+            gap_cap[e] = np.where(
+                f > 1e-9, np.floor(f / (t_ref + c_ref)) + 1.0, 0.0
+            ).astype(np.int64)
     return Wires(
         branches=tuple(branches),
-        order=_order(ctx, mesh, tuple(branches)),
+        order=order,
         capacity_mm=_edge_capacity_mm(ctx, mesh, d, np.asarray(d.pose0)),
         net_layers=tuple(net_layers),
         unreachable=tuple(unreachable),
+        gap_free_mm=gap_free,
+        gap_cap=gap_cap,
+        order_residual=residual,
     )

@@ -53,7 +53,16 @@ def _load_design(fixture: Path, slug: str, dsn: str):
         features=design.features,
         fixed_copper=design.fixed_copper,
     )
-    return td, np.asarray(td.pose0, dtype=np.float64), design.graph, ir.n_layers
+    from precis.pcb import session as pcb_session
+
+    rules_map = pcb_session.clearance_net_rules(design.graph, design.fab_caps)
+    net_rules = tuple(
+        (r.track_width_mm, r.clearance_mm)
+        if (r := rules_map.get(td.net_name[k])) is not None
+        else (0.15, 0.15)
+        for k in range(len(td.net_pins))
+    )
+    return td, np.asarray(td.pose0, dtype=np.float64), net_rules, ir.n_layers
 
 
 def _svg(path: Path, width_mm: float, height_mm: float, body: list[str]) -> None:
@@ -241,7 +250,7 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
 
     t0 = time.monotonic()
-    td, pose, _graph, n_layers = _load_design(args.fixture, slug, args.dsn)
+    td, pose, net_rules, n_layers = _load_design(args.fixture, slug, args.dsn)
     load_s = time.monotonic() - t0
 
     from precis.pcb.topoplace.mesh import build_mesh
@@ -253,7 +262,7 @@ def main() -> int:
         from precis.pcb.topoplace.wires import build_wires
 
         t0 = time.monotonic()
-        wires = build_wires(mesh, td, n_layers)
+        wires = build_wires(mesh, td, n_layers, net_rules=net_rules)
         wires_ms = (time.monotonic() - t0) * 1000
         numbers = _render_wires(td, pose, mesh, wires, args.out, args.label)
         numbers += f" wires_ms={wires_ms:.0f} route_evals_s={1000 / wires_ms:.1f}"

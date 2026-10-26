@@ -33,8 +33,11 @@ def synth_design(
     n_multinet: int = N_MULTINET,
     n_fixed: int = N_FIXED,
     side: float = SIDE_MM,
+    pad_mm: float = 0.0,
 ) -> tuple[TopoDesign, list[dict], list[dict]]:
-    """Returns ``(design, autoplace_instances, autoplace_nets)``."""
+    """Returns ``(design, autoplace_instances, autoplace_nets)``.
+    ``pad_mm`` > 0 gives every pin a square ``pin_wh`` pad so the
+    ring/gap machinery is exercised (round-4 finding 5)."""
     rng = np.random.default_rng(seed)
 
     parts = tuple(f"U{i + 1}" for i in range(n_parts))
@@ -110,6 +113,7 @@ def synth_design(
         outline=outline,
         pose0=pose0,
         part_outline=part_outline,
+        pin_wh=(np.full((n_parts * 2, 2), pad_mm) if pad_mm > 0 else np.zeros((0, 2))),
     )
 
     instances = [

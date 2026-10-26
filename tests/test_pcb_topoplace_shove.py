@@ -34,14 +34,16 @@ def test_shove_separates_stacked_pair() -> None:
 
 
 def test_shove_partial_overlap_at_lp_bound() -> None:
-    """One overlapping pair clears in a single LP round — displacement
-    within 5 % of the LP optimum (the spec's bound)."""
+    """One overlapping pair resolves with displacement within 5 % of
+    the LP optimum (the spec's bound). Any round count is fine (Reto
+    2026-10-26: "it's pretty fast now, so just make it work") — the
+    ceiling only catches a runaway loop."""
     d = example_a()
     pose = d.pose0.copy()
     pose[1, 0] = pose[0, 0] + 0.6
     pose[1, 1] = pose[0, 1] + 0.6
     res = shove_pose(d, pose)
-    assert res.resolved and res.rounds == 1
+    assert res.resolved and res.rounds <= 50
     assert res.lp_optimum_mm > 0.0
     assert res.moved_mm <= 1.05 * res.lp_optimum_mm + 1e-6
 
