@@ -1,5 +1,6 @@
 """gr468293: a waiting queue hides terminal rows and labels actual lifecycle."""
 
+import re
 from typing import Any
 
 import pytest
@@ -53,7 +54,7 @@ def test_browse_lifecycle_scope(
     assert f"{len(terminal)} terminal entries hidden" in default
     assert "status='*'" in default
     for state in live:
-        assert f"\t{state}\tfixture-state-{state}" in default
+        assert re.search(rf"\t{state}\t(?:[^\t]*\t)?fixture-state-{state}\t", default)
     for state in terminal:
         assert f"fixture-state-{state}" not in default
     if kind != "alert":
@@ -63,7 +64,7 @@ def test_browse_lifecycle_scope(
             assert f"fixture-state-{state}" not in first
     all_rows = handler.search(**args, status="*").body
     for state in live + terminal:
-        assert f"\t{state}\tfixture-state-{state}" in all_rows
+        assert re.search(rf"\t{state}\t(?:[^\t]*\t)?fixture-state-{state}\t", all_rows)
     explicit = handler.search(**args, status=terminal[0]).body
     assert f"fixture-state-{terminal[0]}" in explicit
     assert "terminal entries hidden" not in explicit
