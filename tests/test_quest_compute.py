@@ -5086,6 +5086,1039 @@ class TestAutocatpathHarvest:
         assert "tof_untrusted_value" not in meta
 
 
+# ── struct_neb harvest: one edge's barrier → candidate meta (slice 4,     ──
+# ── neb-structure-builder / gr512126)                                     ──
+
+
+class TestStructNebHarvest:
+    """A succeeded ``struct_neb`` run whose IS is a quest candidate lifts its
+    forward barrier onto the same meta keys the autocatpath lane writes
+    (``barrier``/``barrier_trusted``/warning counters), tagged
+    ``barrier_source='struct_neb'`` + ``neb_run_id`` +
+    ``barrier_fidelity='struct_neb'`` (own fidelity stamp: the twin guard
+    only compares like-with-like, and graduate's verify gate can't read a
+    single edge as a ladder rung). The contiguous-terminal watermark means
+    a still-live run holds the bookmark rather than stranding a slow edge;
+    a failed run is never a candidate verdict."""
+
+    def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    _seq = 0
+
+    @staticmethod
+    def _ms_starts(valid: dict[int, float], invalid: dict[int, float]) -> dict:
+        """The REAL ``multistart`` dict autocatpath ``neb_barrier``
+        writes for ``path_seeds=k`` (engine pin ca54d7e,
+        ``src/autocatpath/neb.py``): summary counters plus ``starts`` —
+        one ``{init_seed, barrier_eV, converged, valid, ...}`` per path
+        init. ``valid``/``invalid`` map init_seed → barrier_eV."""
+        starts = []
+        for seed, b in sorted({**invalid, **valid}.items()):
+            ok = seed in valid
+            starts.append(
+                {
+                    "init_seed": seed,
+                    "barrier_eV": b,
+                    "converged": ok,
+                    "valid": ok,
+                    "desorbed_images": 0 if ok else 1,
+                    "ts_image": 4 if ok else None,
+                }
+            )
+        vbars = sorted(valid.values())
+        return {
+            "n_seeds": len(starts),
+            "n_valid": len(valid),
+            "n_distinct_paths": len(vbars),
+            "n_at_min": len(vbars),
+            "selected_seed": min(valid) if valid else 0,
+            "init": "idpp+jitter",
+            "jitter_A": 0.05,
+            "starts": starts,
+        }
+
+    def _neb_run(
+        self,
+        store: Any,
+        sid: int,
+        *,
+        status: str = "succeeded",
+        barrier_fwd_ev: float | None = 0.8,
+        trusted: bool = True,
+        trust: list[dict[str, Any]] | None = None,
+        engine: str | None = None,
+        fs_ref_id: int | None = None,
+        multistart: Any = ...,
+        dead_job: bool = False,
+    ) -> tuple[int, int | None]:
+        """One ``struct_neb_runs`` row whose IS is this candidate — minted
+        ``queued`` then flipped through :meth:`Store.struct_neb_update_run`
+        the way the job writes it. Returns ``(run_id, ts_ref_id)``; the TS
+        design exists only on a priced terminal write. ``dead_job`` hangs
+        the row on a job already ``STATUS:failed`` — the zombie shape a
+        worker kill leaves (the row still reads ``queued``/``running``).
+        ``fs_ref_id`` pins the edge (omit for a fresh FS design);
+        ``engine`` defaults to the current token like a real mint;
+        ``multistart`` defaults to a 2-seed agreeing record (pass ``None``
+        for a run with no seed evidence — the ``seeds:unknown`` shape)."""
+        from precis.structure.neb import neb_engine_token
+
+        type(self)._seq += 1
+        n = type(self)._seq
+        fs_id = (
+            fs_ref_id
+            if fs_ref_id is not None
+            else int(
+                store.insert_ref(kind="structure", slug=f"neb-fs-{n}", title="fs").id
+            )
+        )
+        job_id: int | None = None
+        if dead_job:
+            job = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="struct_neb",
+                meta={"job_type": "struct_neb"},
+                parent_id=sid,
+            )
+            store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+            job_id = int(job.id)
+        run_id = store.struct_neb_record_run(
+            is_ref_id=sid,
+            fs_ref_id=fs_id,
+            fidelity="ml",
+            model="mace",
+            params=None,
+            cache_key=f"ck-{n}",
+            job_ref_id=job_id,
+            engine=engine if engine is not None else neb_engine_token(),
+        )
+        if status in ("queued", "running"):
+            store.struct_neb_update_run(run_id, status=status)
+            return run_id, None
+        ts_id = int(
+            store.insert_ref(kind="structure", slug=f"neb-ts-{n}", title="ts").id
+        )
+        if multistart is ...:
+            b = barrier_fwd_ev or 0.0
+            multistart = self._ms_starts({0: b, 1: b + 0.01}, {})
+        store.struct_neb_update_run(
+            run_id,
+            status=status,
+            barrier_fwd_ev=barrier_fwd_ev,
+            ts_ref_id=ts_id,
+            trust=trust
+            or [
+                {"check": "saddle", "verdict": "pass"},
+                {"check": "frequency", "verdict": "pass"},
+            ],
+            trusted=trusted,
+            multistart=multistart,
+        )
+        return run_id, ts_id
+
+    def test_succeeded_run_lifts_barrier_and_logs_result_idempotently(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-pd", title="fs").id)
+        run_id, ts_id = self._neb_run(store, sid, barrier_fwd_ev=0.8, fs_ref_id=fs_id)
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.8
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "struct_neb"
+        assert meta["barrier_fidelity"] == "struct_neb"
+        assert meta["neb_run_id"] == run_id
+        assert meta["neb_edge_fs_ref_id"] == fs_id
+        assert meta["neb_edges"][str(fs_id)]["trusted"] is True
+        assert meta["quest_neb_harvested_upto"] == run_id
+        assert meta["warnings"] == []
+        assert meta["barrier_neb_failed"] == 0
+        assert meta["barrier_desorbed"] == 0
+        logs = [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None and ts_id is not None
+        assert any(
+            f"struct_neb result for [{handle}] (Pd): barrier=0.8 eV (trusted), "
+            f"run {run_id}, edge [st{fs_id}], TS [st{ts_id}]" in b.text
+            for b in logs
+        )
+        assert any(
+            b.meta["by"] == "system"
+            for b in logs
+            if (b.meta or {}).get("entry_type") == "result"
+        )
+        # idempotent: the same run is not re-harvested
+        assert compute_mod.harvest_measures(store, qid).results_harvested == 0
+
+    def test_failed_run_is_skipped_and_never_ruled_out(self, store: Any) -> None:
+        """A crashed NEB is an infra outcome, not a "no viable edge" verdict
+        on the material — the same rule the autocatpath lane applies: the
+        watermark advances past the terminal row but nothing is stamped and
+        no ``ruled-out:*`` tag lands."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        run_id, _ = self._neb_run(store, sid, status="failed", barrier_fwd_ev=None)
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier" not in meta
+        assert meta["quest_neb_harvested_upto"] == run_id
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+
+    def test_live_run_holds_the_watermark_then_harvests(self, store: Any) -> None:
+        """Independent edges complete out of order: a still-running older run
+        must block the bookmark (a plain max-id watermark would strand it
+        forever once a younger sibling lands)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        live_id, _ = self._neb_run(store, sid, status="running")
+        done_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.6)
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier" not in meta
+        assert "quest_neb_harvested_upto" not in meta
+        # the held run now completes — both harvest on the next pass
+        store.struct_neb_update_run(
+            live_id,
+            status="succeeded",
+            barrier_fwd_ev=0.4,
+            trust=[
+                {"check": "saddle", "verdict": "pass"},
+                {"check": "frequency", "verdict": "pass"},
+            ],
+            trusted=True,
+            multistart=self._ms_starts({0: 0.4, 1: 0.41}, {}),
+        )
+        step2 = compute_mod.harvest_measures(store, qid)
+        assert step2.results_harvested == 2
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.6  # two trusted edges — the max wins
+        assert meta["neb_run_id"] == done_id
+        assert meta["quest_neb_harvested_upto"] == done_id
+
+    def test_untrusted_run_lands_provisional_with_warnings(self, store: Any) -> None:
+        """Non-``pass`` trust records keep the barrier but flip
+        ``barrier_trusted=False`` — the frontier excludes it from ranking
+        (provisional), exactly the autocatpath lane's contract."""
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        # consume the relax run's own result entry so the count below is
+        # exactly the neb lane's
+        assert compute_mod.harvest_measures(store, qid).results_harvested == 1
+        trust = [
+            {
+                "check": "neb_convergence",
+                "verdict": "fail",
+                "evidence": {"reason": "band did not converge"},
+            },
+            {
+                "check": "detachment",
+                "verdict": "fail",
+                "evidence": {"reason": "adsorbate atom 41 detached"},
+            },
+        ]
+        self._neb_run(store, sid, barrier_fwd_ev=0.5, trusted=False, trust=trust)
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.5
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_neb_failed"] == 1
+        assert meta["barrier_desorbed"] == 1
+        assert meta["barrier_wrong_site"] == 0
+        assert len(meta["warnings"]) == 2
+        assert meta["warnings"][0].startswith("neb_convergence: fail")
+        assert meta["warnings"][1].startswith("detachment: fail")
+        fr = quest_frontier(store, qid)
+        assert not any(c.ref_id == sid for c in fr.frontier)
+        pc = next(p for p in fr.provisional if p.candidate.ref_id == sid)
+        assert pc.measures["barrier"] == 0.5
+        assert "barrier" in pc.untrusted_keys
+
+    def test_stale_engine_run_harvests_untrusted(self, store: Any) -> None:
+        """gr517804's strict-engine ruling: a run minted on another engine
+        token keeps its number but harvests untrusted, with a stale-engine
+        warning naming both tokens."""
+        from precis.structure.neb import neb_engine_token
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(store, sid, barrier_fwd_ev=0.5, engine="stale-token")
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.5
+        assert meta["barrier_trusted"] is False
+        assert any(
+            "stale" in w and "stale-token" in w and neb_engine_token() in w
+            for w in meta["warnings"]
+        )
+
+    def test_no_frequency_record_harvests_untrusted(self, store: Any) -> None:
+        """no_freq_check ruling: a stored ``trusted`` run with NO
+        frequency record (a pre-slice-5 mint) keeps its number but never
+        harvests as trusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.5,
+            trust=[{"check": "saddle", "verdict": "pass"}],
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.5
+        assert meta["barrier_trusted"] is False
+        assert any("no_freq_check" in w for w in meta["warnings"])
+
+    def test_untrusted_rerun_never_replaces_a_trusted_edge(self, store: Any) -> None:
+        """The barrier-selection ruling: on ONE edge (same fs_ref_id) an
+        untrusted re-run never overwrites the trusted value."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-e", title="fs").id)
+        first_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9, fs_ref_id=fs_id)
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.4,
+            fs_ref_id=fs_id,
+            trusted=False,
+            trust=[{"check": "neb_convergence", "verdict": "fail"}],
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        edge = meta["neb_edges"][str(fs_id)]
+        assert edge["neb_run_id"] == first_id
+        assert edge["barrier"] == 0.9 and edge["trusted"] is True
+        assert meta["barrier"] == 0.9
+        assert meta["barrier_trusted"] is True
+        assert meta["neb_run_id"] == first_id
+
+    def test_trusted_rerun_replaces_an_older_trusted_edge(self, store: Any) -> None:
+        """Same edge, same rule's other half: a newer trusted
+        current-engine run replaces an older trusted one."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-e2", title="fs").id)
+        self._neb_run(store, sid, barrier_fwd_ev=0.9, fs_ref_id=fs_id)
+        newer_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.6, fs_ref_id=fs_id)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["neb_edges"][str(fs_id)]["neb_run_id"] == newer_id
+        assert meta["barrier"] == 0.6
+        assert meta["neb_run_id"] == newer_id
+
+    def test_two_trusted_edges_the_max_wins_and_names_the_edge(
+        self, store: Any
+    ) -> None:
+        """Across edges the candidate barrier is the HIGHEST trusted
+        current-engine one — the rate-limiting step — and the stamp
+        names the edge + run it came from."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_lo = int(store.insert_ref(kind="structure", slug="neb-fs-lo", title="fs").id)
+        fs_hi = int(store.insert_ref(kind="structure", slug="neb-fs-hi", title="fs").id)
+        self._neb_run(store, sid, barrier_fwd_ev=0.5, fs_ref_id=fs_lo)
+        hi_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9, fs_ref_id=fs_hi)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.9
+        assert meta["barrier_trusted"] is True
+        assert meta["neb_run_id"] == hi_id
+        assert meta["neb_edge_fs_ref_id"] == fs_hi
+        assert set(meta["neb_edges"]) == {str(fs_lo), str(fs_hi)}
+
+    def test_trusted_autocatpath_barrier_stands_over_an_untrusted_neb(
+        self, store: Any
+    ) -> None:
+        """No trusted NEB edge → the trusted non-neb barrier already on
+        the candidate stands; the untrusted edge is stored per-edge but
+        never overwrites it."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(sid, {"barrier": 0.3, "barrier_trusted": True})
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.1,
+            trusted=False,
+            trust=[{"check": "neb_convergence", "verdict": "fail"}],
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.3
+        assert meta["barrier_trusted"] is True
+        assert meta.get("barrier_source") != "struct_neb"
+        assert len(meta["neb_edges"]) == 1
+
+    def test_trusted_neb_beats_the_autocatpath_barrier(self, store: Any) -> None:
+        """A trusted current-engine NEB edge is the frontier barrier —
+        the trusted autocatpath value is only the fallback."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(sid, {"barrier": 0.3, "barrier_trusted": True})
+        run_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.9
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "struct_neb"
+        assert meta["neb_run_id"] == run_id
+
+    # ── cross-lane precedence (neb-s5 review): trust first, then source ──
+
+    @staticmethod
+    def _autocatpath_job(store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    @staticmethod
+    def _pathway_ref(store: Any, sid: int, *, trusted: bool) -> int:
+        """A pathway-ish ref whose meta drives ``_pathway_quality`` —
+        warnings make the harvested barrier untrusted."""
+        meta: dict[str, Any] = {"warnings": [], "low_confidence": False}
+        if not trusted:
+            meta["warnings"] = ["NO->N+O seed=0 NEB not converged"]
+        return store.insert_ref(
+            kind="job", slug=None, title="pw", meta=meta, parent_id=sid
+        ).id
+
+    def test_autocatpath_lane_writes_its_own_provenance(self, store: Any) -> None:
+        """Every barrier the autocatpath lane lands names
+        ``barrier_source='autocatpath'`` and clears the struct_neb
+        provenance ids — the three keys always describe the same value."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._pathway_ref(store, sid, trusted=True)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "autocatpath"
+        assert meta["neb_run_id"] is None
+        assert meta["neb_edge_fs_ref_id"] is None
+
+    def test_untrusted_autocatpath_never_overwrites_a_trusted_neb(
+        self, store: Any
+    ) -> None:
+        """Review scenario (a): a trusted NEB edge landed first — an
+        untrusted autocatpath barrier stashes under
+        ``barrier_untrusted_value`` and neither the value nor its
+        verdict displaces the trusted one."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        run_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.9)
+        compute_mod.harvest_measures(store, qid)
+        pw = self._pathway_ref(store, sid, trusted=False)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.2}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.9
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "struct_neb"
+        assert meta["neb_run_id"] == run_id
+        assert meta["barrier_untrusted_value"] == 0.2
+
+    def test_stashed_job_stamps_no_derived_keys(self, store: Any) -> None:
+        """Must-fix 1: the whole losing job stashes — an untrusted
+        job's span/electro/selectivity keys may not land over the kept
+        trusted barrier; each barrier-gated measure survives under its
+        ``_untrusted_value`` suffix for the provisional read, and its
+        per-run flags never reannotate the kept value."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(store, sid, barrier_fwd_ev=0.6)
+        compute_mod.harvest_measures(store, qid)
+        pw = self._pathway_ref(store, sid, trusted=False)
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.2,
+                    "span": 0.3,
+                    "U_L": -0.2,
+                    "U_opt": -0.4,
+                    "span_at_Uopt": 0.5,
+                    "adsorption_barrier": 0.7,
+                    "selectivity_margin": 1.1,
+                    "side_worst": "NH2",
+                    # kinetics solved on the losing pathway — stashed too
+                    # (neb-s7): the solve is only as trustworthy as the
+                    # pathway it ran on
+                    "tof": 12.5,
+                    "log_tof": 1.1,
+                    "kinetics_trusted": True,
+                    "kinetics_note": "clean solve",
+                    "drc_top": "R->A",
+                },
+                "pathway_ref": pw,
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.6
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "struct_neb"
+        # every gated measure stashes, none stamps over the kept value
+        assert meta["barrier_untrusted_value"] == 0.2
+        assert meta["span_untrusted_value"] == 0.3
+        assert meta["U_L_untrusted_value"] == -0.2
+        assert meta["U_L_abs_untrusted_value"] == 0.2
+        assert meta["U_opt_untrusted_value"] == -0.4
+        assert meta["span_at_Uopt_untrusted_value"] == 0.5
+        assert meta["adsorption_barrier_untrusted_value"] == 0.7
+        assert meta["selectivity_margin_untrusted_value"] == 1.1
+        assert meta["tof_untrusted_value"] == 12.5
+        assert meta["log_tof_untrusted_value"] == 1.1
+        assert meta["kinetics_trusted_untrusted_value"] is True
+        assert meta["kinetics_note_untrusted_value"] == "clean solve"
+        assert meta["drc_top_untrusted_value"] == "R->A"
+        for k in (
+            "span",
+            "U_L",
+            "U_L_abs",
+            "U_opt",
+            "span_at_Uopt",
+            "adsorption_barrier",
+            "selectivity_margin",
+            "side_worst",
+            "tof",
+            "log_tof",
+            "kinetics_trusted",
+            "kinetics_note",
+            "drc_top",
+            "barrier_absurd",
+            "barrier_seed_blocker",
+        ):
+            assert meta.get(k) is None, k
+        # a stashed losing job earns no ladder rung (neb-s7)
+        assert meta.get("tier") is None
+        # the kept edge's own bookkeeping re-stamps from its pick
+        assert meta["warnings"] == []
+        assert meta["barrier_independent_seeds"] == 2
+        # the frontier ranking ignores every stashed value — the
+        # provisional display still recovers them from flags
+        cand = _candidate_from_structure(store, store.fetch_refs_by_ids({sid})[sid])
+        assert cand.measures.get("barrier") == 0.6
+        assert not any(
+            k.endswith("_untrusted_value") or k in ("span", "tof", "U_L")
+            for k in cand.measures
+        )
+        assert cand.flags.get("barrier_untrusted_value") == 0.2
+
+    def test_untrusted_autocatpath_overwrites_without_neb_evidence(
+        self, store: Any
+    ) -> None:
+        """Note D: trust-first precedence is neb-evidence-gated — a
+        quest with no NEB lane keeps the old newest-wins behaviour: an
+        untrusted result replaces the stored trusted one outright."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw_t = self._pathway_ref(store, sid, trusted=True)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw_t}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert meta["barrier_trusted"] is True
+        pw_u = self._pathway_ref(store, sid, trusted=False)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.15}, "pathway_ref": pw_u}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.15
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_source"] == "autocatpath"
+
+    def test_untrusted_neb_never_overwrites_trusted_autocatpath(
+        self, store: Any
+    ) -> None:
+        """Review scenario (b): trusted autocatpath on the candidate —
+        a later untrusted NEB edge lands on the per-edge table but the
+        candidate-level stamp stays the trusted autocatpath value,
+        named ``autocatpath`` with no neb provenance."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._pathway_ref(store, sid, trusted=True)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.1,
+            trusted=False,
+            trust=[{"check": "neb_convergence", "verdict": "fail"}],
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "autocatpath"
+        assert meta["neb_run_id"] is None
+        assert len(meta["neb_edges"]) == 1
+        # …and a SECOND untrusted edge still can't sneak past it —
+        # provenance is what the selection guard reads.
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.05,
+            trusted=False,
+            trust=[{"check": "neb_convergence", "verdict": "fail"}],
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "autocatpath"
+
+    def test_trusted_legacy_barrier_without_source_still_stands(
+        self, store: Any
+    ) -> None:
+        """Stale barrier_source: a candidate stamped trusted before the
+        provenance key existed is still a trusted barrier — on a quest
+        with neb evidence (the gate for trust-first precedence), an
+        untrusted autocatpath landing stashes, never displaces it."""
+        from precis.structure.neb import neb_engine_token
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.3,
+                "barrier_trusted": True,
+                "neb_edges": {
+                    "1": {
+                        "fs_ref_id": 1,
+                        "neb_run_id": 1,
+                        "engine": neb_engine_token(),
+                        "barrier": 0.3,
+                        "trusted": True,
+                    }
+                },
+            },
+        )
+        pw = self._pathway_ref(store, sid, trusted=False)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.15}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.3
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_untrusted_value"] == 0.15
+
+    _POOL_TRUST = [
+        {"check": "neb_convergence", "verdict": "pass"},
+        {"check": "collapsed_band", "verdict": "pass"},
+        {"check": "saddle_verified", "verdict": "pass"},
+        {"check": "detachment", "verdict": "pass"},
+        {"check": "frequency", "verdict": "pass"},
+        {"check": "multistart", "verdict": "marginal"},
+    ]
+
+    def _one_seed_run(
+        self, store: Any, sid: int, fs_id: int, seed: float, **kw: Any
+    ) -> int:
+        """A stored-untrusted run whose own k-start priced ONE valid
+        seed — the shape a ``path_seeds=2`` job writes when one start
+        fails (init_seed kwarg picks which of the two starts is valid;
+        multistart ``marginal``, ``trusted=False``), ready for the
+        union to rescue or not."""
+        init_seed = int(kw.pop("init_seed", 0))
+        valid = {init_seed: seed}
+        invalid = {1 - init_seed: seed + 0.5}
+        run_id, _ = self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=seed,
+            fs_ref_id=fs_id,
+            trusted=False,
+            trust=list(self._POOL_TRUST),
+            multistart=self._ms_starts(valid, invalid),
+            **kw,
+        )
+        return run_id
+
+    def test_union_two_one_seed_runs_agreeing_harvests_trusted(
+        self, store: Any
+    ) -> None:
+        """Union ruling: two current-engine runs of one edge, each
+        holding a DIFFERENT valid init_seed, agreeing within 0.05 eV —
+        pooled, the union reaches ≥ 2 independent seeds and trusts."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-u", title="fs").id)
+        self._one_seed_run(store, sid, fs_id, 0.90, init_seed=0)
+        self._one_seed_run(store, sid, fs_id, 0.92, init_seed=1)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        edge = meta["neb_edges"][str(fs_id)]
+        assert edge["trusted"] is True
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_independent_seeds"] == 2
+        assert meta["barrier_seed_blocker"] is None
+
+    def test_union_repeated_init_seed_counts_once(self, store: Any) -> None:
+        """init_seed dedupe: two runs whose only valid start is the SAME
+        seed 0 (the deterministic IDPP init — identical paths, not
+        independent seeds) pool to a union of one → untrusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-dd", title="fs").id)
+        self._one_seed_run(store, sid, fs_id, 0.90, init_seed=0)
+        self._one_seed_run(store, sid, fs_id, 0.91, init_seed=0)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        assert meta["barrier_independent_seeds"] == 1
+
+    def test_union_disagreeing_seeds_stay_untrusted(self, store: Any) -> None:
+        """Same union, seeds > 0.05 eV apart: the pooled endpoints
+        disagree — untrusted, blocker endpoint:union-disagree."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-d", title="fs").id)
+        self._one_seed_run(store, sid, fs_id, 0.90, init_seed=0)
+        self._one_seed_run(store, sid, fs_id, 1.40, init_seed=1)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "endpoint:union-disagree"
+        assert meta["barrier_independent_seeds"] == 2
+
+    def test_old_engine_run_never_pools_with_current(self, store: Any) -> None:
+        """A stale-engine sibling contributes no seed: one current 1-seed
+        run + one old-engine run = a union of one → untrusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-o", title="fs").id)
+        self._one_seed_run(store, sid, fs_id, 0.90, engine="old-token", init_seed=1)
+        self._one_seed_run(store, sid, fs_id, 0.91, init_seed=0)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+
+    def test_missing_multistart_is_seeds_unknown(self, store: Any) -> None:
+        """No multistart record on the harvested run at all — unknown
+        seed set, never trusted even with a poolable sibling."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_id = int(store.insert_ref(kind="structure", slug="neb-fs-x", title="fs").id)
+        self._one_seed_run(store, sid, fs_id, 0.90, init_seed=1)
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.91,
+            fs_ref_id=fs_id,
+            trusted=False,
+            trust=list(self._POOL_TRUST),
+            multistart=None,
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:unknown"
+        assert any("seeds:unknown" in w for w in meta["warnings"])
+
+    def test_trusted_run_with_multistart_dict_but_no_starts_stays_trusted(
+        self, store: Any
+    ) -> None:
+        """A present ``multistart`` dict with no parseable ``starts``
+        is a RECORDED seed set, not an unknown one — a stored-trusted
+        run keeps its verdict (the seeds:unknown demotion is reserved
+        for runs that never wrote a multistart at all)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=0.7,
+            multistart={"n_valid": 2, "n_at_min": 2},
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_seed_blocker"] is None
+        assert not any("seeds:unknown" in w for w in meta["warnings"])
+
+    def test_dead_job_zombie_does_not_wedge_the_watermark(self, store: Any) -> None:
+        """A run whose job died without the write-back reads ``running``
+        forever — its row status lies (gr512126 slice-4 review): liveness
+        follows the JOB's status, so the zombie is terminal for the
+        watermark and every later sibling still harvests. The harvest
+        also reaps the row so ``view='neb'`` stops listing it."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        dead_id, _ = self._neb_run(store, sid, status="running", dead_job=True)
+        done_ids = [
+            self._neb_run(store, sid, barrier_fwd_ev=0.5 + i / 100)[0] for i in range(4)
+        ]
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 4
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["quest_neb_harvested_upto"] == done_ids[-1]
+        assert store.struct_neb_get(dead_id)["status"] == "failed"
+        # ...and the same zombie never wedges a re-read either.
+        assert compute_mod.harvest_measures(store, qid).results_harvested == 0
+
+    def test_succeeded_unpriced_run_advances_without_a_measure(
+        self, store: Any
+    ) -> None:
+        """A collapsed band stores NULL barriers — the row is terminal, the
+        bookmark still advances (re-reading it every tick would pin the
+        lane), but no measure is lifted."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        run_id, _ = self._neb_run(store, sid, barrier_fwd_ev=None)
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier" not in meta
+        assert meta["quest_neb_harvested_upto"] == run_id
+
+    def test_stamp_harvest_merges_edges_per_key(self, store: Any) -> None:
+        """``struct_neb_stamp_harvest`` is a jsonb key-level merge, never
+        a whole-object replace: two writes carrying disjoint edge keys
+        BOTH survive, and the watermark + selection keys ride the same
+        UPDATE (a replace would leave only the second edge)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.struct_neb_stamp_harvest(
+            sid,
+            {"11": {"barrier": 0.5, "trusted": True}},
+            harvested_upto=3,
+            extra={"barrier": 0.5},
+        )
+        store.struct_neb_stamp_harvest(
+            sid,
+            {"22": {"barrier": 0.7, "trusted": False}},
+            harvested_upto=7,
+        )
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert set(meta["neb_edges"]) == {"11", "22"}
+        assert meta["quest_neb_harvested_upto"] == 7
+        assert meta["barrier"] == 0.5
+
+    def test_two_harvests_on_different_edges_both_survive(self, store: Any) -> None:
+        """The concurrency scenario at the harvest level: two passes each
+        land a different edge — the per-key merge keeps both on
+        ``meta.neb_edges`` (a whole-object write of the second pass's
+        stale snapshot would have wiped the first edge)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        fs_x = int(store.insert_ref(kind="structure", slug="neb-fs-mx", title="fs").id)
+        fs_y = int(store.insert_ref(kind="structure", slug="neb-fs-my", title="fs").id)
+        self._neb_run(store, sid, barrier_fwd_ev=0.8, fs_ref_id=fs_x)
+        compute_mod.harvest_measures(store, qid)
+        second_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.6, fs_ref_id=fs_y)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert set(meta["neb_edges"]) == {str(fs_x), str(fs_y)}
+        assert meta["quest_neb_harvested_upto"] == second_id
+
+    def test_engine_bump_demotes_the_stamp_without_a_new_run(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict-engine ruling at read time (neb-s5): after the engine
+        token moves, the stored trusted stamp demotes on the NEXT pass
+        with no fresh run — the trusted-edge filter keys on the current
+        token, so old-engine edges are candidates no longer."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(store, sid, barrier_fwd_ev=0.8)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.8
+        assert meta["barrier_trusted"] is True
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "engine-v-next"
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier"] == 0.8  # newest value still shows, flagged
+        assert meta["barrier_source"] == "struct_neb"
+        # …and the demotion is named — the pick's own warnings predate
+        # the bump, so a stale-only demotion must say engine:stale
+        # itself (neb-s6 note B).
+        assert any("engine:stale" in str(w) for w in meta["warnings"])
+
+    def test_absurd_flag_clears_when_the_pick_changes(self, store: Any) -> None:
+        """Must-fix 3: the fail flags are recomputed per pick — a
+        candidate showing an absurd untrusted edge drops
+        ``barrier_absurd`` when a sane trusted edge takes over."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(
+            store,
+            sid,
+            barrier_fwd_ev=12.0,
+            trusted=False,
+            trust=[{"check": "neb_convergence", "verdict": "fail"}],
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 12.0
+        assert meta["barrier_absurd"] is True
+        assert meta["barrier_trusted"] is False
+        self._neb_run(store, sid, barrier_fwd_ev=0.5)  # trusted, new edge
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.5
+        assert meta["barrier_trusted"] is True
+        assert meta.get("barrier_absurd") is None
+        assert meta.get("barrier_unrelaxed_geometry") is None
+
+    def test_twin_disagreement_survives_reselection(self, store: Any) -> None:
+        """Must-fix 2: the twin guard's untrust is sticky — re-selection
+        on every later pass must not re-trust a ruled-out pair (it
+        flapped trusted→untrusted→trusted every tick before)."""
+        spec_a = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
+        }
+        spec_b = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.62]}],
+        }
+        qid = _mk_quest(store, "A striving")
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "a", "structure": spec_a}
+        )
+        sid_b = compute_mod.ensure_candidate(
+            store, qid, {"name": "b", "structure": spec_b}
+        )
+        assert sid_a is not None and sid_b is not None and sid_a != sid_b
+        store.stamp_ref_meta(sid_a, {"geom_hash_c": "twin-hash"})
+        store.stamp_ref_meta(sid_b, {"geom_hash_c": "twin-hash"})
+        self._neb_run(store, sid_a, barrier_fwd_ev=0.5)
+        self._neb_run(store, sid_b, barrier_fwd_ev=1.5)
+        for _ in range(3):  # landing pass, then two re-selection passes
+            compute_mod.harvest_measures(store, qid)
+            meta_a = store.fetch_refs_by_ids({sid_a})[sid_a].meta or {}
+            meta_b = store.fetch_refs_by_ids({sid_b})[sid_b].meta or {}
+            assert meta_a["barrier"] == 0.5
+            assert meta_b["barrier"] == 1.5
+            assert meta_a["barrier_trusted"] is False
+            assert meta_b["barrier_trusted"] is False
+            assert meta_a["barrier_twin_disagreement"]
+            assert meta_b["barrier_twin_disagreement"]
+
+    def test_reset_keeps_neb_edges_and_restamps(self, store: Any) -> None:
+        """neb-s6 ruling: ``reset_compute`` clears every DERIVED stamp —
+        the barrier, provenance ids, untrusted stashes, flags — but KEEPS
+        ``meta.neb_edges`` (harvested evidence, expensive to redo), and
+        the next pass re-derives the candidate stamp off it."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        run_id, _ = self._neb_run(store, sid, barrier_fwd_ev=0.6)
+        compute_mod.harvest_measures(store, qid)
+        pw = self._pathway_ref(store, sid, trusted=False)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.2}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_untrusted_value"] == 0.2
+
+        compute_mod.reset_compute(store, qid, keep_dossier=True)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        for k in (
+            "barrier",
+            "barrier_trusted",
+            "barrier_source",
+            "neb_run_id",
+            "neb_edge_fs_ref_id",
+            "barrier_untrusted_value",
+            "barrier_independent_seeds",
+            "warnings",
+        ):
+            assert meta.get(k) is None, k
+        assert meta["neb_edges"]  # the harvested evidence stays
+
+        compute_mod.harvest_measures(store, qid)  # re-derives off the edges
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.6
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_source"] == "struct_neb"
+        assert meta["neb_run_id"] == run_id
+
+    def test_neb_provenance_ids_never_rank_as_measures(self, store: Any) -> None:
+        """``neb_edge_fs_ref_id`` and ``barrier_independent_seeds`` are
+        numeric bookkeeping — ``_META_NON_MEASURE`` keeps them out of
+        the frontier's measure vector (the same reason ``bare_twin_ref``
+        is listed there)."""
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        self._neb_run(store, sid, barrier_fwd_ev=0.8)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["neb_edge_fs_ref_id"] is not None
+        fr = quest_frontier(store, qid)
+        for c in fr.frontier:
+            assert "neb_edge_fs_ref_id" not in c.measures
+            assert "barrier_independent_seeds" not in c.measures
+
+
 # ── structured per-step trust records (catpath trust_schema == 1,          ──
 # ── docs/backlog/per-step-trust-records.md upstream) — _pathway_quality's  ──
 # ── version-gated v1 path, separating barrier trust from selectivity       ──

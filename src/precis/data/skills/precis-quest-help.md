@@ -404,11 +404,12 @@ A tick does not edit repo files. To land prose in a repo file (docs, a
 skill, a backlog spec), file a gripe carrying the text; a session applies it.
 
 `redispatch` re-runs each candidate at its **own highest completed rung**,
-not a blanket neb. So a verify-tier candidate costs a full verify pass
-(3+ seeds, about 2 h each on one GPU), and a quest with many verified
-candidates is an expensive call. It is meant for manual use after an engine
-deploy, not for a loop. It collapses onto existing jobs when the engine
-token is unchanged.
+not a blanket neb — a verify-tier candidate costs a full verify pass
+(3+ seeds, ~2 h each/GPU), so use it by hand after an engine deploy,
+not in a loop. It collapses onto existing jobs when the engine token is
+unchanged.
+`reset-compute` nulls derived stamps but keeps `meta.neb_edges`; next
+tick re-stamps off it.
 
 To re-measure ONE named candidate on demand — a deliberate rerun to test a
 credited pass's reproducibility — call

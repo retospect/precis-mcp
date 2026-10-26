@@ -1308,6 +1308,18 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "version",
         "quest_harvested_upto",
         "quest_autocatpath_harvested_upto",
+        # struct_neb lane (neb-structure-builder slice 4): the idempotency
+        # bookmark and the harvested run's provenance id — both numeric,
+        # both bookkeeping, never a rank measure.
+        "quest_neb_harvested_upto",
+        "neb_run_id",
+        # ``neb_edge_fs_ref_id`` names the selected edge (a ref id —
+        # numeric, would otherwise rank as a measure, same reason
+        # ``bare_twin_ref`` is listed); ``barrier_independent_seeds`` is
+        # the pooled-seed count both lanes stamp — bookkeeping, not a
+        # Pareto axis.
+        "neb_edge_fs_ref_id",
+        "barrier_independent_seeds",
         "barrier_neb_failed",
         "barrier_desorbed",
         "barrier_wrong_site",

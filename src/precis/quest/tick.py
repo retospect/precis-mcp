@@ -1364,6 +1364,39 @@ def _explorers_creed(store: Store, quest_id: int, *, fr: Any | None = None) -> s
     )
 
 
+#: The barrier door for a quest WITHOUT ``meta.reaction_config`` — shown
+#: only when the quest's objectives rank a ``barrier`` (a generic
+#: materials quest still measures activation barriers, between two
+#: designs the agent authors itself; neb-structure-builder slice 4;
+#: qu509651's tick filed gr512126 after 21 bumps of hand-built-TS
+#: failures). ``{neb_quest_daily}`` is resolved with ``str.replace`` at
+#: render — the string carries literal JSON braces, so ``str.format``
+#: was never safe here.
+_GENERIC_NEB_CONTEXT = (
+    "\n## Barriers — one NEB edge between two of your own designs\n"
+    "Two endpoint energies are NOT a barrier — never report ΔE as E_a. To "
+    "measure an activation barrier on a step you choose:\n"
+    "1. IS: build the initial state — the `slab` op for an fcc(111) surface, "
+    "`add_adsorbate` for a group (H·O·N·OH·H2O·NH·NH2·NH3·C·CH·CH2·CH3·CH4), "
+    "or hand-built ops.\n"
+    "2. FS: DERIVE the final state from the IS so atom labels match — "
+    "put(kind='structure', id='<fs-slug>', args={'derive_from': '<is-slug>', "
+    "'ops': [...]}). `transfer` moves one atom onto an acceptor (the "
+    "bond-swap step); `move_group` rigidly relocates a fragment. A fresh "
+    "re-put is NEVER NEB-pairable (its own atom order).\n"
+    "3. Relax BOTH endpoints to a converged ml run on the current version, "
+    "then check the gates: get(kind='structure', id='<is>', view='pair', "
+    "args={'other': '<fs>'}) — every failed row names its fix.\n"
+    "4. Run the edge: put(kind='structure', id='<is>', mode='neb', "
+    "args={'final': '<fs>'}) — mints a struct_neb job (one in-flight run "
+    "per edge, ≤{neb_quest_daily} mints per quest per 24 h, "
+    "PRECIS_STRUCT_NEB_QUEST_DAILY). Poll get(kind='structure', "
+    "id='<is>', view='neb') for E_a, ΔE, the TS design and the trust "
+    "verdict; a succeeded run's barrier lands on the IS candidate and the "
+    "frontier by itself.\n"
+)
+
+
 def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str:
     """Proposal rules for a **barrier quest** that declares a reaction (autocatpath).
 
@@ -1374,8 +1407,10 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
     element list, no fixed site/coadsorbate menu — the discovery agent picks
     the dopant, its placement, and coverage using its own chemistry judgment
     every tick; code only states what it can build (see the explorer's creed
-    below). Absent → ``""`` (a generic materials quest keeps the free-form,
-    hand-built-cell proposal rules already in the template).
+    below). Absent → :data:`_GENERIC_NEB_CONTEXT`, but only when the quest's
+    objectives rank a ``barrier`` — the door offers ``mode='neb'``, so it
+    belongs on quests that can mint and use a NEB edge, not on every
+    materials tick (slice 4 of neb-structure-builder.md).
 
     ``fr`` is the tick's already-computed frontier (see
     :func:`_frontier_summary`), threaded straight through to
@@ -1384,7 +1419,14 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
     meta = getattr(quest, "meta", None) or {}
     rc = meta.get("reaction_config")
     if not isinstance(rc, dict) or not rc:
-        return ""
+        objectives = getattr(fr, "objectives", None) or []
+        if not any(key == "barrier" for key, _sense in objectives):
+            return ""
+        from precis.handlers.structure import _neb_quest_daily
+
+        return _GENERIC_NEB_CONTEXT.replace(
+            "{neb_quest_daily}", str(_neb_quest_daily())
+        )
     slab = rc.get("slab") or {}
     el = slab.get("element", "Pd")
     size = list(slab.get("size", [3, 3, 4]))

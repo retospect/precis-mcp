@@ -8,8 +8,11 @@ prio: high
 
 # NEB structure builder (gr512126)
 
-Status 2026-10-25: slices 1–2 shipped (slice 1 in 49cae7c94; slice 2 —
-`view='pair'` — in this tree's commit). Slices 3–5 open.
+Status 2026-10-25: slices 1–3 shipped (slice 1 in 49cae7c94; slice 2 —
+`view='pair'`; slice 3 in 28b75f86d). Slices 4 (quest harvest lane +
+generic tick block) and 5 (saddle frequency check) built on
+worktree-neb-s3 — the gripe closes when qu509651 has one harvested
+barrier, trusted or not (prod check, post-deploy).
 
 Reto, 2026-10-25: build it, Opus spec first, and keep it a separate tool —
 not merged with gr506762 (structured kinetics/thermochemistry lookup) or

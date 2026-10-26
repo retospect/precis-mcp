@@ -2388,6 +2388,54 @@ class TestReactionContext:
         assert "catalyst slab" not in prompt
         assert "Reaction R" not in prompt
 
+    def test_generic_quest_prompt_offers_the_neb_door(self, store: Any) -> None:
+        """neb-structure-builder slice 4: a quest WITHOUT ``reaction_config``
+        still measures barriers — the tick prompt carries the derive-FS →
+        pair-check → ``mode='neb'`` block when its rubric ranks a ``barrier``
+        objective (qu509651 filed gr512126 after 21 bumps of hand-built-TS
+        failures)."""
+        qid = _mk_quest(store, "A generic materials striving with no reaction")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "one NEB edge between two of your own designs" in prompt
+        assert "derive_from" in prompt
+        assert "view='pair'" in prompt
+        assert "mode='neb'" in prompt
+        assert "view='neb'" in prompt
+        # The mint cap names its env pin, not a hardcoded number.
+        assert "PRECIS_STRUCT_NEB_QUEST_DAILY" in prompt
+        assert "{neb_quest_daily}" not in prompt
+
+    def test_generic_quest_without_barrier_objective_gets_no_neb_door(
+        self, store: Any
+    ) -> None:
+        """The door is for quests where NEB applies: a rubric with no
+        ``barrier`` objective (the default energy-only quest) never sees
+        the ``mode='neb'`` block."""
+        qid = _mk_quest(store, "A generic materials striving with no reaction")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "one NEB edge between two of your own designs" not in prompt
+        assert "mode='neb'" not in prompt
+
+    def test_reaction_quest_prompt_carries_no_generic_neb_block(
+        self, store: Any
+    ) -> None:
+        """A ``reaction_config`` quest's prompt is unchanged: it keeps the
+        catalyst-slab block and never sees the generic NEB door (the
+        autocatpath ladder owns its barrier lane)."""
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "catalyst slab" in prompt
+        assert "one NEB edge between two of your own designs" not in prompt
+
     def test_reaction_context_offers_the_full_composition_op_menu(
         self, store: Any
     ) -> None:

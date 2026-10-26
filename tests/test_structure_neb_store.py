@@ -323,3 +323,64 @@ def test_nonquest_mints_today_counts_unstamped_only(store: Store) -> None:
     _record(store, cache_key="nq-c", params={"quest_ref_id": str(quest)})
 
     assert store.struct_neb_nonquest_mints_today() == 2
+
+
+def test_cap_counts_exclude_dedupe_collapsed_rows(store: Store) -> None:
+    """gr518100: a mint that collapsed onto a live job's idem_key spent
+    no compute — its dedupe-failed row must not draw down either daily
+    cap. A genuinely-failed run still counts (it burned the budget)."""
+    dedupe_trust = [
+        {
+            "id": "precis-dedupe",
+            "check": "dedupe",
+            "verdict": "not-run",
+            "severity": "info",
+            "seed": 0,
+            "step": None,
+            "evidence": {"reason": "collapsed onto in-flight job jo9"},
+        }
+    ]
+    quest = int(store.insert_ref(kind="quest", slug=None, title="q").id)
+    q_stamp = {"quest_ref_id": str(quest)}
+
+    collapsed_q = _record(store, cache_key="dd-qa", params=q_stamp)
+    store.struct_neb_update_run(collapsed_q, status="failed", trust=dedupe_trust)
+    collapsed_nq = _record(store, cache_key="dd-nqa")
+    store.struct_neb_update_run(collapsed_nq, status="failed", trust=dedupe_trust)
+    assert store.struct_neb_quest_mints_24h(quest) == 0
+    assert store.struct_neb_nonquest_mints_today() == 0
+
+    spent_q = _record(store, cache_key="dd-qb", params=q_stamp)
+    store.struct_neb_update_run(spent_q, status="failed")
+    spent_nq = _record(store, cache_key="dd-nqb")
+    store.struct_neb_update_run(spent_nq, status="failed")
+    assert store.struct_neb_quest_mints_24h(quest) == 1
+    assert store.struct_neb_nonquest_mints_today() == 1
+
+
+def test_stamp_harvest_watermark_is_monotonic(store: Store) -> None:
+    """neb-s6 note C: ``quest_neb_harvested_upto`` only moves forward
+    (GREATEST in SQL) — an overlapping harvest's stale upto landing last
+    must not rewind the bookmark and re-read runs already journaled. The
+    per-key edge merge and ``extra`` keys still land on every stamp."""
+    is_id = _structure(store, "is-wm")
+
+    store.struct_neb_stamp_harvest(
+        is_id,
+        {"a:b": {"barrier": 0.4}},
+        harvested_upto=7,
+        extra={"barrier": 0.4},
+    )
+    store.struct_neb_stamp_harvest(
+        is_id,
+        {"c:d": {"barrier": 0.9}},
+        harvested_upto=3,
+        extra={"barrier": 0.9},
+    )
+
+    ref = store.get_ref(kind="structure", id=is_id)
+    assert ref is not None and ref.meta is not None
+    assert ref.meta["quest_neb_harvested_upto"] == 7
+    # Later stamps still merge their edges and extra keys.
+    assert set(ref.meta["neb_edges"]) == {"a:b", "c:d"}
+    assert ref.meta["barrier"] == 0.9

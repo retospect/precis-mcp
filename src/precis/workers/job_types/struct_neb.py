@@ -12,11 +12,17 @@ record: barriers, the band (``struct_neb_images``), the per-check trust
 records, and the TS image as a derived ``<is-slug>-ts-r<run>`` design.
 
 **Trust is precis policy, not engine policy.** The runner seam mints the
-engine-graded records (``saddle_verified``, ``detachment``); this module
-mints the rest of the spec's run-trust list itself — ``neb_convergence``,
-``collapsed_band``, ``multistart`` (Reto 2026-10-25, gr517804: a neb-tier
-barrier needs ≥ 2 independent same-version seeds agreeing within 0.05 eV),
-and the ``absurd_magnitude`` bound — all in the ``autocatpath.trust``
+engine-graded records (``saddle_verified``, ``detachment``) and the
+slice-5 saddle check — a finite-difference Hessian over the TS image's
+adsorbate atoms (ASE ``Vibrations``, ~6·n_ads force calls on the same
+deadline-guarded calculator) returned as ``n_imag``/``imag_cm1``. This
+module mints the rest of the spec's run-trust list itself —
+``neb_convergence``, ``collapsed_band``, ``multistart`` (Reto 2026-10-25,
+gr517804: a neb-tier barrier needs ≥ 2 independent same-version seeds
+agreeing within 0.05 eV), the ``absurd_magnitude`` bound, and the
+``frequency`` record (``n_imag == 1`` past 50i cm⁻¹, else ``marginal``;
+``not-run`` when no Hessian ran — pre-slice-5 rows keep NULL columns and
+read "frequency: not checked") — all in the ``autocatpath.trust``
 record shape and each stamped ``engine=<autocatpath.__version__>`` so a
 later engine bump renders them ``stale, rerun on current``
 (:func:`precis.utils.trust_gate.is_stale`). ``trusted`` is then a pure
@@ -38,6 +44,7 @@ import copy
 import logging
 import os
 import socket
+import tempfile
 import time
 from typing import Any
 
@@ -286,6 +293,8 @@ def _default_neb_runner(
             }
         )
 
+    n_imag, imag_cm1, freq_skip = _ts_frequencies(bar, n_slab, _make_calc)
+
     return {
         "converged": bool(bar.converged),
         "collapsed_images": int(bar.collapsed_images or 0),
@@ -298,9 +307,76 @@ def _default_neb_runner(
         "images": images,
         "multistart": bar.multistart,
         "records": records,
+        "n_imag": n_imag,
+        "imag_cm1": imag_cm1,
+        "freq_skip_reason": freq_skip,
         "engine": engine,
         "wall_s": None,
     }
+
+
+#: The slice-5 saddle check counts only modes past this magnitude — the
+#: finite-difference noise floor, not a chemistry bound (spec §Validation:
+#: "exactly one imaginary mode, above 50i cm⁻¹").
+_IMAG_CUTOFF_CM1 = 50.0
+
+
+def _count_imaginary(freqs: Any) -> tuple[int, float | None]:
+    """``(n_imag, imag_cm1)`` off an ASE frequency array (cm⁻¹).
+
+    Imaginary modes surface two ways depending on the ASE version — a
+    complex ``1j·f`` component or a negative real — and either counts once
+    past :data:`_IMAG_CUTOFF_CM1`. ``imag_cm1`` is the largest imaginary
+    magnitude, stored NEGATIVE (ASE's own imaginary-mode convention)."""
+    f = np.asarray(freqs, dtype=complex).ravel()
+    mag = np.maximum(np.abs(f.imag), np.abs(np.minimum(f.real, 0.0)))
+    imaginary = mag[mag > _IMAG_CUTOFF_CM1]
+    if len(imaginary) == 0:
+        return 0, None
+    return len(imaginary), float(-np.max(imaginary))
+
+
+def _ts_frequencies(
+    bar: Any, n_slab: int, make_calc: Any
+) -> tuple[int | None, float | None, str | None]:
+    """The slice-5 saddle check: a finite-difference Hessian over the
+    ADSORBATE atoms of the TS image (ASE ``Vibrations`` with ``indices`` —
+    ~6·n_ads force calls; the slab is held fixed the way the band tethered
+    it). Returns ``(n_imag, imag_cm1, skip_reason)`` — ``(None, None,
+    None)`` when there is no TS image to check or the frequency pass
+    itself fails, and ``(None, None, "freq_check_budget_exhausted")`` on a
+    deadline overrun: the band's calculator is deadline-wrapped, so a
+    :class:`NebTimeout` here means the edge's wall-clock cap was spent
+    mid-Hessian — the record must say the check never got its budget,
+    which must not lose the already-priced band to a diagnostic.
+
+    The TS image's own calculator is reused when the band left it
+    attached — it is already the deadline-wrapped calculator the edge
+    ran on, and a fresh ``make_calc()`` would re-load the ML model for
+    a check whose remaining budget may not cover it."""
+    ts_index = getattr(bar, "ts_index", None)
+    images = getattr(bar, "images", None) or []
+    if ts_index is None or not (0 <= int(ts_index) < len(images)):
+        return None, None, None
+    try:
+        from ase.vibrations import Vibrations
+
+        img = images[int(ts_index)]
+        ts = img.copy()
+        ts.calc = getattr(img, "calc", None) or make_calc()
+        indices = list(range(n_slab, len(ts)))  # adsorbate atoms only
+        if not indices:
+            return None, None, None
+        with tempfile.TemporaryDirectory(prefix="precis-neb-vib-") as tmp:
+            vib = Vibrations(ts, indices=indices, name=f"{tmp}/vib")
+            vib.run()
+            n_imag, imag_cm1 = _count_imaginary(vib.get_frequencies())
+            return n_imag, imag_cm1, None
+    except NebTimeout:
+        return None, None, "freq_check_budget_exhausted"
+    except Exception:
+        log.warning("struct_neb: TS frequency check failed", exc_info=True)
+        return None, None, None
 
 
 #: Swapped for a stub in tests, mirroring ``struct_search.SEARCH_RUNNER``.
@@ -399,6 +475,28 @@ def _precis_records(outcome: dict[str, Any]) -> list[dict[str, Any]]:
             engine=engine,
         )
     )
+    # Slice 5: the TS-image saddle check. Exactly one imaginary mode past
+    # the noise floor proves a first-order saddle — a minimum (n_imag=0)
+    # or a higher-order saddle (n_imag≥2) keeps the barrier but never
+    # trusts it; no frequencies at all is not-run (the spec's
+    # "frequency: not checked" read).
+    n_imag = outcome.get("n_imag")
+    freq_ev: dict[str, Any] = {
+        "n_imag": n_imag,
+        "imag_cm1": outcome.get("imag_cm1"),
+        "cutoff_cm1": _IMAG_CUTOFF_CM1,
+    }
+    if n_imag is None:
+        freq_verdict = "not-run"
+        freq_ev["reason"] = outcome.get("freq_skip_reason") or (
+            "no TS-image frequencies — the Hessian did not run"
+        )
+    elif int(n_imag) == 1:
+        freq_verdict = "pass"
+    else:
+        freq_verdict = "marginal"
+        freq_ev["reason"] = f"n_imag={int(n_imag)}"
+    records.append(_rec("frequency", freq_verdict, "warn", freq_ev, engine=engine))
     return records
 
 
@@ -407,13 +505,18 @@ def _precis_records(outcome: dict[str, Any]) -> list[dict[str, Any]]:
 #: return ``None`` for ``saddle_verified``/``detachment``, and a check that
 #: emitted no record is ``not-run``, never ``pass`` (trust_gate's rule).
 #: ``absurd_magnitude`` isn't listed — it always emits a record and any
-#: ``fail`` already blocks via the no-fails clause.
+#: ``fail`` already blocks via the no-fails clause. ``frequency`` is:
+#: slice 5 makes a first-order-saddle proof a trust requirement, so a
+#: ``marginal`` (n_imag≠1) or ``not-run`` (no Hessian) record blocks via
+#: the presence rule — old runs predate the check and keep their stored
+#: verdict, the column staying NULL.
 _NEB_REQUIRED_CHECKS: tuple[str, ...] = (
     "neb_convergence",
     "collapsed_band",
     "multistart",
     "saddle_verified",
     "detachment",
+    "frequency",
 )
 
 
@@ -513,6 +616,7 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
         f"n_slab={n_slab} run={run_id} cap={timeout_s:.0f}s",
     )
 
+    t0 = time.monotonic()
     try:
         outcome = NEB_RUNNER(
             is_atoms=is_atoms,
@@ -541,6 +645,20 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("struct_neb: NEB_RUNNER raised", exc_info=True)
         _fail(f"struct_neb: edge failed: {exc}", "infra")
+        return
+
+    # The engine's retry loop can swallow the per-attempt NebTimeout and
+    # return an unpriced band — a burned budget then records as "not
+    # priced" (non-convergence). An unpriced outcome after a full-cap
+    # wall-clock burn is a timeout, not a convergence verdict (gr518100).
+    if not _priced(outcome) and time.monotonic() - t0 >= timeout_s:
+        _fail(
+            f"struct_neb: edge burned the {timeout_s:.0f}s wall-clock cap "
+            "without pricing (the engine's retry loop swallowed the "
+            "timeout) — raise PRECIS_STRUCT_NEB_TIMEOUT_S, lower "
+            "max_steps, or fewer images",
+            "timeout",
+        )
         return
 
     try:
@@ -658,6 +776,12 @@ def _record_outcome(
         delta_e_ev=delta_e,
         ts_index=int(ts_index) if priced and ts_index is not None else None,
         ts_fmax=outcome.get("ts_fmax") if priced else None,
+        n_imag=(
+            int(outcome["n_imag"])
+            if priced and outcome.get("n_imag") is not None
+            else None
+        ),
+        imag_cm1=outcome.get("imag_cm1") if priced else None,
         ts_ref_id=ts_ref_id,
         trust=records,
         trusted=trusted,

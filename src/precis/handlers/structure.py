@@ -1860,12 +1860,16 @@ class StructureHandler(Handler):
         """Mint the ``struct_neb_runs`` row + ``struct_neb`` job for one
         gated edge — the in-process GPU-node rung (spec §Compute).
 
-        The whole mint runs in one transaction under a per-edge advisory
-        lock (``struct_neb_mint:<cache_key>`` — deliberately NOT the job's
-        own ``struct_neb:<cache_key>`` idem string, which job.put takes on
-        a second connection and would self-deadlock): lock → cached/
-        inflight re-check → the daily-cap count under its own lock → run
-        row → job.put → ``job_ref_id`` backfill. A concurrent identical
+        The whole mint runs in one ``store.atomic()`` transaction under a
+        per-edge advisory lock (``struct_neb_mint:<cache_key>`` —
+        deliberately NOT the job's own ``struct_neb:<cache_key>`` idem
+        string, which job.put takes on a second advisory key): lock →
+        cached/inflight re-check → the daily-cap count under its own
+        lock → run row → job.put → ``job_ref_id`` backfill. ``atomic``
+        pins the connection so job.put's own ``tx()`` joins as a
+        savepoint — N≥pool-size concurrent mints can't starve the pool,
+        and a rollback takes the job ref with it (never a GPU job
+        orphaned onto a rolled-back run row). A concurrent identical
         request blocks on the lock, then sees the committed row and
         collapses — no orphan ``queued`` row can wedge the edge. When
         job.put still reports ``reused`` (a live job whose run row this
@@ -1900,7 +1904,7 @@ class StructureHandler(Handler):
         engine = neb_engine_token()
         job_resp: Response | None = None
         existing_run_id: int | None = None
-        with self.store.tx() as conn:
+        with self.store.atomic() as conn:
             conn.execute(
                 "SELECT pg_advisory_xact_lock(%s)",
                 (_idem_lock_key(f"struct_neb_mint:{cache_key}"),),
@@ -1915,8 +1919,10 @@ class StructureHandler(Handler):
                 return self._neb_inflight_response(inflight, is_slug, fs_slug)
             # Dead rows: a queued/running row whose job went terminal
             # (worker kill, OOM, lease expiry — the row's own status is
-            # job-written, so it lies) is failed here so view='neb' never
-            # shows a zombie.
+            # job-written, so it lies) is failed here. The reap is
+            # per-edge — it only clears THIS cache_key on a re-mint;
+            # view='neb' on an edge never re-requested still lists the
+            # stale row (get stays read-only).
             self.store.struct_neb_reap_dead(cache_key, conn=conn)
             if quest_ref_id is not None:
                 conn.execute(
@@ -3101,6 +3107,13 @@ class StructureHandler(Handler):
 
         engines = [e for e in (record_engine(r) for r in recs) if e]
         current = max(set(engines), key=engines.count) if engines else None
+        n_imag = run.get("n_imag")
+        freq_note = (
+            ""
+            if n_imag is None
+            else f"n_imag={n_imag}"
+            + (f", {run['imag_cm1']} cm⁻¹" if run.get("imag_cm1") is not None else "")
+        )
         rows = []
         for r in recs:
             ev = r.get("evidence") or {}
@@ -3109,6 +3122,8 @@ class StructureHandler(Handler):
                 if is_stale(r, current)
                 else str(ev.get("reason") or "")
             )
+            if r.get("check") == "frequency" and not note:
+                note = freq_note
             rows.append(
                 {
                     "check": r.get("check"),
@@ -3120,6 +3135,8 @@ class StructureHandler(Handler):
             )
         seen = {r.get("check") for r in recs}
         for check in _NEB_REQUIRED_CHECKS:
+            if check == "frequency":
+                continue  # rendered below from the n_imag column
             if check not in seen:
                 rows.append(
                     {
@@ -3130,23 +3147,16 @@ class StructureHandler(Handler):
                         "note": "check emitted no records",
                     }
                 )
-        n_imag = run.get("n_imag")
-        rows.append(
-            {
-                "check": "frequency",
-                "verdict": "not checked" if n_imag is None else "checked",
-                "severity": "—",
-                "engine": "—",
-                "note": ""
-                if n_imag is None
-                else f"n_imag={n_imag}"
-                + (
-                    f", {run['imag_cm1']} cm⁻¹"
-                    if run.get("imag_cm1") is not None
-                    else ""
-                ),
-            }
-        )
+        if "frequency" not in seen:
+            rows.append(
+                {
+                    "check": "frequency",
+                    "verdict": "not checked" if n_imag is None else "checked",
+                    "severity": "—",
+                    "engine": "—",
+                    "note": freq_note,
+                }
+            )
         verdict = "trusted" if run.get("trusted") else "untrusted"
         return f"trust: {verdict}\n" + render_agent_table(
             rows, schema=["check", "verdict", "severity", "engine", "note"]

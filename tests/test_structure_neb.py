@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -303,7 +304,39 @@ def _outcome(scene: Any, order: list[str], **over: Any) -> dict[str, Any]:
         "ts_index": 4,
         "ts_fmax": 0.04,
         "images": images,
-        "multistart": {"n_valid": 2, "n_at_min": 2, "barriers": [0.9, 0.91]},
+        # Real autocatpath neb_barrier multistart shape (engine pin
+        # ca54d7e): summary counters + one starts[] entry per path init.
+        "multistart": {
+            "n_seeds": 2,
+            "n_valid": 2,
+            "n_distinct_paths": 1,
+            "n_at_min": 2,
+            "selected_seed": 0,
+            "init": "idpp+jitter",
+            "jitter_A": 0.05,
+            "starts": [
+                {
+                    "init_seed": 0,
+                    "barrier_eV": 0.9,
+                    "converged": True,
+                    "valid": True,
+                    "desorbed_images": 0,
+                    "ts_image": 5,
+                },
+                {
+                    "init_seed": 1,
+                    "barrier_eV": 0.91,
+                    "converged": True,
+                    "valid": True,
+                    "desorbed_images": 0,
+                    "ts_image": 4,
+                },
+            ],
+        },
+        # slice 5: the TS-image Hessian — one imaginary mode past the 50i
+        # cm⁻¹ floor = a first-order saddle (the frequency check passes).
+        "n_imag": 1,
+        "imag_cm1": -121.4,
         "records": [
             {
                 "id": "eng-sad-0",
@@ -409,7 +442,35 @@ def test_job_one_seed_is_untrusted_not_failed(
         job_ref_id=None,
     )
     outcome = _outcome(
-        scene_is, order, multistart={"n_valid": 1, "n_at_min": 1, "barriers": [0.9]}
+        scene_is,
+        order,
+        multistart={
+            "n_seeds": 2,
+            "n_valid": 1,
+            "n_distinct_paths": 1,
+            "n_at_min": 1,
+            "selected_seed": 0,
+            "init": "idpp+jitter",
+            "jitter_A": 0.05,
+            "starts": [
+                {
+                    "init_seed": 0,
+                    "barrier_eV": 0.9,
+                    "converged": True,
+                    "valid": True,
+                    "desorbed_images": 0,
+                    "ts_image": 5,
+                },
+                {
+                    "init_seed": 1,
+                    "barrier_eV": 1.4,
+                    "converged": False,
+                    "valid": False,
+                    "desorbed_images": 1,
+                    "ts_image": None,
+                },
+            ],
+        },
     )
     monkeypatch.setattr(struct_neb, "NEB_RUNNER", lambda **kw: outcome)
     ctx, events = _fake_ctx(store, _job_params(store, is_ref, fs_ref, run_id))
@@ -422,6 +483,208 @@ def test_job_one_seed_is_untrusted_not_failed(
     assert row["trusted"] is False
     ms = next(r for r in row["trust"] if r["check"] == "multistart")
     assert ms["verdict"] == "marginal"
+
+
+# -- slice 5: the TS-image saddle (frequency) check ---------------------------
+
+
+def test_count_imaginary_reads_both_ase_conventions() -> None:
+    """ASE surfaces imaginary modes as a complex 1j·f (newer) or a
+    negative real (older); both count past the 50i cm⁻¹ noise floor, and
+    ``imag_cm1`` is the largest magnitude stored negative."""
+    assert struct_neb._count_imaginary([1j * 120.0, 200.0, 35.0]) == (1, -120.0)
+    assert struct_neb._count_imaginary([-140.0, 80.0, 20.0]) == (1, -140.0)
+    assert struct_neb._count_imaginary([1j * 90.0, -60.0, 100.0]) == (2, -90.0)
+    # under the floor and ordinary real modes count for nothing
+    assert struct_neb._count_imaginary([1j * 30.0, 110.0]) == (0, None)
+    assert struct_neb._count_imaginary([200.0, 150.0, 80.0]) == (0, None)
+
+
+def test_job_two_imaginary_modes_is_untrusted(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slice 5 acceptance: a higher-order saddle keeps its barrier but is
+    never ``trusted`` — reason ``n_imag=2``."""
+    is_ref, fs_ref, order = _endpoint_refs(store)
+    scene_is = _scene_of(store, is_ref.id)
+    run_id = store.struct_neb_record_run(
+        is_ref_id=is_ref.id,
+        fs_ref_id=fs_ref.id,
+        fidelity="ml",
+        model="mace_mp",
+        params=normalize_neb_params({}),
+        cache_key="k-job-test",
+        job_ref_id=None,
+    )
+    outcome = _outcome(scene_is, order, n_imag=2, imag_cm1=-88.0)
+    monkeypatch.setattr(struct_neb, "NEB_RUNNER", lambda **kw: outcome)
+    ctx, events = _fake_ctx(store, _job_params(store, is_ref, fs_ref, run_id))
+    struct_neb._dispatch(ctx, struct_neb.SPEC)
+
+    assert ("status", "succeeded") in events
+    row = _get(store, run_id)
+    assert row["status"] == "succeeded" and row["barrier_fwd_ev"] == pytest.approx(0.9)
+    assert row["trusted"] is False
+    assert row["n_imag"] == 2 and row["imag_cm1"] == -88.0
+    freq = next(r for r in row["trust"] if r["check"] == "frequency")
+    assert freq["verdict"] == "marginal"
+    assert freq["evidence"]["reason"] == "n_imag=2"
+
+
+def test_job_one_imaginary_mode_stays_trusted(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The passing arm: ``n_imag == 1`` emits a ``pass`` record and the
+    columns round-trip."""
+    is_ref, fs_ref, order = _endpoint_refs(store)
+    scene_is = _scene_of(store, is_ref.id)
+    run_id = store.struct_neb_record_run(
+        is_ref_id=is_ref.id,
+        fs_ref_id=fs_ref.id,
+        fidelity="ml",
+        model="mace_mp",
+        params=normalize_neb_params({}),
+        cache_key="k-job-test",
+        job_ref_id=None,
+    )
+    monkeypatch.setattr(
+        struct_neb,
+        "NEB_RUNNER",
+        lambda **kw: _outcome(scene_is, order),
+    )
+    ctx, events = _fake_ctx(store, _job_params(store, is_ref, fs_ref, run_id))
+    struct_neb._dispatch(ctx, struct_neb.SPEC)
+
+    assert ("status", "succeeded") in events
+    row = _get(store, run_id)
+    assert row["trusted"] is True
+    assert row["n_imag"] == 1 and row["imag_cm1"] == -121.4
+    freq = next(r for r in row["trust"] if r["check"] == "frequency")
+    assert freq["verdict"] == "pass" and freq["evidence"]["n_imag"] == 1
+
+
+def test_job_no_frequencies_is_untrusted_not_checked(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run whose Hessian never ran is ``not-run``, never a pass — the
+    column stays NULL and the read renders 'frequency: not checked'
+    (the pre-slice-5 rows' honest shape)."""
+    is_ref, fs_ref, order = _endpoint_refs(store)
+    scene_is = _scene_of(store, is_ref.id)
+    run_id = store.struct_neb_record_run(
+        is_ref_id=is_ref.id,
+        fs_ref_id=fs_ref.id,
+        fidelity="ml",
+        model="mace_mp",
+        params=normalize_neb_params({}),
+        cache_key="k-job-test",
+        job_ref_id=None,
+    )
+    outcome = _outcome(scene_is, order, n_imag=None, imag_cm1=None)
+    monkeypatch.setattr(struct_neb, "NEB_RUNNER", lambda **kw: outcome)
+    ctx, events = _fake_ctx(store, _job_params(store, is_ref, fs_ref, run_id))
+    struct_neb._dispatch(ctx, struct_neb.SPEC)
+
+    assert ("status", "succeeded") in events
+    row = _get(store, run_id)
+    assert row["status"] == "succeeded" and row["trusted"] is False
+    assert row["n_imag"] is None and row["imag_cm1"] is None
+    freq = next(r for r in row["trust"] if r["check"] == "frequency")
+    assert freq["verdict"] == "not-run"
+
+
+class _RaisingCalc:
+    """A duck-typed ASE-calculator stand-in whose first force call raises
+    — the deadline case the budget reason covers (ASE stores any object
+    on ``atoms.calc``; ``get_forces`` is the whole contract here)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def set_atoms(self, atoms: Any) -> None:
+        pass
+
+    def get_forces(self, atoms: Any = None) -> Any:
+        raise self._exc
+
+
+def test_ts_frequencies_reuses_the_band_calc_and_reports_budget() -> None:
+    """The saddle check rides the TS image's own (deadline-wrapped)
+    calculator rather than loading a second model, and a ``NebTimeout``
+    out of it is named ``freq_check_budget_exhausted`` — not the generic
+    'did not run'."""
+    ase = pytest.importorskip("ase")
+    img = ase.Atoms("HCu2", positions=[[0, 0, 0], [0, 0, 1.5], [0, 0, 3.0]])
+    img.calc = _RaisingCalc(struct_neb.NebTimeout("cap"))
+    bar = SimpleNamespace(ts_index=0, images=[img])
+    made: list[int] = []
+
+    def _make_calc() -> Any:
+        made.append(1)
+        return _RaisingCalc(AssertionError("the band calc was not reused"))
+
+    assert struct_neb._ts_frequencies(bar, 1, _make_calc) == (
+        None,
+        None,
+        "freq_check_budget_exhausted",
+    )
+    assert made == []
+
+
+def test_ts_frequencies_make_calc_when_the_band_detached_it() -> None:
+    """No calculator left on the band image → ``make_calc`` supplies one;
+    the same deadline timeout still names the budget reason."""
+    ase = pytest.importorskip("ase")
+    img = ase.Atoms("HCu2", positions=[[0, 0, 0], [0, 0, 1.5], [0, 0, 3.0]])
+    bar = SimpleNamespace(ts_index=0, images=[img])
+    made: list[int] = []
+
+    def _make_calc() -> Any:
+        made.append(1)
+        return _RaisingCalc(struct_neb.NebTimeout("cap"))
+
+    assert struct_neb._ts_frequencies(bar, 1, _make_calc) == (
+        None,
+        None,
+        "freq_check_budget_exhausted",
+    )
+    assert made == [1]
+
+
+def test_job_freq_budget_reason_lands_on_the_record(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runner's ``freq_skip_reason`` reaches the stored frequency
+    record — 'freq_check_budget_exhausted', not the generic
+    'the Hessian did not run'."""
+    is_ref, fs_ref, order = _endpoint_refs(store)
+    scene_is = _scene_of(store, is_ref.id)
+    run_id = store.struct_neb_record_run(
+        is_ref_id=is_ref.id,
+        fs_ref_id=fs_ref.id,
+        fidelity="ml",
+        model="mace_mp",
+        params=normalize_neb_params({}),
+        cache_key="k-job-test",
+        job_ref_id=None,
+    )
+    outcome = _outcome(
+        scene_is,
+        order,
+        n_imag=None,
+        imag_cm1=None,
+        freq_skip_reason="freq_check_budget_exhausted",
+    )
+    monkeypatch.setattr(struct_neb, "NEB_RUNNER", lambda **kw: outcome)
+    ctx, events = _fake_ctx(store, _job_params(store, is_ref, fs_ref, run_id))
+    struct_neb._dispatch(ctx, struct_neb.SPEC)
+
+    assert ("status", "succeeded") in events
+    row = _get(store, run_id)
+    assert row["status"] == "succeeded" and row["trusted"] is False
+    freq = next(r for r in row["trust"] if r["check"] == "frequency")
+    assert freq["verdict"] == "not-run"
+    assert freq["evidence"]["reason"] == "freq_check_budget_exhausted"
 
 
 def test_job_collapsed_band_fails_not_priced(
@@ -904,15 +1167,23 @@ def test_normalize_gpu_ceilings() -> None:
         {"images": 17},
         {"path_seeds": 6},
         {"max_steps": 2001},
+        {"retries": 4},
         {"fmax": 0.005},
     ):
         with pytest.raises(ValueError, match="neb params"):
             normalize_neb_params(bad)
     out = normalize_neb_params(
-        {"images": 16, "path_seeds": 5, "max_steps": 2000, "fmax": 0.01}
+        {
+            "images": 16,
+            "path_seeds": 5,
+            "max_steps": 2000,
+            "retries": 3,
+            "fmax": 0.01,
+        }
     )
     assert out["images"] == 16 and out["path_seeds"] == 5
     assert out["max_steps"] == 2000 and out["fmax"] == 0.01
+    assert out["retries"] == 3
 
 
 def test_cache_key_rekeys_on_an_engine_bump(
@@ -1149,6 +1420,7 @@ def test_put_neb_ceiling_knobs_refuse_before_any_mint(
         {"images": 17},
         {"path_seeds": 6},
         {"max_steps": 2001},
+        {"retries": 4},
         {"fmax": 0.005},
     ):
         with pytest.raises(BadInput, match="neb params"):
@@ -1366,3 +1638,99 @@ def test_view_neb_band_reads_endpoints_at_the_minted_version(
 
     body = structure.get(id="ch_is", view="neb", args={"run": run["id"]}).body
     assert "aC1–aH1" in body and "aH1–aO1" in body
+
+
+# -- gr518100: atomic mint, timeout surfacing, dedupe-free caps ---------------
+
+
+def test_job_unpriced_after_full_cap_burn_fails_as_timeout(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine's retry loop can swallow the per-attempt NebTimeout
+    and return an unpriced band — a burn that consumed the whole
+    wall-clock cap records 'timeout', not 'non-convergence'
+    (``test_job_unpriced_band_keeps_every_priced_scalar_null`` covers the
+    fast-unpriced converse)."""
+    is_ref, fs_ref, order = _endpoint_refs(store)
+    scene_is = _scene_of(store, is_ref.id)
+    run_id = store.struct_neb_record_run(
+        is_ref_id=is_ref.id,
+        fs_ref_id=fs_ref.id,
+        fidelity="ml",
+        model="mace_mp",
+        params=normalize_neb_params({}),
+        cache_key="k-job-test",
+        job_ref_id=None,
+    )
+    outcome = _outcome(scene_is, order, e_ts=None, ts_index=None)
+    monkeypatch.setattr(struct_neb, "NEB_RUNNER", lambda **kw: outcome)
+    # The cap is already spent when the dispatch starts.
+    monkeypatch.setattr(struct_neb, "_timeout_s", lambda: 0.0)
+    ctx, events = _fake_ctx(store, _job_params(store, is_ref, fs_ref, run_id))
+    struct_neb._dispatch(ctx, struct_neb.SPEC)
+
+    fails = [p for k, p in events if k == "fail"]
+    assert len(fails) == 1 and fails[0]["failure_class"] == "timeout"
+    assert "wall-clock cap" in fails[0]["reason"]
+    row = _get(store, run_id)
+    assert row["status"] == "failed" and row["barrier_fwd_ev"] is None
+
+
+def test_put_neb_mint_rollback_takes_the_job_with_it(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mint is one ``store.atomic()`` — job.put's own ``tx()`` joins
+    as a savepoint, so a failure after job.put rolls the run row AND the
+    job ref back together: no GPU job orphaned onto a rolled-back run."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+
+    real_update = store.struct_neb_update_run
+
+    def _explode(run_id: int, **kw: Any) -> None:
+        if "job_ref_id" in kw:  # the post-put backfill — last write
+            raise RuntimeError("staged: post-put write fails")
+        real_update(run_id, **kw)
+
+    monkeypatch.setattr(store, "struct_neb_update_run", _explode)
+    with pytest.raises(RuntimeError, match="staged"):
+        _neb(structure)
+    is_ref = _ref(store, "ch_is")
+    assert store.struct_neb_runs_for(is_ref.id) == []
+    assert _child_jobs2(store, is_ref.id) == []
+
+
+def test_put_neb_dedupe_collapse_skips_the_daily_cap(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mint that collapses onto a live job's idem_key spent no compute —
+    its dedupe-failed run row must not draw down the day's cap: a fresh
+    edge mints under the same cap a genuine failure would have spent."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    monkeypatch.setenv("PRECIS_STRUCT_NEB_GLOBAL_DAILY", "2")
+    _neb(structure)
+    is_ref = _ref(store, "ch_is")
+    run1 = _only_run(store, is_ref.id)
+    # run1's row went terminal while its job is still live — the next
+    # identical mint passes the row probes, then job.put's idem_key
+    # dedupe collapses it onto jo1.
+    store.struct_neb_update_run(run1["id"], status="failed")
+
+    resp = _neb(structure)
+    assert "already owned by jo" in resp.body
+    runs = {r["id"]: r for r in store.struct_neb_runs_for(is_ref.id)}
+    assert len(runs) == 2
+    collapsed = runs[next(i for i in runs if i != run1["id"])]
+    assert collapsed["status"] == "failed"
+    assert collapsed["trust"][0]["check"] == "dedupe"
+    assert len(_child_jobs2(store, is_ref.id)) == 1
+
+    # One spent mint + one free collapse: the day's second slot is still
+    # open, so a different edge (images=9 → a different address) mints.
+    assert store.struct_neb_nonquest_mints_today() == 1
+    resp = _neb(structure, images=9)
+    assert "queued struct_neb" in resp.body
+    assert store.struct_neb_nonquest_mints_today() == 2

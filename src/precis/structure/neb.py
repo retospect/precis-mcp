@@ -143,6 +143,10 @@ def normalize_neb_params(args: Mapping[str, Any] | None) -> dict[str, Any]:
         raise ValueError(
             f"neb params: 'max_steps' must be ≤ 2000 (ceiling), got {out['max_steps']}"
         )
+    if out["retries"] > 3:
+        raise ValueError(
+            f"neb params: 'retries' must be ≤ 3 (ceiling), got {out['retries']}"
+        )
     return out
 
 

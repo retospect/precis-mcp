@@ -1343,6 +1343,8 @@ class StructureMixin:
         delta_e_ev: float | None = None,
         ts_index: int | None = None,
         ts_fmax: float | None = None,
+        n_imag: int | None = None,
+        imag_cm1: float | None = None,
         trust: list[dict[str, Any]] | None = None,
         trusted: bool | None = None,
         multistart: dict[str, Any] | None = None,
@@ -1366,6 +1368,8 @@ class StructureMixin:
             ("delta_e_ev", delta_e_ev),
             ("ts_index", ts_index),
             ("ts_fmax", ts_fmax),
+            ("n_imag", n_imag),
+            ("imag_cm1", imag_cm1),
             ("trusted", trusted),
             ("wall_s", wall_s),
             ("ts_ref_id", ts_ref_id),
@@ -1482,19 +1486,25 @@ class StructureMixin:
         status alone is written by the job itself, so a worker kill, OOM
         or lease expiry would otherwise leave a ``running`` row blocking
         the edge forever. ``job_ref_id IS NULL`` (mint crash before the
-        backfill) is in flight — the mint transaction owns it."""
+        backfill) is in flight — the mint transaction owns it. A job ref
+        that no longer resolves (retired or deleted outright) is dead the
+        same as a terminal one."""
         with self.pool.connection() if conn is None else nullcontext(conn) as c:
             with c.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     "SELECT r.* FROM struct_neb_runs r "
                     "WHERE r.cache_key = %s AND r.status IN ('queued','running') "
-                    "AND (r.job_ref_id IS NULL OR NOT EXISTS ("
+                    "AND (r.job_ref_id IS NULL OR ("
+                    "  EXISTS (SELECT 1 FROM refs j "
+                    "    WHERE j.ref_id = r.job_ref_id "
+                    "    AND j.retired_at IS NULL) "
+                    "  AND NOT EXISTS ("
                     "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
                     "  WHERE rt.ref_id = r.job_ref_id "
                     "    AND t.namespace = 'STATUS' "
                     "    AND t.value = ANY(%s) "
                     "    AND (rt.expires_at IS NULL OR rt.expires_at > now())"
-                    ")) "
+                    "))) "
                     "ORDER BY r.id DESC LIMIT 1",
                     (cache_key, ["succeeded", "failed", "cancelled"]),
                 )
@@ -1507,37 +1517,131 @@ class StructureMixin:
         """Fail ``queued``/``running`` rows for ``cache_key`` whose job went
         terminal — the crash path :meth:`struct_neb_inflight`'s join
         exposes: the row's own status is job-written, so a dead job leaves
-        it lying ``running`` forever. Called under the mint lock before a
-        fresh mint so ``view='neb'`` never lists a zombie; returns the
-        reaped run ids."""
+        it lying ``running`` forever. A job ref that no longer resolves
+        (retired or deleted outright) counts as dead the same way. Called
+        under the mint lock before a fresh mint and by the quest harvest
+        when it steps over a zombie, so the reap is per-edge:
+        ``view='neb'`` stops listing a zombie for *this* edge once a
+        re-mint or a harvest touches it (an edge never re-requested keeps
+        its stale row — reaping on view would make ``get`` a writer).
+        Returns the reaped run ids."""
         with self.tx() if conn is None else nullcontext(conn) as c:
             rows = c.execute(
                 "UPDATE struct_neb_runs r SET status = 'failed' "
                 "WHERE r.cache_key = %s AND r.status IN ('queued','running') "
-                "AND r.job_ref_id IS NOT NULL AND EXISTS ("
+                "AND r.job_ref_id IS NOT NULL AND ("
+                "  NOT EXISTS (SELECT 1 FROM refs j "
+                "    WHERE j.ref_id = r.job_ref_id "
+                "    AND j.retired_at IS NULL) "
+                "  OR EXISTS ("
                 "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
                 "  WHERE rt.ref_id = r.job_ref_id "
                 "    AND t.namespace = 'STATUS' "
                 "    AND t.value = ANY(%s) "
                 "    AND (rt.expires_at IS NULL OR rt.expires_at > now())"
-                ") RETURNING r.id",
+                ")) RETURNING r.id",
                 (cache_key, ["succeeded", "failed", "cancelled"]),
             ).fetchall()
         return [int(r[0]) for r in rows]
+
+    def struct_neb_edge_pool(
+        self,
+        is_ref_id: int,
+        fs_ref_id: int,
+        engine: str,
+        *,
+        exclude_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Succeeded runs on one edge (IS→FS) at one engine token — the
+        union-seed pool the quest harvest's multistart ruling reads
+        (gr517804: trust needs ≥ 2 independent same-version seeds over
+        the union, agreeing within 0.05 eV; an old-engine run never
+        pools with current). ``exclude_id`` drops the harvesting run
+        itself — its own seeds are counted separately."""
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT id, multistart FROM struct_neb_runs "
+                    "WHERE is_ref_id = %s AND fs_ref_id = %s AND engine = %s "
+                    "AND status = 'succeeded' AND id != %s ORDER BY id",
+                    (is_ref_id, fs_ref_id, engine, exclude_id or -1),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
+    def struct_neb_stamp_harvest(
+        self,
+        is_ref_id: int,
+        edges: dict[str, Any],
+        *,
+        harvested_upto: int | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """One atomic meta write for the quest's struct_neb harvest.
+
+        ``edges`` merges into ``meta.neb_edges`` KEY-BY-KEY (a jsonb
+        ``||`` at the ``neb_edges`` level — never a whole-object
+        replace), while the ``quest_neb_harvested_upto`` watermark and
+        the candidate-level selection keys (``extra``) land in the same
+        UPDATE. Two failure modes this rules out (neb-s5 review):
+
+        * a crash between a separate watermark stamp and the edge-table
+          stamp advancing the bookmark past runs whose edges were never
+          written — those barriers would be lost for good;
+        * a second harvest of the same IS (overlapping ticks, or one
+          structure serving two quests) whole-object-replacing
+          ``neb_edges`` from a stale snapshot and wiping edges a
+          concurrent writer just landed — the per-key merge makes
+          concurrent writes additive.
+
+        The watermark is MONOTONIC — ``GREATEST`` in SQL, not a plain
+        overwrite (neb-s6 note C): two overlapping harvests can still
+        race the bookmark backwards (the slower one's older upto lands
+        last), which would re-read and re-journal runs already seen.
+        """
+        top: dict[str, Any] = dict(extra or {})
+        with self.pool.connection() as c:
+            if harvested_upto is None:
+                c.execute(
+                    "UPDATE refs SET meta = jsonb_set("
+                    "  meta || %(top)s::jsonb, '{neb_edges}',"
+                    "  COALESCE(meta->'neb_edges', '{}'::jsonb) || %(edges)s::jsonb"
+                    "), updated_at = now() WHERE ref_id = %(rid)s",
+                    {"top": Jsonb(top), "edges": Jsonb(edges), "rid": is_ref_id},
+                )
+            else:
+                c.execute(
+                    "UPDATE refs SET meta = jsonb_set("
+                    "  jsonb_set(meta || %(top)s::jsonb, '{neb_edges}',"
+                    "    COALESCE(meta->'neb_edges', '{}'::jsonb) || %(edges)s::jsonb"
+                    "  ), '{quest_neb_harvested_upto}',"
+                    "  to_jsonb(GREATEST("
+                    "    COALESCE((meta->>'quest_neb_harvested_upto')::bigint, 0),"
+                    "    %(upto)s))"
+                    "), updated_at = now() WHERE ref_id = %(rid)s",
+                    {
+                        "top": Jsonb(top),
+                        "edges": Jsonb(edges),
+                        "upto": harvested_upto,
+                        "rid": is_ref_id,
+                    },
+                )
 
     def struct_neb_quest_mints_24h(
         self, quest_ref_id: int, *, conn: Connection | None = None
     ) -> int:
         """``struct_neb`` mints stamped to ``quest_ref_id`` in the rolling
         24 h — the ``PRECIS_STRUCT_NEB_QUEST_DAILY`` cap's count. Any status
-        counts (a minted-then-failed run still spent the cap). ``conn``
-        runs the count inside the caller's mint-lock transaction so the
-        check and the insert serialize."""
+        counts (a minted-then-failed run still spent the cap) — except a
+        dedupe-collapsed row (``trust`` holds a ``check='dedupe'`` record):
+        that mint never queued compute, so it must not spend the quest's
+        cap. ``conn`` runs the count inside the caller's mint-lock
+        transaction so the check and the insert serialize."""
         with self.pool.connection() if conn is None else nullcontext(conn) as c:
             row = c.execute(
                 "SELECT count(*) FROM struct_neb_runs "
                 "WHERE params->>'quest_ref_id' = %s "
-                "AND created_at > now() - interval '24 hours'",
+                "AND created_at > now() - interval '24 hours' "
+                'AND NOT (trust @> \'[{"check":"dedupe"}]\'::jsonb)',
                 (str(quest_ref_id),),
             ).fetchone()
         return int(row[0]) if row else 0
@@ -1546,15 +1650,17 @@ class StructureMixin:
         """``struct_neb`` mints no quest can be charged for, since UTC
         midnight — the ``PRECIS_STRUCT_NEB_GLOBAL_DAILY`` cap's count for
         calls without ``requested_by=`` (or whose todo serves no quest).
-        ``conn`` runs the count inside the caller's mint-lock
-        transaction."""
+        Dedupe-collapsed rows (``trust`` carries ``check='dedupe'``) are
+        excluded — they never queued compute. ``conn`` runs the count
+        inside the caller's mint-lock transaction."""
         with self.pool.connection() if conn is None else nullcontext(conn) as c:
             row = c.execute(
                 "SELECT count(*) FROM struct_neb_runs "
                 "WHERE params->>'quest_ref_id' IS NULL "
                 "AND created_at >= "
                 "  date_trunc('day', now() AT TIME ZONE 'UTC') "
-                "  AT TIME ZONE 'UTC'",
+                "  AT TIME ZONE 'UTC' "
+                'AND NOT (trust @> \'[{"check":"dedupe"}]\'::jsonb)',
             ).fetchone()
         return int(row[0]) if row else 0
 
