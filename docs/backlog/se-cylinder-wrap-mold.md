@@ -109,16 +109,23 @@ many slides" before any geometry is cut.
    shrink default from the material card (explicit for now); axial's
    constant-in-z undercut check (radial only); sprue/gate/vents/ejectors/
    cooling; milled-mold cutter radius. Prototype route: SLA-printed halves.
-4. **Cross-dimensional (later, optional).** The wrap map (`u, v,
-   repeat, twist`) is the same object as hexfold's roll-up
-   (`src/hexfold/build.py::_patch_seed3`: chiral vector = the periodicity +
-   twist condition, `lattice.py::wrap_tube`). Slice 4 moves the shared
-   piece, mapping and periodicity check, into one module both use, so a
-   pattern spec can be realised as a relief (macro) or as lattice sites
-   (nano). The nano "negative" already exists as
-   [pocket-from-molecule](pocket-from-molecule.md). The relief leaf is
-   dimension-free (R and h scale together), so it serves µm to 50 cm with
-   no code change; only map resolution and mesh budget set the floor.
+4. ~~**Cross-dimensional (shared wrap frame).**~~ slice 4 core landed
+   2026-10-24: `hexfold/wrap.py` — the dimension-free `WrapSpec`
+   (circumferential `repeat` + helical `twist`), the forward/inverse
+   `(u, v) ↔ azimuth` map (`theta`/`u_of`), and the seam residual
+   (`seam_error`), numpy/stdlib only so the fold-in boundary holds. The
+   macro relief imports *down* into it (`precis.cad.hmap`/`mold`/
+   `primitives` route their `θ` and seam through it; `hmap.seam_error` is
+   now the re-export); the nano roll-up uses the same frame via
+   `hexfold.lattice.site_uv` (a lattice site's `(u, v)`). `tests/
+   test_wrap.py` pins the round-trip, the legacy-formula parity, and that
+   a site's `(u, v)` is the relief's wrap frame. **Deferred:** the exact
+   numeric `twist ↔ chiral-screw` bridge (`twist_per_cell`); the nano
+   pattern consumer that paints categorical fields on tube sites
+   ([pocket-from-molecule](pocket-from-molecule.md)) — `site_uv` is the
+   entry point it will call. The relief leaf is dimension-free (R and h
+   scale together), so it serves µm to 50 cm with no code change; only map
+   resolution and mesh budget set the floor.
 
 ## Decisions (Reto 2026-10-21)
 

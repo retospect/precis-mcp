@@ -22,7 +22,12 @@ manifold3d route unchanged.
 
 This package deliberately imports **nothing** from the rest of precis
 (no DB, no handler, no store) so it stays unit-testable in isolation and
-swappable behind the same node-list. The kernel is unit-agnostic
+swappable behind the same node-list. The one outward edge is *down* into
+:mod:`hexfold.wrap` — the dimension-free cylinder-wrap mapping the
+``relief:`` leaf shares with hexfold's nano roll-up (one ``WrapSpec``,
+realised as a macro relief here or as lattice sites there;
+se-cylinder-wrap-mold slice 4). hexfold is a vendored numpy-only package
+that imports no precis, so the isolation holds. The kernel is unit-agnostic
 ``float64`` throughout — callers pick the length unit; every internal
 tolerance is scale-relative (:data:`~precis.cad.vec.LINEAR_REL_EPS`), not
 tuned for one magnitude.

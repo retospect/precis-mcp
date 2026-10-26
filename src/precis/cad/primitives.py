@@ -52,6 +52,10 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
+# Shared dimension-free wrap mapping (se-cylinder-wrap-mold slice 4); the
+# leaf's point query inverts ``θ`` back to a map column through it.
+from hexfold.wrap import WrapSpec
+
 if TYPE_CHECKING:
     from precis.cad.hmap import HeightMap
 
@@ -1430,7 +1434,7 @@ class CylRelief(Primitive):
         z = arr[:, 2]
         u_cyl = np.mod(np.arctan2(arr[:, 1], arr[:, 0]) / (2.0 * math.pi), 1.0)
         v = np.clip(z / self.h, 0.0, 1.0)
-        u_map = np.mod(self.repeat * u_cyl + self.twist * v / (2.0 * math.pi), 1.0)
+        u_map = WrapSpec(self.repeat, self.twist).u_of(u_cyl, v)
         hm = self._h_at(u_map, v)
         rho_c = np.maximum(rho, self._rho_min)
         f_lat = (rho_c - self.r - self.s * self.depth * hm) / self._lip

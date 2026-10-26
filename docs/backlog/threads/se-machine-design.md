@@ -231,7 +231,8 @@ off that gap until it closes.
    2-D shape around a cylinder, undercut check per pull layout, mold
    halves as the negative (Reto 2026-10-21); Q1–Q4 decided, slice 1
    (relief leaf, pull-aware flanks) landed 2026-10-21 on `wrapmold-s1`,
-   slice 2 (pull check / `mold.undercut` DRC) follows.
+   slice 4 core (shared `hexfold.wrap.WrapSpec` frame, macro+nano)
+   landed 2026-10-24; slice 2 (pull check / `mold.undercut` DRC) follows.
 0b. **backlog/se-multiphysics.md** — species/heat/EO/Darcy/slip/
    compliance/power-law/two-phase on the thin-gap kernel + external 3-D
    backend; se carries BCs as patch measures (Reto 2026-10-21); slice 1

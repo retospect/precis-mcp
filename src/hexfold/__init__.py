@@ -43,6 +43,13 @@ zigzag-rimmed sheets whose seam atoms pair into a chain along the axis
 carrying the fourth bond. Rim-type mismatches and off-catalogue
 multiplicities refuse before placement; no public grammar is added.
 
+``wrap`` (se-cylinder-wrap-mold slice 4) is the dimension-free cylinder-wrap
+mapping — the ``WrapSpec`` (circumferential repeat + helical twist), the
+forward/inverse ``(u, v) ↔ azimuth`` map, and the seam residual — shared by
+the macro height relief (``precis.cad`` imports *down* into it) and this
+package's roll-up: ``lattice.site_uv`` is the same ``(u, v)`` for a lattice
+site. numpy/stdlib only, so the fold-in boundary holds.
+
 Vendored into precis as its own package: MIT (``LICENSE`` here), never
 imports ``precis*`` (``tests/test_hexfold_import_boundary.py``), exported
 as its own pip later.  Export seed (README, examples, CITATION) is the

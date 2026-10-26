@@ -14,6 +14,8 @@ from math import gcd
 
 import numpy as np
 
+from hexfold.wrap import canonical_u
+
 SIGMA_DEFAULT = 1.42  # Angstrom, ideal C-C bond
 
 #: sp3 tetrahedral interior angle (0.2: check/stick use this at sp3
@@ -251,20 +253,46 @@ def wrap_tube(site: Site, n: int, m: int, shift: float = 0.0) -> Site:
 
 def cell_index(site: Site, n: int, m: int) -> int:
     """Axial cell index (along T) of a site on a (n, m) tube."""
-    ch = (n, m)
-    t = translation_vector(n, m)
-    det = ch[0] * t[1] - ch[1] * t[0]
-    be = (ch[0] * site.v - ch[1] * site.u) / det
-    return math.floor(be + 1e-9)
+    return math.floor(axial(site, n, m) + 1e-9)
 
 
 def circumferential(site: Site, n: int, m: int) -> float:
-    """Position of a site around the tube circumference, in [0, 1)."""
+    """Position of a site around the tube circumference, in [0, 1).
+
+    This is the ``u`` of the shared unrolled-cylinder wrap frame
+    (:mod:`hexfold.wrap`): the macro relief's circumferential coordinate and
+    a lattice site's position around the tube fold into the same periodic
+    domain through :func:`hexfold.wrap.canonical_u`.
+    """
     ch = (n, m)
     t = translation_vector(n, m)
     det = ch[0] * t[1] - ch[1] * t[0]
     al = (site.u * t[1] - site.v * t[0]) / det
-    return al % 1.0
+    return float(canonical_u(al))
+
+
+def axial(site: Site, n: int, m: int) -> float:
+    """Continuous axial coordinate of a site along T, in unit cells.
+
+    The companion to :func:`circumferential`: ``floor`` of it is
+    :func:`cell_index`. Together they are the ``(u, v)`` a wrap pattern
+    samples at on the nano side.
+    """
+    ch = (n, m)
+    t = translation_vector(n, m)
+    det = ch[0] * t[1] - ch[1] * t[0]
+    return (ch[0] * site.v - ch[1] * site.u) / det
+
+
+def site_uv(site: Site, n: int, m: int) -> tuple[float, float]:
+    """The unrolled-cylinder ``(u, v)`` of a lattice site on an (n, m) tube.
+
+    ``u = circumferential`` (periodic, in [0, 1)) and ``v = axial`` (in unit
+    cells). This is the nano realisation of a wrap pattern spec: evaluate the
+    pattern at ``site_uv(site, n, m)`` to decide a site's class/height, the
+    same ``(u, v)`` the macro relief leaf wraps (se-cylinder-wrap-mold s4).
+    """
+    return circumferential(site, n, m), axial(site, n, m)
 
 
 def cone_opening_deg(p: int) -> float:

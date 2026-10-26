@@ -47,6 +47,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from hexfold.wrap import WrapSpec
 from precis.cad.bulk import expr_aabb
 from precis.cad.dsl import ShapeSpec, format_spec, scale_config
 from precis.cad.graph import Design
@@ -196,7 +197,7 @@ def clip_map(
     nu, nv = m.shape
     iu = (np.arange(nu) + 0.5) / nu
     jv = np.arange(nv) / (nv - 1)
-    theta = (2.0 * math.pi * iu[:, None] - twist * jv[None, :]) / repeat
+    theta = WrapSpec(repeat, twist).theta(iu[:, None], jv[None, :])
     delta = np.abs(slide_delta(theta, k, phi))
     pole = math.pi / 2.0 - alpha
     hcap = np.where(

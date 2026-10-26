@@ -53,6 +53,12 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+# The unrolled-cylinder wrap mapping is dimension-free and shared with
+# hexfold's roll-up (se-cylinder-wrap-mold slice 4): ``θ = (2π·u − twist·v)/
+# repeat`` and the seam residual live in ``hexfold.wrap``, imported down into
+# the cad kernel (hexfold stays precis-free, the macro side depends on it).
+from hexfold.wrap import WrapSpec, seam_error
+
 #: Wire-format magic of an encoded height map (:func:`encode_hmap`).
 HMAP_MAGIC = b"PHMP"
 
@@ -125,12 +131,6 @@ class HeightMap:
     def shape(self) -> tuple[int, int]:
         nu, nv = self.values.shape
         return int(nu), int(nv)
-
-
-def seam_error(values: NDArray[np.floating[Any]]) -> float:
-    """The wrap discontinuity: ``max |m[0, :] - m[-1, :]|``."""
-    m = np.asarray(values)
-    return float(np.max(np.abs(m[0, :] - m[-1, :])))
 
 
 def seam_tolerance(
@@ -494,7 +494,7 @@ def _flank_raster(
     py = np.repeat(ys[None, :], nu, axis=0)
     u = px / period  # (i+0.5)/nu
     v = py / height  # j/(nv-1)
-    theta_cyl = (2.0 * math.pi * u - twist * v) / repeat
+    theta_cyl = WrapSpec(repeat, twist).theta(u, v)
     delta = slide_delta(theta_cyl, k, phi)
     toward_join = np.sign(delta)  # 0 at the pull centre: treated as +1
     toward_join[toward_join == 0.0] = 1.0
@@ -598,7 +598,7 @@ def _pull_grids(
     item 3)."""
     iu = (np.arange(nu) + 0.5) / nu
     jv = np.arange(nv) / (nv - 1)
-    theta = (2.0 * math.pi * iu[:, None] - twist * jv[None, :]) / repeat
+    theta = WrapSpec(repeat, twist).theta(iu[:, None], jv[None, :])
     # u-edge midpoint: exactly half a u-step past pixel i's centre —
     # valid across the seam too since θ is linear in u within a v row
     d_u = slide_delta(theta + math.pi / (nu * repeat), k, phi)
