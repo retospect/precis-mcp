@@ -64,7 +64,9 @@ def test_overflow_line_carries_a_call_that_lists_the_whole_group(
             "q": "qualified-by",
         },
     )
-    assert full.count("qualified-by: me") == n
+    # expanded group: a count header, then one indented row per member
+    assert f"— linked (1 hop) · qualified-by ({n}) —" in full
+    assert len(re.findall(r"^    me\d+ — Gotcha ", full, flags=re.M)) == n
     assert "more" not in full.split("— linked")[-1]
     # an unknown group names the known ones
     bad = runtime.dispatch(

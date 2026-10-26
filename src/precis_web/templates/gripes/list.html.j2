@@ -53,7 +53,7 @@
   </summary>
   <div id="gripe-rows-{{ loop.index }}" class="mt-2">
     {% if c.status == 'open' %}
-      {% set rows = open_rows %}{% set rows_status = c.status %}{% include "gripes/_rows.html.j2" %}
+      {% set rows = open_rows %}{% set rows_status = c.status %}{% set next_offset = open_next_offset %}{% set append = false %}{% include "gripes/_rows.html.j2" %}
     {% else %}
       <div class="rounded-md border border-line px-3 py-2 text-sm text-fg-faint">loading…</div>
     {% endif %}

@@ -285,7 +285,10 @@ def test_memory_edges_render_in_their_documented_rings(hub: Hub) -> None:
         f"qualified-by: {_h(gotcha)}"
     )
     hub_eye = render_eye(store, _h(root), "fisheye+1hop")
-    assert hub_eye.index("Parts:") < hub_eye.index(f"contains: {_h(thread)}")
+    # several members group under one ``contains (N):`` row header
+    # (single-member groups stay inline as ``label: row``)
+    assert hub_eye.index("Parts:") < hub_eye.index("contains (2):")
+    assert hub_eye.index("contains (2):") < hub_eye.index(f"    {_h(thread)}")
 
 
 def test_hint_failure_never_breaks_a_write(
