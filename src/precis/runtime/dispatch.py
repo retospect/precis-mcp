@@ -2243,10 +2243,11 @@ class DispatchMixin(RuntimeShape):
 
         # Backlog view: ``search(view='stubs')`` is the "papers we still
         # need to get" list — paper refs with an external id but no PDF
-        # yet (the stub surfaces). Paper-only; ignores
-        # ``q=``. Intercept before kind resolution.
+        # yet (the stub surfaces). ``kind='datasheet'`` switches to the
+        # manual-fill datasheet stub backlog (gr520099); ``q=`` is
+        # ignored. Intercept before kind resolution.
         if verb == "search" and str(args.get("view") or "").strip() == "stubs":
-            return self._dispatch_stubs(dict(args))
+            return self._dispatch_stubs(kind, dict(args))
 
         # Chase-queue view: ``search(view='chase-queue')`` is the DOI-only,
         # never-tried-first slice of the same stub backlog — a tighter feed
@@ -2254,7 +2255,7 @@ class DispatchMixin(RuntimeShape):
         # (the stub surfaces). Paper-only; ignores ``q=``.
         # Intercept before kind resolution, same as ``view='stubs'``.
         if verb == "search" and str(args.get("view") or "").strip() == "chase-queue":
-            return self._dispatch_chase_queue(dict(args))
+            return self._dispatch_chase_queue(kind, dict(args))
 
         # Count view: ``search(kind=K, view='count', group_by=...)`` is
         # the filtered total + facet counts on numeric-ref kinds

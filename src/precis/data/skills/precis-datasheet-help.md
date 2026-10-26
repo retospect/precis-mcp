@@ -105,9 +105,37 @@ put(kind='datasheet', args={'url': '<found PDF URL>', 'part': 'C883122'})
 ```
 
 Slug and title come from the PDF's own metadata and can name an unrelated
-document — check the stored ref's title against the part and `edit` it
-when wrong; don't re-pull. A put on a part that already has a datasheet
-is a no-op.
+document — check the stored ref's title against the part and fix it with
+`edit(kind='datasheet', id='<slug>', title='<correct name>')`; don't
+re-pull. A put on a part that already has a datasheet is a no-op.
+
+## Stubs and pull status
+
+**A human must supply the file** (no fetchable URL anywhere): mint a
+stub — a bodiless datasheet already linked `datasheet-of` the part,
+listed by `search(kind='datasheet', view='stubs')`. Fill it the paper
+way: drop the PDF as `<inbox>/datasheets/da<N>.pdf` and the ingest folds
+it into the stub in place.
+
+```python
+put(kind='datasheet', args={'part': 'C5358484', 'stub': True})
+search(kind='datasheet', view='stubs')   # da<N> + part + fill instruction
+```
+
+**Did a pull work?** `search(kind='datasheet', view='status', ids=[…])`
+mixes `da<N>` handles, cite_key slugs and C-numbers: a ref row shows its
+body state (full-text / card-only / stub) plus its part's recorded pull
+outcome; a C-number row shows the pull (`status`, `reason`, `url`,
+`at` — where a `not_pdf` or dead-host failure is readable without SQL)
+and the datasheet it links, if any. `search(kind='datasheet',
+view='ingest', days=14)` lists what landed recently — handle, title,
+part, live chunk count, source URL (also the `source:` line on `get`'s
+overview), newest first. `view='chase-queue'` is paper-only.
+
+```python
+search(kind='datasheet', view='status', ids=['da519921', 'C2895249'])
+search(kind='datasheet', view='ingest', args={'days': 7})
+```
 
 ## The fact layer — `view='facts'`
 

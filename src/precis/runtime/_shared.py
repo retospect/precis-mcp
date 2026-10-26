@@ -126,10 +126,10 @@ class RuntimeShape:
         raise NotImplementedError
 
     # ── search.py (SearchMixin) ──────────────────────────────────────────
-    def _dispatch_stubs(self, args: dict[str, Any]) -> Response:
+    def _dispatch_stubs(self, kind: Any, args: dict[str, Any]) -> Response:
         raise NotImplementedError
 
-    def _dispatch_chase_queue(self, args: dict[str, Any]) -> Response:
+    def _dispatch_chase_queue(self, kind: Any, args: dict[str, Any]) -> Response:
         raise NotImplementedError
 
     def _dispatch_cross_kind(self, kind: str, args: dict[str, Any]) -> Response:

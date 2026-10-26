@@ -159,23 +159,36 @@ class SearchMixin(RuntimeShape):
     # scan in one prompt without dumping the whole queue.
     _STUBS_DEFAULT_N: int = 25
 
-    def _dispatch_stubs(self, args: dict[str, Any]) -> Response:
-        """The required-papers backlog: ``search(view='stubs')``.
+    def _dispatch_stubs(self, kind: Any, args: dict[str, Any]) -> Response:
+        """The required-documents backlog: ``search(view='stubs')``.
 
         Lists ``paper`` refs with an external identifier (DOI / arXiv /
         S2) registered but no PDF yet — the "papers we still need to
         get" queue the chase worker and the dream ``acquire`` tool both
-        feed (the stub surfaces). Paper-only; ``q=`` is
-        ignored (the view *is* the filter). ``n=`` / ``page_size=`` cap
-        the row count; ``prio``-ranked first (1=hottest, unranked
-        last), oldest request the tiebreak. Read-only — surfacing the
-        backlog does not touch salience or the fetch pipeline.
+        feed (the stub surfaces). ``kind='datasheet'`` instead lists the
+        manual-fill stubs ``put(kind='datasheet', args={'part': …,
+        'stub': True})`` mints (gr520099); any other kind is refused —
+        nothing else has a stub backlog. ``q=`` is ignored (the view
+        *is* the filter). ``n=`` / ``page_size=`` cap the row count;
+        ``prio``-ranked first (1=hottest, unranked last), oldest request
+        the tiebreak. Read-only — surfacing the backlog does not touch
+        salience or the fetch pipeline.
         """
         from precis.utils.next_block import render_next_section
 
         store = self.hub.store
         if store is None:
             raise Unsupported("view='stubs' needs a store-backed deployment")
+
+        normalized = str(kind or "").strip().lower()
+        if normalized == "datasheet":
+            return self._datasheet_stubs(args, store=store)
+        if normalized != "paper" and normalized not in _CROSS_KIND_ALIASES:
+            raise BadInput(
+                f"view='stubs' has no {normalized!r} backlog",
+                options=["paper", "datasheet"],
+                next="search(kind='datasheet', view='stubs')",
+            )
 
         n = int(args.get("n") or args.get("page_size") or self._STUBS_DEFAULT_N)
         if n < 1:
@@ -233,7 +246,73 @@ class SearchMixin(RuntimeShape):
         )
         return Response(body=body)
 
-    def _dispatch_chase_queue(self, args: dict[str, Any]) -> Response:
+    def _datasheet_stubs(self, args: dict[str, Any], *, store: Any) -> Response:
+        """``search(kind='datasheet', view='stubs')`` — bodiless sheets to fill.
+
+        The datasheet counterpart of :meth:`_dispatch_stubs` (gr520099):
+        a ``datasheet`` stub is minted on request (
+        ``put(kind='datasheet', args={'part': …, 'stub': True})``) or
+        when a pull leaves nothing fetchable, and is filled by a human
+        dropping ``da<N>.pdf`` into ``<inbox>/datasheets/`` — there is
+        no fetcher, so the row's actionable bit is the named-drop
+        instruction, not a fetch state. Renders the ``da<N>`` handle,
+        the part it documents, the cite_key slug and title.
+        """
+        from precis.utils.next_block import render_next_section
+
+        n = int(args.get("n") or args.get("page_size") or self._STUBS_DEFAULT_N)
+        if n < 1:
+            raise BadInput(
+                "n must be >= 1", next="search(kind='datasheet', view='stubs', n=25)"
+            )
+
+        rows = store.stub_backlog(kind="datasheet", limit=n)
+        if not rows:
+            return Response(
+                body=(
+                    "no datasheet stubs — every datasheet has a body. Nothing to fill."
+                )
+            )
+
+        lines = [f"datasheets still needing a PDF ({len(rows)} shown):", ""]
+        for r in rows:
+            handle = handle_registry.format_handle("datasheet", r["ref_id"])
+            cite = r["cite_key"] or handle
+            head = f"  {handle}"
+            if r["part_lcsc"]:
+                head += f"  {r['part_lcsc']}"
+            head += f"  [{cite}]"
+            if r["title"]:
+                head += f"  {r['title']}"
+            lines.append(head)
+            state = _stub_state_line(r) if r["last_event"] else "awaiting fill"
+            lines.append(f"      {state} — drop <inbox>/datasheets/{handle}.pdf")
+        body = "\n".join(lines)
+        top_handle = handle_registry.format_handle("datasheet", rows[0]["ref_id"])
+        top_part = rows[0]["part_lcsc"]
+        hints = [
+            (
+                f"get(kind='datasheet', id='{top_handle}')",
+                "open a stub",
+            ),
+        ]
+        if top_part:
+            hints.append(
+                (
+                    f"get(kind='part', id='{top_part}')",
+                    "the part it documents",
+                )
+            )
+        hints.append(
+            (
+                "get(kind='skill', id='precis-datasheet-help')",
+                "how datasheet ingest works",
+            )
+        )
+        body += render_next_section(hints)
+        return Response(body=body)
+
+    def _dispatch_chase_queue(self, kind: Any, args: dict[str, Any]) -> Response:
         """The DOI-only, never-tried-first chase queue:
         ``search(view='chase-queue')``.
 
@@ -242,12 +321,21 @@ class SearchMixin(RuntimeShape):
         identifier kind the fetcher cascade covers most reliably) and
         ordered never-tried-first rather than oldest-request-first —
         "what should I go find a PDF for right now" rather than "what's
-        been waiting longest". Paper-only; ``q=`` is ignored (like
-        ``view='stubs'``). ``n=`` / ``page_size=`` cap the row count.
-        Read-only — surfacing the queue does not touch the fetch
-        pipeline.
+        been waiting longest". Paper-only (gr520077: any other kind is
+        refused — nothing else has a DOI-fetcher queue to list); ``q=``
+        is ignored (like ``view='stubs'``). ``n=`` / ``page_size=`` cap
+        the row count. Read-only — surfacing the queue does not touch
+        the fetch pipeline.
         """
         from precis.utils.next_block import render_next_section
+
+        normalized = str(kind or "").strip().lower()
+        if normalized != "paper" and normalized not in _CROSS_KIND_ALIASES:
+            raise BadInput(
+                f"view='chase-queue' is paper-only (kind={normalized!r})",
+                options=["paper"],
+                next="search(kind='paper', view='chase-queue')",
+            )
 
         store = self.hub.store
         if store is None:

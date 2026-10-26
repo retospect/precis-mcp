@@ -1043,6 +1043,7 @@ class RefsMixin:
     def stub_backlog(
         self,
         *,
+        kind: str = "paper",
         limit: int = 50,
         offset: int = 0,
         awaiting: bool = False,
@@ -1051,6 +1052,13 @@ class RefsMixin:
         no_oa: bool = False,
     ) -> list[dict[str, Any]]:
         """The "papers we still need to get" backlog.
+
+        ``kind='datasheet'`` (gr520099) lists the *manual-fill* stubs
+        instead: bodiless datasheet refs minted by
+        ``put(kind='datasheet', args={'part': …, 'stub': True})``, whose
+        only fill path is a named ``da<N>.pdf`` drop — no fetcher
+        identifier leg applies. Rows then carry ``title`` and
+        ``part_lcsc`` (``meta.part_lcsc``) for the render.
 
         A *stub* is a ``paper`` ref with an external identifier
         (DOI/arXiv/S2 by default) but ``pdf_sha256 IS NULL`` — chase and
@@ -1132,9 +1140,11 @@ class RefsMixin:
                        r.meta->>'set_by' AS requested_by,
                        r.prio AS prio,
                        r.meta->>'llm_label' AS llm_label,
-                       r.meta->>'llm_reason' AS llm_reason
+                       r.meta->>'llm_reason' AS llm_reason,
+                       r.title,
+                       r.meta->>'part_lcsc' AS part_lcsc
                   FROM refs r
-                 WHERE {stub_predicate_sql("r", id_kinds)}
+                 WHERE {stub_predicate_sql("r", id_kinds, kind=kind)}
             ),
             latest_event AS (
                 -- Not the strictly-latest event: the most *actionable*
@@ -1218,7 +1228,8 @@ class RefsMixin:
                    le.ts, le.source, le.event,
                    s.created_at, s.requested_by,
                    COALESCE(fs.attempts, 0) AS attempts,
-                   le.payload, s.prio, s.llm_label, s.llm_reason
+                   le.payload, s.prio, s.llm_label, s.llm_reason,
+                   s.title, s.part_lcsc
               FROM stubs s
               LEFT JOIN latest_event le ON le.ref_id = s.ref_id
               LEFT JOIN fetch_stats fs ON fs.ref_id = s.ref_id
@@ -1254,11 +1265,15 @@ class RefsMixin:
                     "prio": int(row[10]) if row[10] is not None else None,
                     "llm_label": row[11] or "",
                     "llm_reason": row[12] or "",
+                    "title": row[13] or "",
+                    "part_lcsc": row[14] or "",
                 }
             )
         return out
 
-    def stub_backlog_count(self, *, awaiting: bool = False, no_oa: bool = False) -> int:
+    def stub_backlog_count(
+        self, *, kind: str = "paper", awaiting: bool = False, no_oa: bool = False
+    ) -> int:
         """Total stub count under the same filter as :meth:`stub_backlog`.
 
         Lets the pager show "page N of M" and a grand total instead of a
@@ -1272,7 +1287,7 @@ class RefsMixin:
             WITH stubs AS (
                 SELECT r.ref_id
                   FROM refs r
-                 WHERE {stub_predicate_sql("r")}
+                 WHERE {stub_predicate_sql("r", kind=kind)}
             ),
             latest_event AS (
                 SELECT DISTINCT ON (ref_id) ref_id, ts, event
@@ -1295,16 +1310,20 @@ class RefsMixin:
             row = conn.execute(sql, (awaiting, no_oa)).fetchone()
         return int(row[0]) if row else 0
 
-    def paper_fetch_status(self, ref_ids: list[int]) -> list[dict[str, Any]]:
-        """Per-paper ingest state + last fetch outcome for a set of ids.
+    def paper_fetch_status(
+        self, ref_ids: list[int], *, kind: str = "paper"
+    ) -> list[dict[str, Any]]:
+        """Per-ref ingest state + last fetch outcome for a set of ids.
 
         ``body`` is ``'full-text'`` (a live non-card, non-``references``
         body chunk exists), ``'card-only'`` (only ``card_*`` chunks —
         abstract/title cards) or ``'stub'`` (no chunks at all).
         ``last_event`` / ``last_source`` / ``last_ts`` are the strictly
-        newest ``fetcher:%`` ref_event (empty when never tried). Ids that
-        are not live ``paper`` refs are simply absent from the result.
-        One query; rows come back in ``ref_ids`` order.
+        newest ``fetcher:%`` ref_event (empty when never tried — a
+        datasheet never has any). Ids that are not live ``kind`` refs
+        are simply absent from the result. ``kind='datasheet'`` backs
+        ``search(kind='datasheet', view='status')`` (gr520077). One
+        query; rows come back in ``ref_ids`` order.
         """
         if not ref_ids:
             return []
@@ -1326,11 +1345,11 @@ class RefsMixin:
                    SELECT ts, source, event FROM ref_events
                     WHERE ref_id = r.ref_id AND source LIKE 'fetcher:%%'
                     ORDER BY ts DESC LIMIT 1) le ON true
-             WHERE r.ref_id = ANY(%s) AND r.kind = 'paper'
+             WHERE r.ref_id = ANY(%s) AND r.kind = %s
                AND r.retired_at IS NULL
         """
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, (list(ref_ids),)).fetchall()
+            rows = conn.execute(sql, (list(ref_ids), kind)).fetchall()
         by_id: dict[int, dict[str, Any]] = {}
         for rid, cite, has_pdf, n_full, n_card, ts, src, ev in rows:
             by_id[int(rid)] = {
@@ -1395,6 +1414,51 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, {"since": since}).fetchall()
         return [(d, int(f), int(k)) for d, f, k in rows]
+
+    def datasheet_ingest_list(
+        self, *, since: datetime, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Datasheet refs created since ``since``, newest first (gr520077).
+
+        Backs ``search(kind='datasheet', view='ingest')`` — the per-ref
+        listing a paper's per-day rate view can't answer: handle, title,
+        the part it documents (``meta.part_lcsc``), live body-chunk
+        count (a stub reads 0), provenance (``meta.source_url``) and
+        ``created_at``.
+        """
+        sql = """
+            SELECT r.ref_id,
+                   (SELECT min(id_value) FROM ref_identifiers
+                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+                   r.title,
+                   r.meta->>'part_lcsc',
+                   r.meta->>'source_url',
+                   r.created_at,
+                   COALESCE(c.n, 0)
+              FROM refs r
+              LEFT JOIN LATERAL (
+                   SELECT count(*) AS n FROM chunks
+                    WHERE ref_id = r.ref_id AND ord >= 0
+                      AND retired_at IS NULL) c ON true
+             WHERE r.kind = 'datasheet' AND r.retired_at IS NULL
+               AND r.created_at >= %s
+             ORDER BY r.created_at DESC, r.ref_id DESC
+             LIMIT %s
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (since, limit)).fetchall()
+        return [
+            {
+                "ref_id": int(r[0]),
+                "cite_key": r[1] or "",
+                "title": r[2] or "",
+                "part_lcsc": r[3] or "",
+                "source_url": r[4] or "",
+                "created_at": r[5].isoformat() if r[5] is not None else "",
+                "chunks": int(r[6]),
+            }
+            for r in rows
+        ]
 
     def manual_retrieval_list(
         self, *, limit: int = 50, offset: int = 0

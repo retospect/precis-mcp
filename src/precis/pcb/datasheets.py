@@ -140,7 +140,12 @@ def datasheet_states(store: Store, lcscs: list[str]) -> dict[str, dict[str, Any]
             "  JOIN refs s ON s.ref_id = l.src_ref_id "
             "  WHERE l.dst_ref_id = p.ref_id AND l.relation = 'datasheet-of' "
             "    AND s.retired_at IS NULL "
-            "  ORDER BY s.ref_id LIMIT 1) d ON true "
+            "  ORDER BY (s.pdf_sha256 IS NULL), "
+            "           CASE WHEN COALESCE(s.meta->>'subtype', 'datasheet') "
+            "                IN ('datasheet', 'reference-manual') "
+            "           THEN 0 ELSE 1 END, "
+            "           l.created_at DESC, s.created_at DESC, s.ref_id DESC "
+            "  LIMIT 1) d ON true "
             "LEFT JOIN ref_identifiers ck ON ck.ref_id = d.ref_id "
             "  AND ck.id_kind = 'cite_key' "
             "WHERE ri.id_kind = 'lcsc' AND ri.id_value = ANY(%s)",

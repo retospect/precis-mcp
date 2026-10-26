@@ -2313,9 +2313,14 @@ class PaperHandler(Handler):
                 return self._fetch_status_view(ids)
             if view == "ingest":
                 return self._ingest_rate_view(days)
+            # Only name views the kind actually serves (gr520077): the
+            # chase queue is the DOI-fetcher backlog — paper-only.
+            options = ["count", "status", "ingest", "stubs"] + (
+                ["chase-queue"] if kind == "paper" else []
+            )
             raise BadInput(
                 f"unknown view {view!r} for search(kind={kind!r})",
-                options=["count", "status", "ingest", "stubs", "chase-queue"],
+                options=options,
                 next=(
                     f"search(kind={kind!r}, view='count', "
                     "args={'group_by': 'tag:studytype'}) · view='status' "

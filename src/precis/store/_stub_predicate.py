@@ -31,6 +31,7 @@ the exact ``'retracted'`` literal drops a row.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 #: The only identifier kinds that make a paper stub "fetchable" — the
@@ -138,12 +139,20 @@ def fetchable_id_exists_sql(
     )
 
 
+#: ``kind`` is spliced into the SQL fragment as a literal — a lowercase
+#: ``refs.kind`` slug only, validated before interpolation (the same
+#: injection-guard posture as ``id_kinds``'s whitelist walk, which never
+#: lets a caller-supplied string reach the query text).
+_KIND_RE = re.compile(r"^[a-z_]+$")
+
+
 def stub_predicate_sql(
     alias: str = "r",
     id_kinds: Iterable[str] = _STUB_ID_KIND_ORDER,
     *,
     exclude_retracted: bool = True,
     pin_meta_key: str | None = None,
+    kind: str = "paper",
 ) -> str:
     """The shared "is this a fetchable stub" WHERE-fragment.
 
@@ -151,6 +160,16 @@ def stub_predicate_sql(
     ``<alias>.retired_at`` / ``<alias>.ref_id`` / ``<alias>.
     retraction_status`` — the caller's query must alias the ``refs``
     row accordingly (``r`` everywhere today).
+
+    ``kind`` (default ``'paper'``) names the ref kind the predicate
+    gates on — spliced as a literal, so it is validated against
+    :data:`_KIND_RE` first. A non-paper kind (``'datasheet'`` —
+    gr520099) drops the fetchable-identifier leg entirely: a datasheet
+    stub carries no DOI/arXiv/S2 because nothing chases one — its fill
+    is a manual ``da<N>.pdf`` named drop, not a fetcher pass — so the
+    predicate is "live, bodiless (and not retracted)" alone. ``id_kinds``
+    is then unused; keeping it in the signature means the paper call
+    shape is byte-identical to before.
 
     ``id_kinds`` narrows which external-identifier kinds count as
     fetchable (e.g. the DOI-only chase queue passes ``('doi',)``); the
@@ -181,14 +200,16 @@ def stub_predicate_sql(
     (``claim_stubs_to_fetch``), and a literal ``?`` collides with that
     placeholder scan.
     """
+    if not _KIND_RE.fullmatch(kind):
+        raise ValueError(f"stub_predicate_sql: invalid kind {kind!r}")
     pdf_clause = f"{alias}.pdf_sha256 IS NULL"
     if pin_meta_key:
         pdf_clause = f"({pdf_clause} OR jsonb_exists({alias}.meta, '{pin_meta_key}'))"
     predicate = (
-        f"{alias}.kind = 'paper' AND {pdf_clause} "
-        f"AND {alias}.retired_at IS NULL "
-        f"AND {fetchable_id_exists_sql(alias, id_kinds=id_kinds)}"
+        f"{alias}.kind = '{kind}' AND {pdf_clause} AND {alias}.retired_at IS NULL"
     )
+    if kind == "paper":
+        predicate += f" AND {fetchable_id_exists_sql(alias, id_kinds=id_kinds)}"
     if exclude_retracted:
         # IS DISTINCT FROM (not <>): NULL — unchecked, the default state
         # every stub starts in — must stay eligible so it gets checked at

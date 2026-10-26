@@ -1140,15 +1140,18 @@ def _doi_conflicts(fetched_doi: str | None, ref_id: int, *, conn: Any) -> str | 
     return journal[0]
 
 
-_HANDLE_STEM_RE = re.compile(r"pa(\d+)(?:-.*)?", re.IGNORECASE | re.DOTALL)
+_HANDLE_STEM_RE = re.compile(r"(?:pa|da)(\d+)(?:-.*)?", re.IGNORECASE | re.DOTALL)
 
 
 def _handle_stem_ref_id(stem: str) -> int | None:
-    """``pa<digits>`` / ``pa<digits>-<anything>`` filename stem -> ref_id.
+    """``pa<digits>`` / ``da<digits>`` (+ optional ``-…``) stem -> ref_id.
 
-    The ``pa<id>`` handle is what every surface shows, so a human drops a
-    PDF for a wanted stub under that name. Pure parse; callers still gate
-    the result through :func:`_valid_fold_stub`.
+    The ``pa<id>`` / ``da<id>`` handle is what every surface shows, so a
+    human drops a PDF for a wanted stub under that name — ``da<N>.pdf``
+    under ``inbox/datasheets/`` fills a datasheet stub the same way
+    ``pa<N>.pdf`` fills a paper stub (gr520099). Pure parse; callers
+    still gate the result through :func:`_valid_fold_stub`, whose
+    ``kind`` check refuses a handle of the wrong kind.
     """
     m = _HANDLE_STEM_RE.fullmatch(stem.strip())
     return int(m.group(1)) if m else None

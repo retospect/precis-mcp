@@ -1403,6 +1403,37 @@ class TestSidecarFold:
         assert _handle_stem_ref_id("pa") is None
         assert _handle_stem_ref_id("pa12x") is None
         assert _handle_stem_ref_id("xpa12") is None
+        # da<N> names a datasheet stub the same way (gr520099).
+        assert _handle_stem_ref_id("da343399") == 343399
+        assert _handle_stem_ref_id("DA12-rev b") == 12
+        assert _handle_stem_ref_id("da") is None
+        assert _handle_stem_ref_id("da12x") is None
+
+    def test_da_stem_drop_fills_datasheet_stub(self, store, tmp_path: Path):
+        """gr520099: ``da<N>.pdf`` in ``inbox/datasheets/`` folds into the
+        named bodiless datasheet stub — the manual-fill counterpart of a
+        ``pa<N>.pdf`` paper-stub fill."""
+        stub = store.insert_ref(
+            kind="datasheet",
+            slug="kxob25",
+            title="KOA KXOB25-05X3F",
+            meta={"part_lcsc": "C5358484"},
+        )
+        pdf = tmp_path / f"da{stub.id}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 ds")
+        sha = hashlib.sha256(b"%PDF-1.4 ds").hexdigest()
+        paper = _fixture_paper(paper_id="dsfill1", doi=None, pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
+            result = precis_add(
+                PdfInput(pdf_path=pdf, as_kind="datasheet"), store=store
+            )
+        assert result is not None
+        assert result.ref_id == stub.id
+        assert result.inserted is False
+        ref = store.get_ref(kind="datasheet", id=stub.id)
+        assert ref is not None and ref.pdf_sha256 == sha
+        # …and it leaves the manual-fill backlog once filled.
+        assert store.stub_backlog(kind="datasheet") == []
 
     def test_new_ref_branch_folds_orphan_stub_by_filename(self, store, tmp_path: Path):
         """Root-cause fix: the *first* ingest of a paper (a dedup miss →

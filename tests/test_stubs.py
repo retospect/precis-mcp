@@ -51,6 +51,24 @@ def _stub(
     return ref.id
 
 
+def _ds_stub(
+    store: Store,
+    *,
+    cite_key: str,
+    part_lcsc: str = "",
+    title: str = "X",
+) -> int:
+    """A bodiless datasheet stub (gr520099): no PDF, no fetchable id —
+    the manual-fill shape ``put(args={'stub': True})`` mints."""
+    ref = store.insert_ref(
+        kind="datasheet",
+        slug=cite_key,
+        title=title,
+        meta={"part_lcsc": part_lcsc} if part_lcsc else {},
+    )
+    return ref.id
+
+
 def _mark_held(store: Store, ref_id: int) -> None:
     sha = f"{ref_id:064d}"
     with store.pool.connection() as conn:
@@ -489,6 +507,99 @@ def test_stub_backlog_prio_outranks_chase_queue_tiebreak(store: Store) -> None:
     _set_prio(store, never_cold, 9)
     order = [r["ref_id"] for r in store.stub_backlog(sort="last-tried")]
     assert order == [tried_hot, never_cold]
+
+
+# ── store engine: datasheet stubs (gr520099) ─────────────────────────
+
+
+def test_stub_backlog_kind_datasheet_lists_bodiless(store: Store) -> None:
+    rid = _ds_stub(store, cite_key="kxob25", part_lcsc="C5358484", title="KXOB25-05X3F")
+    rows = store.stub_backlog(kind="datasheet")
+    assert [r["ref_id"] for r in rows] == [rid]
+    assert rows[0]["title"] == "KXOB25-05X3F"
+    assert rows[0]["part_lcsc"] == "C5358484"
+    assert rows[0]["cite_key"] == "kxob25"
+
+
+def test_stub_backlog_kind_datasheet_needs_no_external_id(store: Store) -> None:
+    # The paper predicate's fetchable-id leg (doi/arxiv/s2) must NOT
+    # apply — a datasheet stub's only fill is a manual named drop.
+    rid = _ds_stub(store, cite_key="nodoids", title="no ids")
+    assert [r["ref_id"] for r in store.stub_backlog(kind="datasheet")] == [rid]
+
+
+def test_stub_backlog_kind_datasheet_excludes_filled_and_papers(store: Store) -> None:
+    filled = _ds_stub(store, cite_key="filledds")
+    _mark_held(store, filled)
+    paper_stub = _stub(store, cite_key="ppstub2024", doi="10.1/x")
+    want = _ds_stub(store, cite_key="wantds")
+    assert [r["ref_id"] for r in store.stub_backlog(kind="datasheet")] == [want]
+    # …and the datasheet stub doesn't leak into the paper backlog.
+    assert [r["ref_id"] for r in store.stub_backlog()] == [paper_stub]
+    assert store.stub_backlog_count(kind="datasheet") == 1
+
+
+def test_stub_predicate_rejects_a_bad_kind(store: Store) -> None:
+    # kind is spliced into SQL — anything but a lowercase slug is refused.
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid kind"):
+        store.stub_backlog(kind="paper' OR '1'='1")
+
+
+# ── dispatch: search(kind='datasheet', view='stubs') (gr520099) ──────
+
+
+def test_view_stubs_datasheet_empty_message(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch("search", {"kind": "datasheet", "view": "stubs"})
+    assert "no datasheet stubs" in out
+
+
+def test_view_stubs_datasheet_lists_backlog(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    rid = _ds_stub(store, cite_key="kxob121", part_lcsc="C5156220", title="KXOB121K04F")
+    handle = handle_registry.format_handle("datasheet", rid)
+
+    out = runtime_with_store.dispatch("search", {"kind": "datasheet", "view": "stubs"})
+    assert "datasheets still needing a PDF" in out
+    assert handle in out
+    assert "C5156220" in out
+    assert "[kxob121]" in out
+    assert "KXOB121K04F" in out
+    assert "awaiting fill" in out
+    assert f"<inbox>/datasheets/{handle}.pdf" in out
+
+
+def test_view_stubs_datasheet_ignores_q(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    rid = _ds_stub(store, cite_key="dsq2024", title="q test")
+
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "datasheet", "view": "stubs", "q": "totally unrelated query"},
+    )
+    assert handle_registry.format_handle("datasheet", rid) in out
+
+
+def test_view_stubs_unknown_kind_refused(runtime_with_store: PrecisRuntime) -> None:
+    out = runtime_with_store.dispatch("search", {"kind": "gripe", "view": "stubs"})
+    assert "gripe" in out
+    assert "paper" in out and "datasheet" in out
+
+
+def test_view_stubs_datasheet_trailer_hints_round_trip(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The ``da`` trailer's advertised calls must parse and execute."""
+    store = runtime_with_store.hub.store
+    assert store is not None
+    _ds_stub(store, cite_key="dsh2024", part_lcsc="C25900", title="sheet")
+    out = runtime_with_store.dispatch("search", {"kind": "datasheet", "view": "stubs"})
+    assert_hints_round_trip(out, runtime_with_store.dispatch)
 
 
 # ── store engine: llm_label / llm_reason (stub_rank Tier-2 band) ─────
