@@ -215,6 +215,10 @@
     "close/hinged/living-hinge": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "compliant",
+        "mechanism": "integral"
+      },
       "parents": [
         "close/hinged"
       ],
@@ -393,12 +397,24 @@
         {
           "confidence": "handbook",
           "equipment": "industrial-fdm",
-          "id": "close/hinged/living-hinge#c18",
+          "id": "close/hinged/living-hinge#c18a",
+          "note": "Protolabs hinge lengths 1.27 mm (90 deg) and 3.81 mm (180 deg) kept as-is; source page not re-verified here",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/resources/blog/how-to-design-3d-printed-living-hinges/",
           "text": "Industrial printed-hinge guide: hinge length at least 0.050 in for 90 deg, 0.150 in for 180 deg: 1.27 / 3.81 mm",
           "unit": "mm",
           "value": "1.27 / 3.81"
+        },
+        {
+          "confidence": "secondary",
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "close/hinged/living-hinge#c18b",
+          "source_quality": "secondary",
+          "source_url": "https://www.hubs.com/knowledge-base/how-design-living-hinges-3d-printing/",
+          "text": "FDM printed living hinge: 0.4-0.6 mm thick with at least two layers",
+          "unit": "mm",
+          "value": "0.4-0.6"
         },
         {
           "confidence": "handbook",
@@ -426,6 +442,9 @@
     "close/hinged/pin-hinge": {
       "coverage": "shallow",
       "domain": "mech",
+      "implies": {
+        "class": "revolute"
+      },
       "parents": [
         "close/hinged"
       ],
@@ -699,6 +718,10 @@
     "close/latches/draw-latch": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "clamp"
+      },
       "parents": [
         "close/latches"
       ],
@@ -850,6 +873,10 @@
     "close/latches/magnetic-catch": {
       "coverage": "shallow",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "magnet"
+      },
       "parents": [
         "close/latches"
       ],
@@ -1025,6 +1052,9 @@
     "close/latches/push-push-and-slide": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "prismatic"
+      },
       "parents": [
         "close/latches"
       ],
@@ -1652,6 +1682,11 @@
     "close/snap-and-friction/annular-snap-cap": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "snap",
+        "rank": 3
+      },
       "parents": [
         "close/snap-and-friction"
       ],
@@ -1869,6 +1904,11 @@
     "close/snap-and-friction/cantilever-snap-lid": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "snap",
+        "rank": 2
+      },
       "parents": [
         "close/snap-and-friction"
       ],
@@ -2041,6 +2081,10 @@
     "close/snap-and-friction/friction-press-lid": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "press"
+      },
       "parents": [
         "close/snap-and-friction"
       ],
@@ -2233,6 +2277,9 @@
     "close/threaded-and-twist/bayonet": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "close/threaded-and-twist"
       ],
@@ -2424,6 +2471,11 @@
     "close/threaded-and-twist/quarter-turn-fastener": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 8
+      },
       "parents": [
         "close/threaded-and-twist"
       ],
@@ -2588,6 +2640,9 @@
     "close/threaded-and-twist/screw-cap": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "close/threaded-and-twist"
       ],
@@ -3188,6 +3243,10 @@
     "join/integrate/cast-as-one": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "integral"
+      },
       "parents": [
         "join/integrate"
       ],
@@ -3537,6 +3596,10 @@
     "join/integrate/machine-from-solid": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "integral"
+      },
       "parents": [
         "join/integrate"
       ],
@@ -3690,6 +3753,10 @@
     "join/integrate/one-body-print-mould": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "integral"
+      },
       "parents": [
         "join/integrate"
       ],
@@ -3728,12 +3795,26 @@
         {
           "confidence": "handbook",
           "equipment": "industrial-fdm",
-          "id": "join/integrate/one-body-print-mould#c4",
+          "id": "join/integrate/one-body-print-mould#c4a",
+          "note": "Stratasys 4x layer rule kept for Fortus-class machines; not re-verified against the PDF (not in this slice scope)",
           "source_quality": "primary",
           "source_url": "https://www.stratasys.com/siteassets/sdm/content---website-storage/design-guides/dg_sdm_fdm_0725a.pdf?v=490918",
           "text": "Minimum FDM wall about 4x layer thickness (1.016 mm at 0.254 mm layers)",
           "unit": "x layer thickness",
           "value": "4"
+        },
+        {
+          "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "join/integrate/one-body-print-mould#c4b",
+          "machine_specific": true,
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_wall",
+          "text": "Minimum printable FDM wall on a 0.4 mm nozzle is one perimeter, about 0.45 mm; two perimeters give about 0.9 mm",
+          "unit": "mm",
+          "value": "0.45"
         },
         {
           "confidence": "secondary",
@@ -3838,17 +3919,19 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "join/integrate/one-body-print-mould#c17",
+          "note": "Same rule, Prusa KB instead of Stratasys tooling guide; Prusa does not name the interlayer direction explicitly, it says strength is directional",
           "source_quality": "primary",
-          "source_url": "https://www.stratasys.com/contentassets/1a0cc7a8e7d14f29ac972189bfeade4c/dg_fdm_designconsiderationsfdmtooling_0718a.pdf?v=48fbe5",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
           "text": "FDM interlayer bond is the weakest direction; avoid loads that open layers",
           "unit": null,
           "value": null
         },
         {
           "confidence": "secondary",
-          "equipment": "injection-mould",
+          "equipment": "sla",
           "id": "join/integrate/one-body-print-mould#c18",
           "source_quality": "secondary",
           "source_url": "https://formlabs.com/support/Injection-molding/",
@@ -3878,6 +3961,9 @@
     "join/permanent/material-bond/adhesive": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/material-bond"
       ],
@@ -4056,6 +4142,9 @@
     "join/permanent/material-bond/braze-solder": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/material-bond"
       ],
@@ -4180,6 +4269,9 @@
     "join/permanent/material-bond/solvent-weld": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/material-bond"
       ],
@@ -4237,7 +4329,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "injection-mould",
+          "equipment": "any",
           "id": "join/permanent/material-bond/solvent-weld#c6",
           "source_quality": "primary",
           "source_url": "https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1557217197.pdf",
@@ -4282,6 +4374,9 @@
     "join/permanent/material-bond/weld": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/material-bond"
       ],
@@ -4394,7 +4489,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "any",
+          "equipment": "injection-mould",
           "id": "join/permanent/material-bond/weld#c11",
           "source_quality": "secondary",
           "source_url": "https://www.twi-global.com/technical-knowledge/job-knowledge/ultrasonic-welding-of-injection-moulded-components-part-2-component-design-and-weld-parameters-062",
@@ -4506,6 +4601,9 @@
     "join/permanent/permanent-mechanical/clinch": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/permanent-mechanical"
       ],
@@ -4597,6 +4695,9 @@
     "join/permanent/permanent-mechanical/heat-stake": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/permanent-mechanical"
       ],
@@ -4808,6 +4909,11 @@
     "join/permanent/permanent-mechanical/permanent-snap": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "snap",
+        "rank": 4
+      },
       "parents": [
         "join/permanent/permanent-mechanical"
       ],
@@ -4906,19 +5012,23 @@
           "value": "1-2"
         },
         {
-          "confidence": "secondary",
+          "confidence": "handbook",
+          "conflicted": true,
           "corrected": true,
           "equipment": "desktop-fdm",
           "id": "join/permanent/permanent-mechanical/permanent-snap#c10",
-          "source_quality": "weak",
-          "source_url": "https://www.fictiv.com/articles/how-to-design-snap-fit-components",
-          "text": "FDM clearance fits are typically 0.1-0.3 mm depending on printer and process (one vendor guide); its 0.4 mm slide fit is a generic figure, not FDM",
+          "machine_specific": true,
+          "note": "Fictiv says '3D printing' generally, not FDM, and not desktop; its 0.1-0.3 mm is not a desktop figure. Prusa KB gives 0.3 mm as the starting clearance for movable printed parts.",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_clearance",
+          "text": "Printed movable parts and snap clearances start at 0.3 mm on a desktop FDM printer; test and tighten from there",
           "unit": "mm",
-          "value": "0.1-0.3"
+          "value": "0.3"
         },
         {
           "confidence": "secondary",
-          "equipment": "injection-mould",
+          "equipment": "cnc-mill",
           "id": "join/permanent/permanent-mechanical/permanent-snap#c11",
           "source_quality": "weak",
           "source_url": "https://www.fictiv.com/articles/how-to-design-snap-fit-components",
@@ -4927,9 +5037,11 @@
           "value": "0.8-1.5"
         },
         {
-          "confidence": "secondary",
+          "confidence": "shop-rule",
+          "corrected": true,
           "equipment": "desktop-fdm",
           "id": "join/permanent/permanent-mechanical/permanent-snap#c12",
+          "note": "Guide is an unattributed PDF; says 'FDM equipment' with no printer class or vendor. Cannot confirm desktop; no desktop source found for max deflecting wall.",
           "source_quality": "weak",
           "source_url": "https://aarontyleranderson.com/wp-content/uploads/2022/02/SnapFit_Quick_Guide.pdf",
           "text": "FDM snap guide: annular snap deflecting wall at most 1.9 mm (other cantilever dimensions in the figure were not checked)",
@@ -4972,6 +5084,10 @@
     "join/permanent/permanent-mechanical/press-shrink-fit": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "press"
+      },
       "parents": [
         "join/permanent/permanent-mechanical"
       ],
@@ -5177,6 +5293,9 @@
     "join/permanent/permanent-mechanical/rivet": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/permanent-mechanical"
       ],
@@ -5376,6 +5495,11 @@
     "join/permanent/permanent-mechanical/rivet-nut": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 9
+      },
       "parents": [
         "join/permanent/permanent-mechanical",
         "join/service/threaded"
@@ -5421,6 +5545,11 @@
     "join/permanent/permanent-mechanical/self-clinching-fastener": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 10
+      },
       "parents": [
         "join/permanent/permanent-mechanical"
       ],
@@ -5472,6 +5601,9 @@
     "join/permanent/permanent-mechanical/tube-swage-crimp": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/permanent/permanent-mechanical"
       ],
@@ -5541,6 +5673,10 @@
     "join/service/clamp/split-boss-pinch": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "clamp"
+      },
       "parents": [
         "join/service/clamp"
       ],
@@ -5570,12 +5706,26 @@
         {
           "confidence": "handbook",
           "equipment": "industrial-fdm",
-          "id": "join/service/clamp/split-boss-pinch#c3",
+          "id": "join/service/clamp/split-boss-pinch#c3a",
+          "note": "Stratasys 4x layer rule kept for industrial machines",
           "source_quality": "primary",
           "source_url": "https://www.stratasys.com/siteassets/sdm/content---website-storage/design-guides/dg_sdm_fdm_0725a.pdf?v=490918",
           "text": "FDM wall at least 4 x layer thickness, example 1.00 mm for 0.25 mm layers",
           "unit": "x layer thickness",
           "value": "4"
+        },
+        {
+          "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "join/service/clamp/split-boss-pinch#c3b",
+          "machine_specific": true,
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_wall",
+          "text": "Minimum printable FDM wall on a 0.4 mm nozzle is one perimeter, about 0.45 mm; two perimeters give about 0.9 mm",
+          "unit": "mm",
+          "value": "0.45"
         },
         {
           "confidence": "handbook",
@@ -5713,6 +5863,9 @@
     "join/service/pinned-retained/pin-and-clip": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute"
+      },
       "parents": [
         "join/service/pinned-retained"
       ],
@@ -5903,6 +6056,9 @@
     "join/service/pinned-retained/retaining-ring": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/service/pinned-retained"
       ],
@@ -6057,6 +6213,9 @@
     "join/service/releasable-form-lock/dovetail-slide": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "prismatic"
+      },
       "parents": [
         "join/service/releasable-form-lock"
       ],
@@ -6178,6 +6337,11 @@
     "join/service/releasable-form-lock/releasable-snap": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "snap",
+        "rank": 1
+      },
       "parents": [
         "join/service/releasable-form-lock"
       ],
@@ -6254,10 +6418,11 @@
           "value": "50 / 25"
         },
         {
-          "confidence": "secondary",
+          "confidence": "shop-rule",
           "corrected": true,
           "equipment": "desktop-fdm",
           "id": "join/service/releasable-form-lock/releasable-snap#c9",
+          "note": "Same unattributed PDF as permanent-snap c12; 'FDM equipment' with no printer class. Cannot confirm desktop; no desktop annular snap source found.",
           "source_quality": "weak",
           "source_url": "https://aarontyleranderson.com/wp-content/uploads/2022/02/SnapFit_Quick_Guide.pdf",
           "text": "FDM annular snap-fit clearance (difference between largest and smallest diameter) about 0.35 mm; the guide gives no cantilever side clearance",
@@ -6320,6 +6485,9 @@
     "join/service/releasable-form-lock/twist-lock": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "join/service/releasable-form-lock"
       ],
@@ -6463,6 +6631,11 @@
     "join/service/threaded/clearance-tapped": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 1
+      },
       "parents": [
         "join/service/threaded"
       ],
@@ -6669,6 +6842,11 @@
     "join/service/threaded/heat-set-insert": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 3
+      },
       "parents": [
         "join/service/threaded"
       ],
@@ -6811,6 +6989,11 @@
     "join/service/threaded/nut-trap": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 4
+      },
       "parents": [
         "join/service/threaded"
       ],
@@ -6818,7 +7001,7 @@
       "rules": [
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "bought",
           "id": "join/service/threaded/nut-trap#c1",
           "source_quality": "secondary",
           "source_url": "https://www.mfsupply.com/v/vspfiles/assets/31-NHM6ISO4032SS-0-Nut-Hex.pdf",
@@ -6829,7 +7012,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "bought",
           "id": "join/service/threaded/nut-trap#c2",
           "source_quality": "secondary",
           "source_url": "https://www.mfsupply.com/v/vspfiles/assets/31-NHM6ISO4032SS-0-Nut-Hex.pdf",
@@ -6840,7 +7023,7 @@
         },
         {
           "confidence": "standard",
-          "equipment": "desktop-fdm",
+          "equipment": "bought",
           "id": "join/service/threaded/nut-trap#c3",
           "source_quality": "primary",
           "source_url": "https://cdn.standards.iteh.ai/samples/61668/93b89b8502a943499386155c44018aaa/ISO-4032-2012.pdf",
@@ -6870,7 +7053,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "any",
           "id": "join/service/threaded/nut-trap#c6",
           "source_quality": "weak",
           "source_url": "https://github.com/w1ne/kernelCAD-web/blob/develop/cookbook/snippets/hex-nut-trap-bolt-clearance.md",
@@ -6942,7 +7125,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "injection-mould",
           "id": "join/service/threaded/nut-trap#c13",
           "source_quality": "weak",
           "source_url": "https://www.m-dtg.com/blogs/insert-injection-molding-design-guide",
@@ -6952,7 +7135,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "injection-mould",
           "id": "join/service/threaded/nut-trap#c15",
           "source_quality": "secondary",
           "source_url": "https://www.hankyan.com/design%20guide%20BASF.pdf",
@@ -6966,6 +7149,10 @@
     "join/service/threaded/shoulder-screw": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute",
+        "mechanism": "screw"
+      },
       "parents": [
         "join/service/threaded"
       ],
@@ -7076,7 +7263,8 @@
         {
           "confidence": "handbook",
           "equipment": "industrial-fdm",
-          "id": "join/service/threaded/shoulder-screw#c11",
+          "id": "join/service/threaded/shoulder-screw#c11a",
+          "note": "Stratasys +-0.127 mm or 0.0015 in/in kept for Fortus-class machines",
           "source_quality": "primary",
           "source_url": "https://www.stratasys.com/contentassets/1a0cc7a8e7d14f29ac972189bfeade4c/dg_fdm_designconsiderationsfdmtooling_0718a.pdf",
           "text": "Stratasys FDM accuracy +-0.005 in or +-0.0015 in/in whichever greater: 0.127 / 0.0015 mm / ratio",
@@ -7085,13 +7273,36 @@
         },
         {
           "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "join/service/threaded/shoulder-screw#c11b",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "An Original Prusa printer is accurate to at least 0.2 mm; shrink and warp vary by material",
+          "unit": "mm",
+          "value": "0.2"
+        },
+        {
+          "confidence": "handbook",
           "equipment": "industrial-fdm",
-          "id": "join/service/threaded/shoulder-screw#c12",
+          "id": "join/service/threaded/shoulder-screw#c12a",
+          "note": "Stratasys 28 C below HDT / 14 C below Tg margin kept for industrial FDM",
           "source_quality": "primary",
           "source_url": "https://www.stratasys.com/contentassets/1a0cc7a8e7d14f29ac972189bfeade4c/dg_fdm_designconsiderationsfdmtooling_0718a.pdf",
           "text": "FDM service temperature at least 28 C below HDT and 14 C below Tg",
           "unit": "K",
           "value": "28; 14"
+        },
+        {
+          "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "join/service/threaded/shoulder-screw#c12b",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/petg_2059",
+          "text": "Prusament PETG parts suit interior and most exterior use below 80 C",
+          "unit": "C",
+          "value": "80"
         },
         {
           "confidence": "handbook",
@@ -7109,6 +7320,11 @@
     "join/service/threaded/thread-forming": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 5
+      },
       "parents": [
         "join/service/threaded"
       ],
@@ -7253,6 +7469,11 @@
     "join/service/threaded/through-bolt-nut": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 2
+      },
       "parents": [
         "join/service/threaded"
       ],
@@ -7396,6 +7617,9 @@
     "locate/dowel-pin-and-slot": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "locate"
       ],
@@ -7524,21 +7748,31 @@
           "value": "X/Y/Z"
         },
         {
-          "confidence": "excerpt-only",
+          "confidence": "shop-rule",
           "corrected": true,
-          "equipment": "desktop-fdm",
-          "id": "locate/dowel-pin-and-slot#c10",
-          "note": "confirmed only from a search excerpt, page not read",
-          "source_quality": "weak",
+          "equipment": "industrial-fdm",
+          "id": "locate/dowel-pin-and-slot#c10a",
+          "source_quality": "primary",
           "source_url": "https://forgelabs.com/design-guides/fdm",
-          "text": "Forge Labs current web FDM guide gives general tolerance about 0.3 percent with a 0.25 mm floor; the older PDF's 0.127 mm is superseded",
+          "text": "Industrial FDM general tolerance is plus/minus 0.25 mm or 0.3 percent, whichever is greater",
           "unit": "mm",
           "value": "0.3% / 0.25"
         },
         {
-          "confidence": "excerpt-only",
+          "confidence": "handbook",
           "corrected": true,
           "equipment": "desktop-fdm",
+          "id": "locate/dowel-pin-and-slot#c10b",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "An Original Prusa printer is accurate to at least 0.2 mm",
+          "unit": "mm",
+          "value": "0.2"
+        },
+        {
+          "confidence": "excerpt-only",
+          "corrected": true,
+          "equipment": "industrial-fdm",
           "id": "locate/dowel-pin-and-slot#c11",
           "note": "confirmed only from a search excerpt, page not read",
           "source_quality": "weak",
@@ -7548,14 +7782,29 @@
           "value": "3"
         },
         {
-          "confidence": "secondary",
-          "equipment": "desktop-fdm",
-          "id": "locate/dowel-pin-and-slot#c12",
-          "source_quality": "secondary",
+          "confidence": "shop-rule",
+          "corrected": true,
+          "equipment": "industrial-fdm",
+          "id": "locate/dowel-pin-and-slot#c12a",
+          "source_quality": "primary",
           "source_url": "https://forgelabs.com/design-guides/fdm",
-          "text": "Same FDM guide gives 0.5 mm minimum clearance for mating features",
+          "text": "Industrial FDM minimum clearance for mating features is 0.5 mm",
           "unit": "mm",
           "value": "0.5"
+        },
+        {
+          "confidence": "handbook",
+          "conflicted": true,
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "locate/dowel-pin-and-slot#c12b",
+          "machine_specific": true,
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_clearance",
+          "text": "Desktop FDM clearance for movable mating parts starts at 0.3 mm",
+          "unit": "mm",
+          "value": "0.3"
         },
         {
           "confidence": "secondary",
@@ -7573,6 +7822,11 @@
     "locate/key-flat-spline": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "key",
+        "rank": 2
+      },
       "parents": [
         "locate"
       ],
@@ -7747,6 +8001,9 @@
     "locate/nest-pocket-step": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid"
+      },
       "parents": [
         "locate"
       ],
@@ -7754,7 +8011,7 @@
       "rules": [
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "sheet",
           "id": "locate/nest-pocket-step#a1",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/resources/design-tips/avoiding-sheet-metal-dfm-issues/",
@@ -7825,7 +8082,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "injection-mould",
           "id": "locate/nest-pocket-step#c8",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/en-gb/resources/design-tips/design-essentials-for-injection-moulding/",
@@ -7855,7 +8112,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "sheet",
           "id": "locate/nest-pocket-step#c11",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/services/sheet-metal-fabrication/design-guidelines/",
@@ -7865,7 +8122,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "sheet",
           "id": "locate/nest-pocket-step#c12",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/resources/design-tips/avoiding-sheet-metal-dfm-issues/",
@@ -7875,7 +8132,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "sheet",
           "id": "locate/nest-pocket-step#c13",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/resources/design-tips/the-basics-of-bend-radii-in-sheet-metal/",
@@ -7885,7 +8142,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "any",
           "id": "locate/nest-pocket-step#c14",
           "source_quality": "secondary",
           "source_url": "https://www.epocrafter.com/types-of-fits-in-engineering/",
@@ -7895,7 +8152,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "any",
           "id": "locate/nest-pocket-step#c15",
           "source_quality": "secondary",
           "source_url": "https://iteraio.com/en/hole-tolerance-fits/",
@@ -7905,7 +8162,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "desktop-fdm",
+          "equipment": "any",
           "id": "locate/nest-pocket-step#c16",
           "source_quality": "secondary",
           "source_url": "https://manufacturingprocesses.org/charts/iso-286-fits-tolerances",
@@ -7919,6 +8176,11 @@
     "locate/second-fastener": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 6
+      },
       "parents": [
         "locate"
       ],
@@ -8972,55 +9234,79 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
-          "id": "process/additive/desktop-fdm/dimensional-accuracy#c6",
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "process/additive/desktop-fdm/dimensional-accuracy#c6a",
           "machine_specific": true,
+          "note": "Prusa wall table, 1 perimeter = 0.45 mm.",
           "source_quality": "primary",
-          "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
-          "table_ref": "dtree/process/additive/desktop-fdm/dimensional-accuracy#c6",
-          "text": "Service-bureau FDM minimum wall 0.8 mm; minimum feature and hole 2.0 mm"
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_wall",
+          "text": "Minimum wall is one perimeter, 0.45 mm on a 0.4 mm nozzle; use 0.9 mm for two perimeters",
+          "unit": "mm",
+          "value": "0.45"
         },
         {
           "confidence": "secondary",
           "corrected": true,
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
+          "id": "process/additive/desktop-fdm/dimensional-accuracy#c6b",
+          "note": "Ultimaker desktop guide; Prusa KB and Bambu wiki silent on hole minimum.",
+          "source_quality": "secondary",
+          "source_url": "https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/",
+          "text": "Minimum hole or feature size 2 mm",
+          "unit": "mm",
+          "value": "2"
+        },
+        {
+          "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/dimensional-accuracy#c7",
-          "note": "the draft's 2 x 0.4 mm nozzle = 0.8 mm desktop rule is not in the source",
+          "note": "Prusa printability table: below one perimeter cross, one perimeter tick, between one and two cross, two or more tick. Icons are images; read from page HTML (xmark.png / checkmark.png) by DESIGN.",
           "source_quality": "primary",
-          "source_url": "https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf",
-          "text": "Supporting walls 1.2-1.5 mm; features thinner than twice the extrusion road usually fail (Xometry, industrial 0.254 mm road)",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Supporting walls should be at least two perimeters (0.9 mm on a 0.4 mm nozzle); walls between one and two perimeters do not print",
           "unit": "mm",
-          "value": "1.2-1.5"
+          "value": "0.9"
         },
         {
-          "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "confidence": "shop-rule",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/dimensional-accuracy#c8",
+          "note": "Prusa has no rib guidance; derived from its wall table (a rib is a thin wall). Marked shop-rule because the rib reading is my inference.",
           "source_quality": "primary",
-          "source_url": "https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf",
-          "text": "Structural ribs 1.5 mm safe minimum",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Ribs can be built from perimeters; use 3 perimeters (1.35 mm) for structural ribs on a 0.4 mm nozzle",
           "unit": "mm",
-          "value": "1.5"
+          "value": "1.35"
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/dimensional-accuracy#c9",
+          "note": "Detail thickness taken from Prusa wall table. The text height minimum (1.0 / 1.2-1.5 mm) has no Prusa or Bambu source found; drop that clause or file separately.",
           "source_quality": "primary",
-          "source_url": "https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf",
-          "text": "Small detail at least 1.0 mm thick; text height minimum 1.0 mm, 1.2-1.5 mm preferred",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Smallest printable detail thickness is one perimeter, 0.45 mm on a 0.4 mm nozzle (0.9 mm for two)",
           "unit": "mm",
-          "value": "1.0; 1.2-1.5"
+          "value": "0.45"
         },
         {
-          "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "confidence": "secondary",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/dimensional-accuracy#c10",
           "machine_specific": true,
-          "source_quality": "primary",
-          "source_url": "https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf",
+          "note": "Ultimaker desktop guide gives 2 mm; no desktop source for the 1 mm lower figure.",
+          "source_quality": "secondary",
+          "source_url": "https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/",
           "table_ref": "dtree/process/additive/desktop-fdm/dimensional-accuracy#c10",
-          "text": "Round holes larger than 1 mm; 2 mm or more when circularity matters"
+          "text": "Round holes should be at least 2 mm; design smaller holes undersized and drill to size",
+          "unit": "mm",
+          "value": "2"
         },
         {
           "confidence": "handbook",
@@ -9034,13 +9320,17 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/dimensional-accuracy#c12",
+          "machine_specific": true,
+          "note": "Prusa gives only the upper bound; the 0.10 high-res floor was a bureau figure with no desktop source found, and the 0.28-0.32 arithmetic for 0.4 nozzle is mine.",
           "source_quality": "primary",
-          "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
-          "text": "Service layer heights 0.10-0.30 mm: about 0.10 high-res, 0.20-0.254 normal, 0.30-0.33 low-res",
+          "source_url": "https://help.prusa3d.com/article/creating-profiles-for-different-nozzles_127540",
+          "table_ref": "fdm/*.layer_height",
+          "text": "Layer height should be at most 70-80% of nozzle diameter, about 0.28-0.32 mm on a 0.4 mm nozzle",
           "unit": "mm",
-          "value": "0.10-0.33"
+          "value": "0.28-0.32"
         },
         {
           "confidence": "shop-rule",
@@ -9289,7 +9579,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/holes-and-clearances#c2",
           "source_quality": "secondary",
           "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
@@ -9299,7 +9589,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/holes-and-clearances#c3",
           "source_quality": "secondary",
           "source_url": "https://www.hubs.com/knowledge-base/dfm-tips-for-3d-printed-parts-with-thin-walls/",
@@ -9559,34 +9849,39 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/material-selection#c2",
+          "note": "Same as warping-and-first-layer c4; Prusa table row 3 perimeters = 1.35 mm.",
           "source_quality": "primary",
-          "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
-          "text": "Structural wall 1.2-1.5 mm",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Structural wall of 3 perimeters, 1.35 mm with a 0.4 mm nozzle at 0.45 mm extrusion width",
           "unit": "mm",
-          "value": "1.2-1.5"
+          "value": "1.35"
         },
         {
           "confidence": "shop-rule",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/material-selection#c3",
-          "note": "no primary source found or source weak; guidance only, not DRC-enforceable",
-          "source_quality": "weak",
-          "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
-          "text": "Features thinner than 2 x nozzle diameter are unreliable (0.8 mm for 0.4 mm)",
-          "unit": "x nozzle",
-          "value": "2"
+          "note": "Rewritten to Prusa's printability table; the drafted 'under 2 extrusion widths is unreliable' wording is not on the page.",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "On a 0.4 mm nozzle a wall prints as exactly one perimeter (0.45 mm) or two or more (0.9 mm and up); below one perimeter, or between one and two, it does not print cleanly",
+          "unit": "mm",
+          "value": "0.45 or >=0.9"
         },
         {
-          "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "confidence": "shop-rule",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/material-selection#c4",
-          "source_quality": "secondary",
-          "source_url": "https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf",
-          "text": "Rib thickness at least 1.5 mm",
+          "note": "Derived from Prusa wall table; no rib-specific Prusa guidance (see dimensional-accuracy c8).",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Rib thickness 1.35 mm (3 perimeters) on a 0.4 mm nozzle",
           "unit": "mm",
-          "value": "1.5"
+          "value": "1.35"
         },
         {
           "confidence": "shop-rule",
@@ -9654,14 +9949,18 @@
           "text": "Unsupported bridges clean below 10 mm, support beyond 20 mm for critical features"
         },
         {
-          "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "confidence": "secondary",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/material-selection#c11",
           "machine_specific": true,
-          "source_quality": "primary",
-          "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
+          "note": "Ultimaker does not distinguish horizontal holes; Xometry and Hubs comparisons dropped (not desktop).",
+          "source_quality": "secondary",
+          "source_url": "https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/",
           "table_ref": "dtree/process/additive/desktop-fdm/material-selection#c11",
-          "text": "Horizontal hole minimum 2 mm preferred; Xometry circular minimum more than 1 mm; Hubs avoids holes below 1-2 mm"
+          "text": "Horizontal holes at least 2 mm; design undersized and drill when accuracy matters",
+          "unit": "mm",
+          "value": "2"
         },
         {
           "confidence": "shop-rule",
@@ -9802,13 +10101,17 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/material-selection#c24",
           "machine_specific": true,
+          "note": "Replaces Xometry 1.2 / 1.5 mm with Prusa perimeter multiples.",
           "source_quality": "primary",
-          "source_url": "https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
           "table_ref": "dtree/process/additive/desktop-fdm/material-selection#c24",
-          "text": "Xometry minimum wall 1.2 mm for smaller supported structures, 1.5 mm more robust"
+          "text": "Minimum wall 0.9 mm (2 perimeters) for small features, 1.35 mm (3 perimeters) for robust walls on a 0.4 mm nozzle",
+          "unit": "mm",
+          "value": "0.9-1.35"
         },
         {
           "confidence": "handbook",
@@ -9974,22 +10277,6 @@
           ]
         },
         {
-          "reading": "0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least 2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.",
-          "rules": [
-            "c4",
-            "c6",
-            "c7"
-          ],
-          "topic": "Minimum wall",
-          "values": [
-            "Prusa: 0.45 mm (one perimeter)",
-            "Hubs: 0.8 mm",
-            "3dprintmap: 1.2 mm practical",
-            "Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing",
-            "Fictiv PLA guide: 1.5 mm"
-          ]
-        },
-        {
           "reading": "No agreed number; FDM interference fits split layers. Prefer crush ribs or a metal insert. Ruling 10: a test print on the user's printer is the authority; use the conservative value until then.",
           "rules": [
             "c10",
@@ -10050,7 +10337,6 @@
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
           "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/orientation-and-anisotropy#c4",
           "source_quality": "secondary",
@@ -10071,7 +10357,6 @@
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
           "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/orientation-and-anisotropy#c6",
           "source_quality": "secondary",
@@ -10082,7 +10367,6 @@
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
           "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/orientation-and-anisotropy#c7",
           "source_quality": "secondary",
@@ -10093,7 +10377,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/orientation-and-anisotropy#c8",
           "source_quality": "secondary",
           "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
@@ -10103,25 +10387,31 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/orientation-and-anisotropy#c9",
+          "note": "Fictiv page blocked by Cloudflare (not verified); replaced citation with the verified Xometry hole rule; Prusa minimum feature is one 0.45 mm perimeter",
           "source_quality": "secondary",
-          "source_url": "https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling",
-          "text": "About 1 mm minimum feature and hole diameter",
+          "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
+          "text": "About 1 mm minimum hole diameter on FDM",
           "unit": "mm",
           "value": "1"
         },
         {
-          "confidence": "secondary",
+          "confidence": "handbook",
           "conflicted": true,
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/orientation-and-anisotropy#c10",
           "machine_specific": true,
           "measured_on": "Fictiv service machines",
-          "source_quality": "secondary",
-          "source_url": "https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling",
-          "table_ref": "dtree/process/additive/desktop-fdm/orientation-and-anisotropy#c10",
-          "text": "Functional clearance 0.2 mm per side; 0.1 mm minimum start; PLA guide 0.2 mm per side / 0.4 mm total"
+          "note": "Prusa KB 0.3 mm for movable parts replaces Fictiv 0.2 mm per side (Fictiv page unverifiable); Prusa does not say per side vs total, so state it as a clearance to tune",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_clearance",
+          "text": "Start moving or fitted FDM parts at 0.3 mm clearance and tweak by test print",
+          "unit": "mm",
+          "value": "0.3"
         },
         {
           "confidence": "shop-rule",
@@ -10137,16 +10427,20 @@
           "text": "Sliding or nesting clearance 0.3-0.5 mm per side"
         },
         {
-          "confidence": "secondary",
+          "confidence": "handbook",
           "conflicted": true,
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/orientation-and-anisotropy#c12",
           "machine_specific": true,
           "measured_on": "Fictiv FDM service",
-          "source_quality": "secondary",
-          "source_url": "https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling",
+          "note": "Fictiv 0.5 mm / 1 percent per inch is a service budget and was unverifiable (Cloudflare); Prusa KB 0.2 mm used",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
           "table_ref": "dtree/process/additive/desktop-fdm/orientation-and-anisotropy#c12",
-          "text": "Service FDM tolerance about plus or minus 0.5 mm or 1 percent per inch"
+          "text": "Desktop FDM printer accuracy is about 0.2 mm; budget more for warp and shrink",
+          "unit": "mm",
+          "value": "0.2"
         },
         {
           "confidence": "handbook",
@@ -10283,20 +10577,6 @@
             "Protolabs prototyping: +-0.5 mm or 0.5%",
             "Hubs comparison: desktop +-0.5% with +-1.0 mm floor"
           ]
-        },
-        {
-          "reading": "0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least 2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.",
-          "rules": [
-            "c9"
-          ],
-          "topic": "Minimum wall",
-          "values": [
-            "Prusa: 0.45 mm (one perimeter)",
-            "Hubs: 0.8 mm",
-            "3dprintmap: 1.2 mm practical",
-            "Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing",
-            "Fictiv PLA guide: 1.5 mm"
-          ]
         }
       ],
       "coverage": "deep",
@@ -10380,7 +10660,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/overhangs-bridges-supports#c7",
           "source_quality": "secondary",
           "source_url": "https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf",
@@ -10400,8 +10680,7 @@
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/overhangs-bridges-supports#c9",
           "source_quality": "secondary",
           "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
@@ -10452,16 +10731,20 @@
           "value": "1.5-2"
         },
         {
-          "confidence": "secondary",
+          "confidence": "handbook",
           "conflicted": true,
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/overhangs-bridges-supports#c14",
           "machine_specific": true,
           "measured_on": "Protolabs prototyping FDM; machine not named",
-          "source_quality": "secondary",
-          "source_url": "https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/",
+          "note": "Prusa KB 0.2 mm printer accuracy; the old 0.5 mm / 0.5 percent is a Protolabs service budget (PL_FDM page: Prototyping FDM 0.5 mm)",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
           "table_ref": "dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c14",
-          "text": "Prototyping FDM tolerance budget about plus or minus 0.5 mm or 0.5 percent, whichever larger"
+          "text": "A desktop printer such as an Original Prusa is accurate to at least 0.2 mm; service prototyping FDM budgets plus or minus 0.5 mm",
+          "unit": "mm",
+          "value": "0.2"
         },
         {
           "confidence": "secondary",
@@ -10475,15 +10758,19 @@
           "text": "Industrial FDM tolerance about plus or minus 0.3 mm or 0.3 percent"
         },
         {
-          "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/overhangs-bridges-supports#c16",
           "machine_specific": true,
           "measured_on": "Protolabs FDM service; machine not named",
-          "source_quality": "secondary",
-          "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
-          "table_ref": "dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c16",
-          "text": "Service layer heights 100-300 micrometres"
+          "note": "Replaces Protolabs service range 100-300 um; Prusa page also advises against going below 0.10 mm",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/layers-and-perimeters_1748",
+          "table_ref": "fdm/*.layer_height",
+          "text": "Desktop layer height: no lower than 0.10 mm in practice, at most 80 percent of nozzle diameter (about 0.32 mm for a 0.4 mm nozzle)",
+          "unit": "mm",
+          "value": "0.10-0.32"
         },
         {
           "confidence": "shop-rule",
@@ -10499,7 +10786,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/overhangs-bridges-supports#c19",
           "machine_specific": true,
           "measured_on": "not stated",
@@ -10543,13 +10830,15 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/strength-and-infill#c2",
+          "note": "Prusa wall table row 3 perimeters = 1.35 mm.",
           "source_quality": "primary",
-          "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
-          "text": "Robust structural walls about 1.2-1.5 mm or more",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Robust structural walls of 3 perimeters, 1.35 mm or more on a 0.4 mm nozzle",
           "unit": "mm",
-          "value": "1.2-1.5"
+          "value": "1.35"
         },
         {
           "confidence": "handbook",
@@ -10593,14 +10882,18 @@
           "text": "Unsupported overhang about 45 deg or less from vertical; tuned Prusa machines can reach 60, newer models 75"
         },
         {
-          "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "confidence": "secondary",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/strength-and-infill#c7",
           "machine_specific": true,
-          "source_quality": "primary",
-          "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
+          "note": "Ultimaker gives 2 mm and the undersize-then-drill advice. The \"axis in Z\" orientation advice has no desktop source found (Prusa/Bambu forum only) and is dropped.",
+          "source_quality": "secondary",
+          "source_url": "https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/",
           "table_ref": "dtree/process/additive/desktop-fdm/strength-and-infill#c7",
-          "text": "Holes larger than about 1 mm; orient precision holes with axis in Z when possible; drill or ream critical holes"
+          "text": "Holes at least 2 mm; design precision holes undersized and drill or ream to size",
+          "unit": "mm",
+          "value": "2"
         },
         {
           "confidence": "handbook",
@@ -10799,22 +11092,6 @@
           ]
         },
         {
-          "reading": "0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least 2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.",
-          "rules": [
-            "c1",
-            "c2",
-            "c23"
-          ],
-          "topic": "Minimum wall",
-          "values": [
-            "Prusa: 0.45 mm (one perimeter)",
-            "Hubs: 0.8 mm",
-            "3dprintmap: 1.2 mm practical",
-            "Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing",
-            "Fictiv PLA guide: 1.5 mm"
-          ]
-        },
-        {
           "reading": "No agreed number; FDM interference fits split layers. Prefer crush ribs or a metal insert. Ruling 10: a test print on the user's printer is the authority; use the conservative value until then.",
           "rules": [
             "c5"
@@ -10837,19 +11114,19 @@
       "role": "leaf",
       "rules": [
         {
-          "confidence": "secondary",
-          "conflicted": true,
-          "equipment": "industrial-fdm",
+          "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/threads-and-inserts#c1",
-          "source_quality": "secondary",
-          "source_url": "https://www.hubs.com/3d-printing/fdm/",
-          "text": "Ordinary wall at least 0.8 mm; 1.2 mm practical default (three perimeters, 0.4 mm nozzle)",
+          "note": "Prusa perimeter table replaces Hubs 0.8/1.2 mm; Hubs FDM page says its parts print with 3 perimeters or 1.2 mm",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Ordinary wall: two perimeters (about 0.9 mm) minimum, three perimeters (about 1.35 mm) for a robust default on a 0.4 mm nozzle",
           "unit": "mm",
-          "value": "0.8-1.2"
+          "value": "0.9-1.35"
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
           "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/threads-and-inserts#c2",
           "source_quality": "secondary",
@@ -10860,7 +11137,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/threads-and-inserts#c3",
           "source_quality": "secondary",
           "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
@@ -10869,16 +11146,20 @@
           "value": "2"
         },
         {
-          "confidence": "secondary",
+          "confidence": "handbook",
           "conflicted": true,
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/threads-and-inserts#c4",
           "machine_specific": true,
           "measured_on": "Protolabs service machines",
-          "source_quality": "secondary",
-          "source_url": "https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/",
+          "note": "Prusa KB figure for desktop; Protolabs 0.5/0.3 mm kept in text as service numbers",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
           "table_ref": "dtree/process/additive/desktop-fdm/threads-and-inserts#c4",
-          "text": "General prototyping FDM accuracy about plus or minus 0.5 mm; industrial about 0.3 mm"
+          "text": "Desktop FDM accuracy about 0.2 mm; service prototyping FDM budgets 0.5 mm, industrial 0.3 mm",
+          "unit": "mm",
+          "value": "0.2"
         },
         {
           "confidence": "secondary",
@@ -11090,7 +11371,6 @@
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
           "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/threads-and-inserts#c23",
           "source_quality": "secondary",
@@ -11116,23 +11396,6 @@
             "Hubs thin-wall table: +-0.1-0.2 mm",
             "Protolabs prototyping: +-0.5 mm or 0.5%",
             "Hubs comparison: desktop +-0.5% with +-1.0 mm floor"
-          ]
-        },
-        {
-          "reading": "0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least 2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.",
-          "rules": [
-            "c3",
-            "c4",
-            "c5",
-            "c6"
-          ],
-          "topic": "Minimum wall",
-          "values": [
-            "Prusa: 0.45 mm (one perimeter)",
-            "Hubs: 0.8 mm",
-            "3dprintmap: 1.2 mm practical",
-            "Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing",
-            "Fictiv PLA guide: 1.5 mm"
           ]
         }
       ],
@@ -11166,7 +11429,6 @@
         },
         {
           "confidence": "handbook",
-          "conflicted": true,
           "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c3",
           "source_quality": "primary",
@@ -11177,7 +11439,6 @@
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
           "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c4",
           "source_quality": "secondary",
@@ -11187,20 +11448,22 @@
           "value": "0.8-1.0"
         },
         {
-          "confidence": "secondary",
-          "conflicted": true,
-          "equipment": "industrial-fdm",
+          "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c5",
-          "source_quality": "secondary",
-          "source_url": "https://www.hubs.com/knowledge-base/dfm-tips-for-3d-printed-parts-with-thin-walls/",
-          "text": "Hubs DFM table minimum wall 0.8 mm",
+          "machine_specific": true,
+          "note": "Hubs 0.8 mm replaced by Prusa KB perimeter table; Hubs 0.8 mm remains a service-bureau figure",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_wall",
+          "text": "Minimum printable FDM wall on a 0.4 mm nozzle is one perimeter, about 0.45 mm; two perimeters give about 0.9 mm",
           "unit": "mm",
-          "value": "0.8"
+          "value": "0.45"
         },
         {
           "confidence": "secondary",
-          "conflicted": true,
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c6",
           "source_quality": "secondary",
           "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
@@ -11251,7 +11514,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c11",
           "source_quality": "secondary",
           "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
@@ -11380,7 +11643,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c23",
           "source_quality": "secondary",
           "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
@@ -11390,7 +11653,7 @@
         },
         {
           "confidence": "secondary",
-          "equipment": "industrial-fdm",
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c24",
           "source_quality": "secondary",
           "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
@@ -11399,24 +11662,16 @@
           "value": "1"
         },
         {
-          "confidence": "secondary",
+          "confidence": "handbook",
+          "corrected": true,
           "equipment": "industrial-fdm",
           "id": "process/additive/desktop-fdm/walls-and-min-features#c25",
-          "source_quality": "secondary",
-          "source_url": "https://www.hubs.com/talk/uploads/db5060/original/3X/b/5/b5f0f2e484a45e8239690bdd3dd13b81ef18998d.pdf",
-          "text": "Top and bottom text about 16-point bold or larger",
+          "note": "Old 16 pt / 10 pt figures came from a dead Stratasys Direct PDF (404, no archive); the current Stratasys guide says 24+ pt bold.",
+          "source_quality": "primary",
+          "source_url": "https://www.stratasys.com/siteassets/sdm/content---website-storage/design-guides/dg_sdm_fdm_0725a.pdf?v=490918",
+          "text": "Industrial FDM embossed or engraved text: bold font, 24 pt or larger",
           "unit": "pt",
-          "value": "16"
-        },
-        {
-          "confidence": "secondary",
-          "equipment": "industrial-fdm",
-          "id": "process/additive/desktop-fdm/walls-and-min-features#c26",
-          "source_quality": "secondary",
-          "source_url": "https://www.hubs.com/talk/uploads/db5060/original/3X/b/5/b5f0f2e484a45e8239690bdd3dd13b81ef18998d.pdf",
-          "text": "Vertical-wall text about 10-point bold or larger",
-          "unit": "pt",
-          "value": "10"
+          "value": "24"
         }
       ],
       "scale": "macro"
@@ -11462,23 +11717,29 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/warping-and-first-layer#c4",
+          "note": "Prusa wall table (row 3 perimeters = 1.35 mm*, stock 0.4 nozzle, 0.45 mm width); the 1.35 figure is a table row not a sentence, quote is the adjacent sentence. Old 1.2-1.5 was Xometry; \"structural\" choice of 3 perimeters is a design pick, not stated by Prusa.",
           "source_quality": "primary",
-          "source_url": "https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/",
-          "text": "Structural walls 1.2-1.5 mm",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Structural walls of 3 perimeters, 1.35 mm with a 0.4 mm nozzle at 0.45 mm extrusion width",
           "unit": "mm",
-          "value": "1.2-1.5"
+          "value": "1.35"
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/warping-and-first-layer#c5",
           "machine_specific": true,
+          "note": "Replaces Protolabs 0.8 mm bureau minimum and the 1.0-1.2 mm shop advice with Prusa's perimeter table (1 = 0.45, 2 = 0.9 mm). Prusa marks walls between 1 and 2 perimeters as not printable.",
           "source_quality": "primary",
-          "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
-          "table_ref": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c5",
-          "text": "Service-bureau FDM wall minimum 0.8 mm; 1.0-1.2 mm safer for desktop production parts"
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_wall",
+          "text": "Wall thickness should be a whole number of perimeters, 0.45 mm for one and 0.9 mm for two on a 0.4 mm nozzle; walls thinner than one perimeter do not print",
+          "unit": "mm",
+          "value": "0.45-0.9"
         },
         {
           "confidence": "handbook",
@@ -11491,14 +11752,18 @@
           "value": ">2"
         },
         {
-          "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "confidence": "secondary",
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/warping-and-first-layer#c7",
           "machine_specific": true,
-          "source_quality": "primary",
-          "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
+          "note": "Prusa KB and Bambu wiki give no minimum hole size (searched KB and wiki); Ultimaker is the desktop secondary. Same 2 mm as old value; the \"below 1.0 mm risky\" clause is dropped as unsourced for desktop.",
+          "source_quality": "secondary",
+          "source_url": "https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/",
           "table_ref": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c7",
-          "text": "Small feature or hole at least 2.0 mm for reliable service-bureau FDM; holes below 1.0 mm risky"
+          "text": "Printed holes and small features should be at least 2 mm; design smaller holes undersized and drill them",
+          "unit": "mm",
+          "value": "2"
         },
         {
           "confidence": "handbook",
@@ -11512,13 +11777,18 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "conflicted": true,
+          "corrected": true,
+          "equipment": "desktop-fdm",
           "id": "process/additive/desktop-fdm/warping-and-first-layer#c9",
+          "machine_specific": true,
+          "note": "Replaces \"one layer height Z / one extrusion width XY\" (Stratasys) with Prusa's fixed 0.3 mm start value; Ultimaker (U) says 0.6 mm gap for parts printed together, a more conservative secondary figure.",
           "source_quality": "primary",
-          "source_url": "https://www.hubs.com/talk/uploads/db5060/original/3X/b/5/b5f0f2e484a45e8239690bdd3dd13b81ef18998d.pdf",
-          "text": "Assembled moving parts need at least one layer height in Z and one extrusion width in XY (Stratasys)",
-          "unit": "-",
-          "value": "1 layer height Z; 1 extrusion width XY"
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "table_ref": "fdm/*.min_clearance",
+          "text": "Moving parts printed together need at least 0.3 mm clearance (Prusa); Ultimaker uses 0.6 mm",
+          "unit": "mm",
+          "value": "0.3"
         },
         {
           "confidence": "handbook",
@@ -11533,13 +11803,26 @@
         },
         {
           "confidence": "handbook",
+          "corrected": true,
+          "equipment": "desktop-fdm",
+          "id": "process/additive/desktop-fdm/warping-and-first-layer#c11a",
+          "note": "Prusa states it as accuracy \"at least 0.2 mm\" (read as +-0.2); printer-specific to Original Prusa.",
+          "source_quality": "primary",
+          "source_url": "https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135",
+          "text": "Expect dimensional accuracy of about +-0.2 mm on a Prusa desktop printer",
+          "unit": "mm",
+          "value": "0.2"
+        },
+        {
+          "confidence": "handbook",
           "equipment": "industrial-fdm",
-          "id": "process/additive/desktop-fdm/warping-and-first-layer#c11",
+          "id": "process/additive/desktop-fdm/warping-and-first-layer#c11b",
           "machine_specific": true,
           "measured_on": "not named",
+          "note": "Unchanged old record, retagged to its true equipment.",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/",
-          "table_ref": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c11",
+          "table_ref": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c11b",
           "text": "Industrial/service FDM tolerance about +-0.3 mm, or +-0.1-0.2 mm in controlled bureau conditions"
         },
         {
@@ -12026,7 +12309,7 @@
     "process/additive/powder-bed": {
       "coverage": "shallow",
       "domain": "mech",
-      "equipment": "industrial-fdm",
+      "equipment": "powder-bed",
       "parents": [
         "process/additive"
       ],
@@ -12034,7 +12317,7 @@
       "rules": [
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c1",
           "machine_specific": true,
           "measured_on": "not stated (www.protolabs.com capability statement)",
@@ -12045,7 +12328,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c2",
           "machine_specific": true,
           "measured_on": "not stated (www.protolabs.com capability statement)",
@@ -12056,7 +12339,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c3",
           "machine_specific": true,
           "measured_on": "not stated (www.hubs.com capability statement)",
@@ -12067,7 +12350,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c4",
           "source_quality": "primary",
           "source_url": "https://www.fictiv.com/specifications/3d-printing",
@@ -12077,7 +12360,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c5",
           "machine_specific": true,
           "measured_on": "not stated (www.protolabs.com capability statement)",
@@ -12088,7 +12371,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c6",
           "machine_specific": true,
           "measured_on": "not stated (www.protolabs.com capability statement)",
@@ -12099,7 +12382,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c7",
           "machine_specific": true,
           "measured_on": "not stated (www.hubs.com capability statement)",
@@ -12110,7 +12393,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c8",
           "machine_specific": true,
           "measured_on": "not stated (www.hubs.com capability statement)",
@@ -12121,7 +12404,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c9",
           "machine_specific": true,
           "measured_on": "not stated (www.hubs.com capability statement)",
@@ -12132,7 +12415,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c10",
           "source_quality": "primary",
           "source_url": "https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/",
@@ -12142,7 +12425,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c11",
           "source_quality": "primary",
           "source_url": "https://www.fictiv.com/specifications/3d-printing",
@@ -12152,7 +12435,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c12",
           "source_quality": "primary",
           "source_url": "https://www.hubs.com/knowledge-base/dfm-tips-for-3d-printed-parts-with-thin-walls/",
@@ -12162,7 +12445,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c13",
           "machine_specific": true,
           "measured_on": "not stated (www.hubs.com capability statement)",
@@ -12173,7 +12456,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c14",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/es-es/recursos/sugerencias-de-diseno/como-disenar-para-la-impresion-en-nylon-3d/",
@@ -12183,7 +12466,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c15",
           "source_quality": "primary",
           "source_url": "https://www.protolabs.com/en-gb/services/3d-printing/multi-jet-fusion/",
@@ -12193,7 +12476,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c16",
           "source_quality": "primary",
           "source_url": "https://www.hubs.com/3d-printing/sls/",
@@ -12203,7 +12486,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c17",
           "machine_specific": true,
           "measured_on": "Hubs SLS, PA12; machine not named",
@@ -12214,7 +12497,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c18",
           "machine_specific": true,
           "measured_on": "Protolabs MJF service; machine not named",
@@ -12225,7 +12508,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c19",
           "machine_specific": true,
           "measured_on": "not stated (www.protolabs.com capability statement)",
@@ -12236,7 +12519,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c20",
           "machine_specific": true,
           "measured_on": "not stated (www.hubs.com capability statement)",
@@ -12247,7 +12530,7 @@
         },
         {
           "confidence": "handbook",
-          "equipment": "industrial-fdm",
+          "equipment": "powder-bed",
           "id": "process/additive/powder-bed#c21",
           "machine_specific": true,
           "measured_on": "not stated (www.protolabs.com capability statement)",
@@ -22830,6 +23113,10 @@
     "rotate/flexure-pivot/cross-spring-and-notch": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "compliant",
+        "mechanism": "integral"
+      },
       "parents": [
         "rotate/flexure-pivot"
       ],
@@ -23019,6 +23306,9 @@
     "rotate/plain-bearing/pin-in-hole": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute"
+      },
       "parents": [
         "rotate/plain-bearing"
       ],
@@ -23197,6 +23487,11 @@
     "rotate/plain-bearing/polymer-bushing": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute",
+        "mechanism": "bearing",
+        "rank": 3
+      },
       "parents": [
         "rotate/plain-bearing"
       ],
@@ -23380,6 +23675,11 @@
     "rotate/plain-bearing/sintered-bronze-bushing": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute",
+        "mechanism": "bearing",
+        "rank": 4
+      },
       "parents": [
         "rotate/plain-bearing"
       ],
@@ -23584,6 +23884,11 @@
     "rotate/rolling-bearing/bearing-in-printed-part": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute",
+        "mechanism": "bearing",
+        "rank": 2
+      },
       "parents": [
         "rotate/rolling-bearing"
       ],
@@ -23758,6 +24063,11 @@
     "rotate/rolling-bearing/deep-groove-ball": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute",
+        "mechanism": "bearing",
+        "rank": 1
+      },
       "parents": [
         "rotate/rolling-bearing"
       ],
@@ -23963,6 +24273,11 @@
     "rotate/rolling-bearing/paired-preloaded": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "revolute",
+        "mechanism": "bearing",
+        "rank": 5
+      },
       "parents": [
         "rotate/rolling-bearing"
       ],
@@ -24702,6 +25017,10 @@
     "rotate/shaft-hub/clamp-hub": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "clamp"
+      },
       "parents": [
         "rotate/shaft-hub"
       ],
@@ -24824,6 +25143,11 @@
     "rotate/shaft-hub/cross-pin": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "key",
+        "rank": 4
+      },
       "parents": [
         "rotate/shaft-hub"
       ],
@@ -24945,6 +25269,11 @@
     "rotate/shaft-hub/key-and-keyway": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "key",
+        "rank": 1
+      },
       "parents": [
         "rotate/shaft-hub"
       ],
@@ -25090,6 +25419,11 @@
     "rotate/shaft-hub/set-screw-on-flat": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "screw",
+        "rank": 7
+      },
       "parents": [
         "rotate/shaft-hub"
       ],
@@ -25216,6 +25550,11 @@
     "rotate/shaft-hub/spline-and-polygon": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "rigid",
+        "mechanism": "key",
+        "rank": 3
+      },
       "parents": [
         "rotate/shaft-hub"
       ],
@@ -25401,6 +25740,10 @@
     "rotate/spherical/rod-end-ball-joint": {
       "coverage": "deep",
       "domain": "mech",
+      "implies": {
+        "class": "ball",
+        "mechanism": "bearing"
+      },
       "parents": [
         "rotate/spherical"
       ],

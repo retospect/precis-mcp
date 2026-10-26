@@ -30,6 +30,10 @@ close:
           id: close/snap-and-friction/cantilever-snap-lid
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: snap
+            rank: 2
           summary: A flexed beam with a hook that springs into an undercut; tool-free, cheap, integral to the housing. Good
             for retention and light loads, poor where the hook carries sustained load, pressure or needs a preload.
           when:
@@ -244,6 +248,10 @@ close:
           id: close/snap-and-friction/annular-snap-cap
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: snap
+            rank: 3
           summary: A continuous bead on a cap snaps into a groove around the whole circumference. Even retention for round
             lids, but the whole ring strains on assembly and the undercut complicates the mould.
           when:
@@ -500,6 +508,9 @@ close:
           id: close/snap-and-friction/friction-press-lid
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: press
           summary: A lid held by radial interference or crush ribs. Fine as a low-load, hand-openable locating joint on tins
             and printed boxes; not a structural press fit and not a seal.
           when:
@@ -730,6 +741,8 @@ close:
           id: close/threaded-and-twist/screw-cap
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
           summary: Helical thread closure with repeatable seal and adjustable clamp. Container finishes (400/410/415, buttress,
             M-profile) set turns of engagement; on desktop FDM use coarse rounded threads, M6 or larger, or metal inserts.
           when:
@@ -1003,6 +1016,8 @@ close:
           id: close/threaded-and-twist/bayonet
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
           summary: Lugs slide axially into L-slots and turn a fraction of a turn into a detent; fast, positive, repeatable.
             Low to medium axial load; ramps give preload; seal must sit on a stationary land.
           when:
@@ -1226,6 +1241,10 @@ close:
           id: close/threaded-and-twist/quarter-turn-fastener
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: screw
+            rank: 8
           summary: Quarter-turn cam fasteners (Dzus type, camlocks) and captive panel screws give fast tool-light access with
             no loose hardware. Pick the receptacle first, work out total material thickness, and use metal inserts in printed
             panels.
@@ -1437,6 +1456,8 @@ close:
           id: close/hinged/pin-hinge
           role: leaf
           coverage: shallow
+          implies:
+            class: revolute
           summary: Knuckle hinge with a separate pin carries lid load best; use metal pin and leaves for load and life, print-in-place
             only for light prototype lids. Size pin for bending, bearing and tear-out, not shear alone.
           when:
@@ -1631,6 +1652,9 @@ close:
           id: close/hinged/living-hinge
           role: leaf
           coverage: deep
+          implies:
+            class: compliant
+            mechanism: integral
           summary: Integral thin web hinge, ideal in injection-moulded polypropylene at 0.25-0.35 mm; on desktop FDM it is
             a prototype or low-cycle feature (TPU strap, PETG short life), never a structural pivot.
           when:
@@ -1839,7 +1863,7 @@ close:
             source_quality: secondary
             equipment: desktop-fdm
             confidence: secondary
-          - id: c18
+          - id: c18a
             text: 'Industrial printed-hinge guide: hinge length at least 0.050 in for 90 deg, 0.150 in for 180 deg: 1.27 /
               3.81 mm'
             value: 1.27 / 3.81
@@ -1848,6 +1872,16 @@ close:
             source_quality: primary
             equipment: industrial-fdm
             confidence: handbook
+            note: Protolabs hinge lengths 1.27 mm (90 deg) and 3.81 mm (180 deg) kept as-is; source page not re-verified here
+          - id: c18b
+            text: 'FDM printed living hinge: 0.4-0.6 mm thick with at least two layers'
+            value: 0.4-0.6
+            unit: mm
+            source_url: https://www.hubs.com/knowledge-base/how-design-living-hinges-3d-printing/
+            source_quality: secondary
+            equipment: desktop-fdm
+            confidence: secondary
+            corrected: true
           - id: c19
             text: 'Prusa PETG: 230 C first layer, 240 C other layers, bed 85-90 C'
             value: 230/240, 85-90
@@ -2048,6 +2082,9 @@ close:
           id: close/latches/draw-latch
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: clamp
           summary: Over-centre toggle or draw latches clamp a lid against a gasket quickly and tool-free; count latches from
             gasket compression force, let separate features locate the lid, and let a hard stop, not the latch, limit gasket
             crush.
@@ -2247,6 +2284,9 @@ close:
           id: close/latches/magnetic-catch
           role: leaf
           coverage: shallow
+          implies:
+            class: rigid
+            mechanism: magnet
           summary: Magnet plus steel strike gives quiet low-load closure, strongly gap- and direction-sensitive; add a mechanical
             datum and stop, capture the magnet mechanically, and do not rely on glue or catalog pull.
           when:
@@ -2462,6 +2502,8 @@ close:
           id: close/latches/push-push-and-slide
           role: leaf
           coverage: deep
+          implies:
+            class: prismatic
           summary: Push-push touch latch retains only; a dovetail or plain rail guides and carries load and independent end
             stops define the positions. Printed rails need coupon-tuned clearance and wear strips.
           when:

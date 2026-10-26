@@ -304,8 +304,8 @@ def test_packaged_manifest_import(store: Store) -> None:
     assert _snapshot(store) == before
 
     rep = import_conventions(store, "design-tree")
-    assert rep.created == len(PACKAGED.items) == 5615
-    assert rep.edges_added == len(PACKAGED.edges) == 9054  # 81 'n/a' axes mint none
+    assert rep.created == len(PACKAGED.items) == 5625
+    assert rep.edges_added == len(PACKAGED.edges) == 9070  # 81 'n/a' axes mint none
     assert rep.orphaned == []
     ids = _by_key(store)
     assert len(ids) == len(PACKAGED.items)

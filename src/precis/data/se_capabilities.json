@@ -1,6 +1,92 @@
 {
-  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c (hole_diameter_compensation/min_wall/min_boss_wall only). WIDENED on 2026-09-16 by docs/backlog/se-print-implementer.md rung 1 with the full process-figure set for the printed-solid/orientation/process-DRC implementer: layer_height, line_width, max_overhang, max_bridge, min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build — every widened field carries `unit` (`mm` default | `deg` | `ratio`), `retrieved`, and a `source` naming se-kind.md's 2026-09-02 validation (`perplexity-reasoning:292746`) or, honestly, that no figure was published there. A null field is null, with a source saying so, NEVER a figure carried over from a neighbouring material's row — three of the new fields (layer_height, line_width, max_overhang) are process/nozzle-class figures the validated section gives ONE number for across every fdm material; the rest (min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build) have no published figure at all yet and are null in every row. Every length is MILLIMETRES unless `unit` says otherwise. TWO TIERS per field: `physical` is the floor/ceiling the process cannot beat whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through `precis_se.capabilities.resolve()` (block override -> load-derived, unimplemented -> this file's house tier), which clamps to `physical` for `min_*`/`max_*`-named fields only — a field named neither way carries `physical` as information, not a clamp direction (see that function's docstring). CONFIDENCE: these are community/slicer-doc FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override (`set_process_override`), which is why every row says so in its own source. Separately, the top-level `orientation` block carries the FAMILY-level (not per-material) build-orientation-search weights for Engine 2 (`precis/cad/printability.py`) — a house judgment, not a measured figure, read through `capabilities.orientation_policy(mode)`. WIDENED on 2026-09-18 by docs/backlog/structural-solution-space.md slice 4 bridge with `simp_pitch` (mm, the voxel pitch `realize(strategy='simp')` samples the block's envelope at) — null in every fdm row with a source saying why; the op demands `pitch=` while it is null. WIDENED on 2026-09-19 by the same item's round B2 with `min_clearance` (mm, the smallest printable in-place gap between DOF-joined members, `realize(strategy='manufacture')`'s `in_place_clearance` floor) — null in every fdm row with a source saying why; the op demands `gap=` while it is null and states that the floor is uncalibrated. WIDENED on 2026-10-15 by se-machine-design O2 with `min_member` (mm, the thinnest strut realize(strategy='simp') may leave: filter radius, pitch guard and default rounding) — null in every fdm row with a source saying why; without it the op keeps the engine's 1.5-element filter.",
+  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c (hole_diameter_compensation/min_wall/min_boss_wall only). WIDENED on 2026-09-16 by docs/backlog/se-print-implementer.md rung 1 with the full process-figure set for the printed-solid/orientation/process-DRC implementer: layer_height, line_width, max_overhang, max_bridge, min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build — every widened field carries `unit` (`mm` default | `deg` | `ratio`), `retrieved`, and a `source` naming se-kind.md's 2026-09-02 validation (`perplexity-reasoning:292746`) or, honestly, that no figure was published there. A null field is null, with a source saying so, NEVER a figure carried over from a neighbouring material's row — three of the new fields (layer_height, line_width, max_overhang) are process/nozzle-class figures the validated section gives ONE number for across every fdm material; the rest (min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build) have no published figure at all yet and are null in every row. Every length is MILLIMETRES unless `unit` says otherwise. TWO TIERS per field: `physical` is the floor/ceiling the process cannot beat whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through `precis_se.capabilities.resolve()` (block override -> load-derived, unimplemented -> this file's house tier), which clamps to `physical` for `min_*`/`max_*`-named fields only — a field named neither way carries `physical` as information, not a clamp direction (see that function's docstring). CONFIDENCE: these are community/slicer-doc FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override (`set_process_override`), which is why every row says so in its own source. Separately, the top-level `orientation` block carries the FAMILY-level (not per-material) build-orientation-search weights for Engine 2 (`precis/cad/printability.py`) — a house judgment, not a measured figure, read through `capabilities.orientation_policy(mode)`. WIDENED on 2026-09-18 by docs/backlog/structural-solution-space.md slice 4 bridge with `simp_pitch` (mm, the voxel pitch `realize(strategy='simp')` samples the block's envelope at) — null in every fdm row with a source saying why; the op demands `pitch=` while it is null. WIDENED on 2026-09-19 by the same item's round B2 with `min_clearance` (mm, the smallest printable in-place gap between DOF-joined members, `realize(strategy='manufacture')`'s `in_place_clearance` floor) — null in every fdm row with a source saying why; the op demands `gap=` while it is null and states that the floor is uncalibrated. WIDENED on 2026-10-15 by se-machine-design O2 with `min_member` (mm, the thinnest strut realize(strategy='simp') may leave: filter radius, pitch guard and default rounding) — null in every fdm row with a source saying why; without it the op keeps the engine's 1.5-element filter. WIDENED on 2026-10-25 by the design-tree S2 pass (gr516958): a process-level 'fdm/*' row carries the verifier-confirmed process/nozzle-class figures (min_wall, min_clearance, layer_height, line_width, max_overhang — the rules that carry these bounds now point at them as 'fdm/*.<field>' table_refs), new material rows fdm/pa, fdm/pc, fdm/pa-cf, fdm/pc-cf land with their per-material figures plus the shared process set, and every fdm material row gains the promoted per-material fields nozzle_temp, bed_temp, drying, hdt_0.45mpa, hdt_1.8mpa, tensile_xy, tensile_z, shrinkage and the researched-but-unpromoted null gap-field enclosure — all from primary desktop vendors (Prusa KB/TDS, Bambu TDS, Polymaker TDS), retrieved 2026-10-25, confidence medium. The field unit vocabulary extends past mm/deg/ratio with degC, MPa and percent. For promoted fields the physical/house envelope is built from the published bounds: a min_* field takes the smallest published floor as physical and the largest published bound as house; tensile/HDT/strength claims take the strongest claim as physical and the weakest as house (design to the conservative end); every other field takes the widest published ceiling as physical and the tightest as house; shrinkage carries the worst published figure in both tiers. The pre-existing seed fields on the fdm/pla, fdm/petg, fdm/abs, fdm/asa and fdm/tpu rows are deliberately left for Reto's desktop-FDM review rather than overwritten. TEMPERATURE SPLIT 2026-10-25 (gr516958 r2): nozzle_temp, bed_temp and drying were vendor *windows*, not point floors — each is now a <f>_min/<f>_max pair over every confirmed vendor record: _min takes the lowest vendor minimum as physical and the highest as house, _max the highest vendor maximum as physical and the lowest as house, and a side no vendor bounded stays null. The resolver clamps by the *_min/*_max suffix with no special case. MIN WALL RESOLUTION 2026-10-25 (gr516958 r2): fdm/*.min_wall house is 0.9 mm — the Prusa printability ruling reads 1 perimeter (0.45 mm) prints, 1-2 perimeters does not count as a wall, 2+ (0.9 mm) does; the 0.45 vs 0.9+ conflict records in the design tree were dropped as resolved. The pre-existing seed min_wall fields on the five older material rows are still left for Reto review. LAYER HEIGHT 2026-10-25 (gr516958 r2): fdm/*.layer_height physical 0.32 mm stays the ceiling (80% of a 0.4 mm nozzle); house is 0.2 mm. CEILING-WINS 2026-10-25 (gr516958 r3): when a temperature field's house floor lands above its house ceiling — the strictest published minimum over the strictest published maximum, vendors genuinely disagreeing — both house bounds take the house ceiling and each field's source names the vendor that set it; physical keeps the full vendor spread. Temperature fields only.",
   "rows": [
+    {
+      "mode": "fdm/*",
+      "title": "FDM, any material — process/nozzle-class figures for a 0.4 mm-nozzle desktop machine (gr516958 S2)",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched hole_diameter_compensation for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Single worked example (M6 hole, Bambu printer, filament unspecified) of diametral undersize. Wiki: compensation value is per side ('hole diameter will increase by twice the compensation value'). Not a spec. Convention only: slicer value is per-side radius offset, diameter changes 2x. Wiki says calibrate per filament. Null stays null; never borrowed from a sibling material."
+        },
+        "layer_height": {
+          "physical": 0.32,
+          "house": 0.2,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.32 mm; Prusa prusa-mk4s 0.05-0.3 mm. physical = widest published ceiling; house = tightest published ceiling. Max for 0.4 nozzle. Same for every material. Min is a machine figure, next record. Machine range on the Prusa MK4S product page, not a nozzle-physics limit. House revised 2026-10-25 (gr516958 r2): 0.32 mm is the ceiling (80% of a 0.4 mm nozzle); house builds at 0.2 mm."
+        },
+        "line_width": {
+          "physical": 0.45,
+          "house": 0.45,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm. physical = widest published ceiling; house = tightest published ceiling. Slicer default for 0.4 nozzle (single value, no published min/max range found in Prusa/Bambu docs). Existing row says 0.42-0.48."
+        },
+        "max_bridge": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_bridge for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa KB (layers-and-perimeters, support-material, modeling-with-3d-printing-in-mind) say only 'short horizontal bridges can be printed without supports'; Bambu wiki / Orca docs searched, no mm figure. Only non-vendor blogs give 5-20 mm. Null stays null; never borrowed from a sibling material."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_build for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). X x Y x Z From the MK4S page's comparison table, CORE One column. X x Y x Z X1 Carbon official tech-spec sheet. A community thread reports Bambu Studio rejects a full 256 mm footprint (usable ~238 mm wide on some layouts); not verified. P1S. Quote taken from a search-result excerpt of the Bambu buying-guide page; page not fetchable by curl (403/JS). A1 (not Mini). Quote taken from a search-result excerpt of the Bambu A1 tech-specs page; page not fetched directly. Null stays null; never borrowed from a sibling material."
+        },
+        "max_overhang": {
+          "physical": 75,
+          "house": 60,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 45-60 deg; Prusa prusa-mk4s 75 deg; Prusa prusa-core-one 75 deg. physical = widest published ceiling; house = tightest published ceiling. Axis resolved by DESIGN: from vertical, the se field's convention. 75 deg from horizontal would be a near-vertical wall any printer manages, so Prusa's 'up to 75 deg without supports' only means something from vertical. PrusaSlicer's Overhang threshold setting is the complement (from horizontal)."
+        },
+        "min_clearance": {
+          "physical": 0.3,
+          "house": 0.3,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.3 mm. physical = smallest published floor; house = most conservative published bound. Prusa starting value for hinges/moving parts; page says no universal value, test print needed."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_feature for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa Arachne page defines 'Minimum feature size' as a setting ('Features thinner than this value will not be printed') but the page text states no default mm value; Bambu/Orca docs not found with a figure. Null stays null; never borrowed from a sibling material."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_hole for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Soft limit: below 1 mm hole compensation is hard to tune; not a stated hard floor. Material not specified. Null stays null; never borrowed from a sibling material."
+        },
+        "min_wall": {
+          "physical": 0.45,
+          "house": 0.9,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm; Prusa 0.86-0.86 mm. physical = smallest published floor; house = most conservative published bound. One perimeter ~0.45 mm for 0.4 nozzle; table in same page gives 2 perimeters 0.9 mm (approx). Two perimeters at 0.45 width, 0.2 layer: PrusaSlicer's computed ideal thin wall. Matches existing house value. House revised 2026-10-25 (gr516958 r2): the 0.45 vs 0.9 mm dispute is resolved, not conflicted — one perimeter (0.45 mm) prints but 1-2 perimeters is the house floor only as whole perimeter counts, so house = 2 perimeters = 0.9 mm."
+        }
+      }
+    },
     {
       "mode": "fdm/pla",
       "title": "FDM, PLA — 0.4 mm nozzle, 0.2 mm layer",
@@ -112,6 +198,101 @@
           "confidence": "unknown",
           "retrieved": "2026-09-19",
           "source": "The smallest in-place gap between two DOF-joined members that prints as two parts rather than fusing — realize(strategy='manufacture')'s in_place_clearance floor (docs/backlog/structural-solution-space.md slice 4 bridge, round B2). Community practice quotes 0.2-0.5 mm for a 0.4 mm nozzle depending on orientation (a vertical gap prints looser than a horizontal one), but this shop has not printed a gap ladder on this material and no per-orientation figure is published for it. Null on purpose: the op demands gap= while it is null and says the floor is uncalibrated; a set_process_override(field='min_clearance', value=<mm>) on the group root supplies one; never a default in code."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 25,
+          "house": 40,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa via MatterHackers mirror (secondary) 40-60 degC; Polymaker 25-60 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 60,
+          "house": 60,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa via MatterHackers mirror (secondary) 40-60 degC; Polymaker 25-60 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 45,
+          "house": 45,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 45 degC; Bambu 55 degC; Polymaker 55 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Prusa) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 55,
+          "house": 45,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 45 degC; Bambu 55 degC; Polymaker 55 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Prusa) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "enclosure": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched enclosure for fdm/pla — no figure met the promote bar (verifier-confirmed primary vendor). Polymaker spelling is theirs. Null stays null; never borrowed from a sibling material."
+        },
+        "hdt_0.45mpa": {
+          "physical": 57,
+          "house": 57,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Bambu 57-57 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 0.45 MPa, Bambu PLA."
+        },
+        "hdt_1.8mpa": {
+          "physical": 58,
+          "house": 58,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 58-58 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 1.8 MPa; 0.45 MPa figure on same sheet is 60 degC."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 190,
+          "house": 200,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa via MatterHackers mirror (secondary) 200-220 degC; Bambu 190-230 degC; Polymaker 190-230 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 230,
+          "house": 220,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa via MatterHackers mirror (secondary) 200-220 degC; Bambu 190-230 degC; Polymaker 190-230 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "shrinkage": {
+          "physical": null,
+          "house": null,
+          "unit": "percent",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched shrinkage for fdm/pla — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa PLA KB page, Prusament PLA TDS, Polymaker PLA TDS, Bambu guide/wiki: no percent stated for PLA (Bambu wiki gives only the calibration method). Null stays null; never borrowed from a sibling material."
+        },
+        "tensile_xy": {
+          "physical": 52.3,
+          "house": 52.3,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 52.3-52.3 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Polymaker PolyLite PLA."
+        },
+        "tensile_z": {
+          "physical": 40.5,
+          "house": 40.5,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 40.5-40.5 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Polymaker PolyLite PLA."
         }
       }
     },
@@ -226,6 +407,101 @@
           "confidence": "unknown",
           "retrieved": "2026-09-19",
           "source": "The smallest in-place gap between two DOF-joined members that prints as two parts rather than fusing — realize(strategy='manufacture')'s in_place_clearance floor (docs/backlog/structural-solution-space.md slice 4 bridge, round B2). Community practice quotes 0.2-0.5 mm for a 0.4 mm nozzle depending on orientation (a vertical gap prints looser than a horizontal one), but this shop has not printed a gap ladder on this material and no per-orientation figure is published for it. Null on purpose: the op demands gap= while it is null and says the floor is uncalibrated; a set_process_override(field='min_clearance', value=<mm>) on the group root supplies one; never a default in code."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 60,
+          "house": 70,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 70-90 degC; Bambu 60-80 degC; Polymaker 70-80 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 90,
+          "house": 80,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 70-90 degC; Bambu 60-80 degC; Polymaker 70-80 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 55,
+          "house": 55,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 55 degC; Bambu 65 degC; Polymaker 65 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Prusa) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 65,
+          "house": 55,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 55 degC; Bambu 65 degC; Polymaker 65 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Prusa) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "enclosure": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched enclosure for fdm/petg — no figure met the promote bar (verifier-confirmed primary vendor). Bambu guide also shows no enclosure for PETG (red marker, image-read). Null stays null; never borrowed from a sibling material."
+        },
+        "hdt_0.45mpa": {
+          "physical": 69,
+          "house": 68,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 68-68 degC; Bambu 69-69 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 0.45 MPa; 1.80 MPa also 68 on same sheet. Load 0.45 MPa, Bambu PETG."
+        },
+        "hdt_1.8mpa": {
+          "physical": 75,
+          "house": 75,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 75-75 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 1.8 MPa; 0.45 MPa is 78 degC. Polymaker PETG runs hotter than Prusament."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 230,
+          "house": 240,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 240-260 degC; Bambu 240-270 degC; Polymaker 230-260 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 270,
+          "house": 260,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 240-260 degC; Bambu 240-270 degC; Polymaker 230-260 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "shrinkage": {
+          "physical": null,
+          "house": null,
+          "unit": "percent",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched shrinkage for fdm/petg — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa PETG KB says only 'does not shrink or warp (it has very little thermal expansion)'; Prusament/Polymaker TDS and Bambu guide give no percent. Null stays null; never borrowed from a sibling material."
+        },
+        "tensile_xy": {
+          "physical": 50.8,
+          "house": 47,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 47-47 MPa; Polymaker 50.8-50.8 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Prusa horizontal. Polymaker."
+        },
+        "tensile_z": {
+          "physical": 50,
+          "house": 42.8,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 50-50 MPa; Polymaker 42.8-42.8 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Prusa 'vertical xz'. Prusa 'vertical xz' specimens are not a true Z pull and often exceed horizontal; do not use as strength_z_ratio. Same sheet: interlayer adhesion 18 +/- 4 MPa. Polymaker."
         }
       }
     },
@@ -340,6 +616,101 @@
           "confidence": "unknown",
           "retrieved": "2026-09-19",
           "source": "The smallest in-place gap between two DOF-joined members that prints as two parts rather than fusing — realize(strategy='manufacture')'s in_place_clearance floor (docs/backlog/structural-solution-space.md slice 4 bridge, round B2). Community practice quotes 0.2-0.5 mm for a 0.4 mm nozzle depending on orientation (a vertical gap prints looser than a horizontal one), but this shop has not printed a gap ladder on this material and no per-orientation figure is published for it. Null on purpose: the op demands gap= while it is null and says the floor is uncalibrated; a set_process_override(field='min_clearance', value=<mm>) on the group root supplies one; never a default in code."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 80,
+          "house": 90,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Polymaker 90-100 degC; Prusa 80-110 degC; Bambu 90-100 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 110,
+          "house": 100,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Polymaker 90-100 degC; Prusa 80-110 degC; Bambu 90-100 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 70,
+          "house": 70,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Polymaker 70 degC; Bambu 80 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 80,
+          "house": 70,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Polymaker 70 degC; Bambu 80 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "enclosure": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched enclosure for fdm/abs — no figure met the promote bar (verifier-confirmed primary vendor). Prusa lists it under cons; Prusa also gives draft shield as a partial workaround. Polymaker: 'Needed (ambient temperature)'. Bambu: enclosure marked. Null stays null; never borrowed from a sibling material."
+        },
+        "hdt_0.45mpa": {
+          "physical": 87,
+          "house": 87,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Bambu 87-87 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 0.45 MPa, Bambu ABS."
+        },
+        "hdt_1.8mpa": {
+          "physical": 98,
+          "house": 98,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 98-98 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 1.8 MPa; 0.45 MPa is 100 on the same sheet."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 240,
+          "house": 255,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Polymaker 245-265 degC; Bambu 240-280 degC; Prusa 255 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 280,
+          "house": 255,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Polymaker 245-265 degC; Bambu 240-280 degC; Prusa 255 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "shrinkage": {
+          "physical": 2,
+          "house": 2,
+          "unit": "percent",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 1-2 percent. both tiers at the worst published figure — the only desktop-vendor shrinkage percent on file. Prusa KB; only desktop vendor shrinkage percent found for any material."
+        },
+        "tensile_xy": {
+          "physical": 33.4,
+          "house": 33.4,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 33.4-33.4 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Polymaker. No Prusa/Bambu ABS tensile figure found."
+        },
+        "tensile_z": {
+          "physical": 29.7,
+          "house": 29.7,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 29.7-29.7 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Polymaker."
         }
       }
     },
@@ -454,6 +825,101 @@
           "confidence": "unknown",
           "retrieved": "2026-09-19",
           "source": "The smallest in-place gap between two DOF-joined members that prints as two parts rather than fusing — realize(strategy='manufacture')'s in_place_clearance floor (docs/backlog/structural-solution-space.md slice 4 bridge, round B2). Community practice quotes 0.2-0.5 mm for a 0.4 mm nozzle depending on orientation (a vertical gap prints looser than a horizontal one), but this shop has not printed a gap ladder on this material and no per-orientation figure is published for it. Null on purpose: the op demands gap= while it is null and says the floor is uncalibrated; a set_process_override(field='min_clearance', value=<mm>) on the group root supplies one; never a default in code."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 75,
+          "house": 95,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 105-115 degC; Bambu 90-100 degC; Polymaker 75-95 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 115,
+          "house": 95,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 105-115 degC; Bambu 90-100 degC; Polymaker 75-95 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 70,
+          "house": 70,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 80 degC; Bambu 80 degC; Polymaker 70 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 80,
+          "house": 70,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 80 degC; Bambu 80 degC; Polymaker 70 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "enclosure": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched enclosure for fdm/asa — no figure met the promote bar (verifier-confirmed primary vendor). Prusa: needed for large parts, draft shield alternative otherwise. Polymaker ASA sheet: 'Closure chamber Needed'. Bambu: enclosure marked. Null stays null; never borrowed from a sibling material."
+        },
+        "hdt_0.45mpa": {
+          "physical": 100,
+          "house": 93,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 93-93 degC; Bambu 100-100 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 0.45 MPa; 1.80 MPa is 86 on same sheet. Load 0.45 MPa, Bambu ASA."
+        },
+        "hdt_1.8mpa": {
+          "physical": 100,
+          "house": 100,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Polymaker 100-100 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Polymaker ASA, load 1.8 MPa; 0.45 MPa is 103."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 230,
+          "house": 250,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 250-270 degC; Bambu 240-280 degC; Polymaker 230-260 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 280,
+          "house": 260,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 250-270 degC; Bambu 240-280 degC; Polymaker 230-260 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "shrinkage": {
+          "physical": null,
+          "house": null,
+          "unit": "percent",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched shrinkage for fdm/asa — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa ASA KB and Prusament ASA TDS, Polymaker ASA TDS, Bambu guide: no percent. KB only says significant warping from temperature difference. Null stays null; never borrowed from a sibling material."
+        },
+        "tensile_xy": {
+          "physical": 43.8,
+          "house": 42,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 42-42 MPa; Polymaker 43.8-43.8 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Prusa horizontal. Polymaker ASA; checked on rendered PDF page. Specimens printed with 90 degC environment temperature."
+        },
+        "tensile_z": {
+          "physical": 45,
+          "house": 32,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 45-45 MPa; Polymaker 32-32 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Prusa 'vertical xz'. Prusa 'vertical xz' specimens are not a true Z pull and often exceed horizontal; do not use as strength_z_ratio. Same sheet: interlayer adhesion 11 +/- 1 MPa. As above, 90 degC environment."
         }
       }
     },
@@ -568,6 +1034,739 @@
           "confidence": "unknown",
           "retrieved": "2026-09-19",
           "source": "The smallest in-place gap between two DOF-joined members that prints as two parts rather than fusing — realize(strategy='manufacture')'s in_place_clearance floor (docs/backlog/structural-solution-space.md slice 4 bridge, round B2). Community practice quotes 0.2-0.5 mm for a 0.4 mm nozzle depending on orientation (a vertical gap prints looser than a horizontal one), but this shop has not printed a gap ladder on this material and no per-orientation figure is published for it. Null on purpose: the op demands gap= while it is null and says the floor is uncalibrated; a set_process_override(field='min_clearance', value=<mm>) on the group root supplies one; never a default in code."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 25,
+          "house": 45,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 55-75 degC; cdn.shopify.com 25-60 degC; Bambu 30-45 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Bambu) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 75,
+          "house": 45,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 55-75 degC; cdn.shopify.com 25-60 degC; Bambu 30-45 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Bambu) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 60,
+          "house": 60,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 60 degC; Bambu 70 degC; cdn.shopify.com 70 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Prusa) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 70,
+          "house": 60,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 60 degC; Bambu 70 degC; cdn.shopify.com 70 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Prusa) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "enclosure": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched enclosure for fdm/tpu — no figure met the promote bar (verifier-confirmed primary vendor). Bambu guide also shows no enclosure. Null stays null; never borrowed from a sibling material."
+        },
+        "hdt_1.8mpa": {
+          "physical": 78.6,
+          "house": 78.6,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 78.6-78.6 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. Load 1.8 MPa; Vicat A 101.6 degC also given. Bambu lists HDT N/A."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 210,
+          "house": 220,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 220-240 degC; Bambu 220-240 degC; cdn.shopify.com 210-230 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 240,
+          "house": 230,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 220-240 degC; Bambu 220-240 degC; cdn.shopify.com 210-230 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "shrinkage": {
+          "physical": null,
+          "house": null,
+          "unit": "percent",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched shrinkage for fdm/tpu — no figure met the promote bar (verifier-confirmed primary vendor). Qualitative only; no percent. Treat as no figure. Null stays null; never borrowed from a sibling material."
+        },
+        "tensile_xy": {
+          "physical": 41.4,
+          "house": 41.4,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 41.4-41.4 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. Prusa horizontal specimen, tensile strength at break per ISO 37 (not yield)."
+        },
+        "tensile_z": {
+          "physical": null,
+          "house": null,
+          "unit": "MPa",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched tensile_z for fdm/tpu — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusament TPU TDS gives horizontal only (interlayer adhesion 9.5 MPa); Polymaker TPU95 TDS has XY stress only; Bambu N/A. Null stays null; never borrowed from a sibling material."
+        }
+      }
+    },
+    {
+      "mode": "fdm/pa",
+      "title": "FDM, PA (nylon) — 0.4 mm nozzle desktop rows (gr516958 S2)",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched hole_diameter_compensation for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Single worked example (M6 hole, Bambu printer, filament unspecified) of diametral undersize. Wiki: compensation value is per side ('hole diameter will increase by twice the compensation value'). Not a spec. Convention only: slicer value is per-side radius offset, diameter changes 2x. Wiki says calibrate per filament. Null stays null; never borrowed from a sibling material."
+        },
+        "layer_height": {
+          "physical": 0.32,
+          "house": 0.2,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.32 mm; Prusa prusa-mk4s 0.05-0.3 mm. physical = widest published ceiling; house = tightest published ceiling. Max for 0.4 nozzle. Same for every material. Min is a machine figure, next record. Machine range on the Prusa MK4S product page, not a nozzle-physics limit. House revised 2026-10-25 (gr516958 r2): 0.32 mm is the ceiling (80% of a 0.4 mm nozzle); house builds at 0.2 mm."
+        },
+        "line_width": {
+          "physical": 0.45,
+          "house": 0.45,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm. physical = widest published ceiling; house = tightest published ceiling. Slicer default for 0.4 nozzle (single value, no published min/max range found in Prusa/Bambu docs). Existing row says 0.42-0.48."
+        },
+        "max_bridge": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_bridge for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa KB (layers-and-perimeters, support-material, modeling-with-3d-printing-in-mind) say only 'short horizontal bridges can be printed without supports'; Bambu wiki / Orca docs searched, no mm figure. Only non-vendor blogs give 5-20 mm. Null stays null; never borrowed from a sibling material."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_build for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). X x Y x Z From the MK4S page's comparison table, CORE One column. X x Y x Z X1 Carbon official tech-spec sheet. A community thread reports Bambu Studio rejects a full 256 mm footprint (usable ~238 mm wide on some layouts); not verified. P1S. Quote taken from a search-result excerpt of the Bambu buying-guide page; page not fetchable by curl (403/JS). A1 (not Mini). Quote taken from a search-result excerpt of the Bambu A1 tech-specs page; page not fetched directly. Null stays null; never borrowed from a sibling material."
+        },
+        "max_overhang": {
+          "physical": 75,
+          "house": 60,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 45-60 deg; Prusa prusa-mk4s 75 deg; Prusa prusa-core-one 75 deg. physical = widest published ceiling; house = tightest published ceiling. Axis resolved by DESIGN: from vertical, the se field's convention. 75 deg from horizontal would be a near-vertical wall any printer manages, so Prusa's 'up to 75 deg without supports' only means something from vertical. PrusaSlicer's Overhang threshold setting is the complement (from horizontal)."
+        },
+        "min_clearance": {
+          "physical": 0.3,
+          "house": 0.3,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.3 mm. physical = smallest published floor; house = most conservative published bound. Prusa starting value for hinges/moving parts; page says no universal value, test print needed."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_feature for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa Arachne page defines 'Minimum feature size' as a setting ('Features thinner than this value will not be printed') but the page text states no default mm value; Bambu/Orca docs not found with a figure. Null stays null; never borrowed from a sibling material."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_hole for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Soft limit: below 1 mm hole compensation is hard to tune; not a stated hard floor. Material not specified. Null stays null; never borrowed from a sibling material."
+        },
+        "min_wall": {
+          "physical": 0.45,
+          "house": 0.9,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm; Prusa 0.86-0.86 mm. physical = smallest published floor; house = most conservative published bound. One perimeter ~0.45 mm for 0.4 nozzle; table in same page gives 2 perimeters 0.9 mm (approx). Two perimeters at 0.45 width, 0.2 layer: PrusaSlicer's computed ideal thin wall. Matches existing house value. House revised 2026-10-25 (gr516958 r2): the 0.45 vs 0.9 mm dispute is resolved, not conflicted — one perimeter (0.45 mm) prints but 1-2 perimeters is the house floor only as whole perimeter counts, so house = 2 perimeters = 0.9 mm."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 90,
+          "house": 90,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 90-110 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 110,
+          "house": 110,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 90-110 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: drying split into a window for fdm/pa — no vendor published a min bound (Prusa 90 degC). Null stays null."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 90,
+          "house": 90,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 90 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "enclosure": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched enclosure for fdm/pa — no figure met the promote bar (verifier-confirmed primary vendor). Prusa PA11 natural specifies a 55 degC chamber. Prusa KB: PA11-CF 'can be printed without an enclosure'; unfilled PA 'prone to warping, enclosure helps a lot'. Bambu PA6-CF/PAHT-CF: enclosure marked. Value is for the CF grades Prusa; natural PA: required. Null stays null; never borrowed from a sibling material."
+        },
+        "hdt_0.45mpa": {
+          "physical": 58.7,
+          "house": 58.7,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 58.7-58.7 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. PA11 natural (unfilled), load 0.45 MPa; 1.80 MPa is 49.9. Shows CF vs unfilled spread is ~130 degC."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 265,
+          "house": 265,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 265-285 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 285,
+          "house": 285,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 265-285 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "shrinkage": {
+          "physical": null,
+          "house": null,
+          "unit": "percent",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched shrinkage for fdm/pa — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa PA KB, Prusament PA11/PA11-CF TDS, Bambu guide: no percent. Bambu wiki shrinkage page only says fibre fill reduces shrinkage. Polymaker PA6-CF TDS lists 'Mold shrinkage' as '/' (blank). Null stays null; never borrowed from a sibling material."
+        },
+        "strength_z_ratio": {
+          "physical": 0.84,
+          "house": 0.84,
+          "unit": "ratio",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.84-0.84 ratio. physical = strongest published claim; house = weakest published figure — design to the conservative value. Prusa's own Z/XY coefficient, PA11 natural (unfilled), CORE One+. The only vendor-stated Z/XY ratio found. Not for CF grades."
+        },
+        "tensile_xy": {
+          "physical": 38.3,
+          "house": 38.3,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 38.3-38.3 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PA11 natural, horizontal xy."
+        },
+        "tensile_z": {
+          "physical": 39.5,
+          "house": 39.5,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 39.5-39.5 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PA11 natural, 'vertical xz'. Same sheet gives a separate anisotropy coefficient."
+        }
+      }
+    },
+    {
+      "mode": "fdm/pa-cf",
+      "title": "FDM, PA-CF (carbon-filled nylon) — 0.4 mm nozzle desktop rows (gr516958 S2)",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched hole_diameter_compensation for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Single worked example (M6 hole, Bambu printer, filament unspecified) of diametral undersize. Wiki: compensation value is per side ('hole diameter will increase by twice the compensation value'). Not a spec. Convention only: slicer value is per-side radius offset, diameter changes 2x. Wiki says calibrate per filament. Null stays null; never borrowed from a sibling material."
+        },
+        "layer_height": {
+          "physical": 0.32,
+          "house": 0.2,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.32 mm; Prusa prusa-mk4s 0.05-0.3 mm. physical = widest published ceiling; house = tightest published ceiling. Max for 0.4 nozzle. Same for every material. Min is a machine figure, next record. Machine range on the Prusa MK4S product page, not a nozzle-physics limit. House revised 2026-10-25 (gr516958 r2): 0.32 mm is the ceiling (80% of a 0.4 mm nozzle); house builds at 0.2 mm."
+        },
+        "line_width": {
+          "physical": 0.45,
+          "house": 0.45,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm. physical = widest published ceiling; house = tightest published ceiling. Slicer default for 0.4 nozzle (single value, no published min/max range found in Prusa/Bambu docs). Existing row says 0.42-0.48."
+        },
+        "max_bridge": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_bridge for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa KB (layers-and-perimeters, support-material, modeling-with-3d-printing-in-mind) say only 'short horizontal bridges can be printed without supports'; Bambu wiki / Orca docs searched, no mm figure. Only non-vendor blogs give 5-20 mm. Null stays null; never borrowed from a sibling material."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_build for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). X x Y x Z From the MK4S page's comparison table, CORE One column. X x Y x Z X1 Carbon official tech-spec sheet. A community thread reports Bambu Studio rejects a full 256 mm footprint (usable ~238 mm wide on some layouts); not verified. P1S. Quote taken from a search-result excerpt of the Bambu buying-guide page; page not fetchable by curl (403/JS). A1 (not Mini). Quote taken from a search-result excerpt of the Bambu A1 tech-specs page; page not fetched directly. Null stays null; never borrowed from a sibling material."
+        },
+        "max_overhang": {
+          "physical": 75,
+          "house": 60,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 45-60 deg; Prusa prusa-mk4s 75 deg; Prusa prusa-core-one 75 deg. physical = widest published ceiling; house = tightest published ceiling. Axis resolved by DESIGN: from vertical, the se field's convention. 75 deg from horizontal would be a near-vertical wall any printer manages, so Prusa's 'up to 75 deg without supports' only means something from vertical. PrusaSlicer's Overhang threshold setting is the complement (from horizontal)."
+        },
+        "min_clearance": {
+          "physical": 0.3,
+          "house": 0.3,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.3 mm. physical = smallest published floor; house = most conservative published bound. Prusa starting value for hinges/moving parts; page says no universal value, test print needed."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_feature for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa Arachne page defines 'Minimum feature size' as a setting ('Features thinner than this value will not be printed') but the page text states no default mm value; Bambu/Orca docs not found with a figure. Null stays null; never borrowed from a sibling material."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_hole for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Soft limit: below 1 mm hole compensation is hard to tune; not a stated hard floor. Material not specified. Null stays null; never borrowed from a sibling material."
+        },
+        "min_wall": {
+          "physical": 0.45,
+          "house": 0.9,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm; Prusa 0.86-0.86 mm. physical = smallest published floor; house = most conservative published bound. One perimeter ~0.45 mm for 0.4 nozzle; table in same page gives 2 perimeters 0.9 mm (approx). Two perimeters at 0.45 width, 0.2 layer: PrusaSlicer's computed ideal thin wall. Matches existing house value. House revised 2026-10-25 (gr516958 r2): the 0.45 vs 0.9 mm dispute is resolved, not conflicted — one perimeter (0.45 mm) prints but 1-2 perimeters is the house floor only as whole perimeter counts, so house = 2 perimeters = 0.9 mm."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 100,
+          "house": 100,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 100-120 degC; Bambu 100-120 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 120,
+          "house": 120,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 100-120 degC; Bambu 100-120 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 80,
+          "house": 80,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 90 degC; Bambu 80 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Bambu) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 90,
+          "house": 80,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 90 degC; Bambu 80 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Bambu) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "hdt_0.45mpa": {
+          "physical": 194,
+          "house": 184,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 192-192 degC; Bambu 184-194 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. PA11-CF, load 0.45 MPa; 1.80 MPa is 152. Row HDT, 0.45 MPa: PET-CF 205, PAHT-CF 194, PA6-CF 184 (columns read from rendered image)."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 260,
+          "house": 280,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 280-290 degC; Bambu 260-300 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 300,
+          "house": 290,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 280-290 degC; Bambu 260-300 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "tensile_xy": {
+          "physical": 42,
+          "house": 42,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 42-42 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PA11-CF Prusa horizontal."
+        },
+        "tensile_z": {
+          "physical": 49,
+          "house": 49,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 49-49 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PA11-CF Prusa 'vertical xz'. Prusa 'vertical xz' specimens are not a true Z pull and often exceed horizontal; do not use as strength_z_ratio."
+        }
+      }
+    },
+    {
+      "mode": "fdm/pc",
+      "title": "FDM, PC — 0.4 mm nozzle desktop rows (gr516958 S2)",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched hole_diameter_compensation for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Single worked example (M6 hole, Bambu printer, filament unspecified) of diametral undersize. Wiki: compensation value is per side ('hole diameter will increase by twice the compensation value'). Not a spec. Convention only: slicer value is per-side radius offset, diameter changes 2x. Wiki says calibrate per filament. Null stays null; never borrowed from a sibling material."
+        },
+        "layer_height": {
+          "physical": 0.32,
+          "house": 0.2,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.32 mm; Prusa prusa-mk4s 0.05-0.3 mm. physical = widest published ceiling; house = tightest published ceiling. Max for 0.4 nozzle. Same for every material. Min is a machine figure, next record. Machine range on the Prusa MK4S product page, not a nozzle-physics limit. House revised 2026-10-25 (gr516958 r2): 0.32 mm is the ceiling (80% of a 0.4 mm nozzle); house builds at 0.2 mm."
+        },
+        "line_width": {
+          "physical": 0.45,
+          "house": 0.45,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm. physical = widest published ceiling; house = tightest published ceiling. Slicer default for 0.4 nozzle (single value, no published min/max range found in Prusa/Bambu docs). Existing row says 0.42-0.48."
+        },
+        "max_bridge": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_bridge for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa KB (layers-and-perimeters, support-material, modeling-with-3d-printing-in-mind) say only 'short horizontal bridges can be printed without supports'; Bambu wiki / Orca docs searched, no mm figure. Only non-vendor blogs give 5-20 mm. Null stays null; never borrowed from a sibling material."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_build for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). X x Y x Z From the MK4S page's comparison table, CORE One column. X x Y x Z X1 Carbon official tech-spec sheet. A community thread reports Bambu Studio rejects a full 256 mm footprint (usable ~238 mm wide on some layouts); not verified. P1S. Quote taken from a search-result excerpt of the Bambu buying-guide page; page not fetchable by curl (403/JS). A1 (not Mini). Quote taken from a search-result excerpt of the Bambu A1 tech-specs page; page not fetched directly. Null stays null; never borrowed from a sibling material."
+        },
+        "max_overhang": {
+          "physical": 75,
+          "house": 60,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 45-60 deg; Prusa prusa-mk4s 75 deg; Prusa prusa-core-one 75 deg. physical = widest published ceiling; house = tightest published ceiling. Axis resolved by DESIGN: from vertical, the se field's convention. 75 deg from horizontal would be a near-vertical wall any printer manages, so Prusa's 'up to 75 deg without supports' only means something from vertical. PrusaSlicer's Overhang threshold setting is the complement (from horizontal)."
+        },
+        "min_clearance": {
+          "physical": 0.3,
+          "house": 0.3,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.3 mm. physical = smallest published floor; house = most conservative published bound. Prusa starting value for hinges/moving parts; page says no universal value, test print needed."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_feature for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa Arachne page defines 'Minimum feature size' as a setting ('Features thinner than this value will not be printed') but the page text states no default mm value; Bambu/Orca docs not found with a figure. Null stays null; never borrowed from a sibling material."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_hole for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Soft limit: below 1 mm hole compensation is hard to tune; not a stated hard floor. Material not specified. Null stays null; never borrowed from a sibling material."
+        },
+        "min_wall": {
+          "physical": 0.45,
+          "house": 0.9,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm; Prusa 0.86-0.86 mm. physical = smallest published floor; house = most conservative published bound. One perimeter ~0.45 mm for 0.4 nozzle; table in same page gives 2 perimeters 0.9 mm (approx). Two perimeters at 0.45 width, 0.2 layer: PrusaSlicer's computed ideal thin wall. Matches existing house value. House revised 2026-10-25 (gr516958 r2): the 0.45 vs 0.9 mm dispute is resolved, not conflicted — one perimeter (0.45 mm) prints but 1-2 perimeters is the house floor only as whole perimeter counts, so house = 2 perimeters = 0.9 mm."
+        },
+        "bed_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 90,
+          "house": 100,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 100-120 degC; Polymaker 90-105 degC; Bambu 100-120 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "bed_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 120,
+          "house": 105,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 100-120 degC; Polymaker 90-105 degC; Bambu 100-120 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "drying_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 75,
+          "house": 75,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 85 degC; Polymaker 75 degC; Bambu 80 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "drying_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 85,
+          "house": 75,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 85 degC; Polymaker 75 degC; Bambu 80 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure). House revised 2026-10-25 (gr516958 r3): vendors disagree; ceiling wins (Polymaker) — the strictest published floor sat above the strictest published ceiling, so both house bounds take the ceiling; physical keeps the full vendor spread."
+        },
+        "enclosure": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched enclosure for fdm/pc — no figure met the promote bar (verifier-confirmed primary vendor). Prusa: helps, not mandatory (PC Blend). Polymaker: 'recommended to use an enclosure; for large part a heated chamber'. Bambu guide: enclosure marked for PC. Null stays null; never borrowed from a sibling material."
+        },
+        "hdt_0.45mpa": {
+          "physical": 117,
+          "house": 113,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 113-113 degC; Polymaker 114-114 degC; Bambu 117-117 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. PC Blend, load 0.45 MPa; 1.80 MPa is 93. PolyMax PC, load 0.45 MPa; 1.8 MPa is 99. Bambu PC, load 0.45 MPa."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 250,
+          "house": 265,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 265-285 degC; Polymaker 250-270 degC; Bambu 260-290 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 290,
+          "house": 270,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 265-285 degC; Polymaker 250-270 degC; Bambu 260-290 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "shrinkage": {
+          "physical": null,
+          "house": null,
+          "unit": "percent",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched shrinkage for fdm/pc — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa PC KB and TDS (PC Blend, PCCF), Polymaker PolyMax PC TDS, Bambu guide: no percent stated; Prusa says only 'tends to warp a lot'. Null stays null; never borrowed from a sibling material."
+        },
+        "strength_z_ratio": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched strength_z_ratio for fdm/pc — no figure met the promote bar (verifier-confirmed primary vendor). Computed 41.43/53.44. Printed in a 90 degC chamber; open-frame desktop likely lower. Null stays null; never borrowed from a sibling material."
+        },
+        "tensile_xy": {
+          "physical": 63,
+          "house": 53.44,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 63-63 MPa; Polymaker 53.44-53.44 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PC Blend Prusa horizontal. PolyMax PC."
+        },
+        "tensile_z": {
+          "physical": 63,
+          "house": 41.43,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 63-63 MPa; Polymaker 41.43-41.43 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PC Blend Prusa 'vertical xz'. Prusa 'vertical xz' specimens are not a true Z pull and often exceed horizontal; do not use as strength_z_ratio. Printed 275 degC, bed 115, cooling off, extrusion multiplier 1.034. PolyMax PC; printed with 90 degC environment per sheet settings."
+        }
+      }
+    },
+    {
+      "mode": "fdm/pc-cf",
+      "title": "FDM, PC-CF (carbon-filled polycarbonate) — 0.4 mm nozzle desktop rows (gr516958 S2)",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched hole_diameter_compensation for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Single worked example (M6 hole, Bambu printer, filament unspecified) of diametral undersize. Wiki: compensation value is per side ('hole diameter will increase by twice the compensation value'). Not a spec. Convention only: slicer value is per-side radius offset, diameter changes 2x. Wiki says calibrate per filament. Null stays null; never borrowed from a sibling material."
+        },
+        "layer_height": {
+          "physical": 0.32,
+          "house": 0.2,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.32 mm; Prusa prusa-mk4s 0.05-0.3 mm. physical = widest published ceiling; house = tightest published ceiling. Max for 0.4 nozzle. Same for every material. Min is a machine figure, next record. Machine range on the Prusa MK4S product page, not a nozzle-physics limit. House revised 2026-10-25 (gr516958 r2): 0.32 mm is the ceiling (80% of a 0.4 mm nozzle); house builds at 0.2 mm."
+        },
+        "line_width": {
+          "physical": 0.45,
+          "house": 0.45,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm. physical = widest published ceiling; house = tightest published ceiling. Slicer default for 0.4 nozzle (single value, no published min/max range found in Prusa/Bambu docs). Existing row says 0.42-0.48."
+        },
+        "max_bridge": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_bridge for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa KB (layers-and-perimeters, support-material, modeling-with-3d-printing-in-mind) say only 'short horizontal bridges can be printed without supports'; Bambu wiki / Orca docs searched, no mm figure. Only non-vendor blogs give 5-20 mm. Null stays null; never borrowed from a sibling material."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched max_build for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). X x Y x Z From the MK4S page's comparison table, CORE One column. X x Y x Z X1 Carbon official tech-spec sheet. A community thread reports Bambu Studio rejects a full 256 mm footprint (usable ~238 mm wide on some layouts); not verified. P1S. Quote taken from a search-result excerpt of the Bambu buying-guide page; page not fetchable by curl (403/JS). A1 (not Mini). Quote taken from a search-result excerpt of the Bambu A1 tech-specs page; page not fetched directly. Null stays null; never borrowed from a sibling material."
+        },
+        "max_overhang": {
+          "physical": 75,
+          "house": 60,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 45-60 deg; Prusa prusa-mk4s 75 deg; Prusa prusa-core-one 75 deg. physical = widest published ceiling; house = tightest published ceiling. Axis resolved by DESIGN: from vertical, the se field's convention. 75 deg from horizontal would be a near-vertical wall any printer manages, so Prusa's 'up to 75 deg without supports' only means something from vertical. PrusaSlicer's Overhang threshold setting is the complement (from horizontal)."
+        },
+        "min_clearance": {
+          "physical": 0.3,
+          "house": 0.3,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.3 mm. physical = smallest published floor; house = most conservative published bound. Prusa starting value for hinges/moving parts; page says no universal value, test print needed."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_feature for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). no-source: Prusa Arachne page defines 'Minimum feature size' as a setting ('Features thinner than this value will not be printed') but the page text states no default mm value; Bambu/Orca docs not found with a figure. Null stays null; never borrowed from a sibling material."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25: researched min_hole for fdm/* — no figure met the promote bar (verifier-confirmed primary vendor). Soft limit: below 1 mm hole compensation is hard to tune; not a stated hard floor. Material not specified. Null stays null; never borrowed from a sibling material."
+        },
+        "min_wall": {
+          "physical": 0.45,
+          "house": 0.9,
+          "unit": "mm",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 0.45-0.45 mm; Prusa 0.86-0.86 mm. physical = smallest published floor; house = most conservative published bound. One perimeter ~0.45 mm for 0.4 nozzle; table in same page gives 2 perimeters 0.9 mm (approx). Two perimeters at 0.45 width, 0.2 layer: PrusaSlicer's computed ideal thin wall. Matches existing house value. House revised 2026-10-25 (gr516958 r2): the 0.45 vs 0.9 mm dispute is resolved, not conflicted — one perimeter (0.45 mm) prints but 1-2 perimeters is the house floor only as whole perimeter counts, so house = 2 perimeters = 0.9 mm."
+        },
+        "hdt_0.45mpa": {
+          "physical": 114,
+          "house": 114,
+          "unit": "degC",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 114-114 degC. physical = strongest published claim; house = weakest published figure — design to the conservative value. PC Blend CF, load 0.45 MPa; 1.80 MPa is 106."
+        },
+        "nozzle_temp_min": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 275,
+          "house": 275,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 275-295 degC. physical = lowest vendor minimum; house = highest vendor minimum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "nozzle_temp_max": {
+          "unit": "degC",
+          "retrieved": "2026-10-25",
+          "physical": 295,
+          "house": 295,
+          "confidence": "medium",
+          "source": "DESIGN S2 pass (gr516958) window split, retrieved 2026-10-25 — vendor figures: Prusa 275-295 degC. physical = highest vendor maximum; house = lowest vendor maximum (a temperature window, not a floor/ceiling point figure)."
+        },
+        "tensile_xy": {
+          "physical": 64,
+          "house": 64,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 64-64 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PC Blend CF Prusa horizontal."
+        },
+        "tensile_z": {
+          "physical": 70,
+          "house": 70,
+          "unit": "MPa",
+          "confidence": "medium",
+          "retrieved": "2026-10-25",
+          "source": "DESIGN S2 pass (gr516958), retrieved 2026-10-25 — verifier-confirmed primary desktop-FDM vendors: Prusa 70-70 MPa. physical = strongest published claim; house = weakest published figure — design to the conservative value. PC Blend CF Prusa 'vertical xz'. Prusa 'vertical xz' specimens are not a true Z pull and often exceed horizontal; do not use as strength_z_ratio."
         }
       }
     }

@@ -32,6 +32,8 @@ rotate:
           id: rotate/plain-bearing/pin-in-hole
           role: leaf
           coverage: deep
+          implies:
+            class: revolute
           summary: A pin turning directly in a drilled, reamed or printed hole. Cheapest pivot; the housing is the wear part,
             so it suits low load, low speed, oscillating or hand-operated motion. Past that, put a replaceable bushing or
             rolling bearing in the hole.
@@ -269,6 +271,10 @@ rotate:
           id: rotate/plain-bearing/polymer-bushing
           role: leaf
           coverage: deep
+          implies:
+            class: revolute
+            mechanism: bearing
+            rank: 3
           summary: Press-fit solid polymer sleeve (igus iglidur class) running dry on a hard ground shaft. Good for dirt,
             vibration, corrosion and low-to-moderate speed at moderate-to-high pressure; poor for precision, near-limit PV,
             or frequent removal. The installed bore only reaches size after pressing into an H7 bore.
@@ -507,6 +513,10 @@ rotate:
           id: rotate/plain-bearing/sintered-bronze-bushing
           role: leaf
           coverage: deep
+          implies:
+            class: revolute
+            mechanism: bearing
+            rank: 4
           summary: Oil-impregnated porous bronze sleeve (ASTM B438) pressed into a rigid housing. Quiet, cheap, no maintenance
             for steady rotation at moderate load and speed. Bore closes in after pressing, so size the shaft to the installed
             bore; poor for oscillation, shock, dirt or removal.
@@ -755,6 +765,10 @@ rotate:
           id: rotate/rolling-bearing/deep-groove-ball
           role: leaf
           coverage: deep
+          implies:
+            class: revolute
+            mechanism: bearing
+            rank: 1
           summary: 'The default bearing for ordinary shafts: radial load plus moderate axial load either way, high speed,
             low noise, cheap and standard. Pick size by L10 life and static capacity, closure by contamination vs speed, and
             fits by which ring rotates relative to the load. Not separable, weak on shock, moment and heavy thrust.'
@@ -1013,6 +1027,10 @@ rotate:
           id: rotate/rolling-bearing/bearing-in-printed-part
           role: leaf
           coverage: deep
+          implies:
+            class: revolute
+            mechanism: bearing
+            rank: 2
           summary: Seating a bought bearing in a Prusa or Bambu printed housing. Default design is a measured slip or transition
             bore with a shoulder and a removable cap or clamp; a printed interference fit relaxes by creep. Use a metal sleeve
             or machined housing for load, heat, speed or precision.
@@ -1242,6 +1260,10 @@ rotate:
           id: rotate/rolling-bearing/paired-preloaded
           role: leaf
           coverage: deep
+          implies:
+            class: revolute
+            mechanism: bearing
+            rank: 5
           summary: Two angular-contact ball or tapered-roller bearings set against each other (DB, DF, tandem) with a defined
             preload for axial location in both directions, stiffness, low backlash and moment capacity. Preload is product-specific,
             raises heat and cuts speed, and is destroyed by thermal growth and polymer creep, so it needs a steel shaft and
@@ -2041,6 +2063,9 @@ rotate:
           id: rotate/flexure-pivot/cross-spring-and-notch
           role: leaf
           coverage: deep
+          implies:
+            class: compliant
+            mechanism: integral
           summary: Cross-spring pivots give a backlash-free, stiff axis with large elastic angle but need aligned matched
             leaves; notch hinges are monolithic, compact and cheap but shift their centre and carry little transverse load.
             Size from allowable stress first, then check fatigue and buckling.
@@ -2227,6 +2252,9 @@ rotate:
           id: rotate/spherical/rod-end-ball-joint
           role: leaf
           coverage: deep
+          implies:
+            class: ball
+            mechanism: bearing
           summary: Rod ends and spherical plain bearings give misalignment and multi-axis rotation for radial, oscillating
             or slow loads; check shank, thread, pin and clevis, not only the bearing rating, and keep printed polymer out
             of safety-critical load paths. Dimensions follow ISO 12240-4.
@@ -2414,6 +2442,10 @@ rotate:
           id: rotate/shaft-hub/set-screw-on-flat
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: screw
+            rank: 7
           summary: 'One or two radial set screws biting on a machined shaft flat: cheap, compact, light-duty hub fixing. The
             cup point is ISO 4029 (DIN 916); ISO 4026 is the flat point.'
           when:
@@ -2590,6 +2622,10 @@ rotate:
           id: rotate/shaft-hub/key-and-keyway
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: key
+            rank: 1
           summary: 'Parallel key on its flanks in a shaft keyseat and hub keyway: the default removable torque connection
             for metal hubs. The keyway is a fatigue notch and the joint has some backlash.'
           when:
@@ -2779,6 +2815,10 @@ rotate:
           id: rotate/shaft-hub/spline-and-polygon
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: key
+            rank: 3
           summary: 'Multi-flank shaft-hub profiles: DIN 5480 involute splines, DIN 32711/32712 polygons, and the cheap hex
             or D bore for printed hubs. Metal splines and polygons beat keys for compact, reversing, fatigue duty; printed
             hex or D bores are prototype-grade only.'
@@ -2991,6 +3031,9 @@ rotate:
           id: rotate/shaft-hub/clamp-hub
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: clamp
           summary: 'Friction-locked shaft-hub joints: split clamp hubs, taper-lock bushes, Ringfeder-type keyless locking
             assemblies and shrink discs. No keyway or backlash, but capacity depends on preload, surface condition, hub stiffness
             and clean dry interfaces.'
@@ -3160,6 +3203,10 @@ rotate:
           id: rotate/shaft-hub/cross-pin
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: key
+            rank: 4
           summary: 'Transverse pin (solid, taper, dowel, spring, coiled) through hub and shaft: cheap, compact positive drive
             and axial retention for light to moderate torque, or a deliberate shear fuse. The cross hole is the main fatigue
             risk.'

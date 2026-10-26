@@ -72,6 +72,7 @@ EQUIPMENT = frozenset(
     {
         "desktop-fdm",
         "industrial-fdm",
+        "powder-bed",
         "sla",
         "cnc-mill",
         "lathe",
@@ -164,6 +165,15 @@ _RULE_FIELDS = frozenset(
 
 _ISSUE_FIELDS = frozenset({"issue", "fix", "failure_mode"})
 _ENFORCER_FIELDS = frozenset({"path", "what"})
+
+#: ``implies`` on a leaf: the joint a connect realising this leaf
+#: carries — ``class`` + optional ``mechanism`` over the
+#: ``precis_se.joints`` vocabulary (checked against it by the test
+#: suite, not here: joints.py already imports this module), plus an
+#: optional integer ``rank`` ordering the candidates inside a crowded
+#: class+mechanism tier (lower = more general default; the hint picks
+#: at most 3).
+_IMPLIES_FIELDS = frozenset({"class", "mechanism", "rank"})
 
 #: ``conflicts`` record (final ruling): sources genuinely disagree on
 #: ``topic``; ``values`` lists the disputed values with the source
@@ -408,6 +418,37 @@ def _vet_fields(node_id: str, role: str, raw: dict[str, Any], where: str) -> Non
         val = raw.get(name)
         if val is not None and not isinstance(val, dict):
             raise DesignTreeError(f"{where} ({node_id}): {name} must be a mapping")
+    implies = raw.get("implies")
+    if implies is not None:
+        if role != "leaf":
+            raise DesignTreeError(
+                f"{where} ({node_id}): implies is only allowed on "
+                "role=leaf nodes — it names the joint a connect "
+                "realising this leaf carries"
+            )
+        bad_implies = set(implies) - _IMPLIES_FIELDS
+        if bad_implies:
+            raise DesignTreeError(
+                f"{where} ({node_id}): implies unknown field(s) "
+                f"{', '.join(sorted(bad_implies))}"
+            )
+        klass = implies.get("class")
+        if not isinstance(klass, str) or not klass.strip():
+            raise DesignTreeError(
+                f"{where} ({node_id}): implies 'class' must be a "
+                "nonempty string (a precis_se.joints kinematic class)"
+            )
+        mech = implies.get("mechanism")
+        if mech is not None and (not isinstance(mech, str) or not mech.strip()):
+            raise DesignTreeError(
+                f"{where} ({node_id}): implies 'mechanism' must be a "
+                "nonempty string when present"
+            )
+        rank = implies.get("rank")
+        if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int)):
+            raise DesignTreeError(
+                f"{where} ({node_id}): implies 'rank' must be an integer when present"
+            )
     prin = raw.get("principle")
     if prin is not None:
         if node_id != "join" and not node_id.startswith("join/"):
@@ -536,9 +577,13 @@ _STANDARD_TABLES = frozenset({"iso_2768_1.json"})
 @lru_cache(maxsize=1)
 def _capability_row_ids() -> frozenset[str]:
     """The ``table_ref`` vocabulary: the ``mode`` of every row in the
-    packaged ``design-tree/capabilities.json`` plus the standard-table
-    file names in :data:`_STANDARD_TABLES`. Cached — every
-    ``machine_specific`` rule in the manifests hits this lookup."""
+    packaged ``design-tree/capabilities.json`` (per-rule published
+    claims), every ``mode`` in ``se_capabilities.json`` — and each
+    ``mode.field`` pair, for a rule whose figure *is* one promoted
+    bound (``fdm/*.min_wall``) — plus the standard-table file names in
+    :data:`_STANDARD_TABLES`. Cached — every ``machine_specific`` rule
+    in the manifests hits this lookup."""
+    rows = set(_STANDARD_TABLES)
     try:
         data = json.loads(
             resources.files("precis.data")
@@ -547,10 +592,23 @@ def _capability_row_ids() -> frozenset[str]:
             .read_text(encoding="utf-8")
         )
     except FileNotFoundError:
-        return _STANDARD_TABLES
-    return _STANDARD_TABLES | frozenset(
-        str(r["mode"]) for r in data.get("rows") or [] if r.get("mode")
-    )
+        data = {}
+    rows.update(str(r["mode"]) for r in data.get("rows") or [] if r.get("mode"))
+    try:
+        se = json.loads(
+            resources.files("precis.data")
+            .joinpath("se_capabilities.json")
+            .read_text(encoding="utf-8")
+        )
+    except FileNotFoundError:
+        se = {}
+    for r in se.get("rows") or []:
+        mode = r.get("mode")
+        if not mode:
+            continue
+        rows.add(str(mode))
+        rows.update(f"{mode}.{field}" for field in (r.get("fields") or {}))
+    return frozenset(rows)
 
 
 def _vet_rule(
@@ -626,7 +684,8 @@ def _vet_rule(
         if tref not in rows:
             raise DesignTreeError(
                 f"{where} ({node_id})#{rid}: table_ref {tref!r} names no "
-                "design-tree/capabilities.json row or standard table; "
+                "design-tree/capabilities.json row, se_capabilities.json "
+                "row[.field], or standard table; "
                 f"options: {', '.join(sorted(rows))}"
             )
     for enf in rule.get("enforcers") or []:

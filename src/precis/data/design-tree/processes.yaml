@@ -105,7 +105,7 @@ process:
                 unit: mm
                 source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c3
                 text: Avoid holes below 1-2 mm unless post-machined or tested
@@ -113,7 +113,7 @@ process:
                 unit: mm
                 source_url: https://www.hubs.com/knowledge-base/dfm-tips-for-3d-printed-parts-with-thin-walls/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c4
                 text: For a nominal 5 mm rod model the hole about 5.2 mm
@@ -437,20 +437,25 @@ process:
                 equipment: desktop-fdm
                 confidence: secondary
               - id: c5
-                text: Hubs DFM table minimum wall 0.8 mm
-                value: '0.8'
+                text: Minimum printable FDM wall on a 0.4 mm nozzle is one perimeter, about 0.45 mm; two perimeters give about
+                  0.9 mm
+                value: '0.45'
                 unit: mm
-                source_url: https://www.hubs.com/knowledge-base/dfm-tips-for-3d-printed-parts-with-thin-walls/
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
+                machine_specific: true
+                table_ref: fdm/*.min_wall
+                note: Hubs 0.8 mm replaced by Prusa KB perimeter table; Hubs 0.8 mm remains a service-bureau figure
               - id: c6
                 text: Strong or supporting wall 1.2-1.5 mm
                 value: 1.2-1.5
                 unit: mm
                 source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c7
                 text: 1-4 perimeters give about 0.45, 0.90, 1.35, 1.80 mm (approximate; slicers overlap lines)
@@ -491,7 +496,7 @@ process:
                 unit: mm
                 source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c12
                 text: Start at 0.3 mm clearance for moving parts
@@ -595,7 +600,7 @@ process:
                 unit: mm
                 source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c24
                 text: Engraved text uses the same about 1 mm minimum stroke and depth, text on the XY plane
@@ -603,24 +608,19 @@ process:
                 unit: mm
                 source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c25
-                text: Top and bottom text about 16-point bold or larger
-                value: '16'
+                text: 'Industrial FDM embossed or engraved text: bold font, 24 pt or larger'
+                value: '24'
                 unit: pt
-                source_url: https://www.hubs.com/talk/uploads/db5060/original/3X/b/5/b5f0f2e484a45e8239690bdd3dd13b81ef18998d.pdf
-                source_quality: secondary
+                source_url: https://www.stratasys.com/siteassets/sdm/content---website-storage/design-guides/dg_sdm_fdm_0725a.pdf?v=490918
+                source_quality: primary
                 equipment: industrial-fdm
-                confidence: secondary
-              - id: c26
-                text: Vertical-wall text about 10-point bold or larger
-                value: '10'
-                unit: pt
-                source_url: https://www.hubs.com/talk/uploads/db5060/original/3X/b/5/b5f0f2e484a45e8239690bdd3dd13b81ef18998d.pdf
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                confidence: handbook
+                note: Old 16 pt / 10 pt figures came from a dead Stratasys Direct PDF (404, no archive); the current Stratasys
+                  guide says 24+ pt bold.
+                corrected: true
               conflicts:
               - topic: Dimensional accuracy
                 values:
@@ -633,20 +633,6 @@ process:
                   Assume +-0.2 mm and design fits by coupon.
                 rules:
                 - c13
-              - topic: Minimum wall
-                values:
-                - 'Prusa: 0.45 mm (one perimeter)'
-                - 'Hubs: 0.8 mm'
-                - '3dprintmap: 1.2 mm practical'
-                - 'Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing'
-                - 'Fictiv PLA guide: 1.5 mm'
-                reading: 0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least
-                  2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.
-                rules:
-                - c3
-                - c4
-                - c5
-                - c6
               sources:
               - perplexity-reasoning:517823
               - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
@@ -773,7 +759,7 @@ process:
                 unit: mm
                 source_url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c8
                 text: Typical support column or wall 1.2-1.5 mm
@@ -789,7 +775,7 @@ process:
                 unit: mm
                 source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c10
                 text: Holes above 1 mm stay circular; 2 mm more reliable service minimum; 3 mm or more preferable
@@ -826,14 +812,20 @@ process:
                 equipment: desktop-fdm
                 confidence: secondary
               - id: c14
-                text: Prototyping FDM tolerance budget about plus or minus 0.5 mm or 0.5 percent, whichever larger
-                source_url: https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                text: A desktop printer such as an Original Prusa is accurate to at least 0.2 mm; service prototyping FDM
+                  budgets plus or minus 0.5 mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c14
                 measured_on: Protolabs prototyping FDM; machine not named
+                note: 'Prusa KB 0.2 mm printer accuracy; the old 0.5 mm / 0.5 percent is a Protolabs service budget (PL_FDM
+                  page: Prototyping FDM 0.5 mm)'
+                unit: mm
+                value: '0.2'
+                corrected: true
               - id: c15
                 text: Industrial FDM tolerance about plus or minus 0.3 mm or 0.3 percent
                 source_url: https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/
@@ -844,14 +836,19 @@ process:
                 table_ref: dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c15
                 measured_on: Protolabs industrial FDM; machine not named
               - id: c16
-                text: Service layer heights 100-300 micrometres
-                source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                text: 'Desktop layer height: no lower than 0.10 mm in practice, at most 80 percent of nozzle diameter (about
+                  0.32 mm for a 0.4 mm nozzle)'
+                value: 0.10-0.32
+                unit: mm
+                source_url: https://help.prusa3d.com/article/layers-and-perimeters_1748
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
                 machine_specific: true
-                table_ref: dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c16
+                table_ref: fdm/*.layer_height
                 measured_on: Protolabs FDM service; machine not named
+                note: Replaces Protolabs service range 100-300 um; Prusa page also advises against going below 0.10 mm
               - id: c17
                 text: 'Maker rule: 0.4 mm movable gap and 0.2 mm vertical clearance after calibration'
                 source_url: https://www.makerverse.com/resources/3d-printing/the-fused-deposition-modeling-fdm-design-guide/
@@ -866,7 +863,7 @@ process:
                 text: Visible stair-stepping appears at about 200 micrometre layers
                 source_url: https://www.protolabs.com/resources/design-tips/3d-printing-tolerances/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c19
@@ -915,17 +912,6 @@ process:
                   Assume +-0.2 mm and design fits by coupon.
                 rules:
                 - c14
-              - topic: Minimum wall
-                values:
-                - 'Prusa: 0.45 mm (one perimeter)'
-                - 'Hubs: 0.8 mm'
-                - '3dprintmap: 1.2 mm practical'
-                - 'Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing'
-                - 'Fictiv PLA guide: 1.5 mm'
-                reading: 0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least
-                  2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.
-                rules:
-                - c9
               sources:
               - perplexity-reasoning:517833
               - https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
@@ -1060,25 +1046,33 @@ process:
                 unit: mm
                 source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c9
-                text: About 1 mm minimum feature and hole diameter
+                text: About 1 mm minimum hole diameter on FDM
                 value: '1'
                 unit: mm
-                source_url: https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling
+                source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
+                note: Fictiv page blocked by Cloudflare (not verified); replaced citation with the verified Xometry hole rule;
+                  Prusa minimum feature is one 0.45 mm perimeter
+                corrected: true
               - id: c10
-                text: Functional clearance 0.2 mm per side; 0.1 mm minimum start; PLA guide 0.2 mm per side / 0.4 mm total
-                source_url: https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                text: Start moving or fitted FDM parts at 0.3 mm clearance and tweak by test print
+                value: '0.3'
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
                 machine_specific: true
-                table_ref: dtree/process/additive/desktop-fdm/orientation-and-anisotropy#c10
+                table_ref: fdm/*.min_clearance
                 measured_on: Fictiv service machines
+                note: Prusa KB 0.3 mm for movable parts replaces Fictiv 0.2 mm per side (Fictiv page unverifiable); Prusa
+                  does not say per side vs total, so state it as a clearance to tune
               - id: c11
                 text: Sliding or nesting clearance 0.3-0.5 mm per side
                 source_url: https://help.makelab.com/help/article/how-to-design-holes-threads-and-inserts-for-3d-printing
@@ -1090,14 +1084,19 @@ process:
                 measured_on: not stated
                 note: no primary source found or source weak; guidance only, not DRC-enforceable
               - id: c12
-                text: Service FDM tolerance about plus or minus 0.5 mm or 1 percent per inch
-                source_url: https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                text: Desktop FDM printer accuracy is about 0.2 mm; budget more for warp and shrink
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/orientation-and-anisotropy#c12
                 measured_on: Fictiv FDM service
+                note: Fictiv 0.5 mm / 1 percent per inch is a service budget and was unverifiable (Cloudflare); Prusa KB 0.2
+                  mm used
+                unit: mm
+                value: '0.2'
+                corrected: true
               - id: c13
                 text: Self-supporting overhang 45 degrees; well-cooled machines 45-60, Prusa up to 75
                 source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
@@ -1204,19 +1203,6 @@ process:
                 rules:
                 - c12
                 - c19
-              - topic: Minimum wall
-                values:
-                - 'Prusa: 0.45 mm (one perimeter)'
-                - 'Hubs: 0.8 mm'
-                - '3dprintmap: 1.2 mm practical'
-                - 'Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing'
-                - 'Fictiv PLA guide: 1.5 mm'
-                reading: 0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least
-                  2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.
-                rules:
-                - c4
-                - c6
-                - c7
               - topic: Press fit between printed parts
                 values:
                 - 'Printforge: 0.0-0.1 mm total (its intro says 0.1-0.2)'
@@ -1310,13 +1296,17 @@ process:
                 failure_mode: dimensional-error
               rules:
               - id: c1
-                text: Ordinary wall at least 0.8 mm; 1.2 mm practical default (three perimeters, 0.4 mm nozzle)
-                value: 0.8-1.2
+                text: 'Ordinary wall: two perimeters (about 0.9 mm) minimum, three perimeters (about 1.35 mm) for a robust
+                  default on a 0.4 mm nozzle'
+                value: 0.9-1.35
                 unit: mm
-                source_url: https://www.hubs.com/3d-printing/fdm/
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                note: Prusa perimeter table replaces Hubs 0.8/1.2 mm; Hubs FDM page says its parts print with 3 perimeters
+                  or 1.2 mm
+                corrected: true
               - id: c2
                 text: 'Minimum reliable wall about 2 times nozzle: 0.8 mm for 0.4, 1.2 for 0.6, 1.6 for 0.8'
                 value: 0.8-1.6
@@ -1331,17 +1321,21 @@ process:
                 unit: mm
                 source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
                 source_quality: secondary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: secondary
               - id: c4
-                text: General prototyping FDM accuracy about plus or minus 0.5 mm; industrial about 0.3 mm
-                source_url: https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                text: Desktop FDM accuracy about 0.2 mm; service prototyping FDM budgets 0.5 mm, industrial 0.3 mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/threads-and-inserts#c4
                 measured_on: Protolabs service machines
+                note: Prusa KB figure for desktop; Protolabs 0.5/0.3 mm kept in text as service numbers
+                unit: mm
+                value: '0.2'
+                corrected: true
               - id: c5
                 text: Fit clearance 0.15-0.30 mm per side same-printer; 0.30-0.50 sliding; 0.00 to -0.10 light press
                 source_url: https://web.archive.org/web/2024/https://www.secs.oakland.edu/~latcha/ME4999/3Dprinting.html
@@ -1567,19 +1561,6 @@ process:
                 rules:
                 - c4
                 - c6
-              - topic: Minimum wall
-                values:
-                - 'Prusa: 0.45 mm (one perimeter)'
-                - 'Hubs: 0.8 mm'
-                - '3dprintmap: 1.2 mm practical'
-                - 'Melbourne Fab Lab: 2 mm general, 1.2 mm free-standing'
-                - 'Fictiv PLA guide: 1.5 mm'
-                reading: 0.45 mm is what prints; it is not a structural wall. Use whole multiples of extrusion width, at least
-                  2 perimeters (about 0.9 mm) for any wall, 1.2 mm or more for free-standing or loaded walls.
-                rules:
-                - c1
-                - c2
-                - c23
               - topic: Press fit between printed parts
                 values:
                 - 'Printforge: 0.0-0.1 mm total (its intro says 0.1-0.2)'
@@ -1690,21 +1671,31 @@ process:
                 equipment: desktop-fdm
                 confidence: handbook
               - id: c4
-                text: Structural walls 1.2-1.5 mm
-                value: 1.2-1.5
+                text: Structural walls of 3 perimeters, 1.35 mm with a 0.4 mm nozzle at 0.45 mm extrusion width
+                value: '1.35'
                 unit: mm
-                source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
+                note: Prusa wall table (row 3 perimeters = 1.35 mm*, stock 0.4 nozzle, 0.45 mm width); the 1.35 figure is
+                  a table row not a sentence, quote is the adjacent sentence. Old 1.2-1.5 was Xometry; "structural" choice
+                  of 3 perimeters is a design pick, not stated by Prusa.
+                corrected: true
               - id: c5
-                text: Service-bureau FDM wall minimum 0.8 mm; 1.0-1.2 mm safer for desktop production parts
-                source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
+                text: Wall thickness should be a whole number of perimeters, 0.45 mm for one and 0.9 mm for two on a 0.4 mm
+                  nozzle; walls thinner than one perimeter do not print
+                value: 0.45-0.9
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
+                corrected: true
                 machine_specific: true
-                table_ref: dtree/process/additive/desktop-fdm/warping-and-first-layer#c5
+                table_ref: fdm/*.min_wall
+                note: Replaces Protolabs 0.8 mm bureau minimum and the 1.0-1.2 mm shop advice with Prusa's perimeter table
+                  (1 = 0.45, 2 = 0.9 mm). Prusa marks walls between 1 and 2 perimeters as not printable.
               - id: c6
                 text: 'Structural wall: prefer more than 2 mm or add ribs rather than rely on infill'
                 value: '>2'
@@ -1714,13 +1705,19 @@ process:
                 equipment: any
                 confidence: handbook
               - id: c7
-                text: Small feature or hole at least 2.0 mm for reliable service-bureau FDM; holes below 1.0 mm risky
-                source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
-                source_quality: primary
-                equipment: industrial-fdm
-                confidence: handbook
+                text: Printed holes and small features should be at least 2 mm; design smaller holes undersized and drill
+                  them
+                source_url: https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/
+                source_quality: secondary
+                equipment: desktop-fdm
+                confidence: secondary
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/warping-and-first-layer#c7
+                note: Prusa KB and Bambu wiki give no minimum hole size (searched KB and wiki); Ultimaker is the desktop secondary.
+                  Same 2 mm as old value; the "below 1.0 mm risky" clause is dropped as unsourced for desktop.
+                unit: mm
+                value: '2'
+                corrected: true
               - id: c8
                 text: Mating clearance start 0.2 mm; 0.5 mm for conservative loose fit
                 source_url: https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling
@@ -1730,13 +1727,18 @@ process:
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/warping-and-first-layer#c8
               - id: c9
-                text: Assembled moving parts need at least one layer height in Z and one extrusion width in XY (Stratasys)
-                value: 1 layer height Z; 1 extrusion width XY
-                unit: '-'
-                source_url: https://www.hubs.com/talk/uploads/db5060/original/3X/b/5/b5f0f2e484a45e8239690bdd3dd13b81ef18998d.pdf
+                text: Moving parts printed together need at least 0.3 mm clearance (Prusa); Ultimaker uses 0.6 mm
+                value: '0.3'
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
+                corrected: true
+                machine_specific: true
+                table_ref: fdm/*.min_clearance
+                note: Replaces "one layer height Z / one extrusion width XY" (Stratasys) with Prusa's fixed 0.3 mm start value;
+                  Ultimaker (U) says 0.6 mm gap for parts printed together, a more conservative secondary figure.
               - id: c10
                 text: Desktop FDM dimensional tolerance about +-0.5 mm or +-1%, whichever is larger
                 source_url: https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling
@@ -1746,15 +1748,26 @@ process:
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/warping-and-first-layer#c10
                 measured_on: not named
-              - id: c11
+              - id: c11a
+                text: Expect dimensional accuracy of about +-0.2 mm on a Prusa desktop printer
+                value: '0.2'
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
+                note: Prusa states it as accuracy "at least 0.2 mm" (read as +-0.2); printer-specific to Original Prusa.
+              - id: c11b
                 text: Industrial/service FDM tolerance about +-0.3 mm, or +-0.1-0.2 mm in controlled bureau conditions
                 source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
                 source_quality: primary
                 equipment: industrial-fdm
                 confidence: handbook
                 machine_specific: true
-                table_ref: dtree/process/additive/desktop-fdm/warping-and-first-layer#c11
+                table_ref: dtree/process/additive/desktop-fdm/warping-and-first-layer#c11b
                 measured_on: not named
+                note: Unchanged old record, retagged to its true equipment.
               - id: c12
                 text: Common FDM layer height range 0.1-0.3 mm
                 value: 0.1-0.3
@@ -2078,49 +2091,74 @@ process:
                 confidence: handbook
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/dimensional-accuracy#c5
-              - id: c6
-                text: Service-bureau FDM minimum wall 0.8 mm; minimum feature and hole 2.0 mm
-                source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
-                source_quality: primary
-                equipment: industrial-fdm
-                confidence: handbook
-                machine_specific: true
-                table_ref: dtree/process/additive/desktop-fdm/dimensional-accuracy#c6
-              - id: c7
-                text: Supporting walls 1.2-1.5 mm; features thinner than twice the extrusion road usually fail (Xometry, industrial
-                  0.254 mm road)
-                value: 1.2-1.5
+              - id: c6a
+                text: Minimum wall is one perimeter, 0.45 mm on a 0.4 mm nozzle; use 0.9 mm for two perimeters
+                value: '0.45'
                 unit: mm
-                source_url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
+                machine_specific: true
+                table_ref: fdm/*.min_wall
+                note: Prusa wall table, 1 perimeter = 0.45 mm.
+              - id: c6b
+                text: Minimum hole or feature size 2 mm
+                value: '2'
+                unit: mm
+                source_url: https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/
+                source_quality: secondary
+                equipment: desktop-fdm
                 confidence: secondary
                 corrected: true
-                note: the draft's 2 x 0.4 mm nozzle = 0.8 mm desktop rule is not in the source
+                note: Ultimaker desktop guide; Prusa KB and Bambu wiki silent on hole minimum.
+              - id: c7
+                text: Supporting walls should be at least two perimeters (0.9 mm on a 0.4 mm nozzle); walls between one and
+                  two perimeters do not print
+                value: '0.9'
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
+                note: 'Prusa printability table: below one perimeter cross, one perimeter tick, between one and two cross,
+                  two or more tick. Icons are images; read from page HTML (xmark.png / checkmark.png) by DESIGN.'
               - id: c8
-                text: Structural ribs 1.5 mm safe minimum
-                value: '1.5'
+                text: Ribs can be built from perimeters; use 3 perimeters (1.35 mm) for structural ribs on a 0.4 mm nozzle
+                value: '1.35'
                 unit: mm
-                source_url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
-                confidence: handbook
+                equipment: desktop-fdm
+                confidence: shop-rule
+                note: Prusa has no rib guidance; derived from its wall table (a rib is a thin wall). Marked shop-rule because
+                  the rib reading is my inference.
+                corrected: true
               - id: c9
-                text: Small detail at least 1.0 mm thick; text height minimum 1.0 mm, 1.2-1.5 mm preferred
-                value: 1.0; 1.2-1.5
+                text: Smallest printable detail thickness is one perimeter, 0.45 mm on a 0.4 mm nozzle (0.9 mm for two)
+                value: '0.45'
                 unit: mm
-                source_url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
+                note: Detail thickness taken from Prusa wall table. The text height minimum (1.0 / 1.2-1.5 mm) has no Prusa
+                  or Bambu source found; drop that clause or file separately.
+                corrected: true
               - id: c10
-                text: Round holes larger than 1 mm; 2 mm or more when circularity matters
-                source_url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf
-                source_quality: primary
-                equipment: industrial-fdm
-                confidence: handbook
+                text: Round holes should be at least 2 mm; design smaller holes undersized and drill to size
+                source_url: https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/
+                source_quality: secondary
+                equipment: desktop-fdm
+                confidence: secondary
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/dimensional-accuracy#c10
+                note: Ultimaker desktop guide gives 2 mm; no desktop source for the 1 mm lower figure.
+                unit: mm
+                value: '2'
+                corrected: true
               - id: c11
                 text: Layer height normally 20-70% of nozzle diameter (0.08-0.28 mm for 0.4 mm)
                 value: 20-70
@@ -2130,13 +2168,18 @@ process:
                 equipment: desktop-fdm
                 confidence: handbook
               - id: c12
-                text: 'Service layer heights 0.10-0.30 mm: about 0.10 high-res, 0.20-0.254 normal, 0.30-0.33 low-res'
-                value: 0.10-0.33
+                text: Layer height should be at most 70-80% of nozzle diameter, about 0.28-0.32 mm on a 0.4 mm nozzle
+                value: 0.28-0.32
                 unit: mm
-                source_url: https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/
+                source_url: https://help.prusa3d.com/article/creating-profiles-for-different-nozzles_127540
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
+                corrected: true
+                machine_specific: true
+                table_ref: fdm/*.layer_height
+                note: Prusa gives only the upper bound; the 0.10 high-res floor was a bureau figure with no desktop source
+                  found, and the 0.28-0.32 arithmetic for 0.4 nozzle is mine.
               - id: c13
                 text: Use 0.10-0.20 mm layers when Z height accuracy matters
                 source_url: https://wiki.bambulab.com/en/software/bambu-studio/layer-height
@@ -2393,30 +2436,37 @@ process:
                 equipment: any
                 confidence: handbook
               - id: c2
-                text: Structural wall 1.2-1.5 mm
-                value: 1.2-1.5
+                text: Structural wall of 3 perimeters, 1.35 mm with a 0.4 mm nozzle at 0.45 mm extrusion width
+                value: '1.35'
                 unit: mm
-                source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
+                note: Same as warping-and-first-layer c4; Prusa table row 3 perimeters = 1.35 mm.
+                corrected: true
               - id: c3
-                text: Features thinner than 2 x nozzle diameter are unreliable (0.8 mm for 0.4 mm)
-                value: '2'
-                unit: x nozzle
-                source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
-                source_quality: weak
-                equipment: industrial-fdm
-                confidence: shop-rule
-                note: no primary source found or source weak; guidance only, not DRC-enforceable
-              - id: c4
-                text: Rib thickness at least 1.5 mm
-                value: '1.5'
+                text: On a 0.4 mm nozzle a wall prints as exactly one perimeter (0.45 mm) or two or more (0.9 mm and up);
+                  below one perimeter, or between one and two, it does not print cleanly
+                value: 0.45 or >=0.9
                 unit: mm
-                source_url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf
-                source_quality: secondary
-                equipment: industrial-fdm
-                confidence: secondary
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: shop-rule
+                note: Rewritten to Prusa's printability table; the drafted 'under 2 extrusion widths is unreliable' wording
+                  is not on the page.
+                corrected: true
+              - id: c4
+                text: Rib thickness 1.35 mm (3 perimeters) on a 0.4 mm nozzle
+                value: '1.35'
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: shop-rule
+                note: Derived from Prusa wall table; no rib-specific Prusa guidance (see dimensional-accuracy c8).
+                corrected: true
               - id: c5
                 text: Large perforated-part wall start at 2.0 mm
                 value: '2.0'
@@ -2471,14 +2521,17 @@ process:
                 table_ref: dtree/process/additive/desktop-fdm/material-selection#c10
                 note: no primary source found or source weak; guidance only, not DRC-enforceable
               - id: c11
-                text: Horizontal hole minimum 2 mm preferred; Xometry circular minimum more than 1 mm; Hubs avoids holes below
-                  1-2 mm
-                source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
-                source_quality: primary
-                equipment: industrial-fdm
-                confidence: handbook
+                text: Horizontal holes at least 2 mm; design undersized and drill when accuracy matters
+                source_url: https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/
+                source_quality: secondary
+                equipment: desktop-fdm
+                confidence: secondary
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/material-selection#c11
+                note: Ultimaker does not distinguish horizontal holes; Xometry and Hubs comparisons dropped (not desktop).
+                unit: mm
+                value: '2'
+                corrected: true
               - id: c12
                 text: Sliding/nesting fit clearance 0.3-0.5 mm per side
                 source_url: https://github.com/mike-mones/bambu-easy/blob/master/Reference/fdm-design-rules.md
@@ -2593,13 +2646,18 @@ process:
                 table_ref: dtree/process/additive/desktop-fdm/material-selection#c23
                 measured_on: 'not named on mini guide; capabilities page: Stratasys Fortus'
               - id: c24
-                text: Xometry minimum wall 1.2 mm for smaller supported structures, 1.5 mm more robust
-                source_url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf
+                text: Minimum wall 0.9 mm (2 perimeters) for small features, 1.35 mm (3 perimeters) for robust walls on a
+                  0.4 mm nozzle
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/material-selection#c24
+                note: Replaces Xometry 1.2 / 1.5 mm with Prusa perimeter multiples.
+                unit: mm
+                value: 0.9-1.35
+                corrected: true
               - id: c25
                 text: Xometry large-part wall 1.19 mm below 16 in, 1.52 mm above 16 in
                 source_url: https://www.xometry.com/capabilities/3d-printing-service/fused-deposition-modeling/
@@ -2789,13 +2847,15 @@ process:
                 equipment: desktop-fdm
                 confidence: handbook
               - id: c2
-                text: Robust structural walls about 1.2-1.5 mm or more
-                value: 1.2-1.5
+                text: Robust structural walls of 3 perimeters, 1.35 mm or more on a 0.4 mm nozzle
+                value: '1.35'
                 unit: mm
-                source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
                 source_quality: primary
-                equipment: industrial-fdm
+                equipment: desktop-fdm
                 confidence: handbook
+                note: Prusa wall table row 3 perimeters = 1.35 mm.
+                corrected: true
               - id: c3
                 text: Practical default 3-4 perimeters for functional or watertight wall; 5-6 rarely needed
                 value: 3-4
@@ -2832,14 +2892,18 @@ process:
                 table_ref: dtree/process/additive/desktop-fdm/strength-and-infill#c6
                 measured_on: Prusa MK4S / CORE One family for 75 deg
               - id: c7
-                text: Holes larger than about 1 mm; orient precision holes with axis in Z when possible; drill or ream critical
-                  holes
-                source_url: https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/
-                source_quality: primary
-                equipment: industrial-fdm
-                confidence: handbook
+                text: Holes at least 2 mm; design precision holes undersized and drill or ream to size
+                source_url: https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/
+                source_quality: secondary
+                equipment: desktop-fdm
+                confidence: secondary
                 machine_specific: true
                 table_ref: dtree/process/additive/desktop-fdm/strength-and-infill#c7
+                note: Ultimaker gives 2 mm and the undersize-then-drill advice. The "axis in Z" orientation advice has no
+                  desktop source found (Prusa/Bambu forum only) and is dropped.
+                unit: mm
+                value: '2'
+                corrected: true
               - id: c8
                 text: Initial clearance for moving or mating parts at least 0.3 mm
                 source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
@@ -3255,7 +3319,7 @@ process:
           domain: mech
           scale: macro
           coverage: shallow
-          equipment: industrial-fdm
+          equipment: powder-bed
           summary: Polymer powder bed fusion (SLS, MJF, mostly PA12) needs no supports because powder holds the part, so it
             suits complex tough nylon parts, but walls, gaps, powder escape and warpage still set the rules. Numbers vary
             by machine and bureau; first-article the critical fits.
@@ -3318,7 +3382,7 @@ process:
             text: Protolabs absolute minimum wall for SLS PA12
             source_url: https://www.protolabs.com/resources/design-tips/how-to-design-for-nylon-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c1
@@ -3327,7 +3391,7 @@ process:
             text: Protolabs absolute minimum wall for MJF PA12
             source_url: https://www.protolabs.com/en-gb/services/3d-printing/plastic/nylon/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c2
@@ -3336,7 +3400,7 @@ process:
             text: Robust production wall for SLS PA12 (Hubs 0.8 mm; unsupported 1.0 mm)
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c3
@@ -3347,14 +3411,14 @@ process:
             unit: mm
             source_url: https://www.fictiv.com/specifications/3d-printing
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
           - id: c5
             text: 'Protolabs SLS minimum wall by material: PA12 0.80, glass-filled PA12 1.00, carbon-filled PA12 0.80, TPU
               1.00 mm; MJF PA12, glass-bead PA12 and PA11 0.50 mm'
             source_url: https://www.protolabs.com/en-gb/resources/design-for-3d-printing-toolkit/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c5
@@ -3363,7 +3427,7 @@ process:
             text: Minimum gap between separate features (Protolabs 0.762 mm in one guide, 1 mm in another)
             source_url: https://www.protolabs.com/en-gb/resources/insight/nylon-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c6
@@ -3372,7 +3436,7 @@ process:
             text: Clearance for moving or interlocking parts, starting range
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c7
@@ -3381,7 +3445,7 @@ process:
             text: Sphere-in-pocket clearance for SLS
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c8
@@ -3391,7 +3455,7 @@ process:
               mm
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c9
@@ -3402,7 +3466,7 @@ process:
             unit: mm
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
           - id: c11
             text: Preferred powder escape hole diameter (Fictiv), two or more holes (Hubs)
@@ -3410,7 +3474,7 @@ process:
             unit: mm
             source_url: https://www.fictiv.com/specifications/3d-printing
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
           - id: c12
             text: Hole-to-edge or hole-to-hole spacing as multiple of wall thickness
@@ -3418,14 +3482,14 @@ process:
             unit: x wall thickness
             source_url: https://www.hubs.com/knowledge-base/dfm-tips-for-3d-printed-parts-with-thin-walls/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
           - id: c13
             text: 'SLS embossed or engraved detail: minimum feature 0.8, engraving depth 1, emboss height 1, text height 2
               mm'
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c13
@@ -3436,7 +3500,7 @@ process:
             unit: mm
             source_url: https://www.protolabs.com/es-es/recursos/sugerencias-de-diseno/como-disenar-para-la-impresion-en-nylon-3d/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
           - id: c15
             text: MJF ideal wall 2.5-4 mm, hollow thick regions to 2-4 mm, avoid sections above 4 mm without hollowing
@@ -3444,7 +3508,7 @@ process:
             unit: mm
             source_url: https://www.protolabs.com/en-gb/services/3d-printing/multi-jet-fusion/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
           - id: c16
             text: Hubs lists 20 mm as maximum wall recommendation for SLS
@@ -3452,13 +3516,13 @@ process:
             unit: mm
             source_url: https://www.hubs.com/3d-printing/sls/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
           - id: c17
             text: SLS nominal tolerance +/-0.3 mm or 0.3% whichever larger (Hubs); Protolabs +/-0.2 mm + 0.002 mm/mm
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c17
@@ -3467,7 +3531,7 @@ process:
             text: MJF Protolabs tolerance +/-0.25 mm + 0.002 mm/mm
             source_url: https://www.protolabs.com/en-gb/services/3d-printing/multi-jet-fusion/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c18
@@ -3476,7 +3540,7 @@ process:
             text: Typical layer thickness SLS about 0.10 mm, MJF about 0.08 mm
             source_url: https://www.protolabs.com/resources/design-tips/how-to-use-multi-jet-fusion-for-functional-3d-printed-parts/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c19
@@ -3485,7 +3549,7 @@ process:
             text: Service bureaus pre-compensate SLS shrinkage by about 3-3.5%
             source_url: https://www.hubs.com/knowledge-base/how-design-parts-sls-3d-printing/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c20
@@ -3494,7 +3558,7 @@ process:
             text: Protolabs MJF nominal minimum feature size
             source_url: https://www.protolabs.com/resources/design-tips/how-to-use-multi-jet-fusion-for-functional-3d-printed-parts/
             source_quality: primary
-            equipment: industrial-fdm
+            equipment: powder-bed
             confidence: handbook
             machine_specific: true
             table_ref: dtree/process/additive/powder-bed#c21

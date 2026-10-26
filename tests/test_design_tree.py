@@ -397,6 +397,56 @@ def test_rejects_bad_nodes(tmp_path: Path) -> None:
             {"a": {"id": "a", "role": "goal", "issues": [{"issue": ""}]}},
             "nonempty string 'issue'",
         ),
+        (
+            {
+                "a": {
+                    "id": "a",
+                    "role": "goal",
+                    "implies": {"class": "rigid"},
+                }
+            },
+            "role=leaf",
+        ),
+        (
+            {
+                "a": {
+                    "id": "a",
+                    "role": "leaf",
+                    "implies": {"class": "rigid", "surprise": 1},
+                }
+            },
+            "unknown field",
+        ),
+        (
+            {
+                "a": {
+                    "id": "a",
+                    "role": "leaf",
+                    "implies": {"mechanism": "screw"},
+                }
+            },
+            "'class'",
+        ),
+        (
+            {
+                "a": {
+                    "id": "a",
+                    "role": "leaf",
+                    "implies": {"class": "rigid", "rank": "first"},
+                }
+            },
+            "'rank' must be an integer",
+        ),
+        (
+            {
+                "a": {
+                    "id": "a",
+                    "role": "leaf",
+                    "implies": {"class": "rigid", "rank": True},
+                }
+            },
+            "'rank' must be an integer",
+        ),
     ]
     for data, match in cases:
         with pytest.raises(DesignTreeError, match=match):
@@ -429,7 +479,7 @@ def test_rejects_bad_rules(tmp_path: Path) -> None:
         ({"rules": [{"id": "f2", "text": "t"}]}, "reserved"),
         (
             {"rules": [{"id": "c1", "text": "t", "table_ref": "fdm/unobtainium"}]},
-            "names no design-tree/capabilities.json row or standard table",
+            "names no design-tree/capabilities.json row, se_capabilities.json row",
         ),
         (
             {"rules": [{"id": "c1", "text": "t", "table_ref": 3}]},
@@ -577,6 +627,27 @@ def test_real_manifests_validate() -> None:
     assert "axis/locking" in tree.nodes
     assert "failure/galvanic-corrosion" in tree.nodes
     assert "criterion/separable" in tree.nodes
+
+
+def test_implies_tokens_match_the_joint_vocabulary() -> None:
+    """Every ``implies`` class/mechanism in the packaged manifests is a
+    ``precis_se.joints`` token — the manifest validator checks only the
+    field's shape (joints.py already imports this module, so the
+    vocabulary can't be imported here), and a typo'd token would be a
+    silent never-match for the connect walk's leaf hints."""
+    from precis_se import joints
+
+    tree = load_dir(design_tree.packaged_data_dir() / "design-tree")
+    implied = [
+        (nid, node.record["implies"])
+        for nid, node in tree.nodes.items()
+        if node.record.get("implies")
+    ]
+    assert implied, "no leaf carries implies — the S2 mapping is missing"
+    for nid, implies in implied:
+        assert implies["class"] in joints.KINEMATIC_CLASSES, nid
+        mech = implies.get("mechanism")
+        assert mech is None or mech in joints.MECHANISMS, nid
 
 
 def test_leaf_ids_from_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

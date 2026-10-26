@@ -32,6 +32,9 @@ join:
           coverage: deep
           principle: none
           directness: direct
+          implies:
+            class: rigid
+            mechanism: integral
           summary: Make both functions one continuous printed or moulded body (integral hinges, snaps, print-in-place) so
             no joint exists. Fits permanent, low-load-at-interface assemblies of one material.
           when:
@@ -129,14 +132,28 @@ join:
             source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
             source_quality: primary
             confidence: handbook
-          - id: c4
+          - id: c4a
             text: Minimum FDM wall about 4x layer thickness (1.016 mm at 0.254 mm layers)
             value: '4'
             unit: x layer thickness
-            equipment: industrial-fdm
             source_url: https://www.stratasys.com/siteassets/sdm/content---website-storage/design-guides/dg_sdm_fdm_0725a.pdf?v=490918
             source_quality: primary
+            equipment: industrial-fdm
             confidence: handbook
+            note: Stratasys 4x layer rule kept for Fortus-class machines; not re-verified against the PDF (not in this slice
+              scope)
+          - id: c4b
+            text: Minimum printable FDM wall on a 0.4 mm nozzle is one perimeter, about 0.45 mm; two perimeters give about
+              0.9 mm
+            value: '0.45'
+            unit: mm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+            source_quality: primary
+            equipment: desktop-fdm
+            confidence: handbook
+            corrected: true
+            machine_specific: true
+            table_ref: fdm/*.min_wall
           - id: c5
             text: Injection-moulded nominal wall commonly 1-3 mm
             value: 1-3
@@ -224,16 +241,19 @@ join:
             text: FDM interlayer bond is the weakest direction; avoid loads that open layers
             value: null
             unit: null
-            equipment: industrial-fdm
-            source_url: https://www.stratasys.com/contentassets/1a0cc7a8e7d14f29ac972189bfeade4c/dg_fdm_designconsiderationsfdmtooling_0718a.pdf?v=48fbe5
+            equipment: desktop-fdm
+            source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
             source_quality: primary
             confidence: handbook
+            note: Same rule, Prusa KB instead of Stratasys tooling guide; Prusa does not name the interlayer direction explicitly,
+              it says strength is directional
+            corrected: true
           - id: c18
             text: Plan about 0.5 mm stock allowance on 3D-printed injection moulds and finish by post-processing (stock is
               on the mould, not the moulded part)
             value: '0.5'
             unit: mm
-            equipment: injection-mould
+            equipment: sla
             source_url: https://formlabs.com/support/Injection-molding/
             source_quality: secondary
             confidence: secondary
@@ -251,6 +271,9 @@ join:
           id: join/integrate/machine-from-solid
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: integral
           summary: Cut both features from one billet, plate or near-net blank so the joint disappears. Pays off when the joint's
             risk and cost exceed the material removed.
           when:
@@ -453,6 +476,9 @@ join:
           id: join/integrate/cast-as-one
           role: leaf
           coverage: deep
+          implies:
+            class: rigid
+            mechanism: integral
           summary: Cast the whole assembly as one body so the joint never exists. Works when one castable alloy meets every
             function and the quantity repays pattern or die tooling; design it as a foundry part (feeding, cores, uniform
             sections, machined datums), not as a machined solid with the joint deleted.
@@ -856,6 +882,8 @@ join:
               coverage: deep
               principle: material-bond
               directness: direct
+              implies:
+                class: rigid
               summary: Fuse the parts permanently, by fusion or resistance welding for metals, or ultrasonic, hot-plate, vibration
                 and similar for thermoplastics. Joint strength is governed by weld detail and workmanship, not parent metal.
               when:
@@ -1027,7 +1055,7 @@ join:
                   60 deg equilateral one; PC and acrylic are amorphous but use the 60 deg form, so the rule is not clean
                 value: 90 / 60
                 unit: deg
-                equipment: any
+                equipment: injection-mould
                 source_url: https://www.twi-global.com/technical-knowledge/job-knowledge/ultrasonic-welding-of-injection-moulded-components-part-2-component-design-and-weld-parameters-062
                 source_quality: secondary
                 confidence: secondary
@@ -1120,6 +1148,8 @@ join:
               coverage: deep
               principle: material-bond
               directness: indirect
+              implies:
+                class: rigid
               summary: Join metals with a filler that melts below the base metal, drawn into a controlled gap by capillary
                 action. Brazing is above 450 C filler liquidus, soldering below. Design as a shear or lap joint with a set
                 gap.
@@ -1304,6 +1334,8 @@ join:
               coverage: deep
               principle: material-bond
               directness: indirect
+              implies:
+                class: rigid
               summary: Bond with epoxy, acrylic, cyanoacrylate or PSA tape. Design so the adhesive sees shear or compression,
                 never peel or cleavage, with a controlled bondline and prepared surfaces.
               when:
@@ -1538,6 +1570,8 @@ join:
               coverage: deep
               principle: material-bond
               directness: direct
+              implies:
+                class: rigid
               summary: Soften both mating faces with a solvent or solvent cement so the polymer chains interdiffuse and fuse
                 as the solvent leaves. Only for plastics the same solvent dissolves (ABS, PMMA, PVC, PS, SAN, some PC), with
                 a close fit and a broad overlap.
@@ -1664,7 +1698,7 @@ join:
                 text: 'Covestro staged PC cure to 93 C operating temperature: 23 C 8 h, 38 C 12 h, 65 C 12 h, 93 C 12 h'
                 value: '93'
                 unit: C
-                equipment: injection-mould
+                equipment: any
                 source_url: https://solutions.covestro.com/-/media/covestro/solution-center/brands/downloads/imported/1557217197.pdf
                 source_quality: primary
                 confidence: handbook
@@ -1710,6 +1744,8 @@ join:
               coverage: deep
               principle: form
               directness: indirect
+              implies:
+                class: rigid
               summary: Permanent, shear-loaded joint of thin sheet; solid rivet if both sides reachable, blind rivet if one
                 side only. Weak for clamp load, sealing, creep-prone plastic, and anything needing disassembly.
               when:
@@ -1970,6 +2006,8 @@ join:
               coverage: deep
               principle: form
               directness: direct
+              implies:
+                class: rigid
               summary: A moulded thermoplastic post goes through a hole in the second part and is reformed into a head with
                 heat or ultrasonic energy. Cheap permanent retention in volume; weak as sole carrier of high or cyclic load.
               when:
@@ -2236,6 +2274,8 @@ join:
               coverage: deep
               principle: form
               directness: direct
+              implies:
+                class: rigid
               summary: Join two or more ductile metal sheets by pressing a local button interlock with a punch and die. No
                 added part, no heat, no consumable.
               when:
@@ -2369,6 +2409,10 @@ join:
               coverage: deep
               principle: form
               directness: indirect
+              implies:
+                class: rigid
+                mechanism: screw
+                rank: 10
               summary: Press a nut, stud or standoff into a punched hole in ductile sheet so it cold-flows into the panel
                 and stays. Gives a permanent thread or post in thin metal.
               when:
@@ -2476,6 +2520,10 @@ join:
               directness: indirect
               also_under:
               - join/service/threaded
+              implies:
+                class: rigid
+                mechanism: screw
+                rank: 9
               summary: A threaded tubular insert set from one side of a panel or tube by pulling and upsetting its body. Gives
                 a captive thread where only one side is reachable.
               when:
@@ -2567,6 +2615,8 @@ join:
               coverage: deep
               principle: force
               directness: direct
+              implies:
+                class: rigid
               summary: Join a tube to a fitting by plastically deforming the tube or fitting with a swage, roller or crimp
                 tool. Used for qualified fluid-system joints; capacity depends on the whole fitting system.
               when:
@@ -2661,6 +2711,9 @@ join:
               coverage: deep
               principle: force
               directness: direct
+              implies:
+                class: rigid
+                mechanism: press
               summary: Friction joint from diametral interference, assembled by press or by thermal change. Predictable for
                 steel-on-steel machined cylinders; unreliable in FDM, moulded or creeping plastics unless calibrated. Best
                 paired with a key, shoulder or ring for overload.
@@ -2929,6 +2982,10 @@ join:
               coverage: deep
               principle: form
               directness: direct
+              implies:
+                class: rigid
+                mechanism: snap
+                rank: 4
               summary: Moulded cantilever or annular hook assembled by elastic deflection and retained by a steep (90 degree)
                 return face. Cheapest one-time plastic assembly; strain-limited, creep and root-fatigue sensitive, not for
                 primary structural load.
@@ -3101,20 +3158,24 @@ join:
                 source_quality: weak
                 confidence: secondary
               - id: c10
-                text: FDM clearance fits are typically 0.1-0.3 mm depending on printer and process (one vendor guide); its
-                  0.4 mm slide fit is a generic figure, not FDM
-                value: 0.1-0.3
+                text: Printed movable parts and snap clearances start at 0.3 mm on a desktop FDM printer; test and tighten
+                  from there
+                value: '0.3'
                 unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
                 equipment: desktop-fdm
-                source_url: https://www.fictiv.com/articles/how-to-design-snap-fit-components
-                source_quality: weak
-                confidence: secondary
+                confidence: handbook
                 corrected: true
+                machine_specific: true
+                table_ref: fdm/*.min_clearance
+                note: Fictiv says '3D printing' generally, not FDM, and not desktop; its 0.1-0.3 mm is not a desktop figure.
+                  Prusa KB gives 0.3 mm as the starting clearance for movable printed parts.
               - id: c11
                 text: 'end-mill internal corner radius allowance: 0.8-1.5 mm'
                 value: 0.8-1.5
                 unit: mm
-                equipment: injection-mould
+                equipment: cnc-mill
                 source_url: https://www.fictiv.com/articles/how-to-design-snap-fit-components
                 source_quality: weak
                 confidence: secondary
@@ -3126,7 +3187,10 @@ join:
                 equipment: desktop-fdm
                 source_url: https://aarontyleranderson.com/wp-content/uploads/2022/02/SnapFit_Quick_Guide.pdf
                 source_quality: weak
-                confidence: secondary
+                confidence: shop-rule
+                note: Guide is an unattributed PDF; says 'FDM equipment' with no printer class or vendor. Cannot confirm desktop;
+                  no desktop source found for max deflecting wall.
+                corrected: true
               - id: c13
                 text: 'Covestro annular worked example: PC, 200 mm diameter, 1 mm per part (2 mm undercut), strain 0.5 percent'
                 value: '200'
@@ -3175,6 +3239,10 @@ join:
               coverage: deep
               principle: force
               directness: indirect
+              implies:
+                class: rigid
+                mechanism: screw
+                rank: 1
               summary: Screw passes freely through the near part (ISO 273 hole, optional counterbore for ISO 4762 head) and
                 clamps into a tapped hole in the far part. Default detachable joint when one side is accessible and the far
                 part is metal or inserted.
@@ -3424,6 +3492,10 @@ join:
               coverage: deep
               principle: force
               directness: indirect
+              implies:
+                class: rigid
+                mechanism: screw
+                rank: 2
               summary: Bolt through clearance holes in both parts, nut and washers on the far side. Strongest, most inspectable
                 detachable joint when both sides are reachable and parts can be drilled through.
               when:
@@ -3612,6 +3684,10 @@ join:
               coverage: deep
               principle: force
               directness: indirect
+              implies:
+                class: rigid
+                mechanism: screw
+                rank: 3
               summary: Brass or steel threaded insert melted or pressed into a hole in a thermoplastic part, giving a reusable
                 metal thread. Good for one-sided access, repeated service, FDM and moulded thermoplastics; weak under bending,
                 impact, high cyclic load or sustained hot preload.
@@ -3802,6 +3878,10 @@ join:
               coverage: deep
               principle: force
               directness: indirect
+              implies:
+                class: rigid
+                mechanism: screw
+                rank: 4
               summary: Hex pocket in a plastic part captures a standard nut so a screw clamps without a spanner on the far
                 side. Cheap and FDM-friendly; weak walls, creep and nut-spin limit load and cycle life.
               when:
@@ -3869,7 +3949,7 @@ join:
                 text: ISO 4032 M3 nut 5.5 mm across flats, 2.4 mm max thick
                 value: 5.5 / 2.4
                 unit: mm
-                equipment: desktop-fdm
+                equipment: bought
                 source_url: https://www.mfsupply.com/v/vspfiles/assets/31-NHM6ISO4032SS-0-Nut-Hex.pdf
                 source_quality: secondary
                 confidence: secondary
@@ -3878,7 +3958,7 @@ join:
                 text: ISO 4032 across flats / thickness M4 7.0/3.2, M5 8.0/4.7, M6 10.0/5.2, M8 13.0/6.8, M10 16.0/8.4 mm
                 value: 7/3.2; 8/4.7; 10/5.2; 13/6.8; 16/8.4
                 unit: mm
-                equipment: desktop-fdm
+                equipment: bought
                 source_url: https://www.mfsupply.com/v/vspfiles/assets/31-NHM6ISO4032SS-0-Nut-Hex.pdf
                 source_quality: secondary
                 confidence: secondary
@@ -3887,7 +3967,7 @@ join:
                 text: ISO 4032 geometry covers M1.6 to M64
                 value: M1.6-M64
                 unit: thread
-                equipment: desktop-fdm
+                equipment: bought
                 source_url: https://cdn.standards.iteh.ai/samples/61668/93b89b8502a943499386155c44018aaa/ISO-4032-2012.pdf
                 source_quality: primary
                 confidence: standard
@@ -3911,7 +3991,7 @@ join:
                 text: ISO 273 based clearance holes M3 3.4, M4 4.5, M5 5.5, M6 6.6 mm
                 value: 3.4 / 4.5 / 5.5 / 6.6
                 unit: mm
-                equipment: desktop-fdm
+                equipment: any
                 source_url: https://github.com/w1ne/kernelCAD-web/blob/develop/cookbook/snippets/hex-nut-trap-bolt-clearance.md
                 source_quality: weak
                 confidence: secondary
@@ -3971,7 +4051,7 @@ join:
                 text: Typical interference between plastic hole and metal insert OD 0.25-0.30 mm
                 value: 0.25-0.30
                 unit: mm
-                equipment: desktop-fdm
+                equipment: injection-mould
                 source_url: https://www.m-dtg.com/blogs/insert-injection-molding-design-guide
                 source_quality: weak
                 confidence: secondary
@@ -3980,7 +4060,7 @@ join:
                   of 2.0x or less is the sink-mark workaround.
                 value: '2.5'
                 unit: x d
-                equipment: desktop-fdm
+                equipment: injection-mould
                 source_url: https://www.hankyan.com/design%20guide%20BASF.pdf
                 source_quality: secondary
                 confidence: secondary
@@ -4003,6 +4083,10 @@ join:
               coverage: deep
               principle: force
               directness: indirect
+              implies:
+                class: rigid
+                mechanism: screw
+                rank: 5
               summary: Plastic-specific thread-forming screw (low-angle flank, e.g. EJOT DELTA PT) driven into a cored boss
                 in a ductile thermoplastic. Cheapest one-sided joint for a few openings and moderate loads; poor for frequent
                 service, hot or filled plastics without testing.
@@ -4201,6 +4285,9 @@ join:
               coverage: deep
               principle: form
               directness: indirect
+              implies:
+                class: revolute
+                mechanism: screw
               summary: ISO 7379 socket-head screw with a ground unthreaded shoulder (6.5 to 25 mm) smaller thread. The shoulder
                 is the pivot, guide or locator; thread only retains. Moderate load, removable, needs a bushing for soft hole
                 material.
@@ -4350,22 +4437,42 @@ join:
                 confidence: shop-rule
                 note: consistent with ISO 286-2 deviations (H7 +21/0, g6 -7/-20 um at 25 mm) but no page stating it was read;
                   not DRC-enforceable
-              - id: c11
+              - id: c11a
                 text: 'Stratasys FDM accuracy +-0.005 in or +-0.0015 in/in whichever greater: 0.127 / 0.0015 mm / ratio'
                 value: 0.127 / 0.0015
                 unit: mm / ratio
-                equipment: industrial-fdm
                 source_url: https://www.stratasys.com/contentassets/1a0cc7a8e7d14f29ac972189bfeade4c/dg_fdm_designconsiderationsfdmtooling_0718a.pdf
                 source_quality: primary
+                equipment: industrial-fdm
                 confidence: handbook
-              - id: c12
+                note: Stratasys +-0.127 mm or 0.0015 in/in kept for Fortus-class machines
+              - id: c11b
+                text: An Original Prusa printer is accurate to at least 0.2 mm; shrink and warp vary by material
+                value: '0.2'
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
+              - id: c12a
                 text: FDM service temperature at least 28 C below HDT and 14 C below Tg
                 value: 28; 14
                 unit: K
-                equipment: industrial-fdm
                 source_url: https://www.stratasys.com/contentassets/1a0cc7a8e7d14f29ac972189bfeade4c/dg_fdm_designconsiderationsfdmtooling_0718a.pdf
                 source_quality: primary
+                equipment: industrial-fdm
                 confidence: handbook
+                note: Stratasys 28 C below HDT / 14 C below Tg margin kept for industrial FDM
+              - id: c12b
+                text: Prusament PETG parts suit interior and most exterior use below 80 C
+                value: '80'
+                unit: C
+                source_url: https://help.prusa3d.com/article/petg_2059
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
               - id: c13
                 text: NASA preliminary preload P = 0.65 sigma_y A
                 value: '0.65'
@@ -4395,6 +4502,8 @@ join:
               coverage: deep
               principle: form
               directness: indirect
+              implies:
+                class: revolute
               summary: Detachable transverse-load pivot or link; the pin carries shear and bearing, the clip only stops axial
                 escape. Not a preload joint.
               when:
@@ -4628,6 +4737,8 @@ join:
               coverage: deep
               principle: form
               directness: indirect
+              implies:
+                class: rigid
               summary: Groove-seated spring ring giving axial retention that can be removed. Groove material, not the ring,
                 is often the limit.
               when:
@@ -4832,6 +4943,9 @@ join:
               coverage: deep
               principle: force
               directness: indirect
+              implies:
+                class: rigid
+                mechanism: clamp
               summary: Slotted hub or collar closed by a pinch screw; friction grip on a round shaft or tube, adjustable and
                 non-marring, capacity set by clamp force times friction.
               when:
@@ -4934,14 +5048,27 @@ join:
                 source_quality: weak
                 confidence: unverified
                 note: source could not be read; value kept for review
-              - id: c3
+              - id: c3a
                 text: FDM wall at least 4 x layer thickness, example 1.00 mm for 0.25 mm layers
                 value: '4'
                 unit: x layer thickness
-                equipment: industrial-fdm
                 source_url: https://www.stratasys.com/siteassets/sdm/content---website-storage/design-guides/dg_sdm_fdm_0725a.pdf?v=490918
                 source_quality: primary
+                equipment: industrial-fdm
                 confidence: handbook
+                note: Stratasys 4x layer rule kept for industrial machines
+              - id: c3b
+                text: Minimum printable FDM wall on a 0.4 mm nozzle is one perimeter, about 0.45 mm; two perimeters give about
+                  0.9 mm
+                value: '0.45'
+                unit: mm
+                source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+                source_quality: primary
+                equipment: desktop-fdm
+                confidence: handbook
+                corrected: true
+                machine_specific: true
+                table_ref: fdm/*.min_wall
               - id: c4
                 text: 'Moulded rib thickness 50-60% of nominal wall: 0.5-0.6 x wall'
                 value: 0.5-0.6
@@ -5060,6 +5187,10 @@ join:
               coverage: deep
               principle: form
               directness: direct
+              implies:
+                class: rigid
+                mechanism: snap
+                rank: 1
               summary: Cantilever hook on a flexible arm with a shallow return face, loaded mostly at assembly; retention
                 and location only, not a structural load path.
               when:
@@ -5207,8 +5338,10 @@ join:
                 equipment: desktop-fdm
                 source_url: https://aarontyleranderson.com/wp-content/uploads/2022/02/SnapFit_Quick_Guide.pdf
                 source_quality: weak
-                confidence: secondary
+                confidence: shop-rule
                 corrected: true
+                note: Same unattributed PDF as permanent-snap c12; 'FDM equipment' with no printer class. Cannot confirm desktop;
+                  no desktop annular snap source found.
               - id: c10
                 text: Mating force F_a = F_d (mu + tan a)/(1 - mu tan a)
                 value: null
@@ -5266,6 +5399,8 @@ join:
               coverage: deep
               principle: form
               directness: direct
+              implies:
+                class: prismatic
               summary: Captured sliding joint entered axially from the open end; low-speed, moderate-precision guide that
                 resists pull-off normal to the slide. Clearance and end stop are the design.
               when:
@@ -5450,6 +5585,8 @@ join:
               coverage: deep
               principle: form
               directness: direct
+              implies:
+                class: rigid
               summary: Axial entry then short rotation locks lugs behind shoulders or a spiral cam. Catalogue quarter-turn
                 fasteners for panels with known loads; custom bayonet for compact fast coupling. Needs detent against back-rotation.
               when:
@@ -5661,6 +5798,8 @@ locate:
       id: locate/dowel-pin-and-slot
       role: leaf
       coverage: deep
+      implies:
+        class: rigid
       summary: Locate a part with one round dowel (position) plus a diamond pin or slot (clocking), so hole-spacing error
         does not bind. Pins locate; bolts clamp and carry load.
       when:
@@ -5825,36 +5964,55 @@ locate:
         source_url: https://www.carrlane.com/engineering-resources/technical-information/manual-workholding/locating-devices/locating-pins
         source_quality: primary
         confidence: handbook
-      - id: c10
-        text: Forge Labs current web FDM guide gives general tolerance about 0.3 percent with a 0.25 mm floor; the older PDF's
-          0.127 mm is superseded
+      - id: c10a
+        text: Industrial FDM general tolerance is plus/minus 0.25 mm or 0.3 percent, whichever is greater
         value: 0.3% / 0.25
         unit: mm
-        equipment: desktop-fdm
         source_url: https://forgelabs.com/design-guides/fdm
-        source_quality: weak
-        confidence: excerpt-only
+        source_quality: primary
+        equipment: industrial-fdm
+        confidence: shop-rule
         corrected: true
-        note: confirmed only from a search excerpt, page not read
+      - id: c10b
+        text: An Original Prusa printer is accurate to at least 0.2 mm
+        value: '0.2'
+        unit: mm
+        source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+        source_quality: primary
+        equipment: desktop-fdm
+        confidence: handbook
+        corrected: true
       - id: c11
         text: Forge Labs current web FDM guide gives about 3 mm minimum pin diameter, depending on orientation, nozzle and
           length (older PDF said 5 mm; other guides say 1-3 mm)
         value: '3'
         unit: mm
-        equipment: desktop-fdm
+        equipment: industrial-fdm
         source_url: https://forgelabs.com/design-guides/fdm
         source_quality: weak
         confidence: excerpt-only
         corrected: true
         note: confirmed only from a search excerpt, page not read
-      - id: c12
-        text: Same FDM guide gives 0.5 mm minimum clearance for mating features
+      - id: c12a
+        text: Industrial FDM minimum clearance for mating features is 0.5 mm
         value: '0.5'
         unit: mm
-        equipment: desktop-fdm
         source_url: https://forgelabs.com/design-guides/fdm
-        source_quality: secondary
-        confidence: secondary
+        source_quality: primary
+        equipment: industrial-fdm
+        confidence: shop-rule
+        corrected: true
+      - id: c12b
+        text: Desktop FDM clearance for movable mating parts starts at 0.3 mm
+        value: '0.3'
+        unit: mm
+        source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+        source_quality: primary
+        equipment: desktop-fdm
+        confidence: handbook
+        corrected: true
+        machine_specific: true
+        table_ref: fdm/*.min_clearance
       - id: c13
         text: Starting fits H7/m6 for press fit and H7/h6 for slip fit of dowels
         value: H7/m6, H7/h6
@@ -5874,6 +6032,8 @@ locate:
       id: locate/nest-pocket-step
       role: leaf
       coverage: deep
+      implies:
+        class: rigid
       summary: Locate by a pocket, shoulder, step or edge datum that takes compression and shear; a separate screw, clamp
         or snap holds the part down. Add one asymmetric feature or pin to stop rotation.
       when:
@@ -5946,7 +6106,7 @@ locate:
         text: Sheet-metal bend relief length no longer than bend radius plus material thickness
         value: <= r + t
         unit: null
-        equipment: industrial-fdm
+        equipment: sheet
         source_url: https://www.protolabs.com/resources/design-tips/avoiding-sheet-metal-dfm-issues/
         source_quality: primary
         confidence: handbook
@@ -6004,7 +6164,7 @@ locate:
         text: Draft rule of thumb about 1 degree per 25 mm of cavity depth
         value: '1'
         unit: deg per 25 mm
-        equipment: industrial-fdm
+        equipment: injection-mould
         source_url: https://www.protolabs.com/en-gb/resources/design-tips/design-essentials-for-injection-moulding/
         source_quality: primary
         confidence: handbook
@@ -6028,7 +6188,7 @@ locate:
         text: Sheet-metal minimum flange length 4 times material thickness
         value: '4'
         unit: x thickness
-        equipment: industrial-fdm
+        equipment: sheet
         source_url: https://www.protolabs.com/services/sheet-metal-fabrication/design-guidelines/
         source_quality: primary
         confidence: handbook
@@ -6036,7 +6196,7 @@ locate:
         text: Sheet-metal standard bend angle tolerance +-1 degree
         value: '1'
         unit: deg
-        equipment: industrial-fdm
+        equipment: sheet
         source_url: https://www.protolabs.com/resources/design-tips/avoiding-sheet-metal-dfm-issues/
         source_quality: primary
         confidence: handbook
@@ -6044,7 +6204,7 @@ locate:
         text: Common sheet-metal bend radius 0.762 mm and bend relief width about 0.762 mm
         value: '0.762'
         unit: mm
-        equipment: industrial-fdm
+        equipment: sheet
         source_url: https://www.protolabs.com/resources/design-tips/the-basics-of-bend-radii-in-sheet-metal/
         source_quality: primary
         confidence: handbook
@@ -6052,7 +6212,7 @@ locate:
         text: H7/g6 at 25 mm nominal gives 7 to 41 um clearance
         value: 7-41
         unit: um
-        equipment: desktop-fdm
+        equipment: any
         source_url: https://www.epocrafter.com/types-of-fits-in-engineering/
         source_quality: secondary
         confidence: secondary
@@ -6060,7 +6220,7 @@ locate:
         text: H7/h6 at 25 mm nominal gives 0 to 34 um clearance
         value: 0-34
         unit: um
-        equipment: desktop-fdm
+        equipment: any
         source_url: https://iteraio.com/en/hole-tolerance-fits/
         source_quality: secondary
         confidence: secondary
@@ -6068,7 +6228,7 @@ locate:
         text: H7 hole at 18-30 mm is +0.021/0 mm; h6 shaft is 0/-0.013 mm
         value: +0.021/0; 0/-0.013
         unit: mm
-        equipment: desktop-fdm
+        equipment: any
         source_url: https://manufacturingprocesses.org/charts/iso-286-fits-tolerances
         source_quality: secondary
         confidence: secondary
@@ -6089,6 +6249,10 @@ locate:
       id: locate/second-fastener
       role: leaf
       coverage: deep
+      implies:
+        class: rigid
+        mechanism: screw
+        rank: 6
       summary: 'A second screw stops rotation by forming a couple: for in-plane moment M and screw spacing p, each screw carries
         about M/p of shear. Space the screws widely, check bearing, tear-out and slip, and do not treat two clearance-hole
         screws as precision locators; pair one screw with a close-fit dowel or shoulder for a repeatable location. Preload
@@ -6280,6 +6444,10 @@ locate:
       id: locate/key-flat-spline
       role: leaf
       coverage: deep
+      implies:
+        class: rigid
+        mechanism: key
+        rank: 2
       summary: Stop rotation on a shaft with a DIN 6885 parallel key (detachable, moderate torque), a D-flat or polygon (low-load
         moulded/FDM), or an ISO 4156 involute spline (high torque, concentricity, sliding). None of them locates axially;
         add a shoulder, ring or clamp.
@@ -6685,7 +6853,9 @@ axes:
       source_url: https://mfg.trimech.com/installing-heat-set-inserts-into-fdm-parts/
       source_quality: weak
       confidence: unverified
-      note: source could not be read; value kept for review
+      note: Cited trimech page was marked unverified. Prusa/CNC Kitchen pages found give no 2 mm figure; other guides give
+        1.6 mm or 2x insert dia, so it varies. No primary desktop source.
+      corrected: true
     - id: c15
       text: Printed threads are only practical from about M8 up per one blog; others say M4 to M6, so there is no standard
         cutoff
@@ -6704,7 +6874,8 @@ axes:
       source_url: https://3dservicesusa.com/blog/heat-set-inserts-and-threads
       source_quality: weak
       confidence: unverified
-      note: source could not be read; value kept for review
+      note: Cited page marked unverified; no desktop vendor cycle-life figure found.
+      corrected: true
     - id: c17
       text: Heat-set insert hole about 0.1 to 0.2 mm undersize for some inserts
       value: 0.1-0.2
@@ -7469,10 +7640,14 @@ axes:
       text: Typical FDM assembly clearance for moving parts about 0.3 mm
       value: '0.3'
       unit: mm
+      source_url: https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135
+      source_quality: primary
       equipment: desktop-fdm
-      source_url: https://jlc3dp.com/blog/design-for-additive-manufacturing
-      source_quality: weak
-      confidence: secondary
+      confidence: handbook
+      corrected: true
+      machine_specific: true
+      table_ref: fdm/*.min_clearance
+      note: jlc3dp blog replaced by Prusa KB.
     - id: c5
       text: 'Lag screws should not be used in end grain; end-grain nail lateral resistance about two-thirds of side grain;
         end-grain screw withdrawal about 75 percent average: 2/3; 75 ratio; %'

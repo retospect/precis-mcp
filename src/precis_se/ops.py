@@ -2991,13 +2991,14 @@ def _op_set_process_override(tree: SeTree, op: dict[str, Any]) -> None:
         )
     cap = se_caps.capability(node.mode, field)
     if cap is not None and cap.physical is not None:
-        if field.startswith("max_") and value > cap.physical:
+        direction = se_caps.clamp_direction(field)
+        if direction == "ceiling" and value > cap.physical:
             raise OpError(
                 f"set_process_override: {field} {value:g} exceeds the "
                 f"physical ceiling {cap.physical:g} {cap.unit} — the process "
                 "cannot beat it whatever the design declares"
             )
-        if field.startswith("min_") and value < cap.physical:
+        if direction == "floor" and value < cap.physical:
             raise OpError(
                 f"set_process_override: {field} {value:g} is below the "
                 f"physical floor {cap.physical:g} {cap.unit} — the process "

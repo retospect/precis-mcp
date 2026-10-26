@@ -1,5 +1,5 @@
 {
-  "_note": "design-tree MACHINE-SPECIFIC CAPABILITY ROWS - one row per machine_specific rule in the packaged design-tree manifests (processes.yaml only), mode = the rule's dtree id 'dtree/<node>#<rid>' which the rule's table_ref names. Split out of se_capabilities.json on 2026-10-25 (gr516958, Opus review): these are PUBLISHED CLAIMS, not this shop's build targets - a source's figure is not 'what we build to', so the se physical/house tier vocabulary does not apply and is not used. 'declared' is the verbatim manifest value; 'declared_value' carries it as a scalar when it is one (a range or table stays declared-only). 'unit' is normalised to mm|deg|ratio where the conversion is exact (declared_value is scaled; the source's unit is kept in 'unit_raw'); where it is not, unit is null and 'unit_raw' carries the source's unit verbatim. 'confidence' maps the rule's confidence claim. S2 promotes vetted values into proper se_capabilities rows (per process and material, with min/max).",
+  "_note": "design-tree MACHINE-SPECIFIC CAPABILITY ROWS - one row per machine_specific rule in the packaged design-tree manifests (processes.yaml only), mode = the rule's dtree id 'dtree/<node>#<rid>' which the rule's table_ref names. Split out of se_capabilities.json on 2026-10-25 (gr516958, Opus review): these are PUBLISHED CLAIMS, not this shop's build targets - a source's figure is not 'what we build to', so the se physical/house tier vocabulary does not apply and is not used. 'declared' is the verbatim manifest value; 'declared_value' carries it as a scalar when it is one (a range or table stays declared-only). 'unit' is normalised to mm|deg|ratio where the conversion is exact (declared_value is scaled; the source's unit is kept in 'unit_raw'); where it is not, unit is null and 'unit_raw' carries the source's unit verbatim. 'confidence' maps the rule's confidence claim. S2 promotes vetted values into proper se_capabilities rows (per process and material, with min/max). S2 applied 2026-10-25: rules whose figures promoted into se_capabilities rows now carry 'fdm/*.<field>' table_refs; their rows here were removed.",
   "rows": [
     {
       "mode": "dtree/process/additive/desktop-fdm/holes-and-clearances#c1",
@@ -373,14 +373,14 @@
     },
     {
       "mode": "dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c14",
-      "title": "industrial-fdm — process/additive/desktop-fdm/overhangs-bridges-supports#c14: Prototyping FDM tolerance budget about plus or minus 0.5 mm or 0.5 percent, whic",
+      "title": "desktop-fdm — process/additive/desktop-fdm/overhangs-bridges-supports#c14: A desktop printer such as an Original Prusa is accurate to at least 0.2 mm; serv",
       "fields": {
         "value": {
-          "declared_value": 0.5,
+          "declared_value": 0.2,
           "unit": "mm",
-          "declared": "0.5",
-          "confidence": "low",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/overhangs-bridges-supports#c14 — secondary claim (https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/); measured on: Protolabs prototyping FDM; machine not named"
+          "declared": "0.2",
+          "confidence": "medium",
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/overhangs-bridges-supports#c14 — handbook claim (https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135); measured on: Protolabs prototyping FDM; machine not named"
         }
       }
     },
@@ -394,20 +394,6 @@
           "declared": "0.3",
           "confidence": "low",
           "source": "design-tree processes.yaml process/additive/desktop-fdm/overhangs-bridges-supports#c15 — secondary claim (https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/); measured on: Protolabs industrial FDM; machine not named"
-        }
-      }
-    },
-    {
-      "mode": "dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c16",
-      "title": "industrial-fdm — process/additive/desktop-fdm/overhangs-bridges-supports#c16: Service layer heights 100-300 micrometres",
-      "fields": {
-        "value": {
-          "declared_value": null,
-          "unit": "mm",
-          "unit_raw": "um",
-          "declared": "100-300",
-          "confidence": "low",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/overhangs-bridges-supports#c16 — secondary claim (https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/); measured on: Protolabs FDM service; machine not named"
         }
       }
     },
@@ -426,7 +412,7 @@
     },
     {
       "mode": "dtree/process/additive/desktop-fdm/overhangs-bridges-supports#c19",
-      "title": "industrial-fdm — process/additive/desktop-fdm/overhangs-bridges-supports#c19: Visible stair-stepping appears at about 200 micrometre layers",
+      "title": "desktop-fdm — process/additive/desktop-fdm/overhangs-bridges-supports#c19: Visible stair-stepping appears at about 200 micrometre layers",
       "fields": {
         "value": {
           "declared_value": 0.2,
@@ -480,20 +466,6 @@
       }
     },
     {
-      "mode": "dtree/process/additive/desktop-fdm/orientation-and-anisotropy#c10",
-      "title": "industrial-fdm — process/additive/desktop-fdm/orientation-and-anisotropy#c10: Functional clearance 0.2 mm per side; 0.1 mm minimum start; PLA guide 0.2 mm per",
-      "fields": {
-        "value": {
-          "declared_value": 0.2,
-          "unit": "mm",
-          "unit_raw": "mm per side",
-          "declared": "0.2",
-          "confidence": "low",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/orientation-and-anisotropy#c10 — secondary claim (https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling); measured on: Fictiv service machines"
-        }
-      }
-    },
-    {
       "mode": "dtree/process/additive/desktop-fdm/orientation-and-anisotropy#c11",
       "title": "desktop-fdm — process/additive/desktop-fdm/orientation-and-anisotropy#c11: Sliding or nesting clearance 0.3-0.5 mm per side",
       "fields": {
@@ -509,14 +481,14 @@
     },
     {
       "mode": "dtree/process/additive/desktop-fdm/orientation-and-anisotropy#c12",
-      "title": "industrial-fdm — process/additive/desktop-fdm/orientation-and-anisotropy#c12: Service FDM tolerance about plus or minus 0.5 mm or 1 percent per inch",
+      "title": "desktop-fdm — process/additive/desktop-fdm/orientation-and-anisotropy#c12: Desktop FDM printer accuracy is about 0.2 mm; budget more for warp and shrink",
       "fields": {
         "value": {
-          "declared_value": 0.5,
+          "declared_value": 0.2,
           "unit": "mm",
-          "declared": "0.5",
-          "confidence": "low",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/orientation-and-anisotropy#c12 — secondary claim (https://www.fictiv.com/capabilities/3d-printing-services/fused-deposition-modeling); measured on: Fictiv FDM service"
+          "declared": "0.2",
+          "confidence": "medium",
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/orientation-and-anisotropy#c12 — handbook claim (https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135); measured on: Fictiv FDM service"
         }
       }
     },
@@ -574,14 +546,14 @@
     },
     {
       "mode": "dtree/process/additive/desktop-fdm/threads-and-inserts#c4",
-      "title": "industrial-fdm — process/additive/desktop-fdm/threads-and-inserts#c4: General prototyping FDM accuracy about plus or minus 0.5 mm; industrial about 0.",
+      "title": "desktop-fdm — process/additive/desktop-fdm/threads-and-inserts#c4: Desktop FDM accuracy about 0.2 mm; service prototyping FDM budgets 0.5 mm, indus",
       "fields": {
         "value": {
-          "declared_value": 0.5,
+          "declared_value": 0.2,
           "unit": "mm",
-          "declared": "0.5",
-          "confidence": "low",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/threads-and-inserts#c4 — secondary claim (https://www.protolabs.com/services/3d-printing/fused-deposition-modeling/); measured on: Protolabs service machines"
+          "declared": "0.2",
+          "confidence": "medium",
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/threads-and-inserts#c4 — handbook claim (https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135); measured on: Protolabs service machines"
         }
       }
     },
@@ -731,28 +703,15 @@
       }
     },
     {
-      "mode": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c5",
-      "title": "industrial-fdm — process/additive/desktop-fdm/warping-and-first-layer#c5: Service-bureau FDM wall minimum 0.8 mm; 1.0-1.2 mm safer for desktop production ",
-      "fields": {
-        "value": {
-          "declared_value": null,
-          "unit": "mm",
-          "declared": "0.8; 1.0-1.2",
-          "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/warping-and-first-layer#c5 — handbook claim (https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/)"
-        }
-      }
-    },
-    {
       "mode": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c7",
-      "title": "industrial-fdm — process/additive/desktop-fdm/warping-and-first-layer#c7: Small feature or hole at least 2.0 mm for reliable service-bureau FDM; holes bel",
+      "title": "desktop-fdm — process/additive/desktop-fdm/warping-and-first-layer#c7: Printed holes and small features should be at least 2 mm; design smaller holes u",
       "fields": {
         "value": {
-          "declared_value": null,
+          "declared_value": 2.0,
           "unit": "mm",
-          "declared": "2.0 / <1.0",
-          "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/warping-and-first-layer#c7 — handbook claim (https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/)"
+          "declared": "2",
+          "confidence": "low",
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/warping-and-first-layer#c7 — secondary claim (https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/)"
         }
       }
     },
@@ -784,15 +743,15 @@
       }
     },
     {
-      "mode": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c11",
-      "title": "industrial-fdm — process/additive/desktop-fdm/warping-and-first-layer#c11: Industrial/service FDM tolerance about +-0.3 mm, or +-0.1-0.2 mm in controlled b",
+      "mode": "dtree/process/additive/desktop-fdm/warping-and-first-layer#c11b",
+      "title": "industrial-fdm — process/additive/desktop-fdm/warping-and-first-layer#c11b: Industrial/service FDM tolerance about +-0.3 mm, or +-0.1-0.2 mm in controlled b",
       "fields": {
         "value": {
           "declared_value": null,
           "unit": "mm",
           "declared": "0.3; 0.1-0.2",
           "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/warping-and-first-layer#c11 — handbook claim (https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/); measured on: not named"
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/warping-and-first-layer#c11b — handbook claim (https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/); measured on: not named"
         }
       }
     },
@@ -1003,28 +962,15 @@
       }
     },
     {
-      "mode": "dtree/process/additive/desktop-fdm/dimensional-accuracy#c6",
-      "title": "industrial-fdm — process/additive/desktop-fdm/dimensional-accuracy#c6: Service-bureau FDM minimum wall 0.8 mm; minimum feature and hole 2.0 mm",
-      "fields": {
-        "value": {
-          "declared_value": null,
-          "unit": "mm",
-          "declared": "0.8; 2.0",
-          "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/dimensional-accuracy#c6 — handbook claim (https://www.protolabs.com/en-gb/services/3d-printing/fused-deposition-modelling/)"
-        }
-      }
-    },
-    {
       "mode": "dtree/process/additive/desktop-fdm/dimensional-accuracy#c10",
-      "title": "industrial-fdm — process/additive/desktop-fdm/dimensional-accuracy#c10: Round holes larger than 1 mm; 2 mm or more when circularity matters",
+      "title": "desktop-fdm — process/additive/desktop-fdm/dimensional-accuracy#c10: Round holes should be at least 2 mm; design smaller holes undersized and drill t",
       "fields": {
         "value": {
-          "declared_value": null,
+          "declared_value": 2.0,
           "unit": "mm",
-          "declared": ">1; >=2",
-          "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/dimensional-accuracy#c10 — handbook claim (https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf)"
+          "declared": "2",
+          "confidence": "low",
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/dimensional-accuracy#c10 — secondary claim (https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/)"
         }
       }
     },
@@ -1203,14 +1149,14 @@
     },
     {
       "mode": "dtree/process/additive/desktop-fdm/material-selection#c11",
-      "title": "industrial-fdm — process/additive/desktop-fdm/material-selection#c11: Horizontal hole minimum 2 mm preferred; Xometry circular minimum more than 1 mm;",
+      "title": "desktop-fdm — process/additive/desktop-fdm/material-selection#c11: Horizontal holes at least 2 mm; design undersized and drill when accuracy matter",
       "fields": {
         "value": {
-          "declared_value": null,
+          "declared_value": 2.0,
           "unit": "mm",
-          "declared": ">=2; >1",
-          "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/material-selection#c11 — handbook claim (https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/)"
+          "declared": "2",
+          "confidence": "low",
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/material-selection#c11 — secondary claim (https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/)"
         }
       }
     },
@@ -1348,14 +1294,13 @@
     },
     {
       "mode": "dtree/process/additive/desktop-fdm/material-selection#c24",
-      "title": "industrial-fdm — process/additive/desktop-fdm/material-selection#c24: Xometry minimum wall 1.2 mm for smaller supported structures, 1.5 mm more robust",
+      "title": "desktop-fdm — process/additive/desktop-fdm/material-selection#c24: Minimum wall 0.9 mm (2 perimeters) for small features, 1.35 mm (3 perimeters) fo",
       "fields": {
         "value": {
-          "declared_value": null,
           "unit": "mm",
-          "declared": "1.2; 1.5",
+          "declared": "0.9-1.35",
           "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/material-selection#c24 — handbook claim (https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_FDM.pdf)"
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/material-selection#c24 — handbook claim (https://help.prusa3d.com/article/modeling-with-3d-printing-in-mind_164135)"
         }
       }
     },
@@ -1387,14 +1332,14 @@
     },
     {
       "mode": "dtree/process/additive/desktop-fdm/strength-and-infill#c7",
-      "title": "industrial-fdm — process/additive/desktop-fdm/strength-and-infill#c7: Holes larger than about 1 mm; orient precision holes with axis in Z when possibl",
+      "title": "desktop-fdm — process/additive/desktop-fdm/strength-and-infill#c7: Holes at least 2 mm; design precision holes undersized and drill or ream to size",
       "fields": {
         "value": {
-          "declared_value": null,
+          "declared_value": 2.0,
           "unit": "mm",
-          "declared": ">1",
-          "confidence": "medium",
-          "source": "design-tree processes.yaml process/additive/desktop-fdm/strength-and-infill#c7 — handbook claim (https://www.xometry.com/resources/3d-printing/mini-guide-fdm-3d-printing/)"
+          "declared": "2",
+          "confidence": "low",
+          "source": "design-tree processes.yaml process/additive/desktop-fdm/strength-and-infill#c7 — secondary claim (https://ultimaker.com/learn/design-for-fff-3d-printing-maximize-your-success/)"
         }
       }
     },
@@ -1690,7 +1635,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c1",
-      "title": "industrial-fdm — process/additive/powder-bed#c1: Protolabs absolute minimum wall for SLS PA12",
+      "title": "powder-bed — process/additive/powder-bed#c1: Protolabs absolute minimum wall for SLS PA12",
       "fields": {
         "value": {
           "declared_value": 0.762,
@@ -1703,7 +1648,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c2",
-      "title": "industrial-fdm — process/additive/powder-bed#c2: Protolabs absolute minimum wall for MJF PA12",
+      "title": "powder-bed — process/additive/powder-bed#c2: Protolabs absolute minimum wall for MJF PA12",
       "fields": {
         "value": {
           "declared_value": 0.508,
@@ -1716,7 +1661,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c3",
-      "title": "industrial-fdm — process/additive/powder-bed#c3: Robust production wall for SLS PA12 (Hubs 0.8 mm; unsupported 1.0 mm)",
+      "title": "powder-bed — process/additive/powder-bed#c3: Robust production wall for SLS PA12 (Hubs 0.8 mm; unsupported 1.0 mm)",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1729,7 +1674,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c5",
-      "title": "industrial-fdm — process/additive/powder-bed#c5: Protolabs SLS minimum wall by material: PA12 0.80, glass-filled PA12 1.00, carbo",
+      "title": "powder-bed — process/additive/powder-bed#c5: Protolabs SLS minimum wall by material: PA12 0.80, glass-filled PA12 1.00, carbo",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1742,7 +1687,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c6",
-      "title": "industrial-fdm — process/additive/powder-bed#c6: Minimum gap between separate features (Protolabs 0.762 mm in one guide, 1 mm in ",
+      "title": "powder-bed — process/additive/powder-bed#c6: Minimum gap between separate features (Protolabs 0.762 mm in one guide, 1 mm in ",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1755,7 +1700,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c7",
-      "title": "industrial-fdm — process/additive/powder-bed#c7: Clearance for moving or interlocking parts, starting range",
+      "title": "powder-bed — process/additive/powder-bed#c7: Clearance for moving or interlocking parts, starting range",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1768,7 +1713,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c8",
-      "title": "industrial-fdm — process/additive/powder-bed#c8: Sphere-in-pocket clearance for SLS",
+      "title": "powder-bed — process/additive/powder-bed#c8: Sphere-in-pocket clearance for SLS",
       "fields": {
         "value": {
           "declared_value": 0.2,
@@ -1781,7 +1726,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c9",
-      "title": "industrial-fdm — process/additive/powder-bed#c9: Hole diameter for SLS (Hubs above 1.5 mm; a feasible minimum of 1.0 mm); MJF nom",
+      "title": "powder-bed — process/additive/powder-bed#c9: Hole diameter for SLS (Hubs above 1.5 mm; a feasible minimum of 1.0 mm); MJF nom",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1794,7 +1739,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c13",
-      "title": "industrial-fdm — process/additive/powder-bed#c13: SLS embossed or engraved detail: minimum feature 0.8, engraving depth 1, emboss ",
+      "title": "powder-bed — process/additive/powder-bed#c13: SLS embossed or engraved detail: minimum feature 0.8, engraving depth 1, emboss ",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1807,7 +1752,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c17",
-      "title": "industrial-fdm — process/additive/powder-bed#c17: SLS nominal tolerance +/-0.3 mm or 0.3% whichever larger (Hubs); Protolabs +/-0.",
+      "title": "powder-bed — process/additive/powder-bed#c17: SLS nominal tolerance +/-0.3 mm or 0.3% whichever larger (Hubs); Protolabs +/-0.",
       "fields": {
         "value": {
           "declared_value": 0.3,
@@ -1820,7 +1765,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c18",
-      "title": "industrial-fdm — process/additive/powder-bed#c18: MJF Protolabs tolerance +/-0.25 mm + 0.002 mm/mm",
+      "title": "powder-bed — process/additive/powder-bed#c18: MJF Protolabs tolerance +/-0.25 mm + 0.002 mm/mm",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1833,7 +1778,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c19",
-      "title": "industrial-fdm — process/additive/powder-bed#c19: Typical layer thickness SLS about 0.10 mm, MJF about 0.08 mm",
+      "title": "powder-bed — process/additive/powder-bed#c19: Typical layer thickness SLS about 0.10 mm, MJF about 0.08 mm",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1846,7 +1791,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c20",
-      "title": "industrial-fdm — process/additive/powder-bed#c20: Service bureaus pre-compensate SLS shrinkage by about 3-3.5%",
+      "title": "powder-bed — process/additive/powder-bed#c20: Service bureaus pre-compensate SLS shrinkage by about 3-3.5%",
       "fields": {
         "value": {
           "declared_value": null,
@@ -1860,7 +1805,7 @@
     },
     {
       "mode": "dtree/process/additive/powder-bed#c21",
-      "title": "industrial-fdm — process/additive/powder-bed#c21: Protolabs MJF nominal minimum feature size",
+      "title": "powder-bed — process/additive/powder-bed#c21: Protolabs MJF nominal minimum feature size",
       "fields": {
         "value": {
           "declared_value": 0.5,

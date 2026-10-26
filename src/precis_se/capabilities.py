@@ -233,6 +233,21 @@ def _load_derived(tree: SeTree, block: SeBlock, field: str) -> float | None:
     return None
 
 
+def clamp_direction(field: str) -> str | None:
+    """Which way a field's ``physical`` figure binds, read off its name:
+    ``max_*``/``*_max`` is a ceiling the process cannot exceed,
+    ``min_*``/``*_min`` is a floor it cannot go under (temperature
+    windows are split into ``*_min``/``*_max`` fields exactly so this
+    name rule needs no special case). ``None`` for a name that encodes
+    neither direction — :func:`resolve` carries such a field's
+    ``physical`` as information only, never a guessed clamp."""
+    if field.startswith("max_") or field.endswith("_max"):
+        return "ceiling"
+    if field.startswith("min_") or field.endswith("_min"):
+        return "floor"
+    return None
+
+
 def resolve(tree: SeTree, block: SeBlock, field: str) -> Resolved | None:
     """Chain a block's own override over the (unimplemented) load-derived
     slot over :func:`capability`'s house tier, clamped to the physical
@@ -245,14 +260,14 @@ def resolve(tree: SeTree, block: SeBlock, field: str) -> Resolved | None:
     block's mode — never an invented figure the way a fallback default
     would be.
 
-    **Clamp direction is read off the field's name.** A ``max_*`` field's
-    physical figure is a ceiling the process cannot exceed; a ``min_*``
-    field's is a floor it cannot go under. A field named neither way
-    (``layer_height``, ``line_width``, ``hole_diameter_compensation``,
-    ``strength_z_ratio``) carries ``physical`` as information only —
-    resolving it never guesses which direction an unprefixed name's floor
-    points, so no clamp is applied even when a physical figure is on
-    file.
+    **Clamp direction is read off the field's name** (:func:`clamp_direction`).
+    A ``max_*``/``*_max`` field's physical figure is a ceiling the process
+    cannot exceed; a ``min_*``/``*_min`` field's is a floor it cannot go
+    under. A field named neither way (``layer_height``, ``line_width``,
+    ``hole_diameter_compensation``, ``strength_z_ratio``) carries
+    ``physical`` as information only — resolving it never guesses which
+    direction an unprefixed name's floor points, so no clamp is applied
+    even when a physical figure is on file.
     """
     mode = getattr(block, "mode", None)
     cap = capability(mode, field)
@@ -276,11 +291,12 @@ def resolve(tree: SeTree, block: SeBlock, field: str) -> Resolved | None:
     unit = cap.unit if cap is not None else _LENGTH_UNIT
     clamped = False
     if cap is not None and cap.physical is not None:
-        if field.startswith("max_") and value > cap.physical:
+        direction = clamp_direction(field)
+        if direction == "ceiling" and value > cap.physical:
             value = cap.physical
             clamped = True
             note = f"{note}; clamped to the physical ceiling {cap.physical:g} {unit}"
-        elif field.startswith("min_") and value < cap.physical:
+        elif direction == "floor" and value < cap.physical:
             value = cap.physical
             clamped = True
             note = f"{note}; clamped to the physical floor {cap.physical:g} {unit}"
