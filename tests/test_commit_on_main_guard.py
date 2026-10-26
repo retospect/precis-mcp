@@ -179,6 +179,93 @@ class TestScope:
         assert evaluate(None, "/anywhere") is None
 
 
+class TestDenyByDefault:
+    """gr519471 ruling: the regex match stands unless shlex proves the
+    git…commit words sit inside an inert command's arguments."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The gripe's refused call: quoted report text naming "git
+            # interpret-trailers" and, later on the same physical line
+            # (\n escapes), the word commit.
+            "printf 'use git interpret-trailers; commit often\\n' > /tmp/plan.md",
+            'printf "git status; commit count\\n"',
+            "echo 'run git commit later'",
+            # Arguments to an inert command are inert quoted or not.
+            "echo git commit",
+            "rg 'git commit' src/",
+            # commit as a --grep pattern, not a subcommand.
+            "git log --grep commit",
+            "git grep commit",
+        ],
+    )
+    def test_inert_mentions_allowed(self, cmd: str, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "main"})
+        assert evaluate(cmd, str(root)) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Bypass shapes the invocation matcher let through: anything
+            # shlex cannot prove inert stays refused.
+            "bash -c 'git commit -m x'",
+            "sh -c 'git commit -m x'",
+            "sudo -u root git commit -m x",
+            "env -i git commit -m x",
+            "time -p git commit -m x",
+            "nice -n 5 git commit -m x",
+            "(git commit -m x)",
+            "if true; then git commit -m x; fi",
+            "! git commit -m x",
+            "ssh host git commit -m x",
+            "python3 -c \"import subprocess; subprocess.run('git commit -m x', shell=True)\"",
+        ],
+    )
+    def test_bypass_shapes_still_denied(self, cmd: str, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "main"})
+        reason = evaluate(cmd, str(root))
+        assert reason is not None and "`main`" in reason, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Substitutions run before the inert command does — they
+            # void the exception even inside quotes. The first two are
+            # refused by the wrapped check, the rest by the branch walk.
+            "echo $(git commit -m x)",
+            'echo "$(git commit -m x)"',
+            "echo `git commit -m x`",
+            "echo x <(git commit)",
+            "echo x >(git commit -m x)",
+        ],
+    )
+    def test_substitutions_in_inert_command_denied(
+        self, cmd: str, monkeypatch, tmp_path
+    ) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "main"})
+        assert evaluate(cmd, str(root)) is not None, cmd
+
+    def test_real_invocations_still_denied(self, monkeypatch, tmp_path) -> None:
+        root = _patch(
+            monkeypatch,
+            tmp_path,
+            {
+                tmp_path / "repo": "feature",
+                tmp_path / "repo" / "main-tree": "main",
+            },
+        )
+        (root / "main-tree").mkdir()
+        for cmd in (
+            f"cd {root}/main-tree && git commit -m x",
+            f"git -C {root}/main-tree commit -m x",
+            f"cd {root}/main-tree && sudo git commit -m x",
+            f"cd {root}/main-tree && git log | git commit -m x",
+        ):
+            reason = evaluate(cmd, str(root))
+            assert reason is not None and "`main`" in reason, cmd
+
+
 class TestUnparseableCommitShape:
     """gr514943: heredoc/$(…) commits get a named refusal, not a bare
     parse error. These shapes are denied even on a feature branch — the

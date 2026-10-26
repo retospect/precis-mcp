@@ -10,12 +10,21 @@ to be surgically moved back onto a feature branch. This denies the commit
 up-front instead, mirroring ``guard-worktree-path.py`` (remove the *ability* to
 do the wrong thing).
 
-Scope, deliberately narrow to stay false-positive-free:
+Scope, deliberately narrow to stay false-positive-free, and
+deny-by-default (gr519471 ruling):
 - Only ``git commit`` (incl. ``--amend``) as a whitespace-bounded token —
   a path that merely contains it (``scratch/commit-msg.txt``, gr515527),
-  ``--no-commit`` or ``HEAD^{commit}`` is not the subcommand. NOT
-  ``git merge`` (a ``git merge --ff-only origin/main`` to sync the primary
-  is legitimate), NOT ``commit-tree`` (``scripts/ship``'s plumbing), NOT
+  ``--no-commit`` or ``HEAD^{commit}`` is not the subcommand. The regex
+  match is the authority and the refusal stands UNLESS shlex proves the
+  git…commit words sit inside arguments to a known-inert command —
+  ``printf``/``echo``/``grep``/``rg``, or ``git log``/``show``/``grep``
+  where ``commit`` feeds a ``--grep`` pattern — and any substitution
+  (``$(``/````/``<(``/``>(``) voids even that proof, since it runs
+  before the inert command does. Everything else — shell ``-c``,
+  ``eval``, ``ssh``, subshells, keyword lead-ins, wrappers with flag
+  words, unparseable text — stays refused. NOT ``git merge`` (a
+  ``git merge --ff-only origin/main`` to sync the primary is
+  legitimate), NOT ``commit-tree`` (``scripts/ship``'s plumbing), NOT
   cherry-pick/revert.
 - Only when the resolved branch is ``main``/``master``. Commits on any feature
   / ``worktree-*`` / ``docs-*`` branch pass untouched.
@@ -65,11 +74,15 @@ import sys
 
 PROTECTED = {"main", "master"}
 
-# A ``git … commit`` invocation where ``commit`` is a whitespace-bounded
-# token — ``scratch/commit-msg.txt`` in a ``git check-ignore`` path,
-# ``--no-commit`` on a merge or ``HEAD^{commit}`` is not the subcommand
-# (gr515527).
-_COMMIT_RE = re.compile(r"\bgit\b[^\n;&|]*?(?<!\S)commit(?!\S)")
+#: The deny-by-default authority: a ``git … commit`` where ``commit``
+#: starts whitespace-bounded and ends on a non-word, non-dash,
+#: non-brace char — ``scratch/commit-msg.txt`` in a
+#: ``git check-ignore`` path, ``--no-commit`` on a merge,
+#: ``HEAD^{commit}`` or ``commit-tree`` is not the subcommand
+#: (gr515527), but a trailing quote or paren still counts
+#: (``<(git commit)``, ``bash -c 'git commit'``, gr519471). A match
+#: refuses unless ``_inert_segment`` proves the words are inert data.
+_COMMIT_RE = re.compile(r"\bgit\b[^\n;&|]*?(?<!\S)commit(?![\w\-{}])")
 # ``git -C <path>`` inside a single segment.
 _GIT_C_RE = re.compile(r"\bgit\b\s+(?:-c\s+\S+\s+)*-C\s+(['\"]?)([^'\"\s]+)\1")
 # A segment that is *only* a ``cd <path>``.
@@ -83,16 +96,122 @@ _UNPARSEABLE_RE = re.compile(r"\$\(|<<-?\s*['\"]?[A-Za-z_]")
 #: A heredoc opener carrying its delimiter tag, for tracking body lines.
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
+#: ``git`` global options that swallow the next word — skipped to reach
+#: the real subcommand when checking the inert exception.
+_GIT_OPT_ARG = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+#: The inert exception list (gr519471 ruling): command words whose
+#: arguments are all data — output text or search input — so a
+#: ``git``/``commit`` inside them can never be a shell word. Everything
+#: not on this list stays refused: ``bash -c``, ``eval``, ``ssh``,
+#: wrappers, and anything shlex cannot parse.
+_INERT = {"printf", "echo", "grep", "rg"}
+#: ``git`` subcommands that only read — inert when ``commit`` feeds a
+#: ``--grep`` pattern. ``git grep`` needs no flag: its pattern is an
+#: argument by definition.
+_INERT_GIT = {"log", "show"}
+#: Substitutions — ``$(``/````/``<(``/``>(`` — run before the inert
+#: command does, so their presence voids the exception even inside
+#: quotes (gr519471 review; the false positives are the point of
+#: deny-by-default).
+_SUB_RE = re.compile(r"\$\(|`|<\(|>\(")
+
+
+def _segments(command: str) -> list[str]:
+    """The command's simple commands: split on separators outside quotes.
+
+    ``&&``/``||``/``;``/``|``/``&`` and newlines end a segment only when
+    they sit outside a ``'…'``/``"…"`` word — otherwise a ``;`` inside
+    ``printf 'a; git commit'`` would fake an invocation (gr519471). An
+    unterminated quote runs to end-of-command; the segment then fails
+    shlex and takes the fail-safe regex path.
+    """
+    segs: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == quote:
+                quote = ""
+            elif ch == "\\" and quote == '"' and i + 1 < len(command):
+                buf.append(command[i : i + 2])
+                i += 2
+                continue
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\" and i + 1 < len(command):
+            buf.append(command[i : i + 2])
+            i += 2
+            continue
+        elif ch in "\n;|&":
+            if ch in "|&" and command[i + 1 : i + 2] == ch:
+                i += 1  # && and || count as one separator
+            segs.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    segs.append("".join(buf))
+    return segs
+
+
+def _git_subcommand(argv: list[str]) -> str:
+    """The subcommand in ``git <globals> <sub> …`` — the first word past
+    the global options that swallow a value (``-C <path>``, ``-c k=v``)."""
+    j = 1
+    while j < len(argv):
+        opt = argv[j]
+        if opt in _GIT_OPT_ARG:
+            j += 2
+        elif opt.startswith("-"):
+            j += 1
+        else:
+            return opt
+    return ""
+
+
+def _inert_segment(seg: str) -> bool:
+    """True only when shlex proves the segment cannot run ``git commit``.
+
+    Deny-by-default (gr519471 ruling): the exception list is the only
+    new surface — the command word is ``printf``/``echo``/``grep``/``rg``
+    (its arguments are output text or search input), or ``git
+    log``/``show``/``grep`` where ``commit`` feeds a ``--grep`` pattern.
+    Unparseable input and everything else returns False, so the regex's
+    refusal stands.
+    """
+    if _SUB_RE.search(seg):
+        return False
+    try:
+        argv = shlex.split(seg)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    cmd = os.path.basename(argv[0])
+    if cmd in _INERT:
+        return True
+    if cmd != "git":
+        return False
+    sub = _git_subcommand(argv)
+    if sub == "grep":
+        return True
+    return sub in _INERT_GIT and any(
+        a == "--grep" or a.startswith("--grep=") for a in argv
+    )
+
 
 def _wrapped_commit(command: str) -> bool:
     """A ``git commit`` tangled with a heredoc or ``$(…)`` — the shape the
     worktree guard kills at parse time (gr514943).
 
-    Only a commit the guard actually cannot parse counts: a ``git commit``
-    inside a heredoc BODY (the guard refuses any heredoc whose text names
-    git), or one sharing a segment with a ``$(``/``<<``. A plain commit in
-    its own segment after an unrelated heredoc — ``python3 <<'EOF' …``
-    then ``git commit -F msg`` — is statically parseable and runs
+    Only a commit the guard actually cannot parse counts: a ``git
+    commit`` — the regex-matched, non-inert kind — inside a heredoc
+    BODY, or one sharing a segment with a ``$(``/``<<``. A plain commit
+    in its own segment after an unrelated heredoc — ``python3 <<'EOF'
+    …`` then ``git commit -F msg`` — is statically parseable and runs
     (gr515648).
     """
     pending: list[str] = []
@@ -100,12 +219,16 @@ def _wrapped_commit(command: str) -> bool:
         if pending:
             if line.strip() == pending[0]:
                 pending.pop(0)
-            elif _COMMIT_RE.search(line):
+            elif _COMMIT_RE.search(line) and not _inert_segment(line):
                 return True
             continue
         pending.extend(m.group(2) for m in _HEREDOC.finditer(line))
-        for seg in re.split(r"&&|\|\||;", line):
-            if _COMMIT_RE.search(seg) and _UNPARSEABLE_RE.search(seg):
+        for seg in _segments(line):
+            if (
+                _COMMIT_RE.search(seg)
+                and _UNPARSEABLE_RE.search(seg)
+                and not _inert_segment(seg)
+            ):
                 return True
     return False
 
@@ -241,9 +364,10 @@ def _commit_message(seg: str, cwd: str) -> str | None:
 def evaluate(command: str, cwd: str) -> str | None:
     """Return a deny reason, or ``None`` to allow. Pure & testable.
 
-    Walks the command's ``&&`` / ``;`` / newline segments left-to-right,
-    tracking the effective directory (updated by ``cd``), and denies the first
-    ``git commit`` whose resolved branch is protected.
+    Walks the command's simple commands — separators outside quotes —
+    left-to-right, tracking the effective directory (updated by ``cd``),
+    and denies the first ``git commit`` whose resolved branch is
+    protected.
     """
     if not isinstance(command, str) or "commit" not in command:
         return None
@@ -264,14 +388,16 @@ def evaluate(command: str, cwd: str) -> str | None:
         )
 
     cur = cwd
-    for seg in re.split(r"&&|\|\||;|\n", command):
+    for seg in _segments(command):
         cd = _CD_RE.match(seg)
         if cd:
             cur = _resolve(cur, cd.group(2))
             continue
-        if not _COMMIT_RE.search(seg):
+        if not _COMMIT_RE.search(seg) or _inert_segment(seg):
             continue
-        # This segment commits. Read the branch at its target dir.
+        # The regex matched and shlex could not prove the git…commit
+        # words inert — treat it as a commit. Read the branch at the
+        # target dir.
         gc = _GIT_C_RE.search(seg)
         target = _resolve(cur, gc.group(2)) if gc else cur
         # Only guard a repo that has the scripts/ship gate this protects;
