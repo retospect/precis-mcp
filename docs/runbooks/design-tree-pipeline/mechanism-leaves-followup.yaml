@@ -1,0 +1,19 @@
+# Apply after worktree-se-mech (93f01c247) AND dtree-s2 have landed. DESIGN rulings 2026-10-25 ~23:30Z.
+# Set implies.mechanism on these leaves (class shown); no rank changes needed.
+# Restored 2026-10-26 by DESIGN after the reboot wiped /tmp (content as GRIPE_FIX wrote it).
+fuse:
+  - {leaf: join/permanent/material-bond/weld, class: rigid}
+  - {leaf: join/permanent/material-bond/braze-solder, class: rigid}
+  - {leaf: join/permanent/material-bond/solvent-weld, class: rigid}
+adhesive:
+  - {leaf: join/permanent/material-bond/adhesive, class: rigid}
+rivet:
+  - {leaf: join/permanent/permanent-mechanical/rivet, class: rigid}
+pin:
+  - {leaf: join/service/pinned-retained/pin-and-clip, class: revolute}
+  - {leaf: close/hinged/pin-hinge, class: revolute}
+  - {leaf: rotate/plain-bearing/pin-in-hole, class: revolute}   # pin is a bought hardened dowel/ground shaft
+  - {leaf: rotate/shaft-hub/cross-pin, class: rigid}            # replaces the key workaround
+  - {leaf: locate/dowel-pin-and-slot, class: rigid}             # ISO 8734 / ISO 2338
+# Tiers after: revolute+pin 3, rigid+pin 2, rigid+key 3 (keep its ranks); only rigid+screw (10) and revolute+bearing (5) exceed 3, both ranked.
+# Also drop the per-leaf "no ... token" notes on these leaves wherever the builder copied them.

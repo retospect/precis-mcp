@@ -1,0 +1,84 @@
+# join v3 skeleton (hand-written, pilot). Level 1 = separability (VDI 2232 order),
+# gate J0 = Boothroyd-Dewhurst minimum-part-count test. Leaves marked `expand: true`
+# get one perplexity-reasoning query each in the pilot.
+# Labels per leaf: principle (form|force|material-bond), directness (direct|indirect).
+
+join:
+  role: function
+  def: fix two parts with no relative motion, permanent or detachable
+  asks: [separable, load_kind, load_N, material_pair, process, access, quantity, environment, temp_range_C]
+  children:
+    integrate:                       # J0 gate: must they be two parts?
+      role: branch
+      when: "DFA test: no relative motion, no different material needed, no separation for assembly/service"
+      children:
+        one-body-print-mould:  {role: leaf, expand: true, principle: none, directness: direct}
+        machine-from-solid:    {role: leaf, expand: true}
+        cast-as-one:           {role: leaf, expand: true}
+    permanent:                       # J1
+      role: branch
+      when: "separable=never"
+      children:
+        material-bond:
+          role: branch
+          children:
+            weld:              {role: leaf, expand: true, principle: material-bond, directness: direct}
+            braze-solder:      {role: leaf, expand: true, principle: material-bond, directness: indirect}
+            adhesive:          {role: leaf, expand: true, principle: material-bond, directness: indirect}
+            solvent-weld:      {role: leaf, expand: true, principle: material-bond, directness: direct}
+        permanent-mechanical:
+          role: branch
+          children:
+            rivet:             {role: leaf, expand: true, principle: form, directness: indirect}
+            heat-stake:        {role: leaf, expand: true, principle: form, directness: direct}
+            clinch-crimp-swage:{role: leaf, expand: true, principle: form, directness: direct}
+            press-shrink-fit:  {role: leaf, expand: true, principle: force, directness: direct}
+            permanent-snap:    {role: leaf, expand: true, principle: form, directness: direct}
+    service:                         # J2: comes apart with a tool
+      role: branch
+      when: "separable=service"
+      children:
+        threaded:
+          role: branch
+          children:
+            clearance-tapped:  {role: leaf, expand: true, principle: force, directness: indirect}
+            through-bolt-nut:  {role: leaf, expand: true, principle: force, directness: indirect}
+            heat-set-insert:   {role: leaf, expand: true, principle: force, directness: indirect}
+            nut-trap:          {role: leaf, expand: true, principle: force, directness: indirect}
+            thread-forming:    {role: leaf, expand: true, principle: force, directness: indirect}
+            shoulder-screw:    {role: leaf, expand: true, principle: form, directness: indirect}
+        pinned-retained:
+          role: branch
+          children:
+            pin-and-clip:      {role: leaf, expand: true, principle: form, directness: indirect}
+            retaining-ring:    {role: leaf, expand: true, principle: form, directness: indirect}
+        clamp:
+          role: branch
+          children:
+            split-boss-pinch:  {role: leaf, expand: true, principle: force, directness: indirect}
+        releasable-form-lock:
+          role: branch
+          children:
+            releasable-snap:   {role: leaf, expand: true, principle: form, directness: direct}
+            dovetail-slide:    {role: leaf, expand: true, principle: form, directness: direct}
+            twist-lock:        {role: leaf, expand: true, principle: form, directness: direct}
+    frequent:                        # J3: by hand, often -> close tree (stub only)
+      role: branch
+      when: "separable=frequent"
+      see: close
+
+locate:                              # shared subtree (anti-rotation, alignment)
+  role: function
+  def: put one part in a repeatable position relative to another, and stop the remaining degrees of freedom
+  children:
+    dowel-pin-and-slot:  {role: leaf, expand: true}
+    nest-pocket-step:    {role: leaf, expand: true}
+    second-fastener:     {role: leaf, expand: true}
+    key-flat-spline:     {role: leaf, expand: true}
+
+axes:                                # shared library, one query each in the pilot
+  locking:            {expand: true, fixes: [loosening]}
+  captive:            {expand: true, fixes: [lost-part, assembly-error]}
+  corrosion:          {expand: true, fixes: [galvanic, crevice], always: true}
+  bearing-face:       {expand: true, fixes: [creep, embedding, crushing]}
+  material-direction: {expand: true, fixes: [brittle-fracture, delamination]}

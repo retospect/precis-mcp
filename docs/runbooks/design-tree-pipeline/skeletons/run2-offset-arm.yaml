@@ -1,0 +1,31 @@
+# Hand-authored replacement for rotate/lever-crank-arm/offset-arm (the Perplexity answer was thin;
+# on-node content was statics only). DESIGN (Opus), 2026-10-25. No new numbers: sizing numbers come
+# from the linked shaft-hub leaves and the principles. Keep the verified statics rule (H c1/c11) if
+# the verifier confirmed them; drop the borrowed key-table claims (they live in key-and-keyway).
+
+- id: rotate/lever-crank-arm/offset-arm
+  role: leaf
+  coverage: shallow
+  authored: by-hand
+  summary: "An arm that turns a shaft (or is turned by it) has a pivot end on the shaft and a working end offset by the arm length; the torque is the working-end force times that length."
+  when: ["a force at a distance must become shaft torque, or shaft torque must become a force at a distance (cranks, levers, handles, rocker arms)"]
+  avoid_when: ["the load is pure torque with no offset point (use a hub or coupling)"]
+  variants: ["single crank (one working end)", "double or symmetric arm (two working ends; centred on the shaft by design)", "lever with the pivot between load and effort", "bell crank (two arms at an angle)"]
+  tradeoffs:
+    - "Longer arm: more torque per force, more bending at the hub, larger swept volume."
+    - "Clamped hub: adjustable angle and position, needs a clamp bolt path; keyed or splined hub: positive drive, fixed angle."
+  howto:
+    - "Place the pivot end on the shaft axis and the working end at the arm length L from it; do not centre a single crank on the shaft."
+    - "Pick the pivot-end attachment from rotate/shaft-hub (clamp hub, spline or square taper, key, set screw on a flat for light loads) and size the hub by that leaf."
+    - "The bending moment is largest at the hub and zero at the working end: make the section deepest at the hub, in the plane of the load, and taper it outward."
+    - "Give the working end its own joint (threaded spindle, pin, handle bearing) and walk its tree separately."
+    - "Retain the arm axially on the shaft in both directions (principles/retention-all-dof)."
+    - "Sweep the arm through its full rotation and check it clears every other part and the user."
+  issues:
+    - {issue: "single crank modelled centred on the shaft, so the working end sits on the axis", fix: "offset the working end by the arm length; the shaft passes through the pivot end only", failure_mode: assembly-error}
+    - {issue: "arm clamps at the wrong end or the hub is at mid-length", fix: "the hub is at the pivot end; the working end carries the load joint", failure_mode: assembly-error}
+    - {issue: "rotation of the working-end part unscrews it (precession of a threaded spindle)", fix: "use the thread hand that tightens under rotation on each side, and mark the handed parts", failure_mode: loosening}
+    - {issue: "arm slips on a round shaft under torque", fix: "positive drive (flat, key, spline, square) or a clamp hub sized for the torque", failure_mode: overload}
+    - {issue: "printed arm fails at the hub across the layers", fix: "print with the arm length in the layer plane; add section at the hub", failure_mode: brittle-fracture}
+  axes: {locking: "relevant (clamp bolt, threaded working end)", captive: "n/a: not removed in normal use", corrosion: "relevant when steel shaft meets aluminium arm", bearing-face: "relevant (clamp bolt head on the hub)", material-direction: "relevant for printed arms"}
+  links: [rotate/shaft-hub/clamp-hub, rotate/shaft-hub/spline-and-polygon, rotate/shaft-hub/key-and-keyway, rotate/shaft-hub/set-screw-on-flat, principles/retention-all-dof, principles/load-path, principles/mistake-proofing]

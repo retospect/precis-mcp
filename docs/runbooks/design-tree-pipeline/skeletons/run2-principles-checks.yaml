@@ -1,0 +1,92 @@
+# Hand-curated checks for principles.yaml (DESIGN, Opus). Maker context: desktop FDM, small
+# machined parts, bought hardware. Run per part (retention, fail-safe, load path, thermal,
+# look-up) or per assembly (over-constraint, assembly, mistake-proofing, tolerance stack).
+# The merge uses these as `checks:`; the verified rules from K stay as `rules:`.
+
+principles/retention-all-dof:
+  applies: per-part
+  checks:
+    - "List the part's 6 DOF (3 translations, 3 rotations) and mark each intended motion or stopped; leave none unclassified."
+    - "For every stopped DOF name what stops the + direction and what stops the - direction (shoulder, pin, wall, clamp, latch)."
+    - "Friction or gravity alone is not a stop when the object vibrates, is carried, or can be turned over; add a form stop or justify it with a load case."
+    - "An intended motion still needs limits: guide it, and stop its travel where it must end (axial retention for a turning shaft)."
+    - "Check every stop is itself retained (a circlip in a groove, a pin that cannot walk out)."
+    - "Check every orientation of use and of transport, not only the drawn one."
+    - "Printed stops: check the stop load against creep and against the weak layer direction."
+    - "There must be an assembly path that reaches the stops (links principles/assembly-and-access)."
+
+principles/fail-safe-retention:
+  applies: per-part, where losing the part hurts someone or wrecks the object
+  checks:
+    - "Name the primary failure: nut backs off, screw breaks, ring leaves groove, latch opens, glue lets go."
+    - "Say what the freed part then does (falls, flies, jams, drops its load) and whether that is acceptable."
+    - "If not acceptable, add a backup that does not share the primary's friction, preload, hole or groove (cotter pin through a castle nut, safety wire, lip, captive feature)."
+    - "The backup takes the full load after the primary is gone."
+    - "The installed state can be seen or felt; a missing backup is obvious."
+    - "One line answer: with the primary retainer gone, what stops the part, at what load."
+
+principles/over-constraint:
+  applies: per-assembly
+  checks:
+    - "For each joint list the DOF to stop and to leave free; count independent constraints, with no two fixing the same direction."
+    - "Constraints must not depend on perfect parallelism, coaxiality or flatness (two bearings in two separate housings; four feet on a flat face)."
+    - "On a shaft with two bearings, one locates axially and the other floats (links rotate/seat-and-retain/locating-floating-arrangement)."
+    - "Two screws through clearance holes: check the floating-fastener position tolerance; or use one pin plus one slot (links locate/dowel-pin-and-slot)."
+    - "Where redundancy is deliberate (stiffness), name the shim, slot or adjuster that absorbs the misfit."
+
+principles/load-path:
+  applies: per-part and per-joint, per load case
+  checks:
+    - "For each load case trace the force from where it enters to ground, part by part and joint by joint; no gaps."
+    - "Threads carry tension, not shear; shear goes through a shank, dowel, shoulder or nesting feature."
+    - "Thin features in bending, sharp internal corners and holes on the path get a fillet, rib or more section."
+    - "Printed parts: the main stress runs along the layers, not across them (links axis material-direction)."
+    - "Plastic under a screw head or in a clamp: check creep and preload loss (links axis bearing-face)."
+    - "Where friction carries the shear, check slip margin with the real preload."
+    - "Follow torque and moments through too, not only forces (a crank arm, a cantilevered shaft)."
+
+principles/assembly-and-access:
+  applies: per-assembly
+  checks:
+    - "Write the assembly order; each part and fastener has a straight insertion path at its turn."
+    - "Every screw head can be reached by its actual tool (hex key length, driver shaft, socket OD) at its turn."
+    - "Disassembly for service works in reverse without cutting or breaking parts that should survive."
+    - "Cables, seals and fingers are not pinched when closing."
+    - "Printed parts: support material can be removed, and a print-in-place gap is clear."
+    - "Prefer fewer parts and fewer fastener types (Boothroyd-Dewhurst minimum part count)."
+
+principles/mistake-proofing:
+  applies: per-assembly
+  checks:
+    - "A part that fits only one way should only fit one way: make asymmetric parts visibly asymmetric, or key them."
+    - "Mirror-image (left and right) parts are marked or keyed so they cannot be swapped."
+    - "Similar screws of different length in one assembly: a too-long screw must not damage anything; otherwise use one length."
+    - "Connectors and polarised parts cannot be plugged reversed."
+    - "The keying is strong enough that it cannot be forced."
+
+principles/tolerance-stack:
+  applies: per functional gap (fits, clearances, alignment)
+  checks:
+    - "For each gap that must stay open or closed, list the dimensions in the loop and add worst case; use RSS only for many independent contributors."
+    - "Take each contributor's tolerance from the process (printer test coupon, machining class, bought-part datasheet), not from the drawing default."
+    - "Include temperature, moisture swell and coating thickness where they matter."
+    - "Dimension critical features from shared functional datums, not as a chain."
+    - "If the budget does not close, add an adjuster or a shim, or change the datum, before tightening everything."
+
+principles/thermal-expansion:
+  applies: per joint of dissimilar materials, and any part near heat
+  checks:
+    - "Use the real minimum and maximum temperature of the part (sun, motor, enclosure), not room temperature."
+    - "Compute the differential movement (alpha1 - alpha2) * L * dT for each joined pair; check fits and clearances at both extremes."
+    - "Fix one datum and let the rest slide along the expansion direction (slots, floating joints)."
+    - "Plastics: check the hot case against softening (PLA around 55 C) and the cold case against brittleness."
+    - "Recheck bolt preload and seals at both extremes."
+
+principles/look-up-dont-assume:
+  applies: per number used in the design
+  checks:
+    - "Bought parts: record maker, part number and datasheet; dimensions and ratings come from it, never from memory."
+    - "Materials: name the grade and condition; strength, temperature limit and creep come from its datasheet."
+    - "Fits and clearances come from a recognised system (ISO 286) or from a test print on this printer."
+    - "Record source, revision, unit and condition for each critical number; unsourced numbers are marked provisional and listed."
+    - "Typical values are not minimums; rules of thumb are for first sizing only."

@@ -1,0 +1,114 @@
+# Run 3 skeleton: processes (S6). Hand-written. Each topic/leaf = one perplexity query.
+# DIN 8580 main groups as methods. Deep processes (Reto ruling 10): desktop-fdm, cnc-mill, lathe,
+# injection-mould; each is a `process` node whose children are rule topics (role: leaf, coverage deep).
+# Every other process is one shallow `process` node with one query.
+# Equipment vocabulary: desktop-fdm, industrial-fdm, sla, cnc-mill, lathe, injection-mould, sheet,
+# cast, bought, any. Batches L-R.
+
+process:
+  role: goal
+  coverage: shallow
+  def: how a part is made, and the limits that process puts on its geometry, tolerance, material and cost
+  asks: [quantity, material, size_mm, tolerance_mm, surface_Ra, equipment_available, lead_time, cost_weight]
+  children:
+    additive:
+      role: method
+      def: build the part up layer by layer (DIN 8580 group 1, primary shaping, additive)
+      children:
+        desktop-fdm:
+          role: process
+          coverage: deep
+          equipment: desktop-fdm
+          def: fused filament fabrication on desktop printers (Prusa, Bambu Lab class), 0.4 mm nozzle default
+          topics:
+            holes-and-clearances:      {batch: L, ctx: "desktop FDM 3D printing (Prusa, Bambu Lab): hole undersize and compensation, horizontal vs vertical holes, clearance for sliding and press fits between printed parts and with metal pins, test coupons"}
+            walls-and-min-features:    {batch: L, ctx: "desktop FDM 3D printing: minimum wall thickness as a multiple of extrusion width, minimum pin and feature size, embossed and engraved text, perimeters vs infill for strength"}
+            overhangs-bridges-supports: {batch: L, ctx: "desktop FDM 3D printing: maximum overhang angle, bridge length, support needs and removal, teardrop and diamond holes, chamfers instead of fillets on downward faces"}
+            orientation-and-anisotropy: {batch: L, ctx: "desktop FDM 3D printing: build orientation, interlayer (Z) strength vs in-plane strength ratio, loading parts in the layer plane, splitting parts to orient each"}
+            threads-and-inserts:       {batch: L, ctx: "desktop FDM 3D printing: heat-set threaded inserts (hole sizes, boss walls), captive hex nuts, printed threads, self-tapping screws into printed plastic, pilot hole sizes"}
+            warping-and-first-layer:   {batch: M, ctx: "desktop FDM 3D printing: warping and shrinkage by material (PLA, PETG, ABS, ASA, nylon), elephant foot and its compensation, corner lifting, brims, enclosure need, large flat parts"}
+            dimensional-accuracy:      {batch: M, ctx: "desktop FDM 3D printing: achievable dimensional accuracy and tolerances in XY and Z, layer height effects, seam, how to design for fit and calibrate with test prints"}
+            material-selection:        {batch: M, ctx: "desktop FDM filament selection for functional parts: PLA, PETG, ABS, ASA, PA/nylon, PC, TPU, CF-filled; heat deflection temperature, creep, UV, moisture uptake and drying, printability"}
+            strength-and-infill:       {batch: M, ctx: "desktop FDM functional part strength: perimeter count, infill percentage and pattern, top/bottom layers, stress concentrations, layer adhesion, annealing"}
+        sla:            {role: process, coverage: shallow, equipment: sla, batch: Q, ctx: "resin vat photopolymerisation (SLA, MSLA, DLP) design rules: min wall, holes, drain holes, supports, accuracy, brittleness and UV ageing of standard resins"}
+        powder-bed:     {role: process, coverage: shallow, equipment: industrial-fdm, batch: Q, ctx: "powder bed fusion of polymers (SLS, MJF, PA12) design rules: min wall, clearances between parts, escape holes, warpage, accuracy, from service bureau design guides"}
+        industrial-fdm: {role: process, coverage: shallow, equipment: industrial-fdm, batch: Q, ctx: "industrial FDM (Stratasys class, ULTEM, PC, soluble supports) design rules vs desktop FDM: accuracy, min features, materials"}
+    cutting:
+      role: method
+      def: remove material to shape the part (DIN 8580 group 3, separating)
+      children:
+        cnc-mill:
+          role: process
+          coverage: deep
+          equipment: cnc-mill
+          def: 3-axis and 3+2/5-axis CNC milling of metals and plastics
+          topics:
+            internal-corners:          {batch: N, ctx: "CNC milling design: internal corner radii vs tool diameter and pocket depth, dogbone and T-bone reliefs for square mating parts, cost of small radii"}
+            pockets-and-thin-walls:    {batch: N, ctx: "CNC milling design: pocket depth to tool diameter ratio, minimum wall thickness in aluminium and plastics, floor thickness, chatter and deflection"}
+            holes-and-threads:         {batch: N, ctx: "CNC milling design: standard drill sizes, hole depth to diameter, blind hole drill point, tapped hole depth and thread engagement, thread milling vs tapping, counterbores"}
+            tolerances-and-finish:     {batch: N, ctx: "CNC machining tolerances and surface finish: ISO 2768 general tolerances, tight tolerance cost, Ra values as machined, ISO 286 fits for bores, GD&T basics for machinists"}
+            setups-and-undercuts:      {batch: O, ctx: "CNC milling design: number of setups and fixturing, 3-axis vs 5-axis access, undercuts and T-slot cutters, workholding features, tabs"}
+            materials-machinability:   {batch: O, ctx: "CNC milling material choice: aluminium 6061 and 7075, free-machining steel and 303/304/316 stainless, brass, POM/acetal, PEEK, nylon; machinability, distortion and burrs"}
+            edges-text-deburr:         {batch: O, ctx: "CNC milling design: chamfers and edge breaks, engraved text size and depth, deburring, sharp edge specification, ISO 13715 edge notation"}
+        lathe:
+          role: process
+          coverage: deep
+          equipment: lathe
+          def: turning on a manual or CNC lathe, including live-tooling cross features
+          topics:
+            diameters-and-tolerances:  {batch: P, ctx: "CNC turning design: achievable diameter tolerances and roundness, surface finish, shaft fit classes (h6, g6, k6) by turning vs grinding, concentricity"}
+            grooves-and-reliefs:       {batch: P, ctx: "turning design: thread undercuts DIN 76, grinding reliefs DIN 509, retaining ring grooves, groove widths matched to standard tools"}
+            turned-threads:            {batch: P, ctx: "turned threads on a lathe: external and internal single-point threading, thread length, runout, chamfers at thread starts"}
+            slenderness-and-workholding: {batch: P, ctx: "turning design: length to diameter limits, tailstock and steady rest, bar stock sizes, chuck holding length, parting off"}
+            bores-and-internal:        {batch: P, ctx: "turning design: internal bores, boring bar reach vs diameter, blind bores, internal grooves, drilled centre holes DIN 332"}
+            cross-features:            {batch: P, ctx: "turned parts with secondary features: cross holes, flats, knurls (DIN 82), live tooling vs second op on a mill, burrs at cross holes"}
+        edm-wire:       {role: process, coverage: shallow, equipment: any, batch: Q, ctx: "wire EDM design rules: start holes, minimum inside corner radius from wire diameter, taper, tolerances, conductive materials only"}
+        edm-sinker:     {role: process, coverage: shallow, equipment: any, batch: Q, ctx: "sinker (ram) EDM design rules: electrode design, sharp internal corners, deep narrow ribs in moulds, surface finish and recast layer"}
+        laser-cutting:  {role: process, coverage: shallow, equipment: sheet, batch: Q, ctx: "laser cutting of sheet metal and acrylic/plywood design rules: min hole vs thickness, kerf, min web between cuts, tabs, heat-affected zone, tolerances"}
+        waterjet:       {role: process, coverage: shallow, equipment: sheet, batch: R, ctx: "abrasive waterjet cutting design rules: taper, min hole, piercing, tolerances, materials incl. glass and stone"}
+        grinding:       {role: process, coverage: shallow, equipment: any, batch: R, ctx: "grinding for precision fits: when shafts and bores need grinding, achievable tolerances and Ra, reliefs, hardened parts"}
+    forming:
+      role: method
+      def: change shape without removing material (DIN 8580 group 2 and 4, forming)
+      children:
+        sheet-metal-bending: {role: process, coverage: shallow, equipment: sheet, batch: R, ctx: "sheet metal press-brake bending design: min bend radius vs thickness by material, min flange length, hole and slot distance from bend, bend reliefs, K-factor, DIN 6935"}
+        punching-stamping:   {role: process, coverage: shallow, equipment: sheet, batch: R, ctx: "punched and stamped sheet metal design rules: min hole diameter vs thickness, hole spacing and edge distance, burr side, embosses and louvres"}
+        extrusion-profile:   {role: process, coverage: shallow, equipment: bought, batch: R, ctx: "aluminium extrusion profile design: wall thickness ratios, tongue ratio, standard profiles vs custom die, tolerances EN 755-9"}
+        forging:             {role: process, coverage: shallow, equipment: any, batch: R, ctx: "closed-die forging design rules: draft, parting line, fillet and corner radii, grain flow, machining allowance"}
+        thermoforming:       {role: process, coverage: shallow, equipment: any, batch: S, ctx: "vacuum forming and thermoforming of plastic sheet: draw ratio, draft, radii, wall thinning, materials"}
+        corrugated-board:    {role: process, coverage: shallow, equipment: any, batch: S, ctx: "corrugated cardboard and folding carton design: FEFCO box styles, flute direction, crease and score allowances, board grades, die-cut tolerances"}
+    primary-shaping:
+      role: method
+      def: make the shape from liquid or powder in a mould (DIN 8580 group 1, primary shaping)
+      children:
+        injection-mould:
+          role: process
+          coverage: deep
+          equipment: injection-mould
+          def: thermoplastic injection moulding in a steel or aluminium tool
+          topics:
+            wall-thickness:            {batch: L2, ctx: "injection moulding design: nominal wall thickness by resin (ABS, PC, PP, PA, POM), uniformity, thick-to-thin transitions, coring out"}
+            draft-and-texture:         {batch: L2, ctx: "injection moulding design: draft angles per side, extra draft per texture depth (VDI 3400, SPI/Mold-Tech), ejection"}
+            ribs-and-bosses:           {batch: L2, ctx: "injection moulding design: rib thickness vs wall, rib height, boss outer and inner diameter for screws and inserts, gussets, sink marks"}
+            radii-and-corners:         {batch: L2, ctx: "injection moulding design: inside and outside corner radii vs wall thickness, stress concentration, flow"}
+            undercuts-and-actions:     {batch: M2, ctx: "injection moulding design: undercuts, side actions, lifters, bump-offs, pass-through coring and shut-offs to avoid actions"}
+            gates-weld-lines-warpage:  {batch: M2, ctx: "injection moulding design: gate location, weld and knit lines, sink, warpage from uneven cooling and fibre orientation, venting"}
+            shrinkage-and-tolerances:  {batch: M2, ctx: "injection moulding shrinkage by resin and tolerances: ISO 20457, DIN 16742, tolerance classes, critical vs non-critical dimensions"}
+            resin-selection:           {batch: M2, ctx: "injection moulding resin selection: PP, ABS, PC, PC/ABS, PA6 and PA66 (glass filled), POM, TPE; temperature, impact, creep, chemical resistance, moisture"}
+            tooling-cost-quantity:     {batch: M2, ctx: "injection mould tooling: aluminium vs steel tools, cavities, tool life, cost drivers, quantity break-even vs 3D printing and urethane casting"}
+        die-casting:         {role: process, coverage: shallow, equipment: cast, batch: S, ctx: "aluminium and zinc high-pressure die casting design: wall thickness, draft, porosity, ribs, ejector marks, machining stock"}
+        sand-investment-casting: {role: process, coverage: shallow, equipment: cast, batch: S, ctx: "sand casting and investment casting design: min wall, draft, shrink allowance, cores, tolerances ISO 8062"}
+        urethane-casting:    {role: process, coverage: shallow, equipment: any, batch: S, ctx: "urethane (polyurethane) casting in silicone moulds from 3D printed masters: wall thickness, draft, undercuts, tolerances, quantities"}
+    coating:
+      role: method
+      def: put a layer on the part (DIN 8580 group 5)
+      children:
+        anodising:           {role: process, coverage: shallow, equipment: any, batch: T, ctx: "anodising aluminium (Type II, Type III hard): coating thickness and dimensional growth, masking threads and fits, alloy suitability, MIL-A-8625"}
+        plating-and-passivation: {role: process, coverage: shallow, equipment: any, batch: T, ctx: "zinc and nickel plating of steel fasteners and parts, passivation of stainless steel, hydrogen embrittlement baking, thread allowance ISO 4042"}
+        powder-coat-paint:   {role: process, coverage: shallow, equipment: any, batch: T, ctx: "powder coating and painting of metal parts: film thickness, masking, effect on fits and threads, edge coverage, earth points"}
+    property-change:
+      role: method
+      def: change the material's properties (DIN 8580 group 6)
+      children:
+        heat-treatment:      {role: process, coverage: shallow, equipment: any, batch: T, ctx: "heat treatment of steel and aluminium parts in design: hardening, case hardening, tempering, T6 aging, distortion, machining before vs after"}
+        annealing-printed-parts: {role: process, coverage: shallow, equipment: desktop-fdm, batch: T, ctx: "annealing 3D printed parts (PLA, PETG, nylon): temperature and time, strength and heat resistance gain, shrinkage and warp, design allowance"}

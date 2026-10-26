@@ -1,0 +1,77 @@
+# Run 2 skeleton: rotate, close, principles. Hand-written. Each leaf = one perplexity query.
+# Batch letters assign leaves to agents. CONTEXT strings feed the query template.
+# Equipment scope vocabulary: desktop-fdm, industrial-fdm, sla, cnc-mill, lathe, injection-mould,
+# sheet, cast, bought. Prefer desktop-fdm (Prusa, Bambu) sources over industrial FDM (Stratasys).
+
+rotate:
+  role: function
+  coverage: deep
+  def: let one part turn relative to another about an axis, continuously or through a limited angle, with controlled play and friction
+  asks: [motion{continuous,oscillating,limited-angle}, speed_rpm, load_radial_N, load_axial_N, play_mm, duty, environment, process, quantity]
+  children:
+    plain-bearing:
+      pin-in-hole:            {batch: F, ctx: "plain pivot: a pin or shaft turning directly in a hole of a machined or 3D-printed part; running clearance fits (ISO 286 H8/f7 etc.), printed hole compensation, wear"}
+      polymer-bushing:        {batch: F, ctx: "plain bearing: polymer sleeve bushings (igus iglidur class), PV limits, press-fit housing bore, shaft hardness and finish"}
+      sintered-bronze-bushing: {batch: F, ctx: "plain bearing: oil-impregnated sintered bronze bushings, PV limits, housing fit and bore close-in after pressing"}
+    rolling-bearing:
+      deep-groove-ball:       {batch: F, ctx: "rolling bearing: deep groove ball bearings (608, 6000 series) for general shafts; selection by load and speed, L10 life, shields vs seals"}
+      bearing-in-printed-part: {batch: F, ctx: "rolling bearing seated in a desktop FDM 3D-printed housing (Prusa, Bambu): bore compensation, press vs glued vs clamped seat, creep of the plastic seat"}
+      paired-preloaded:       {batch: F, ctx: "rolling bearing pairs: angular contact or tapered roller bearings in back-to-back / face-to-face arrangement, preload, when needed"}
+    seat-and-retain:
+      housing-and-shaft-fits: {batch: G, ctx: "rolling bearing seats: choosing housing bore and shaft tolerance classes (e.g. k6, j6, H7, J7) from load rotation (rotating inner vs outer ring), per bearing maker tables (SKF, Schaeffler)"}
+      locating-floating-arrangement: {batch: G, ctx: "bearing arrangement on a shaft: one locating bearing and one floating bearing to allow thermal expansion, versus cross-located; over-constraint and binding"}
+      axial-retention:        {batch: G, ctx: "axial retention of bearings and shafts: shoulders with abutment heights, circlips DIN 471/472, shaft collars, end caps, locknuts; retaining both directions"}
+    flexure-pivot:
+      cross-spring-and-notch: {batch: G, ctx: "compliant pivots: cross-spring (cross-flexure) pivots and notch hinges for limited angle rotation with no play; stress, range of motion, printed and machined"}
+    spherical:
+      rod-end-ball-joint:     {batch: G, ctx: "spherical joints: rod ends (heim joints), ball joints, spherical plain bearings for misalignment and multi-axis rotation"}
+    shaft-hub:
+      set-screw-on-flat:      {batch: H, ctx: "shaft-hub torque transfer by set screw (ISO 4026 cup point) on a D-flat, two set screws at 90 degrees, when set screws walk"}
+      key-and-keyway:         {batch: H, ctx: "shaft-hub torque transfer with parallel keys DIN 6885 / ISO 773, keyway fits, torque capacity"}
+      spline-and-polygon:     {batch: H, ctx: "shaft-hub torque transfer with involute splines (DIN 5480) and polygon profiles, and hex/D bores in 3D-printed hubs"}
+      clamp-hub:              {batch: H, ctx: "shaft-hub torque transfer with clamping hubs: split hubs, taper-lock bushes, keyless locking assemblies (shrink discs, Ringfeder type)"}
+      cross-pin:              {batch: H, ctx: "shaft-hub connection with a cross pin or spring pin through hub and shaft; shear capacity, hole weakening of the shaft"}
+    shaft-basics:
+      shaft-shoulders-fillets: {batch: H, ctx: "shaft design: shoulders, fillet radii and relief grooves for fatigue, stress concentration factors, deflection limits at bearings and gears"}
+    lever-crank-arm:
+      offset-arm:             {batch: H, ctx: "levers, cranks and arms on a shaft: pivot or clamp end vs working end, offset from the shaft, arm section and attachment to the shaft"}
+
+close:
+  role: function
+  coverage: deep
+  def: open and re-close access to an enclosure or container, by hand or with a tool, optionally sealed
+  asks: [open_frequency, tool_free, sealing{none,dust,splash,IP67}, user_force_N, child_or_tamper_resistant, process, hinged_or_removable, quantity]
+  children:
+    snap-and-friction:
+      cantilever-snap-lid:    {batch: I, ctx: "enclosure lids held by cantilever snap hooks, designed for repeated opening, moulded and desktop FDM printed"}
+      annular-snap-cap:       {batch: I, ctx: "annular snap-fit caps and lids (round), undercut and strain, moulded and printed"}
+      friction-press-lid:     {batch: I, ctx: "friction or press-fit lids held by interference on a rim or crush ribs; tins, printed boxes"}
+    threaded-and-twist:
+      screw-cap:              {batch: I, ctx: "threaded closures: screw caps and threaded lids, container thread profiles (buttress, modified), printed threads on desktop FDM, thread start and engagement turns"}
+      bayonet:                {batch: I, ctx: "bayonet closures: lugs and L-slots with a detent, for lids and caps"}
+      quarter-turn-fastener:  {batch: I, ctx: "quarter-turn panel fasteners (Dzus type, camlocks) and captive panel screws for access panels"}
+    hinged:
+      pin-hinge:              {batch: J, ctx: "pin hinges for lids: knuckle hinges with a metal pin, print-in-place hinges on desktop FDM, clearances, hinge axis placement"}
+      living-hinge:           {batch: J, ctx: "living hinges: polypropylene moulded living hinges, thickness and length, and what works on desktop FDM (PETG, PP, TPU)"}
+      stay-detent-stop:       {batch: J, ctx: "lid stays, hold-open detents and end stops for hinged lids; keeping the lid open and limiting the angle"}
+    latches:
+      draw-latch:             {batch: J, ctx: "draw latches and toggle latches that pull a lid closed against a gasket"}
+      magnetic-catch:         {batch: J, ctx: "magnetic catches for lids and doors: magnet pull force, steel strike, pocket and glue design in 3D-printed parts"}
+      push-push-and-slide:    {batch: J, ctx: "push-to-open (push-push) latches and sliding lids on rails or dovetails"}
+    seal-interface:
+      o-ring-face-seal:       {batch: J, ctx: "sealing a lid with an O-ring in a face or radial gland: groove width and depth, squeeze percentage, per Parker O-ring handbook"}
+      gasket-and-lip:         {batch: J, ctx: "sealing a lid with a flat gasket, a foam or TPU printed gasket, or a tongue-and-groove lip; compression, IP ratings"}
+
+principles:                    # universal sweep, run on every part (Reto 2026-10-25)
+  role: principle-set
+  coverage: deep
+  children:
+    retention-all-dof:        {batch: K, ctx: "exact constraint design: every part has 6 degrees of freedom; each must be either an intended motion or stopped in both directions; friction and gravity as unreliable retainers under vibration"}
+    fail-safe-retention:      {batch: K, ctx: "secondary retention and fail-safe design for fasteners and safety-critical parts: what happens when the primary retainer loosens; cotter pins, safety wire, lips"}
+    over-constraint:          {batch: K, ctx: "over-constraint (redundant constraints) in mechanical assemblies: binding, thermal stress, misalignment; kinematic and exact-constraint design"}
+    load-path:                {batch: K, ctx: "load path in mechanical design: tracing every force from where it enters to ground, avoiding threads in shear, bending in thin features"}
+    assembly-and-access:      {batch: K, ctx: "design for assembly and disassembly: insertion path, assembly order, tool access and clearance, Boothroyd-Dewhurst DFA rules"}
+    mistake-proofing:         {batch: K, ctx: "mistake-proofing (poka-yoke) in mechanical design: parts that cannot be assembled wrong, asymmetry, keying"}
+    tolerance-stack:          {batch: K, ctx: "tolerance stack-up in assemblies: worst case vs statistical (RSS), where clearances and fits come from, datum choice"}
+    thermal-expansion:        {batch: K, ctx: "differential thermal expansion between joined materials (aluminium, steel, plastics): slots, floating joints, clearances over a temperature range"}
+    look-up-dont-assume:      {batch: K, ctx: "engineering design practice: which quantities must come from a datasheet or standard (material allowables, bought-part dimensions, fits) rather than assumed"}
