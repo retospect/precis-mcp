@@ -1273,6 +1273,12 @@ def _initialise_test_db(request: pytest.FixtureRequest) -> Iterator[None]:
                         # Best-effort: the dump only speeds up a cold
                         # template — a missing pg_dump must not fail the run.
                         log.warning("conftest: schema dump not written: %s", exc)
+            # Defensive reseeds on every maintenance claim — a tail-
+            # migration seed emptied by a sibling worktree's older
+            # _PRESERVE_TABLES never comes back via apply_all (the ledger
+            # seals it), and the stamp-match / schema-dump paths never
+            # replayed the INSERTs either. Idempotent and cheap.
+            _ensure_vocab_seeds(PG_TEST_DSN)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)
@@ -1600,6 +1606,7 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         # truncating it would desync it from the (preserved) triggers.
         "revision_trigger_state",
         "news_sources",  # seeded reference rows, 0033
+        "tag_axes",  # seeded display-rank registry, 0256
         "material_properties",  # seeded property registry, 0092 (core + proposed)
         "component_categories",  # seeded category registry, 0093 (core + proposed)
         "component_specs",  # seeded spec registry, 0093 (core + proposed)
@@ -1732,6 +1739,38 @@ def _ensure_vocab_seeds(dsn: str) -> None:
     _ensure_component_seed(dsn)
     _ensure_rxn_seed(dsn)
     _ensure_design_core_seed(dsn)
+    _ensure_tag_axes_seed(dsn)
+
+
+def _ensure_tag_axes_seed(dsn: str) -> None:
+    """Defensive reseed of ``tag_axes`` (0256) — same tail-migration
+    hazard as :func:`_ensure_material_seed`: a sibling whose conftest
+    lacks ``tag_axes`` in ``_PRESERVE_TABLES`` TRUNCATEs the seed out of
+    the shared template, and ``apply_all`` won't replay it."""
+    seed_file = MIGRATIONS_DIR / "0256_tag_axes.sql"
+    if not seed_file.exists():
+        return  # this checkout predates tag_axes; nothing to seed
+    from precis.store.migrate import _execute_dump_sql
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        exists = conn.execute(
+            "SELECT to_regclass('public.tag_axes') IS NOT NULL"
+        ).fetchone()
+        if not (exists and exists[0]):
+            return  # 0256 hasn't applied yet; apply_all's own run will seed it
+        n = conn.execute("SELECT count(*) FROM tag_axes").fetchone()
+        if n and n[0] > 0:
+            return  # seed intact — nothing to repair
+        log.warning(
+            "conftest: tag_axes seed missing on %r — "
+            "re-applying 0256's seed directly (see _ensure_tag_axes_seed)",
+            dsn,
+        )
+        # Same driver Migrator.apply_all uses for a migration's raw SQL
+        # body (handles the file's own BEGIN/COMMIT under autocommit).
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))
 
 
 def _ensure_material_seed(dsn: str) -> None:

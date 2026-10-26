@@ -79,10 +79,10 @@ class TestQuestFisheyeLadder:
         out = _handler(store).get(id=q.id, view="fisheye+1hop").body
 
         assert "Notes & links:" in out
-        assert out.count("supported-by: fi") == 8
+        assert "  supported-by (10):" in out
         assert "    … +2 more" in out
         # 9 papers + 1 structure share the one `served-by` block: 8 shown
-        assert out.count("served-by: ") == 8
+        assert "  served-by (10):" in out
         assert "    … +2 more" in out.split("Notes & links:")[0]
 
     def test_serving_findings_list_before_serving_papers(self, store: Any) -> None:
@@ -103,12 +103,14 @@ class TestQuestFisheyeLadder:
         store.add_link(src_ref_id=sub.id, dst_ref_id=q.id, relation="serves")
 
         out = _handler(store).get(id=q.id, view="fisheye+1hop").body
-        served = [ln for ln in out.splitlines() if ln.startswith("  served-by: ")]
+        served = [
+            ln for ln in out.splitlines() if ln.startswith("    ") and " — " in ln
+        ]
 
         assert len(served) == 8
-        assert served[0].startswith(f"  served-by: qu{sub.id} ")
-        assert {ln.split()[1] for ln in served[1:4]} == {f"fi{f.id}" for f in findings}
-        assert all(ln.split()[1].startswith("pa") for ln in served[4:])
+        assert served[0].startswith(f"    qu{sub.id} ")
+        assert {ln.split()[0] for ln in served[1:4]} == {f"fi{f.id}" for f in findings}
+        assert all(ln.split()[0].startswith("pa") for ln in served[4:])
         assert "supported-by:" not in out
 
     def test_2hop_and_recall_suffix_are_accepted(self, store: Any) -> None:

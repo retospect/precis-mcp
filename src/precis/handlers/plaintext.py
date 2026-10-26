@@ -1955,8 +1955,11 @@ class PlaintextHandler(Handler):
             handle_registry.try_format(self._KIND, block.id, chunk=True)
             or f"{ref.slug}~{block.slug or block.ord}"
         )
+        head = handle_registry.chunk_head_label(
+            self._KIND, block.id, block.slug or block.ord, ref.slug
+        )
         record_handle = handle_registry.format_handle(self._KIND, ref.id)
-        body = f"# {handle}\n{block.text}"
+        body = f"# {head}\n{block.text}"
         body += render_next_section(
             [
                 (

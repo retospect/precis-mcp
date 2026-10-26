@@ -765,7 +765,7 @@ class PatentHandler(Handler):
         lines: list[str] = []
         for b in blocks:
             lines.append(
-                f"# {handle_registry.try_format(ref.kind, b.id, chunk=True) or f'{slug}~{b.ord}'}"
+                f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, slug)}"
             )
             lines.append(b.text)
             lines.append("")

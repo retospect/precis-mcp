@@ -7013,13 +7013,12 @@ class PaperHandler(Handler):
             lines.append(banner)
             lines.append("")
         for b in blocks:
-            # head each chunk with its computed handle (``pc<id>``);
-            # the legacy ``slug~pos`` stays only for a kind with no chunk code.
-            b_handle = (
-                handle_registry.try_format(ref.kind, b.id, chunk=True)
-                or f"{ref.slug}~{b.ord}"
+            # head each chunk with its computed handle plus the ~ord it
+            # hides (``pc<id> ~<ord>``, gr520328); the legacy ``slug~pos``
+            # stays only for a kind with no chunk code.
+            lines.append(
+                f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
             )
-            lines.append(f"# {b_handle}")
             lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
             # sidecars of this chunk's verified `cites` verdicts, when any

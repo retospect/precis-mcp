@@ -698,6 +698,17 @@ class TestChunks:
         assert "TOC of this range" not in resp.body
         assert "previous chunk" not in resp.body
 
+    def test_chunk_header_shows_the_ordinal(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr520328: a bare ``pc<id>`` chunk handle hides its ordinal,
+        so ``~N..M`` range reads were guessed from ids; each ``#``
+        header now prints ``<handle> ~<ord>``."""
+        _seed_paper(store, blocks=["a", "b", "c", "d"])
+        resp = handler.get(id="wang2020state~1..2")
+        assert f"# {chunk_handle(store, 'wang2020state', ord=1)} ~1" in resp.body
+        assert f"# {chunk_handle(store, 'wang2020state', ord=2)} ~2" in resp.body
+
     def test_single_chunk_promotes_search_toc_and_range(
         self, store: Store, handler: PaperHandler
     ) -> None:

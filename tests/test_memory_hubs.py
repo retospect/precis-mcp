@@ -70,12 +70,14 @@ def test_hub_lists_every_member_one_line_with_hook(hub: Hub) -> None:
 
     out = render_eye(store, _h(root), "fisheye+1hop")
 
-    assert out.count("contains: me") == len(members)
+    assert f"  contains ({len(members)}):" in out
     assert "… +" not in out.split("related-to")[0]
-    assert f"contains: {_h(hooked)} — Hooked — the hook text" in out
-    assert f"contains: {_h(bodied)} — Bodied — first line of body" in out
-    assert out.count("related-to: me") == _NEIGHBOR_GROUP_CAP
-    assert "… +2 more" in out
+    assert f"    {_h(hooked)} — Hooked  [{SPACE_TAG}] — the hook text" in out
+    assert f"    {_h(bodied)} — Bodied  [{SPACE_TAG}] — first line of body" in out
+    member_rows = [ln for ln in out.splitlines() if ln.startswith("    me")]
+    assert len(member_rows) == len(members) + _NEIGHBOR_GROUP_CAP
+    assert f"  related-to ({_NEIGHBOR_GROUP_CAP + 2}):" in out
+    assert "    … +2 more" in out
 
 
 def test_hub_member_hook_is_cut_to_about_100_chars(hub: Hub) -> None:
@@ -94,8 +96,9 @@ def test_non_hub_keeps_the_cap_on_contains(hub: Hub) -> None:
     for i in range(_NEIGHBOR_GROUP_CAP + 3):
         _part_of(store, _note(handler, f"M{i}"), root)
     out = render_eye(store, _h(root), "fisheye+1hop")
-    assert out.count("contains: me") == _NEIGHBOR_GROUP_CAP
-    assert "… +3 more" in out
+    assert f"  contains ({_NEIGHBOR_GROUP_CAP + 3}):" in out
+    assert out.count("    me") == _NEIGHBOR_GROUP_CAP
+    assert "    … +3 more" in out
 
 
 def test_first_hop_shape_does_not_count_hub_members_as_hidden(hub: Hub) -> None:
@@ -382,7 +385,7 @@ def test_hub_members_order_active_band_first(hub: Hub) -> None:
         render_eye(store, _h(root), "fisheye+1hop"),
         render_eye(store, _h(root), "fisheye+1hop", q="contains"),
     ):
-        contains = [ln for ln in out.splitlines() if "contains: me" in ln]
+        contains = [ln for ln in out.splitlines() if ln.startswith("    me")]
         assert [next(h for h in want if h in ln) for ln in contains] == want
 
 
@@ -468,7 +471,8 @@ def test_hub_listing_is_capped_with_a_more_line_and_reads_hooks_in_one_query(
     monkeypatch.setattr(store.chunks, "list_chunks_for_ref", spy)
     out = render_eye(store, _h(root), "fisheye+1hop")
 
-    assert out.count("contains: me") == 5
+    assert "  contains (9):" in out
+    assert out.count("    me") == 5
     assert f"… +4 more · get(kind='memory', id='{_h(root)}'" in out
     assert "q='contains')" in out
     assert out.splitlines()[-1].startswith("search within:")

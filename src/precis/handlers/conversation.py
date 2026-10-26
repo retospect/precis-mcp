@@ -563,9 +563,7 @@ class ConversationHandler(Handler):
                 next=f"get(kind='conv', id='{slug}/transcript')",
             )
         b = blocks[0]
-        chunk_handle = (
-            handle_registry.try_format("conv", b.id, chunk=True) or f"{slug}~{pos}"
-        )
+        chunk_handle = handle_registry.chunk_head_label("conv", b.id, pos, slug)
         return Response(body=f"# {chunk_handle}\n{b.text}")
 
     # ── asa_bot preamble views ──────────────────────────────────────

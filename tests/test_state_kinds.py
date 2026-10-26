@@ -972,7 +972,9 @@ class TestConversation:
     def test_single_turn(self, conv: ConversationHandler) -> None:
         self._seed_conv(conv.store, "thread-1", "x", ["alpha", "beta", "gamma"])
         out = conv.get(id="thread-1~1")
-        assert chunk_handle(conv.store, "thread-1", kind="conv", ord=1) in out.body
+        assert (
+            f"{chunk_handle(conv.store, 'thread-1', kind='conv', ord=1)} ~1" in out.body
+        )
         assert "beta" in out.body
         assert "alpha" not in out.body
         assert "gamma" not in out.body
@@ -1158,7 +1160,8 @@ class TestPresentation:
         pres.put(id="d", text="gamma")
         out = pres.get(id="d~1")
         assert (
-            f"{chunk_handle(pres.store, 'd', kind='pres', ord=1)} (slide)" in out.body
+            f"{chunk_handle(pres.store, 'd', kind='pres', ord=1)} ~1 (slide)"
+            in out.body
         )
         assert "beta" in out.body
         assert "alpha" not in out.body

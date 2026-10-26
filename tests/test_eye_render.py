@@ -19,6 +19,7 @@ from precis.utils.eye_render import _cluster_map, _fisheye_split, render_eye
 from precis.utils.toc_db import cluster_blocks
 from precis.utils.working_set_render import render_working_set
 from precis.workers.working_set import Extent, WorkingSet
+from tests._refs import insert_gripe
 
 
 def _pe(body: str) -> str:
@@ -77,6 +78,64 @@ def test_memory_eye_1hop_marks_an_audit_flagged_neighbour(hub: Hub) -> None:
     assert out.count("[AUDIT:ungrounded-number]") == 1
 
 
+def test_eye_rows_and_head_carry_ranked_tag_chips(hub: Hub) -> None:
+    """gr520321 ruling (comment 1): every tag when ≤4, top-4-by-rank
+    then ``+N more`` above that; ``STATUS:open`` drops only on
+    open-by-default kinds (todo/gripe), and the focus head shows its
+    own chips with the wider cap."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="todo", slug=None, title="Focus todo")
+    done = insert_gripe(store, "A closed gripe", status="done")
+    noisy = store.insert_ref(kind="memory", slug=None, title="Tagged note")
+    for near in (done, noisy):
+        store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    store.add_tag(done.id, Tag.closed("PRIO", "high"), set_by="system")
+    store.add_tag(done.id, Tag.open("pcb-dogfood"), set_by="system")
+    store.add_tag(noisy.id, Tag.closed("STATUS", "open"), set_by="system")
+    for value in ("one", "two", "three", "four", "five"):
+        store.add_tag(noisy.id, Tag.open(value), set_by="system")
+    store.add_tag(focus.id, Tag.closed("STATUS", "open"), set_by="system")
+    store.add_tag(focus.id, Tag.open("planning"), set_by="system")
+
+    out = render_eye(
+        store, handle_registry.format_handle("todo", focus.id), "fisheye+1hop"
+    )
+    # Focus header: [planning] but not the context-restating STATUS:open.
+    assert "[planning]" in out.splitlines()[0]
+    assert "STATUS" not in out.splitlines()[0]
+    # A closed gripe neighbour visibly reads done; axes rank before
+    # free-form, free-form sorts by value.
+    row = next(ln for ln in out.splitlines() if f"gr{done.id}" in ln)
+    assert row.rstrip().endswith("[STATUS:done] [PRIO:high] [pcb-dogfood]")
+    # Six tags on a memory: STATUS is NOT open-by-default noise here, so
+    # it heads the row, then three free-form chips, then the overflow.
+    nrow = next(ln for ln in out.splitlines() if f"me{noisy.id}" in ln)
+    assert nrow.rstrip().endswith("[STATUS:open] [five] [four] [one] +2 more")
+
+
+def test_eye_row_drops_the_space_the_ring_filter_already_applied(
+    hub: Hub,
+) -> None:
+    """The ruling's other drop: a ``SPACE`` tag equal to the applied
+    ring filter restates the context; unfiltered it still shows."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    near = store.insert_ref(kind="memory", slug=None, title="Near")
+    store.add_tag(near.id, Tag.closed("SPACE", "repo-dev"), set_by="system")
+    store.add_tag(near.id, Tag.open("planning"), set_by="system")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    h = handle_registry.format_handle("memory", focus.id)
+
+    out = render_eye(store, h, "fisheye+1hop", ring={"space": "repo-dev"})
+    row = next(ln for ln in out.splitlines() if f"me{near.id}" in ln)
+    assert "[planning]" in row
+    assert "[SPACE:repo-dev]" not in row
+
+    unfiltered = render_eye(store, h, "fisheye+1hop")
+    row = next(ln for ln in unfiltered.splitlines() if f"me{near.id}" in ln)
+    assert "[SPACE:repo-dev]" in row
+
+
 def test_memory_eye_1hop_labels_a_codeless_neighbour_by_kind_and_slug(
     hub: Hub,
 ) -> None:
@@ -96,10 +155,9 @@ def test_memory_eye_1hop_labels_a_codeless_neighbour_by_kind_and_slug(
         store, handle_registry.format_handle("memory", mem.id), "fisheye+1hop"
     )
 
-    assert (
-        "related-to: websearch:characteristic-length-nanoparticles — ℓc search" in out
-    )
-    assert f"related-to: pa{paper.id} — XPS profiling" in out
+    assert "  related-to (2):" in out
+    assert "websearch:characteristic-length-nanoparticles — ℓc search" in out
+    assert f"pa{paper.id} — XPS profiling" in out
 
 
 def test_memory_eye_1hop_caps_a_relation_group_with_overflow_line(hub: Hub) -> None:
@@ -118,7 +176,8 @@ def test_memory_eye_1hop_caps_a_relation_group_with_overflow_line(hub: Hub) -> N
     h = handle_registry.format_handle("memory", mem.id)
     out = render_eye(store, h, "fisheye+1hop")
 
-    assert out.count("related-to: me") == 8
+    assert "  related-to (10):" in out
+    assert out.count("— Related note") == 8
     assert "… +2 more" in out
 
 
@@ -141,7 +200,8 @@ def test_memory_eye_1hop_counts_overflow_against_live_neighbours(hub: Hub) -> No
     h = handle_registry.format_handle("memory", mem.id)
     out = render_eye(store, h, "fisheye+1hop")
 
-    assert out.count("related-to: me") == 7
+    assert "  related-to (7):" in out
+    assert out.count("— Related note") == 7
     assert "more" not in out
 
 
@@ -547,9 +607,10 @@ def test_ring_filter_narrows_the_first_hop_by_kind(hub: Hub) -> None:
 
     narrowed = render_eye(store, h, "fisheye+1hop", ring={"kinds": "memory"})
     assert f"related-to: me{note.id}" in narrowed
-    assert "related-to: pa" not in narrowed
+    assert f"pa{paper.id}" not in narrowed
     full = render_eye(store, h, "fisheye+1hop")
-    assert f"related-to: pa{paper.id}" in full
+    assert "  related-to (2):" in full
+    assert f"pa{paper.id} — XPS" in full
 
 
 def test_space_axis_tracks_the_closed_vocab() -> None:
@@ -638,12 +699,12 @@ def test_roadmap_lists_serving_sub_quests_before_papers(hub: Hub) -> None:
     out = render_eye(
         store, handle_registry.format_handle("quest", q.id), "fisheye+1hop"
     )
-    served = [
-        ln.strip() for ln in out.splitlines() if ln.strip().startswith("served-by:")
-    ]
-    assert served[0].startswith(f"served-by: qu{sub1.id}")
-    assert served[1].startswith(f"served-by: qu{sub2.id}")
-    assert served[2].startswith("served-by: pa")
+    assert "served-by (11):" in out
+    block = out.split("served-by (11):", 1)[1]
+    served = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    assert served[0].startswith(f"qu{sub1.id}")
+    assert served[1].startswith(f"qu{sub2.id}")
+    assert served[2].startswith("pa")
     assert "… +3 more" in out  # 11 servers, 8 rows
 
 

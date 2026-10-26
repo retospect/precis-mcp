@@ -300,10 +300,21 @@ def _handle_with_file(kind: str, ref: Any, ref_id: int) -> str:
     return f"{hid} ({name})" if name else hid
 
 
-def _head(ref: Any, kind: str) -> str:
+def _head(ref: Any, kind: str, chips: str = "") -> str:
     hid = _handle_with_file(kind, ref, int(ref.id))
     title = " ".join((getattr(ref, "title", None) or "").split())
-    return f"{hid} [{kind}] {title}".rstrip()
+    head = f"{hid} [{kind}] {title}".rstrip()
+    return f"{head}  {chips}" if chips else head
+
+
+def _head_chips(store: Any, ref_id: int, kind: str) -> str:
+    """The focus ref's own tag chips for its ``_head`` line — same helper
+    and order as the row chips, wider cap (it renders once)."""
+    from precis.utils import tag_chips
+
+    return tag_chips.chips_bulk(store, {ref_id: kind}, cap=tag_chips.HEAD_CHIP_CAP).get(
+        ref_id, ""
+    )
 
 
 def _cap(text: str, cap: int) -> str:
@@ -445,7 +456,7 @@ def _render_doc_eye(
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
-    head = _head(ref, kind)
+    head = _head(ref, kind, _head_chips(store, ref_id, kind))
     if ext <= Extent.TOC:
         return f"· {head}"
 
@@ -524,8 +535,9 @@ def _render_note_eye(
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
+    chips = _head_chips(store, int(ref.id), kind)
     if ext <= Extent.TOC and not recall:
-        return f"· {_head(ref, kind)}"
+        return f"· {_head(ref, kind, chips)}"
     cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
     body, total = _note_body(store, ref, kind, cap=cap)
     if cap == _VERBATIM_CAP and total > _VERBATIM_CAP:
@@ -533,7 +545,7 @@ def _render_note_eye(
             kind, handle_registry.format_handle(kind, int(ref.id)), _VERBATIM_CAP, total
         )
         body = f"{body}\n{marker}"
-    block = f"{_head(ref, kind)}\n{body}" if body else _head(ref, kind)
+    block = f"{_head(ref, kind, chips)}\n{body}" if body else _head(ref, kind, chips)
     sections = _rings(
         store, int(ref.id), kind, ext, recall=recall, expand=expand, ring=ring
     )
@@ -612,19 +624,36 @@ def _render_ring(
     ref_id: int,
     hop1: dict[tuple[str, str], list[int]],
     refs: dict[int, Any],
+    ring: RingFilter | None = None,
 ) -> str:
     """:func:`_render_first_hop` with the hub listing switched on for a
     ``section:index`` memory (its ``contains`` members are not capped)."""
     notes = _hub_member_notes(store, ref_id, hop1, refs)
+    chips = _row_chips(store, refs, ring=ring)
     return _render_first_hop(
         hop1,
         refs,
-        audit=_audit_flagged(store, refs),
+        chips=chips,
         hub_members=notes,
         more_hint=_more_hint_factory(store, ref_id, hop1),
         hub_handle=handle_registry.format_handle("memory", ref_id)
         if notes is not None
         else None,
+    )
+
+
+def _row_chips(
+    store: Store, refs: Any, *, ring: RingFilter | None = None
+) -> dict[int, str]:
+    """``{ref id: chips}`` for a page of neighbour rows — one
+    ``ref_tags_bulk`` read (:func:`precis.utils.tag_chips.chips_bulk`),
+    the ring's ``SPACE:`` values dropped as context-restating."""
+    from precis.utils import tag_chips
+
+    return tag_chips.chips_bulk(
+        store,
+        {int(i): str(getattr(r, "kind", "") or "") for i, r in refs.items()},
+        ring_spaces=ring.spaces if ring is not None else None,
     )
 
 
@@ -986,6 +1015,7 @@ def _expand_first_hop(
     hop1: dict[tuple[str, str], list[int]],
     refs: dict[int, Any],
     label: str,
+    ring: RingFilter | None = None,
 ) -> str:
     """One first-hop label's live neighbours, uncapped by the ring's per-group
     cap (bounded by :data:`_FIRST_HOP_EXPAND_CAP`). A ``section:index``
@@ -998,10 +1028,10 @@ def _expand_first_hop(
         from precis.utils.memory_hubs import band_order
 
         ids = band_order(store, ids)
-    audit = _audit_flagged(store, refs)
-    lines = [f"— linked (1 hop) · {label}: {len(ids)} —"]
+    chips = _row_chips(store, {o: refs[o] for o in ids if o in refs}, ring=ring)
+    lines = [f"— linked (1 hop) · {label} ({len(ids)}) —"]
     lines.extend(
-        f"  {label}: {_neighbor_label(refs[o], o, audit=o in audit)}"
+        f"    {_neighbor_label(refs[o], o, chips=chips.get(o, ''))}"
         for o in ids[:_FIRST_HOP_EXPAND_CAP]
     )
     if len(ids) > _FIRST_HOP_EXPAND_CAP:
@@ -1009,35 +1039,15 @@ def _expand_first_hop(
     return "\n".join(lines)
 
 
-def _audit_flagged(store: Store, ref_ids: Any) -> frozenset[int]:
-    """Ids among ``ref_ids`` carrying ``AUDIT:ungrounded-number`` (one query),
-    so a ring label can warn the reader before they trust the prose."""
-    ids = [int(i) for i in ref_ids]
-    if not ids:
-        return frozenset()
-    try:
-        with store.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT rt.ref_id FROM ref_tags rt "
-                "JOIN tags t ON t.tag_id = rt.tag_id "
-                "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'AUDIT' "
-                "AND t.value = 'ungrounded-number'",
-                (ids,),
-            ).fetchall()
-    except Exception:
-        # A label decoration must never break a render.
-        return frozenset()
-    return frozenset(int(r[0]) for r in rows)
-
-
 def _render_first_hop(
     by_label: dict[tuple[str, str], list[int]],
     refs: dict[int, Any],
-    audit: frozenset[int] = frozenset(),
+    chips: dict[int, str] | None = None,
     hub_members: dict[int, str] | None = None,
     more_hint: Any = None,
     hub_handle: str | None = None,
 ) -> str:
+    chips = chips or {}
     order = {group: i for i, group in enumerate(RING_GROUPS)}
     lines = ["— linked (1 hop) —"]
     heading = None
@@ -1049,21 +1059,36 @@ def _render_first_hop(
         if hub_members is not None and label == _HUB_MEMBER_LABEL:
             live = set(live_ids)
             listed = [o for o in hub_members if o in live]
-            for oid in listed:
+            if len(live_ids) == 1:
+                oid = live_ids[0]
                 hook = hub_members.get(oid, "")
-                row = _neighbor_label(refs[oid], oid, audit=oid in audit)
+                row = _neighbor_label(refs[oid], oid, chips=chips.get(oid, ""))
                 lines.append(
                     f"  {label}: {row} — {hook}" if hook else f"  {label}: {row}"
                 )
-            if len(live_ids) > len(listed):
-                lines.append(
-                    f"    … +{len(live_ids) - len(listed)} more · get(kind='memory', "
-                    f"id='{hub_handle}', extent='fisheye+1hop', q='{label}')"
-                )
+            else:
+                lines.append(f"  {label} ({len(live_ids)}):")
+                for oid in listed:
+                    hook = hub_members.get(oid, "")
+                    row = _neighbor_label(refs[oid], oid, chips=chips.get(oid, ""))
+                    lines.append(f"    {row} — {hook}" if hook else f"    {row}")
+                if len(live_ids) > len(listed):
+                    lines.append(
+                        f"    … +{len(live_ids) - len(listed)} more · "
+                        f"get(kind='memory', id='{hub_handle}', "
+                        f"extent='fisheye+1hop', q='{label}')"
+                    )
             continue
+        if len(live_ids) == 1:
+            lines.append(
+                f"  {label}: "
+                f"{_neighbor_label(refs[live_ids[0]], live_ids[0], chips=chips.get(live_ids[0], ''))}"
+            )
+            continue
+        lines.append(f"  {label} ({len(live_ids)}):")
         for oid in live_ids[:_NEIGHBOR_GROUP_CAP]:
             lines.append(
-                f"  {label}: {_neighbor_label(refs[oid], oid, audit=oid in audit)}"
+                f"    {_neighbor_label(refs[oid], oid, chips=chips.get(oid, ''))}"
             )
         if len(live_ids) > _NEIGHBOR_GROUP_CAP:
             more = more_hint(label, live_ids) if more_hint is not None else ""
@@ -1076,13 +1101,13 @@ def _render_first_hop(
     return "\n".join(lines) if heading is not None else ""
 
 
-def _neighbor_label(ref: Any, ref_id: int, *, audit: bool = False) -> str:
+def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "") -> str:
     oh = _handle_with_file(getattr(ref, "kind", "?"), ref, ref_id)
     title = " ".join((getattr(ref, "title", None) or "").split())
     if len(title) > _NEIGHBOR_TITLE_CAP:
         title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
     label = f"{oh} — {title}" if title else oh
-    return f"{label}  [AUDIT:ungrounded-number]" if audit else label
+    return f"{label}  {chips}" if chips else label
 
 
 #: Most ``(kind, label)`` count lines the second hop renders before its
@@ -1181,7 +1206,7 @@ def _second_hop(
         return ""
     floor = "≥" if len(rows) >= _SECOND_HOP_ROW_CAP else ""
     if expand is not None:
-        return _expand_second_hop(store, groups, expand)
+        return _expand_second_hop(store, groups, expand, ring=ring)
     ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     lines = [
         f"— second hop ({len(hop1_ids)} neighbours out; counts — "
@@ -1198,7 +1223,11 @@ def _second_hop(
 
 
 def _expand_second_hop(
-    store: Store, groups: dict[tuple[str, str], set[int]], expand: str
+    store: Store,
+    groups: dict[tuple[str, str], set[int]],
+    expand: str,
+    *,
+    ring: RingFilter | None = None,
 ) -> str:
     kind, _, label = expand.partition(":")
     ids = groups.get((kind.strip(), label.strip()))
@@ -1207,10 +1236,10 @@ def _expand_second_hop(
         raise ValueError(f"eye: no second-hop group {expand!r}; groups here: {known}")
     shown = sorted(ids)[:_SECOND_HOP_EXPAND_CAP]
     refs = store.fetch_refs_by_ids(shown)
+    chips = _row_chips(store, refs, ring=ring)
     lines = [f"— second hop: {len(ids)} {kind} via {label} —"]
-    flagged = _audit_flagged(store, refs)
     lines.extend(
-        f"  {_neighbor_label(refs[i], i, audit=i in flagged)}"
+        f"  {_neighbor_label(refs[i], i, chips=chips.get(i, ''))}"
         for i in shown
         if i in refs
     )
@@ -1266,7 +1295,11 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         # chunk; let it match, as `seed_chunk_for_ref` does for the seed.
         card_kinds=("card_combined",),
     )
-    flagged = _audit_flagged(store, {int(ref.id) for _b, ref, _d in hits})
+    chips = _row_chips(
+        store,
+        {int(ref.id): ref for _b, ref, _d in hits},
+        ring=ring,
+    )
     seen: set[int] = set()
     lines = [f"— recall (nearest by embedding, {'+'.join(kinds)}, k≤{_RECALL_K}) —"]
     for block, ref, dist in hits:
@@ -1276,7 +1309,7 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         seen.add(rid)
         gist = _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
         lines.append(
-            f"  {_neighbor_label(ref, rid, audit=rid in flagged)}  ({1 - dist:.2f})"
+            f"  {_neighbor_label(ref, rid, chips=chips.get(rid, ''))}  ({1 - dist:.2f})"
         )
         if gist:
             lines.append(f"    {gist}")
@@ -1306,10 +1339,10 @@ def _rings(
         first_hop_label = expand if expand is not None and ":" not in expand else None
         if first_hop_label is not None:
             sections.append(
-                _expand_first_hop(store, ref_id, hop1, refs, first_hop_label)
+                _expand_first_hop(store, ref_id, hop1, refs, first_hop_label, ring=ring)
             )
         elif expand is None:
-            sections.append(_render_ring(store, ref_id, hop1, refs))
+            sections.append(_render_ring(store, ref_id, hop1, refs, ring=ring))
         if ext >= Extent.HOP2 and first_hop_label is None:
             sections.append(_second_hop(store, ref_id, hop1, expand=expand, ring=ring))
     if recall:

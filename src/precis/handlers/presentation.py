@@ -545,9 +545,7 @@ class PresentationHandler(Handler):
             )
         b = blocks[0]
         label = "slide" if b.chunk_kind == "pres_slide" else "block"
-        chunk_handle = (
-            handle_registry.try_format("pres", b.id, chunk=True) or f"{slug}~{pos}"
-        )
+        chunk_handle = handle_registry.chunk_head_label("pres", b.id, pos, slug)
         return Response(body=f"# {chunk_handle} ({label})\n{b.text}")
 
 

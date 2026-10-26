@@ -18,6 +18,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
 from precis.runtime import PrecisRuntime
+from precis.store.types import Tag
 from tests._refs import insert_gripe
 from tests.conftest import id_of
 
@@ -207,6 +208,19 @@ def test_id_range_through_dispatch(runtime_with_store: PrecisRuntime, hub: Hub) 
     lines = [ln for ln in body.splitlines() if ln.startswith("gr")]
     assert set(lines) == {f"gr{gid}" for gid in ids[2:]}
     assert "[error" not in body
+
+
+def test_list_view_carries_ranked_tag_chips(handler: GripeHandler) -> None:
+    """gr520321: a gripe's tags render as rank-ordered chips on
+    ``view='list'`` rows; the context-restating ``STATUS:open`` drops on
+    this open-by-default kind."""
+    gid = int(insert_gripe(handler.store, "chips probe gripe\nbody").id)
+    handler.store.add_tag(gid, Tag.closed("PRIO", "high"), set_by="system")
+
+    list_body = handler.search(tags=["STATUS:open"], view="list", page_size=100).body
+    line = next(ln for ln in list_body.splitlines() if ln.startswith(f"gr{gid}"))
+    assert "[PRIO:high]" in line
+    assert "STATUS" not in line
 
 
 # ── get(id=[...], view='body'): the batch body read ──────────────────

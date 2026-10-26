@@ -44,6 +44,7 @@ owner, never to a browse request.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from collections.abc import Callable
@@ -70,7 +71,7 @@ from precis.store import (
     Tag,
 )
 from precis.store.types import _KIND_STATUS_VALUES
-from precis.utils import handle_registry
+from precis.utils import handle_registry, tag_chips
 from precis.utils.embed_query import query_vec_for
 from precis.utils.link_tag_ops import (
     _DEFAULT_RELATION,
@@ -1647,6 +1648,11 @@ class NumericRefHandler(Handler):
         the handle so a triage read sees what each id *is* — still one
         line per hit, never a folded body.
         """
+        chip_map = (
+            tag_chips.chips_bulk(self.store, {int(r.id): self.kind for r in refs})
+            if titles
+            else {}
+        )
         lines = []
         for r in refs:
             handle = handle_registry.try_format(self.kind, r.id) or str(r.id)
@@ -1654,6 +1660,9 @@ class NumericRefHandler(Handler):
                 summary, _rest = _extract_summary(r.title or "")
                 if summary:
                     handle = f"{handle}  {summary}"
+                chips = chip_map.get(int(r.id))
+                if chips:
+                    handle = f"{handle}  {chips}"
             lines.append(handle)
         return "\n".join(lines)
 
@@ -2071,7 +2080,16 @@ class NumericRefHandler(Handler):
         pairs: list[tuple[Any, float]] = [
             (ref, float(len(refs) - i)) for i, ref in enumerate(refs)
         ]
-        return ref_hits_to_search_hits(pairs, kind=self.kind)
+        hits = ref_hits_to_search_hits(pairs, kind=self.kind)
+        chip_map = tag_chips.chips_bulk(
+            self.store, {int(ref.id): self.kind for ref in refs}
+        )
+        if not chip_map:
+            return hits
+        return [
+            dataclasses.replace(hit, tags=chip_map.get(hit.ref_id or -1, ""))
+            for hit in hits
+        ]
 
     # ── shared body-chunk search (opt-in via search_body_chunks) ────
 
@@ -2347,14 +2365,21 @@ class NumericRefHandler(Handler):
             lines.extend(id_lines.splitlines())
             fold_tail = None
         else:
+            chip_map = tag_chips.chips_bulk(
+                self.store,
+                {int(ref.id): self.kind for _, ref, _ in [*shown, *weak]},
+            )
 
             def _render_hit(block: Any, ref: Ref, rank: float) -> str:
+                chips = chip_map.get(int(ref.id), "")
                 sem_d = fold_info.get(block.id, (None, True))[0]
                 if fold_distance is not None:
                     # ``dist`` shows only on folding kinds — every other
                     # kind's ``(rank=…)`` render stays byte-identical.
-                    return self._render_body_search_hit(ref, block, rank, dist=sem_d)
-                return self._render_body_search_hit(ref, block, rank)
+                    return self._render_body_search_hit(
+                        ref, block, rank, dist=sem_d, chips=chips
+                    )
+                return self._render_body_search_hit(ref, block, rank, chips=chips)
 
             lines.extend(_render_hit(*hit) for hit in shown)
             fold_tail = "".join(_render_hit(*hit) for hit in weak) if weak else None
@@ -2385,6 +2410,7 @@ class NumericRefHandler(Handler):
         block: Any,
         rank: float,
         dist: float | None = None,
+        chips: str = "",
     ) -> str:
         """One result line for a body-chunk hit.
 
@@ -2396,14 +2422,19 @@ class NumericRefHandler(Handler):
         ``(0.21)`` replaces ``(rank=…)`` — the number the fold cut is
         calibrated on is more informative than an opaque RRF score
         (gr514956). ``dist=None`` under a folding kind (a lex-only hit)
-        keeps ``(rank=…)``.
+        keeps ``(rank=…)``. ``chips`` carries the ref's pre-rendered tag
+        chips (gr520321), appended on the ``##`` line.
         """
         label = f"{self._sense()} {ref.id}"
         title = ref.title or ""
         if title:
             label += f": {title}"
         metric = f"({dist:.2f})" if dist is not None else f"(rank={rank:.2f})"
-        return f"\n## {label}  {metric}\n{self._snippet(self._hit_text(ref, block))}"
+        suffix = f"  {chips}" if chips else ""
+        return (
+            f"\n## {label}  {metric}{suffix}\n"
+            f"{self._snippet(self._hit_text(ref, block))}"
+        )
 
     def _body_search_hits(
         self,
@@ -2436,6 +2467,9 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             hard_cut=True,
         )
+        chip_map = tag_chips.chips_bulk(
+            self.store, {int(ref.id): self.kind for _, ref, _ in ordered}
+        )
         return [
             SearchHit(
                 score=rank,
@@ -2444,6 +2478,7 @@ class NumericRefHandler(Handler):
                 or self._snippet(self._hit_text(ref, block), max_chars=80),
                 preview=self._snippet(self._hit_text(ref, block)),
                 ref_id=ref.id,
+                tags=chip_map.get(int(ref.id), ""),
             )
             for block, ref, rank in ordered
         ]
@@ -3824,7 +3859,11 @@ class NumericRefHandler(Handler):
             return ""
         link_counts = self.store.count_links_for_refs([r.id for r in refs])
         lifecycle = self.kind in _BROWSE_TERMINALS
-        tag_rows = self.store.ref_tags_bulk([r.id for r in refs]) if lifecycle else {}
+        tag_rows = self.store.ref_tags_bulk([r.id for r in refs])
+        chip_map = tag_chips.chips_bulk(
+            self.store, {int(r.id): self.kind for r in refs}, tagged=tag_rows
+        )
+        any_chips = bool(chip_map)
         now = datetime.now(UTC)
         rows: list[dict[str, str]] = []
         for r in refs:
@@ -3845,6 +3884,7 @@ class NumericRefHandler(Handler):
                     # one address form, replacing the bare numeric id.
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
                     **({"status": state} if lifecycle else {}),
+                    **({"tags": chip_map.get(int(r.id), "")} if any_chips else {}),
                     "summary": summary,
                     "remaining_words": str(remaining_words),
                     "links": str(link_counts.get(r.id, 0)),
@@ -3854,6 +3894,8 @@ class NumericRefHandler(Handler):
         schema = ["kind", "id", "summary", "remaining_words", "links", "age"]
         if lifecycle:
             schema.insert(2, "status")
+        if any_chips:
+            schema.insert(3 if lifecycle else 2, "tags")
         return render_agent_table(rows, schema=schema)
 
     def _render_create_ack(self, ref_id: int) -> Response:

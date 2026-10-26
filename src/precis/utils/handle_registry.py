@@ -391,6 +391,21 @@ def try_format(kind: str, id_: int | None, *, chunk: bool = False) -> str | None
         return None
 
 
+def chunk_head_label(
+    kind: str, chunk_id: int | None, sel: int | str, slug: str | None
+) -> str:
+    """The ``#`` header a chunk get prints: ``<handle> ~<sel>``.
+
+    The decimal chunk handle hides the block's ``~<ord>``/``~<slug>``
+    selector, so a ``~N..M`` range read can't be written without a TOC
+    round-trip (gr520328); the header prints both. A kind with no chunk
+    code keeps the legacy ``<slug>~<sel>`` form — no separating space,
+    it *is* the legacy id.
+    """
+    h = try_format(kind, chunk_id, chunk=True)
+    return f"{h} ~{sel}" if h is not None else f"{slug or '?'}~{sel}"
+
+
 def normalize(handle: str) -> str:
     """Canonicalise a handle: strip + lowercase the 2-char prefix.
 

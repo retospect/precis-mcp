@@ -305,6 +305,12 @@ class SearchHit:
     # title that *contains* the query no more weight than a semantic
     # neighbour at the same rank.
     title_phrase: bool = False
+    # Pre-rendered tag chips for the hit's ref (``[STATUS:done]
+    # [planning] +2 more`` — :func:`precis.utils.tag_chips.chips_for`,
+    # gr520321). Producers populate from ``tag_chips.chips_bulk``; the
+    # merge renders it verbatim — ``_render_hit`` on the ``##`` line,
+    # ``_render_toon_table`` as a column only when any hit carries one.
+    tags: str = ""
 
     @property
     def handle(self) -> str:
@@ -634,6 +640,9 @@ def _render_toon_table(
     """
     from precis.format import render_agent_table
 
+    # The tags column exists only when some hit carries chips — an
+    # all-empty column is a per-row token tax for the common case.
+    any_tags = any(h.tags for h in hits)
     rows: list[dict[str, str]] = []
     for hit in hits:
         summary, remaining_words = _derive_toon_summary(hit)
@@ -681,9 +690,12 @@ def _render_toon_table(
                 "summary": summary,
                 "remaining_words": str(remaining_words),
                 "links": links_cell,
+                **({"tags": hit.tags} if any_tags else {}),
             }
         )
     schema = ["id", "summary", "remaining_words", "links"]
+    if any_tags:
+        schema.append("tags")
     return render_agent_table(rows, schema=schema)
 
 
@@ -739,7 +751,8 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     # emit the universal handle when known, else the legacy
     # slug~pos / ref_id form (still resolves on input; un-backfilled rows).
     ident = hit.uhandle or hit.handle
-    parts = [f"\n## {rank}. {ident}{label}"]
+    tag_suffix = f"  {hit.tags}" if hit.tags else ""
+    parts = [f"\n## {rank}. {ident}{label}{tag_suffix}"]
     if hit.title:
         parts.append(f"_{hit.title}_")
     prefix = _annotation_prefix(hit)
