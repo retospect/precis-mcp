@@ -1296,18 +1296,17 @@ class ComponentHandler(ValueEntityHandler):
         ``(leaf_ref_id, effective qty)`` pairs, multiplying qty down each
         path. A component with no ``contains`` children is a leaf by
         definition — the PCB-leaf boundary: a PCBA is one line
-        item here, the rollup never descends into its internals."""
-        children = self.store.component_contains_children(ref_id)
-        if not children:
-            return [(ref_id, multiplier)]
-        pairs: list[tuple[int, int]] = []
-        for child in children:
-            pairs.extend(
-                self._flatten_bom(
-                    child["child_ref_id"], multiplier=multiplier * child["qty"]
-                )
-            )
-        return pairs
+        item here, the rollup never descends into its internals.
+
+        A wrapper over the store's :meth:`component_bom_walk` — the
+        traversal lives there so bom-tables' ``from_bom`` can reuse it;
+        this keeps only the leaf filter and the lone-root fallback."""
+        pairs = [
+            (line.path[-1], multiplier * line.effective_qty)
+            for line in self.store.component_bom_walk(ref_id)
+            if line.is_leaf
+        ]
+        return pairs or [(ref_id, multiplier)]
 
     def _bom_leaves(self, ref_id: int) -> dict[int, int]:
         """``{leaf_ref_id: summed qty}`` — the flat BOM, one entry per

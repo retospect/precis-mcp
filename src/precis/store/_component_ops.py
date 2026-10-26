@@ -26,7 +26,8 @@ otherwise silently mis-assign a field), then ``cast`` to the matching
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, cast
+from collections.abc import Iterator
+from typing import Any, NamedTuple, TypedDict, cast
 
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -125,6 +126,28 @@ class ComponentValueSearchRow(ComponentValueRowWithSource):
     component's title (``component_search_values``)."""
 
     component_title: str
+
+
+class BomWalkLine(NamedTuple):
+    """One ``contains``-edge instance in a flattened assembly walk — the
+    bom-tables ``from_bom`` row source, and what
+    ``view='bom'``'s leaf rollup filters on ``is_leaf``.
+
+    ``path`` is the ref_id chain from the bom root down to and including
+    this line's child (``path[-1] == link['child_ref_id']``); callers that
+    need the handle path (``cp100/cp240/cp881``) resolve the ids through
+    ``get_ref``. ``link`` is the child dict of
+    :meth:`ComponentMixin.component_contains_children`;
+    ``effective_qty`` the edge qty multiplied down the path;
+    ``designator`` the link's ``ref`` meta. ``is_leaf`` is whether the
+    child has no ``contains`` children of its own — the PCB-leaf
+    boundary, so the walk never descends into a PCBA's internals."""
+
+    path: tuple[int, ...]
+    link: dict[str, Any]
+    effective_qty: int
+    designator: str | None
+    is_leaf: bool
 
 
 def _fetchone(conn: Connection, sql: str, params: Any = ()) -> dict[str, Any] | None:
@@ -501,6 +524,39 @@ class ComponentMixin:
             )
         return out
 
+    def component_bom_walk(self, ref_id: int) -> Iterator[BomWalkLine]:
+        """Depth-first walk of the ``contains`` DAG under ``ref_id`` —
+        THE line walker behind ``view='bom'`` and the bom-tables
+        ``from_bom`` row source: one :class:`BomWalkLine` per edge
+        instance, depth-first in link-creation order, so a shared
+        subpart yields one line PER path reaching it. The root itself
+        yields no line (it has no incoming edge) — a lone component
+        walks empty; a leaf root is the caller's ``is_leaf``-less edge
+        case, same as the old ``_flatten_bom`` fallback. Each node's
+        children are fetched once via
+        :meth:`component_contains_children`, so the walk's leaf flags
+        cost no extra reads."""
+
+        def descend(
+            link: dict[str, Any], parent_path: tuple[int, ...], multiplier: int
+        ) -> Iterator[BomWalkLine]:
+            child_id = link["child_ref_id"]
+            path = parent_path + (child_id,)
+            effective_qty = multiplier * link["qty"]
+            grandchildren = self.component_contains_children(child_id)
+            yield BomWalkLine(
+                path=path,
+                link=link,
+                effective_qty=effective_qty,
+                designator=link["ref"],
+                is_leaf=not grandchildren,
+            )
+            for grandchild in grandchildren:
+                yield from descend(grandchild, path, effective_qty)
+
+        for link in self.component_contains_children(ref_id):
+            yield from descend(link, (ref_id,), 1)
+
     def component_current_spec_value(
         self, ref_id: int, spec_id: str
     ) -> ComponentValueRow | None:
@@ -713,6 +769,7 @@ class ComponentMixin:
 
 
 __all__ = [
+    "BomWalkLine",
     "ComponentCategoryRow",
     "ComponentMixin",
     "ComponentSpecRow",
