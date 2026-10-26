@@ -95,6 +95,7 @@ offender; it's disabled session-wide via ``PRECIS_ORACLE_AUTO_REINGEST``.
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import logging
 import os
@@ -256,12 +257,144 @@ def _seed_probe_conn() -> psycopg.Connection | None:
 _SEED_WATCH_EXEMPT_FIXTURES = frozenset({"fresh_db", "drop_public_objects"})
 
 
+# --- hang-stack artifacts (gr514873) --------------------------------------
+# pytest-timeout's thread method (pyproject ``timeout_method = "thread"``)
+# fails a test that outlives ``timeout = 300`` — but under ``-n auto`` its
+# stack dump goes to the *worker's* captured stderr, which xdist drops when
+# the wedged process has to be SIGKILLed ("node down", no stacks — three
+# container runs to isolate the gripe's hang). So each worker ALSO writes
+# every thread's stack to its own artifact file: armed per-test at the
+# item's effective timeout + margin (a test that the injected fail can't
+# unstick keeps dumping every interval), then ``pytest_terminal_summary``
+# on the controller names the files in the run's output — no re-running
+# ``-n0 --timeout=120`` to diagnose.
+_HANG_DUMP_DIR = Path(__file__).resolve().parent.parent / ".test-hang-stacks"
+#: Seconds past a test's effective timeout before the file dump fires. The
+#: thread-method fail usually wins at the timeout itself; the file is for
+#: the case it can't unstick the worker (C-level hangs, lock wedging).
+_HANG_DUMP_MARGIN_S = 30
+_hang_dump_fh: Any = None  # this process's open artifact handle
+_hang_dump_path: Path | None = None  # its path, for the clean-run unlink
+
+
+def _hang_worker_name(config: pytest.Config) -> str:
+    """Name from ``workerinput`` — only a real xdist worker carries it.
+    ``PYTEST_XDIST_WORKER`` is set in worker env and leaks into any
+    subprocess a test spawns, mislabelling a serial child's artifact."""
+    workerinput = getattr(config, "workerinput", None)
+    return str(workerinput["workerid"]) if workerinput is not None else "main"
+
+
+def _hang_armed(config: pytest.Config) -> bool:
+    """Workers and serial runs arm; the xdist controller never runs tests
+    (its ``dsession`` plugin marks it) and would only leave an empty file."""
+    return getattr(config, "workerinput", None) is not None or (
+        config.pluginmanager.get_plugin("dsession") is None
+    )
+
+
+def _hang_effective_timeout(item: pytest.Item) -> float:
+    """The timeout pytest-timeout will enforce on this item: its
+    ``@pytest.mark.timeout(N)`` wins, then ``--timeout``, then the ini.
+    0/None disables the arm (the mark's own way to opt out)."""
+    mark = item.get_closest_marker("timeout")
+    if mark is not None and mark.args:
+        return float(mark.args[0])
+    try:
+        cli = item.config.getoption("timeout")
+    except (AttributeError, ValueError):
+        cli = None
+    if cli:
+        return float(cli)
+    ini = item.config.getini("timeout")
+    return float(ini) if ini else 300.0
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Open this process's hang artifact and arm the collection-phase dump.
+
+    The ini ``faulthandler_timeout`` (600) covers collection; each test's
+    setup then re-arms at its own effective timeout + margin — there is
+    only one ``dump_traceback_later`` timer per process, so the per-test
+    arm replaces both this and the builtin plugin's."""
+    global _hang_dump_fh, _hang_dump_path
+    if not _hang_armed(session.config):
+        return
+    try:
+        _HANG_DUMP_DIR.mkdir(exist_ok=True)
+        path = (
+            _HANG_DUMP_DIR
+            / f"hang-{_hang_worker_name(session.config)}-{os.getpid()}.log"
+        )
+        _hang_dump_fh = path.open("w", encoding="utf-8")
+        _hang_dump_path = path
+    except OSError:
+        return
+    try:
+        fh_timeout = float(session.config.getini("faulthandler_timeout") or 600)
+        faulthandler.dump_traceback_later(fh_timeout, file=_hang_dump_fh, repeat=True)
+    except (ValueError, OSError):
+        pass
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if _hang_dump_fh is None:
+        return
+    timeout_s = _hang_effective_timeout(item)
+    faulthandler.cancel_dump_traceback_later()
+    if timeout_s <= 0:
+        return
+    _hang_dump_fh.write(f"\n# ===== {item.nodeid} =====\n")
+    _hang_dump_fh.flush()
+    faulthandler.dump_traceback_later(
+        timeout_s + _HANG_DUMP_MARGIN_S, file=_hang_dump_fh, repeat=True
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    global _hang_dump_fh, _hang_dump_path
+    faulthandler.cancel_dump_traceback_later()
+    if _hang_dump_fh is not None:
+        _hang_dump_fh.close()
+        _hang_dump_fh = None
+    path, _hang_dump_path = _hang_dump_path, None
+    if path is not None and not _hang_dumped(path):
+        # Clean run: only per-test headers, no stacks. Delete so logs do
+        # not pile up and the summary never re-reports an old file.
+        path.unlink(missing_ok=True)
+
+
+def _hang_dumped(path: Path) -> bool:
+    """The file caught a real dump — not just the per-test ``# =====``
+    headers every worker writes. faulthandler's dump body starts each
+    thread section with ``Thread ``."""
+    try:
+        return "Thread " in path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def pytest_terminal_summary(
+    terminalreporter: Any, exitstatus: int, config: pytest.Config
+) -> None:
+    """Name the per-worker hang artifacts that actually captured stacks —
+    this runs on the xdist controller too (workers share the worktree fs),
+    so a ``node down`` failure output points at the evidence."""
+    hits = [p for p in sorted(_HANG_DUMP_DIR.glob("hang-*.log")) if _hang_dumped(p)]
+    if not hits:
+        return
+    terminalreporter.write_sep("=", "worker hang stack dumps (gr514873)")
+    for p in hits:
+        terminalreporter.write_line(f"  {p} — every thread's stack")
+
+
 def pytest_runtest_teardown(item: pytest.Item) -> None:
     """Fail at the exact test that leaves the design-core seed empty.
 
     Teardown rather than setup, so the reported nodeid is the test that DID
     it rather than the next innocent one to notice.
     """
+    faulthandler.cancel_dump_traceback_later()
     if not _WATCH_SEED:
         return
     if _SEED_WATCH_EXEMPT_FIXTURES & set(getattr(item, "fixturenames", ())):

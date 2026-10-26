@@ -188,7 +188,9 @@ the shards: one job of the fast set (`-m 'not db and not slow'`, no
 Postgres), which holds the doc-reading tests (doc pointers, the secrets
 sweep, backlog front-matter). Skills, `scripts/` and `.claude/` are not docs
 for this purpose — tests execute them. The **full** shape (adds 3.12 and
-macOS) runs nightly and on `workflow_dispatch` with `full: true`; a
+macOS) runs nightly and on `workflow_dispatch` with `full: true` — trigger
+one on demand with `gh workflow run check.yml -f full=true` (gr514905);
+`scripts/nightly` is the local equivalent. A
 platform-only break therefore surfaces the next morning, off the ship that
 caused it. Windows is not supported or tested: its nightly leg was dropped
 2026-10-17 (Reto: "nothing but trouble"). The `skipif(win32)` markers and
@@ -298,7 +300,8 @@ says so in the failure text; re-run with `--slow` before writing new tests.
 >240 s CI even after splitting (rt-s3's needs-ruling set, moved per Reto
 2026-10-24) carry `@pytest.mark.nightly(reason=...)`: the gate shape
 (`ci/**`, `release/**`, PRs) runs its shards with `-m "not nightly"`; the
-full shape (nightly schedule, `workflow_dispatch full=true`) and local
+full shape (nightly schedule, or on demand via `gh workflow run check.yml
+-f full=true`) and local
 `scripts/test` / `scripts/nightly` carry no filter, so the tests still run
 there. Items are auto-tagged `slow` (tests/conftest.py), so every
 `-m 'not slow'` lane skips them too — the marker lifts a test out of the

@@ -166,6 +166,14 @@ def test_changed_test_file_selects_itself(selector: sel.Selector) -> None:
     assert "tests/test_skill_prose.py" in targets
 
 
+def test_new_migration_selects_seed_classifier(selector: sel.Selector) -> None:
+    """gr514386: a ``*/migrations/*.sql`` diff always selects the
+    seeded-table classifier — the unclassified ``vault._key`` seed
+    (migration 0239) rode a --quick land to a red release gate (r97)."""
+    targets, _ = selector.select(["src/precis/migrations/9999_zz_fake.sql"])
+    assert "tests/test_baseline_seed_tables.py" in targets
+
+
 @_POSIX_MODULE_KEYS
 def test_deleted_module_still_selects_importers(selector: sel.Selector) -> None:
     """A module deleted by the diff isn't in the file map anymore — its

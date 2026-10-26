@@ -39,6 +39,14 @@ wrapped check is scoped to the commit itself: a plain ``git commit`` in
 its own segment after an unrelated heredoc or ``$(…)`` elsewhere in the
 call is parseable and passes (gr515648).
 
+Third job (gr515109): a ``git commit`` in the gated repo whose message is
+inspectable — ``-m`` strings, or an ``-F`` file that exists — must carry
+the ``Co-Authored-By:`` trailer the repo's commit convention requires;
+the first commit's missing footer otherwise goes unnoticed until a manual
+amend. Messages git composes elsewhere are never blocked: no ``-m``/``-F``
+(editor path), ``-F -`` (stdin), ``--reuse-message``/``-C``/``--no-edit``
+(the message is reused), or an ``-F`` path that can't be read.
+
 Escape hatch: set ``ALLOW_COMMIT_ON_MAIN=1`` in the environment for the rare
 legitimate direct-to-main commit.
 
@@ -51,6 +59,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -138,6 +147,97 @@ def _resolve(base: str, path: str) -> str:
     return path if os.path.isabs(path) else os.path.normpath(os.path.join(base, path))
 
 
+#: The trailer every commit message in this repo must carry (gr515109).
+_FOOTER_RE = re.compile(r"^Co-Authored-By:\s*\S", re.M | re.I)
+
+#: ``git commit`` flags after which the message is composed elsewhere —
+#: never inspected, never blocked.
+_UNINSPECTABLE = (
+    "--no-edit",
+    "--allow-empty-message",
+    "-C",
+    "-c",
+    "-t",
+    "--reuse-message",
+    "--reedit-message",
+    "--template",
+    "--squash",
+    "--fixup",
+)
+_UNINSPECTABLE_EQ = _UNINSPECTABLE[3:]
+
+
+def _commit_message(seg: str, cwd: str) -> str | None:
+    """The message a ``git commit`` carries, when it is inspectable.
+
+    ``-m`` strings join with blank lines; ``-F <file>`` is read relative to
+    the commit's target dir. ``None`` when git would get the message a way
+    this hook cannot see — the editor path (no ``-m``/``-F``), ``-F -``
+    (stdin), ``-C``/``--reuse-message``/``--no-edit`` (reused), or an
+    ``-F`` path that does not resolve to a readable file.
+    """
+    try:
+        argv = shlex.split(seg)
+    except ValueError:
+        return None
+    if "commit" not in argv:
+        return None
+    rest = argv[argv.index("commit") + 1 :]
+    msgs: list[str] = []
+    file_arg: str | None = None
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a in _UNINSPECTABLE or any(a.startswith(p + "=") for p in _UNINSPECTABLE_EQ):
+            return None
+        if a in ("-m", "--message", "-F", "--file"):
+            i += 1
+            if i >= len(rest):
+                break
+            if a in ("-m", "--message"):
+                msgs.append(rest[i])
+            else:
+                file_arg = rest[i]
+        elif a == "--trailer":
+            i += 1
+            if i < len(rest):
+                msgs.append(rest[i])
+        elif a.startswith(("--trailer=", "--message=")):
+            msgs.append(a.partition("=")[2])
+        elif a.startswith("--file="):
+            file_arg = a.partition("=")[2]
+        elif a.startswith("-") and not a.startswith("--") and len(a) > 1:
+            # Bundled short flags: -m/-F take a value (glued or next arg);
+            # -am "msg" is -a -m "msg".
+            for j, ch in enumerate(a[1:]):
+                if ch in "mF":
+                    val = a[j + 2 :]
+                    if not val:
+                        i += 1
+                        if i < len(rest):
+                            val = rest[i]
+                        else:
+                            val = ""
+                    if ch == "m":
+                        msgs.append(val)
+                    else:
+                        file_arg = val
+                    break
+        i += 1
+    if file_arg is not None:
+        if file_arg == "-":
+            return None
+        path = file_arg if os.path.isabs(file_arg) else os.path.join(cwd, file_arg)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            return None
+    if msgs:
+        return "\n\n".join(msgs)
+    return None
+
+
 def evaluate(command: str, cwd: str) -> str | None:
     """Return a deny reason, or ``None`` to allow. Pure & testable.
 
@@ -187,6 +287,20 @@ def evaluate(command: str, cwd: str) -> str | None:
                 "and the scripts/ship gate. Commit inside a `claude -w` "
                 "worktree on a feature branch and let /land (scripts/ship) "
                 "merge it. If this really is intended, set ALLOW_COMMIT_ON_MAIN=1."
+            )
+        # gr515109: the repo convention puts a Co-Authored-By trailer on
+        # every commit; nothing caught its absence until a manual amend.
+        # Deny only messages this hook can fully read — git-composed ones
+        # (editor, stdin, reused) pass untouched.
+        msg = _commit_message(seg, target)
+        if msg is not None and not _FOOTER_RE.search(msg):
+            return (
+                "Refusing `git commit` — the message carries no "
+                "`Co-Authored-By:` trailer, which this repo requires on "
+                "every commit (CLAUDE.md §Conventions that bite; ship "
+                "strips it back into the squash footer). Add it to the -m "
+                "text or the -F message file, e.g. "
+                "`Co-Authored-By: <agent> <noreply@…>`."
             )
     return None
 

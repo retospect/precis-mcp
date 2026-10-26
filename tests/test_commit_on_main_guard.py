@@ -66,11 +66,14 @@ class TestBranchWalk:
 
     def test_commit_on_feature_branch_allowed(self, monkeypatch, tmp_path) -> None:
         root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "worktree-x"})
-        assert evaluate("git commit -m x", str(root)) is None
+        # Two -m's is the inspectable way to carry the required trailer.
+        cmd = 'git commit -m "fix: x" -m "Co-Authored-By: T <t@x>"'
+        assert evaluate(cmd, str(root)) is None
 
     def test_detached_head_allowed(self, monkeypatch, tmp_path) -> None:
         root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": ""})
-        assert evaluate("git commit -m x", str(root)) is None
+        cmd = 'git commit -m "fix: x" -m "Co-Authored-By: T <t@x>"'
+        assert evaluate(cmd, str(root)) is None
 
     def test_repo_without_ship_gate_allowed(self, monkeypatch, tmp_path) -> None:
         # A sibling repo that ships direct-to-main by design: no scripts/ship.
@@ -125,7 +128,7 @@ class TestTargetResolution:
             },
         )
         (root / "wt").mkdir()
-        cmd = f"cd {root}/wt && git commit -m x"
+        cmd = f'cd {root}/wt && git commit -m "x" -m "Co-Authored-By: T <t@x>"'
         assert evaluate(cmd, str(root)) is None
 
 
@@ -202,13 +205,14 @@ class TestUnparseableCommitShape:
     @pytest.mark.parametrize(
         "cmd",
         [
-            'git commit -m "plain literal"',
+            'git commit -m "plain literal" -m "Co-Authored-By: T <t@x>"',
             # A left-shift with a numeric operand is not a heredoc opener.
-            'git commit -m x && python3 -c "print(1<<2)"',
+            'git commit -m "x" -m "Co-Authored-By: T <t@x>" && python3 -c "print(1<<2)"',
             # gr515648: a commit in its own segment after an unrelated
             # heredoc is not "wrapped" — the gripe's exact refused shape.
+            # (The -F path does not exist here → uninspectable → allowed.)
             "python3 <<'PY'\nprint(1)\nPY\ngit commit -F scratch/msg.txt",
-            "python3 - <<'PY'\nimport os\nPY\n\ngit commit -m x",
+            'python3 - <<\'PY\'\nimport os\nPY\n\ngit commit -m "x" -m "Co-Authored-By: T <t@x>"',
             "msg=$(cat f.txt) && git commit -F msg.txt",
         ],
     )
@@ -234,6 +238,68 @@ class TestUnparseableCommitShape:
         root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
         reason = evaluate("bash <<'EOF'\ngit commit -m x\nEOF", str(root))
         assert reason is not None and "worktree guard" in reason
+
+
+class TestFooterGuard:
+    """gr515109: an inspectable commit message in the gated repo must carry
+    the ``Co-Authored-By:`` trailer — the convention nothing caught."""
+
+    def test_plain_m_without_footer_denied(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        reason = evaluate("git commit -m 'fix: x'", str(root))
+        assert reason is not None and "Co-Authored-By" in reason
+
+    def test_bundled_am_without_footer_denied(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        assert evaluate("git commit -am 'fix: x'", str(root)) is not None
+
+    def test_second_m_carries_trailer_allowed(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        cmd = 'git commit -m "fix: x" -m "Co-Authored-By: T <t@x>"'
+        assert evaluate(cmd, str(root)) is None
+
+    def test_trailer_flag_carries_footer_allowed(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        for cmd in (
+            "git commit -m 'fix: x' --trailer 'Co-Authored-By: A <a@b>'",
+            "git commit -m 'fix: x' --trailer='Co-Authored-By: A <a@b>'",
+        ):
+            assert evaluate(cmd, str(root)) is None, cmd
+
+    def test_footer_key_case_insensitive(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        cmd = "git commit -m 'fix: x' -m 'co-authored-by: A <a@b>'"
+        assert evaluate(cmd, str(root)) is None
+
+    def test_f_file_without_footer_denied(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        msg = root / "msg.txt"
+        msg.write_text("fix: x\n", encoding="utf-8")
+        assert evaluate("git commit -F msg.txt", str(root)) is not None
+
+    def test_f_file_with_footer_allowed(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        msg = root / "msg.txt"
+        msg.write_text("fix: x\n\nCo-Authored-By: T <t@x>\n", encoding="utf-8")
+        assert evaluate("git commit -F msg.txt", str(root)) is None
+
+    def test_uninspectable_forms_allowed(self, monkeypatch, tmp_path) -> None:
+        root = _patch(monkeypatch, tmp_path, {tmp_path / "repo": "feature"})
+        for cmd in (
+            "git commit",
+            "git commit --amend",
+            "git commit --amend --no-edit",
+            "git commit -F -",
+            "git commit -F missing.txt",
+            "git commit --reuse-message abc123",
+        ):
+            assert evaluate(cmd, str(root)) is None, cmd
+
+    def test_footer_check_scoped_to_gated_repo(self, monkeypatch, tmp_path) -> None:
+        root = _patch(
+            monkeypatch, tmp_path, {tmp_path / "repo": "feature"}, gated=False
+        )
+        assert evaluate("git commit -m 'fix: x'", str(root)) is None
 
 
 class TestMainWiring:
@@ -265,7 +331,12 @@ class TestMainWiring:
         rc, out = self._run(
             monkeypatch,
             capsys,
-            {"tool_input": {"command": "git commit -m x"}, "cwd": str(root)},
+            {
+                "tool_input": {
+                    "command": 'git commit -m "x" -m "Co-Authored-By: T <t@x>"'
+                },
+                "cwd": str(root),
+            },
         )
         assert rc == 0
         assert out is None

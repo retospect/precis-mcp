@@ -1258,6 +1258,10 @@ addopts = "-n auto --max-worker-restart=0"
 # dots. faulthandler dumps every thread's stack once a test passes 600s;
 # pytest-timeout fails a test at 300s (thread method: dumps stacks, then
 # ends the worker — works for C-level and lock hangs signal mode misses).
+# Under -n the worker's own dump dies with it on a SIGKILL ("node down"):
+# conftest additionally re-arms dump_traceback_later per test into a
+# per-worker artifact under .test-hang-stacks/ and the terminal summary
+# names the files (gr514873).
 # Known-long tests carry @pytest.mark.timeout(N) with their measured
 # worst case; don't raise the global to fit one (Reto-only).
 faulthandler_timeout = 600
