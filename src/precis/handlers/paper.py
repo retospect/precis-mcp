@@ -306,8 +306,8 @@ _MERGE_UNKNOWN_YEAR_SIM = 0.95
 #: The ``edit(args=…)`` door keys, in dispatch order — at most one per
 #: call, and never combined with the metadata fields. Every door takes
 #: ``args['reason']``. ``keep_pdf`` / ``pdf_sha256`` are *modifiers* —
-#: ``keep_pdf`` of ``drop_body`` alone, ``pdf_sha256`` of ``drop_body``
-#: and ``reextract`` — they ride the same args dict.
+#: ``keep_pdf`` of ``drop_body`` alone, ``pdf_sha256`` of ``drop_body``,
+#: ``reextract`` and ``move_pdf_to`` — they ride the same args dict.
 _EDIT_DOOR_ARGS = (
     "retire",
     "redirect_to",
@@ -315,6 +315,8 @@ _EDIT_DOOR_ARGS = (
     "drop_body",
     "reextract",
     "move_body_to",
+    "move_pdf_to",
+    "attach_pdf",
     "split_body",
     "clear_abstract",
     "convert_to",
@@ -527,6 +529,13 @@ class PaperHandler(Handler):
                 "restore_abort",
                 "target",
                 "handle",
+                # upload doors (gr517423, slice 6): args={'pdf_upload_link':
+                # True} mints a single-use signed POST URL
+                # (:meth:`_mint_pdf_upload_link`); args={'pdf_upload':
+                # '<sha>'} queues a paper_pull attach of the staged file
+                # (:meth:`_queue_pdf_upload`).
+                "pdf_upload_link",
+                "pdf_upload",
             }
         ),
         # ``redirect_to`` re-points a retired/merged stub's supersede
@@ -719,6 +728,15 @@ class PaperHandler(Handler):
             # profiles; "false"/"0"/"no" must not read truthy.
             verify = verify.strip().lower() not in ("false", "0", "no")
         pdf_url = extras.get("pdf_url", _kw.get("pdf_url"))
+        pdf_upload_link = extras.get("pdf_upload_link")
+        if isinstance(pdf_upload_link, str):
+            pdf_upload_link = pdf_upload_link.strip().lower() not in (
+                "false",
+                "0",
+                "no",
+                "",
+            )
+        pdf_upload_sha = extras.get("pdf_upload")
         restore_abort = extras.get("restore_abort")
         if isinstance(restore_abort, str):
             # ``args=`` values can arrive JSON-stringified; "false" must
@@ -767,6 +785,41 @@ class PaperHandler(Handler):
             if restore_abort:
                 return self._restore_abort(id, extras, dry_run=dry_run)
             return self._restore(id, extras, dry_run=dry_run)
+        if pdf_upload_link or pdf_upload_sha is not None:
+            # The upload doors queue an attach or mint a staging link —
+            # a combined call reads as a stub-mint and would silently
+            # drop half the intent.
+            combined = [
+                name
+                for name, val in (
+                    ("doi", doi),
+                    ("arxiv", arxiv),
+                    ("identifier", identifier),
+                    ("title", title),
+                    ("year", year),
+                    ("citation", citation),
+                    ("record_type", record_type),
+                    ("tags", tags),
+                    ("mode", mode),
+                    ("pdf_url", pdf_url),
+                    ("text", _kw.get("text")),
+                )
+                if val is not None and (not isinstance(val, str) or val.strip())
+            ]
+            if pdf_upload_link and pdf_upload_sha is not None:
+                combined.append("pdf_upload_link+pdf_upload")
+            if combined:
+                raise BadInput(
+                    "args['pdf_upload_link'] / args['pdf_upload'] are "
+                    f"separate doors; the call does not combine with: "
+                    f"{', '.join(combined)}",
+                    next="put(kind='paper', id='<pa-or-slug>', args="
+                    "{'pdf_upload_link': True}) then args={'pdf_upload': "
+                    "'<sha256>', 'reason': '<why>'}",
+                )
+            if pdf_upload_link:
+                return self._mint_pdf_upload_link(id)
+            return self._queue_pdf_upload(id, pdf_upload_sha, reason, dry_run=dry_run)
         if tags:
             if pdf_url is not None or mode is not None:
                 raise BadInput(
@@ -908,6 +961,138 @@ class PaperHandler(Handler):
                 "(size-capped, %PDF-checked) and drops it in the ingest inbox "
                 "with a sidecar naming this stub; the watcher then attaches the "
                 "body. The outcome lands on the paper's meta.paper_pull."
+            )
+        )
+
+    def _mint_pdf_upload_link(self, id: str | int | None) -> Response:
+        """``put(args={'pdf_upload_link': True})`` — a single-use signed
+        upload URL for a paper stub (gr517423 slice 6). precis_web stages
+        the POSTed bytes under ``PRECIS_UPLOAD_STAGING``; nothing is
+        attached until the agent comes back with
+        ``args={'pdf_upload': '<sha>'}``.
+        """
+        from precis import file_links
+        from precis import secrets as vault
+        from precis.ingest import pdf_upload as _uploads
+        from precis.workers.job_types import paper_pull
+
+        example = "put(kind='paper', id='<slug>', args={'pdf_upload_link': True})"
+        if id is None or (isinstance(id, str) and not id.strip()):
+            raise BadInput("pdf_upload_link needs id=<paper slug>", next=example)
+        slug, ref_id = self._resolve_paper_slug(id)
+        problem = paper_pull.target_problem(self.store, ref_id)
+        if problem is not None:
+            raise BadInput(
+                f"{slug} {problem}",
+                next="pdf_upload_link feeds a stub with no body and no PDF; "
+                "get(kind='paper', id=...) to check its state",
+            )
+        _uploads.require_uploads_dir()
+        token = file_links.mint("put", file_links.UPLOAD_SHA, ref_id, store=self.store)
+        exp = file_links.parse(token).exp
+        path = f"/files/upload/{ref_id}?t={token}"
+        base = (
+            vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=self.store) or ""
+        ).rstrip("/")
+        url = f"{base}{path}" if base else path
+        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines: list[str] = []
+        if not base:
+            lines.append(
+                "PRECIS_WEB_BASE_URL is not set — the link below is "
+                "path-only; prepend the precis_web origin to POST to it "
+                "(the operator sets it via the vault)."
+            )
+        lines += [
+            f"# {slug} — PDF upload link",
+            f"url: {url}",
+            f"expires: {expires} (single use — one upload per link)",
+            f"max bytes: {_uploads.MAX_UPLOAD_BYTES} · must start with %PDF",
+            "",
+            f"curl -f --data-binary @paper.pdf -H 'Content-Type: application/pdf' "
+            f"'{url}'",
+            "",
+            "then attach the sha256 the POST answers:",
+            f"put(kind='paper', id='{slug}', args="
+            "{'pdf_upload': '<sha256>', 'reason': '<why>'})",
+        ]
+        return Response(body="\n".join(lines))
+
+    def _queue_pdf_upload(
+        self,
+        id: str | int | None,
+        sha_arg: Any,
+        reason: Any,
+        *,
+        dry_run: bool | str | None,
+    ) -> Response:
+        """``put(args={'pdf_upload': '<sha256>'})`` — attach a staged
+        upload to a body-less stub: queue ``paper_pull`` with the staged
+        file as its source (same ``check_pdf`` gate + inbox drop as a
+        fetched URL). The sha must name a staging the upload route
+        recorded under ``PRECIS_UPLOAD_STAGING`` — anything else refuses
+        toward the mint door."""
+        from precis.ingest import pdf_upload as _uploads
+        from precis.workers.job_types import paper_pull
+
+        example = (
+            "put(kind='paper', id='<slug>', args="
+            "{'pdf_upload': '<sha256>', 'reason': '<why>'})"
+        )
+        if id is None or (isinstance(id, str) and not id.strip()):
+            raise BadInput("pdf_upload needs id=<paper slug>", next=example)
+        sha = sha_arg.strip().lower() if isinstance(sha_arg, str) else ""
+        if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+            raise BadInput(
+                f"args['pdf_upload'] must be the sha256 the upload POST "
+                f"answered, got {sha_arg!r}",
+                next=example,
+            )
+        slug, ref_id = self._resolve_paper_slug(id)
+        self._require_reason(
+            str(reason or ""), "pdf_upload", self.spec.kind, slug, arg="'<sha256>'"
+        )
+        problem = paper_pull.target_problem(self.store, ref_id)
+        if problem is not None:
+            raise BadInput(
+                f"{slug} {problem}",
+                next="pdf_upload attaches to a stub with no body and no PDF; "
+                "get(kind='paper', id=...) to check its state",
+            )
+        _uploads.require_uploads_dir()
+        staged = _uploads.staged_upload_path(sha, ref_id=ref_id)
+        if staged is None:
+            raise BadInput(
+                f"no staged upload named {sha[:16]}… for {slug} — the sha "
+                "must come from the upload POST's answer (stagings are bound "
+                "to their token's ref and swept after 24 h)",
+                next=f"put(kind='paper', id='{slug}', "
+                "args={'pdf_upload_link': True})",
+            )
+        if dry_run:
+            return Response(
+                body=(
+                    f"dry run: would queue a paper_pull job attaching staged "
+                    f"upload {sha[:16]}… ({staged}) to {slug} — check_pdf "
+                    "identity gate, inbox drop, pdf_uploaded ref_event"
+                )
+            )
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        resp = hub.sibling("job").put(
+            job_type=paper_pull.JOB_TYPE,
+            executor="job_inproc",
+            parent_id=ref_id,
+            params={"ref_id": ref_id, "upload_sha": sha, "reason": reason},
+            idem_key=paper_pull.idem_key(ref_id, f"upload:{sha}"),
+        )
+        state = "already queued" if getattr(resp, "reused", False) else "queued"
+        return Response(
+            body=(
+                f"{state}: attach staged upload {sha[:16]}… to {slug} — a "
+                "paper_pull job re-checks the target, gates the file on the "
+                "same identity checks as a fetched URL, and drops it in the "
+                "ingest inbox for the watcher to fold. The outcome lands on "
+                "meta.paper_pull and a pdf_uploaded ref_event."
             )
         )
 
@@ -3183,11 +3368,17 @@ class PaperHandler(Handler):
                 next=f"edit(kind='{self.spec.kind}', id='{id}', args="
                 "{'drop_body': True, 'keep_pdf': True, 'reason': '<why>'})",
             )
-        if "pdf_sha256" in raw_args and not {"drop_body", "reextract"} & set(doors):
-            # pdf_sha256 names the attachment a keep_pdf drop retains or
-            # a reextract re-reads — anywhere else it is ignored.
+        if "pdf_sha256" in raw_args and not {
+            "drop_body",
+            "reextract",
+            "move_pdf_to",
+        } & set(doors):
+            # pdf_sha256 names the attachment a keep_pdf drop retains, a
+            # reextract re-reads or a move_pdf_to re-homes — anywhere
+            # else it is ignored.
             raise BadInput(
-                "args['pdf_sha256'] only modifies the drop_body / reextract doors",
+                "args['pdf_sha256'] only modifies the drop_body / reextract "
+                "/ move_pdf_to doors",
                 next=f"edit(kind='{self.spec.kind}', id='{id}', args="
                 "{'drop_body': True, 'keep_pdf': True, 'pdf_sha256': "
                 "'<sha>', 'reason': '<why>'})",
@@ -3271,6 +3462,21 @@ class PaperHandler(Handler):
                 return self._move_body_to(
                     id,
                     raw_args["move_body_to"],
+                    reason=reason,
+                    dry=bool(dry_mode),
+                )
+            if door == "move_pdf_to":
+                return self._move_pdf_to(
+                    id,
+                    raw_args["move_pdf_to"],
+                    reason=reason,
+                    dry=bool(dry_mode),
+                    pdf_sha256=raw_args.get("pdf_sha256"),
+                )
+            if door == "attach_pdf":
+                return self._attach_pdf(
+                    id,
+                    raw_args["attach_pdf"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
@@ -4605,6 +4811,363 @@ class PaperHandler(Handler):
                 f"{', pdf moved' if report.pdf else ''}; "
                 f"{donor_h} kept its metadata and is now a live stub; "
                 "ref_events 'body_moved' logged on both."
+            )
+        )
+
+    def _pdf_target_ready(self, tgt_probe: Any, tgt_h: str, kind: str) -> None:
+        """Refuse a ``move_pdf_to``/``attach_pdf`` target that isn't a
+        bodiless, pdf-less live ref (gr517423 slice 5): a body present
+        points at ``drop_body``, a pdf already held at ``reextract``."""
+        if tgt_probe.chunks:
+            raise BadInput(
+                f"{tgt_h} already holds {tgt_probe.chunks} body chunk(s) — "
+                "a pdf move lands only on a bodiless ref",
+                next=f"drop the body first: edit(kind='{kind}', "
+                f"id='{tgt_h}', args={{'drop_body': True, 'reason': '<why>'}})",
+            )
+        if tgt_probe.pdf:
+            raise BadInput(
+                f"{tgt_h} already holds a pdf — one ref, one file",
+                next=f"re-extract it from that file instead: "
+                f"edit(kind='{kind}', id='{tgt_h}', args="
+                "{'reextract': True, 'reason': '<why>'}), or drop the "
+                f"pdf first: edit(kind='{kind}', id='{tgt_h}', args="
+                "{'drop_body': True, 'reason': '<why>'})",
+            )
+
+    def _enqueue_pdf_attach(
+        self,
+        *,
+        donor_id: int | None,
+        tgt_id: int,
+        sha: str,
+        reason: str,
+    ) -> Any:
+        """Queue the ``pdf_attach`` job — the doors' deferred identity
+        gate (gr517423 slice 5). Returns the put response."""
+        from precis.workers.job_types import pdf_attach
+
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        return hub.sibling("job").put(
+            job_type=pdf_attach.JOB_TYPE,
+            executor="job_inproc",
+            parent_id=tgt_id,
+            params={
+                "target_ref_id": tgt_id,
+                "donor_ref_id": donor_id,
+                "pdf_sha256": sha,
+                "reason": reason,
+            },
+            idem_key=pdf_attach.idem_key(tgt_id, sha),
+        )
+
+    def _enqueue_reextract(self, *, tgt_id: int, sha: str, reason: str) -> Any:
+        """Queue the slice-4 ``paper_reextract`` after a pdf move —
+        the moved file becomes the target's body."""
+        from precis.workers.job_types import paper_reextract
+
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        return hub.sibling("job").put(
+            job_type=paper_reextract.JOB_TYPE,
+            executor="job_inproc",
+            parent_id=tgt_id,
+            params={
+                "ref_id": tgt_id,
+                "pdf_sha256": sha,
+                "reason": reason,
+            },
+            idem_key=paper_reextract.idem_key(tgt_id, sha),
+        )
+
+    def _move_pdf_to(
+        self,
+        id: str | int,
+        target: Any,
+        *,
+        reason: str,
+        dry: bool,
+        pdf_sha256: Any = None,
+    ) -> Response:
+        """``edit(args={'move_pdf_to': <target>})`` — re-home a stored
+        pdf from a bodiless donor to a bodiless target (gr517423 slice 5).
+
+        The wrong-paper repair's pdf leg: a file parked on the wrong
+        record whose body already went (a ``keep_pdf`` drop, a dedup
+        fold) moves onto the ref it actually belongs to. A donor still
+        holding a body refuses toward ``move_body_to`` — body and pdf
+        move together there. The target must be live, bodiless and
+        pdf-less. Before any write the file is identity-checked against
+        the target's title/DOI — from the donor's stored page-1-3 chunk
+        text when it exists, else deferred to a ``pdf_attach`` job that
+        reads the file's leading pages on a corpus host. On a
+        ``doi``/``title`` verdict the pointer, identifier row and
+        ``pdf_moved`` events land in one transaction and a
+        ``paper_reextract`` job is queued so the moved file becomes the
+        target's body. ``args['pdf_sha256']`` names the file when the
+        donor is attached to several.
+        """
+        from precis.ingest import body_ops, paper_dump, pdf_migrate
+        from precis.ingest.paper_hygiene import _identity_title
+
+        kind = self.spec.kind
+        donor, donor_h = self._require_live_body_ref(id, "move_pdf_to")
+        self._require_reason(reason, "move_pdf_to", kind, donor_h, arg="'pa<M>'")
+        tgt_raw = "" if target is None else str(target).strip()
+        tgt = self._resolve_ref_incl_retired(tgt_raw) if tgt_raw else None
+        if tgt is None:
+            raise BadInput(
+                f"move_pdf_to={tgt_raw!r} resolves to no {kind} ref",
+                next=f"search(kind='{kind}', q='...') for the live "
+                "target's pa<id> or slug",
+            )
+        tgt_h = _pa(tgt)
+        if tgt.id == donor.id:
+            raise BadInput(
+                "move_pdf_to names the record itself",
+                next="pass the other live ref the pdf belongs to",
+            )
+        if tgt.retired_at is not None:
+            chain_end = self.store.follow_supersede(tgt.id)
+            if chain_end is not None:
+                end_h = handle_registry.format_handle(tgt.kind, chain_end)
+                raise BadInput(
+                    f"{tgt_h} is itself merged into {end_h} — a move must "
+                    "land on a live ref",
+                    next=f"edit(kind='{kind}', id='{donor_h}', args="
+                    f"{{'move_pdf_to': '{end_h}', 'reason': '{reason}'}})",
+                )
+            raise BadInput(
+                f"{tgt_h} is deleted (retired, no survivor) — a move must "
+                "land on a live ref",
+                next=f"search(kind='{kind}', q='...') for a live target",
+            )
+        named = None if pdf_sha256 is None else str(pdf_sha256).strip() or None
+        with self.store.pool.connection() as conn:
+            src_probe = body_ops.probe_body(conn, donor.id)
+            tgt_probe = body_ops.probe_body(conn, tgt.id)
+            undo = paper_dump.undo_line(conn, donor.id, donor_h)
+            pointer, id_shas = body_ops._attached_pdf_shas(conn, donor.id)
+            attached = sorted({*id_shas, *([pointer] if pointer else [])})
+            if src_probe.chunks:
+                raise BadInput(
+                    f"{donor_h} still holds {src_probe.chunks} body chunk(s) "
+                    "— body and pdf move together",
+                    next=f"move the whole body instead: edit(kind='{kind}', "
+                    f"id='{donor_h}', args={{'move_body_to': '{tgt_h}', "
+                    f"'reason': '{reason}'}})",
+                )
+            if attached:
+                self._pdf_target_ready(tgt_probe, tgt_h, kind)
+                sha, _switch = body_ops.resolve_kept_pdf(conn, donor.id, named=named)
+                texts = pdf_migrate.leading_texts(conn, donor.id)
+                _, tgt_doi = pdf_migrate.ref_identity(conn, tgt.id)
+        if not attached:
+            return Response(body=f"no change: {donor_h} holds no pdf to move.")
+        verdict: str | None = None
+        detail: str | None = None
+        if texts:
+            verdict, detail = pdf_migrate.target_gate_verdict(
+                texts, title=_identity_title(tgt.title), doi=tgt_doi
+            )
+            if verdict == "mismatch":
+                raise BadInput(
+                    f"the stored pages do not look like {tgt_h}: {detail or '-'}",
+                    next="judge the refs again — if the file really is "
+                    f"{tgt_h}'s, its title/doi needs repair first: "
+                    f"edit(kind='{kind}', id='{tgt_h}', title=…|doi=…)",
+                )
+            if verdict == "unchecked":
+                raise BadInput(
+                    f"{tgt_h} has neither title words nor a DOI to check "
+                    f"{donor_h}'s pdf against",
+                    next=f"repair the target's metadata first: "
+                    f"edit(kind='{kind}', id='{tgt_h}', "
+                    "title=…|doi=…), then re-run the move",
+                )
+        if dry:
+            gate_note = (
+                f"identity verdict {verdict} (from {donor_h}'s stored page-1-3 chunks)"
+                if verdict is not None
+                else "identity check DEFERRED to a pdf_attach job — no "
+                "stored chunks on pages 1-3 to judge against here"
+            )
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would move pdf {sha} from "
+                    f"{donor_h} to {tgt_h}: {gate_note}; the move "
+                    f"clears {donor_h}'s pdf_sha256/pdf_pages/pdf_role, "
+                    "re-homes the pdf_sha256 identifier row, sets "
+                    f"{tgt_h}'s pointer, journals 'pdf_moved' on both "
+                    "refs and queues paper_reextract for the target."
+                    f"\n\n{undo}"
+                )
+            )
+        if verdict is None:
+            resp = self._enqueue_pdf_attach(
+                donor_id=donor.id, tgt_id=tgt.id, sha=sha, reason=reason
+            )
+            state = "already queued" if getattr(resp, "reused", False) else "queued"
+            return Response(
+                body=(
+                    f"{state}: pdf_attach job id={resp.ref_id} to "
+                    f"identity-check and move pdf {sha} from {donor_h} "
+                    f"to {tgt_h} — the file's leading pages are read on "
+                    "a worker (no stored chunks on pages 1-3 here). "
+                    f"Watch: get(kind='job', id={resp.ref_id}); the "
+                    "outcome lands on the target's meta.pdf_attach."
+                )
+            )
+        with _body_op_tx(self.store, "move_pdf_to") as conn:
+            # TOCTOU, same shape as _move_body_to: lock both ref rows in
+            # ref_id order, then re-verify everything the probes proved.
+            locked = {
+                int(r[0]): r
+                for r in conn.execute(
+                    "SELECT ref_id, pdf_sha256, retired_at, "
+                    "       meta->>'superseded_by' "
+                    "FROM refs WHERE ref_id = ANY(%s) "
+                    "ORDER BY ref_id FOR NO KEY UPDATE",
+                    ([donor.id, tgt.id],),
+                )
+            }
+            for ref_id, handle in ((donor.id, donor_h), (tgt.id, tgt_h)):
+                row = locked.get(ref_id)
+                if row is None or row[2] is not None or row[3] is not None:
+                    raise BadInput(
+                        f"{handle} was retired or merged since the check — "
+                        "a pdf move needs both refs live",
+                        next=f"re-resolve and retry: edit(kind='{kind}', "
+                        f"id='{donor_h}', args={{'move_pdf_to': '<live "
+                        f"target>', 'reason': '{reason}'}})",
+                    )
+            if conn.execute(
+                "SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0 "
+                "AND retired_at IS NULL LIMIT 1",
+                (donor.id,),
+            ).fetchone():
+                raise BadInput(
+                    f"{donor_h} gained a body since the check — body "
+                    "and pdf move together",
+                    next=f"move the whole body instead: edit(kind='{kind}', "
+                    f"id='{donor_h}', args={{'move_body_to': '{tgt_h}', "
+                    f"'reason': '{reason}'}})",
+                )
+            if (
+                locked[tgt.id][1] is not None
+                or conn.execute(
+                    "SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0 "
+                    "AND retired_at IS NULL LIMIT 1",
+                    (tgt.id,),
+                ).fetchone()
+            ):
+                raise BadInput(
+                    f"{tgt_h} gained a body or pdf since the check — "
+                    "a pdf move lands only on a bodiless, pdf-less ref",
+                    next=f"re-extract from its own pdf: edit(kind='{kind}', "
+                    f"id='{tgt_h}', args={{'reextract': True, "
+                    "'reason': '<why>'}})",
+                )
+            pdf_migrate.apply_pdf_move(
+                conn,
+                store=self.store,
+                sha=sha,
+                target_id=tgt.id,
+                donor_id=donor.id,
+                verdict=verdict,
+                reason=reason,
+                source="agent",
+            )
+        job = self._enqueue_reextract(tgt_id=tgt.id, sha=sha, reason=reason)
+        return Response(
+            body=(
+                f"moved pdf {sha} from {donor_h} to {tgt_h} (verdict "
+                f"{verdict}): {donor_h}'s pointer cleared, the "
+                "pdf_sha256 identifier row re-homed, 'pdf_moved' "
+                f"ref_events on both refs; paper_reextract "
+                f"{'reused' if getattr(job, 'reused', False) else 'queued'} "
+                f"(job id={job.ref_id}) to extract the target's body "
+                f"from the moved file."
+            )
+        )
+
+    def _attach_pdf(
+        self, id: str | int, sha_value: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'attach_pdf': '<sha>'})`` — adopt an orphan
+        ``pdfs`` row (gr517423 slice 5).
+
+        ``drop_body`` leaves exactly such orphans: the corpus holds the
+        file but no live ref points at it. The target must be live,
+        bodiless and pdf-less; a sha a live ref owns refuses naming the
+        owner (``move_pdf_to`` is the re-home door). The identity gate
+        always defers to the ``pdf_attach`` job — an orphan sha has no
+        donor chunks to judge against, and the file's leading pages are
+        read on a corpus host. On a ``doi``/``title`` verdict the job
+        sets the pointer + identifier row, journals ``pdf_moved`` and
+        queues ``paper_reextract``.
+        """
+        from precis.ingest import body_ops, paper_dump, pdf_migrate
+
+        kind = self.spec.kind
+        tgt, tgt_h = self._require_live_body_ref(id, "attach_pdf")
+        self._require_reason(reason, "attach_pdf", kind, tgt_h, arg="'<sha>'")
+        sha = "" if sha_value is None else str(sha_value).strip().lower()
+        if not sha:
+            raise BadInput(
+                "attach_pdf needs a sha to adopt",
+                next=f"edit(kind='{kind}', id='{tgt_h}', args="
+                "{'attach_pdf': '<sha>', 'reason': '<why>'})",
+            )
+        with self.store.pool.connection() as conn:
+            tgt_probe = body_ops.probe_body(conn, tgt.id)
+            self._pdf_target_ready(tgt_probe, tgt_h, kind)
+            owner = pdf_migrate.live_pdf_sha_owner(conn, sha)
+            if owner is not None and owner != tgt.id:
+                owner_h = handle_registry.format_handle(kind, owner)
+                raise BadInput(
+                    f"pdf {sha} already belongs to live {owner_h} — "
+                    "attach_pdf only adopts orphans",
+                    next=f"re-home it instead: edit(kind='{kind}', "
+                    f"id='{owner_h}', args={{'move_pdf_to': '{tgt_h}', "
+                    f"'reason': '{reason}'}})",
+                )
+            has_pdfs_row = (
+                conn.execute(
+                    "SELECT 1 FROM pdfs WHERE pdf_sha256 = %s", (sha,)
+                ).fetchone()
+                is not None
+            )
+            undo = paper_dump.undo_line(conn, tgt.id, tgt_h)
+        if not has_pdfs_row:
+            raise BadInput(
+                f"the corpus holds no pdfs row for {sha} — attach_pdf "
+                "adopts a stored file, it does not fetch one",
+                next=f"attach by URL instead: put(kind='{kind}', "
+                f"id='{tgt_h}', args={{'pdf_url': 'https://…/x.pdf'}})",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would queue pdf_attach to "
+                    f"adopt pdf {sha} onto {tgt_h}: the job reads the "
+                    "file's leading pages, applies only on a doi/title "
+                    "verdict (sets the pointer, re-homes the identifier "
+                    "row, journals 'pdf_moved') and queues "
+                    "paper_reextract for the body.\n\n"
+                    f"{undo}"
+                )
+            )
+        resp = self._enqueue_pdf_attach(
+            donor_id=None, tgt_id=tgt.id, sha=sha, reason=reason
+        )
+        state = "already queued" if getattr(resp, "reused", False) else "queued"
+        return Response(
+            body=(
+                f"{state}: pdf_attach job id={resp.ref_id} to "
+                f"identity-check and attach pdf {sha} onto {tgt_h} — "
+                "the file's leading pages are read on a worker. "
+                f"Watch: get(kind='job', id={resp.ref_id}); the "
+                "outcome lands on the ref's meta.pdf_attach."
             )
         )
 

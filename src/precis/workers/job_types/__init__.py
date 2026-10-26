@@ -641,6 +641,16 @@ def _load_paper_reextract() -> JobTypeSpec:
     return paper_reextract.SPEC
 
 
+def _load_pdf_attach() -> JobTypeSpec:
+    # Identity-gate a stored PDF against a bodiless target and move/
+    # attach it — the enqueued half of edit(kind='paper',
+    # args={'move_pdf_to': …} / {'attach_pdf': …}) (gr517423 slice 5).
+    # job_inproc plugin dispatch.
+    from precis.workers.job_types import pdf_attach
+
+    return pdf_attach.SPEC
+
+
 def _load_derived_drain() -> JobTypeSpec:
     # Bounded in-proc work order draining a SMALL-tier derived LLM queue
     # (summarize/classify) — melchior-pinned, router-capped, never cloud.
@@ -925,6 +935,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "paper_reextract":
         _REGISTRY["paper_reextract"] = _load_paper_reextract()
         return _REGISTRY["paper_reextract"]
+    if name == "pdf_attach":
+        _REGISTRY["pdf_attach"] = _load_pdf_attach()
+        return _REGISTRY["pdf_attach"]
     if name == "deferred_llm_call":
         # A synchronous surface's LLM call deferred past a quota/budget
         # window (web follow-up first). Plugin dispatch under coordinator.
@@ -1002,6 +1015,7 @@ def known_job_types() -> list[str]:
         "pcb_review",
         "paper_pull",
         "paper_reextract",
+        "pdf_attach",
         "deferred_llm_call",
         "survey_extract",
         "measure_accept",

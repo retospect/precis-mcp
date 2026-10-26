@@ -23,16 +23,28 @@ find (author / institution hosts). Steps:
 
 The outcome is recorded on the paper's ``meta.paper_pull``; a deterministic
 failure is a recorded state, not a raised error. Runs under ``job_inproc``.
+
+Slice 6 (gr517423) adds a second source: ``params={'upload_sha': …}``
+attaches a PDF the agent staged under ``$PRECIS_UPLOAD_STAGING/
+<ref_id>-<sha>.pdf`` via the signed-upload route — no fetch, no host
+gate (the bytes are already ours); the same target re-check,
+``check_pdf``, sidecar and drop apply, plus a ``pdf_uploaded``
+ref_event carrying the identity verdict. The staging dir is a sibling
+of the inbox on the same share, so its ``os.replace`` into
+``.staging/`` stays a same-filesystem rename.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from precis.errors import BadInput
+from precis.ingest import pdf_upload
 from precis.ingest.fetch_sidecar import sidecar_path, write_sidecar
 from precis.ingest.pdf_identity import identity_verdict, read_leading_pages
 from precis.store._body_predicate import has_body_sql
@@ -104,8 +116,15 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "properties": {
         "ref_id": {"type": "integer", "minimum": 1},
         "url": {"type": "string", "minLength": 8},
+        "upload_sha": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-fA-F]{64}$",
+        },
+        "reason": {"type": "string"},
     },
-    "required": ["ref_id", "url"],
+    "required": ["ref_id"],
     "additionalProperties": False,
 }
 
@@ -117,9 +136,31 @@ DESCRIPTION = (
     "sidecar naming the paper stub it belongs to."
 )
 
+_SHA_RE = re.compile(r"[0-9a-fA-F]{64}")
+
 
 def idem_key(ref_id: int, url: str) -> str:
     return f"{JOB_TYPE}:{ref_id}:{url}"
+
+
+def validate(store: Store, params: dict[str, Any]) -> None:
+    """``JobHandler.put``'s semantic gate (gr511724): a direct
+    ``put(kind='job', job_type='paper_pull')`` bypasses the paper
+    handler's ``pdf_url``/``pdf_upload`` arg checks, so the source pair
+    is re-checked here — exactly one of ``url`` / ``upload_sha``, and a
+    well-formed 64-hex sha."""
+    url, sha = params.get("url"), params.get("upload_sha")
+    if (url is None) == (sha is None):
+        raise BadInput(
+            "paper_pull takes exactly one of params.url / params.upload_sha",
+            next="params={'ref_id': N, 'url': '<pdf url>'} or "
+            "params={'ref_id': N, 'upload_sha': '<64-hex>'}",
+        )
+    if sha is not None and (not isinstance(sha, str) or _SHA_RE.fullmatch(sha) is None):
+        raise BadInput(
+            f"params.upload_sha must be a 64-hex sha256 (got {sha!r})",
+            next="params={'ref_id': N, 'upload_sha': '<64-hex>'}",
+        )
 
 
 def target_problem(store: Store, ref_id: int) -> str | None:
@@ -219,16 +260,32 @@ def _cite_key(store: Store, ref_id: int) -> str:
     return str(getattr(ref, "slug", "") or "") if ref is not None else ""
 
 
-def pull(store: Store, ref_id: int, url: str) -> dict[str, Any]:
-    """Run one pull and record the outcome on the paper; returns the record."""
+def pull(
+    store: Store,
+    ref_id: int,
+    url: str | None = None,
+    *,
+    upload_sha: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Run one pull and record the outcome on the paper; returns the record.
+
+    Exactly one source: ``url`` fetches via ``safe_stream``;
+    ``upload_sha`` attaches the staged
+    ``$PRECIS_UPLOAD_STAGING/<ref_id>-<sha>.pdf`` an agent PUT through
+    the signed-upload route. ``reason`` is the caller's audit string,
+    journaled into the upload leg's ``pdf_uploaded`` ref_event.
+    """
     from precis.workers.fetch_oa import _sanitise
 
     try:
+        if url is not None and upload_sha is not None:
+            raise _dl._Failed(
+                "bad_source", "paper_pull takes exactly one of url / upload_sha"
+            )
         problem = target_problem(store, ref_id)
         if problem is not None:
             raise _dl._Failed("bad_target", f"ref {ref_id} {problem}")
-        if (bad := blocked_host(url)) is not None:
-            raise _dl._Failed("blocked_host", bad)
         inbox = _inbox()
         cite_key = _cite_key(store, ref_id)
         stem = _sanitise(cite_key) if cite_key else f"ref_{ref_id}"
@@ -238,17 +295,47 @@ def pull(store: Store, ref_id: int, url: str) -> dict[str, Any]:
         staging = inbox / ".staging"
         staging.mkdir(parents=True, exist_ok=True)
         staged = staging / target.name
+        final_url: str | None = None
+        sha: str | None = None
         try:
-            final_url, sha = _dl._download(url, staged)
-            if (bad := blocked_host(final_url)) is not None:
-                raise _dl._Failed("blocked_host", f"redirected to {bad}")
+            if upload_sha is not None:
+                upload_sha = upload_sha.strip().lower()
+                if _SHA_RE.fullmatch(upload_sha) is None:
+                    raise _dl._Failed("bad_source", "upload_sha is not a 64-hex sha256")
+                if pdf_upload.uploads_dir() is None:
+                    raise _dl._Failed(
+                        "no_upload_staging",
+                        f"{pdf_upload.UPLOAD_STAGING_ENV} is unset on this "
+                        "worker; staged uploads unreachable",
+                    )
+                staged_pdf = pdf_upload.staged_upload_path(upload_sha, ref_id=ref_id)
+                if staged_pdf is None or not Path(staged_pdf).is_file():
+                    raise _dl._Failed(
+                        "upload_missing",
+                        f"no staged upload for sha {upload_sha[:16]}… — "
+                        "mint a fresh pdf_upload_link",
+                    )
+                sha = upload_sha
+                os.replace(staged_pdf, staged)
+            elif url is not None:
+                if (bad := blocked_host(url)) is not None:
+                    raise _dl._Failed("blocked_host", bad)
+                final_url, sha = _dl._download(url, staged)
+                if (bad := blocked_host(final_url)) is not None:
+                    raise _dl._Failed("blocked_host", f"redirected to {bad}")
+            else:
+                raise _dl._Failed("bad_source", "paper_pull needs url or upload_sha")
             title, doi, etype = _stub_facts(store, ref_id)
             checks = check_pdf(staged, title=title, doi=doi, entry_type=etype)
             write_sidecar(
                 staged,
                 ref_id=ref_id,
                 identifiers={"cite_key": cite_key},
-                source=SIDECAR_SOURCE,
+                source=(
+                    pdf_upload.UPLOAD_SIDECAR_SOURCE
+                    if upload_sha is not None
+                    else SIDECAR_SOURCE
+                ),
                 url=final_url,
             )
             # Sidecar first, PDF last: the watcher keys off the ``.pdf``.
@@ -258,24 +345,46 @@ def pull(store: Store, ref_id: int, url: str) -> dict[str, Any]:
             staged.unlink(missing_ok=True)
         record: dict[str, Any] = {
             "status": "dropped",
-            "url": final_url,
             "sha256": sha,
             "file": target.name,
             "at": now_iso(),
             **checks,
         }
+        if final_url is not None:
+            record["url"] = final_url
     except _dl._Failed as exc:
-        record = {"status": "failed", "reason": exc.reason, "url": url, "at": now_iso()}
+        record = {"status": "failed", "reason": exc.reason, "at": now_iso()}
+        if upload_sha is None:
+            record["url"] = url
+        else:
+            record["upload_sha"] = upload_sha
         if exc.detail:
             record["detail"] = exc.detail[:300]
     store.update_ref(ref_id, meta_patch={"paper_pull": record})
+    if upload_sha is not None:
+        payload: dict[str, Any] = {"sha": upload_sha, "status": record["status"]}
+        if record.get("identity"):
+            payload["identity"] = record["identity"]
+        if record.get("reason"):
+            payload["failure"] = record["reason"]
+        if reason:
+            payload["reason"] = reason
+        store.append_event(
+            ref_id, source="paper_pull", event="pdf_uploaded", payload=payload
+        )
     return record
 
 
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = ctx.meta.get("params") or {}
     ref_id = int(params["ref_id"])
-    record = pull(ctx.store, ref_id, str(params["url"]))
+    record = pull(
+        ctx.store,
+        ref_id,
+        params.get("url"),
+        upload_sha=params.get("upload_sha"),
+        reason=params.get("reason"),
+    )
     ctx.append_chunk(
         "job_summary",
         f"paper_pull ref {ref_id}: {record['status']}"
@@ -298,6 +407,7 @@ SPEC = JobTypeSpec(
     description=DESCRIPTION,
     run=None,
     dispatch=_dispatch,
+    validate=validate,
 )
 
 

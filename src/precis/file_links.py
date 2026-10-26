@@ -43,6 +43,13 @@ WEB_BASE_URL_SECRET = "PRECIS_WEB_BASE_URL"
 #: token can never be replayed as an upload.
 OPS = ("get", "put")
 
+#: The ``sha`` field of a ``put`` (upload) token. There is no sha to
+#: bind at mint time — the bytes do not exist yet — so the field is a
+#: fixed sentinel the route verifies verbatim; what an upload token
+#: actually binds is ``ref_id`` (the path must match) and single-use
+#: (the nonce tombstone under ``PRECIS_UPLOAD_STAGING``).
+UPLOAD_SHA = "upload"
+
 #: Reto 2026-10-25: links last 600 s by default, 3600 s max, and a
 #: download link is reusable until expiry.
 DEFAULT_TTL_S = 600
@@ -202,6 +209,7 @@ __all__ = [
     "FILE_LINK_SECRET",
     "MAX_TTL_S",
     "OPS",
+    "UPLOAD_SHA",
     "WEB_BASE_URL_SECRET",
     "Claims",
     "LinkTokenError",

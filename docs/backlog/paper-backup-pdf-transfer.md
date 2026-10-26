@@ -346,6 +346,9 @@ migration.
 
 ## Slice 5 — move or attach a stored PDF (Opus review: store writes)
 
+**Landed.** `ingest/pdf_migrate.py` + `workers/job_types/pdf_attach.py`
++ the `move_pdf_to`/`attach_pdf` edit doors.
+
 **Shapes** (the two door args are mutually exclusive):
 - `edit(kind='paper', id=<donor>, args={'move_pdf_to': '<target>',
   'reason': …, 'pdf_sha256'?: …})` re-homes the sha from a bodiless
@@ -395,22 +398,45 @@ migration.
 
 ## Slice 6 — signed upload, then attach (highest risk: new ingress)
 
+**Landed.** `ingest/pdf_upload.py` staging helpers + `POST
+/files/upload/{ref_id}` + `pdf_upload_link`/`pdf_upload` put doors +
+`paper_pull` upload source + `paper_reconcile` sweep +
+`PRECIS_UPLOAD_STAGING` on the precis_web role. Security review moved
+staging out of the watched inbox (MF1): the legacy
+`<inbox>/.uploads` layout let the out-of-repo acatome-extract watcher
+fold a staged PDF as an unbound paper, so the staging dir is now a
+sibling of `papers_inbox_path` on the same share; `.uploads` stays a
+`_MANAGED_DIRS` name as a second guard, and a `PRECIS_UPLOAD_STAGING`
+resolving inside the inbox reads as unconfigured (Unsupported refusals
+with `next=` naming the var on every upload door).
+
 **Mint.** `put(kind='paper', id=<pa>, args={'pdf_upload_link': True})`
 returns a `put`-op token URL for `POST /files/upload/{ref_id}?t=…`,
-plus `curl -fF file=@paper.pdf '<url>'`. The target must pass
+plus `curl -f --data-binary @paper.pdf -H 'Content-Type:
+application/pdf' '<url>'`. The target must pass
 `paper_pull.target_problem`, the same precondition as `pdf_url`.
 
-**Route.** The route (in `routes/files.py`) streams the multipart body
-to `<PRECIS_WATCH_INBOX>/.uploads/<nonce>.part`:
+**Route.** The route (in `routes/files.py`) takes the raw
+`application/pdf` body — no `UploadFile`/`File(...)` param, so the
+token is verified before a single body byte is read (`/files` is
+exempt from the Basic login gate; an unauthenticated body must never
+reach disk). It streams `request.stream()` to
+`$PRECIS_UPLOAD_STAGING/<nonce>.part`:
 - hashes while streaming;
-- rejects at 50 MB (413, the `paper_pull` cap) and without `%PDF`
-  magic (415);
-- renames to `<sha>.pdf`;
+- rejects at 50 MB (413, enforced while the bytes arrive — the cap is
+  a **server constant** (`pdf_upload.MAX_UPLOAD_BYTES`), deliberately
+  not part of the signed token) and without `%PDF` magic (415);
+- renames to `<ref_id>-<sha>.pdf` — the staged file IS the record (no
+  `pdfs` row at upload; ingest writes it when the attach drop folds),
+  and the ref prefix binds the staging to the token's stub;
 - returns JSON `{sha256, bytes, next: "put(kind='paper', id='<h>',
   args={'pdf_upload': '<sha>', 'reason': '…'})"}`.
 
 Each token is good for one upload: the nonce is the token's exp+sig,
-and a second POST with it is refused (409).
+tombstoned `.done` (O_EXCL) *before* the body streams — a replay is
+refused (409) no matter where the first upload stands. A failed upload
+(413/415/disconnect) drops the tombstone, leaving the token reusable
+until expiry.
 
 **Attach.** `put(kind='paper', id=<pa>, args={'pdf_upload': '<sha>',
 'reason': …})` enqueues `paper_pull` with `params={ref_id,
@@ -418,11 +444,24 @@ upload_sha}`. Generalise `paper_pull.pull` so the source is either a
 download or the staged upload. The same `check_pdf` gate, sidecar and
 inbox drop then apply, so dedup, `Claim` and the watcher fold are
 reused unchanged. Record ref_event `pdf_uploaded` with the verdict.
-`paper_reconcile` sweeps `.uploads/` entries older than 24 h.
+`paper_reconcile` sweeps staging entries older than 24 h — files
+only, never `pdfs` rows (a swept re-upload's sha may already be a live
+paper's corpus PDF).
 
-**Deploy.** The `precis_web` role adds `PRECIS_WATCH_INBOX`, set from
-the overlay's `papers_inbox_path`, to the plist template and defaults.
-No literal path or host.
+**Watcher.** `.uploads` stays a `precis ingest --watch` managed dir
+(`watch.py::_MANAGED_DIRS`) as a second guard so the watcher never
+ingests a staged upload directly. The legacy `extract_watch` role's
+daemon is `acatome-extract watch` — code outside this repo — watching
+the same `papers_inbox_path`; its exclusion list can't be patched
+here, which is why staging lives in `PRECIS_UPLOAD_STAGING`, a
+*sibling* of the inbox it never scans (playbook 28's `precis_watch`
+remains its replacement).
+
+**Deploy.** The `precis_web` role adds `PRECIS_UPLOAD_STAGING` —
+default `{{ papers_inbox_path | dirname }}/precis-upload-staging`,
+sibling on the same share so the attach's `os.replace` is a
+same-filesystem rename — to the plist template and defaults, alongside
+the existing `PRECIS_WATCH_INBOX`. No literal path or host.
 
 **Tests.** `tests/test_paper_pdf_upload.py`:
 - route: valid upload, oversize, non-PDF, replayed nonce, expired

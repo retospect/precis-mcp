@@ -19,6 +19,16 @@ precis_identity_env_raw:
   # `precis_inbound_chase: false` (value drops out) or the var set to 0.
   # The DB row (`precis service prio inbound_chase N`) is the second gate.
   PRECIS_INBOUND_CHASE_ENABLED: "{{ '1' if (precis_inbound_chase | default(true)) else '' }}"
+  # Signed-upload staging dir (gr517423 MF1) — read live by the paper
+  # mint/attach doors (handlers/paper.py), the paper_pull worker's
+  # staged-attach os.replace, and the precis_web upload route, i.e.
+  # every process class, so it rides this dict rather than the web's
+  # plist alone. A SIBLING of the inbox on the same share: inside the
+  # inbox the out-of-repo acatome-extract watcher would fold a staged
+  # PDF; a different filesystem would break the rename. The dirname is
+  # taken AFTER stripping trailing slashes — "/x/inbox/" | dirname is
+  # "/x/inbox", which would nest staging INSIDE the watched tree.
+  PRECIS_UPLOAD_STAGING: "{{ papers_inbox_path | regex_replace('/+$','') | dirname }}/precis-upload-staging"
 precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('value', 'equalto', '') | list | items2dict }}"
 
 # Fleet-wide trailing-24h LLM spend ceiling (PRECIS_DAILY_COST_CEILING).

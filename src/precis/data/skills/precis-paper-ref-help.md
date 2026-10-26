@@ -12,6 +12,7 @@ answers:
   - a ref holds the wrong paper's body — how do I detach or re-home it?
   - a ref carries one wrong identifier next to right ones — how do I remove just it?
   - the body is another paper's but the attached PDF is right — how do I re-extract it?
+  - a stored PDF sits on the wrong ref — how do I move it?
   - how do I undo a drop_body or rebuild a ref from its dump?
   - a worker stamped a paper done/failed — how do I re-run it?
   - how do I attach a legal PDF to a body-less stub?
@@ -41,9 +42,11 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` (drop_body takes `'keep_pdf': True` to keep the stored pdf) |
 | re-extract from the stored pdf | `args={'reextract': True, 'reason': …}` — keeps the pdf, queues a `paper_reextract` job; `'pdf_sha256': '<sha>'` names the file when several are attached |
+| re-home a stored pdf / adopt an orphan | `args={'move_pdf_to': '<pa>'/'attach_pdf': '<sha>', 'reason': …}` — identity-gated on the target's title/DOI |
 | export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
 | rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` or `precis paper restore <file> --apply` |
 | download a held PDF | `get(id=…, view='pdf_link')` — signed URL, no bytes over MCP |
+| upload a local PDF | `args={'pdf_upload_link': True}` → POST the file to the URL → `args={'pdf_upload': '<sha>', 'reason': …}` — single-use link |
 | convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
 | attach a legal PDF | `put(id=…, args={'pdf_url': '<url>'})` |
@@ -257,6 +260,57 @@ as a fenced `precis-paper-dump/1` block, paged by
 `args={'page': N, 'page_size': K}` (default 100, cap 500, 0 = the rest;
 concatenate the slices' `chunks` arrays). The operator twin
 `precis paper dump <id> --out <file>` writes every slice into one file.
+
+## A stored PDF sits on the wrong ref — how do I move it?
+
+```python
+edit(kind="paper", id="pa506039", args={"move_pdf_to": "pa42053", "reason": "the file is 42053's"})
+```
+
+`move_pdf_to` re-homes the sha a *bodiless* donor holds — a donor
+still holding a body refuses toward `move_body_to`, because body and
+pdf move together there. The target must be live, bodiless and
+pdf-less — a body present points at `drop_body`, a pdf already held
+at `reextract`. `'pdf_sha256': '<sha>'` names the file when the donor
+is attached to several.
+
+Before anything moves the file is identity-checked against the
+*target's* title/DOI — the same gate `paper_pull`/`paper_reextract`
+run — from the donor's stored page-1-3 chunk text when it exists (a
+re-ingested donor keeps them as history), else by a `pdf_attach` job
+that reads the file's leading pages on a corpus host. `mismatch`
+refuses with the detail line; `unchecked` (the target has neither
+title words nor a DOI) refuses toward fixing the target's metadata
+first. On `doi`/`title` the write lands in one transaction — the
+donor's pointer clears, the `pdf_sha256` identifier row re-homes,
+`pdf_moved` ref_events journal on both refs — and `paper_reextract` is
+queued so the moved file becomes the target's body. Watch
+`get(kind='job', id=…)`; the outcome lands on `meta.pdf_attach` and a
+failure also logs `pdf_attach_failed`.
+
+## Adopt an orphaned PDF the corpus still holds
+
+```python
+edit(kind="paper", id="pa42053", args={"attach_pdf": "<sha>", "reason": "drop_body left it orphaned"})
+```
+
+`attach_pdf` adopts a `pdfs` row no live ref owns — the orphan a plain
+`drop_body` leaves behind. A sha a live ref owns refuses naming the
+owner (that is the `move_pdf_to` case), and a sha with no `pdfs` row
+refuses toward `pdf_url` — attach adopts a stored file, it does not
+fetch one. The target must be live, bodiless and pdf-less, same as a
+move target.
+
+The identity gate always runs as a `pdf_attach` job — an orphan sha
+has no donor chunks to judge against here, so the file's leading pages
+are read on a corpus host and checked against the target's title/DOI
+(a `mismatch`/`unchecked` verdict fails the job — `unchecked` wants
+the target's metadata fixed first). On a
+`doi`/`title` verdict the job sets the pointer, re-homes the
+`pdf_sha256` identifier row, journals `pdf_moved` and queues
+`paper_reextract` so the adopted file becomes the target's body. Watch
+`get(kind='job', id=…)`; the outcome lands on `meta.pdf_attach` and a
+failure also logs `pdf_attach_failed`.
 
 ## Undo a body door — restore a ref from its dump
 

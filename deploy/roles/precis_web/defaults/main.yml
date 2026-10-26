@@ -29,6 +29,17 @@ precis_web_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'
 # /opt/shared/corpus path (now a transition symlink to shared_mount) as
 # a fallback for any PDFs staged there before the path was unified.
 precis_web_corpus: "{{ papers_corpus_path }}:/opt/shared/corpus"
+# Watch inbox — same NAS path every node sees. Still exported so the
+# staging-dir guard (and the /oa-fetch drive view) can resolve it.
+precis_web_watch_inbox: "{{ papers_inbox_path }}"
+# Signed-upload staging (POST /files/upload/{ref}, gr517423 MF1) is NOT
+# a web-only knob — every consumer (workers' paper_pull, the MCP
+# mint/attach doors, this unit) reads the same PRECIS_UPLOAD_STAGING
+# from precis_identity_env (group_vars/all.yml), emitted by the plist's
+# shared-env loop; a role-level override would silently lose to it. The
+# shared derivation picks a sibling of the inbox on the same share
+# (paper_pull's os.replace stays a same-filesystem rename) and strips
+# trailing slashes before dirname.
 # Git ref to install precis-mcp from — DELIBERATELY UNSET (gr489462), like
 # precis_worker_git_ref: install.yml refuses when it is unset; scripts/deploy,
 # scripts/host-ops/play and redeploy-precis.yml's step-0 all pin it.

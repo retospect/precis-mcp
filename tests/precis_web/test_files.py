@@ -172,6 +172,126 @@ def test_recorded_leg_needs_no_size_check(
     )
 
 
+# -- POST /files/upload/{ref_id} (slice 6) --------------------------------
+# The route reads the RAW body (``request.stream()``) — no multipart
+# framing, so ``curl --data-binary`` / ``content=`` is the contract; a
+# ``files=`` post would spool the boundary bytes into the staged file.
+# Staging lives in ``PRECIS_UPLOAD_STAGING`` — deliberately OUTSIDE the
+# watched inbox (feat-a2 MF1) — so the fixture sets it to a sibling dir.
+
+
+@pytest.fixture
+def staging_dir(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """``PRECIS_UPLOAD_STAGING`` → a sibling of the watch inbox; returns
+    the staging dir."""
+    monkeypatch.setenv("PRECIS_WATCH_INBOX", str(tmp_path / "inbox"))
+    staging = tmp_path / "staging"
+    monkeypatch.setenv("PRECIS_UPLOAD_STAGING", str(staging))
+    return staging
+
+
+def _put_token(ref_id: int = 50, **kw) -> str:
+    return file_links.mint("put", file_links.UPLOAD_SHA, ref_id, **kw)
+
+
+def _post(client: TestClient, ref_id: int, token: str, body: bytes = _PDF_BYTES):
+    return client.post(
+        f"/files/upload/{ref_id}?t={token}",
+        content=body,
+        headers={"content-type": "application/pdf"},
+    )
+
+
+def test_upload_stages_pdf_and_answers_sha(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    r = _post(_client(runtime, tmp_path), 50, _put_token(50))
+    assert r.status_code == 200
+    sha = r.json()["sha256"]
+    # The staged name binds the upload to its token's ref.
+    assert (staging_dir / f"50-{sha}.pdf").read_bytes() == _PDF_BYTES
+    assert r.json()["bytes"] == len(_PDF_BYTES)
+    assert "pdf_upload" in r.json()["next"]
+    # The nonce tombstone lands — the link is now spent.
+    assert list(staging_dir.glob("*.done"))
+
+
+def test_upload_single_use_409(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    token = _put_token(50)
+    client = _client(runtime, tmp_path)
+    assert _post(client, 50, token).status_code == 200
+    r = _post(client, 50, token)
+    assert r.status_code == 409
+
+
+def test_upload_no_token_403(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    r = _client(runtime, tmp_path).post(
+        "/files/upload/50",
+        content=_PDF_BYTES,
+        headers={"content-type": "application/pdf"},
+    )
+    assert r.status_code == 403
+
+
+def test_upload_get_token_403(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    """A download token can't be replayed as an upload — op is signed."""
+    token = file_links.mint("get", _SHA, 50)
+    r = _post(_client(runtime, tmp_path), 50, token)
+    assert r.status_code == 403
+
+
+def test_upload_wrong_ref_403(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    r = _post(_client(runtime, tmp_path), 99, _put_token(50))
+    assert r.status_code == 403
+
+
+def test_upload_expired_410(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    r = _post(_client(runtime, tmp_path), 50, _put_token(50, now=1_000_000))
+    assert r.status_code == 410
+
+
+def test_upload_non_pdf_415(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    r = _post(_client(runtime, tmp_path), 50, _put_token(50), body=b"<html>x")
+    assert r.status_code == 415
+    assert list(staging_dir.iterdir()) == []
+
+
+def test_upload_oversize_413(
+    runtime: FakeRuntime, staging_dir, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.ingest import pdf_upload
+
+    monkeypatch.setattr(pdf_upload, "MAX_UPLOAD_BYTES", 16)
+    r = _post(_client(runtime, tmp_path), 50, _put_token(50), body=_PDF_BYTES * 4)
+    assert r.status_code == 413
+    # An over-cap upload never reaches disk — the declared-length check
+    # may refuse before ``.uploads/`` even exists.
+    assert not staging_dir.exists() or list(staging_dir.iterdir()) == []
+
+
+def test_upload_failed_attempt_frees_the_nonce(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    """A refused upload (415) drops the tombstone again — the token
+    stays reusable until expiry; only a SUCCESS spends it."""
+    client = _client(runtime, tmp_path)
+    token = _put_token(50)
+    assert _post(client, 50, token, body=b"<html>x").status_code == 415
+    assert _post(client, 50, token).status_code == 200
+
+
+def test_upload_no_staging_503(
+    runtime: FakeRuntime, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_UPLOAD_STAGING`` unset — the route refuses, and never
+    falls back into the watch inbox even though it IS configured."""
+    monkeypatch.setenv("PRECIS_WATCH_INBOX", str(tmp_path / "inbox"))
+    monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
+    r = _post(_client(runtime, tmp_path), 50, _put_token(50))
+    assert r.status_code == 503
+    assert "PRECIS_UPLOAD_STAGING" in r.json()["detail"]
+
+
 def test_files_prefix_is_segment_scoped() -> None:
     """``/files`` exempts itself and its subtree only — ``/filesx`` must
     never ride the exemption (same segment-match rule the podcast

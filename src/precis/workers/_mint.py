@@ -21,6 +21,7 @@ re-minting under its failed parent's class
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 from precis.store.types import Tag
@@ -33,6 +34,94 @@ if TYPE_CHECKING:
 #: claim-rank order (D2: human first, background last). The put handler
 #: stamps the first two; this module derives the last two.
 JOB_ORIGINS: tuple[str, ...] = ("human", "agent", "recurring", "background")
+
+#: Terminal job statuses for the idem-key reuse check — a queued /
+#: running / parked job with the key blocks a re-mint; a terminal one
+#: doesn't. Same tuple ``handlers.job`` keeps for ``_lookup_idem``.
+JOB_TERMINAL_STATUSES: tuple[str, ...] = ("succeeded", "failed", "cancelled")
+
+
+def idem_lock_key(idem: str) -> int:
+    """Hash an idem string to a 64-bit signed integer for advisory lock.
+
+    ``pg_advisory_xact_lock`` takes a ``bigint``. We hash via BLAKE2b
+    truncated to 8 bytes and reinterpret as a signed int so the
+    value fits Postgres's ``bigint`` range. Stable across processes
+    so two workers racing the same idem key serialize correctly.
+    The hash is not security-sensitive: collisions just cause two
+    unrelated puts to share a lock briefly.
+    """
+    digest = hashlib.blake2b(idem.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def active_job_id(conn: Any, idem_key: str) -> int | None:
+    """The newest live job carrying ``meta.idem_key`` in a non-terminal
+    STATUS, else ``None``. Runs on the caller's ``conn`` — inside the
+    ``pg_advisory_xact_lock`` window when serialized minting matters."""
+    row = conn.execute(
+        """
+        SELECT r.ref_id
+          FROM refs r
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'idem_key' = %s
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = 'STATUS'
+                    AND t.value = ANY(%s)
+               )
+         ORDER BY r.ref_id DESC
+         LIMIT 1
+        """,
+        (idem_key, list(JOB_TERMINAL_STATUSES)),
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def mint_job_once(
+    store: Store,
+    *,
+    conn: Any,
+    job_type: str,
+    executor: str,
+    title: str,
+    params: dict[str, Any] | None = None,
+    parent_id: int | None = None,
+    idem_key: str,
+    prio: int | None = None,
+    status: str = "queued",
+    origin: str | None = None,
+    meta_extra: dict[str, Any] | None = None,
+) -> tuple[int, bool]:
+    """Mint one job under ``idem_key``, or reuse the active one —
+    ``(job_ref_id, reused)``.
+
+    Serializes on a transaction-scoped advisory lock keyed on the idem
+    string, then re-checks for an active job before minting — the same
+    race-safe shape ``JobHandler.put`` uses, so two concurrent mints
+    with the same key can never both insert. Callers wrap this in
+    ``store.tx()``.
+    """
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (idem_lock_key(idem_key),))
+    existing = active_job_id(conn, idem_key)
+    if existing is not None:
+        return existing, True
+    ref = mint_background_job(
+        store,
+        conn=conn,
+        job_type=job_type,
+        executor=executor,
+        title=title,
+        params=params,
+        parent_id=parent_id,
+        idem_key=idem_key,
+        prio=prio,
+        status=status,
+        origin=origin,
+        meta_extra=meta_extra,
+    )
+    return int(ref.id), False
 
 
 def mint_background_job(
@@ -97,4 +186,11 @@ def mint_background_job(
     return ref
 
 
-__all__ = ["JOB_ORIGINS", "mint_background_job"]
+__all__ = [
+    "JOB_ORIGINS",
+    "JOB_TERMINAL_STATUSES",
+    "active_job_id",
+    "idem_lock_key",
+    "mint_background_job",
+    "mint_job_once",
+]

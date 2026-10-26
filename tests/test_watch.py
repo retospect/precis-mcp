@@ -76,6 +76,17 @@ class TestShouldSkip:
         target.write_bytes(b"x")
         assert _should_skip(target, watch_dir) is True
 
+    def test_inside_uploads_dir(self, tmp_path: Path):
+        """``.uploads/`` holds the signed-upload route's staged PDFs —
+        ingesting one would mint an unbound paper and move the file
+        away before its ``pdf_upload`` attach runs."""
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        target = watch_dir / ".uploads" / "50-abc.pdf"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"x")
+        assert _should_skip(target, watch_dir) is True
+
     def test_normal_path_not_skipped(self, tmp_path: Path):
         watch_dir = tmp_path / "watch"
         watch_dir.mkdir()
@@ -454,7 +465,7 @@ class TestBackfillOrder:
         nested = watch_dir / "papers" / "sub"
         nested.mkdir(parents=True)
         (nested / "deep.xml").write_bytes(b"b")
-        for managed in ("errors", "completed", ".staging"):
+        for managed in ("errors", "completed", ".staging", ".uploads"):
             d = watch_dir / managed
             d.mkdir()
             (d / "buried.pdf").write_bytes(b"c")

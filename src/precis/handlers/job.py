@@ -12,7 +12,6 @@ See ``precis-job-help`` for the agent-facing surface and
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import subprocess
@@ -40,6 +39,8 @@ from precis.utils.link_tag_ops import (
 from precis.utils.link_target import parse_link_target
 from precis.utils.next_block import render_next_section
 from precis.utils.timeutil import as_utc
+from precis.workers._mint import active_job_id
+from precis.workers._mint import idem_lock_key as _idem_lock_key
 from precis.workers.executors import (
     DEFAULT_EXECUTOR,
     EXECUTOR_PROVIDES,
@@ -267,19 +268,12 @@ def _ancestry_repo() -> tuple[Path | None, str | None]:
     return None, f"no git checkout reachable (tried {', '.join(tried)})"
 
 
-def _idem_lock_key(idem: str) -> int:
-    """Hash an idem string to a 64-bit signed integer for advisory lock.
-
-    ``pg_advisory_xact_lock`` takes a ``bigint``. We hash via BLAKE2b
-    truncated to 8 bytes and reinterpret as a signed int so the
-    value fits Postgres's ``bigint`` range. Stable across processes
-    so two workers racing the same idem key serialize correctly.
-    The hash is not security-sensitive: collisions just cause two
-    unrelated puts to share a lock briefly.
-    """
-    digest = hashlib.blake2b(idem.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, byteorder="big", signed=True)
-
+# ``_idem_lock_key`` is an alias of
+# ``precis.workers._mint.idem_lock_key`` (imported above) — the hash
+# lives in the workers layer so worker-side mints (e.g. pdf_attach's
+# reextract enqueue) can serialize on the same key without importing
+# this handler module (the lint-imports contract forbids
+# workers → handlers).
 
 _JOB_SUMMARY_KIND = "job_summary"
 _JOB_EVENT_KIND = "job_event"
@@ -3599,24 +3593,7 @@ class JobHandler(NumericRefHandler):
         """
 
         def _query(c: Any) -> int | None:
-            rows = c.execute(
-                """
-                SELECT r.ref_id
-                  FROM refs r
-                 WHERE r.kind = 'job' AND r.retired_at IS NULL
-                   AND r.meta->>'idem_key' = %s
-                   AND NOT EXISTS (
-                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                          WHERE rt.ref_id = r.ref_id
-                            AND t.namespace = 'STATUS'
-                            AND t.value = ANY(%s)
-                       )
-                 ORDER BY r.ref_id DESC
-                 LIMIT 1
-                """,
-                (idem, list(_TERMINAL_STATUSES)),
-            ).fetchall()
-            return int(rows[0][0]) if rows else None
+            return active_job_id(c, idem)
 
         if conn is not None:
             return _query(conn)
@@ -3680,8 +3657,10 @@ def _validate_params(
 
     Implements only the bits v1 needs: ``required`` + per-property
     ``type`` (``integer`` / ``string`` / ``object``) +
-    ``additionalProperties=False``. Swap for ``jsonschema`` if a
-    job_type's schema ever needs richer constraints.
+    ``additionalProperties=False`` + string ``pattern`` (jsonschema
+    ``re.search`` semantics — declared patterns are enforced, never
+    decoration). Swap for ``jsonschema`` if a job_type's schema ever
+    needs richer constraints.
     """
     if not isinstance(params, dict):
         raise BadInput(
@@ -3725,6 +3704,12 @@ def _validate_params(
                 f"params.{key} must be an object (got {type(value).__name__})",
                 next=f"retry with params.{key} as a JSON object "
                 f"(params={{{key!r}: {{'k': 'v'}}}})",
+            )
+        pattern = prop_schema.get("pattern")
+        if pattern and isinstance(value, str) and re.search(pattern, value) is None:
+            raise BadInput(
+                f"params.{key} does not match pattern {pattern!r} (got {value!r})",
+                next=f"retry with params.{key} matching {pattern!r}",
             )
 
 

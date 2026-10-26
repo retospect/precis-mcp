@@ -143,6 +143,18 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             collapsed = collapse_superseded_chains(store, dry_run=False, limit=limit)
             relinked = migrate_dangling_paper_links(store, dry_run=False, limit=limit)
             requeued = requeue_stranded_fetches(store, dry_run=False, limit=limit)
+            # Staged agent uploads (gr517423 slice 6): staging parts,
+            # nonce tombstones and un-attached PDFs older than 24 h —
+            # files only, never pdfs rows; a no-op where
+            # PRECIS_UPLOAD_STAGING is unset.
+            from precis.ingest.pdf_upload import sweep_stale_uploads
+
+            uploads_swept = sweep_stale_uploads()
+            if uploads_swept:
+                log.info(
+                    "paper_reconcile: swept %d stale upload artifact(s)",
+                    uploads_swept,
+                )
             # Bodiless PDFs (gr453860): the one heal that may run Marker.
             # Capped per pass so the lock-holding node spends at most a
             # few model runs; verdicts (preview / missing / unreadable)
@@ -271,6 +283,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 + len(bodiless_judged)
                 + len(repaired)
                 + len(raised)
+                + uploads_swept
             )
             return BatchResult(
                 handler="paper_reconcile", claimed=work, ok=work, failed=0

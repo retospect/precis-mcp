@@ -90,7 +90,16 @@ DEFAULT_POLL_INTERVAL = 15.0
 # operators can drop cooperative dirs without breaking anything.
 # ``.staging`` (dotted, matching the on-disk name) holds fetch_oa's
 # not-yet-published markup triggers (gr170349) — never watcher-visible.
-_MANAGED_DIRS: frozenset[str] = frozenset({"errors", "completed", ".staging"})
+# ``.uploads`` (also dotted) was the signed-upload route's staging
+# dir (gr517423 slice 6) — staging moved out of the watched tree to
+# ``PRECIS_UPLOAD_STAGING`` (feat-a2 MF1: the out-of-repo
+# acatome-extract watcher scans this inbox too), but the name stays
+# managed as a second guard: ingesting a stray staged PDF directly
+# would mint an unbound paper and move the file away before its
+# ``pdf_upload`` attach could run.
+_MANAGED_DIRS: frozenset[str] = frozenset(
+    {"errors", "completed", ".staging", ".uploads"}
+)
 
 # Inbox sub-trees that select the ingest kind. Files outside any of
 # these go through the paper pipeline (back-compat with the flat
@@ -1646,10 +1655,12 @@ def _infer_markup_fmt(path: Path, sidecar: Any | None) -> str | None:
 
 def _should_skip(path: Path, watch_dir: Path) -> bool:
     """True iff ``path`` is inside one of the watcher-managed
-    subdirectories (``errors/``, ``completed/``, ``.staging/``). Backfill
-    and live events both use this guard so previously-failed PDFs aren't
-    retried automatically, and staged-not-yet-published markup triggers
-    never leak into a scan."""
+    subdirectories (``errors/``, ``completed/``, ``.staging/``,
+    ``.uploads/``). Backfill and live events both use this guard so
+    previously-failed PDFs aren't retried automatically,
+    staged-not-yet-published markup triggers never leak into a scan,
+    and a signed-upload staging is never ingested ahead of its
+    ``pdf_upload`` attach."""
     try:
         rel = path.resolve().relative_to(watch_dir.resolve())
     except ValueError:
@@ -1660,8 +1671,9 @@ def _should_skip(path: Path, watch_dir: Path) -> bool:
 
 def _walk_unmanaged_files(watch_dir: Path) -> list[Path]:
     """Return every regular file under ``watch_dir``, **pruning** the
-    ``_MANAGED_DIRS`` subtrees (``errors``/``completed``/``.staging``) at the
-    directory level so the walk never descends into them.
+    ``_MANAGED_DIRS`` subtrees (``errors``/``completed``/``.staging``/
+    ``.uploads``) at the directory level so the walk never descends
+    into them.
 
     This replaces ``Path.rglob`` in :meth:`_PdfHandler.backfill`, which walked
     the *entire* tree — ``_should_skip`` filters the *results* but cannot stop
