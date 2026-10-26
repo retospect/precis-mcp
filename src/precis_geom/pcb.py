@@ -33,6 +33,7 @@ authors wrote.
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import importlib.metadata
 import json
@@ -122,9 +123,41 @@ def Min(text: str | float | int) -> Bound:
     return Bound("min", _parse_amps(text), str(text))
 
 
+@functools.cache
+def _script_dir() -> Path:
+    """The directory the entry script lives in — the anchor claim sites
+    are made relative against (the sandbox runs
+    ``python /work/main.py``). ``sys.argv[0]`` when it names a real
+    file, else ``__main__``'s ``__file__``, else the cwd. Cached: it is
+    syscalls on every pin claim and argv0 does not change mid-run. Any
+    filesystem fault degrades to ``Path('.')`` — a relative anchor that
+    no resolved path is under, so the caller falls back to basename."""
+    import sys
+
+    try:
+        argv0 = Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else None
+    except (OSError, ValueError):
+        argv0 = None
+    if argv0 is not None and argv0.is_file():
+        return argv0.parent
+    main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+    if main_file:
+        try:
+            return Path(main_file).resolve().parent
+        except (OSError, ValueError):
+            pass
+    try:
+        return Path.cwd()
+    except OSError:
+        return Path(".")
+
+
 def _caller_site(depth: int = 2) -> str:
     """``file:line`` of the board-script line that called the API —
-    recorded on pin claims so a PinConflict can name both sites."""
+    recorded on pin claims so a PinConflict can name both sites. The
+    file is reported relative to the calling script's directory
+    (``basename:line`` when the frame lives outside it), so a
+    ``pin_decls`` ``site`` never carries an absolute path (gr520324)."""
     import inspect
 
     f = inspect.currentframe()
@@ -135,7 +168,20 @@ def _caller_site(depth: int = 2) -> str:
             f = f.f_back
         if f is None:
             return "?:0"
-        return f"{f.f_code.co_filename}:{f.f_lineno}"
+        raw = Path(f.f_code.co_filename)
+        try:
+            path = raw.resolve()
+            anchors = (_script_dir(), Path.cwd())
+        except (OSError, ValueError):
+            # resolve()/cwd() can fail (NUL in the name, a deleted cwd) —
+            # the site contract is "never absolute", so basename it is.
+            return f"{raw.name}:{f.f_lineno}"
+        for anchor in anchors:
+            try:
+                return f"{path.relative_to(anchor)}:{f.f_lineno}"
+            except ValueError:
+                continue
+        return f"{path.name}:{f.f_lineno}"
     finally:
         del f
 

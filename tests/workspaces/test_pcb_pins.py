@@ -7,6 +7,7 @@ coverage lives in ``tests/test_pcb_topoplace_pins.py``."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,51 @@ def test_fixed_pin_conflict_names_both_sites(tmp_path: Path) -> None:
     msg = str(exc.value)
     assert "'BTN'" in msg and "'LED'" in msg
     assert "main.py:7" in msg and "main.py:8" in msg
+
+
+_SITE_MAIN = """\
+import precis_geom.pcb as pcb
+
+
+def build() -> pcb.Board:
+    b = pcb.Board("t")
+    u1 = b.part("U1")
+    u1.pin(5, name="BTN")
+    u1.pin(any_of=["PA1", "PA2"], name="SLOT")
+    return b
+"""
+
+
+def test_pin_decl_sites_carry_no_absolute_path(tmp_path: Path) -> None:
+    """gr520324: a claim ``site`` is relative to the calling script's
+    directory — ``basename:line`` outside it — so ``to_batch()`` never
+    leaks an absolute laptop path into ``pin_decls``."""
+    mod = load_script(tmp_path, _SITE_MAIN)
+    decls = mod.build().to_batch()["components"][0]["pin_decls"]
+    sites = [c["site"] for c in decls["claims"]] + [s["site"] for s in decls["slots"]]
+    assert sites == ["main.py:7", "main.py:8"]
+    for site in sites:
+        path, _, line = site.rpartition(":")
+        assert not Path(path).is_absolute() and line.isdigit()
+
+
+def test_pin_decl_site_relative_to_argv0_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr520324 follow-up: when ``sys.argv[0]`` names the entry script —
+    the sandbox's ``python /work/main.py`` shape — its directory anchors
+    the site, giving ``main.py:N`` via ``relative_to`` rather than the
+    basename fallback the pytest argv0 exercises above."""
+    mod = load_script(tmp_path, _SITE_MAIN)
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "main.py")])
+    pcb._script_dir.cache_clear()
+    try:
+        assert pcb._script_dir() == (tmp_path / "main.py").resolve().parent
+        decls = mod.build().to_batch()["components"][0]["pin_decls"]
+    finally:
+        pcb._script_dir.cache_clear()
+    sites = [c["site"] for c in decls["claims"]] + [s["site"] for s in decls["slots"]]
+    assert sites == ["main.py:7", "main.py:8"]
 
 
 def test_fixed_pin_reclaim_same_name_is_noop() -> None:

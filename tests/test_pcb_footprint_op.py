@@ -15,6 +15,8 @@ closes.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from precis.dispatch import Hub
@@ -226,6 +228,63 @@ def test_op_footprint_needs_part_or_footprint(pcb):
     pcb.put(id="fp1", args=_minimal_design())
     with pytest.raises(BadInput):
         pcb.put(id="fp1", args={"op": "footprint"})
+
+
+def test_part_pinmap_view_through_dispatch(runtime_with_store, store):
+    """gr520331: ``view='pinmap'`` returns only the pad-number → pin-name
+    map — what a board-script author needs to write connections, without
+    the footprint view's pad geometry."""
+    store.part_footprint_put(_LCSC, _fake_footprint())
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "part", "id": _LCSC, "view": "pinmap"}
+    )
+    payload = json.loads(body)
+    assert payload == {"lcsc": _LCSC, "pin_map": {"1": "A", "2": "B"}}
+    # And the same uncached miss the footprint view gives.
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "part", "id": "C999999", "view": "pinmap"}
+    )
+    assert "[error:NotFound]" in body and "op': 'footprint'" in body
+
+
+def test_footprint_notfound_hint_runs_verbatim(pcb, monkeypatch):
+    """gr520322: the part handler's 'no cached footprint' hint prints
+    ``put(kind='pcb', args={'op':'footprint','part':…})`` — with no id=.
+    It used to refuse for want of a design slug; the cache is
+    catalogue-wide, so the printed call runs as written (design-free,
+    hence unjudged — there is no board whose copper could collide)."""
+    import ast
+    import re
+
+    from precis.errors import NotFound
+    from precis.handlers.part import PartHandler
+
+    monkeypatch.setattr(
+        pcb_footprint_mod, "_easyeda_fetch", lambda lcsc: _fake_footprint()
+    )
+    part = PartHandler(hub=Hub(store=pcb.store))
+    with pytest.raises(NotFound) as exc:
+        part.get(id=_LCSC, view="footprint")
+    hint = exc.value.next
+    assert isinstance(hint, str)
+    m = re.search(r"put\(kind='pcb', args=(\{[^}]*\})\)", hint)
+    assert m, f"the hint is not a copy-pasteable put() call: {hint!r}"
+    resp = pcb.put(args=ast.literal_eval(m.group(1)))  # as printed: no id=
+    assert _LCSC in resp.body and "yes" in resp.body
+    assert pcb.store.part_footprint_get(_LCSC) is not None
+
+    # The id-less authoring mode works the same way.
+    resp = pcb.put(
+        args={
+            "op": "footprint",
+            "part": "C900003",
+            "footprint": {
+                "pads": [{"pin": "1", "shape": "rect", "x": 0.0, "y": 0.0, "w": 0.5}]
+            },
+        }
+    )
+    assert "authored" in resp.body
+    assert pcb.store.part_footprint_get("C900003")["source"] == "authored"
 
 
 # ── (d) view='footprints' ─────────────────────────────────────────────────

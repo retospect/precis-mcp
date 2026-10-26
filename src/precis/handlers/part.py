@@ -135,17 +135,19 @@ class PartHandler(Handler):
             "view='footprint' returns the cached footprint row "
             "(pads/pin_map/courtyard/centroid/holes + a content sha) as "
             "JSON — the sandbox read path pcb.catalog() resolves "
-            "through (gr514460). See precis-part-select-help."
+            "through (gr514460); view='pinmap' returns only the "
+            "pad-number → pin-name map, for writing connections "
+            "(gr520331). See precis-part-select-help."
         ),
         supports_get=True,
         supports_search=True,
         is_numeric=False,
         id_required=False,
-        views=("facts", "footprint"),
+        views=("facts", "footprint", "pinmap"),
     )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        return ["facts", "footprint"]
+        return ["facts", "footprint", "pinmap"]
 
     def __init__(
         self,
@@ -184,12 +186,13 @@ class PartHandler(Handler):
         if view is not None:
             if is_eye_view(view):
                 return self.eye(id=id, extent=view)
-            if view not in ("facts", "footprint"):
+            if view not in ("facts", "footprint", "pinmap"):
                 raise BadInput(
                     f"kind='part' has no view {view!r}",
                     next="get(kind='part', id='C…', view='facts') — the "
                     "datasheet-extracted pin table / required externals; "
-                    "view='footprint' is the cached footprint row as JSON",
+                    "view='footprint' is the cached footprint row as JSON; "
+                    "view='pinmap' is only its pad-number → pin-name map",
                 )
             if id is None or not str(id).strip():
                 raise BadInput(
@@ -201,6 +204,8 @@ class PartHandler(Handler):
                 return Response(
                     body=render_facts(part_facts(self.store, lcsc), lcsc=lcsc)
                 )
+            if view == "pinmap":
+                return self._pinmap_view(lcsc)
             return self._footprint_view(lcsc)
         if id is None or not str(id).strip():
             raise BadInput(
@@ -366,6 +371,31 @@ class PartHandler(Handler):
             ).hexdigest(),
         }
         return Response(body=json.dumps(payload, sort_keys=True))
+
+    def _pinmap_view(self, lcsc: str) -> Response:
+        """``view='pinmap'`` (gr520331) — only the pad-number → pin-name
+        map off the cached footprint row, for a board-script author
+        writing connections; the full pad geometry stays on
+        ``view='footprint'``. Same JSON shape the sandbox parses."""
+        row = self.store.part_footprint_get(lcsc)
+        if row is None:
+            raise NotFound(
+                f"part {lcsc}: no cached footprint",
+                next=(
+                    f"put(kind='pcb', args={{'op': 'footprint', 'part': {lcsc!r}}})"
+                    " fetches and caches it, or search(kind='part', q='...')"
+                    " for another part"
+                ),
+            )
+        pin_map = {
+            str(pad): (
+                str(e.get("name") or "") if isinstance(e, dict) else str(e or "")
+            )
+            for pad, e in (row.get("pin_map") or {}).items()
+        }
+        return Response(
+            body=json.dumps({"lcsc": lcsc, "pin_map": pin_map}, sort_keys=True)
+        )
 
     # ── search ───────────────────────────────────────────────────────
     def search(

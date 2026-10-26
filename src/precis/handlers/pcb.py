@@ -1103,6 +1103,14 @@ class PcbHandler(Handler):
         (nothing is stored); one that names router copper rips that net,
         reported in the response. A put that leaves the design with no
         placed instance is never judged."""
+        args = args or {}
+        if (id is None or not str(id).strip()) and args.get("op") == "footprint":
+            # gr520322: the part_footprints cache is catalogue-wide, so
+            # pulling or authoring a catalog part's pads needs no design
+            # — the part handler's NotFound hint prints this id-less
+            # call verbatim. Design-free runs unjudged: there is no board
+            # whose stored copper the new pads could collide with.
+            return self._op_footprint(None, args)
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='pcb') requires id= (the design slug)",
@@ -1114,7 +1122,6 @@ class PcbHandler(Handler):
                 ),
             )
         slug = str(id).strip()
-        args = args or {}
         op = args.get("op")
         if op is not None:
             # pcb-guided-place-route Slice 10 tool surface: place/route/the
@@ -3189,7 +3196,7 @@ class PcbHandler(Handler):
         )
 
     # ── footprint cache (gr341532 fix 3) ────────────────────────────────
-    def _op_footprint(self, ref: Any, args: dict[str, Any]) -> Response:
+    def _op_footprint(self, ref: Any | None, args: dict[str, Any]) -> Response:
         """``put(args={'op':'footprint', ...})`` — fill the ``part_footprints``
         cache (``part_footprint_get``/``part_footprint_put``), which nothing in
         this handler used to fill: a catalog-part instance
@@ -3211,6 +3218,11 @@ class PcbHandler(Handler):
         (:func:`precis.pcb.rows.normalize_footprint`) the
         design-local ``footprints:[...]`` batch key already uses, cached
         under ``source='authored'``.
+
+        ``id`` may be omitted entirely (gr520322): the cache is
+        catalogue-wide, so ``put(kind='pcb', args={'op':'footprint',
+        'part':'C…'})`` runs design-free — the write is then unjudged,
+        since there is no board whose copper could collide.
 
         Cached pad geometry is read lazily at IR-build time
         (:meth:`_build_ir` -> :func:`precis.pcb.session.
@@ -3243,7 +3255,11 @@ class PcbHandler(Handler):
                     "'footprints' entry",
                 ) from exc
             data["source"] = "authored"
-            judged = self._put_footprints_judged(ref, {lcsc: data})
+            if ref is not None:
+                judged = self._put_footprints_judged(ref, {lcsc: data})
+            else:
+                self.store.part_footprint_put(lcsc, data)
+                judged = JudgeReport()
             row = self.store.part_footprint_get(lcsc)
             return Response(
                 body=f"# footprint {lcsc} — authored\n"
@@ -3280,7 +3296,14 @@ class PcbHandler(Handler):
                 # vendor/network failure on one C-number reports in that
                 # row, the rest of the batch still runs.
                 errors[lcsc] = f"{type(exc).__name__}: {exc}"
-        judged = self._put_footprints_judged(ref, fetched) if fetched else JudgeReport()
+        if fetched and ref is not None:
+            judged = self._put_footprints_judged(ref, fetched)
+        else:
+            # ref=None (design-free): the catalogue-wide cache row is
+            # written without a judged pass — there is no board to judge.
+            for lcsc, data in fetched.items():
+                self.store.part_footprint_put(lcsc, data)
+            judged = JudgeReport()
         rows: list[dict[str, str]] = []
         n_ok = 0
         for raw in parts:
@@ -3326,7 +3349,7 @@ class PcbHandler(Handler):
         return judged
 
     def _footprint_judge_lines(
-        self, ref: Any, lcscs: list[str], judged: JudgeReport
+        self, ref: Any | None, lcscs: list[str], judged: JudgeReport
     ) -> str:
         """The footprint op's judge report: ripped nets, what is now visible
         (first 8), and the other designs sharing the catalogue-wide cache
@@ -3349,7 +3372,9 @@ class PcbHandler(Handler):
                 f"{judged.unjudged} — check view='drc'\n"
             )
         for lcsc in lcscs:
-            others = self.store.pcb_designs_using_part(lcsc, exclude_ref_id=ref.id)
+            others = self.store.pcb_designs_using_part(
+                lcsc, exclude_ref_id=ref.id if ref is not None else None
+            )
             if others:
                 names = ", ".join(others[:5]) + (
                     f" (+{len(others) - 5} more)" if len(others) > 5 else ""

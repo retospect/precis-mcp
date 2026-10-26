@@ -445,7 +445,11 @@ can't settle.
 Fill in a missing footprint (`op='footprint'`, the `synthesized_footprint`
 fix), pads vs pins, fix a wrong pin name (`op='pin_rename'`/`'pin_remove'`)
 and annotate pin semantics (`op='pins'`):
-`get(kind='skill', id='precis-pcb-check-help')`.
+`get(kind='skill', id='precis-pcb-check-help')`. One authoring default:
+a pad that omits `paste` stores `'full'` — a `shape='polygon'` pad
+included, so a large sensor electrode still gets a stencil opening;
+`role='electrode'` (or `'tape_land'`) defaults it to `'none'`, and an
+explicit `paste` always wins.
 
 ## Place it — `put(args={'op':'place', …})`
 

@@ -90,7 +90,10 @@ never carried resolves transparently. A real miss is negative-cached for a
 few minutes, then the `NotFound` says the live listing was checked too.
 
 Use this to confirm a candidate before committing it to a design — especially
-`package` (must match your footprint) and `basic`.
+`package` (must match your footprint) and `basic`. Two `view=`s matter at
+board-script time: `view='pinmap'` returns only the pad-number → pin-name
+map you write `part.pin(…)` / `net.tie` against; `view='footprint'` is the
+full pad geometry JSON.
 
 ## Link a part — it becomes a ref on first use
 
