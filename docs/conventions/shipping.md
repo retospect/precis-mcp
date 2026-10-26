@@ -185,6 +185,13 @@ Hand-run sync has three wrong-base traps:
   a conflict chain in the gr515502 case, silently wrong if no conflict
   had surfaced. `git reset --hard <branch>` puts the tree on the tip;
   a fresh tree has no commits of its own to replay.
+- **A stack base that already merged is not a base.** Before proposing a
+  fix lands on a branch — cherry-pick onto it, a PR against it, stacking
+  a builder or agent on it — run `git merge-base --is-ancestor <branch>
+  origin/main`; when the base is already in main, land on `main`
+  instead, or the next release ships without the fix (gr518102).
+  `scripts/rebase` (non-default base) and `scripts/take-agent` warn on
+  this.
 
 `scripts/ship` and `scripts/rebase` are quiet by default (gr497896): the
 full transcript goes to a `/tmp` log whose path is printed, and the terminal

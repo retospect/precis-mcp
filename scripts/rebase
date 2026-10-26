@@ -43,6 +43,21 @@ for arg in "$@"; do
     esac
 done
 
+# A non-default base already merged into origin/main is the wrong stack
+# target (gr518102): the rebase succeeds yet leaves the branch behind
+# trunk. Checked before the quiet re-exec so the warning also reaches the
+# terminal in quiet mode.
+case "$BASE_REF" in
+    main|master|origin/main|origin/master) ;;
+    *)
+        if git rev-parse --verify -q "origin/main^{commit}" >/dev/null 2>&1 \
+            && git rev-parse --verify -q "${BASE_REF}^{commit}" >/dev/null 2>&1 \
+            && git merge-base --is-ancestor "$BASE_REF" origin/main 2>/dev/null; then
+            printf '\033[33m! %s is already in origin/main — rebase onto origin/main instead.\033[0m\n' \
+                "$BASE_REF" >&2
+        fi ;;
+esac
+
 # Quiet mode (gr497896): re-exec the real run with its output in a /tmp log,
 # then print the epilogue (lib/quiet-log.sh). The inner run keeps this
 # script's exit code and does the work; INT/TERM/HUP forward to it.

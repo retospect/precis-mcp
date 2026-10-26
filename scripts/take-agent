@@ -29,6 +29,13 @@ branch="$(git -C "$tree" symbolic-ref --short HEAD)"
 [[ "$branch" == worktree-agent-* ]] || die "$branch is not an agent branch (worktree-agent-*) — refusing to touch another session's tree"
 ours="$(git symbolic-ref --short HEAD)"
 [[ "$ours" != main ]] || die "refusing to take agent work onto main"
+# Stacking on a branch that already landed puts the work on a stale base
+# (gr518102) — warn; the ff below still lands it, so this only advises.
+if [[ "$ours" != "master" ]] \
+    && git rev-parse --verify -q "origin/main^{commit}" >/dev/null 2>&1 \
+    && git merge-base --is-ancestor "$ours" origin/main 2>/dev/null; then
+    echo "! $ours is already in origin/main — take onto a fresh tree cut from origin/main instead" >&2
+fi
 task_helper="$top/scripts/hooks/subagent-task-state.py"
 if [[ -f "$task_helper" ]]; then
     if task_id="$(python3 "$task_helper" check "$tree" 2>/dev/null)"; then

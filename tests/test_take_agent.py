@@ -111,6 +111,32 @@ def test_take_fast_forwards_agent_into_branch(
     assert record.read_text(encoding="utf-8") == f"worktree-agent-x {tip}\n"
 
 
+def test_merged_caller_branch_warns(
+    repo: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """A caller branch already in origin/main is a stale stack base
+    (gr518102): the take still lands, but the script says so."""
+    primary, feat, env = repo
+    _g(primary, env, "fetch", ".", "main:refs/remotes/origin/main")
+    _agent(primary, env, "agent-m")
+    r = _take(feat, env, "agent-m")
+    assert r.returncode == 0, r.stderr
+    assert "already in origin/main" in r.stderr
+    assert (feat / "agent-m.txt").exists()
+
+
+def test_unmerged_caller_branch_no_warning(
+    repo: tuple[Path, Path, dict[str, str]],
+) -> None:
+    primary, feat, env = repo
+    _g(primary, env, "fetch", ".", "main:refs/remotes/origin/main")
+    _commit(feat, env, "mine.txt")  # feat ahead of origin/main: not merged
+    _agent(primary, env, "agent-n")
+    r = _take(feat, env, "agent-n")
+    assert r.returncode == 0, r.stderr
+    assert "already in origin/main" not in r.stderr
+
+
 def test_non_agent_tree_is_refused(repo: tuple[Path, Path, dict[str, str]]) -> None:
     primary, feat, env = repo
     other = primary / ".claude" / "worktrees" / "someone"
