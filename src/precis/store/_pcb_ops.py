@@ -968,9 +968,10 @@ class PcbMixin:
                 # A non-bool flag is a bug, not a value: 'false' (string)
                 # is truthy and would read as POLARIZED while
                 # `unpolarized_refdes`'s `is False` never opts it out.
-                raise ValueError(
+                raise BadInput(
                     f"pcb component {refdes!r}: 'polarized' is a boolean "
-                    f"flag (true/false), got {c.get('polarized')!r}"
+                    f"flag (true/false), got {c.get('polarized')!r}",
+                    next="polarized: true|false (JSON bool, not a string)",
                 )
             if refdes in inst_by_refdes:
                 comp_id = inst_by_refdes[refdes][1]
@@ -1224,10 +1225,10 @@ class PcbMixin:
             ).fetchall()
         }
         comp_ids = [int(r[17]) for r in stored.values()]
-        pins: dict[int, dict[str, tuple[list[Any], dict[str, Any], Any, Any]]] = {}
+        pins: dict[int, dict[str, tuple[list[Any], dict[str, Any], Any, Any, Any]]] = {}
         if comp_ids:
-            for comp_id, name, tags, description, note, meta in conn.execute(
-                "SELECT component_id, name, tags, description, note, meta "
+            for comp_id, name, pad, tags, description, note, meta in conn.execute(
+                "SELECT component_id, name, pad, tags, description, note, meta "
                 "FROM pcb_pins "
                 "WHERE component_id = ANY(%s) AND retired_at IS NULL",
                 (comp_ids,),
@@ -1237,6 +1238,7 @@ class PcbMixin:
                     dict(meta or {}),
                     description,
                     note,
+                    pad,
                 )
         for c in reused:
             refdes = str(c.get("refdes") or "").strip()
@@ -1289,7 +1291,7 @@ class PcbMixin:
         c: dict[str, Any],
         refdes: str,
         row: Any,
-        pins: dict[str, tuple[list[Any], dict[str, Any], Any, Any]],
+        pins: dict[str, tuple[list[Any], dict[str, Any], Any, Any, Any]],
     ) -> list[str]:
         """The authored keys of ``c`` that a re-put just dropped for the
         EXISTING ``refdes`` — i.e. present in the batch dict AND different
@@ -1298,7 +1300,7 @@ class PcbMixin:
         :meth:`_pcb_patch_net`: a key the batch omits is never reported,
         and one re-supplying the stored value reports nothing either —
         only a real authored change counts as "ignored". ``pins`` is the
-        stored ``{name: (tags, meta, description, note)}`` map AFTER
+        stored ``{name: (tags, meta, description, note, pad)}`` map AFTER
         declare-all completion AND the connections loop (so a name this
         batch's own connection just minted is present): a pin named in
         the batch that the component still lacks reports
@@ -1306,9 +1308,12 @@ class PcbMixin:
         annotates real pins only); one carrying semantics
         (:func:`precis.pcb.rows.pin_tags_meta` folds them the same way
         the insert path does) that differ from the stored pin reports
-        ``"pins"`` once; and a changed ``description``/``note`` reports
+        ``"pins"`` once; a changed ``description``/``note`` reports
         ``"pins (description/note)"`` — also not ``op='pins'``-editable,
-        so it reads insert-only."""
+        so it reads insert-only; and an authored ``pad`` that differs
+        from the stored binding reports ``"pins (pad)"`` — no op sets a
+        pin's pad (``op='pins'`` refuses it, and a connection mints the
+        pin padless), so it is insert-only too."""
         i_meta = row[7] or {}
         c_meta = row[16] or {}
         fields: list[str] = []
@@ -1374,6 +1379,7 @@ class PcbMixin:
             new_name = False
             dropped = False
             prose = False
+            pad_diff = False
             for p in c["pins"]:
                 if not isinstance(p, dict):
                     continue
@@ -1389,17 +1395,27 @@ class PcbMixin:
                     # reply can name the step that DOES create it.
                     new_name = True
                     continue
+                st_tags, st_meta, st_desc, st_note, st_pad = stored_pin
+                # An authored pad that disagrees with the stored binding
+                # is dropped like every other pin field — a pin's pad is
+                # written once at insert and NO op revisits it (op='pins'
+                # refuses 'pad'; a connection mints the pin padless, so
+                # any authored pad on this batch's own minted pin reads as
+                # a difference here). Batch-internal pad conflicts are
+                # refused by validate_pin_declarations before this point.
+                if (
+                    p.get("pad") is not None
+                    and str(p["pad"]).strip() != str(st_pad or "").strip()
+                ):
+                    pad_diff = True
                 # A bare {name, pad} re-declaration wires connections; it
                 # asserts no semantics, so it is not a dropped change.
-                # Pad conflicts on an existing name are refused by
-                # validate_pin_declarations before this point anyway.
                 if set(p) - {"name", "pad"}:
                     try:
                         tags, meta = pcb_rows.pin_tags_meta(p, refdes, declared)
                     except ValueError:
                         dropped = True
                         break
-                    st_tags, st_meta, st_desc, st_note = stored_pin
                     if sorted(map(str, tags)) != sorted(
                         map(str, st_tags)
                     ) or not _json_same(meta, st_meta):
@@ -1418,6 +1434,8 @@ class PcbMixin:
                 fields.append("pins (description/note)")
             if new_name:
                 fields.append("pins (new name)")
+            if pad_diff:
+                fields.append("pins (pad)")
         return fields
 
     def _pcb_reconcile_part_edges(

@@ -4449,6 +4449,12 @@ def test_reput_reports_ignored_fields_per_existing_component(pcb, store):
     line = next(l for l in block.splitlines() if l.startswith("- U1:"))
     for field in ("x", "y", "rot", "layer", "fixed"):
         assert field in line, line
+    # U1 is already placed, so its pose diff is phrased as a reversion
+    # note, not a bare move instruction.
+    assert (
+        "x, y, rot → stored placement kept; op='move' only to revert "
+        "to the authored seed" in line
+    )
     assert "op='move'" in line
     assert "op='pins'" in line
     assert "label" in line and "pin_decls" in line and "insert-only" in line
@@ -4548,6 +4554,63 @@ def test_reput_pin_minted_by_this_batchs_own_connection_is_not_dropped(pcb, stor
     assert "op='pins'" in line
 
 
+def test_reput_reports_an_authored_pad_the_stored_pin_does_not_carry(pcb, store):
+    """A re-put declaring ``pins:[{name, pad}]`` where the pin exists but
+    holds a different binding drops the pad — it is written once at
+    insert and NO op revisits it (op='pins' refuses 'pad'; a connection
+    mints the pin padless). The reply must name it ``pins (pad)`` and
+    say so, rather than report nothing. Covers both a pin this batch's
+    own connection just minted (pad NULL) and one bound at insert."""
+    pcb.put(
+        id="reput-pad",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "x": 1.0,
+                    "y": 1.0,
+                    "pins": [{"name": "A", "pad": "1"}],
+                }
+            ]
+        },
+    )
+    resp = pcb.put(
+        id="reput-pad",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "pins": [
+                        {"name": "A", "pad": "9"},
+                        {"name": "RST", "pad": "7"},
+                    ],
+                }
+            ],
+            "connections": [{"net": "N1", "refdes": "U1", "pin": "RST"}],
+        },
+    )
+    line = next(
+        l for l in resp.body.splitlines() if l.startswith("- U1:") and "pins" in l
+    )
+    assert "pins (pad)" in line
+    assert "no op sets a pin's pad" in line
+    assert "pins (new name)" not in line
+    # The pads really did not land: RST was minted padless and A kept '1'.
+    ref = store.get_ref(kind="pcb", id="reput-pad")
+    pins = {
+        p["pin"]: p["pad"] for p in store.pcb_instance_neighbors(ref.id, "U1")["pins"]
+    }
+    assert pins == {"A": "1", "RST": None}
+    # Re-supplying the STORED bindings is idempotent — nothing reported.
+    resp2 = pcb.put(
+        id="reput-pad",
+        args={
+            "components": [{"refdes": "U1", "pins": [{"name": "A", "pad": "1"}]}],
+        },
+    )
+    assert "## ignored on re-put" not in resp2.body
+
+
 def test_reput_applies_a_changed_polarized_flag(pcb, store):
     """gr520373 ruling: ``polarized`` is component metadata, not geometry
     -- a re-put that changes it on an existing refdes APPLIES it (the
@@ -4607,7 +4670,7 @@ def test_put_refuses_a_non_boolean_polarized(pcb):
     as POLARIZED while `unpolarized_refdes`'s ``is False`` never opts it
     out -- a non-bool value refuses the whole put instead of storing a
     corrupt declaration."""
-    with pytest.raises(BadInput, match="polarized"):
+    with pytest.raises(BadInput, match="polarized") as exc_info:
         pcb.put(
             id="reput-polstr",
             args={
@@ -4620,3 +4683,4 @@ def test_put_refuses_a_non_boolean_polarized(pcb):
                 ]
             },
         )
+    assert exc_info.value.next == "polarized: true|false (JSON bool, not a string)"

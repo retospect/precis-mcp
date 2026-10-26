@@ -390,7 +390,18 @@ _REPUT_FIELD_OPS: dict[str, str] = {
     "pins (new name)": (
         "connect to it in a re-put to mint it, then op='pins' for semantics"
     ),
+    # And no op binds a pin's PAD after insert either: op='pins' refuses
+    # 'pad' ("pad binding stays with the canonical-pad rule") and a
+    # connection mints the pin padless, so an authored pad that differs
+    # from the stored binding has no edit to name.
+    "pins (pad)": "insert-only — no op sets a pin's pad",
 }
+#: A re-put's POSE fields — on a part that is already placed their diff
+#: is a stored-vs-authored-seed note (r2 ruling on gr520369's report:
+#: "stored placement kept; op='move' only to revert to the authored
+#: seed"), not an instruction to move. ``layer``/``fixed`` stay ordinary
+#: ``op='move'`` edits — they are not the placement.
+_REPUT_POSE_FIELDS = frozenset({"x", "y", "rot"})
 _MOVES_EXAMPLE = (
     "args={'op':'move','moves':[{'refdes':'U1','x':10,'y':5},"
     "{'refdes':'U2','x':20,'y':5,'rot':90}]}"
@@ -1339,7 +1350,10 @@ class PcbHandler(Handler):
             if mapped
             else ""
         )
-        ignored_block = self._reput_ignored_block(ignored)
+        ignored_block = self._reput_ignored_block(
+            ignored,
+            {i["refdes"] for i in design["instances"] if i["x"] is not None},
+        )
         applied_block = self._reput_applied_block(applied)
         head = (
             f"# {slug} — {verb}: +{counts['components']} part(s), "
@@ -1369,21 +1383,29 @@ class PcbHandler(Handler):
         )
 
     @staticmethod
-    def _reput_ignored_block(ignored: dict[str, list[str]]) -> str:
+    def _reput_ignored_block(ignored: dict[str, list[str]], placed: set[str]) -> str:
         """gr520369 — the "your authored changes were dropped" section of a
         batch-put reply: one line per EXISTING refdes naming every field the
         create-or-extend contract ignored and the op that applies each
         (:data:`_REPUT_FIELD_OPS`; anything else is insert-only). Empty
-        when no authored field differed — an idempotent re-put stays quiet."""
+        when no authored field differed — an idempotent re-put stays quiet.
+        ``placed`` is the refdes set already holding a stored pose: for
+        them the ``x``/``y``/``rot`` diff is phrased as "stored placement
+        kept; op='move' only to revert to the authored seed" so the line
+        does not read as an instruction to move the part back."""
         if not ignored:
             return ""
         lines = []
         for refdes in sorted(ignored):
             by_op: dict[str, list[str]] = {}
             for field in ignored[refdes]:
-                by_op.setdefault(_REPUT_FIELD_OPS.get(field, "insert-only"), []).append(
-                    field
-                )
+                op = _REPUT_FIELD_OPS.get(field, "insert-only")
+                if refdes in placed and field in _REPUT_POSE_FIELDS:
+                    op = (
+                        "stored placement kept; op='move' only to revert "
+                        "to the authored seed"
+                    )
+                by_op.setdefault(op, []).append(field)
             lines.append(
                 f"- {refdes}: "
                 + "; ".join(
