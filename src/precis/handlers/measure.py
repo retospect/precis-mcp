@@ -132,6 +132,9 @@ class MeasureHandler(Handler):
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "search": ArgsSpec({"paper", "serves"}),
     }
+    #: ``edit(id=[...])`` repeats the same edit per id in one transaction
+    #: (gr514482); the method itself keeps its scalar-id signature.
+    edit_id_list: ClassVar[str] = "repeat"
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="measure",

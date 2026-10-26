@@ -303,6 +303,11 @@ class PlaintextHandler(Handler):
     #: are real file lines.
     supports_find_in_ref = True
 
+    #: ``edit(id=[...])`` refuses (gr514482): file-backed kinds can't
+    #: honour the one-transaction rollback claim, so a list is refused
+    #: naming the per-id call. Inherited by markdown/tex.
+    edit_id_list: ClassVar[str] = "refuse"
+
     # ── parser hooks (overrideable by subclasses) ─────────────────
     def _parse_blocks(self, content: str) -> list[PlaintextChunk]:
         """Parse ``content`` into a list of paragraph-shaped blocks.

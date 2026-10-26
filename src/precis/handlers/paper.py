@@ -475,6 +475,11 @@ class PaperHandler(Handler):
     #: concrete id scans the paper's chunks; ``id=None`` keeps its older
     #: meaning (delegate to ``search``).
     supports_find_in_ref = True
+
+    #: ``edit(id=[...])`` stays inside the handler — its own list door is
+    #: the ``args={'clear_stamp': …}`` cohort re-arm; other field edits
+    #: refuse a list there with a named per-id call.
+    edit_id_list: ClassVar[str] = "native"
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         # ``get`` reads the ``view='ops'`` slice window only
         # (gr517423: :meth:`_render_ops_view`); the deprecated

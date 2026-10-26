@@ -543,6 +543,136 @@ class SearchMixin(RuntimeShape):
                 ) from exc
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
+    def _handle_query_hit(
+        self,
+        q: Any,
+        *,
+        kinds: Any = None,
+        include_ref_ids: Any = None,
+        exclude_ref_ids: Any = None,
+    ) -> SearchHit | None:
+        """The pinned identity hit for a ``q`` that *is* a universal handle.
+
+        A handle names one object, so its card ranks ahead of every
+        lexical/semantic hit (``pinned`` — gr517806): a record handle
+        (``me5``, ``gr123``) yields its ref card; a chunk handle
+        (``dc4417588``, ``pc10`` — every chunk code the registry knows)
+        yields the containing ref's card showing that chunk's text, so
+        the caller sees the doc the chunk lives in rather than a bare
+        chunk row. For the status kinds (``_PARENT_HANDLE_KINDS``) the
+        card is the parent ref (``gr123``, not ``gc456``), matching the
+        parent-handle collapse the source search already applies.
+
+        ``kinds`` is the caller's requested kind set — an explicit
+        ``kind='paper,patent'`` search must not pin a todo card as row 1
+        of a paper-scoped result. ``None`` means unrestricted (the
+        wildcard/omitted-``kind`` request — a handle is an address, so a
+        wildcard search pins any kind, including kinds like draft that
+        opt out of the fan-out itself). ``include_ref_ids`` /
+        ``exclude_ref_ids`` (the cited=/uncited= facets) still apply to
+        the pinned hit — an identity card that
+        the caller's own filter excludes must not surface. Tag and
+        folder filters do NOT apply: a handle is an address, not a
+        match. ``None`` for anything that is not a well-formed handle,
+        resolves to nothing (unknown/retired), or has no store —
+        the caller falls through to the ordinary fan-out untouched.
+        """
+        store = self.hub.store
+        if not isinstance(q, str) or store is None:
+            return None
+        text = q.strip()
+        if not handle_registry.is_well_formed(text):
+            return None
+        resolved = store.resolve_handle(text)
+        if resolved is None:
+            return None
+        if kinds is not None and resolved.kind not in kinds:
+            return None
+        if exclude_ref_ids and resolved.ref_id in exclude_ref_ids:
+            return None
+        if include_ref_ids is not None and resolved.ref_id not in include_ref_ids:
+            return None
+        ref = store.fetch_refs_by_ids([resolved.ref_id]).get(resolved.ref_id)
+        if resolved.kind == "profile":
+            # owner-private rows (gr490266): another owner's profile
+            # pins nothing — the card would be an existence oracle plus
+            # a title leak. Same filter the tags-only sweep applies.
+            from precis import profiles
+
+            if ref is None or not profiles.visible_to(
+                ref, profiles.acting_login(store)
+            ):
+                return None
+        title = (getattr(ref, "title", "") or "").strip() if ref is not None else ""
+        retraction = getattr(ref, "retraction_status", None)
+        handle = handle_registry.normalize(text)
+        excerpt = 200
+
+        if resolved.chunk_id is None:
+            # Record handle → the ref card. Dedupe keyed like the ref-level
+            # producers (kind:slug / kind:#id) so a lexical hit on the same
+            # ref folds into this card instead of duplicating it.
+            dedupe = (
+                f"{resolved.kind}:{resolved.public_id}"
+                if resolved.public_id != str(resolved.ref_id)
+                else f"{resolved.kind}:#{resolved.ref_id}"
+            )
+            preview = title if len(title) <= excerpt else title[: excerpt - 1] + "…"
+            return SearchHit(
+                score=1.0,
+                kind=resolved.kind,
+                title=title,
+                preview=preview,
+                slug=(
+                    resolved.public_id
+                    if resolved.public_id != str(resolved.ref_id)
+                    else None
+                ),
+                ref_id=resolved.ref_id,
+                dedupe_key=dedupe,
+                uhandle=handle,
+                pinned=True,
+                retraction_status=retraction,
+            )
+
+        # Chunk handle → the containing ref's card at that chunk.
+        chunk = store.drafts.universal_chunk(text) or {}
+        body = str(chunk.get("text") or "").strip()
+        preview = body if len(body) <= excerpt else body[: excerpt - 1] + "…"
+        is_parent_kind = resolved.kind in _PARENT_HANDLE_KINDS
+        slug = (
+            resolved.public_id if resolved.public_id != str(resolved.ref_id) else None
+        )
+        return SearchHit(
+            score=1.0,
+            kind=resolved.kind,
+            title=title,
+            preview=preview,
+            # The TOON table renders only the summary cell — put the
+            # ref's name + the chunk's own text there so the pinned row
+            # shows what the handle pointed at, not just the doc title.
+            summary=(
+                f"{title} — {preview}"
+                if title and preview
+                else (title or preview) or None
+            ),
+            slug=slug,
+            pos=None if is_parent_kind else resolved.chunk_ord,
+            ref_id=resolved.ref_id,
+            dedupe_key=(
+                f"{resolved.kind}:{resolved.ref_id}"
+                if is_parent_kind
+                else f"{resolved.kind}:{resolved.public_id}~{resolved.chunk_ord}"
+            ),
+            uhandle=(
+                handle_registry.try_format(resolved.kind, resolved.ref_id)
+                if is_parent_kind
+                else handle
+            ),
+            pinned=True,
+            retraction_status=retraction,
+        )
+
     def _dispatch_source_search(
         self, kind: str | None, args: dict[str, Any]
     ) -> Response:
@@ -638,8 +768,22 @@ class SearchMixin(RuntimeShape):
             include_ref_ids=include_ref_ids,
         )
         hits: list[SearchHit] = []
+        handle_hit = self._handle_query_hit(
+            q,
+            kinds=(None if expanded.strip().lower() in _CROSS_KIND_ALIASES else kinds),
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+        )
+        if handle_hit is not None:
+            hits.append(handle_hit)
         seen_parents: set[int] = set()
+        pinned_ref_id = handle_hit.ref_id if handle_hit is not None else None
         for block, ref, score in results:
+            # The pinned identity card already covers this ref — its own
+            # chunk hit must not list it again (nor push the page to
+            # top_k+1 rows).
+            if pinned_ref_id is not None and ref.id == pinned_ref_id:
+                continue
             for hit in block_hits_to_search_hits([(block, ref, score)], kind=ref.kind):
                 # gr495382: gripe/todo/quest comments are chunks, but the
                 # thing to act on is the parent (gr123), not the chunk handle
@@ -976,7 +1120,10 @@ class SearchMixin(RuntimeShape):
         # every single-kind call raised, misleading anyone using it as
         # a health check. (``streams`` gets an entry for every kind
         # that *ran*, even with zero hits, so empty ``streams`` +
-        # non-empty ``errored`` ⇒ nothing ran successfully.)
+        # non-empty ``errored`` ⇒ nothing ran successfully.) This check
+        # runs BEFORE the pinned identity card is inserted — a lone pin
+        # on top of an all-errored fan-out must not read as a normal
+        # result.
         if errored and not streams:
             names = ", ".join(
                 f"{k} ({type(e).__name__})" for k, e in sorted(errored.items())
@@ -985,6 +1132,20 @@ class SearchMixin(RuntimeShape):
                 f"cross-kind search failed in every kind tried — {names} "
                 "(see server log)"
             ) from next(iter(errored.values()))
+
+        # gr517806: a ``q`` that is itself a universal handle resolves to
+        # a pinned identity card ahead of every lexical/semantic hit —
+        # a chunk handle shows its containing ref's card with that
+        # chunk's text. The cited=/uncited= ref-id facets still apply to
+        # it; tags=/folder= do not (a handle is an address, not a match).
+        handle_hit = self._handle_query_hit(
+            q,
+            kinds=None if kind.strip().lower() in _CROSS_KIND_ALIASES else kinds,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+        )
+        if handle_hit is not None:
+            streams.insert(0, [handle_hit])
 
         # gr513663: when at least half the fanned kinds timed out or
         # errored, a confident "# N matches" (or worse, "no matches")

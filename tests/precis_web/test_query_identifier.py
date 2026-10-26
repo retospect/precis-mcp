@@ -83,6 +83,25 @@ def test_resolver_rejects_non_identifiers(store, q):
     assert resolve_query_identifier(store, q).ref is None
 
 
+def test_resolver_chunk_handle_redirects(store):
+    """gr517806: a chunk handle names one chunk, not a ref — the resolver
+    hands back a ``/c/<handle>`` redirect so the kind's reader lands at
+    that chunk; unknown and retired chunks fall through to text search."""
+    from precis.store import ChunkInsert
+
+    ref = store.insert_ref(kind="paper", slug="chunked23", title="chunked", meta={})
+    rows = store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="quoted body")])
+    cid = int(rows[0].id)
+    m = resolve_query_identifier(store, f" pc{cid} ")
+    assert m.ref is None
+    assert m.redirect == f"/c/pc{cid}"
+    m2 = resolve_query_identifier(store, "pc99999999")
+    assert m2.ref is None and m2.redirect is None and not m2.ambiguous_ref_ids
+    store.retire_ref(ref.id)
+    m3 = resolve_query_identifier(store, f"pc{cid}")
+    assert m3.ref is None and m3.redirect is None
+
+
 def test_resolver_cite_key(store):
     """gr514062: a bare cite_key — the slug the paper is cited by —
     resolves through its ref_identifiers row, like a handle or DOI."""

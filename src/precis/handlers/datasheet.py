@@ -93,6 +93,11 @@ class DatasheetHandler(PaperHandler):
         "drop a PDF into `<inbox>/datasheets/` to add one"
     )
 
+    #: Overrides paper's ``'native'``: this edit's scalar-id signature
+    #: forwards bibliographic fields to the paper editor, which refuses a
+    #: list — so the dispatcher's per-id repeat applies instead.
+    edit_id_list: ClassVar[str] = "repeat"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="datasheet",
         title="Datasheet",

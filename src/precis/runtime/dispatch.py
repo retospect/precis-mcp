@@ -2408,6 +2408,18 @@ class DispatchMixin(RuntimeShape):
 
         try:
             handler = self._resolve_handler(resolved_kind, verb, raw_id=args.get("id"))
+            # gr514482: edit(id=[...]) is uniform across kinds — the
+            # handler's ``edit_id_list`` picks native / repeat / refuse;
+            # a list never silently edits only the first id.
+            if verb == "edit" and isinstance(args.get("id"), list):
+                response = self._dispatch_edit_id_list(
+                    handler,
+                    kind=resolved_kind,
+                    kind_was_defaulted=kind_was_defaulted,
+                    args=args,
+                )
+                if response is not None:
+                    return response
             return self._invoke_handler(
                 handler,
                 verb,
@@ -2785,6 +2797,125 @@ class DispatchMixin(RuntimeShape):
                 next=next_hints[0] if len(next_hints) == 1 else next_hints,
             )
         return handler
+
+    def _dispatch_edit_id_list(
+        self,
+        handler: Handler,
+        *,
+        kind: str,
+        kind_was_defaulted: bool,
+        args: dict[str, Any],
+    ) -> Response | None:
+        """Route ``edit(id=[...])`` by the handler's ``edit_id_list``.
+
+        ``'native'`` returns ``None`` so the caller falls through to
+        :meth:`_invoke_handler` and the handler's own edit takes the
+        list (the ``batch_ids`` numeric-ref kinds; paper's
+        ``args={'clear_stamp': …}`` door). ``'repeat'`` replays the same
+        edit once per id inside ``store.atomic()`` — the full per-id
+        invocation path (reason=/trust/kwargs gates included), one
+        transaction, the first error rolling every id back — for kinds
+        whose edit is store-backed but scalar-id and cheap enough for
+        one transaction. Anything else (``'refuse'``, or ``None`` for a
+        kind that hasn't declared yet) refuses with a ``BadInput``
+        naming the per-id call: file-backed kinds
+        (plaintext/markdown/tex/python) can't honour the rollback claim,
+        structure's per-design relax is too long for one transaction,
+        and a list must never silently edit only the first id
+        (gr514482).
+        """
+        if handler.edit_id_list == "native":
+            return None
+        ids: list[Any] = list(args["id"])
+        first = next((i for i in ids if i is not None), "<id>")
+        if handler.edit_id_list != "repeat":
+            raise BadInput(
+                f"edit(kind={kind!r}) takes one id= at a time, not a list",
+                next=(f"call edit once per id: edit(kind={kind!r}, id={first!r}, ...)"),
+            )
+        if self.store is None:
+            raise Unsupported(
+                f"edit(kind={kind!r}, id=[...]) needs a store for its "
+                "one-transaction batch",
+                next=(f"call edit once per id: edit(kind={kind!r}, id={first!r}, ...)"),
+            )
+        from precis.handlers._numeric_ref import BATCH_ID_CAP
+
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next=f"edit(kind={kind!r}, id=<id>, ...)",
+            )
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+            )
+
+        # De-dupe, order kept — ``_coerce_ids`` does the same for the
+        # native batch kinds. The key is the resolved pk wherever one
+        # decodes (int, decimal string, ``kind:N``, universal handle —
+        # ``handle_registry.parse`` folds the prefix's case, so 'dc5' ==
+        # 'DC5' and 'fo5' == 5): two spellings of one ref must collapse,
+        # or the second pass re-edits it — a find-replace that already
+        # applied fails and rolls the whole batch back.
+        def _dedupe_key(raw: Any) -> tuple[str, Any]:
+            if isinstance(raw, bool):
+                return ("s", raw)
+            if isinstance(raw, int):
+                return ("pk", raw)
+            if isinstance(raw, str):
+                s = raw.strip()
+                parsed = handle_registry.parse(s)
+                if parsed is not None:
+                    return ("pk", parsed[2])
+                head, _, tail = s.partition(":")
+                if head and tail.isdigit():
+                    return ("pk", int(tail))
+                if s.isdigit():
+                    return ("pk", int(s))
+            return ("s", raw)
+
+        uniq: list[Any] = []
+        seen: set[tuple[str, Any]] = set()
+        for raw in ids:
+            key = _dedupe_key(raw)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(raw)
+        lines: list[str] = []
+        with self.store.atomic():
+            for raw in uniq:
+                label = (
+                    handle_registry.try_format(kind, raw)
+                    if isinstance(raw, int) and not isinstance(raw, bool)
+                    else None
+                ) or str(raw)
+                per_args = copy.deepcopy(args)
+                per_args["id"] = raw
+                try:
+                    resp = self._invoke_handler(
+                        handler,
+                        "edit",
+                        kind=kind,
+                        kind_was_defaulted=kind_was_defaulted,
+                        args=per_args,
+                    )
+                except PrecisError as exc:
+                    exc.cause = (
+                        f"{label}: {exc.cause} — batch of {len(uniq)} "
+                        "rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+                # Full per-id body, not just its first line: structure's
+                # preflight caveats and a draft dry_run's diff live in
+                # later lines (gripe:285774 — caveats are never dropped
+                # silently).
+                lines.append(f"{label}:\n{textwrap.indent(resp.body or 'done', '  ')}")
+        head = f"edited {len(uniq)} {kind} in one transaction"
+        return Response(body=head + "\n" + "\n".join(lines))
 
     def _invoke_handler(
         self,

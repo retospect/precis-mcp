@@ -385,6 +385,8 @@ class MemoryHandler(NumericRefHandler):
     # get/tag/link take id=[...]; get is overridden below to render each memory in
     # full (memories are short — the point of batching them is to read them).
     batch_ids: ClassVar[bool] = True
+    #: ``edit(id=[...])`` runs the handler's own one-transaction batch.
+    edit_id_list: ClassVar[str] = "native"
 
     # Carry call-local title/argument/index fields through the base's create
     # plumbing; shared handler instances must never stage request state.

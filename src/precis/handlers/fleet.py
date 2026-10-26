@@ -80,6 +80,10 @@ def _is_live(m: dict[str, Any], now: datetime) -> bool:
 class FleetHandler(NumericRefHandler):
     #: machine-collected host reports, not agent prose: the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
+    #: ``edit(id=[...])`` repeats the same edit per id in one transaction
+    #: (gr514482); the method itself keeps its scalar-id signature.
+    edit_id_list: ClassVar[str] = "repeat"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="fleet",
         title="Agent fleet",

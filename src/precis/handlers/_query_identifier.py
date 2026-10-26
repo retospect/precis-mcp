@@ -9,6 +9,11 @@ this lookup does not need):
 - a lone record handle (``pa5``, ``td12``, ``gr462129`` …, any prefix the
   :mod:`~precis.utils.handle_registry` knows) resolves to its live ref,
   following a merge/supersede tombstone;
+- a lone *chunk* handle (``dc4417588``, ``pc10`` …, every chunk code the
+  registry knows) resolves to a ``/c/<handle>`` redirect — the one
+  short-link route that lands every chunk kind in its reader at that
+  chunk (draft anchored at ``?focus=``, paper at its PDF page —
+  gr517806);
 - a lone cite_key (``jaroenram19`` — a slug-kind ref's own identifier
   row, the handle the operator actually cites by) resolves to its ref
   (gr514062);
@@ -55,6 +60,10 @@ class QueryIdentifierMatch:
     ref: Any | None = None
     #: Ref ids of an ambiguous DOI prefix (``ref`` is ``None``).
     ambiguous_ref_ids: list[int] = field(default_factory=list)
+    #: A ready-made landing URL when the query names something with no
+    #: single-ref page — today only a chunk handle, which the
+    #: ``/c/<handle>`` resolver lands in the kind's reader at that chunk.
+    redirect: str | None = None
 
 
 def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
@@ -68,12 +77,18 @@ def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
 
     parsed = handle_registry.parse(text)
     if parsed is not None:
-        kind, is_chunk, _pk = parsed
-        if is_chunk:
-            return QueryIdentifierMatch()
+        _kind, is_chunk, _pk = parsed
         resolved = store.resolve_handle(text)
         if resolved is None:
             return QueryIdentifierMatch()
+        if is_chunk:
+            # A chunk handle names one chunk, not a ref — the ``/c``
+            # short-link resolver lands every chunk kind in its reader
+            # at that chunk. Resolve first so an unknown / retired chunk
+            # still falls through to the text search instead of a 404.
+            return QueryIdentifierMatch(
+                redirect=f"/c/{handle_registry.normalize(text)}"
+            )
         try:
             ref = resolve_live_slug_ref(
                 store,

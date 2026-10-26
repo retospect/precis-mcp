@@ -360,6 +360,10 @@ class SeHandler(Handler):
         "edit": ArgsSpec({"ops", "prefunits"}),
     }
 
+    #: ``edit(id=[...])`` repeats the same ops per id in one transaction
+    #: (gr514482) — every write goes through the store, so atomic() covers it.
+    edit_id_list: ClassVar[str] = "repeat"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="se",
         plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for

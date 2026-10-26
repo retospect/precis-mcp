@@ -833,10 +833,10 @@ async def index(
     viewer = _user.login if _user is not None else None
     q = (q or "").strip()
 
-    # A query that *is* an identifier (a lone record handle, or a DOI whole
-    # or as a unique prefix) goes straight to that item's page instead of
-    # the chunk search. Ambiguous prefixes / no match fall through. Other
-    # facets (k/state/folder/…) never affect resolution.
+    # A query that *is* an identifier (a lone record or chunk handle, or a
+    # DOI whole or as a unique prefix) goes straight to that item's page
+    # instead of the chunk search. Ambiguous prefixes / no match fall
+    # through. Other facets (k/state/folder/…) never affect resolution.
     ambiguous_ids: list[int] = []
     if q:
         # A pasted URL/site path that this UI actually serves goes
@@ -848,6 +848,11 @@ async def index(
             return RedirectResponse(url=target, status_code=302)
         hit = await asyncio.to_thread(resolve_query_identifier, store, q)
         ambiguous_ids = hit.ambiguous_ref_ids
+        # A chunk handle (``dc4417588``, ``pc10`` …) has no ref page of
+        # its own — ``/c/<handle>`` lands it in the kind's reader at that
+        # chunk (gr517806).
+        if hit.redirect is not None:
+            return RedirectResponse(url=hit.redirect, status_code=302)
         # A profile handle never redirects (gr490266): its reader is closed
         # (owners use /account), and a 302 only for a live id is an
         # existence oracle on other owners' profiles.

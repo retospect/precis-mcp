@@ -18,6 +18,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.store import ChunkInsert
 from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
@@ -128,6 +129,47 @@ def test_retired_handle_redirects_to_live_successor(
         "/drive", params={"q": _handle("paper", old)}, follow_redirects=False
     )
     _assert_redirect(resp, "paper", live)
+
+
+def _chunk(store: Any, kind: str, slug: str, text: str) -> tuple[int, int]:
+    ref = store.insert_ref(kind=kind, slug=slug, title=f"{kind} {slug}", meta={})
+    rows = store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text)])
+    return int(ref.id), int(rows[0].id)
+
+
+def test_draft_chunk_handle_redirects_through_c_resolver(
+    store: Any, drive_client: TestClient
+) -> None:
+    """gr517806: ``/drive?q=dc<N>`` bounces through ``/c/<handle>`` — the
+    one resolver that lands every chunk kind in its reader at the chunk
+    (a draft chunk → ``/smartdraft/<slug>?focus=dc<N>``)."""
+    _, cid = _chunk(store, "draft", "deepd1", "anchored paragraph")
+    resp = drive_client.get("/drive", params={"q": f"dc{cid}"}, follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"/c/dc{cid}"
+    land = drive_client.get(f"/c/dc{cid}", follow_redirects=False)
+    assert land.status_code == 303
+    assert land.headers["location"] == f"/smartdraft/deepd1?focus=dc{cid}"
+
+
+def test_paper_chunk_handle_redirects_through_c_resolver(
+    store: Any, drive_client: TestClient
+) -> None:
+    """The same for a non-draft chunk code (``pc<N>``) — generalised over
+    every chunk prefix the registry knows, not only ``dc``."""
+    _, cid = _chunk(store, "paper", "deepp1", "quoted passage")
+    resp = drive_client.get("/drive", params={"q": f"pc{cid}"}, follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"/c/pc{cid}"
+
+
+def test_unknown_chunk_handle_falls_through_to_search(
+    drive_client: TestClient,
+) -> None:
+    resp = drive_client.get(
+        "/drive", params={"q": "dc99999999"}, follow_redirects=False
+    )
+    _assert_search_page(resp)
 
 
 def test_whole_doi_redirects(store: Any, drive_client: TestClient) -> None:

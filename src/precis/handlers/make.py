@@ -59,6 +59,10 @@ def _is_make_chunk_handle(s: str) -> bool:
 
 
 class MakeHandler(Handler):
+    #: ``edit(id=[...])`` repeats the same edit per id in one transaction
+    #: (gr514482); the method itself keeps its scalar-id signature.
+    edit_id_list: ClassVar[str] = "repeat"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="make",
         title="Make",

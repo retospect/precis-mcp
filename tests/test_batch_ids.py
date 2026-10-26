@@ -11,16 +11,29 @@ to every id, again all-or-nothing (gr514482). All share the
 ``_coerce_ids`` normaliser and its cap; every other verb and every other
 kind still refuses a list with a ``BadInput`` naming the batch form,
 never an ``Internal``.
+
+``edit(id=[...])`` is uniform across every kind (gr514482): the
+handler's ``edit_id_list`` picks ``'native'`` (its own list-taking
+batch), ``'repeat'`` (the dispatcher replays the scalar edit per id
+inside ``store.atomic()`` — store-backed kinds whose per-id edit fits
+one transaction) or ``'refuse'`` — refusal with a ``BadInput`` naming
+the per-id call (file-backed kinds that can't honour the rollback
+claim; structure, whose per-design in-process relax is too long for
+one transaction). ``None`` means undeclared and fails the parity test
+below, so a new kind that adds ``edit`` must pick a policy.
 """
 
 from __future__ import annotations
 
+import inspect
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from precis.alerts import STATE_OPEN, STATE_RESOLVED, raise_alert
-from precis.dispatch import Hub
+from precis.config import PrecisConfig
+from precis.dispatch import Hub, boot
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._numeric_ref import BATCH_ID_CAP
 from precis.handlers.alert import AlertHandler
@@ -593,3 +606,177 @@ def test_store_atomic_joins_self_connected_ops(store: Store) -> None:
         store.set_prio(ref.id, 4)
     fetched = store.get_ref(kind="memory", id=ref.id)
     assert fetched is not None and fetched.prio == 4
+
+
+# ── edit id=[...] uniform across kinds (gr514482) ──────────────────
+
+
+def test_edit_id_list_every_handler_declares_a_mode(store: Store) -> None:
+    """Parity guard over the real registry: every kind exposing ``edit``
+    declares ``edit_id_list`` explicitly — ``'native'`` / ``'repeat'`` /
+    ``'refuse'``. ``None`` means undeclared and fails here, so a new
+    kind that adds ``edit`` must pick a policy. ``'native'`` means its
+    ``edit`` really declares a list-taking ``id``; ``'repeat'`` and
+    ``'refuse'`` mean it doesn't (the dispatcher owns the list path)."""
+    full = boot(store=store)
+    problems: list[str] = []
+    for kind in sorted(full.handlers):
+        handler = full.handlers[kind]
+        mode = handler.edit_id_list
+        if mode not in (None, "native", "repeat", "refuse"):
+            problems.append(f"{kind}: edit_id_list={mode!r}")
+            continue
+        if not handler.spec.supports("edit"):
+            continue
+        if mode is None:
+            problems.append(f"{kind}: exposes edit but edit_id_list is unset")
+            continue
+        param = inspect.signature(handler.edit).parameters.get("id")
+        ann = str(param.annotation) if param is not None else "<no id param>"
+        if mode == "native" and "list" not in ann:
+            problems.append(f"{kind}: 'native' but edit(id: {ann})")
+        if mode in ("repeat", "refuse") and "list" in ann:
+            problems.append(f"{kind}: {mode!r} but edit(id: {ann})")
+    assert not problems, problems
+
+
+def test_edit_id_list_repeat_folder_through_dispatch(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A scalar-id kind whose edit is store-backed gets the dispatcher's
+    per-id repeat — one transaction, per-id outcome lines."""
+    a = store.insert_ref(kind="folder", slug=None, title="fold a", meta={})
+    b = store.insert_ref(kind="folder", slug=None, title="fold b", meta={})
+    body = runtime_with_store.dispatch(
+        "edit", {"kind": "folder", "id": [a.id, b.id], "text": "renamed"}
+    )
+    assert "[error" not in body
+    assert body.startswith("edited 2 folder in one transaction")
+    for rid in (a.id, b.id):
+        ref = store.get_ref(kind="folder", id=rid)
+        assert ref is not None and ref.title == "renamed"
+
+
+def test_edit_id_list_repeat_rolls_back_all(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """One bad id aborts the whole repeat — the surviving id keeps its
+    old title (the per-id writes joined ``store.atomic()``)."""
+    a = store.insert_ref(kind="folder", slug=None, title="keep a", meta={})
+    missing = a.id + 100_000
+    body = runtime_with_store.dispatch(
+        "edit", {"kind": "folder", "id": [a.id, missing], "text": "renamed"}
+    )
+    assert "[error" in body
+    assert "rolled back, nothing applied" in body
+    ref = store.get_ref(kind="folder", id=a.id)
+    assert ref is not None and ref.title == "keep a"
+
+
+def test_edit_id_list_repeat_keeps_full_per_id_body(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A draft ``dry_run`` list edit shows each chunk's proposed diff —
+    the diff lives below the reply's first line, which is all the old
+    one-line-per-id shape kept (gripe:285774)."""
+    proj = store.insert_ref(kind="todo", slug=None, title="proj", meta={}).id
+    ref, _title = store.drafts.create_draft(name="dryb", title="T", project_ref_id=proj)
+    a, b = (
+        store.drafts.add_chunks(
+            ref_id=ref.id, chunk_kind="paragraph", text=t, at={"last": True}
+        )[0].dc
+        for t in ("alpha body", "beta body")
+    )
+    body = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "draft",
+            "id": [a, b],
+            "find": "body",
+            "text": "corpse",
+            "dry_run": True,
+        },
+    )
+    assert "[error" not in body
+    assert body.startswith("edited 2 draft in one transaction")
+    assert f"{a}:" in body and f"{b}:" in body
+    assert "-alpha body" in body and "+alpha corpse" in body
+    assert "-beta body" in body and "+beta corpse" in body
+
+
+def test_edit_id_list_repeat_dedupes_and_caps(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    a = store.insert_ref(kind="folder", slug=None, title="fold d", meta={})
+    body = runtime_with_store.dispatch(
+        "edit", {"kind": "folder", "id": [a.id, a.id], "text": "once"}
+    )
+    assert "[error" not in body
+    assert body.startswith("edited 1 folder in one transaction")
+    body = runtime_with_store.dispatch(
+        "edit",
+        {"kind": "folder", "id": list(range(BATCH_ID_CAP + 1)), "text": "x"},
+    )
+    assert "[error" in body
+    assert f"at most {BATCH_ID_CAP}" in body
+
+
+def test_edit_id_list_repeat_dedupes_spelling_variants(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``fo5`` == ``FO5`` == ``5`` == ``'5'`` == ``'folder:5'`` — every
+    spelling of one ref collapses to a single edit; a second find-
+    replace pass would fail and roll the whole batch back."""
+    a = store.insert_ref(kind="folder", slug=None, title="fold v", meta={})
+    ids: list[Any] = [
+        a.id,
+        str(a.id),
+        f"fo{a.id}",
+        f"FO{a.id}",
+        f"folder:{a.id}",
+    ]
+    body = runtime_with_store.dispatch(
+        "edit", {"kind": "folder", "id": ids, "text": "once"}
+    )
+    assert "[error" not in body
+    assert body.startswith("edited 1 folder in one transaction")
+
+
+def test_edit_id_list_refused_on_structure(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr514482 ruling: structure's per-design in-process relax is too
+    long for one transaction, so a list refuses naming the per-id call —
+    before any handler work runs."""
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "edit", {"kind": "structure", "id": ["d1", "d2"]}
+    )
+    assert is_error
+    assert "one id= at a time" in body
+    assert "call edit once per id" in body
+
+
+def test_edit_id_list_refused_on_file_kind(store: Store, tmp_path: Path) -> None:
+    """File-backed kinds can't honour the rollback claim, so their
+    ``edit_id_list='refuse'`` turns a list into a BadInput naming the
+    per-id call — never a silent first-ref edit."""
+    runtime = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(store=store, precis_root=str(tmp_path))
+    )
+    (tmp_path / "a.md").write_text("# A\n", encoding="utf-8")
+    (tmp_path / "b.md").write_text("# B\n", encoding="utf-8")
+    body, is_error = runtime.dispatch_with_status(
+        "edit",
+        {
+            "kind": "markdown",
+            "id": ["a", "b"],
+            "mode": "find-replace",
+            "find": "A",
+            "text": "X",
+        },
+    )
+    assert is_error
+    assert "one id= at a time" in body
+    assert "call edit once per id" in body
+    assert "edit(kind='markdown', id='a'" in body
+    assert "# A" in (tmp_path / "a.md").read_text(encoding="utf-8")

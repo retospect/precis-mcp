@@ -33,6 +33,10 @@ class DiagramHandler(Handler):
     #: Set by each concrete subclass — the source language + per-kind config.
     LANG: ClassVar[DiagramLang]
 
+    #: ``edit(id=[...])`` repeats the same edit per id in one transaction
+    #: (gr514482) — every write goes through ``self.store``.
+    edit_id_list: ClassVar[str] = "repeat"
+
     def __init__(self, *, hub: Any) -> None:
         from precis.dispatch import InitError
 

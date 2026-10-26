@@ -945,6 +945,11 @@ class StructureHandler(Handler):
 
     #: atomic coordinates / CIF / edit ops: the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
+    #: ``edit(id=[...])`` refuses (gr514482): each id runs its ops plus
+    #: the in-process preflight relax, and one transaction across every
+    #: design's relax is too long — call edit once per design id.
+    edit_id_list: ClassVar[str] = "refuse"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="structure",
         title="Structure",

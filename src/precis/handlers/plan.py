@@ -78,6 +78,10 @@ def _is_plan_chunk_handle(s: str) -> bool:
 
 
 class PlanHandler(Handler):
+    #: ``edit(id=[...])`` repeats the same edit per id in one transaction
+    #: (gr514482); the method itself keeps its scalar-id signature.
+    edit_id_list: ClassVar[str] = "repeat"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="plan",
         title="Plan",

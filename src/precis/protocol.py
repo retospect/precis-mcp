@@ -381,6 +381,30 @@ class Handler(ABC):
     #: the dispatcher's generic part-of ``under`` facet leaves them alone.
     owns_under: ClassVar[bool] = False
 
+    #: How ``edit(kind=K, id=[...])`` behaves on this kind (gr514482 —
+    #: list-id handling is uniform at the dispatch layer, like
+    #: get/tag/link already were). Every edit-capable kind declares one
+    #: of the three values explicitly — the registry parity test fails a
+    #: kind that exposes ``edit`` and leaves this unset:
+    #:   ``'native'`` — the handler's own ``edit`` takes the list (the
+    #:     ``batch_ids`` numeric-ref kinds, paper's clear_stamp door);
+    #:     the dispatcher passes it through untouched.
+    #:   ``'repeat'`` — the dispatcher applies the same edit once per id
+    #:     inside ``store.atomic()`` (one transaction, first error rolls
+    #:     every id back). Only for kinds whose edit writes through the
+    #:     store AND whose per-id edit is cheap enough for one
+    #:     transaction.
+    #:   ``'refuse'`` — the dispatcher refuses the list with a
+    #:     ``BadInput`` naming the per-id call: file-backed kinds
+    #:     (plaintext/markdown/tex/python) can't honour the rollback
+    #:     claim, and structure's per-design in-process relax is too
+    #:     long for one transaction.
+    #:   ``None`` — undeclared: refused like ``'refuse'`` at runtime (a
+    #:     list is never silently applied to only the first id), but the
+    #:     parity test flags it — a kind that exposes ``edit`` must pick
+    #:     a policy.
+    edit_id_list: ClassVar[str | None] = None
+
     #: ``get(kind=K, id=N, q='…')`` is find-in-ref on this kind (gr486840):
     #: the dispatcher routes ``q`` to :meth:`find_in_ref` before ``get``
     #: runs, so it can't be silently dropped by a subclass's ``view=``

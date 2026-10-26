@@ -57,6 +57,10 @@ from precis.utils.title_views import title_md, title_plain
 
 
 class PresentationHandler(Handler):
+    #: ``edit(id=[...])`` repeats the same edit per id in one transaction
+    #: (gr514482); the method itself keeps its scalar-id signature.
+    edit_id_list: ClassVar[str] = "repeat"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pres",
         title="Presentation",

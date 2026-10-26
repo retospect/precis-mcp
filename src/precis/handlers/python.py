@@ -274,6 +274,9 @@ class PythonHandler(Handler):
 
     #: edits source files on disk; fixtures may hold credential-like strings: the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
+    #: ``edit(id=[...])`` refuses (gr514482): file-backed kinds can't
+    #: honour the one-transaction rollback claim.
+    edit_id_list: ClassVar[str] = "refuse"
     #: ``args=`` keys one verb reads (dispatch gates callers on the
     #: derived ``ARGS_KEYS``; test_dispatch_args_keys pins the pair).
     ARGS: ClassVar[dict[str, ArgsSpec]] = {

@@ -234,6 +234,8 @@ class FindingHandler(NumericRefHandler):
     #: relations route per-source-hub, so a fan-in batch would have to
     #: resolve which sources are claim hubs anyway.
     batch_ids: ClassVar[bool] = True
+    #: ``edit(id=[...])`` runs the handler's own one-transaction batch.
+    edit_id_list: ClassVar[str] = "native"
 
     # ──────────────────────────────────────────────────────────────────
     # put — create a new finding (idempotent on deterministic pub_id)

@@ -624,6 +624,10 @@ class QuestHandler(NumericRefHandler):
         "get": ArgsSpec({"budget", "has_fulltext"}),
     }
 
+    #: ``edit(id=[...])`` repeats the same edit per id in one transaction
+    #: (gr514482); the method itself keeps its scalar-id signature.
+    edit_id_list: ClassVar[str] = "repeat"
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="quest",
         title="Quest",

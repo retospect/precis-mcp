@@ -358,6 +358,8 @@ class GripeHandler(NumericRefHandler):
     sense: ClassVar[str] = "gripe"
     #: get/tag/link take ``id=[...]`` (summary get, one-transaction tag/fan-in link).
     batch_ids: ClassVar[bool] = True
+    #: ``edit(id=[...])`` runs the handler's own one-transaction batch.
+    edit_id_list: ClassVar[str] = "native"
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
     # The everyday gripe search is "what's still open?" — so default the
