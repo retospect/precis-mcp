@@ -72,9 +72,13 @@ ops=[
  {"op": "add_port", "block": "seat_bolt", "name": "thread"},
  {"op": "connect", "a": "seat_bolt.thread", "b": "post.top",
   "joint": {"class": "rigid", "mechanism": "screw",
-            "params": {"fit_class": "house", "thread_strategy": "nut-trap"}}},
+            "params": {"fit_class": "house", "thread_strategy": "nut-trap",
+                       "leaf": "join/service/threaded/nut-trap"}}},
 ]
 ```
+
+`params.leaf` is the design-tree leaf the joint realises — the walk that
+picks it is `precis-se-dtree-help` §1.
 
 **The connect names the screw**, not the two members. A connect between
 `saddle.rail` and `post.top` says they are joined; it does not say by
@@ -110,15 +114,16 @@ nothing", the `rot` is backwards.
 
 This is the decision the pass will not make for you on a printed member,
 because all four answers are reasonable and they produce different parts.
-Set `params.thread_strategy`:
+Each answer is a leaf under `join/service/threaded/` — set
+`params.thread_strategy` and `params.leaf` to the matching leaf:
 
-| strategy | stamps | use it when |
-|---|---|---|
-| `nut` | clearance through; the nut is a part | both sides reachable — strongest, no thread in plastic |
-| `nut-trap` | hex pocket + clearance | one-sided, and you want a steel thread |
-| `insert` | stepped pocket for a heat-set brass insert | the joint gets undone repeatedly |
-| `thread-forming` | a core hole the pointy screw deforms | cheap, few cycles, no second part |
-| `tapped` | `d − P` tapping drill | **metal.** In plastic it is an explicit, short-lived choice |
+| strategy | leaf | stamps | use it when |
+|---|---|---|---|
+| `nut` | `join/service/threaded/through-bolt-nut` | clearance through; the nut is a part | both sides reachable — strongest, no thread in plastic |
+| `nut-trap` | `join/service/threaded/nut-trap` | hex pocket + clearance | one-sided, and you want a steel thread |
+| `insert` | `join/service/threaded/heat-set-insert` | stepped pocket for a heat-set brass insert | the joint gets undone repeatedly |
+| `thread-forming` | `join/service/threaded/thread-forming` | a core hole the pointy screw deforms | cheap, few cycles, no second part |
+| `tapped` | `join/service/threaded/clearance-tapped` | `d − P` tapping drill | **metal.** In plastic it is an explicit, short-lived choice |
 
 Metal members default to `tapped` and need no param. A printed member
 with no strategy gets **no far-end hole at all** and a
@@ -137,16 +142,18 @@ in a 6 mm plate is too big a thing to do to a part unasked.
 
 ### the numbers, if you want to know where they come from
 
-- **Core hole** (thread-forming): 0.8 × the screw's major Ø for rigid
-  thermoplastics, 0.75 × for tough ones, never below the thread's own
-  minor Ø (ISO 1478 for ST sizes, d − P for metric). A house rule in the
-  middle of what the thread-forming screw makers publish — there is no
-  ISO for this.
-- **Engagement**: ≥ 2×D in thermoplastic against 1×D in steel. Too thin a
-  member gets a `thread_engagement` finding.
-- **Boss**: ≥ 2×D of material around a formed thread. Reported in prose,
-  not stamped — this pass subtracts holes, it never adds material, so
-  modelling the boss is yours.
+The design numbers — core-hole ratio for a formed thread, engagement by
+far material, boss diameter around it — are the leaf's `rules`, each with
+its source and confidence:
+
+```python
+search(kind="finding", tags=["SPACE:design-conventions"],
+       q="join/service/threaded/thread-forming")
+get(kind="finding", id=<handle>, extent="fisheye+1hop")  # rules via part-of
+```
+
+What the *pass* does with them:
+
 - **Printed holes come out undersize**, so every stamped hole in an
   `fdm/*` member is modelled ~0.2–0.35 mm oversize; the hole's `source`
   line says by how much and how confident that is. Calibrate your printer
@@ -158,6 +165,10 @@ in a 6 mm plate is too big a thing to do to a part unasked.
   no tap runs in it. Where that would reach the member's far face, the
   hole comes back through instead and the feature's `source` says so —
   a house rule, not a standard.
+- Too thin a member for the engagement gets a `thread_engagement`
+  finding. The boss around a formed thread is reported in prose, not
+  stamped — this pass subtracts holes, it never adds material, so
+  modelling the boss is yours.
 
 ## 4 — read `view='fasten'`
 

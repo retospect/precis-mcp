@@ -525,6 +525,7 @@ script (gr514049).
 
 ## See also
 
+- [[precis-se-dtree-help]] — the design knowledge graph: walk a function tree to a leaf, axis + principles sweeps
 - [[precis-se-check-help]] — checking views: stability, drc, fasten, clearance, surface_deviation
 - [[precis-se-atomic-help]] — atomic-mode block trees over real chemistry
 - [[precis-se-chain-help]] — nucleic-acid helices, strands, domains, pairing

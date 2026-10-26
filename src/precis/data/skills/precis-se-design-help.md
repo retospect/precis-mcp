@@ -30,13 +30,20 @@ supports and external loads via `set_load`, and the requirement measures
 must-holds — default `gauge`, `soft` for preferences). This design is
 already checkable: run `validate` and `freedom` on the box.
 
-## 1 — interfaces before interiors
+## 1 — interfaces before interiors: walk each one to a leaf
 
 Ports + joints + measures on the boundary are the contract every later
 solver treats as boundary conditions. Declare mating ports, joint
 classes, connect objectives (`force`/`torque`/`duty`/`cycles`) before
-any interior exists. `view='interview'` elicits what's missing — run it
-whenever unsure what to declare next.
+any interior exists.
+
+Each connect also names a *function* — hold still (`join`), turn
+(`rotate`), reopen (`close`), position (`locate`), carry a bought part
+(`mount`). Walk that function's design tree down to a **leaf** and
+record it in `joint.params.leaf`, plus a `decision` note with the
+answers that chose it: `precis-se-dtree-help` has the walk, the axis and
+principles sweeps, and the shallow-node fallback. `view='interview'`
+elicits what's missing — run it whenever unsure what to declare next.
 
 ## 2 — check at every rung
 
@@ -86,37 +93,37 @@ Process DRC is unshipped: mode is intent, not yet checked.
   weights (mass via `bom`, compliance, member count, cost). **Weights
   are human-set; a solver never tunes its own objective.**
 
-## Worked example — a wheel, integral vs laced
+## Worked example — a boom arm, solid vs triangulated
 
 Shape a design the way §0–§3 above build one: a root block
-carrying `set_load` and the requirement measures, `frame`/`wheel`/`drive`
+carrying `set_load` and the requirement measures, `mount`/`boom`/`head`
 subassemblies as its children (`add_block parent=…`), and parts below
-those. Model the `wheel` child as one integral cylinder envelope — tire,
-rim, spokes and hub abstracted into a single block:
+those. Model the `boom` child as one integral cylinder envelope — spar,
+tie and pivots abstracted into a single block:
 
 ```python
-edit(kind="se", id="switch1", ops=[
-  {"op": "add_block", "name": "wheel", "parent": "frame",
-   "envelope": "cyl:r0.28h0.03"},
-  {"op": "set_mode", "block": "wheel", "mode": "fdm/pla"},
+edit(kind="se", id="lamp1", ops=[
+  {"op": "add_block", "name": "boom", "parent": "mount",
+   "envelope": "cyl:r0.012h0.4"},
+  {"op": "set_mode", "block": "boom", "mode": "fdm/pla"},
 ])
 ```
 
 Read it with `view='tree'`, then `view='stability'` to see what that
 abstraction costs you: the stability view reports **no axial members —
 stability analysis does not apply**, and warns that loads on sibling
-blocks (a saddle, say) sit outside the analysed subgraph, so they were
-not checked.
+blocks (the lamp head, say) sit outside the analysed subgraph, so they
+were not checked.
 
 That is the lesson, not a defect. The stability view models *pin-ended
-axial members only* — an integral wheel has none, so there is nothing for
-Maxwell/Calladine to count. Lacing the wheel instead (a `hub`, a `rim`,
-and `connect` members with `class: "axial"`, `compression_capacity: 0`
+axial members only* — an integral boom has none, so there is nothing for
+Maxwell/Calladine to count. Splitting the boom instead (a `spar`, and a
+`tie` `connect` member with `class: "axial"`, `compression_capacity: 0`
 and a declared `preload`/`free_length`/`rate` triple) is what makes the
-view informative — and what it then reports is non-obvious: a purely
-radially-laced wheel comes back **first-order mobile**, because radial
-spokes transmit no crank torque.
+view informative — and what it then reports is non-obvious: a spar hung
+off one `revolute` pin with no tie comes back **first-order mobile**,
+because a pin carries no moment and nothing triangulates it.
 
 `rigid` connects merge their blocks into one rigid body in that view, so a
-rim built as a ring of rigid blocks is analysed as a body; only the axial
-members and rigid groups are modelled (`revolute` etc. are not).
+spar built as a chain of rigid blocks is analysed as a body; only the
+axial members and rigid groups are modelled (`revolute` etc. are not).

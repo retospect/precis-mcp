@@ -1,0 +1,237 @@
+# Eval cases for precis-se-dtree-help (schema: precis.skill_eval.cases).
+# gr516957 S3: an agent designs with no hints; pass means it found the
+# tree, declared a leaf per connect, and left axis + principles notes —
+# no retention or galvanic sweep skipped.
+skill: precis-se-dtree-help
+cases:
+  - id: lidded-hinged-box
+    skills: [precis-se-dtree-help, precis-se-design-help]
+    prompt: |
+      In se, design a small lidded box: a shell, a lid that hinges open,
+      and something that holds it shut. Declare the joints and record the
+      mechanism decisions the way the design workflow wants them.
+    expect:
+      calls:
+        # finds the goal roots / leaves in the design graph
+        - verb: search
+          kind: finding
+          args: {tags: ['re:SPACE:design-conventions']}
+        # leaf declared on a connect (close/hinged/living-hinge or a
+        # close/latches or close/snap-and-friction leaf for the shut side)
+        - verb: edit
+          kind: se
+          args: {ops: 're:(?is).*leaf.*(close|rotate|join)/.*'}
+        # one decision note per connect — the walk's answers, axes included
+        - verb: edit
+          kind: se
+          args: {ops: 're:(?is).*add_note.*decision.*'}
+        # principles note per part — DOF retention both directions
+        - verb: edit
+          kind: se
+          args: {ops: 're:(?is).*principles.*(dof|retention).*'}
+    forbid:
+      calls:
+        - {verb: put, kind: finding}   # walking the graph, not authoring it
+        - {verb: put, kind: gripe}     # the landed leaf is deep — no gap
+        - {verb: search, kind: web}    # the tree answers before the web does
+    fake:
+      calls:
+        - verb: search
+          kind: finding
+          args:
+            tags: ['SPACE:design-conventions', 'dt:goal']
+            q: close
+        - verb: get
+          kind: finding
+          args: {id: fi701, extent: 'fisheye+1hop'}
+        - verb: search
+          kind: finding
+          args:
+            tags: ['SPACE:design-conventions']
+            q: close/hinged/living-hinge
+        - verb: get
+          kind: finding
+          args: {id: fi744, extent: 'fisheye+1hop'}
+        - verb: edit
+          kind: se
+          args:
+            id: box1
+            ops:
+              - {op: connect, a: 'lid.web', b: 'shell.top',
+                 joint: {class: compliant, mechanism: integral,
+                         params: {leaf: 'close/hinged/living-hinge'}}}
+              - op: add_note
+                name: decision-lid-hinge
+                kind: decision
+                about: ['lid', 'shell']
+                text: >-
+                  walked close -> hinged -> living-hinge
+                  (separable=service, hinged_or_removable=hinged,
+                  process=FDM); rejected pin-hinge (a loose pin is a
+                  second part and a bearing face to retain) and bayonet;
+                  axes: locking n/a (no fastener to loosen), captive
+                  relevant (the hinge is the capture), corrosion n/a
+                  (all ASA), bearing-face n/a (a compliant web, not a
+                  bearing), material-direction relevant (hinge line laid
+                  across the build grain).
+        - verb: edit
+          kind: se
+          args:
+            id: box1
+            ops:
+              - op: add_note
+                name: principles-lid
+                kind: decision
+                about: ['lid']
+                text: >-
+                  retention-all-dof: lid rx free and intended (the hinge);
+                  ry/rz stopped by the hinge web both ways; tx/ty stopped
+                  by the web both ways; tz stopped by the latch closed and
+                  by the rim open. fail-safe: a lost latch drops the lid
+                  shut, not open. load path: lid -> hinge web -> shell ->
+                  feet. insertion path: lid and shell print as one body —
+                  no insertion step; the catch is print-in-place.
+      record: null
+      answer: >
+        Searched the SPACE:design-conventions goals for `close`, walked
+        asks (separable=service, hinged) down to `close/hinged/living-hinge`,
+        set it on the connect's `joint.params.leaf`, and recorded the
+        decision note with the axis answers plus a `principles-lid` note
+        covering all six DOF both directions, fail-safe, load and
+        insertion paths.
+
+  - id: bracket-on-plate
+    skills: [precis-se-dtree-help, precis-se-fasten-help]
+    prompt: |
+      In se, bolt an aluminium bracket to a steel plate so it can come off
+      again for service — one side reachable. Declare the joint and record
+      the mechanism decision properly.
+    expect:
+      calls:
+        - verb: search
+          kind: finding
+          args: {tags: ['re:SPACE:design-conventions']}
+        - verb: edit
+          kind: se
+          args: {ops: 're:(?is).*leaf.*join/service/threaded/.*'}
+        - verb: edit
+          kind: se
+          args: {ops: 're:(?is).*add_note.*decision.*'}
+        - verb: edit
+          kind: se
+          args: {ops: 're:(?is).*(galvanic|corrosion).*'}
+        - verb: edit
+          kind: se
+          args: {ops: 're:(?is).*principles.*(dof|retention).*'}
+    forbid:
+      calls:
+        - {verb: put, kind: finding}
+        - {verb: put, kind: gripe}      # join/service/threaded is deep
+        - {verb: search, kind: web}
+    fake:
+      calls:
+        - verb: search
+          kind: finding
+          args:
+            tags: ['SPACE:design-conventions', 'dt:goal']
+            q: join
+        - verb: search
+          kind: finding
+          args:
+            tags: ['SPACE:design-conventions']
+            q: join/service/threaded/clearance-tapped
+        - verb: get
+          kind: finding
+          args: {id: fi812, extent: 'fisheye+1hop'}
+        - verb: edit
+          kind: se
+          args:
+            id: bracket1
+            ops:
+              - {op: connect, a: 'bolt.thread', b: 'plate.face',
+                 joint: {class: rigid, mechanism: screw,
+                         params: {thread_strategy: tapped,
+                                  leaf: 'join/service/threaded/clearance-tapped'}}}
+              - op: add_note
+                name: decision-bracket-plate
+                kind: decision
+                about: ['bracket', 'plate']
+                text: >-
+                  walked join -> service -> threaded -> clearance-tapped
+                  (separable=service, access=one-side, far_material=steel);
+                  rejected through-bolt-nut (no back access) and
+                  thread-forming (steel plate). axes: locking relevant
+                  (spring washer plus preload), captive n/a (joint opened
+                  on the bench only), corrosion relevant — Al on steel is
+                  a galvanic pair, isolated with a washer stack and
+                  anti-seize, bearing-face relevant (head on soft Al —
+                  washer), material-direction n/a (all metal).
+        - verb: edit
+          kind: se
+          args:
+            id: bracket1
+            ops:
+              - op: add_note
+                name: principles-bracket
+                kind: decision
+                about: ['bracket']
+                text: >-
+                  retention-all-dof: all six DOF stopped by the clamped
+                  interface both directions — tz by bolt preload into the
+                  plate, xy by friction under preload plus the shoulder;
+                  a friction-only stop under vibration is why the shoulder
+                  is there. fail-safe: a loosened bolt leaves the bracket
+                  drooping on the shoulder, not falling. load path: load
+                  -> bracket arm -> shoulder -> plate. insertion path:
+                  bracket slides onto the plate face, bolts in from the
+                  open side.
+      record: null
+      answer: >
+        Walked `join` with separable=service, access=one-side to
+        `join/service/threaded/clearance-tapped`, set it as
+        `joint.params.leaf` with `thread_strategy: tapped`, recorded the
+        decision note with all five axis answers (Al-on-steel named as a
+        galvanic pair and isolated), and a `principles-bracket` note
+        covering all six DOF in both directions, fail-safe, load and
+        insertion paths.
+
+  - id: shallow-node-files-a-gap
+    prompt: |
+      In se, mount a PCB inside an enclosure on standoffs and record the
+      mechanism decision. The design tree's mount branch is shallow — do
+      whatever the workflow says to do in that case.
+    expect:
+      calls:
+        - verb: search
+          kind: finding
+          args: {tags: ['re:SPACE:design-conventions']}
+        # a walk that ends on coverage=shallow falls back to look-up and
+        # files a gap gripe naming the node
+        - verb: put
+          kind: gripe
+          args: {text: 're:(?is).*mount.*'}
+    forbid:
+      calls:
+        - {verb: put, kind: finding}    # gaps are gripes, not authored nodes
+    fake:
+      calls:
+        - verb: search
+          kind: finding
+          args:
+            tags: ['SPACE:design-conventions', 'dt:goal']
+            q: mount
+        - verb: get
+          kind: finding
+          args: {id: fi901, extent: 'fisheye+1hop'}   # mount/pcb-mount: shallow
+        - verb: put
+          kind: gripe
+          args:
+            text: >-
+              design-tree gap: mount/pcb-mount is shallow — needs standoff
+              height, screw size and keep-out rules (hit walking a board
+              mount for an enclosure)
+      record: null
+      answer: >
+        `mount/pcb-mount` resolves but carries `coverage: shallow`, so I
+        looked the standoff numbers up and filed a gap gripe naming the
+        node id, per the workflow's shallow-node fallback.
