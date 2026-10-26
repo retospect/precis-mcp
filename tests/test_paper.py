@@ -176,6 +176,20 @@ class TestResolveDoi:
         assert isinstance(hint, str)
         assert "put(kind='paper', arxiv='2401.99999')" in hint
 
+    def test_uningested_arxiv_get_names_the_ingest_call(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr518634: ``get(kind='paper', id='1412.6980', view='bibtex')``
+        on an un-ingested arXiv id retried 9x on a bare NotFound. The
+        refusal must lead to the working call — the ingest/stub mint for
+        that exact id — whatever view the caller asked for."""
+        for view in (None, "bibtex", "abstract"):
+            with pytest.raises(NotFound) as exc_info:
+                handler.get(id="1412.6980", view=view)
+            hint = exc_info.value.next
+            assert isinstance(hint, str)
+            assert "put(kind='paper', arxiv='1412.6980')" in hint, view
+
     def test_bare_digits_passthrough_to_slug_path(self, store: Store) -> None:
         """Digits look PubMed-shaped but are also the slug resolver's
         ref_id fallback — a miss must not intercept them."""

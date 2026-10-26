@@ -515,21 +515,37 @@ class FindingHandler(NumericRefHandler):
             # nothing to cite; tell it what to do instead.
             only_cited_in = missing == ["cited_in=<frontier handle, e.g. miller23a~42>"]
             if only_cited_in:
-                next_hint = (
-                    "A finding MUST cite a corpus chunk — do NOT resubmit the "
-                    "same claim without cited_in. If the source paper is in "
-                    "the corpus, pass its handle: cited_in='miller23a~42' "
-                    "(chunk) or 'miller23a' (ref-level). If it is NOT in the "
-                    "corpus yet, search(kind='paper', q='…') to find it or "
-                    "stub it (put(kind='paper', doi='…')) and cite the "
-                    "resulting chunk. If instead this is a canonicalized "
-                    "cross-paper claim grounded in specific papers, mint a "
-                    "Taproot hub: put(kind='finding', title=<claim>, "
-                    "supporters=[{'paper':'pa5','source_handle':'pc293'}]). "
-                    "If this is your own synthesis with no single source, it "
-                    "is NOT a finding — write it into the draft or record a "
-                    "memory instead."
-                )
+                # gr518635: agents retried the identical put 8x on the
+                # prose hint — lead with a copyable call carrying the
+                # caller's own claim as the probe.
+                probe = " ".join(str(title or "").split()[:10])[:80]
+                next_hint: str | list[str] = [
+                    (
+                        "a finding MUST cite a corpus chunk — do NOT resubmit "
+                        "the same put without cited_in. Find the source's "
+                        "handle first: "
+                        + (
+                            f"search(kind='paper', q={probe!r})"
+                            if probe
+                            else "search(kind='paper', q='<words from the source title>')"
+                        )
+                        + " — then cite a handle from its hits: "
+                        "cited_in='pc42' (chunk) or 'miller23a' (ref-level)"
+                    ),
+                    (
+                        "source not in the corpus yet? "
+                        "put(kind='paper', doi='10.1/x') or "
+                        "put(kind='paper', arxiv='2401.00001') mints the "
+                        "stub — cite the resulting handle once ingested"
+                    ),
+                    (
+                        "a canonical cross-paper claim mints a hub instead: "
+                        "put(kind='finding', title=<claim>, supporters="
+                        "[{'paper':'pa5','source_handle':'pc293'}]). Your "
+                        "own synthesis with no single source is not a "
+                        "finding — write it into a draft or a memory"
+                    ),
+                ]
             else:
                 next_hint = (
                     "put(kind='finding', "

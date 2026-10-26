@@ -842,15 +842,31 @@ class Tag:
         # (non-yield) whitespace tag reaches here, and legitimate labels
         # (``STATUS:open``, ``project:<slug>``) are untouched.
         if any(ch.isspace() for ch in s):
+            # Name the label the caller almost meant: fold every
+            # non-label run to '-' and lowercase (open tags normalise
+            # lowercase anyway). A Slack-mention value like
+            # ``user:Reto Stamm (<@UP4JTH873>, human)`` — pasted whole as
+            # a tag (gr518632/gr518633) — yields a copyable
+            # ``user:reto-stamm-up4jth873-human`` instead of a template
+            # the agent must edit. The slug only ever shrinks the
+            # <=200-char input, so it stays under the length cap above
+            # and carries neither whitespace nor the ``<…>`` placeholder
+            # brackets the next guard rejects.
+            slug = re.sub(r"[^A-Za-z0-9:_-]+", "-", s).strip("-:_").lower()
             raise BadInput(
                 "tag value must not contain whitespace (no spaces, tabs, or "
                 "newlines); whitespace means the value is prose, not a tag "
                 "label",
                 next=(
-                    "for prose: put(kind='memory', text='<long context>', "
-                    "link='todo:N', rel='note-for') then tag(id=N, "
-                    "add=['ask-user:<short-handle>']) - or hyphenate a "
-                    "space-free tag (e.g. 'topic:co2-capture')"
+                    (
+                        f"if it is a label: retry with the slugified form '{slug}'; "
+                        if slug
+                        else "if it is a label: hyphenate it into one "
+                        "space-free token (e.g. 'topic:co2-capture'); "
+                    )
+                    + "if it is prose: pass it as text= (put) or q= "
+                    "(search), not tags= — a tag takes a single "
+                    "space-free label"
                 ),
             )
         # Unsubstituted hint placeholder guard. `Next:` trailers advertise

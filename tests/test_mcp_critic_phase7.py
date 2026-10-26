@@ -478,6 +478,90 @@ class TestMissingKindRecentHint:
         assert "pass kind=" in out
 
 
+# ── link missing-kind refusal names the call shape (gr518636) ────
+
+
+class TestLinkMissingKind:
+    """gr518636: ``link(mode='add', rel='blocked-by')`` — no ``kind=``,
+    no ``id=``, no ``target=`` — bounced on bare "missing kind=" five
+    times in one session. The refusal must name the whole call shape
+    with the caller's ``rel=`` filled in; an id that already carries
+    its kind (handle, ``kind:id``, or a bare numeric ref id — ref ids
+    are globally unique) infers instead of refusing."""
+
+    def test_link_without_kind_names_the_call_shape(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        out = runtime.dispatch("link", {"mode": "add", "rel": "blocked-by"})
+        assert "[error:BadInput]" in out
+        assert "missing kind" in out
+        assert "link(kind=" in out
+        assert "target=" in out
+        assert "rel='blocked-by'" in out
+
+    def _todo_id(self, runtime: PrecisRuntime, text: str) -> int:
+        m = re.search(
+            r"id=(\d+)", runtime.dispatch("put", {"kind": "todo", "text": text})
+        )
+        assert m is not None
+        return int(m.group(1))
+
+    def _linked(self, runtime: PrecisRuntime, src: int, dst: int) -> bool:
+        return any(
+            link.dst_ref_id == dst
+            for link in runtime.hub.live_store.links_for(src, direction="out")
+        )
+
+    def test_link_bare_numeric_id_infers_kind(self, runtime: PrecisRuntime) -> None:
+        src = self._todo_id(runtime, "link infer src")
+        dst = self._todo_id(runtime, "link infer dst")
+        out = runtime.dispatch("link", {"id": src, "target": f"todo:{dst}"})
+        assert "missing kind" not in out
+        assert "linked" in out  # the edge actually landed
+        assert self._linked(runtime, src, dst)
+
+    def test_link_prefixed_id_self_identifies(self, runtime: PrecisRuntime) -> None:
+        src = self._todo_id(runtime, "link prefix src")
+        dst = self._todo_id(runtime, "link prefix dst")
+        out = runtime.dispatch("link", {"id": f"todo:{src}", "target": f"todo:{dst}"})
+        assert "missing kind" not in out
+        assert "linked" in out
+        assert self._linked(runtime, src, dst)
+
+    def test_link_unknown_numeric_id_still_refuses(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        dst = self._todo_id(runtime, "link unknown dst")
+        out = runtime.dispatch("link", {"id": 99999999, "target": f"todo:{dst}"})
+        assert "missing kind" in out  # nothing to infer from → unchanged refusal
+
+    def test_link_retired_id_falls_back_to_missing_kind(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        """A retired ref id is not a live ref — inference must not
+        resurrect it into a ``kind=`` the link would then attach to a
+        tombstone; it gets the same ``missing kind=`` refusal as an
+        id that never existed."""
+        src = self._todo_id(runtime, "link retired src")
+        dst = self._todo_id(runtime, "link retired dst")
+        runtime.dispatch("delete", {"kind": "todo", "id": src})
+        out = runtime.dispatch("link", {"id": src, "target": f"todo:{dst}"})
+        assert "missing kind" in out
+        assert not self._linked(runtime, src, dst)
+
+    def test_get_retired_bare_id_falls_back_to_missing_kind(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        """GRIPE_FIX ruling: the live-only inference applies to ``get``
+        too — ``_kind_of_bare_id``'s 'live ref' docstring is true for
+        every verb, so a retired bare id is a ``missing kind=``
+        refusal, not a kind inferred off a tombstone."""
+        tid = self._todo_id(runtime, "get retired todo")
+        runtime.dispatch("delete", {"kind": "todo", "id": tid})
+        out = runtime.dispatch("get", {"id": tid})
+        assert "missing kind" in out
+
+
 # ── bare numeric id infers kind; index view folds (gr492994-97) ──
 
 

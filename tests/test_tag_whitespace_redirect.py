@@ -21,6 +21,8 @@ plus the reject for a non-yield whitespace tag on each family.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from precis.dispatch import Hub
@@ -28,6 +30,7 @@ from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
+from precis.store.types import Tag
 from tests.conftest import id_of
 
 # The real prod #39254 shape: single-line prose, no newline, 120–200 chars.
@@ -143,6 +146,49 @@ def test_memory_tag_redirects_long_yield_tag(memory: MemoryHandler) -> None:
 def test_memory_put_rejects_nonyield_whitespace_tag(memory: MemoryHandler) -> None:
     with pytest.raises(BadInput, match="whitespace"):
         memory.put(text="a note", tags=["topic:carbon capture"])
+
+
+# ── gr518632: search-filter whitespace tag names a working call ──────
+
+_SLACK_TAG = "user:Reto Stamm (<@UP4JTH873>, human)"
+
+
+def test_search_filter_whitespace_tag_names_slugified_retry() -> None:
+    """gr518632: an agent pasted a whole Slack mention as a ``tags=``
+    filter on ``search(kind='memory')`` and kept resubmitting it — the
+    generic "prose is not a tag" message gave no concrete fix. The
+    refusal must carry the space-free slug of *their own value* (and the
+    prose alternative), the same ``next=`` whatever path validates."""
+    with pytest.raises(BadInput, match="whitespace") as exc:
+        Tag.normalize_filter([_SLACK_TAG], kind=None)
+    hint = str(exc.value.next)
+    assert "user:reto-stamm-up4jth873-human" in hint
+    assert "q=" in hint  # the prose alternative on the read path
+
+
+def test_search_filter_whitespace_tag_hint_slug_is_itself_valid() -> None:
+    """The suggested slug is a working call, not a trap: it must pass
+    the same ``parse_strict`` the caller's retry hits (no whitespace,
+    no placeholder brackets, under the length cap)."""
+    with pytest.raises(BadInput) as exc:
+        Tag.normalize_filter([_SLACK_TAG], kind=None)
+    m = re.search(r"'([^']+)'", str(exc.value.next))
+    assert m is not None
+    assert str(Tag.parse_strict(m.group(1))) == "user:reto-stamm-up4jth873-human"
+
+
+def test_memory_put_whitespace_tag_names_slugified_retry(
+    memory: MemoryHandler,
+) -> None:
+    """gr518633: the same Slack mention pasted as a ``tags=`` label on
+    ``put(kind='memory')`` (12 identical retries) hit the identical
+    raise — the write path's refusal must equally name the slugified
+    label and the ``text=`` alternative the prose belongs in."""
+    with pytest.raises(BadInput, match="whitespace") as exc:
+        memory.put(text="a note", tags=[_SLACK_TAG])
+    hint = str(exc.value.next)
+    assert "user:reto-stamm-up4jth873-human" in hint
+    assert "text=" in hint  # the prose alternative on the write path
 
 
 def test_memory_create_rolls_back_on_rejected_tag(memory: MemoryHandler) -> None:

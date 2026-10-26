@@ -2487,16 +2487,22 @@ class DispatchMixin(RuntimeShape):
         if kind is not None:
             return self._expand_kind_code(str(kind)), False, None
 
-        if verb == "get" and (inferred := self._kind_of_bare_id(args.get("id"))):
+        if verb in ("get", "link") and (
+            inferred := self._kind_of_bare_id(args.get("id"))
+        ):
             # gr492997: ref ids are globally unique, so a bare numeric
-            # get(id=N) names its kind unambiguously.
+            # get(id=N) names its kind unambiguously. gr518636 extends
+            # the same inference to link — a bare int id= names its
+            # (kind, ref) just as unambiguously, and a self-identifying
+            # id= (handle or 'kind:id') already routed through
+            # ``_maybe_split_prefixed_id`` before this point.
             return inferred, False, None
 
         if verb != "search":
             raise BadInput(
                 "missing kind=",
                 options=sorted(self.hub.kinds),
-                next=self._missing_kind_hints(verb),
+                next=self._missing_kind_hints(verb, args),
             )
 
         # ``search()`` without ``kind=`` defaults to cross-kind
@@ -2574,7 +2580,7 @@ class DispatchMixin(RuntimeShape):
             return None
         if self.store is None:
             return None
-        ref = self.store.fetch_refs_by_ids([raw]).get(raw)
+        ref = self.store.fetch_refs_by_ids([raw], include_deleted=False).get(raw)
         if ref is None or ref.kind not in self.hub.kinds:
             return None
         return str(ref.kind)
@@ -2613,7 +2619,7 @@ class DispatchMixin(RuntimeShape):
             "numeric get(id=N) or a handle get(id='pa123') needs no kind="
         )
 
-    def _missing_kind_hints(self, verb: str) -> list[str]:
+    def _missing_kind_hints(self, verb: str, args: dict[str, Any]) -> list[str]:
         """Recovery hints for a non-``search`` verb called without ``kind=``.
 
         Used to lead with :meth:`Store.most_recent_kind` — "you were
@@ -2632,6 +2638,18 @@ class DispatchMixin(RuntimeShape):
         per-verb help-skill pointer is still appended by
         :meth:`_maybe_add_skill_hint` after this.
         """
+        if verb == "link":
+            # gr518636: link(mode='add', rel='…') with no kind=/id=/target=
+            # bounced on bare "missing kind=" — the refusal must name the
+            # whole call shape, with the caller's own rel= filled in.
+            rel = args.get("rel")
+            rel_arg = f", rel={rel!r}" if isinstance(rel, str) and rel.strip() else ""
+            return [
+                f"link(kind='<source kind>', id=<source id>, "
+                f"target='<kind>:<identifier>'{rel_arg})",
+                "a typed id needs no kind=: link(id='td12', target='todo:34') "
+                "or id='todo:12' self-identify",
+            ]
         return ["pass kind=<one of the listed options>"]
 
     def _resolve_handler(self, kind: str, verb: str, *, raw_id: Any = None) -> Handler:

@@ -123,6 +123,22 @@ class TestPutValidation:
         msg = str(exc.value)
         assert "title" in msg and "body" in msg and "cited_in" in msg
 
+    def test_cited_in_hint_probes_with_the_callers_claim(self, store) -> None:
+        """gr518635: the spin-breaker hint must be a copyable call with
+        the caller's own values — a ``search(kind='paper', q=...)``
+        carrying their claim words — not another generic template the
+        agent re-fails on (8 identical retries in prod)."""
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as exc:
+            h.put(
+                title="amine loading raises CO2 capture in UiO-66",
+                body="claim + setup prose",
+                cited_in=None,
+            )
+        hint = str(exc.value.next)
+        assert "search(kind='paper', q='amine loading raises CO2" in hint
+        assert "cited_in='pc42'" in hint  # what the search handle plugs into
+
     def test_scope_must_be_dict(self, store) -> None:
         _seed_paper(store)
         h = _make_handler(store)
