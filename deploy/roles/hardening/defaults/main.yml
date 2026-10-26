@@ -61,10 +61,20 @@ hardening_os_update_timeout: "{{ 75 - (hardening_os_update_offset_min | int) }}m
 # they stand alone as single arguments unquoted.
 earlyoom_swap_args: >-
   -s {{ '100,100' if inventory_hostname in groups.get('compute', []) else '10,5' }}
+#
+# Host override (host_vars): earlyoom_avoid / earlyoom_prefer replace the whole
+# regex. E.g. on a host where long test runs (comm `python`) hog memory, drop
+# `precis` from earlyoom_prefer and add it to earlyoom_avoid: the precis workers
+# (comm `precis`, the console-script name) then survive and the test process is
+# culled. Trade-off: an avoided worker that itself leaks falls to the kernel OOM
+# killer instead (sshd stays OOMScoreAdjust=-1000). Keep both free of whitespace
+# (see the NB above).
+earlyoom_avoid: "^(sshd|systemd|systemd-.*|dbus-daemon|tailscaled|autossh|cron)$"
+earlyoom_prefer: "^(python[0-9.]*|precis|llama-server|llama-swap|ollama|marker.*)$"
 earlyoom_args: >-
   -r 3600 -m 10,5 {{ earlyoom_swap_args }}
-  --avoid ^(sshd|systemd|systemd-.*|dbus-daemon|tailscaled|autossh|cron)$
-  --prefer ^(python[0-9.]*|precis|llama-server|llama-swap|ollama|marker.*)$
+  --avoid {{ earlyoom_avoid }}
+  --prefer {{ earlyoom_prefer }}
 
 # Optional HARD memory ceiling on the compute worker (precis-worker.service).
 # Empty = off (the drop-in is not written). An over-tight cap OOM-kills

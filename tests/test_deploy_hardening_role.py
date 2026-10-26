@@ -431,6 +431,14 @@ def test_earlyoom_swap_leg_kept_off_compute_hosts() -> None:
     assert "-s 100,100" not in rendered
 
 
+def test_earlyoom_default_render_pins_avoid_and_prefer() -> None:
+    rendered = _earlyoom_args("node-b")
+    assert (
+        "--avoid ^(sshd|systemd|systemd-.*|dbus-daemon|tailscaled|autossh|cron)$"
+        " --prefer ^(python[0-9.]*|precis|llama-server|llama-swap|ollama|marker.*)$"
+    ) in rendered
+
+
 def test_earlyoom_tasks_carry_the_oom_guard_tag() -> None:
     tasks = [t for t in _tasks() if "earlyoom" in t["name"].lower()]
     assert len(tasks) == 3
