@@ -702,7 +702,7 @@ def test_watchdog_alerts_resolve_all_quiet_group(store) -> None:
 
 def test_layer2_flags_a_freshly_minted_enabled_spec_with_no_logs(store) -> None:
     fake = ServiceSpec(
-        name=f"fake-pass-{id(object())}",
+        name=f"fake-pass-{uuid4().hex}",
         label="Fake pass (test-only)",
         category="test",
         kind=ServiceKind.PASS,
@@ -718,7 +718,7 @@ def test_layer2_flags_a_freshly_minted_enabled_spec_with_no_logs(store) -> None:
 
 def test_layer2_ignores_a_disabled_spec(store) -> None:
     fake = ServiceSpec(
-        name=f"fake-off-{id(object())}",
+        name=f"fake-off-{uuid4().hex}",
         label="Fake disabled pass",
         category="test",
         kind=ServiceKind.PASS,
@@ -737,7 +737,7 @@ def test_layer2_ignores_an_enable_env_only_spec(store) -> None:
     OFF, mirroring ``cli/worker.py::_profile_default_on`` — it must not read
     as "intended-on but silent"."""
     fake = ServiceSpec(
-        name=f"fake-envonly-{id(object())}",
+        name=f"fake-envonly-{uuid4().hex}",
         label="Fake env-gated pass",
         category="test",
         kind=ServiceKind.PASS,
@@ -776,7 +776,7 @@ def test_layer2_idle_pass_with_only_claimed_zero_rows_is_not_flagged(store) -> N
     """A pass that ran all day with claimed=0 (healthy idle) has no
     last_ok/last_fail — but it DID log, so it must not read as "silent"."""
     fake = ServiceSpec(
-        name=f"fake-idle-{id(object())}",
+        name=f"fake-idle-{uuid4().hex}",
         label="Fake idle pass (test-only)",
         category="test",
         kind=ServiceKind.PASS,
@@ -792,7 +792,7 @@ def test_layer2_idle_pass_with_only_claimed_zero_rows_is_not_flagged(store) -> N
 def test_layer2_pass_with_zero_worker_logs_rows_is_flagged(store) -> None:
     """The complement: genuinely zero rows in the window IS silent."""
     fake = ServiceSpec(
-        name=f"fake-dark-{id(object())}",
+        name=f"fake-dark-{uuid4().hex}",
         label="Fake dark pass (test-only)",
         category="test",
         kind=ServiceKind.PASS,
@@ -810,7 +810,7 @@ def test_layer2_pass_with_zero_worker_logs_rows_is_flagged(store) -> None:
 
 def _seed_paper(store, *, hours_ago: float) -> int:
     ref = store.insert_ref(
-        kind="paper", slug=f"test-paper-{id(object())}", title="P", meta={}
+        kind="paper", slug=f"test-paper-{uuid4().hex}", title="P", meta={}
     )
     with store.pool.connection() as conn:
         conn.execute(
