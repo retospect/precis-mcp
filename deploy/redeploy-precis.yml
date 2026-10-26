@@ -1654,7 +1654,9 @@
             fi
             # The '# sha' header lands only after the rows exist — a
             # failed run never leaves a valid header over absent content,
-            # and a SKIP never rewrites the on-disk file's header.
+            # and a SKIP never rewrites the header of the on-disk file.
+            # (No apostrophes in this block: ansible splits a free-form
+            # shell on quotes and refuses an unbalanced one.)
             printf '# sha %s\n%s\n' "$sha" "$rows" > "$out" \
               || { echo "SKIP: scratch write failed"; exit 0; }
           args:
