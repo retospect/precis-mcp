@@ -163,6 +163,20 @@ def test_post_state_prepends_validated_keyword(tmp_path: Path) -> None:
     assert line.endswith("\tw1\tdone abc1234 all green")
 
 
+def test_post_state_then_separate_words(tmp_path: Path) -> None:
+    """Words after --state X (3.12 argparse hands them over as extras)."""
+    board = tmp_path / "board.log"
+    cp = _board(
+        ["post", "w1", "--state", "green", "abc1234", "all", "green"], _env(board)
+    )
+    assert cp.returncode == 0, cp.stderr
+    assert (
+        board.read_text(encoding="utf-8")
+        .rstrip("\n")
+        .endswith("\tw1\tgreen abc1234 all green")
+    )
+
+
 def test_post_rejects_an_unknown_state(tmp_path: Path) -> None:
     board = tmp_path / "board.log"
     cp = _board(["post", "w1", "--state", "bogus", "x"], _env(board))

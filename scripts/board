@@ -314,7 +314,15 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    a = parser().parse_args(argv)
+    p = parser()
+    a, extra = p.parse_known_args(argv)
+    if extra:
+        # Python 3.12 argparse closes the nargs="*" positional right after
+        # `window`, so words following `--state X` arrive as extras. Fold
+        # them into the post text; anything else (or a stray flag) is an error.
+        if a.cmd != "post" or any(w.startswith("-") for w in extra):
+            p.error("unrecognized arguments: " + " ".join(extra))
+        a.text = [*a.text, *extra]
     return int(a.fn(a))
 
 
