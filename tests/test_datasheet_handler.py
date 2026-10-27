@@ -166,8 +166,9 @@ def test_put_stub_mints_linked_bodiless_datasheet(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     """``args={'part': 'C…', 'stub': True}`` mints a bodiless datasheet
-    titled ``<mfr> <mfr_part>``, slugged ``<mfr>-<mpn>``, already linked
-    ``datasheet-of`` the part's lazy ref — no pull, no facts job."""
+    titled ``<mfr> <mfr_part>``, slugged ``<mfr>_<MPN>`` (the gr519904
+    ruling), already linked ``datasheet-of`` the part's lazy ref — no
+    pull, no facts job."""
     from precis.pcb.datasheets import datasheet_state
     from precis.utils import handle_registry
 
@@ -187,12 +188,12 @@ def test_put_stub_mints_linked_bodiless_datasheet(
     assert handle in out
 
     ref = store.get_ref(kind="datasheet", id=row["ref_id"])
-    assert ref is not None and ref.slug == "acme-acme25900"
+    assert ref is not None and ref.slug == "acme_ACME25900"
     assert (ref.meta or {})["subtype"] == "datasheet"
     assert (ref.meta or {})["vendor"] == "Acme"
 
     ds = datasheet_state(store, "C25900")["datasheet"]
-    assert ds == (ref.id, "acme-acme25900")
+    assert ds == (ref.id, "acme_ACME25900")
     # A stub queues no pull: the part carries no datasheet_pull record.
     assert datasheet_state(store, "C25900")["pull"] is None
 

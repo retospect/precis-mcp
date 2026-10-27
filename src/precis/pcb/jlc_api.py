@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis import secrets
+from precis.pcb import jlc_library
 from precis.pcb._http import (
     BULK_POLICY,
     DEFAULT_POLICY,
@@ -558,14 +559,27 @@ def reset_live_cache() -> None:
 
 
 def live_lookup(
-    store: Store, lcsc: str, *, client: JlcApiClient | None = None
+    store: Store,
+    lcsc: str,
+    *,
+    client: JlcApiClient | None = None,
+    fetch: jlc_library.FetchFn | None = None,
 ) -> dict[str, Any] | None:
     """Fetch one C-number live via :meth:`JlcApiClient.component_info` and
     upsert it into ``parts`` (the catalog-miss fallback behind
     ``get(kind='part')``). ``None`` on a real miss, negative-cached for
     :data:`_LIVE_MISS_TTL_S`. Without credentials this raises
     :class:`VendorError` -- a missing key is not a miss, so it is neither
-    cached nor reported as "no such part"."""
+    cached nor reported as "no such part".
+
+    An Open-API miss falls back to the jlcpcb.com partdetail page
+    (:func:`precis.pcb.jlc_library.partdetail_lookup`, gr519923): the API's
+    listing hides whole categories (Supercapacitors answer ``total=0`` to
+    keyword AND ``secondSortName``) while ``/partdetail/C<n>`` serves every
+    C-number's record. ``fetch`` is the test seam for that GET — injected
+    HTML instead of the wire. A partdetail *error* degrades to the miss the
+    API already answered (logged, then negative-cached like a real miss);
+    it never masks a live hit."""
     client = client or JlcApiClient(store=store)
     if not client.available:
         raise VendorError("jlcpcb", "no JLCPCB API credentials configured")
@@ -574,6 +588,11 @@ def live_lookup(
     if missed_at is not None and time.monotonic() - missed_at < _LIVE_MISS_TTL_S:
         return None
     row = client.component_info(key)
+    if row is None:
+        try:
+            row = jlc_library.partdetail_lookup(key, fetch=fetch)
+        except VendorError as exc:
+            log.info("jlc_api: partdetail fallback for %s failed: %s", key, exc)
     if row is None:
         _live_misses[key] = time.monotonic()
         return None

@@ -221,23 +221,50 @@ def _title_cite_key(title: str, year: int | None) -> str:
 #: stub's cite_key — that stem is noise, not a slug source (gr520126).
 _GENERIC_DS_STEM_RE = re.compile(r"^datasheet-[0-9a-f]{8,}$")
 
+#: A :func:`mpn_slug_hint` handle is already a formed slug — kebabing it
+#: would collapse the ``_`` and lower the MPN (gr519904).
+_FORMED_HINT_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def mpn_slug_hint(mfr: str, mpn: str) -> str | None:
+    """``<mfr>_<MPN>`` datasheet handle (Reto's gr519904 ruling —
+    ``anysolar_KXOB25-04X3F-TB``, not an author-year cite_key): the
+    manufacturer kebabed, ``_``, then the MPN verbatim apart from
+    non-``[A-Za-z0-9-]`` runs collapsed to ``-`` (case preserved).
+    ``None`` when neither half has a usable char.
+    """
+    from precis.ingest.pres import kebab_slug
+
+    vendor = kebab_slug(mfr)
+    part = re.sub(r"[^A-Za-z0-9-]+", "-", mpn).strip("-")
+    if vendor and part:
+        return f"{vendor}_{part}"
+    return vendor or part or None
+
 
 def datasheet_slug_base(
     slug_hint: str | None, stem: str, title: str | None
 ) -> str | None:
-    """The readable slug a datasheet mints — ``<vendor>-<part>`` style.
+    """The readable slug a datasheet mints — ``<vendor>_<part>`` style.
 
     Priority: the caller's hint (``datasheet_pull`` knows the part's
     mfr/mpn), then the dropped file's stem (a human-named
     ``KXOB121K04F.pdf`` is already the right handle), then the document
     title. ``None`` when nothing readable exists — the writer falls
-    back to the author+year ``cite_key_prefix``. Kebabed via
+    back to the author+year ``cite_key_prefix``. A hint that is already
+    formed (:func:`mpn_slug_hint` charset) is used verbatim so the
+    ``_`` and the MPN's case survive; the rest is kebabed via
     :func:`precis.ingest.pres.kebab_slug`, capped at 48 chars.
     """
     from precis.ingest.pres import kebab_slug
 
-    for raw in (slug_hint, stem, title or ""):
-        slug = kebab_slug(raw or "")[:48].rstrip("-")
+    hint = (slug_hint or "").strip()
+    if _FORMED_HINT_RE.fullmatch(hint):
+        slug = hint[:48].rstrip("-_")
+        if slug and not _GENERIC_DS_STEM_RE.fullmatch(slug):
+            return slug
+    for raw in (hint, stem, title or ""):
+        slug = kebab_slug(raw)[:48].rstrip("-")
         if slug and not _GENERIC_DS_STEM_RE.fullmatch(slug):
             return slug
     return None

@@ -197,6 +197,19 @@ def min_unit_price(price: Any) -> float | None:
     return min(vals) if vals else None
 
 
+def has_no_buy(params: Any) -> bool:
+    """The listing flags the part as not buyable
+    (``params._lifecycle.no_buy`` — e.g. "This product is no longer
+    manufactured."). Its price ladder is a listing placeholder, not a
+    price (gr519681): C99xxxxxxx rows repeat identical ladders across
+    unrelated ICs at stock 0, so callers must render ``—``, not the
+    number."""
+    if not isinstance(params, dict):
+        return False
+    lc = params.get("_lifecycle")
+    return isinstance(lc, dict) and bool(lc.get("no_buy"))
+
+
 _V2_COLUMNS = (
     "lcsc",
     "present",

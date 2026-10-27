@@ -26,7 +26,7 @@ from precis.ingest.db_writer import (
     resolve_slug,
     write_paper,
 )
-from precis.ingest.pipeline import datasheet_slug_base
+from precis.ingest.pipeline import datasheet_slug_base, mpn_slug_hint
 from precis.store.types import Tag
 
 # ---------------------------------------------------------------------------
@@ -197,6 +197,30 @@ class TestDatasheetSlugBase:
     def test_capped_at_48_chars(self):
         slug = datasheet_slug_base("x " * 40, "", None)
         assert slug is not None and len(slug) <= 48
+
+    def test_formed_mpn_hint_used_verbatim(self):
+        # gr519904 ruling: <mfr>_<MPN> keeps the '_' and the MPN's case
+        assert (
+            datasheet_slug_base("anysolar_KXOB25-04X3F-TB", "x", "t")
+            == "anysolar_KXOB25-04X3F-TB"
+        )
+
+
+class TestMpnSlugHint:
+    def test_vendor_kebab_mpn_case_preserved(self):
+        assert mpn_slug_hint("AnySolar", "KXOB25-04X3F-TB") == (
+            "anysolar_KXOB25-04X3F-TB"
+        )
+
+    def test_mpn_punctuation_collapses_to_dash(self):
+        assert mpn_slug_hint("TI", "BQ25504 RGTR") == "ti_BQ25504-RGTR"
+
+    def test_either_half_alone_still_hints(self):
+        assert mpn_slug_hint("", "SHT40-AD1B-R2") == "SHT40-AD1B-R2"
+        assert mpn_slug_hint("sensirion", "") == "sensirion"
+
+    def test_nothing_usable_is_none(self):
+        assert mpn_slug_hint("  ", "!!") is None
 
 
 # ---------------------------------------------------------------------------

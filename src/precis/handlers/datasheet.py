@@ -47,6 +47,7 @@ from precis.pcb.datasheets import (
     datasheet_states,
     enqueue_facts_one,
     enqueue_one,
+    pull_in_flight,
 )
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
@@ -262,13 +263,17 @@ class DatasheetHandler(PaperHandler):
                 f"part:{lcsc} already has datasheet {ds[1] or ds[0]} "
                 "(pass url= to add another)"
             )
-        else:
+        elif pull_in_flight(self.store, lcsc):
             pull = f"datasheet pull already queued for part:{lcsc}"
-        facts = (
-            "facts extraction queued"
-            if enqueue_facts_one(self.store, job, lcsc)
-            else "facts already extracted or queued"
-        )
+        else:
+            # enqueue_one swallowed a failure — don't claim a job exists
+            pull = f"datasheet pull could not be queued for part:{lcsc}"
+        facts = {
+            "queued": "facts extraction queued",
+            "in_flight": "facts extraction already queued",
+            "extracted": "facts already extracted",
+            "no_datasheet": "no datasheet to extract facts from",
+        }.get(enqueue_facts_one(self.store, job, lcsc), "facts queue failed")
         return Response(
             body=f"{pull}; {facts}. Outcome: get(kind='part', id='{lcsc}') "
             "(datasheet line; view='facts' for the fact block)."
@@ -290,7 +295,7 @@ class DatasheetHandler(PaperHandler):
         legitimate).
         """
         from precis.ingest.db_writer import resolve_slug
-        from precis.ingest.pipeline import datasheet_slug_base
+        from precis.ingest.pipeline import datasheet_slug_base, mpn_slug_hint
         from precis.utils import handle_registry
 
         part_id = self.store.ensure_part_ref(lcsc, uncatalogued_ok=True)
@@ -318,9 +323,7 @@ class DatasheetHandler(PaperHandler):
         mfr = str(cat.get("mfr") or "").strip()
         mpn = str(cat.get("mfr_part") or "").strip()
         title = " ".join(p for p in (mfr, mpn) if p) or lcsc
-        base = datasheet_slug_base(
-            " ".join(p for p in (mfr, mpn) if p) or None, "", title
-        )
+        base = datasheet_slug_base(mpn_slug_hint(mfr, mpn), "", title)
         with self.store.tx() as conn:
             slug = resolve_slug(base or f"datasheet-{lcsc.lower()}", conn=conn)
             ref = self.store.insert_ref(

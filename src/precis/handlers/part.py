@@ -472,7 +472,12 @@ class PartHandler(Handler):
         merged = near_miss and bool(live_sorted)
         shown = (live_sorted + rows) if merged else (rows or live_sorted)
         for r in shown:
-            price = min_unit_price(r.get("price"))
+            # a no-buy listing's ladder is a placeholder, not a price (gr519681)
+            price = (
+                None
+                if r.get("no_buy") or catalog.has_no_buy(r.get("params"))
+                else min_unit_price(r.get("price"))
+            )
             desc = (r["description"] or "")[:50]
             miss = r.get("soft_miss")
             if miss:

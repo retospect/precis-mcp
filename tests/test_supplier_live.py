@@ -239,8 +239,9 @@ def test_keyword_refuses_link_and_api_import_not_supported(store, supplier_wire)
 
 
 def test_datasheet_worker_reuses_guarded_download_and_independent_ingest(
-    store, monkeypatch
+    store, monkeypatch, tmp_path
 ):
+    monkeypatch.setattr(worker, "corpus_roots_from_env", lambda: (tmp_path,))
     handler = ComponentHandler(hub=Hub(store=store))
     handler.put(id="dogfood-datasheet-source", category="resistor")
     ref = store.get_ref(kind="component", id="dogfood-datasheet-source")

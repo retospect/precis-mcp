@@ -888,29 +888,34 @@ def _reset_drain_flag() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _no_live_jlcpcb_http(monkeypatch: pytest.MonkeyPatch) -> None:
-    """gr485250: the one remaining jlcpcb.com website call is the keyword
+    """gr485250: the remaining jlcpcb.com website calls are the keyword
     search (:mod:`precis.pcb.jlc_library` ``live_search``/
     ``iter_keyword_rows``), which POSTs to the real listing endpoint when no
-    ``post=`` is injected -- reachable from handler code paths, so a test
-    that forgets the seam would make a real network call. Deny by default:
-    constructing the real poster in a test raises ``VendorError`` (the same
-    degradation a wedged endpoint produces). Tests exercise the path by
-    injecting a fake ``post=`` (or by patching ``live_search`` outright).
+    ``post=`` is injected, and the partdetail fallback
+    (``partdetail_lookup`` → ``_partdetail_get``, gr519923), which GETs the
+    real page when no ``fetch=`` is injected -- both reachable from handler
+    code paths, so a test that forgets the seam would make a real network
+    call. Deny by default: constructing the real poster or calling the real
+    getter in a test raises ``VendorError`` (the same degradation a wedged
+    endpoint produces). Tests exercise the paths by injecting a fake
+    ``post=``/``fetch=`` (or by patching ``live_search``/``live_lookup``
+    outright).
 
     The Open API paths (``jlc_api.live_lookup``/``live_refresh_many``, the
-    refresh walk) need no deny: a ``JlcApiClient`` without credentials is
-    inert (``available`` False, no wire), and tests that supply credentials
-    inject ``send=``.
+    refresh walk) need no deny of their own: a ``JlcApiClient`` without
+    credentials is inert (``available`` False, no wire), and tests that
+    supply credentials inject ``send=``.
     """
     import precis.pcb.jlc_library as _jl
 
     def _denied(*_a: Any, **_k: Any) -> Any:
         raise _jl.VendorError(
             "jlcpcb-web",
-            "live jlcpcb.com call in a test — inject post= or patch the seam",
+            "live jlcpcb.com call in a test — inject post=/fetch= or patch the seam",
         )
 
     monkeypatch.setattr(_jl, "_WebPoster", _denied)
+    monkeypatch.setattr(_jl, "_partdetail_get", _denied)
 
 
 @pytest.fixture(autouse=True)

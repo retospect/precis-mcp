@@ -1,22 +1,31 @@
-"""Live keyword search of jlcpcb.com's parts listing -- the ONE website call left.
+"""Live jlcpcb.com website calls — the two gaps the Open API doesn't cover.
 
 The Open API (:mod:`precis.pcb.jlc_api`) has a bulk cursor walk and a lookup
 by C-number, but no keyword/free-text query. ``search(kind='part', q=...)``
 falls back to a keyword search when the local catalog has no hit, and that is
-the gap this module still covers, via the listing endpoint behind the
+the first gap this module covers, via the listing endpoint behind the
 parts-library page: ``GET`` an XSRF cookie, then ``POST`` the list with the
 token echoed in a header. Interactive only, one page per query; the catalog
 refresh and C-number lookups all go through the Open API (gr464537). That
 endpoint sits under ``/api``, which jlcpcb.com's robots.txt disallows, so it
-leaves as soon as the Open API gains a keyword query. The host is fixed,
-never agent-supplied. Live calls use the tight :data:`LIVE_POLICY` (an
-agent is waiting).
+leaves as soon as the Open API gains a keyword query.
+
+The second gap: the listing endpoint (and the Open API's detail endpoint)
+can't see whole categories — Supercapacitors answer ``total=0`` to keyword,
+exact-MPN AND ``secondSortName`` (gr519923) — while the bare
+``/partdetail/C<n>`` page serves every C-number's record. Its Next.js RSC
+payload (``self.__next_f.push`` chunks) embeds the component record as JSON;
+:func:`partdetail_lookup` fetches that page and normalizes the record into
+the same row the listing produces. ``/partdetail`` is not under ``/api``.
+The host is fixed, never agent-supplied. Live calls use the tight
+:data:`LIVE_POLICY` (an agent is waiting).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -217,7 +226,10 @@ def normalize_library_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "basic": row.get("componentLibraryType") == "base"
         or bool(row.get("preferredComponentFlag")),
         "stock": to_int(row.get("stockCount")) or 0,
-        "price": _price(row.get("componentPrices")),
+        # a no-buy listing's ladder is a placeholder, not a price (gr519681)
+        "price": (
+            None if lifecycle.get("no_buy") else _price(row.get("componentPrices"))
+        ),
         "package": row.get("componentSpecificationEn") or None,
         "height_mm": catalog._height_mm(params),
         "params": params or None,
@@ -291,13 +303,215 @@ def live_search(
     return rows
 
 
+# ── partdetail fallback (gr519923) ───────────────────────────────────
+
+#: ``GET /partdetail/<C-no>`` — a bare C-number works, no mfr/mpn slug
+#: needed. Not under ``/api``, so outside the listing endpoint's robots
+#: disallow.
+PARTDETAIL_PATH = "/partdetail/"
+
+#: One URL → the page HTML. Swappable in tests (a canned partdetail page);
+#: the default hits the wire via :func:`_partdetail_get`.
+FetchFn = Callable[[str], str]
+
+
+def _partdetail_get(url: str) -> str:
+    """Real transport for the partdetail fallback — one GET on the live
+    policy. Module-level so the conftest deny-fixture can pin it: a test
+    that forgets ``fetch=`` must never reach the wire."""
+    from precis.utils.http import http_client
+    from precis.utils.safe_fetch import safe_get
+
+    with http_client(timeout=15.0) as client:
+
+        def _thunk() -> httpx.Response:
+            acquire(_SERVICE)
+            return safe_get(client, url)
+
+        resp = with_backoff(_thunk, service=_SERVICE, policy=LIVE_POLICY)
+        status, text = resp.status_code, resp.text
+        trace_id = resp.headers.get(TRACE_ID_HEADER)
+    if status == 404:
+        return ""  # unknown C-number — parses as a real miss below
+    if status != 200:
+        raise VendorError(
+            _SERVICE,
+            f"HTTP {status} from {PARTDETAIL_PATH}",
+            status=status,
+            trace_id=trace_id,
+        )
+    return text
+
+
+_PUSH_ARG = re.compile(r"self\.__next_f\.push\((\[.*?\])\)</script>", re.S)
+_RSC_ROW = re.compile(r"([0-9a-f]+):(.*)", re.S)
+_RSC_REF = re.compile(r"\$([0-9a-f]+)\Z")
+
+#: The site's absent markers inside the RSC payload: ``"--"`` is the
+#: display placeholder, ``"$undefined"`` the RSC sentinel for a missing
+#: value.
+_ABSENT = (None, "", "--", "$undefined")
+
+
+def _rsc_rows(html: str) -> dict[str, Any]:
+    """De-escape the page's ``self.__next_f.push`` script chunks and parse
+    every ``<id>:<json>`` row into ``{row-id: payload}``. RSC refs
+    (``"$30"``) and sentinels survive as plain strings — the caller
+    resolves them. Non-JSON payloads (module manifests, ``T`` text rows)
+    are skipped."""
+    rows: dict[str, Any] = {}
+    chunks: list[str] = []
+    for m in _PUSH_ARG.finditer(html):
+        args = _try_json(m.group(1))
+        if isinstance(args, list):
+            chunks.extend(a for a in args if isinstance(a, str))
+    # Joined before splitting: a row can straddle a push-chunk boundary.
+    for line in "\n".join(chunks).split("\n"):
+        rm = _RSC_ROW.match(line)
+        if rm is None:
+            continue
+        try:
+            rows[rm.group(1)] = json.loads(rm.group(2))
+        except ValueError:
+            continue
+    return rows
+
+
+def _try_json(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _rsc_dicts(
+    node: Any, rows: dict[str, Any], _refs: frozenset[str] = frozenset()
+) -> Iterator[dict[str, Any]]:
+    """Every dict reachable from a parsed RSC payload, following
+    ``"$id"`` chunk refs (a record's ``prices``/``attributes``/
+    ``componentInfo`` values are refs, not inline values — ``"$30"``
+    resolves to row ``30``). ``"$L.."`` lazy refs, ``"$undefined"`` and
+    plain strings yield nothing; ``_refs`` stops a ref cycle."""
+    if isinstance(node, str):
+        if (m := _RSC_REF.match(node)) is not None and m.group(1) not in _refs:
+            yield from _rsc_dicts(rows.get(m.group(1)), rows, _refs | {m.group(1)})
+        return
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _rsc_dicts(v, rows, _refs)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _rsc_dicts(v, rows, _refs)
+
+
+def _rsc_list(v: Any, rows: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """A record field that is either an inline list or a ``"$id"`` ref to
+    a ref-list row → the resolved dicts."""
+    if isinstance(v, str):
+        if (m := _RSC_REF.match(v)) is None:
+            return None
+        v = rows.get(m.group(1))
+    if not isinstance(v, list):
+        return None
+    out = [d for item in v for d in _rsc_dicts(item, rows)]
+    return out or None
+
+
+def _clean(v: Any) -> Any:
+    """The page's absent markers (and unresolved ``"$id"`` refs on scalar
+    fields) → ``None``; everything else passes through."""
+    if v is None or v in ("", "--", "$undefined"):
+        return None
+    if isinstance(v, str) and _RSC_REF.match(v):
+        return None
+    return v
+
+
+def _parse_partdetail(html: str, code: str) -> dict[str, Any] | None:
+    """The partdetail page's RSC payload → a raw row in the listing shape
+    :func:`normalize_library_row` accepts. ``None`` when no record matches
+    ``code`` — the miss page (``null | null | JLCPCB``) carries only
+    related-product rows for OTHER parts, which fail the
+    ``componentCode``+``componentModelEn`` check here.
+
+    The record arrives as up to three chunks: the render record
+    (``describe``/``componentLibraryType``, prices inline or ``$ref``),
+    the buy record (``isBuyComponent``/``overseasStockCount``/
+    ``noBuyReason``) and the spec record (``firstSortName``/
+    ``secondSortName``/``attributes``-ref). Fields merge across all
+    matching dicts; ``"--"``/``"$undefined"``/unresolved refs count as
+    absent."""
+    rows = _rsc_rows(html)
+    recs = [
+        d
+        for r in rows.values()
+        for d in _rsc_dicts(r, rows)
+        if str(d.get("componentCode") or "").upper() == code
+        and d.get("componentModelEn") not in _ABSENT
+    ]
+    if not recs:
+        return None
+    merged: dict[str, Any] = {}
+    for d in recs:
+        for k, v in d.items():
+            if k not in merged or merged[k] in _ABSENT:
+                merged[k] = v
+    stock = to_int(merged.get("overseasStockCount")) or to_int(merged.get("stockCount"))
+    return {
+        "componentCode": code,
+        "componentBrandEn": _clean(merged.get("componentBrandEn")),
+        "componentModelEn": _clean(merged.get("componentModelEn")),
+        "describe": _clean(merged.get("describe"))
+        or _clean(merged.get("componentName")),
+        "componentSpecificationEn": _clean(merged.get("componentSpecificationEn")),
+        "componentLibraryType": _clean(merged.get("componentLibraryType")),
+        "preferredComponentFlag": merged.get("preferredComponentFlag") is True,
+        "stockCount": stock or 0,
+        "componentPrices": _rsc_list(merged.get("prices"), rows),
+        "dataManualUrl": _clean(merged.get("dataManualUrl")),
+        "attributes": _rsc_list(merged.get("attributes"), rows),
+        "firstSortName": _clean(merged.get("firstSortName")),
+        "secondSortName": _clean(merged.get("secondSortName")),
+        "lcscGoodsUrl": f"{HOST}{PARTDETAIL_PATH}{code}",
+        # the lifecycle sources _LIFECYCLE_FIELDS reads, under their
+        # listing names
+        "mergedComponentCode": _clean(merged.get("mergedComponentCode")),
+        "componentAlternativesCode": _clean(merged.get("componentAlternativesCode")),
+        "noBuyReason": _clean(merged.get("noBuyReason")),
+        "idleFlag": _clean(merged.get("idleFlag")),
+        "estimateDate": _clean(merged.get("estimateDate")),
+        "lossNumber": _clean(merged.get("lossNumber")),
+    }
+
+
+def partdetail_lookup(
+    lcsc: str, *, fetch: FetchFn | None = None
+) -> dict[str, Any] | None:
+    """Fetch ``jlcpcb.com/partdetail/<C-no>`` and return the part's record
+    as the normalized row :meth:`JlcApiClient.component_info` produces —
+    the fallback for parts the Open API's listing can't see (gr519923).
+    ``None`` on a real miss (the page 200s but carries no record for the
+    code); a transport failure raises :class:`VendorError` like every
+    other live call here."""
+    code = catalog._lcsc_number(lcsc)
+    if code is None:
+        return None
+    fetch = fetch or _partdetail_get
+    row = _parse_partdetail(fetch(f"{HOST}{PARTDETAIL_PATH}{code}"), code)
+    return None if row is None else normalize_library_row(row)
+
+
 __all__ = [
     "HOST",
     "LIST_PATH",
     "LIVE_POLICY",
+    "PARTDETAIL_PATH",
     "XSRF_PATH",
+    "FetchFn",
     "PostFn",
     "iter_keyword_rows",
     "live_search",
     "normalize_library_row",
+    "partdetail_lookup",
 ]

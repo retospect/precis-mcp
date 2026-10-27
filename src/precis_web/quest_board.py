@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from precis.checklist.status import VERDICTS, compute_statuses
 from precis.pcb import ROUTE_DANGLING, route_summary_status
-from precis.pcb.catalog import min_unit_price
+from precis.pcb.catalog import has_no_buy, min_unit_price
 from precis.pcb.route_state import route_state
 
 log = logging.getLogger(__name__)
@@ -234,7 +234,8 @@ def _bom_section(store: Any, ref_id: int, design: dict[str, Any]) -> dict[str, A
             stock_known += 1
             if int(stock) < qty or r.get("discontinued"):
                 stock_short += 1
-        unit = min_unit_price(r.get("price"))
+        # a no-buy listing's ladder is a placeholder, not a price (gr519681)
+        unit = None if has_no_buy(r.get("params")) else min_unit_price(r.get("price"))
         if unit is not None:
             priced += 1
             cost += unit * qty

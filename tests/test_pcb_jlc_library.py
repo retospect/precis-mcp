@@ -63,6 +63,25 @@ def test_normalize_preferred_and_junk():
     assert jlc_library.normalize_library_row({"componentCode": ""}) is None
 
 
+def test_no_buy_listing_drops_placeholder_price():
+    """gr519681: a no-buy row's ladder is a listing placeholder —
+    identical ladders repeat across unrelated C99xxxxxxx ICs at stock 0
+    — so it normalizes to ``price=None`` while the flag survives in
+    ``params._lifecycle``."""
+    row = {
+        **C25804,
+        "componentCode": "C9900007588",
+        "noBuyReason": "This product is no longer manufactured.",
+        "stockCount": 0,
+    }
+    n = jlc_library.normalize_library_row(row)
+    assert n is not None
+    assert n["price"] is None
+    assert n["params"]["_lifecycle"]["no_buy"] == (
+        "This product is no longer manufactured."
+    )
+
+
 def _r(code):
     return {"componentCode": code}
 

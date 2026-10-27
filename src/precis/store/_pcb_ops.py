@@ -6331,7 +6331,8 @@ class PcbMixin:
                 rows = conn.execute(
                     "SELECT p.lcsc, p.mfr_part, p.description, p.basic, p.stock, "
                     "       p.package, p.price, coalesce(a.restock_count, 0), "
-                    "       a.ewma_stock "
+                    "       a.ewma_stock, "
+                    "       p.params->'_lifecycle'->>'no_buy' IS NOT NULL "
                     f"{frm}LEFT JOIN part_availability a ON a.lcsc = p.lcsc "
                     f"WHERE p.jlcpcb_assemblable AND {cond} "
                     f"ORDER BY coalesce(p.stock, 0) > 0 DESC, {rank}"
@@ -6352,6 +6353,7 @@ class PcbMixin:
                     "price": r[6],
                     "restock_count": int(r[7]),
                     "ewma_stock": r[8],
+                    "no_buy": bool(r[9]),
                 }
                 for r in rows
             ]

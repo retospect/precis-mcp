@@ -361,6 +361,41 @@ def test_search_partial_match_ranks_in_stock_first_and_skips_live(store):
     assert strict.index("C165948") < strict.index("C9900091898")
 
 
+def test_search_no_buy_row_shows_no_price(store):
+    """gr519681: a stored ``params._lifecycle.no_buy`` row's ladder is a
+    placeholder (identical ladders repeat across unrelated C99xxxxxxx
+    ICs at stock 0) — the row renders ``—`` for ``$ea``, not the
+    number."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C9900257678",
+                "mfr_part": "NRF54L15",
+                "description": "nRF54L15 wireless SoC",
+                "jlcpcb_assemblable": True,
+                "stock": 0,
+                "price": [{"qFrom": 1, "qTo": None, "price": 0.0205}],
+                "params": {
+                    "_lifecycle": {"no_buy": "This product is no longer manufactured."}
+                },
+            },
+            {
+                "lcsc": "C25804",
+                "mfr_part": "0603WAF1002T5E",
+                "description": "nRF54L15 wireless SoC companion",
+                "jlcpcb_assemblable": True,
+                "stock": 9,
+                "price": [{"qFrom": 1, "qTo": None, "price": 0.01}],
+            },
+        ]
+    )
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="nRF54L15 wireless").body
+    assert "C9900257678" in body
+    assert "0.0205" not in body
+    assert "0.01" in body  # the priced sibling still shows
+
+
 def test_search_live_rows_list_in_stock_first(store):
     out_of_stock = {**C2655145, "stockCount": 0, "componentCode": "C9900000001"}
     part = PartHandler(
@@ -1078,3 +1113,165 @@ def test_get_batch_dedupes_and_validates(store):
         part.get(id=[f"C{i + 100}" for i in range(51)])
     with pytest.raises(BadInput, match=r"id\[0\]"):
         part.get(id=typing.cast(Any, [{"lcsc": "C25804"}]))
+
+
+# ── partdetail fallback on an Open-API miss (gr519923) ────────────────
+#
+# The listing endpoint (and the Open API's detail call) can't see whole
+# categories — Supercapacitors answer total=0 to keyword, exact-MPN AND
+# secondSortName. The bare /partdetail/C<n> page serves every C-number's
+# record inside its Next.js RSC payload. Canned pages below carry the
+# real structure (trimmed from a live C1578291 capture — BZ013A144ZSB,
+# expand, no-buy, stock 0): $-ref'd prices/attributes, "--"/"$undefined"
+# sentinels, and related-product rows for OTHER parts.
+
+
+def _push(*chunks: str) -> str:
+    """One ``self.__next_f.push`` script tag per RSC chunk, JSON-escaped
+    the way the page embeds them."""
+    return "".join(
+        f"<script>self.__next_f.push([1,{json.dumps(c)}])</script>" for c in chunks
+    )
+
+
+_PARTDETAIL_HIT = _push(
+    '1:HL["https://assets.jlcpcb.com/web-resources/x/latest"]',
+    '8:I[99925,["90","static/chunks/90.js"],""]',
+    "f:T12,not json\ncontinuation line",
+    '30:["$31","$32"]',
+    '31:{"componentPriceKeyId":null,"componentCode":"C1578291","startNumber":1,'
+    '"endNumber":9,"productPrice":9.8385}',
+    '32:{"componentPriceKeyId":null,"componentCode":"C1578291","startNumber":10,'
+    '"endNumber":-1,"productPrice":8.5504}',
+    '37:{"componentModelEn":"BZ013A144ZSB","componentBrandEn":"--",'
+    '"componentCode":"C1578291","componentName":"BZ013A144ZSB",'
+    '"describe":"-20%~+80% 0.14F 3.6V 70mΩ SMD Supercapacitors ROHS",'
+    '"componentSpecificationEn":"SMD","componentSpecification":"$undefined",'
+    '"lcscComponentId":1669106,"dataManualUrl":"--",'
+    '"componentLibraryType":"expand","assemblyComponentFlag":false,'
+    '"preferredComponentFlag":"$undefined","prices":"$30"}',
+    '3b:["$3c","$3d"]',
+    '3c:{"attribute_name_en":"Capacitance","component_code":"C1578291",'
+    '"attribute_value_name":"0.14F"}',
+    '3d:{"attribute_name_en":"Voltage Rating","component_code":"C1578291",'
+    '"attribute_value_name":"3.6V"}',
+    '3a:{"componentModelEn":"BZ013A144ZSB","componentBrandEn":"--",'
+    '"componentCode":"C1578291","attributes":"$3b",'
+    '"firstSortName":"Capacitors","secondSortName":"Supercapacitors",'
+    '"secondTypeNameId":3232}',
+    '50:{"componentCode":"C1578291","componentModelEn":"BZ013A144ZSB",'
+    '"componentBrandEn":"--","isBuyComponent":"0",'
+    '"componentAlternativesCode":null,"canPresaleNumber":0,'
+    '"overseasStockCount":0,"initialPrice":9.8385,"prices":"$30",'
+    '"lossNumber":0,"leastPatchNumber":0,'
+    '"noBuyReason":"This product is no longer manufactured."}',
+    # a related-product row for a DIFFERENT part — the code-match guard
+    # must keep it out even on a hit page
+    '44:{"componentCode":"C17507162","componentModelEn":"CWR11JH225KCB",'
+    '"componentBrandEn":"Kyocera AVX","price":23.4,"stockCount":7}',
+)
+
+_PARTDETAIL_MISS = _push(
+    '1:HL["https://assets.jlcpcb.com/web-resources/x/latest"]',
+    '7:["urlSuffix","C99999999","c"]',
+    '44:{"componentCode":"C17507162","componentModelEn":"CWR11JH225KCB",'
+    '"componentBrandEn":"Kyocera AVX","price":23.4,"stockCount":7}',
+    '45:{"componentCode":"C6383141","componentModelEn":"008263051100000+",'
+    '"componentBrandEn":"Kyocera AVX","price":"$undefined","stockCount":0}',
+)
+
+
+def _fetch_with(html: str, urls: list[str] | None = None):
+    def fetch(url: str) -> str:
+        if urls is not None:
+            urls.append(url)
+        return html
+
+    return fetch
+
+
+def test_live_lookup_partdetail_fallback_hit(store, creds):
+    """gr519923: the Open API misses Supercapacitors-category parts; the
+    partdetail page's RSC record fills the gap and lands in ``parts``."""
+    calls: list[str] = []
+    client = _api_client({}, calls)  # the API misses
+    urls: list[str] = []
+    row = jlc_api.live_lookup(
+        store,
+        "C1578291",
+        client=client,
+        fetch=_fetch_with(_PARTDETAIL_HIT, urls),
+    )
+    assert row is not None and row["lcsc"] == "C1578291"
+    assert row["mfr_part"] == "BZ013A144ZSB"
+    assert row["mfr"] is None  # the "--" placeholder is absent, not a brand
+    assert row["package"] == "SMD" and row["basic"] is False
+    assert urls == [f"{jlc_library.HOST}{jlc_library.PARTDETAIL_PATH}C1578291"]
+    assert calls == ["C1578291"]  # one API call, then the page
+    # a no-buy record's ladder is a placeholder → suppressed (gr519681);
+    # the reason survives in params._lifecycle
+    assert row["price"] is None
+    assert row["params"]["_lifecycle"]["no_buy"] == (
+        "This product is no longer manufactured."
+    )
+    assert row["params"]["_category"] == "Supercapacitors / Capacitors"
+    assert row["params"]["Capacitance"] == "0.14F"
+    assert row["params"]["_lcsc_url"].endswith("/partdetail/C1578291")
+    assert row["datasheet_url"] is None  # "--" → absent, not the literal
+    got = store.part_row("C1578291")
+    assert got is not None and got["mfr_part"] == "BZ013A144ZSB"
+    assert got["stock"] == 0 and "Supercapacitors" in got["description"]
+
+
+def test_partdetail_lookup_normalizes_the_rsc_record():
+    """The seam's own contract: HTML in, a ``normalize_library_row`` row
+    out — bare/lower-case C-numbers canonicalise too."""
+    urls: list[str] = []
+    row = jlc_library.partdetail_lookup(
+        "c1578291", fetch=_fetch_with(_PARTDETAIL_HIT, urls)
+    )
+    assert row is not None and row["lcsc"] == "C1578291"
+    assert row["basic"] is False and row["stock"] == 0
+    assert urls == [f"{jlc_library.HOST}{jlc_library.PARTDETAIL_PATH}C1578291"]
+
+
+def test_live_lookup_partdetail_miss_is_a_real_miss(store, creds):
+    """A partdetail page with no record for the code (related products
+    only, the ``null | null | JLCPCB`` miss page) is a real miss — None,
+    negative-cached, no second fetch."""
+    calls: list[str] = []
+    client = _api_client({}, calls)
+    urls: list[str] = []
+    fetch = _fetch_with(_PARTDETAIL_MISS, urls)
+    assert jlc_api.live_lookup(store, "C99999999", client=client, fetch=fetch) is None
+    assert jlc_api.live_lookup(store, "C99999999", client=client, fetch=fetch) is None
+    assert calls == ["C99999999"] and len(urls) == 1
+    assert store.part_row("C99999999") is None
+
+
+def test_live_lookup_partdetail_error_degrades_to_miss(store, creds):
+    """A wedged partdetail page doesn't mask the API's answer: the lookup
+    reports the miss it already has (logged), never an outage error on a
+    part the API said it can't see."""
+    client = _api_client({})
+
+    def boom(url: str) -> str:
+        raise VendorError("jlcpcb-web", "HTTP 503 from partdetail")
+
+    assert jlc_api.live_lookup(store, "C99999999", client=client, fetch=boom) is None
+    assert "C99999999" in jlc_api._live_misses
+
+
+def test_live_lookup_api_hit_never_fetches_partdetail(store, creds):
+    """The page is only consulted on an API miss — a live hit pays no
+    second request."""
+    client = _api_client({"C2655145": API_C2655145})
+    urls: list[str] = []
+    row = jlc_api.live_lookup(
+        store,
+        "C2655145",
+        client=client,
+        fetch=_fetch_with(_PARTDETAIL_HIT, urls),
+    )
+    assert row is not None and row["lcsc"] == "C2655145"
+    assert urls == []

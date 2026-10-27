@@ -23,7 +23,13 @@ per C-number its board uses that has no datasheet yet). Steps:
    then stamp ``meta.source_url`` / ``meta.part_lcsc`` — and the
    ``<mfr> <mfr_part>`` title when the PDF's own metadata doesn't name the
    part (a mirror copy's metadata is whatever the mirror shipped).
-5. **Link** ``datasheet-of`` datasheet → the part's lazy ref.
+5. **Keep the PDF.** The ingest records the tempdir path in
+   ``pdfs.storage_path``; the tempdir dies with the job, so the download
+   is moved into the corpus under the ref's cite_key first (gr519912 —
+   without the move every pulled sheet's chunks survived but its file
+   didn't). A dedupe hit whose stored file is gone gets the same move:
+   re-pull is the backfill channel for sheets stranded before the fix.
+6. **Link** ``datasheet-of`` datasheet → the part's lazy ref.
 
 The outcome is recorded on the part ref's ``meta.datasheet_pull``. A
 deterministic failure is a recorded state, not a raised error, so the job
@@ -45,14 +51,17 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import shutil
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import psycopg
 
+from precis.corpus_layout import corpus_pdf_dest, corpus_roots_from_env
 from precis.pcb.datasheets import datasheet_state
 from precis.pcb.jlc_api import JlcApiClient
 from precis.utils.http import (
@@ -187,7 +196,14 @@ _JS_REDIRECT = re.compile(
 _META_REFRESH = re.compile(
     r"""<meta[^>]+http-equiv=["']?refresh[^>]+url=(?P<u>https?://[^"'>\s]+)""", re.I
 )
-_REDIRECT_PAGE_MAX = 4096
+#: LCSC's ``/datasheet/`` URLs answer with a ~9 KB Next.js viewer page
+#: (gr519904): ``__NEXT_DATA__`` carries ``"previewPdfUrl":"<real pdf>"``
+#: and the pdfjs wrapper is ``viewer.html?file=<urlencoded real pdf>``.
+_PREVIEW_PDF_URL = re.compile(r'"previewPdfUrl"\s*:\s*"(?P<u>https?://[^"]+)"')
+_VIEWER_FILE = re.compile(r"viewer\.html\?file=(?P<u>[^\"'\s]+)")
+#: The Next.js viewer payload needs ~6 KB before ``previewPdfUrl`` shows,
+#: so the read cap is well past the old tiny-interstitial 4 KB.
+_REDIRECT_PAGE_MAX = 65536
 
 
 def _site(host: str) -> str:
@@ -195,16 +211,21 @@ def _site(host: str) -> str:
 
 
 def _html_redirect_target(page: bytes, url: str) -> str | None:
-    """The same-site URL a small HTML interstitial forwards to, if it is one.
+    """The same-site URL an HTML interstitial forwards to, if it is one.
 
     Same registrable domain only (``wmsc.lcsc.com`` -> ``datasheet.lcsc.com``):
     a page that bounces to another site is a wall, not a hop. The target is
     fetched through ``safe_stream`` like the first URL."""
     text = page[:_REDIRECT_PAGE_MAX].decode("utf-8", "replace")
     m = _JS_REDIRECT.search(text) or _META_REFRESH.search(text)
-    if m is None:
+    if m is not None:
+        target = m.group("u")
+    elif (v := _PREVIEW_PDF_URL.search(text)) is not None:
+        target = v.group("u")
+    elif (v := _VIEWER_FILE.search(text)) is not None:
+        target = unquote(v.group("u"))
+    else:
         return None
-    target = m.group("u")
     if _site(urlsplit(target).hostname or "") != _site(urlsplit(url).hostname or ""):
         return None
     return target
@@ -370,25 +391,89 @@ def _kind_title(store: Store, ref_id: int) -> tuple[str, str]:
     return (str(row[0]), str(row[1] or "")) if row is not None else ("", "")
 
 
+def _cite_key(store: Store, ref_id: int) -> str | None:
+    """The ref's cite_key identifier — the corpus filename its PDF owns."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT id_value FROM ref_identifiers WHERE ref_id = %s "
+            "AND id_kind = 'cite_key' LIMIT 1",
+            (ref_id,),
+        ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def _move_into_corpus(pdf: Path, *, cite_key: str, root: Path) -> Path:
+    """``cli.watch._move_to_corpus``'s move, without importing the CLI: the
+    cite_key corpus path, timestamp-disambiguated on a real collision, a
+    vanished source tolerated (another host on the shared corpus may have
+    raced the same move)."""
+    dest = corpus_pdf_dest(cite_key, root, suffix=pdf.suffix.lower())
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() and dest.resolve() != pdf.resolve():
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        dest = dest.parent / f"{cite_key}_{ts}{pdf.suffix.lower()}"
+    try:
+        shutil.move(str(pdf), str(dest))
+    except FileNotFoundError:
+        log.info("datasheet_pull: %s already moved by another host", pdf.name)
+    return dest
+
+
+def _pdf_on_disk(store: Store, ref_id: int, sha: str, tmp: Path) -> bool:
+    """The corpus already holds this PDF's bytes. The recorded
+    ``storage_path`` counts only when it resolves *outside* this pull's
+    tempdir — the ingest records the tempdir path itself, which dies with
+    the job."""
+    stored = store.pdf_storage_path(sha)
+    if stored:
+        p = Path(stored)
+        if p.is_file() and tmp not in p.parents:
+            return True
+    cite_key = _cite_key(store, ref_id)
+    if cite_key:
+        for root in corpus_roots_from_env():
+            if corpus_pdf_dest(cite_key, root).is_file():
+                return True
+    return False
+
+
+def _keep_pdf(store: Store, pdf: Path, sha: str, ref_id: int) -> None:
+    """Move the just-downloaded PDF into the corpus under the ref's
+    cite_key (gr519912) and repoint ``pdfs.storage_path`` (a no-op when
+    the sha has no pdfs row — the cite_key convention then resolves).
+    The dedupe-hit caller reaches here only when the file is missing on
+    disk, which is the backfill channel for sheets stranded before the
+    fix: a re-pull restores them."""
+    cite_key = _cite_key(store, ref_id)
+    if not cite_key:
+        raise _Failed("corpus_write_failed", f"ref {ref_id} has no cite_key")
+    try:
+        dest = _move_into_corpus(
+            pdf, cite_key=cite_key, root=corpus_roots_from_env()[0]
+        )
+    except OSError as exc:
+        raise _Failed("corpus_write_failed", str(exc)) from exc
+    if dest.is_file():
+        store.set_pdf_storage_path(sha, str(dest))
+
+
 def _squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
 def _mpn_slug_hint(store: Store, lcsc: str) -> str | None:
-    """``'<mfr> <mfr_part>'`` as the cite_key base for the minted
-    datasheet (gr520126) — the catalog row's identity is known-good even
+    """``'<mfr>_<mfr_part>'`` as the cite_key base for the minted
+    datasheet (gr519904 ruling: ``anysolar_KXOB25-04X3F-TB``, not an
+    author-year handle) — the catalog row's identity is known-good even
     when the PDF's own metadata is junk. ``None`` when the part isn't
     catalogued (the pipeline falls back to the filename/title)."""
+    from precis.ingest.pipeline import mpn_slug_hint
+
     row = store.part_row(lcsc) or {}
-    parts = [
-        p
-        for p in (
-            str(row.get("mfr") or "").strip(),
-            str(row.get("mfr_part") or "").strip(),
-        )
-        if p
-    ]
-    return " ".join(parts) or None
+    return mpn_slug_hint(
+        str(row.get("mfr") or "").strip(),
+        str(row.get("mfr_part") or "").strip(),
+    )
 
 
 def _mpn_title(store: Store, lcsc: str, minted_title: str) -> str | None:
@@ -463,12 +548,13 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
             path = Path(tmp) / "datasheet.pdf"
             final_url, sha = _download_any(urls, path)
             ds_id = _existing_by_sha(store, sha)
+            src = path
             if ds_id is None:
                 # A name that cannot collide with a paper stub's cite_key.
-                named = path.with_name(f"datasheet-{sha[:12]}.pdf")
-                path.rename(named)
+                src = path.with_name(f"datasheet-{sha[:12]}.pdf")
+                path.rename(src)
                 ds_id, inserted = _ingest(
-                    store, named, slug_hint=_mpn_slug_hint(store, lcsc)
+                    store, src, slug_hint=_mpn_slug_hint(store, lcsc)
                 )
                 kind, minted_title = _kind_title(store, ds_id)
                 if kind != "datasheet":
@@ -476,6 +562,8 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
                     raise _Failed(f"ingest_failed:sha_matches_{kind}")
                 if inserted:
                     _stamp_new_sheet(store, ds_id, lcsc, final_url, minted_title)
+            if not _pdf_on_disk(store, ds_id, sha, Path(tmp)):
+                _keep_pdf(store, src, sha, ds_id)
         part_id = store.ensure_part_ref(lcsc, uncatalogued_ok=True)
         empty = _body_chunks(store, ds_id) == 0
         if not (empty and prior is not None):
@@ -541,10 +629,11 @@ def pull_component(store: Store, ref_id: int, url: str) -> dict[str, Any]:
             path = Path(tmp) / "datasheet.pdf"
             final_url, sha = _download(url, path)
             ds_id = _existing_by_sha(store, sha)
+            src = path
             if ds_id is None:
-                named = path.with_name(f"datasheet-{sha[:12]}.pdf")
-                path.rename(named)
-                ds_id, inserted = _ingest(store, named)
+                src = path.with_name(f"datasheet-{sha[:12]}.pdf")
+                path.rename(src)
+                ds_id, inserted = _ingest(store, src)
                 if _kind_title(store, ds_id)[0] != "datasheet":
                     raise _Failed("ingest_failed:wrong_kind")
                 if inserted:
@@ -553,6 +642,8 @@ def pull_component(store: Store, ref_id: int, url: str) -> dict[str, Any]:
                         meta_patch={"source_url": final_url},
                         source="datasheet_pull",
                     )
+            if not _pdf_on_disk(store, ds_id, sha, Path(tmp)):
+                _keep_pdf(store, src, sha, ds_id)
         store.add_link(src_ref_id=ds_id, dst_ref_id=ref_id, relation="datasheet-of")
         return {
             "status": "ok" if _body_chunks(store, ds_id) > 0 else "failed",

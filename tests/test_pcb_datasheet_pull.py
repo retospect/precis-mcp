@@ -28,6 +28,14 @@ from precis.workers.job_types import datasheet_pull as dp
 _PDF = b"%PDF-1.7\n" + b"datasheet body " * 50
 
 
+@pytest.fixture(autouse=True)
+def corpus_root(monkeypatch, tmp_path):
+    """Every successful pull moves the PDF into the corpus (gr519912);
+    keep that write inside the test sandbox, not ``~/work/corpus``."""
+    monkeypatch.setattr(dp, "corpus_roots_from_env", lambda: (tmp_path,))
+    return tmp_path
+
+
 def _design(*parts: str | None) -> dict[str, Any]:
     comps = []
     for i, part in enumerate(parts, start=1):
@@ -459,6 +467,79 @@ def test_an_uncatalogued_part_keeps_the_minted_title(store, no_jlc, serve, fake_
     assert (ref.meta or {}).get("part_lcsc") == "C99999"
 
 
+# ── the pulled PDF is kept (gr519912) ────────────────────────────────
+
+
+def _pdfs_row(store, sha: str, storage_path: str) -> None:
+    """What the real ingest writes for the PDF: a ``pdfs`` row naming the
+    (about-to-die) tempdir or a stale earlier location."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, %s, %s)",
+            (sha, "c" * 64, 100, storage_path),
+        )
+        conn.commit()
+
+
+def test_pulled_pdf_is_moved_into_the_corpus(
+    store, no_jlc, serve, fake_ingest, corpus_root
+):
+    """The download used to die with the tempdir: the web reader then
+    found the ref's cite_key corpus path empty. The pull now moves it."""
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    rec = dp.pull(store, "C25900")
+    assert rec["status"] == "ok"
+    _, slug = pcb_datasheets.datasheet_state(store, "C25900")["datasheet"]
+    assert (corpus_root / "d" / f"{slug}.pdf").read_bytes() == _PDF
+
+
+def test_moved_pdf_repoints_a_stale_storage_path(
+    store, no_jlc, serve, fake_ingest, corpus_root
+):
+    """The ingest writer records the tempdir path in ``pdfs.storage_path``;
+    the move must repoint it at the corpus path."""
+    sha = hashlib.sha256(_PDF).hexdigest()
+    _pdfs_row(store, sha, "/stale/tempdir/datasheet.pdf")
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    _, slug = pcb_datasheets.datasheet_state(store, "C25900")["datasheet"]
+    dest = corpus_root / "d" / f"{slug}.pdf"
+    assert dest.is_file()
+    assert store.pdf_storage_path(sha) == str(dest)
+
+
+def test_repull_restores_a_stranded_datasheet_pdf(
+    store, no_jlc, serve, fake_ingest, corpus_root
+):
+    """Re-pull is the backfill channel for sheets stranded before the
+    fix: a dedupe hit whose stored file is gone re-moves the fresh
+    download into the corpus."""
+    sha = hashlib.sha256(_PDF).hexdigest()
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    _, slug = pcb_datasheets.datasheet_state(store, "C25900")["datasheet"]
+    dest = corpus_root / "d" / f"{slug}.pdf"
+    dest.unlink()
+    _pdfs_row(store, sha, str(dest))  # stranded: points at the deleted file
+    again = dp.pull(store, "C25900")
+    assert again["status"] == "ok"
+    assert dest.read_bytes() == _PDF
+    assert store.pdf_storage_path(sha) == str(dest)
+    assert len(fake_ingest) == 1  # dedupe hit: no second ingest
+
+
+def test_held_pdf_is_not_moved_twice(store, no_jlc, serve, fake_ingest, corpus_root):
+    """A dedupe hit whose file is already in the corpus keeps it — no
+    timestamp-disambiguated duplicate is dropped next to it."""
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    assert [p.name for p in (corpus_root / "d").iterdir()] == [
+        f"ds-{hashlib.sha256(_PDF).hexdigest()[:8]}.pdf"
+    ]
+
+
 # ── read side ────────────────────────────────────────────────────────
 
 
@@ -736,7 +817,7 @@ def test_put_part_only_after_extraction_queues_nothing(
         meta_patch={"datasheet_facts": {"extracted_at": "2026-10-17T00:00:00Z"}},
     )
     resp = ds_handler.put(args={"part": "C25900"})
-    assert "facts already extracted or queued" in resp.body
+    assert "facts already extracted" in resp.body
     assert _job_params(store) == [] and _jobs(store, "datasheet_facts") == []
 
 
@@ -901,3 +982,98 @@ def test_redirect_page_chain_stops_after_one_hop(
     rec = dp.pull(store, "C25900")
     assert (rec["status"], rec["reason"]) == ("failed", "not_pdf")
     assert serve["asked"] == [url, loop]
+
+
+# ── LCSC's /datasheet/ Next.js viewer pages (gr519904) ────────────────
+
+
+def test_lcsc_nextjs_viewer_page_is_followed_to_preview_pdf(
+    store, no_jlc, serve, fake_ingest, monkeypatch
+):
+    """``www.lcsc.com/datasheet/<…>.pdf`` answers with a ~9 KB Next.js
+    viewer page; the real PDF URL is its ``previewPdfUrl`` field, which
+    sits past the old 4 KB interstitial cap."""
+    target = (
+        "https://datasheet.lcsc.com/datasheet/pdf/"
+        "deadbeefc0ffee1234.pdf?productCode=C25900"
+    )
+    page = (
+        b'<html><script id="__NEXT_DATA__" type="application/json">'
+        b'{"props":{"pageProps":{"pad":"' + b"x" * 6000 + b'",'
+        b'"d":{"previewPdfUrl":"' + target.encode() + b'"}}}}</script></html>'
+    )
+    assert len(page) > 4096
+    _gate_stream(serve, monkeypatch, page, target)
+    url = "https://www.lcsc.com/datasheet/C25900.pdf"
+    store.parts_import([_catalog_row(25900, url)])
+    rec = dp.pull(store, "C25900")
+    assert rec["status"] == "ok"
+    assert serve["asked"] == [url, target]
+
+
+def test_lcsc_pdfjs_viewer_wrapper_is_unquoted_and_followed(
+    store, no_jlc, serve, fake_ingest, monkeypatch
+):
+    """The pdfjs form ``viewer.html?file=<urlencoded url>`` unwraps to the
+    same target when no ``previewPdfUrl`` field is present."""
+    from urllib.parse import quote
+
+    target = (
+        "https://datasheet.lcsc.com/datasheet/pdf/"
+        "deadbeefc0ffee1234.pdf?productCode=C25900"
+    )
+    page = (
+        b'<html><body><a href="viewer.html?file='
+        + quote(target, safe="").encode()
+        + b'">open</a></body></html>'
+    )
+    _gate_stream(serve, monkeypatch, page, target)
+    url = "https://www.lcsc.com/datasheet/lcsc_datasheet_x_C25900.pdf"
+    store.parts_import([_catalog_row(25900, url)])
+    rec = dp.pull(store, "C25900")
+    assert rec["status"] == "ok"
+    assert serve["asked"] == [url, target]
+
+
+def test_pulled_datasheet_slug_is_mfr_underscore_mpn(store, no_jlc, serve, monkeypatch):
+    """gr519904 ruling: the minted handle is ``<mfr>_<MPN>``
+    (``anysolar_KXOB25-04X3F-TB``), case preserved — not an author-year
+    cite key and not a kebabed ``<mfr>-<mpn>``."""
+    from precis.ingest.pipeline import datasheet_slug_base
+
+    def _ingest(st, path, *, slug_hint=None):
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        slug = datasheet_slug_base(slug_hint, path.stem, "A datasheet")
+        ref = st.insert_ref(kind="datasheet", slug=slug, title="A datasheet")
+        with st.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('pdf_sha256', %s, %s, 'test')",
+                (sha, ref.id),
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 0, 'paragraph', 'body', '{}'::jsonb)",
+                (ref.id,),
+            )
+            conn.commit()
+        return ref.id, True
+
+    monkeypatch.setattr(dp, "_ingest", _ingest)
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    _, slug = pcb_datasheets.datasheet_state(store, "C25900")["datasheet"]
+    assert slug == "acme_ACME25900"
+
+
+def test_reput_after_failed_pull_with_no_sheet_is_honest(
+    store, ds_handler, no_jlc, monkeypatch
+):
+    """gr519904: a re-put that mints no pull and holds no datasheet used
+    to answer 'facts already extracted or queued' — a lie, since there
+    was no sheet to extract from."""
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    monkeypatch.setattr("precis.handlers.datasheet.enqueue_one", lambda *a, **kw: False)
+    resp = ds_handler.put(args={"part": "C25900"})
+    assert "no datasheet to extract facts from" in resp.body
+    assert "could not be queued" in resp.body

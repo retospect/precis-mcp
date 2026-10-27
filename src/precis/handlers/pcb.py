@@ -6115,7 +6115,11 @@ class PcbHandler(Handler):
         table = []
         for r in rows:
             lcsc = str(r["part_lcsc"]).strip().upper() if r["part_lcsc"] else None
-            price = pcb_catalog.min_unit_price(r.get("price"))
+            price = (
+                None
+                if pcb_catalog.has_no_buy(r.get("params"))
+                else pcb_catalog.min_unit_price(r.get("price"))
+            )
             refdes = r["refdes"]
             table.append(
                 {
