@@ -41,7 +41,8 @@ ref persist — resolve via the link table if you need them.
 Pass `reason=` to say why — it lands as an
 `agent/deleted` row on the ref's `ref_events` log, the audit line a
 mass cleanup otherwise lacks (`kind='draft'` accepts it too: the same
-row on a whole-draft delete, the chunk's `retired` event for one chunk):
+row on a whole-draft delete, the chunk's `retired` event for one chunk;
+`kind='pcb'` likewise on the design delete):
 
 ```python
 delete(kind="memory", id=42, reason="stale duplicate, folded into me77")

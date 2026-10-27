@@ -3385,8 +3385,27 @@ class DraftHandler(Handler):
             raise BadInput(
                 f"{verb}(kind='draft') targets a chunk — id='dc<chunk_id>'",
                 next=f"{verb}(kind='draft', id='dc42', …)",
+                options=self._chunk_id_options(id),
             )
         return str(id)
+
+    def _chunk_id_options(self, id: str | int | None) -> list[str] | None:
+        """The chunk-target refusal's ``options=`` (gr523122): when ``id``
+        resolves to a draft — its slug, a numeric ref id, or the
+        ``<slug>~…`` selector head — the draft's own live ``dc`` handles
+        (first 10), so the next call pastes one instead of detouring
+        through ``view='toc'``. ``None`` when ``id`` names nothing; the
+        read is refusal-path only, matching ``_machine_owner``'s "DB work
+        only on the way to raising" rule."""
+        head = str(id or "").strip().partition("~")[0].strip()
+        if not head:
+            return None
+        try:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=head)
+        except (BadInput, NotFound):
+            return None
+        dcs = [c.dc for c in self.store.drafts.reading_order(int(ref.id))[:10]]
+        return dcs or None
 
     #: Kinds whose chunks are citable literature: a reference to one is a
     #: ``cites`` edge (the bibliography / "who cites this?" graph), not a

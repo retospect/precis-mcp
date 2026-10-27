@@ -39,6 +39,12 @@ delete(id="nanotrans")  # ref-level id → soft-delete the WHOLE draft
 delete(id="dc12", reason="superseded by dc45")
 ```
 
+Chunk edits take the **bare** `dc<id>` — not the `'<slug>~dc<N>'`
+selector form `get` accepts, and not the draft slug (a slug `id=` is
+reserved for draft-level ops like `title=`/`authoring=`/`meta=`). A
+misaddressed call is refused and the error's `options:` list the
+draft's live `dc` handles to paste.
+
 Every text edit's ack ends with `sha:<12>`, the sha of the text that
 landed. Pass it as `base_sha=` on the next edit to chain without a
 re-read; a stale sha is refused.

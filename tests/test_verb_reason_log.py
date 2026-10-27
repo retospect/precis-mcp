@@ -66,6 +66,47 @@ def test_delete_reason_accepts_handle_and_kind_prefixed_ids(
     assert _reason_events(store, mid2, "deleted") == ["by prefix"]
 
 
+def test_pcb_delete_reason_lands_on_the_event_log(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr523119: ``delete(kind='pcb')`` takes ``reason=`` like the numeric
+    kinds — a design delete is a ref soft-delete (``retire_ref`` inside
+    ``pcb_delete``), so it lands the same ``agent/deleted`` audit row.
+    Dispatched top-level it used to die on the strictness gate before
+    reaching the handler at all."""
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "pcb",
+            "id": "callerr-a-board",
+            "args": {
+                "components": [
+                    {
+                        "refdes": "MH1",
+                        "label": "mounting hole",
+                        "pins": [{"name": "1"}],
+                    }
+                ]
+            },
+        },
+    )
+    assert "[error" not in out, out
+    ref = store.get_ref(kind="pcb", id="callerr-a-board")
+    assert ref is not None
+
+    out = runtime_with_store.dispatch(
+        "delete",
+        {
+            "kind": "pcb",
+            "id": "callerr-a-board",
+            "reason": "dogfood fork, folded",
+        },
+    )
+    assert "[error" not in out, out
+    assert "retired pcb design" in out, out
+    assert _reason_events(store, ref.id, "deleted") == ["dogfood fork, folded"]
+
+
 def test_tag_reason_lands_and_shows_in_view_log(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

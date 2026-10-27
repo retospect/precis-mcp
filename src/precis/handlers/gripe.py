@@ -1692,11 +1692,21 @@ class GripeHandler(NumericRefHandler):
         if comment is not None or comments is not None:
             # The selectors only mean something inside the timeline
             # reads — anywhere else they would be a silent drop
-            # (mcp-authoring rule 6). view='full' is legal since
-            # gr503545: "body + the newest K" is a sensible ask, so the
-            # full renderer windows its timeline the same way the
-            # comments view does.
-            if view not in ("comments", "full"):
+            # (mcp-authoring rule 6). On a *bare* get they have exactly
+            # one reading — view='comments' — so run it and name the
+            # reading (gr523120, the interpreted convention gr494831);
+            # prod kept re-issuing the refused call. view='full' is
+            # legal since gr503545: "body + the newest K" is a sensible
+            # ask, so the full renderer windows its timeline the same
+            # way the comments view does. An explicit other view still
+            # refuses.
+            if view is None:
+                view = "comments"
+                readings.append(
+                    "args={'comment': K} / {'comments': K} on a bare get "
+                    "read as view='comments'"
+                )
+            elif view not in ("comments", "full"):
                 raise BadInput(
                     "args={'comment': K} / args={'comments': K} select inside "
                     "view='comments' or view='full'",

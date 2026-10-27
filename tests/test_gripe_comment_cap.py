@@ -231,15 +231,39 @@ def test_comment_selectors_validate(hub: Hub) -> None:
         handler.get(id=rid, view="comments", comments=0)
     with pytest.raises(BadInput, match="not both"):
         handler.get(id=rid, view="comments", comment=1, comments=2)
-    # selectors only mean something inside view='comments'
+    # selectors only mean something inside view='comments'/'full' — an
+    # explicit other view still refuses (gr523120 made the bare get
+    # implicit instead)
     with pytest.raises(BadInput, match="view='comments'"):
-        handler.get(id=rid, comments=2)
+        handler.get(id=rid, view="body", comments=2)
     # comments view on a comment-free gripe says so, not a blank page
     handler.put(text="empty gripe")
     rid2 = next(
         r.id for r in handler.store.list_refs(kind="gripe") if r.title == "empty gripe"
     )
     assert "no comments" in handler.get(id=rid2, view="comments").body
+
+
+def test_comment_selector_on_bare_get_reads_as_comments(hub: Hub) -> None:
+    """gr523120: ``args={'comment': K}`` / ``args={'comments': K}`` without
+    ``view=`` used to refuse — the one unambiguous reading is
+    ``view='comments'``, so run it and name the reading (the
+    ``interpreted:`` line, gr494831)."""
+    handler = GripeHandler(hub=hub)
+    handler.put(text="implicit-selector fixture")
+    rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
+    for i in range(1, 4):
+        handler.put(id=rid, text=f"comment number {i}")
+    body = handler.get(id=rid, comments=2).body
+    assert body.startswith("interpreted: "), body
+    assert "view='comments'" in body.splitlines()[0]
+    for i in (2, 3):
+        assert f"comment number {i}" in body
+    assert "comment number 1" not in body
+    one = handler.get(id=rid, comment=1).body
+    assert one.startswith("interpreted: "), one
+    assert "comment number 1" in one
+    assert "comment number 2" not in one
 
 
 def test_legacy_body_and_view_recovery(hub: Hub) -> None:

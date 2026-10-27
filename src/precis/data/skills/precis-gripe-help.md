@@ -231,7 +231,10 @@ queue, `session@host`, tree, the newest brief/handoff/review and the
 landed sha — and `view='fix'` reads those texts; the loop itself is
 `precis-gripe-loop-help`. The
 selectors work inside `view='comments'`
-or `view='full'`: `args={'comments': K}` is the newest K,
+or `view='full'` — and on a bare `get` a selector implies
+`view='comments'`, so `get(kind='gripe', id=42, args={'comments': 5})`
+reads the newest five with an `interpreted:` line naming the reading:
+`args={'comments': K}` is the newest K,
 `args={'comments': 'A-B'}` is comments A through B (also `'A-'`, A on),
 `args={'comment': K}` is one comment uncapped. Both views page *whole*
 comments — a page that can't hold the rest names the

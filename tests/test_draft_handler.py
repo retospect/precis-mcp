@@ -652,6 +652,34 @@ def test_edit_requires_chunk_handle(draft: DraftHandler, hub: Hub) -> None:
         draft.edit(id="nt", text="x")  # a slug, not a ¶handle
 
 
+def test_edit_refusal_options_name_the_drafts_chunk_ids(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr523122: ``edit(kind='draft')`` aimed at the draft itself — its
+    slug, or the ``<slug>~dc<N>`` selector spelling ``get`` takes — used
+    to refuse bare. The refusal now lists the draft's live ``dc`` handles
+    (first 10) in ``options=`` so the next call pastes one."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="paragraph", text="body", at={"after": "¶" + th})
+    dcs = [c.dc for c in _order(hub, "nt")]
+
+    with pytest.raises(BadInput, match="targets a chunk") as exc:
+        draft.edit(id="nt", text="x")
+    assert exc.value.options == dcs[:10]
+
+    # the '<slug>~dc<N>' selector spelling lands the same refusal+options
+    with pytest.raises(BadInput, match="targets a chunk") as exc2:
+        draft.edit(id=f"nt~{dcs[-1]}", text="x")
+    assert exc2.value.options == dcs[:10]
+
+    # an id that resolves to no draft keeps the plain refusal
+    with pytest.raises(BadInput, match="targets a chunk") as exc3:
+        draft.edit(id="no-such-draft", text="x")
+    assert not exc3.value.options
+
+
 def test_delete_ref_level_id_soft_deletes_whole_draft(
     draft: DraftHandler, hub: Hub
 ) -> None:

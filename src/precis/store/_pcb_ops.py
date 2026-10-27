@@ -549,6 +549,7 @@ class PcbMixin:
     insert_ref: Any
     get_ref: Any
     retire_ref: Any  # RefsMixin — the shared ref soft-delete
+    append_event: Any  # EventsMixin — the delete reason= audit row
     add_link: Any  # LinksMixin — the board → part ``contains`` edges
     remove_link: Any
     chunks: Any  # ChunkStore sub-store — the shared card_combined write
@@ -6920,11 +6921,23 @@ class PcbMixin:
         ]
 
     # -- delete ---------------------------------------------------------
-    def pcb_delete(self, ref_id: int) -> dict[str, int]:
+    def pcb_delete(self, ref_id: int, *, reason: str | None = None) -> dict[str, int]:
         """Soft-delete a design: mark the ref deleted, retire its graph rows,
-        drop its search card — atomically."""
+        drop its search card — atomically.
+
+        ``reason=`` (gr523119) lands as an ``agent/deleted`` ``ref_events``
+        row in the same transaction as the retire — the tombstone trail the
+        numeric-ref kinds write via ``_record_delete_reason`` (gr503546)."""
         counts = {}
         with self._pcb_tx() as conn:
+            if r := (reason or "").strip():
+                self.append_event(
+                    ref_id,
+                    source="agent",
+                    event="deleted",
+                    payload={"reason": r},
+                    conn=conn,
+                )
             self.retire_ref(ref_id, conn=conn)
             for tbl in (
                 "pcb_instances",

@@ -7514,14 +7514,23 @@ class PcbHandler(Handler):
         )
 
     # ── delete ───────────────────────────────────────────────────────
-    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
+    def delete(
+        self,
+        *,
+        id: str | int | None = None,
+        reason: str | None = None,
+        **_kw: Any,
+    ) -> Response:
         if id is None or not str(id).strip():
             raise BadInput(
                 "delete(kind='pcb') requires id= (the design slug)",
                 next="delete(kind='pcb', id='slug')",
             )
         ref = resolve_live_slug_ref(self.store, kind="pcb", id=str(id).strip())
-        counts = self.store.pcb_delete(ref.id)
+        # ``reason=`` (gr523119): a design delete is a ref soft-delete, so
+        # it lands the same ``agent/deleted`` audit row the numeric kinds
+        # write (gr503546) — inside ``pcb_delete``'s own transaction.
+        counts = self.store.pcb_delete(ref.id, reason=reason)
         n = counts.get("pcb_instances", 0)
         return Response(body=f"retired pcb design {ref.slug} ({n} instance(s))")
 
