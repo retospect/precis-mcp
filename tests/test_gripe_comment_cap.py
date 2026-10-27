@@ -83,7 +83,7 @@ def test_bare_get_is_card_plus_body(hub: Hub) -> None:
 
 def test_bare_get_clips_a_long_body_naming_the_escape(hub: Hub) -> None:
     handler = GripeHandler(hub=hub)
-    handler.put(text="pad " * 1000 + "the tail ask")
+    handler.put(text="Pad filler\n" + "pad " * 1000 + "the tail ask")
     rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
     body = handler.get(id=rid).body
     assert f"get(kind='gripe', id={rid}, view='body')" in body
@@ -174,7 +174,7 @@ def test_full_view_bounds_and_names_the_reads(hub: Hub) -> None:
     # gr514350: 'full' stays inside the agent-facing fold; what it
     # elides is named with the call that reads it — no cursor needed.
     handler = GripeHandler(hub=hub)
-    handler.put(text="pad " * 600 + "the tail ask")
+    handler.put(text="Pad filler\n" + "pad " * 600 + "the tail ask")
     rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
     for i in range(1, 6):
         handler.put(id=rid, text="q" * 400 + f" ctail-{i}")
@@ -197,7 +197,7 @@ def test_full_view_with_no_room_lists_the_window(hub: Hub) -> None:
     # 'full' names every comment ord rather than squeezing a fraction
     # of one onto it.
     handler = GripeHandler(hub=hub)
-    handler.put(text="pad " * 900 + "the tail ask")
+    handler.put(text="Pad filler\n" + "pad " * 900 + "the tail ask")
     rid = next(r.id for r in handler.store.list_refs(kind="gripe"))
     handler.tag(id=rid, add=[f"bulk:t{i:03d}-{'a' * 20}" for i in range(90)])
     for i in range(1, 4):

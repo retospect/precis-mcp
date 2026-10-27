@@ -193,8 +193,8 @@ def test_dead_ref_renders_the_handler_error(client: TestClient) -> None:
     page = client.get("/python/r::pkg.runner.nope")
     assert page.status_code == 404 and "[error:NotFound]" in page.text
     assert client.get("/python/nosuch::x").status_code == 404
-    # a BadInput (selector on a :: id) shows the handler's error, not a 404
-    bad = client.get("/python/r::pkg.runner.target~L1")
+    # a BadInput (~param selector with a non-params view) shows the handler's error, not a 404
+    bad = client.get("/python/r::pkg.runner.target~L1", params={"view": "source"})
     assert bad.status_code == 200 and "[error:" in bad.text
 
 

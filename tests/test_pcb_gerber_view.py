@@ -581,7 +581,8 @@ def test_document_reserves_the_legend_gutter_and_covers_a_short_boards_legend() 
     px = gerber_view._view_scale(w, h)
     vw, vh = w * px, h * px
 
-    n_rows = len(re.findall(r'<g class="legend-row', svg))
+    # +1: the cursor-readout line shares the legend box (gr520537)
+    n_rows = len(re.findall(r'<g class="legend-row', svg)) + 1
     legend_h = 20 * n_rows + 12
     assert vh < legend_h + 8.0, (
         "fixture must be short enough to exercise the legend branch"

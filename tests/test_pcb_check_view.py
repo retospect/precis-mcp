@@ -500,10 +500,11 @@ def test_netlist_eval_with_zero_findings_still_records_a_run(
 #: before this slice existed — ``run <8hex>`` masked — so the preset
 #: claim is pinned, not implied. gr488909 dropped its three per-pad
 #: ``connectivity`` rows: a copperless net is the ``unrouted`` question.
-#: The default stackup pours nothing (2026-10-23 ruling), so net GND's
+#: The fixture sits partly below 0, so the board_origin warn (gr520794)
+#: is part of the pinned body. The default stackup pours nothing (2026-10-23 ruling), so net GND's
 #: pads are as unrouted as SIG's and VDD's.
 _DRC_GOLDEN = """
-# DRC — run XXXXXXXX — 5 error(s), 2 warn(s)
+# DRC — run XXXXXXXX — 5 error(s), 3 warn(s)
 vs previous run: none to compare against (first run with finding ids on this board) — every finding below is reported without a new/still verdict
 (pads-only DRC — no routed copper yet)
 {id	severity	rule	where	margin_mm	detail}
@@ -512,6 +513,7 @@ vs previous run: none to compare against (first run with finding ids on this boa
 11898670f503	error	unrouted	net VDD		at least one connection on net VDD has no route; the board is not finished
 4bae789a49c5	error	unconnected_pin	pin U1/MT		pin U1/MT is marked must_terminate and has no net — a pin that must not float is floating (the `unused` marker does not exempt it)
 6d1dd5cc1ab6	error	unconnected_pin	pin U2/MT		pin U2/MT is marked must_terminate and has no net — a pin that must not float is floating (the `unused` marker does not exempt it)
+d0f4e96a6f12	warn	board_origin	board	-15.000	board geometry sits partly in negative coordinates — x and y below 0 (minimum at x=-15mm, y=-15mm); the positive-quadrant convention keeps the fab outputs and the human read of the board on one frame — shift the outline and placement so the bbox minimum lands at the origin
 fc7b2efdb934	warn	unconnected_pin	part U1		1 spare pad(s) on U1 netless and unmarked (SPARE) — mark them `unused` (this board does not use them; full geometry, still matcher-available) or `nc` (part has no internal connection), or wire them
 096d7e1e21f2	warn	unconnected_pin	part U2		1 spare pad(s) on U2 netless and unmarked (SPARE) — mark them `unused` (this board does not use them; full geometry, still matcher-available) or `nc` (part has no internal connection), or wire them"""
 

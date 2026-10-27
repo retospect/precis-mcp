@@ -211,7 +211,7 @@ get(kind="python", id="<alias>::Board.net", view="params")  # short qualname ok
 
 `view='params'` answers "what do I pass here?" — the AST signature
 merged with the docstring's param docs (Google, Sphinx `:param:` and
-NumPy styles all parse) as a TOON table:
+NumPy styles all parse) as a table:
 
 ```
 params[3]{name	hint	default	doc	line}
