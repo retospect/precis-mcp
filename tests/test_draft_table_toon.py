@@ -3,7 +3,9 @@ id-addressed draft tables (spreadsheet-tables slice 1b, spec §9)."""
 
 from __future__ import annotations
 
+import ast
 import copy
+import re
 import threading
 import time
 from typing import Any
@@ -729,6 +731,88 @@ def test_edit_stored_ctrl_cell_names_the_cell_fix(
     r = draft.edit(id=tc.dc, rows=[["GaN", 3.4, 800]])
     assert "inserted 1 row(s)" in r.body
     assert _meta(hub, tc)["rows"][-1] == ["GaN", 3.4, 800]
+
+
+def _store_meta(hub: Hub, tc: Any, meta: dict[str, Any]) -> None:
+    """Write ``meta`` straight to the chunk row — behind the write
+    gate's back, the only way a pre-gate stored cell can exist."""
+    with hub.live_store.pool.connection() as aconn:
+        aconn.execute(
+            "UPDATE chunks SET meta = meta || %s::jsonb WHERE handle = %s",
+            (Jsonb({"table": meta}), tc.handle),
+        )
+        aconn.commit()
+
+
+def _run_cell_repair(draft: DraftHandler, call: str) -> None:
+    """Execute the ``cell=`` repair a stored-ctrl refusal's ``next=``
+    names, parsing its id=/cell=/text= literals back out."""
+    m = re.fullmatch(r"edit\(kind='draft', id=(.+), cell=(.+), text=(.+)\)", call)
+    assert m, call
+    draft.edit(
+        id=ast.literal_eval(m.group(1)),
+        cell=ast.literal_eval(m.group(2)),
+        text=ast.literal_eval(m.group(3)),
+    )
+
+
+def test_edit_stored_ctrl_cells_lists_every_offender(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Two pre-gate cells: the refusal lists every offender and ``next=``
+    names one ``cell=`` repair per cell. On the ``cell=`` path the gate
+    ignores stored control characters outside the addressed cell — the
+    repair lands and the reply carries a note naming each remaining
+    offender with its own repair call."""
+    tc = _seed(draft, hub)
+    rows, cols = _ids(hub, tc)
+    meta = _meta(hub, tc)
+    meta["rows"][0][0] = "a\x1bb"
+    meta["rows"][1][2] = "c\x07d"
+    _store_meta(hub, tc, meta)
+    with pytest.raises(BadInput, match="predate the write gate") as e:
+        draft.edit(id=tc.dc, rows=[["GaN", 3.4, 800]])
+    assert f"{rows[0]}.{cols[0]}" in e.value.cause
+    assert f"{rows[1]}.{cols[2]}" in e.value.cause
+    assert e.value.next == [
+        f"edit(kind='draft', id={tc.dc!r}, cell='{rows[0]}.{cols[0]}', text='ab')",
+        f"edit(kind='draft', id={tc.dc!r}, cell='{rows[1]}.{cols[2]}', text='cd')",
+    ]
+    # the first named repair LANDS — the remaining stored offender is
+    # not the caller's input — and the reply notes it with its repair
+    r = draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="ab")
+    assert "note:" in r.body
+    assert f"{rows[1]}.{cols[2]}" in r.body
+    assert f"{rows[0]}.{cols[0]}" not in r.body
+    assert _meta(hub, tc)["rows"][0][0] == "ab"
+    # the second repair lands with no note — nothing left to name
+    r = draft.edit(id=tc.dc, cell=f"{rows[1]}.{cols[2]}", text="cd")
+    assert "note:" not in r.body
+    r = draft.edit(id=tc.dc, rows=[["GaN", 3.4, 800]])
+    assert "inserted 1 row(s)" in r.body
+    assert _meta(hub, tc)["rows"][-1] == ["GaN", 3.4, 800]
+
+
+def test_edit_stored_ctrl_cell_message_caps_value(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The refusal quotes the stored value capped at 80 chars + ellipsis
+    — a 5000-char pre-gate cell can't flood the wire — while ``next=``
+    still carries the full cleaned value so the named repair lands."""
+    tc = _seed(draft, hub)
+    rows, cols = _ids(hub, tc)
+    meta = _meta(hub, tc)
+    meta["rows"][0][0] = "x" * 4999 + "\x1b"
+    _store_meta(hub, tc, meta)
+    with pytest.raises(BadInput, match="predates the write gate") as e:
+        draft.edit(id=tc.dc, rows=[["GaN", 3.4, 800]])
+    assert len(e.value.cause) < 400
+    assert "…" in e.value.cause
+    assert isinstance(e.value.next, str)
+    _run_cell_repair(draft, e.value.next)
+    assert _meta(hub, tc)["rows"][0][0] == "x" * 4999
+    r = draft.edit(id=tc.dc, rows=[["GaN", 3.4, 800]])
+    assert "inserted 1 row(s)" in r.body
 
 
 # ── should-fix batch ─────────────────────────────────────────────────

@@ -74,11 +74,13 @@ from precis.utils.record_cite import record_cite_handles, record_type_of
 from precis.utils.table_data import (
     TABLE_CTRL_RE,
     cell_next_hint,
+    ctrl_cells,
     find_replace_cells,
-    first_ctrl_cell,
+    infer_scalar,
     normalize_table,
     parse_markdown_table,
     patch_latex_table_text,
+    resolve_cell,
     set_cell,
     table_ids_line,
     table_payload,
@@ -414,28 +416,61 @@ def _coerce_word_target(
     return (lo, hi)
 
 
-def _stored_ctrl_hint(exc: BadInput, cur_table: Any, dc: str) -> BadInput:
-    """Re-aim a control-character refusal at its stored cause. Every
+def _stored_ctrl_hint(
+    exc: BadInput, cur_table: Any, dc: str, *, skip: str | None = None
+) -> BadInput:
+    """Re-aim a control-character refusal at its stored causes. Every
     structure op re-normalises the stored grid together with the
-    incoming write, so a cell that landed before the gate existed
-    refuses the whole edit — but "strip the control character" is no
-    answer when the offender isn't in the caller's input. When the
-    stored table holds such a cell, return a refusal that says the
-    stored value predates the gate and whose ``next=`` spells out the
-    exact ``cell=`` repair; otherwise return ``exc`` unchanged."""
+    incoming write, so cells that landed before the gate existed
+    refuse the whole edit — but "strip the control character" is no
+    answer when the offenders aren't in the caller's input. When the
+    stored table holds such cells, return a refusal that names them
+    all (``row.col``, each stored value capped at 80 chars + ellipsis)
+    and whose ``next=`` spells out one ``cell=`` repair per cell;
+    otherwise return ``exc`` unchanged. ``skip`` is the ``cell=``
+    address whose repair is in flight — that cell is already being
+    rewritten, so naming it again would loop the caller back onto the
+    same repair."""
     if "control character" not in str(exc.cause) or not isinstance(cur_table, dict):
         return exc
-    hit = first_ctrl_cell(cur_table)
-    if hit is None:
+    skip_ids: tuple[str, str] | None = None
+    if skip is not None:
+        # resolve the '<row-id>.<col-id>' (or column-name) address to
+        # the stored ids — a failed resolve just means no skip
+        try:
+            row_i, col_i = resolve_cell(cur_table, skip)
+        except BadInput:
+            pass
+        else:
+            rowmeta = cur_table.get("rowmeta") or []
+            columns = cur_table.get("columns") or []
+            rid = rowmeta[row_i].get("id") if row_i < len(rowmeta) else None
+            cid = columns[col_i].get("id") if col_i < len(columns) else None
+            if rid and cid:
+                skip_ids = (str(rid), str(cid))
+    hits = [h for h in ctrl_cells(cur_table) if (h[0], h[1]) != skip_ids]
+    if not hits:
         return exc
-    row_id, col_id, raw = hit
-    cleaned = TABLE_CTRL_RE.sub("", raw)
-    return BadInput(
-        f"stored cell {row_id}.{col_id} {raw!r} contains a control "
-        "character — the stored value predates the write gate",
-        next=f"edit(kind='draft', id={dc!r}, "
-        f"cell={f'{row_id}.{col_id}'!r}, text={cleaned!r})",
-    )
+    named = [
+        f"{rid}.{cid} {(raw[:80] + '…') if len(raw) > 80 else raw!r}"
+        for rid, cid, raw in hits
+    ]
+    repairs = [
+        f"edit(kind='draft', id={dc!r}, cell={f'{rid}.{cid}'!r}, "
+        f"text={TABLE_CTRL_RE.sub('', raw)!r})"
+        for rid, cid, raw in hits
+    ]
+    if len(hits) == 1:
+        cause = (
+            f"stored cell {named[0]} contains a control character — "
+            "the stored value predates the write gate"
+        )
+    else:
+        cause = (
+            f"stored cells {', '.join(named)} contain control "
+            "characters — the stored values predate the write gate"
+        )
+    return BadInput(cause, next=repairs[0] if len(repairs) == 1 else repairs)
 
 
 class DraftHandler(Handler):
@@ -4118,6 +4153,10 @@ class DraftHandler(Handler):
         # into `meta.label`, so this only fires on the residual parse-miss
         # corner.
         label_loss_hint = ""
+        #: Note on the reply when a cell= write landed while other
+        #: pre-gate stored cells still carry control characters —
+        #: lists each remaining offender with its cell= repair call.
+        ctrl_note = ""
         if (
             is_latex_source
             and not recovered_label
@@ -4431,7 +4470,29 @@ class DraftHandler(Handler):
                         next=exc.next,
                         options=exc.options,
                     ) from None
-                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
+                if TABLE_CTRL_RE.search(str(text)):
+                    # The incoming text= itself carries a control
+                    # character — the gate still applies to the
+                    # caller's own write (no surgical landing).
+                    raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
+                hint = _stored_ctrl_hint(exc, cur_table, chunk.dc, skip=cast(str, cell))
+                if hint is exc:
+                    raise hint from exc
+                # The refusal fired only on OTHER pre-gate stored
+                # cells — none of them is in the caller's input, so
+                # refusing here would loop forever (every write
+                # re-normalises the whole grid; with >=2 offenders no
+                # single-cell repair can ever be last). The stored-ctrl
+                # gate ignores stored characters outside the addressed
+                # cell on this path: the write lands surgically (the
+                # grid can't be re-normalised while offenders remain)
+                # and the reply notes what is left, one cell= repair
+                # call each.
+                rows2 = [list(r) for r in cur_table["rows"]]
+                ri, ci = resolve_cell(cur_table, cast(str, cell))
+                rows2[ri][ci] = infer_scalar(str(text))
+                norm = {**cur_table, "rows": rows2}
+                ctrl_note = f"; note: {hint}"
         elif find is not None or sub is not None:
             if not cur_table:
                 raise no_data_err
@@ -4749,7 +4810,11 @@ class DraftHandler(Handler):
                 meta_notes.append("updates regen metadata")
             note = f" (also would: {'; '.join(meta_notes)})" if meta_notes else ""
             return self._render_draft_dry_run(
-                chunk.dc, chunk.text or "", md, mode=dry_mode, note=note
+                chunk.dc,
+                chunk.text or "",
+                md,
+                mode=dry_mode,
+                note=note + ctrl_note,
             )
         c = self.store.drafts.edit_text(
             handle, md, base_sha=base_sha, meta_patch=mpatch, expect_table=cas_table
@@ -4774,7 +4839,7 @@ class DraftHandler(Handler):
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
             body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
-            f"markdown re-derived{eval_tail}{label_loss_hint}"
+            f"markdown re-derived{eval_tail}{label_loss_hint}{ctrl_note}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
         )
 

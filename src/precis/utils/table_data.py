@@ -540,15 +540,16 @@ def set_cell(table: dict[str, Any], cell: str, value_str: str) -> dict[str, Any]
     return normalize_table({**table, "rows": rows})
 
 
-def first_ctrl_cell(table: dict[str, Any]) -> tuple[str, str, str] | None:
-    """The first body cell carrying a control character, as
+def ctrl_cells(table: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Every body cell carrying a control character, as a list of
     ``(row_id, col_id, raw)`` — the ids a ``cell=`` repair needs. Rows
     are scanned in order, cells left to right (the same order
-    :func:`normalize_table` reports). ``None`` when no cell matches or
-    the table lacks rowmeta/column ids — a pre-schema table can't be
+    :func:`normalize_table` reports). Empty when no cell matches or the
+    table lacks rowmeta/column ids — a pre-schema table can't be
     cell-addressed, so there's nothing actionable to name."""
     rowmeta = table.get("rowmeta") or []
     columns = table.get("columns") or []
+    hits = []
     for i, row in enumerate(table.get("rows") or []):
         rid = rowmeta[i].get("id") if i < len(rowmeta) else None
         if not rid:
@@ -558,8 +559,8 @@ def first_ctrl_cell(table: dict[str, Any]) -> tuple[str, str, str] | None:
                 continue
             cid = columns[j].get("id") if j < len(columns) else None
             if cid:
-                return str(rid), str(cid), c
-    return None
+                hits.append((str(rid), str(cid), c))
+    return hits
 
 
 def find_replace_cells(
