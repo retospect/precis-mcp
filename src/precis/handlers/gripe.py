@@ -2192,9 +2192,12 @@ def gripe_close_cascade(
     flips ``STATUS:blocked`` → ``STATUS:open`` (doable picks it up).
     Quest need-gripes need nothing here: ``open_tool_gripes`` filters
     live statuses, so they drop out on the next tick automatically.
-    Idempotent per referrer: a referrer whose newest comment already
-    carries this close note is skipped, so a ``done`` → ``wontfix``
-    re-close doesn't double-post.
+    Idempotent per referrer: a referrer with ANY comment already
+    carrying this close note is skipped, so a ``done`` → ``wontfix``
+    re-close doesn't double-post even after an intervening comment.
+    A referrer already at a terminal STATUS (per
+    ``BLOCKER_TERMINAL_STATUSES`` — done/won't-do todo, closed gripe,
+    abandoned quest) is settled and gets no note.
     """
     row = conn.execute(
         "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
@@ -2220,9 +2223,18 @@ def gripe_close_cascade(
         (f"waiting-for:gr{gripe_id}",),
     ).fetchall()
 
-    from precis.todo import blocker_terminal_sql
+    from precis.todo import BLOCKER_TERMINAL_STATUSES, blocker_terminal_sql
 
     for src_id, relation, kind in {tuple(r) for r in referrers + waiters}:
+        cur = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t "
+            "ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s "
+            "AND t.namespace = 'STATUS' LIMIT 1",
+            (src_id,),
+        ).fetchone()
+        referrer_status = str(cur[0]) if cur is not None else None
+        if referrer_status in BLOCKER_TERMINAL_STATUSES:
+            continue
         # Next step: a blocked-by referrer with no live blockers left is
         # unblocked; everything else is a re-evaluation note.
         unblocked = False
@@ -2242,14 +2254,11 @@ def gripe_close_cascade(
         comment_kind = _CLOSE_COMMENT_KIND.get(kind)
         if comment_kind is not None:
             already = conn.execute(
-                "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
-                "AND c.chunk_kind = %s ORDER BY c.ord DESC LIMIT 1",
-                (src_id, comment_kind),
+                "SELECT 1 FROM chunks c WHERE c.ref_id = %s "
+                "AND c.chunk_kind = %s AND c.text LIKE %s LIMIT 1",
+                (src_id, comment_kind, f"gr{gripe_id} closed%"),
             ).fetchone()
-            if not (
-                already is not None
-                and str(already[0]).startswith(f"gr{gripe_id} closed")
-            ):
+            if already is None:
                 nxt = "unblocked" if unblocked else "re-evaluate"
                 (ord_,) = conn.execute(
                     "SELECT coalesce(max(ord), 0) + 1 FROM chunks WHERE ref_id = %s",
@@ -2266,18 +2275,11 @@ def gripe_close_cascade(
                     ],
                     conn=conn,
                 )
-        if unblocked and kind == "todo":
-            cur = conn.execute(
-                "SELECT t.value FROM ref_tags rt JOIN tags t "
-                "ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s "
-                "AND t.namespace = 'STATUS' LIMIT 1",
-                (src_id,),
-            ).fetchone()
-            if cur is not None and cur[0] == "blocked":
-                store.add_tag(
-                    src_id,
-                    Tag.parse_strict("STATUS:open"),
-                    set_by="system",
-                    replace_prefix=True,
-                    conn=conn,
-                )
+        if unblocked and kind == "todo" and referrer_status == "blocked":
+            store.add_tag(
+                src_id,
+                Tag.parse_strict("STATUS:open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )

@@ -127,6 +127,101 @@ def test_close_keeps_live_blocker_blocking(hub: Hub) -> None:
     assert "STATUS:blocked" in {str(t) for t in other.store.tags_for(tid)}
 
 
+def test_close_cascade_skips_terminal_referrers(hub: Hub) -> None:
+    """gr520237: a referrer already at a terminal STATUS is settled —
+    no re-evaluate note lands on a done todo, a closed sibling gripe,
+    or a finished waiter's timeline."""
+    from precis.handlers.todo import TodoHandler
+    from precis.store.types import Tag
+
+    h, gid = _gripe(hub)
+    todo = TodoHandler(hub=hub)
+
+    todo.put(text="cascade done-referrer leaf")
+    tid = next(r.id for r in todo.store.list_refs(kind="todo"))
+    todo.store.add_link(src_ref_id=tid, dst_ref_id=gid, relation="fixes")
+    todo.tag(id=tid, add=["STATUS:done"])
+
+    todo.put(text="cascade done-waiter leaf")
+    wid = next(r.id for r in todo.store.list_refs(kind="todo") if "waiter" in r.title)
+    todo.store.add_tag(wid, Tag.open(f"waiting-for:gr{gid}"), set_by="system")
+    todo.tag(id=wid, add=["STATUS:done"])
+
+    h2, gid2 = _gripe(hub)
+    h2.put(id=gid2, text="resolved: abc (r1) — done first")
+    h2.tag(id=gid2, add=["STATUS:done"])
+    h2.store.add_link(src_ref_id=gid2, dst_ref_id=gid, relation="related-to")
+
+    h.put(id=gid, text="resolved: def (r2) — verified")
+    h.tag(id=gid, add=["STATUS:done"])
+
+    for rid, ckind in (
+        (tid, "todo_comment"),
+        (wid, "todo_comment"),
+        (gid2, "gripe_comment"),
+    ):
+        assert not [
+            c
+            for c in h.store.chunks.list_chunks_for_ref(rid)
+            if c.chunk_kind == ckind and c.text.startswith(f"gr{gid} closed")
+        ]
+
+
+def test_close_cascade_dedupes_past_intervening_comment(hub: Hub) -> None:
+    """gr520237: the dedupe scans ALL the referrer's comments for this
+    gripe's close marker, not just the newest — an unrelated comment
+    between two closes must not let the note double-post."""
+    from precis.handlers.todo import TodoHandler
+
+    h, gid = _gripe(hub)
+    todo = TodoHandler(hub=hub)
+    todo.put(text="cascade dedupe leaf")
+    tid = next(r.id for r in todo.store.list_refs(kind="todo"))
+    todo.store.add_link(src_ref_id=tid, dst_ref_id=gid, relation="related-to")
+
+    h.put(id=gid, text="resolved: wontfix — by design")
+    h.tag(id=gid, add=["STATUS:wontfix"])
+    todo.put(id=tid, text="unrelated comment after the first close")
+    h.put(id=gid, text="resolved: abc (r1) — verified")
+    h.tag(id=gid, add=["STATUS:done"])
+
+    notes = [
+        c.text
+        for c in todo.store.chunks.list_chunks_for_ref(tid)
+        if c.chunk_kind == "todo_comment" and c.text.startswith(f"gr{gid} closed")
+    ]
+    assert len(notes) == 1
+
+
+def test_close_cascade_reaches_waiting_for_tag(hub: Hub) -> None:
+    """gr520237: a live ref parked on OPEN ``waiting-for:gr<N>`` — no
+    link, just the tag — hears the close as a re-evaluate note; the
+    park tag itself is left for the owner to clear."""
+    from precis.handlers.todo import TodoHandler
+    from precis.store.types import Tag
+
+    h, gid = _gripe(hub)
+    todo = TodoHandler(hub=hub)
+    todo.put(text="cascade waiter leaf")
+    tid = next(r.id for r in todo.store.list_refs(kind="todo"))
+    todo.store.add_tag(tid, Tag.open(f"waiting-for:gr{gid}"), set_by="agent")
+
+    h.put(id=gid, text="resolved: abc (r1) — verified")
+    h.tag(id=gid, add=["STATUS:done"])
+
+    comments = [
+        c.text
+        for c in todo.store.chunks.list_chunks_for_ref(tid)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert comments == [
+        f"gr{gid} closed (resolved: abc (r1) — verified) — next: re-evaluate"
+    ]
+    tags = {str(t) for t in todo.store.tags_for(tid)}
+    assert f"waiting-for:gr{gid}" in tags
+    assert "STATUS:open" in tags
+
+
 def test_soft_deleted_get_shows_title_status_and_last_comment(hub: Hub) -> None:
     h, gid = _gripe(hub)
     h.put(id=gid, text="resolved: abc (r1) — verified", tags=["STATUS:done"])

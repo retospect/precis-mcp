@@ -20,13 +20,17 @@ TERMINAL_TODO_STATUSES: frozenset[str] = frozenset({"done", "won't-do", "auto-ti
 #: "is the blocker still live" predicate must share. A blocked-by edge
 #: can point at any kind, and terminal vocabularies differ per kind
 #: (todo ``won't-do`` / ``auto-timeout``, gripe ``wontfix``, quest
-#: ``abandoned``) — gr520237: the blocked-by checks hardcoded
+#: ``abandoned`` — the terminals in ``store.types._KIND_STATUS_VALUES``)
+#: — gr520237: the blocked-by checks hardcoded
 #: ``('done', 'won''t-do')``, so a todo blocked-by a gripe closed
-#: ``wontfix`` stayed blocked forever. Self-side todo predicates keep
+#: ``wontfix`` stayed blocked forever. ``resolved`` is deliberately
+#: absent: the tag verb rewrites it to ``done`` at write time
+#: (``handlers/_status_tag.STATUS_VALUE_ALIASES``), so it is never a
+#: stored STATUS value. Self-side todo predicates keep
 #: :data:`TERMINAL_TODO_STATUSES`; this set is for the *target* of a
 #: blocked-by edge only.
 BLOCKER_TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"done", "won't-do", "auto-timeout", "wontfix", "abandoned", "resolved"}
+    {"done", "won't-do", "auto-timeout", "wontfix", "abandoned"}
 )
 
 
