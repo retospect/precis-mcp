@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.utils import handle_registry
+
 if TYPE_CHECKING:
     from precis.store.store import Store
 
@@ -214,6 +216,7 @@ def strip_page_anchor_links(text: str) -> str:
 #: pins are finding-only.
 BARE_BRACKET_REF_PATTERN = re.compile(
     r"\[(?P<bare>[¶§][^\[\]]+|[a-z]{2}\d+)"
+    r"(?P<sel>~" + handle_registry.TABLE_SEL_PATTERN + r")?"
     r"(?P<pin>[>+][a-z]{2}\d+(?:,[a-z]{2}\d+)*)?\]"
 )
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scripts/table-id-backfill — mint stable row/column ids + pos keys on
+# pre-schema chunk_kind='table' chunks (draft refs only; spreadsheet-tables
+# 1a, spec §13). Dry run by default; --apply writes via patch_chunk_meta
+# (meta only — text/body untouched, dc<N> stable). NEVER --apply against
+# prod without Reto's go.
+# Database: PRECIS_DATABASE_URL (default dev DB); prod via the gitignored overlay.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run python scripts/_table_id_backfill.py "$@"

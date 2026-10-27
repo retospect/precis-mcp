@@ -365,7 +365,9 @@ def _check_rung_entry(entry: Any, *, where: str, produces: bool) -> None:
         bad = [
             h
             for h in evidence
-            if not isinstance(h, str) or not handle_registry.is_well_formed(h.strip())
+            if not isinstance(h, str)
+            or "~" in h.strip()
+            or not handle_registry.is_well_formed(h.strip())
         ]
         if bad:
             raise BadInput(

@@ -25,7 +25,7 @@ import hashlib
 import io
 import logging
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from functools import cached_property
@@ -3142,16 +3142,31 @@ class DraftStore(_AbbrevMixin):
             )
         return self.get_draft_chunk(handle)
 
-    def patch_chunk_meta(self, handle: str, patch: dict[str, Any]) -> None:
+    def patch_chunk_meta(
+        self,
+        handle: str,
+        patch: dict[str, Any] | None = None,
+        *,
+        transform: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    ) -> bool:
         """Shallow-merge ``patch`` into a chunk's ``meta`` in place — a key
         mapped to ``None`` is **removed**, any other value set.
         Metadata-only, no re-embed. Logs an ``edited`` event. Used by the
-        plan handler's ``status``/``belief`` markers. No-op on empty patch."""
-        if not patch:
-            return
+        plan handler's ``status``/``belief`` markers. No-op on empty patch.
+
+        ``transform`` (exclusive with ``patch``) computes the patch INSIDE
+        the transaction: called with the current ``meta`` dict and returns
+        the patch dict to merge, or ``None`` to skip the write entirely
+        (no UPDATE, no event). Use it when the patch is derived from meta —
+        a caller computing a patch from an earlier read would otherwise
+        silently clobber a concurrent edit landed in between. Returns
+        ``True`` when a write landed."""
+        if transform is None and not patch:
+            return False
         with self.tx() as conn:
             row = conn.execute(
-                "SELECT chunk_id, meta, retired_at FROM chunks WHERE handle = %s",
+                "SELECT chunk_id, meta, retired_at FROM chunks "
+                "WHERE handle = %s FOR UPDATE",
                 (_bare(handle),),
             ).fetchone()
             if row is None:
@@ -3163,6 +3178,11 @@ class DraftStore(_AbbrevMixin):
                     "edit the current live chunk instead"
                 )
             new_meta = dict(meta or {})
+            if transform is not None:
+                patch = transform(new_meta)
+                if not patch:
+                    return False
+            assert patch is not None
             for k, v in patch.items():
                 if v is None:
                     new_meta.pop(k, None)
@@ -3177,6 +3197,7 @@ class DraftStore(_AbbrevMixin):
                 "VALUES (%s, 'edited', %s)",
                 (chunk_id, Jsonb({"reason": "patch-meta", "keys": list(patch)})),
             )
+            return True
 
     #: The manufacturing-part attribute bag + hover surfaces that
     #: :meth:`set_term_attrs` may patch in place. ``registry``

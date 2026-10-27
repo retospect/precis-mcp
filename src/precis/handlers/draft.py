@@ -33,10 +33,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
 import re
 from datetime import UTC
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from precis.dispatch import Hub, InitError
 from precis.draft import lint as _draft_lint
@@ -71,13 +72,13 @@ from precis.utils.link_tag_ops import (
 )
 from precis.utils.record_cite import record_cite_handles, record_type_of
 from precis.utils.table_data import (
+    cell_next_hint,
     find_replace_cells,
     normalize_table,
-    parse_cell_address,
     parse_markdown_table,
-    patch_latex_cell,
     patch_latex_table_text,
     set_cell,
+    table_ids_line,
     table_payload,
     table_to_markdown,
 )
@@ -117,6 +118,28 @@ def _is_draft_chunk_handle(s: str) -> bool:
     """True iff ``s`` addresses a draft chunk (``dc<id>`` / ``¶<base58>``,
     optionally with a relative operator)."""
     return bool(_DRAFT_CHUNK_HANDLE_RE.match(s.strip()))
+
+
+def _chunk_display_text(chunk: Any) -> str:
+    """``chunk.text`` as a read shows it: a table chunk's trailing
+    ``ids:`` line is derived from ``meta.table`` at read time
+    (spreadsheet-tables 1a — the stored text stays plain GFM so the ids
+    never reach the embedding or ``content_sha``). A stored ``ids:``
+    trailer (written while the line still lived in the text) is dropped
+    first rather than printed twice — meta is the truth."""
+    text = chunk.text or ""
+    if chunk.chunk_kind != "table":
+        return text
+    tbl = (chunk.meta or {}).get("table")
+    if not isinstance(tbl, dict):
+        return text
+    lines = text.rstrip("\n").split("\n")
+    if lines[-1].startswith("ids: "):
+        text = "\n".join(lines[:-1])
+    ids = table_ids_line(tbl)
+    if ids is None:
+        return text
+    return f"{text}\n{ids}" if text else ids
 
 
 def _landed_sha_line(text: str | None) -> str:
@@ -733,6 +756,13 @@ class DraftHandler(Handler):
                 next=f"get(kind='draft', id={view!r}')",
             )
         if "~" in s:
+            # ``dc<N>~<sel>`` — a table chunk's stable row/column/cell id
+            # selector (spreadsheet-tables 1a): sel = <id> | <id>.<id> |
+            # <id>..<id>. Distinct from ``<draft>~<chunk|heading>`` —
+            # here the HEAD is the chunk handle.
+            head, _, sel = s.partition("~")
+            if _is_draft_chunk_handle(head.strip()):
+                return self._render_table_select(head.strip(), sel.strip(), s)
             s = self._chunk_of_selector(s)
         if _is_draft_chunk_handle(s):
             # Turn-taking persona threads eye — render this node at a focus
@@ -3016,6 +3046,13 @@ class DraftHandler(Handler):
                 next="delete(kind='draft', id='dc42')",
             )
         r = (reason or "").strip()
+        if "~" in raw and _is_draft_chunk_handle(raw.partition("~")[0].strip()):
+            raise BadInput(
+                f"{raw!r} carries a table row/column selector — delete "
+                "targets a chunk (dc<id>) or a whole draft, not a row",
+                next="delete(kind='draft', id='dc42')  # dropping rows "
+                "arrives with drop_rows= in a later slice",
+            )
         if not _is_draft_chunk_handle(raw):
             ref = self._resolve_draft_any(raw)  # refuses a machine-owned body
             label = ref.slug or ref.id
@@ -3581,8 +3618,9 @@ class DraftHandler(Handler):
         dry_mode: str | None = None,
     ) -> Response:
         """Edit a chunk_kind='table' chunk — precedence (the shipped draft-table-editing proposal item 1, git history): (1) ``table=`` replaces the whole
-        canonical structure; (2) ``cell=`` (A1 string or ``{row,col}``, 1-based,
-        row 1 = header) + ``text=`` sets ONE field via :func:`set_cell`; (3)
+        canonical structure; (2) ``cell='<row-id>.<col-id>'`` (stable ids —
+        spreadsheet-tables 1a, no A1) + ``text=`` sets ONE field via
+        :func:`set_cell`; (3)
         ``find=`` (literal, paired with ``text=`` as the replacement) or
         ``sub=`` (regex, ``{find,replace,flags}``/``s/…/…/``) find-replaces
         across every string cell via :func:`find_replace_cells`, refusing (chunk
@@ -3645,6 +3683,28 @@ class DraftHandler(Handler):
             )
         cur = self.store.drafts.draft_chunk_meta(handle)
         cur_table = cur.get("table")
+        # Lazy mint (spreadsheet-tables 1a, spec §13): a pre-schema
+        # canonical table — ``meta.table = {header, rows}`` only, from
+        # before the column schema — gains stable ids on its first write
+        # touch. Normalise on read so EVERY selector path below persists
+        # them: cell=/find=/sub= through the write at the tail,
+        # caption=/regen= via ``norm = cur_table``. ``resolve_cell``
+        # works against the minted table in-memory; the cell= branch
+        # additionally persists the mint before a refusing raise so the
+        # refusal's options=/get hints are true afterwards (a malformed
+        # legacy table that normalise can't fix refuses honestly here
+        # instead). Skipped when ``table=`` is given — a whole-grid
+        # replace never reads the old grid's shape, so a malformed
+        # legacy ``meta.table`` must not block the one edit that
+        # repairs it.
+        minted_legacy = False
+        if (
+            table is None
+            and isinstance(cur_table, dict)
+            and (not cur_table.get("columns") or "rowmeta" not in cur_table)
+        ):
+            cur_table = normalize_table(cur_table)
+            minted_legacy = True
         # Read/write divergence repair (gripe 263197). A LaTeX-imported chunk
         # flagged `needs-table-review` carries its grid only as raw LaTeX in
         # `text`, with no canonical `meta.table` — so every structured door
@@ -3714,6 +3774,87 @@ class DraftHandler(Handler):
             and cur_table
             and (cell is not None or find is not None or sub is not None)
         ):
+            if cell is not None:
+                # Spreadsheet-tables 1a: cells are addressed by stable ids
+                # (``cell='<row-id>.<col-id>'``), which a LaTeX-sourced
+                # chunk does not have — the first cell edit CONVERTS the
+                # chunk to the canonical id-addressed grid (Reto
+                # 2026-10-26: raw LaTeX layout is lost; the recovered
+                # label/caption persist in meta). The just-minted ids can't
+                # match the caller's address, so the edit itself is refused
+                # naming them — the retry with real ids lands.
+                if caption is not None or regen is not None:
+                    raise BadInput(
+                        "caption=/regen= don't apply together with a cell= "
+                        "edit on this LaTeX-sourced table chunk",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, cell=…, "
+                        "text='…')  # then caption=/regen= separately",
+                    )
+                # Cheap syntax gate BEFORE the lossy conversion: an A1
+                # ('B2') or dict-shaped address can never match the ids
+                # about to be minted — refuse while nothing is written,
+                # rather than converting first and refusing after
+                # (conversion is reserved for a well-formed id address
+                # that names no minted id).
+                if not isinstance(cell, str):
+                    raise BadInput(
+                        f"cell={cell!r} must be a '<row-id>.<col-id>' string",
+                        next=cell_next_hint(),
+                    )
+                _rid, _sep, _cref = cell.strip().partition(".")
+                if not _sep or not _rid or not _cref:
+                    raise BadInput(
+                        f"cell={cell!r} is not a cell address — the form "
+                        "is '<row-id>.<col-id>'",
+                        next=cell_next_hint(),
+                    )
+                if text is None:
+                    raise BadInput(
+                        "cell= addresses one field and needs text= for its new value",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, cell=…, text='…')",
+                    )
+                norm_conv = cur_table
+                cap_c = cur.get("caption") or recovered_caption or None
+                md_conv = table_to_markdown(norm_conv, caption=cap_c)
+                conv_patch: dict[str, Any] = {"table": norm_conv}
+                if recovered_label:
+                    conv_patch["label"] = recovered_label
+                if cur.get("flag") == "needs-table-review":
+                    conv_patch["flag"] = None
+                if dry_mode is not None:
+                    return self._render_draft_dry_run(
+                        chunk.dc,
+                        chunk.text or "",
+                        md_conv,
+                        mode=dry_mode,
+                        note=(
+                            "would convert this LaTeX-sourced table to the "
+                            "canonical id-addressed grid (raw LaTeX layout "
+                            "is dropped)"
+                        ),
+                    )
+                c = self.store.drafts.edit_text(
+                    handle, md_conv, base_sha=base_sha, meta_patch=conv_patch
+                )
+                if c is not None:
+                    self._attribute_touch([c.chunk_id])
+                    self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
+                # The ids were minted inside this call, so the caller's
+                # address can never name one — refuse naming the real ids
+                # (the retry lands on the now-canonical chunk).
+                row_ids = [rm.get("id") for rm in norm_conv.get("rowmeta", [])]
+                col_ids = [cc.get("id") for cc in norm_conv.get("columns", [])]
+                raise BadInput(
+                    f"cell={cell!r} named no id — but the edit DID "
+                    f"convert {(c or chunk).dc} to the canonical grid: "
+                    f"rows={row_ids[:12]}, cols={col_ids}. Raw LaTeX "
+                    "layout was dropped (caption/label kept in meta).",
+                    next=f"retry with a real address: "
+                    f"edit(kind='draft', id={chunk.dc!r}, "
+                    f"cell='{row_ids[0]}.{col_ids[0]}', text='…')"
+                    if row_ids and col_ids
+                    else f"get(kind='draft', id={chunk.dc!r})",
+                )
             # Non-destructive path for a LaTeX-sourced chunk (gripe 271129):
             # patch the raw LaTeX text in place instead of re-deriving
             # markdown from the (lossy) parsed grid below — that
@@ -3726,7 +3867,6 @@ class DraftHandler(Handler):
                 handle,
                 chunk,
                 cur_table=cur_table,
-                cell=cell,
                 find=find,
                 sub=sub,
                 text=text,
@@ -3739,7 +3879,53 @@ class DraftHandler(Handler):
             )
         replace_count: int | None = None
         if table is not None:
-            norm = normalize_table(table)
+            tobj: Any = table
+            if isinstance(tobj, str):
+                try:
+                    tobj = json.loads(tobj)
+                except json.JSONDecodeError:
+                    tobj = table  # normalise raises the honest error
+            if isinstance(cur_table, dict) and isinstance(tobj, dict):
+                # A whole-grid replace re-mints every id the caller did
+                # NOT re-supply. Feed the replaced table's dead ids —
+                # its whole retired pool, plus the live ids missing from
+                # the new grid — into the normalise as ``retired_ids``
+                # so a fresh mint can never collide with (resurface)
+                # one, and a stored ``[dc<N>~<id>]`` mention reports
+                # dangling instead of silently pointing at a re-minted
+                # row (spreadsheet-tables 1a: a deleted id never
+                # reappears). Ids the caller supplies in
+                # columns/rowmeta stay live (an edit rewrites cells,
+                # not identities — ``table={**meta.table, rows: …}``
+                # round-trips); the retired pool itself is NOT
+                # subtracted, so a deleted id still refuses
+                # ("already taken") if a caller tries to resurrect it.
+                dead = {str(i) for i in cur_table.get("retired_ids") or []}
+                supplied = {
+                    str(e["id"])
+                    for e in (
+                        *(tobj.get("columns") or []),
+                        *(tobj.get("rowmeta") or []),
+                    )
+                    if isinstance(e, dict) and e.get("id")
+                }
+                dead.update(
+                    str(e["id"])
+                    for e in (
+                        *(cur_table.get("columns") or []),
+                        *(cur_table.get("rowmeta") or []),
+                    )
+                    if isinstance(e, dict)
+                    and e.get("id")
+                    and str(e["id"]) not in supplied
+                )
+                tobj = {
+                    **tobj,
+                    "retired_ids": sorted(
+                        dead | {str(i) for i in (tobj.get("retired_ids") or [])}
+                    ),
+                }
+            norm = normalize_table(tobj)
         elif cell is not None:
             if text is None:
                 raise BadInput(
@@ -3749,7 +3935,28 @@ class DraftHandler(Handler):
                 )
             if not cur_table:
                 raise no_data_err
-            norm = set_cell(cur_table, cell, str(text))
+            try:
+                # ``cell`` is typed str|dict at the MCP boundary so a
+                # legacy {'row','col'} dict reaches here and is refused
+                # by resolve_cell with the id-form next=.
+                norm = set_cell(cur_table, cast(str, cell), str(text))
+            except BadInput as exc:
+                # On a pre-schema table the ids exist only in memory so
+                # far — persist the mint before the refusal lands, else
+                # the refusal's options= (and a follow-up get) would name
+                # ids that were never stored. Same write-then-refuse
+                # contract as the LaTeX-source conversion above; the
+                # re-raise names it so the write isn't silent.
+                if minted_legacy and dry_mode is None:
+                    self._persist_minted_table_ids(handle, cur, cur_table)
+                    raise BadInput(
+                        f"{exc.cause} — this pre-schema table had no ids; "
+                        "they were just minted and stored (get shows "
+                        "them)",
+                        next=exc.next,
+                        options=exc.options,
+                    ) from None
+                raise
         elif find is not None or sub is not None:
             if not cur_table:
                 raise no_data_err
@@ -3781,9 +3988,16 @@ class DraftHandler(Handler):
                 cur_table, pattern, replacement, regex=is_regex
             )
             if replace_count == 0:
+                mint_note = " — the table was left unchanged."
+                if minted_legacy and dry_mode is None:
+                    self._persist_minted_table_ids(handle, cur, cur_table)
+                    mint_note = (
+                        " — no cell was replaced, but this pre-schema "
+                        "table's row/col ids were just minted and stored "
+                        "(get shows them)."
+                    )
                 raise BadInput(
-                    f"no cell matches /{pattern}/ in {chunk.dc} — nothing "
-                    "replaced, the table was left unchanged.",
+                    f"no cell matches /{pattern}/ in {chunk.dc}{mint_note}",
                     next=f"get(kind='draft', id={chunk.dc!r})",
                 )
         elif caption is not None or regen is not None:
@@ -3858,13 +4072,31 @@ class DraftHandler(Handler):
             f"{_landed_sha_line(c.text) if c is not None else ''}"
         )
 
+    def _persist_minted_table_ids(
+        self, handle: str, cur: dict[str, Any], table: dict[str, Any]
+    ) -> None:
+        """Persist a lazily-minted pre-schema table — canonical
+        ``meta.table`` + re-derived text (plain GFM; ``get`` appends the
+        new ``ids:`` line from meta at read time), the stale
+        ``needs-table-review`` flag cleared. Used when a legacy
+        ``{header, rows}`` table mints ids on an edit that then refuses
+        (``cell=`` naming no id, a zero-match find/sub): the refusal's
+        ``options=``/``get`` hints must be true once it lands."""
+        md = table_to_markdown(table, caption=cur.get("caption") or None)
+        patch: dict[str, Any] = {"table": table}
+        if cur.get("flag") == "needs-table-review":
+            patch["flag"] = None
+        c = self.store.drafts.edit_text(handle, md, meta_patch=patch)
+        if c is not None:
+            self._attribute_touch([c.chunk_id])
+            self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
+
     def _edit_latex_table_in_place(
         self,
         handle: str,
         chunk: Any,
         *,
         cur_table: dict[str, Any],
-        cell: str | dict[str, Any] | None,
         find: str | None,
         sub: dict[str, Any] | str | None,
         text: str | None,
@@ -3875,9 +4107,8 @@ class DraftHandler(Handler):
         recovered_label: str | None = None,
         label_loss_hint: str = "",
     ) -> Response:
-        """``cell=``/``find=``/``sub=`` on a LaTeX-sourced table chunk
+        """``find=``/``sub=`` on a LaTeX-sourced table chunk
         (gripe 271129) — patch the raw LaTeX `chunk.text` in place via
-        :func:`~precis.utils.table_data.patch_latex_cell`/
         :func:`~precis.utils.table_data.patch_latex_table_text` instead of
         re-deriving markdown from the parsed grid. ``meta.table`` is
         deliberately never written here: the chunk stays LaTeX-sourced, so
@@ -3908,9 +4139,7 @@ class DraftHandler(Handler):
         writes nothing — no metadata is ever touched on this path anyway,
         so no extra note is needed (gr273955 residual)."""
         if caption is not None or regen is not None:
-            selector = (
-                "cell" if cell is not None else "find" if find is not None else "sub"
-            )
+            selector = "find" if find is not None else "sub"
             raise BadInput(
                 "caption=/regen= don't apply together with a "
                 "cell=/find=/sub= edit on this LaTeX-sourced table chunk "
@@ -3925,89 +4154,61 @@ class DraftHandler(Handler):
             )
         raw = chunk.text or ""
         replace_count: int | None = None
-        if cell is not None:
+        if find is not None:
+            if not find:
+                raise BadInput(
+                    "find= must be a non-empty string (the exact cell text to locate)",
+                    next=f"edit(kind='draft', id={chunk.dc!r}, find='old', text='new')",
+                )
             if text is None:
                 raise BadInput(
-                    "cell= addresses one field and needs text= for its new value",
-                    next=f"edit(kind='draft', id={chunk.dc!r}, cell={cell!r}, "
-                    "text='…')",
+                    "find-replace requires text= (the replacement "
+                    "value; pass '' to blank the matched cell content)",
+                    next=f"edit(kind='draft', id={chunk.dc!r}, find={find!r}, text='')",
                 )
-            row1, col0 = parse_cell_address(
-                cell,
-                n_rows=len(cur_table["rows"]),
-                n_cols=len(cur_table["header"]),
-            )
-            new_raw = patch_latex_cell(raw, row1, col0, str(text))
-            if new_raw is None:
-                raise BadInput(
-                    f"cell={cell!r} can't be safely located in {chunk.dc}'s "
-                    "raw LaTeX (it may fall inside a \\multicolumn span) — "
-                    "nothing changed.",
-                    next=(
-                        f"get(kind='draft', id={chunk.dc!r}) to inspect the "
-                        "raw text, or table={header,rows} to replace the "
-                        "whole chunk with canonical data"
-                    ),
-                )
+            # Literal find ⇒ literal replace. `subn` treats a str
+            # replacement as a *template*, so an unescaped `\cite{…}`
+            # or `$\sim$` raises re.error ("bad escape \\c"/"\\s") and a
+            # `\1` would silently interpolate a group. Escaping the
+            # backslashes makes the template emit the text verbatim —
+            # the regex sibling (`sub=`) keeps backreferences by design.
+            pattern_src = re.escape(find)
+            replacement = str(text).replace("\\", "\\\\")
         else:
-            if find is not None:
-                if not find:
-                    raise BadInput(
-                        "find= must be a non-empty string (the exact cell "
-                        "text to locate)",
-                        next=f"edit(kind='draft', id={chunk.dc!r}, "
-                        "find='old', text='new')",
-                    )
-                if text is None:
-                    raise BadInput(
-                        "find-replace requires text= (the replacement "
-                        "value; pass '' to blank the matched cell content)",
-                        next=f"edit(kind='draft', id={chunk.dc!r}, "
-                        f"find={find!r}, text='')",
-                    )
-                # Literal find ⇒ literal replace. `subn` treats a str
-                # replacement as a *template*, so an unescaped `\cite{…}`
-                # or `$\sim$` raises re.error ("bad escape \\c"/"\\s") and a
-                # `\1` would silently interpolate a group. Escaping the
-                # backslashes makes the template emit the text verbatim —
-                # the regex sibling (`sub=`) keeps backreferences by design.
-                pattern_src = re.escape(find)
-                replacement = str(text).replace("\\", "\\\\")
-            else:
-                assert sub is not None
-                f, r, flags = self._parse_sub_expr(sub)
-                prefix = "".join(f"(?{c})" for c in flags if c in "is")
-                pattern_src, replacement = prefix + f, r
-            try:
-                rx = re.compile(pattern_src)
-            except re.error as exc:
-                raise BadInput(
-                    f"invalid regex {pattern_src!r}: {exc}",
-                    next="fix the regex named above (or edit with a literal "
-                    "find= — no escaping needed): edit(kind='draft', "
-                    "id=<chunk>, find='old', text='new')",
-                ) from exc
-            try:
-                new_raw, replace_count = patch_latex_table_text(raw, rx, replacement)
-            except re.error as exc:
-                # Only reachable from sub=, whose replacement stays a live
-                # template; a literal find= is escaped above.
-                raise BadInput(
-                    f"invalid replacement template {replacement!r}: {exc} — "
-                    "in sub= the replacement is a regex template, so a "
-                    "backslash starts an escape (\\1 is a group). Double it "
-                    "(\\\\cite) to emit a literal backslash.",
-                    next=f"edit(kind='draft', id={chunk.dc!r}, "
-                    "find='old', text='new')  # literal, no escaping needed",
-                ) from exc
-            if replace_count == 0:
-                shown = find if find is not None else pattern_src
-                raise BadInput(
-                    f"no cell, caption or note matches /{shown}/ in "
-                    f"{chunk.dc} — nothing replaced, the table was left "
-                    "unchanged.",
-                    next=f"get(kind='draft', id={chunk.dc!r})",
-                )
+            assert sub is not None
+            f, r, flags = self._parse_sub_expr(sub)
+            prefix = "".join(f"(?{c})" for c in flags if c in "is")
+            pattern_src, replacement = prefix + f, r
+        try:
+            rx = re.compile(pattern_src)
+        except re.error as exc:
+            raise BadInput(
+                f"invalid regex {pattern_src!r}: {exc}",
+                next="fix the regex named above (or edit with a literal "
+                "find= — no escaping needed): edit(kind='draft', "
+                "id=<chunk>, find='old', text='new')",
+            ) from exc
+        try:
+            new_raw, replace_count = patch_latex_table_text(raw, rx, replacement)
+        except re.error as exc:
+            # Only reachable from sub=, whose replacement stays a live
+            # template; a literal find= is escaped above.
+            raise BadInput(
+                f"invalid replacement template {replacement!r}: {exc} — "
+                "in sub= the replacement is a regex template, so a "
+                "backslash starts an escape (\\1 is a group). Double it "
+                "(\\\\cite) to emit a literal backslash.",
+                next=f"edit(kind='draft', id={chunk.dc!r}, "
+                "find='old', text='new')  # literal, no escaping needed",
+            ) from exc
+        if replace_count == 0:
+            shown = find if find is not None else pattern_src
+            raise BadInput(
+                f"no cell, caption or note matches /{shown}/ in "
+                f"{chunk.dc} — nothing replaced, the table was left "
+                "unchanged.",
+                next=f"get(kind='draft', id={chunk.dc!r})",
+            )
         if dry_mode is not None:
             return self._render_draft_dry_run(chunk.dc, raw, new_raw, mode=dry_mode)
         meta_patch = {"label": recovered_label} if recovered_label else None
@@ -4761,6 +4962,111 @@ class DraftHandler(Handler):
             "the todo with tag(kind='todo', id='td<N>', add=['STATUS:done'])."
         )
 
+    def _render_table_select(self, dc: str, sel: str, raw: str) -> Response:
+        """``dc<N>~<sel>`` — read inside a table chunk by stable ids
+        (spreadsheet-tables 1a): ``<rowid>.<colid>`` one cell, ``<id>``
+        one row or column, ``<id>..<id>`` a row/column range in current
+        order. A deleted id reports as dangling."""
+        from precis.utils import handle_registry as _hr
+        from precis.utils.table_data import cell_text
+
+        nxt = (
+            f"get(kind='draft', id={dc!r}) lists the table's row/col ids "
+            "on the 'ids:' line under the grid"
+        )
+        chunk = self.store.drafts.get_draft_chunk(dc)
+        if chunk is None or chunk.retired:
+            raise NotFound(f"draft chunk {dc!r} not found", next=nxt)
+        if chunk.chunk_kind != "table":
+            raise BadInput(
+                f"~{sel} selects inside a table chunk — {dc} is {chunk.chunk_kind!r}",
+                next=nxt,
+            )
+        tbl = (chunk.meta or {}).get("table") or {}
+        columns = tbl.get("columns") or []
+        rowmeta = tbl.get("rowmeta") or []
+        if not columns:
+            raise BadInput(
+                f"{dc} has no stable row/column ids (a pre-schema table "
+                "or a recovered LaTeX grid)",
+                next="any table edit mints them — e.g. "
+                f"edit(kind='draft', id={dc!r}, caption='…'); "
+                f"then {nxt}",
+            )
+        # Same ``ids:`` trailer the plain chunk read appends — the full
+        # pool, so a row/cell select still shows the column ids a
+        # follow-up ``cell=`` needs.
+        _ids = table_ids_line(tbl)
+        ids_tail = f"\n{_ids}" if _ids else ""
+        if not re.fullmatch(_hr.TABLE_SEL_PATTERN, sel):
+            raise BadInput(
+                f"~{sel!r} is not a table selector — <rowid>.<colid>, "
+                "<id> or <id>..<id>",
+                next=nxt,
+            )
+        rows = tbl.get("rows") or []
+        if ".." in sel:
+            a, b = sel.split("..", 1)
+            for pool, label in ((rowmeta, "row"), (columns, "column")):
+                ia = next((i for i, e in enumerate(pool) if e.get("id") == a), None)
+                ib = next((i for i, e in enumerate(pool) if e.get("id") == b), None)
+                if ia is not None and ib is not None:
+                    if ia > ib:
+                        ia, ib = ib, ia
+                    if label == "row":
+                        lines = [
+                            f"{rm['id']}\t" + "\t".join(cell_text(c) for c in rows[i])
+                            for i, rm in enumerate(rowmeta[ia : ib + 1])
+                        ]
+                    else:
+                        lines = [f"{c['id']}:{c['name']}" for c in columns[ia : ib + 1]]
+                    return Response(body=f"{dc}~{sel}\n" + "\n".join(lines) + ids_tail)
+            raise NotFound(
+                f"~{sel!r} endpoints must both be {label} ids in {dc} "
+                "(or the id is dangling — deleted ids never reappear)",
+                next=nxt,
+            )
+        if "." in sel:
+            row_id, col_id = sel.split(".", 1)
+            ri = next(
+                (i for i, rm in enumerate(rowmeta) if rm.get("id") == row_id),
+                None,
+            )
+            ci = next(
+                (i for i, c in enumerate(columns) if c.get("id") == col_id),
+                None,
+            )
+            if ri is None or ci is None:
+                raise NotFound(
+                    f"dangling cell id in {dc}~{sel} "
+                    f"({'row' if ri is None else 'column'} side)",
+                    next=nxt,
+                )
+            return Response(body=f"{dc}~{sel}\n{cell_text(rows[ri][ci])}" + ids_tail)
+        ri = next((i for i, rm in enumerate(rowmeta) if rm.get("id") == sel), None)
+        if ri is not None:
+            names = [c["name"] for c in columns]
+            vals = [cell_text(c) for c in rows[ri]]
+            return Response(
+                body=f"{dc}~{sel}\n"
+                + ", ".join(f"{n}={v}" for n, v in zip(names, vals))
+                + ids_tail
+            )
+        ci = next((i for i, c in enumerate(columns) if c.get("id") == sel), None)
+        if ci is not None:
+            col = columns[ci]
+            lines = [
+                f"{rm['id']}\t{cell_text(row[ci])}" for rm, row in zip(rowmeta, rows)
+            ]
+            return Response(
+                body=f"{dc}~{sel}  ({col['name']})\n" + "\n".join(lines) + ids_tail
+            )
+        raise NotFound(
+            f"dangling id {sel!r} in {dc} — no such row or column "
+            "(deleted ids never reappear)",
+            next=nxt,
+        )
+
     def _render_chunk(self, handle: str) -> Response:
         # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``
         # (sibling step), ``-lo..hi`` (signed span — the reading-order
@@ -4827,7 +5133,7 @@ class DraftHandler(Handler):
                 and (span := self.store.drafts.block_own_chunks(c))
                 else ""
             )
-            + f"\n{c.text}"
+            + f"\n{_chunk_display_text(c)}"
             for c in window
         ]
         body = "\n\n".join(blocks)

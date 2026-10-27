@@ -1729,16 +1729,20 @@ def edit(
     # (regen=); the markdown text re-derives. Field-level edits (the shipped
     # draft-table-editing proposal, git history) instead of resending the
     # whole grid: find=/text= (or sub=) find-replace across cells, or
-    # cell='B2' (A1, row 1 = header) / cell={'row':,'col':} (1-based) +
-    # text= sets one field — both keep backslash-safe LaTeX cell content
-    # on the string text= channel. Plain text= (no find=/cell=) is still
-    # rejected — a table's markdown is derived, never hand-edited.
+    # cell='<row-id>.<col-id>' + text= sets one field (stable ids minted
+    # on the table's columns/rows, shown by get — not A1) — keeps
+    # backslash-safe LaTeX cell content on the string text= channel.
+    # Plain text= (no find=/cell=) is still rejected — a table's markdown
+    # is derived, never hand-edited.
     # table= also accepts a JSON string (same backslash-safe channel as
     # caption=) — the nested-dict form is subject to client-side backslash
     # doubling on some MCP clients (gr178512).
     table: str | dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
+    # cell is typed str|dict so a legacy {'row','col'} dict reaches the
+    # handler and is refused there with the id-form next= — a str-only
+    # schema would fail pydantic at the boundary with a bare type error.
     cell: str | dict[str, Any] | None = None,
     # draft review ledger (paper-writing pipeline rung 3, see
     # precis-draft-help): review='human'|'cites'|'flow'|… records that

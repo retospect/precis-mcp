@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.export import latex
 from precis.handlers.draft import DraftHandler
 from precis.utils.table_data import (
@@ -17,14 +17,14 @@ from precis.utils.table_data import (
     _blank_balanced_command,
     _skip_colspec,
     _tabular_env_span,
-    col_letters_to_index,
     find_replace_cells,
-    index_to_col_letters,
+    fresh_table_id,
     infer_scalar,
-    locate_latex_cell,
+    is_table_id,
+    mint_table_id,
     normalize_table,
-    parse_cell_address,
     parse_markdown_table,
+    resolve_cell,
     set_cell,
     table_payload,
     table_to_markdown,
@@ -60,9 +60,20 @@ def test_normalize_rejects_ragged_and_nonscalar() -> None:
         normalize_table({"header": ["a", "b"], "rows": [[1]]})
     with pytest.raises(BadInput, match="JSON scalar"):
         normalize_table({"header": ["a"], "rows": [[{"x": 1}]]})
-    # numbers stay numbers (numerics-indexable), header coerced to str
+    # numbers stay numbers (numerics-indexable), header coerced to str;
+    # columns/rowmeta are minted with ids + pos
     norm = normalize_table({"header": [1, "gap"], "rows": [["Si", 1.12]]})
-    assert norm == {"header": ["1", "gap"], "rows": [["Si", 1.12]]}
+    assert norm["header"] == ["1", "gap"]
+    assert norm["rows"] == [["Si", 1.12]]
+    assert [c["name"] for c in norm["columns"]] == ["1", "gap"]
+    assert all(is_table_id(c["id"]) for c in norm["columns"])
+    assert all(is_table_id(r["id"]) for r in norm["rowmeta"])
+    assert [c["pos"] for c in norm["columns"]] == sorted(
+        c["pos"] for c in norm["columns"]
+    )
+    assert [r["pos"] for r in norm["rowmeta"]] == sorted(
+        r["pos"] for r in norm["rowmeta"]
+    )
 
 
 def test_normalize_table_string_channel_backslash_survives_single() -> None:
@@ -282,47 +293,65 @@ def test_infer_scalar_non_finite_stays_string() -> None:
     assert infer_scalar("1.5") == 1.5 and isinstance(infer_scalar("1.5"), float)
 
 
-def test_col_letter_roundtrip() -> None:
-    assert col_letters_to_index("A") == 0
-    assert col_letters_to_index("Z") == 25
-    assert col_letters_to_index("AA") == 26
-    for i in (0, 1, 25, 26, 27, 51, 52, 701, 702):
-        assert col_letters_to_index(index_to_col_letters(i)) == i
+def test_mint_table_id_letter_first_property() -> None:
+    """10k mints: 4 chars, Crockford base-32, first char a letter other
+    than ``p`` (the ``~pN`` selector owns ``p``; ``~N``/``~N..M`` own
+    digits) — the spec's property test."""
+    for _ in range(10_000):
+        i = mint_table_id()
+        assert is_table_id(i)
+        assert len(i) == 4
+        assert i[0].isalpha() and i[0] != "p"
 
 
-def test_parse_cell_address_a1_and_dict() -> None:
-    # row 1 = header; data rows are 2..1+n_rows
-    assert parse_cell_address("B2", n_rows=3, n_cols=3) == (2, 1)
-    assert parse_cell_address("A1", n_rows=3, n_cols=3) == (1, 0)
-    assert parse_cell_address({"row": 2, "col": 2}, n_rows=3, n_cols=3) == (2, 1)
+def test_fresh_table_id_never_reuses() -> None:
+    """A retired id can never be re-minted: ``used`` (live ∪ retired) is
+    excluded — a monkeypatched forced draw still skips it."""
+    import precis.utils.table_data as td
+
+    assert fresh_table_id({"aaaa"}) != "aaaa"
+    draws = iter(["zzzz", "zzzz", "yyyy"])
+    old = td.mint_table_id
+    td.mint_table_id = lambda: next(draws)
+    try:
+        assert td.fresh_table_id({"zzzz"}) == "yyyy"
+    finally:
+        td.mint_table_id = old
 
 
-def test_parse_cell_address_out_of_range_and_malformed() -> None:
-    with pytest.raises(BadInput, match="out of range"):
-        parse_cell_address("D2", n_rows=2, n_cols=2)  # only 2 cols (A, B)
-    with pytest.raises(BadInput, match="out of range"):
-        parse_cell_address("A9", n_rows=2, n_cols=2)  # only 1(header)+2 rows
-    with pytest.raises(BadInput, match="not valid A1 notation"):
-        parse_cell_address("2B", n_rows=2, n_cols=2)
-    with pytest.raises(BadInput, match="must have both"):
-        parse_cell_address({"row": 1}, n_rows=2, n_cols=2)
-    with pytest.raises(BadInput, match="A1 string or"):
-        parse_cell_address(cast(Any, 1.5), n_rows=2, n_cols=2)
+def test_resolve_cell_id_address() -> None:
+    table = normalize_table({"header": ["a", "b"], "rows": [[1, 2], [3, 4], [5, 6]]})
+    rid = table["rowmeta"][1]["id"]
+    cid = table["columns"][0]["id"]
+    assert resolve_cell(table, f"{rid}.{cid}") == (1, 0)
+    # column side may also be named
+    assert resolve_cell(table, f"{rid}.b") == (1, 1)
 
 
-def test_set_cell_header_and_data_cell() -> None:
-    table = {"header": ["el", "gap_eV"], "rows": [["Si", 1.12], ["Ge", 0.67]]}
-    # data cell: numeric edit stays a number
-    norm = set_cell(table, "B2", "1.523")
+def test_resolve_cell_refuses_a1_and_dict_and_unknown_ids() -> None:
+    table = normalize_table({"header": ["a", "b"], "rows": [[1, 2]]})
+    with pytest.raises(BadInput, match="not a cell address"):
+        resolve_cell(table, "B2")  # A1 gone — refused with the id form
+    with pytest.raises(BadInput, match="must be a"):
+        resolve_cell(table, {"row": 2, "col": 2})
+    with pytest.raises(BadInput, match="no row id"):
+        resolve_cell(table, "zzzz.a")
+    with pytest.raises(BadInput, match="no column id/name"):
+        resolve_cell(table, f"{table['rowmeta'][0]['id']}.zzzz")
+
+
+def test_set_cell_by_id() -> None:
+    table = normalize_table(
+        {"header": ["el", "gap_eV"], "rows": [["Si", 1.12], ["Ge", 0.67]]}
+    )
+    rid, cid = table["rowmeta"][0]["id"], table["columns"][1]["id"]
+    norm = set_cell(table, f"{rid}.{cid}", "1.523")
     assert norm["rows"][0] == ["Si", 1.523]
     assert isinstance(norm["rows"][0][1], float)
-    # header rename (row 1)
-    norm2 = set_cell(table, "B1", "gap (eV)")
-    assert norm2["header"] == ["el", "gap (eV)"]
-    assert norm2["rows"] == table["rows"]  # unrelated data untouched
-    # dict address form (row 3 = 2nd data row, col 2 = gap_eV)
-    norm3 = set_cell(table, {"row": 3, "col": 2}, "0.7")
-    assert norm3["rows"][1] == ["Ge", 0.7]
+    # ids survive the write — an edit rewrites cells, not identities
+    assert norm["rowmeta"][0]["id"] == rid
+    assert norm["columns"][1]["id"] == cid
+    assert norm["rows"][1] == ["Ge", 0.67]  # unrelated data untouched
 
 
 def test_find_replace_cells_string_only_and_count() -> None:
@@ -390,24 +419,49 @@ def test_edit_table_find_no_match_refuses_and_leaves_chunk_untouched(
     assert after == before
 
 
-def test_edit_table_cell_a1_string_and_dict_address(
-    draft: DraftHandler, hub: Hub
-) -> None:
+def _table_ids(hub: Hub, tc: Any) -> tuple[list[str], list[str]]:
+    """``(row_ids, col_ids)`` of the chunk's canonical table, in order —
+    the stable ids ``cell='<row-id>.<col-id>'`` addresses by."""
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    t = meta["table"]
+    return [r["id"] for r in t["rowmeta"]], [c["id"] for c in t["columns"]]
+
+
+def test_edit_table_cell_id_address(draft: DraftHandler, hub: Hub) -> None:
     tc = _seed_table(draft, hub)
-    draft.edit(id=tc.dc, cell="B2", text="1.523")
+    rows, cols = _table_ids(hub, tc)
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[1]}", text="1.523")
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["rows"][0] == ["Si", 1.523]
     assert isinstance(meta["table"]["rows"][0][1], float)  # numerics-indexable
 
-    draft.edit(id=tc.dc, cell={"row": 3, "col": 2}, text="0.7")
+    # the column side may also be named; ids survive the write either way
+    draft.edit(id=tc.dc, cell=f"{rows[1]}.gap_eV", text="0.7")
     meta2 = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta2["table"]["rows"][1] == ["Ge", 0.7]
+    assert meta2["table"]["rowmeta"][1]["id"] == rows[1]
+
+
+def test_edit_table_cell_a1_and_dict_forms_refused(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A1 (``'B2'``) and ``{'row','col'}`` addressing are gone — both
+    refuse with a ``next=`` showing the ``<row-id>.<col-id>`` form, and
+    neither touches the chunk."""
+    tc = _seed_table(draft, hub)
+    before = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    with pytest.raises(BadInput, match="not a cell address") as exc:
+        draft.edit(id=tc.dc, cell="B2", text="x")
+    assert "row-id" in str(exc.value.next)
+    with pytest.raises(BadInput, match="must be a"):
+        draft.edit(id=tc.dc, cell=cast(Any, {"row": 2, "col": 2}), text="x")
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle) == before
 
 
 def test_edit_table_cell_requires_text(draft: DraftHandler, hub: Hub) -> None:
     tc = _seed_table(draft, hub)
     with pytest.raises(BadInput, match="needs text="):
-        draft.edit(id=tc.dc, cell="B2")
+        draft.edit(id=tc.dc, cell="r2k7.k5f9")
 
 
 def test_edit_table_cell_nan_stays_string_no_crash(
@@ -416,7 +470,8 @@ def test_edit_table_cell_nan_stays_string_no_crash(
     # 'NaN' is a legit "not measured" placeholder — must store as the
     # string "NaN", not float('nan') (which jsonb would reject outright).
     tc = _seed_table(draft, hub)
-    draft.edit(id=tc.dc, cell="B2", text="NaN")
+    rows, cols = _table_ids(hub, tc)
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[1]}", text="NaN")
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     val = meta["table"]["rows"][0][1]
     assert val == "NaN" and isinstance(val, str)
@@ -431,21 +486,24 @@ def test_edit_table_conflicting_selectors_rejected(
         draft.edit(
             id=tc.dc,
             table={"header": ["x"], "rows": [[1]]},
-            cell="B2",
+            cell="r2k7.k5f9",
             text="x",
         )
     after = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert after == before  # nothing applied — neither selector silently won
 
 
-def test_edit_table_cell_header_rename(draft: DraftHandler, hub: Hub) -> None:
+def test_edit_table_cell_header_rename_is_not_a_cell_address(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The header row carries no row id — renaming a column is a
+    column-schema op (``rename_column=``, slice 1b), never a cell edit.
+    The old ``cell='B1'`` route is refused and touches nothing."""
     tc = _seed_table(draft, hub)
-    draft.edit(id=tc.dc, cell="B1", text="gap (eV)")
-    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
-    assert meta["table"]["header"] == ["element", "gap (eV)"]
-    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
-    assert chunk is not None
-    assert "| gap (eV) |" in chunk.text
+    before = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    with pytest.raises(BadInput, match="not a cell address"):
+        draft.edit(id=tc.dc, cell="B1", text="gap (eV)")
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle) == before
 
 
 def test_edit_table_sub_regex_find_replace(draft: DraftHandler, hub: Hub) -> None:
@@ -462,7 +520,8 @@ def test_edit_table_backslash_roundtrip_latex_export(
     via cell=/text= stores a single backslash in meta.table and LaTeX export
     emits it unescaped (proves gr178512's fix for the supported edit path)."""
     tc = _seed_table(draft, hub)
-    draft.edit(id=tc.dc, cell="B2", text=r"$\sim$3 zJ")
+    rows, cols = _table_ids(hub, tc)
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[1]}", text=r"$\sim$3 zJ")
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     cell_val = meta["table"]["rows"][0][1]
     assert cell_val == r"$\sim$3 zJ"
@@ -532,32 +591,44 @@ _RAW_TABULAR = (
 )
 
 
-def test_edit_table_recovers_grid_from_raw_latex_and_patches_in_place(
+def test_edit_table_cell_on_latex_source_converts_then_refuses_with_ids(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """The read path (``table_payload``) always recovered these chunks, so
     ``get()`` rendered them while every write door refused — the read/write
-    divergence of gripe 263197. The write path now recovers through the same
-    function for ADDRESSING, so a flagged chunk is editable without
-    hand-reconstructing its grid — but (gripe 271129) the raw LaTeX is
-    patched IN PLACE rather than replaced with markdown re-derived from the
-    (lossy) parsed grid: ``meta.table`` is never written, and the flag is
-    left exactly as-is, because no canonical grid was actually persisted."""
+    divergence of gripe 263197. ``cell=`` is id-addressed now
+    (spreadsheet-tables 1a), and a LaTeX-sourced chunk has no ids: the
+    first cell edit CONVERTS it to the canonical id-addressed grid (spec
+    §13 — raw LaTeX layout is dropped, the flag cleared) and then refuses,
+    naming the just-minted ids the caller couldn't know. The retry with a
+    real address lands."""
     tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert not meta.get("table")  # precondition: no canonical data
     assert meta["flag"] == "needs-table-review"
 
-    # A cell edit used to raise "this table chunk has no stored data".
-    draft.edit(id=tc.dc, cell="A1", text="order")
+    with pytest.raises(BadInput, match="DID convert") as exc:
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="order")
+    assert "cell='" in str(exc.value.next)  # offers a real address
 
+    # The conversion landed despite the refusal — canonical grid with ids,
+    # derived markdown text, review flag cleared.
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    tbl = meta["table"]
+    assert tbl["header"] == ["$k$", "Simple", "Combinatorial"]
+    assert all(is_table_id(c["id"]) for c in tbl["columns"])
+    assert all(is_table_id(r["id"]) for r in tbl["rowmeta"])
+    assert not meta.get("flag")
     chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
-    assert "order & \\textbf{Simple} & \\textbf{Combinatorial}" in chunk.text
-    assert "\\toprule" in chunk.text and "\\bottomrule" in chunk.text
-    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
-    assert not meta.get("table")  # never promoted to canonical
-    assert meta["flag"] == "needs-table-review"  # honest: still not canonical
+    assert "| $k$ | Simple | Combinatorial |" in chunk.text
+    assert "\\toprule" not in chunk.text  # raw LaTeX layout dropped
+
+    # Retry with the real ids — the cell edit now applies.
+    rows, cols = _table_ids(hub, tc)
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="order")
+    meta2 = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta2["table"]["rows"][0][0] == "order"
 
 
 def test_edit_table_find_replace_patches_flagged_latex_chunk_in_place(
@@ -583,7 +654,7 @@ def test_edit_table_unrecoverable_chunk_still_refuses(
     find, and the honest refusal has to survive."""
     tc = _flagged_latex_chunk(draft, hub, "[ht]\n\\centering")
     with pytest.raises(BadInput, match="no stored data"):
-        draft.edit(id=tc.dc, cell="A1", text="nope")
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="nope")
 
 
 def test_edit_table_ragged_parse_falls_through_to_refusal(
@@ -597,7 +668,7 @@ def test_edit_table_ragged_parse_falls_through_to_refusal(
     all."""
     tc = _flagged_latex_chunk(draft, hub, "| a | b |\n| --- | --- |\n| 1 | 2 | 3 |")
     with pytest.raises(BadInput, match="no stored data"):
-        draft.edit(id=tc.dc, cell="A1", text="nope")
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="nope")
     # and the chunk is untouched — no partial grid persisted, flag intact
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert not meta.get("table")
@@ -607,36 +678,36 @@ def test_edit_table_ragged_parse_falls_through_to_refusal(
 def test_edit_table_recovers_caption_from_raw_latex(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """A caption living only in the raw ``\\caption{}`` survives a cell
-    edit — the in-place LaTeX patch (gripe 271129) never re-derives
-    markdown, so the caption's own ``\\caption{}`` command stays put in the
-    text verbatim (stronger than the old contract, which required a
-    separate recovery step and lost the raw command either way)."""
+    """A caption living only in the raw ``\\caption{}`` survives the
+    cell-edit conversion (spec §13): the raw ``\\caption{}`` command is
+    dropped with the rest of the LaTeX layout, but the recovered legend is
+    carried into the derived markdown's ``**…**`` lead line."""
     raw = "{cc}\n\\caption{Yield thresholds}\n\\toprule\na & b \\\\\n1 & 2 \\\\\n"
     tc = _flagged_latex_chunk(draft, hub, raw)
-    draft.edit(id=tc.dc, cell="A1", text="alpha")
+    with pytest.raises(BadInput, match="DID convert"):
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="alpha")
     chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
-    assert "\\caption{Yield thresholds}" in chunk.text
-    assert "alpha & b" in chunk.text
+    assert "**Yield thresholds**" in chunk.text
+    assert "\\caption" not in chunk.text  # raw LaTeX dropped by conversion
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["header"] == ["a", "b"]
 
 
-def test_edit_table_cell_edit_persists_label_via_in_place_patch(
+def test_edit_table_cell_edit_persists_label_through_conversion(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """A ``\\label{...}`` recovered alongside the grid lands in
-    ``meta.label`` even on the raw-LaTeX in-place patch path (gripe
-    271129) — the raw ``\\label{}`` command itself is untouched (only the
-    row/cell area is ever rewritten), but ``meta.label`` gives the anchor
-    a durable, queryable home instead of relying solely on re-parsing raw
-    text on every read."""
+    ``meta.label`` on the cell-edit conversion path (gripe 271129 + spec
+    §13) — the raw ``\\label{}`` command is dropped with the rest of the
+    LaTeX layout, so ``meta.label`` is the anchor's only durable home."""
     raw = "{cc}\n\\label{tab:x}\n\\toprule\na & b \\\\\n1 & 2 \\\\\n"
     tc = _flagged_latex_chunk(draft, hub, raw)
-    draft.edit(id=tc.dc, cell="A1", text="alpha")
+    with pytest.raises(BadInput, match="DID convert"):
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="alpha")
     chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
-    assert "\\label{tab:x}" in chunk.text  # raw label untouched
-    assert "alpha & b" in chunk.text
+    assert "\\label" not in chunk.text  # raw LaTeX dropped
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta.get("label") == "tab:x"
 
@@ -672,9 +743,7 @@ def test_edit_table_markdown_fallback_recovery_promotes_to_canonical(
     ``""`` (the ``or`` → ``and`` mutant, since `chunk.text` is truthy
     here) it would misclassify this markdown-recovered chunk as
     LaTeX-sourced and divert the edit into the raw-LaTeX in-place patcher
-    — which can't find any ``&``/``\\\\``-delimited LaTeX structure in
-    GFM pipe syntax (refusing or mangling the whole chunk), and never
-    promotes ``meta.table`` either way."""
+    — which patches the raw text and never promotes ``meta.table``."""
     proj = _proj(hub)
     draft.put(id="d", title="T", project=proj)
     draft.put(
@@ -692,13 +761,21 @@ def test_edit_table_markdown_fallback_recovery_promotes_to_canonical(
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert not meta.get("table")  # precondition: recoverable only via the fallback
 
-    draft.edit(id=tc.dc, cell="A1", text="one")
+    # cell= is id-addressed now — A1 refuses and touches nothing (the
+    # recovered grid's just-minted ids aren't caller-knowable).
+    with pytest.raises(BadInput, match="not a cell address"):
+        draft.edit(id=tc.dc, cell="A1", text="one")
+    assert not hub.live_store.drafts.draft_chunk_meta(tc.handle).get("table")
+
+    draft.edit(id=tc.dc, find="a", text="one")
 
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     # Promoted to canonical — proves the ordinary re-derive path fired
     # (is_latex_source correctly False), not the LaTeX in-place patcher,
     # which never writes meta.table.
-    assert meta.get("table") == {"header": ["one", "b"], "rows": [["1", "2"]]}
+    assert meta["table"]["header"] == ["one", "b"]
+    assert meta["table"]["rows"] == [["1", "2"]]
+    assert all(is_table_id(c["id"]) for c in meta["table"]["columns"])
 
 
 # ── LaTeX in-place patching (gripe 271129) ─────────────────────────────
@@ -815,36 +892,47 @@ def test_edit_table_latex_full_gripe_edit_end_to_end(
     assert not meta.get("table")  # never promoted — stays LaTeX-sourced
 
 
-def test_edit_table_latex_cell_address_patches_in_place(
+def test_edit_table_latex_cell_converts_full_wrapped_chunk(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """``cell=`` addressing (not just ``find=``) also patches the raw LaTeX
-    in place — row 6 (1-based, header=row1) is the BEACON data row, col 1
-    is Role."""
+    """A well-formed id address on the full float-wrapped LaTeX chunk
+    takes the convert-then-refuse path: the parsed grid is promoted to
+    canonical (``meta.label`` carried along), the refusal names fresh
+    ids, and a retry lands. Raw LaTeX layout — ``\\label``, rules,
+    ``\\,`` thin spaces — is dropped by design (spec §13;
+    ``find=``/``sub=`` remain for in-place edits)."""
     tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
-    draft.edit(id=tc.dc, cell={"row": 6, "col": 1}, text="BEACON2")
+    with pytest.raises(BadInput, match="DID convert") as exc:
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="BEACON2")
+    assert "cell='" in str(exc.value.next)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    tbl = meta["table"]
+    assert tbl["header"] == ["Role", "$\\lambda$", "Cassette", "Count"]
+    assert meta.get("label") == "tab:poc-roles"
     chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert chunk is not None
-    assert "BEACON2 & 650\\,nm (emission)" in chunk.text
-    assert "\\label{tab:poc-roles}" in chunk.text
+    assert "\\label" not in chunk.text and "\\begin{tabular}" not in chunk.text
+
+    rows, cols = _table_ids(hub, tc)
+    draft.edit(id=tc.dc, cell=f"{rows[4]}.{cols[0]}", text="BEACON2")
+    meta2 = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta2["table"]["rows"][4][0] == "BEACON2"
 
 
-def test_edit_table_latex_cell_refuses_when_unlocatable_in_multicolumn_row(
+def test_edit_table_latex_cell_conversion_flattens_multicolumn_row(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """The fallback guarantee this fix leans on: when the parsed-grid
-    address can't be mapped back to a real raw cell (the \\multicolumn
-    row only has 2 raw ``&``-delimited fields, not the parsed grid's 4),
-    the edit REFUSES — chunk left byte-for-byte untouched — rather than
-    silently patching the wrong text. Loud refusal, never silent damage."""
+    """The ``\\multicolumn`` summary row has no span in the canonical
+    grid — conversion lands it as an ordinary row, short cells padded
+    with ``""`` to the table width. That's the documented lossy edge of
+    spec §13: the cell content is preserved verbatim, the span is not."""
     tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
-    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
-    assert before is not None
-    with pytest.raises(BadInput, match="can't be safely located"):
-        draft.edit(id=tc.dc, cell={"row": 7, "col": 4}, text="oops")
-    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
-    assert after is not None
-    assert after.text == before.text
+    with pytest.raises(BadInput, match="DID convert"):
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="x")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    rows = meta["table"]["rows"]
+    total = next(r for r in rows if r[0] == "Total")
+    assert total == ["Total", "5 boxels, 4 roles", "", ""]
 
 
 # ── position-shadow addressing machinery (fallbacks, pure functions) ──
@@ -936,20 +1024,6 @@ def test_skip_colspec_unbalanced_group_stops_at_open_brace() -> None:
     assert end == 0
 
 
-def test_locate_latex_cell_row_out_of_range_returns_none() -> None:
-    tc_text = _POC_ROLES_LATEX
-    assert locate_latex_cell(tc_text, 999, 0) is None  # way past the last row
-    assert locate_latex_cell(tc_text, 0, 0) is None  # row1=0 -> negative index
-
-
-def test_locate_latex_cell_defensive_exception_guard_returns_none() -> None:
-    """A malformed ``row1`` blows up inside the addressing arithmetic
-    (``row1 - 1`` on a non-int) — the broad ``except Exception`` guard
-    still returns the same honest "can't locate" ``None`` rather than
-    letting an internal error escape to the caller."""
-    assert locate_latex_cell(_POC_ROLES_LATEX, cast(Any, "oops"), 0) is None
-
-
 def test_edit_table_latex_caption_regen_rejected_alongside_data_edit(
     draft: DraftHandler, hub: Hub
 ) -> None:
@@ -978,9 +1052,7 @@ def test_edit_table_latex_caption_alone_rejected_alongside_cell_edit(
     before = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert before is not None
     with pytest.raises(BadInput, match="don't apply together"):
-        draft.edit(
-            id=tc.dc, cell={"row": 6, "col": 1}, text="oops", caption="New caption"
-        )
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="oops", caption="New caption")
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert after is not None
     assert after.text == before.text
@@ -998,7 +1070,7 @@ def test_edit_table_latex_regen_alone_rejected_alongside_cell_edit(
     with pytest.raises(BadInput, match="don't apply together"):
         draft.edit(
             id=tc.dc,
-            cell={"row": 6, "col": 1},
+            cell="r2k7.k5f9",
             text="oops",
             regen={"source": "manual"},
         )
@@ -1019,7 +1091,7 @@ def test_edit_table_latex_cell_requires_text(draft: DraftHandler, hub: Hub) -> N
     before = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert before is not None
     with pytest.raises(BadInput, match="needs text="):
-        draft.edit(id=tc.dc, cell="A1")
+        draft.edit(id=tc.dc, cell="r2k7.k5f9")
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert after is not None
     assert after.text == before.text
@@ -1347,7 +1419,8 @@ def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
     before = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert before is not None
 
-    r = draft.edit(id=tc.dc, cell="A2", text="Ge", dry_run=True)
+    rows, cols = _table_ids(hub, tc)
+    r = draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="Ge", dry_run=True)
     assert "[dry-run]" in r.body
     assert "Ge" in r.body
 
@@ -1385,3 +1458,377 @@ def test_edit_table_structural_op_dry_run_still_rejects_with_table_aware_hint(
     assert exc.value.next is not None
     assert "find=" in exc.value.next and "text=" in exc.value.next
     assert tc.dc in exc.value.next
+
+
+# ── stable ids in get + ~sel reads (spreadsheet-tables 1a rework) ──────
+
+
+def _preschema_table_chunk(draft: DraftHandler, hub: Hub, slug: str) -> Any:
+    """A table chunk stripped to the pre-schema shape — legacy
+    ``meta.table = {header, rows}`` AND plain-GFM text with no ``ids:``
+    trailer, the shape every table written before the column schema
+    still has. BOTH halves are stripped: an ``ids:`` line left in the
+    stored text would make a "get shows the ids" check pass before any
+    mint (the vacuous-fixture hole must-fix 1 slipped through)."""
+    proj = _proj(hub)
+    draft.put(id=slug, title="T", project=proj)
+    draft.put(
+        id=slug,
+        chunk_kind="table",
+        table={
+            "header": ["element", "gap_eV"],
+            "rows": [["Si", 1.12], ["Ge", 0.67]],
+        },
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    tc = next(
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "table"
+    )
+    hub.live_store.drafts.edit_text(
+        tc.handle,
+        "| element | gap_eV |\n| --- | --- |\n| Si | 1.12 |\n| Ge | 0.67 |",
+    )
+    hub.live_store.drafts.patch_chunk_meta(
+        tc.handle,
+        {
+            "table": {
+                "header": ["element", "gap_eV"],
+                "rows": [["Si", 1.12], ["Ge", 0.67]],
+            }
+        },
+    )
+    return tc
+
+
+def test_get_table_chunk_shows_ids_line_then_cell_edit_lands(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The skill/next= promise made true: ``get`` renders the row/col ids
+    on an ``ids:`` line under the grid, and an id taken straight from
+    that output addresses ``cell=``."""
+    tc = _seed_table(draft, hub)
+    rows, cols = _table_ids(hub, tc)
+    body = draft.get(id=tc.dc).body
+    assert f"ids: rows {' '.join(rows)}; cols {' '.join(cols)}" in body
+
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[1]}", text="1.523")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"][0][1] == 1.523
+
+
+def test_table_to_markdown_bare_dict_stays_plain() -> None:
+    """A ``{header, rows}`` table with no ids renders plain GFM — no
+    ``ids:`` trailer (pre-schema read unchanged)."""
+    md = table_to_markdown({"header": ["a"], "rows": [[1]]})
+    assert "ids:" not in md
+    assert md == "| a |\n| --- |\n| 1 |"
+
+
+def test_edit_table_cell_on_preschema_mints_then_refuses_with_ids(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A pre-schema ``{header, rows}`` table mints ids on its first write
+    touch — even a *refusing* ``cell=`` leaves them stored (and shown by
+    get), so the retry with a real address lands instead of dead-ending."""
+    tc = _preschema_table_chunk(draft, hub, "d")
+    assert "columns" not in hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+    # pre-mint the read has no ids line at all — the check below fails
+    # here, so it can only pass because the mint really landed
+    assert "ids: rows" not in draft.get(id=tc.dc).body
+
+    with pytest.raises(BadInput, match="no row id") as exc:
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="x")
+    assert "just minted" in str(exc.value)
+
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert all(is_table_id(c["id"]) for c in meta["table"]["columns"])
+    assert all(is_table_id(r["id"]) for r in meta["table"]["rowmeta"])
+    # get shows the minted ids — the SAME ids meta stores, rendered from
+    # meta.table at read time (the refusal's next= is true)
+    rows, cols = _table_ids(hub, tc)
+    assert (
+        f"ids: rows {' '.join(rows)}; cols {' '.join(cols)}" in draft.get(id=tc.dc).body
+    )
+
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[1]}", text="1.523")
+    meta2 = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta2["table"]["rows"][0][1] == 1.523
+    assert meta2["table"]["rowmeta"][0]["id"] == rows[0]  # ids stable
+
+
+def test_edit_table_caption_only_mints_preschema_table(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``caption=`` alone on a pre-schema table persists the normalized
+    table — ids land on the metadata-only edit too (no "edit it once"
+    dead end)."""
+    tc = _preschema_table_chunk(draft, hub, "d")
+    assert "ids: rows" not in draft.get(id=tc.dc).body  # nothing minted yet
+    draft.edit(id=tc.dc, caption="New legend")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert all(is_table_id(c["id"]) for c in meta["table"]["columns"])
+    assert all(is_table_id(r["id"]) for r in meta["table"]["rowmeta"])
+    assert meta.get("caption") == "New legend"
+    rows, cols = _table_ids(hub, tc)
+    assert (
+        f"ids: rows {' '.join(rows)}; cols {' '.join(cols)}" in draft.get(id=tc.dc).body
+    )
+
+
+def test_edit_table_cell_a1_on_preschema_mints_and_refuses(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """An A1 address on a pre-schema table still refuses the id-form —
+    but the mint lands anyway, so get/cell= work from there."""
+    tc = _preschema_table_chunk(draft, hub, "d")
+    with pytest.raises(BadInput, match="not a cell address"):
+        draft.edit(id=tc.dc, cell="B2", text="x")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert all(is_table_id(c["id"]) for c in meta["table"]["columns"])
+
+
+def test_table_select_reads_row_col_cell_and_range(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``dc<N>~<sel>`` end-to-end: one cell, one row, one column, a row
+    range, and a dangling id — all resolved against the canonical ids."""
+    tc = _seed_table(draft, hub)
+    rows, cols = _table_ids(hub, tc)
+
+    cell = draft.get(id=f"{tc.dc}~{rows[0]}.{cols[1]}")
+    assert "1.12" in cell.body
+    row = draft.get(id=f"{tc.dc}~{rows[1]}")
+    assert "gap_eV=0.67" in row.body and "element=Ge" in row.body
+    col = draft.get(id=f"{tc.dc}~{cols[0]}")
+    assert f"{rows[0]}\tSi" in col.body and f"{rows[1]}\tGe" in col.body
+    rng = draft.get(id=f"{tc.dc}~{rows[0]}..{rows[1]}")
+    assert f"{rows[0]}\tSi\t1.12" in rng.body
+    with pytest.raises(NotFound, match="dangling id"):
+        draft.get(id=f"{tc.dc}~zzzz")
+    with pytest.raises(NotFound, match="dangling cell id"):
+        draft.get(id=f"{tc.dc}~{rows[0]}.zzzz")
+
+
+def test_table_select_on_preschema_names_a_minting_edit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``~sel`` on a table with no ids points at an edit that mints —
+    and minting actually makes the same read work."""
+    tc = _preschema_table_chunk(draft, hub, "d")
+    with pytest.raises(BadInput, match="no stable row/column ids") as exc:
+        draft.get(id=f"{tc.dc}~r2k7")
+    assert "mints" in str(exc.value.next)
+    draft.edit(id=tc.dc, caption="mints me")
+    rows, _ = _table_ids(hub, tc)
+    assert rows[0] in draft.get(id=f"{tc.dc}~{rows[0]}").body
+
+
+def test_edit_table_latex_a1_refuses_before_converting(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """An A1/dict ``cell=`` on a LaTeX-sourced chunk refuses on the cheap
+    syntax gate — BEFORE the lossy conversion writes, so the raw LaTeX
+    (layout, ``\\label``, flag) is fully intact."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    with pytest.raises(BadInput, match="not a cell address"):
+        draft.edit(id=tc.dc, cell="B2", text="x")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert not meta.get("table")  # nothing was converted
+    assert meta["flag"] == "needs-table-review"
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "\\label{tab:poc-roles}" in chunk.text  # raw LaTeX intact
+
+    with pytest.raises(BadInput, match="must be a"):
+        draft.edit(id=tc.dc, cell=cast(Any, {"row": 6, "col": 1}), text="x")
+    assert not hub.live_store.drafts.draft_chunk_meta(tc.handle).get("table")
+
+
+def test_edit_table_whole_replace_retires_old_ids(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``table=`` re-mints the grid — the replaced table's live ids (and
+    its retired pool) merge into the new ``retired_ids`` so a deleted id
+    can never resurface."""
+    tc = _seed_table(draft, hub)
+    rows, cols = _table_ids(hub, tc)
+    draft.edit(
+        id=tc.dc,
+        table={"header": ["a", "b"], "rows": [[1, 2], [3, 4], [5, 6]]},
+    )
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    tbl = meta["table"]
+    new_ids = {e["id"] for e in [*tbl["columns"], *tbl["rowmeta"]]}
+    assert new_ids.isdisjoint({*rows, *cols})
+    assert set(tbl["retired_ids"]) >= {*rows, *cols}
+    # a retired id reports dangling, not a re-purposed row
+    with pytest.raises(NotFound, match="dangling id"):
+        draft.get(id=f"{tc.dc}~{rows[0]}")
+
+
+def test_edit_table_replace_keeps_supplied_ids(draft: DraftHandler, hub: Hub) -> None:
+    """``table={**meta.table, rows: …}`` round-trip: re-supplying the
+    existing columns/rowmeta keeps every id live (an edit rewrites
+    cells, not identities) — only ids the caller dropped retire. The
+    retired pool itself is never subtracted: re-supplying a retired id
+    still refuses."""
+    tc = _seed_table(draft, hub)
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+    rows, cols = _table_ids(hub, tc)
+    new_rows = [list(r) for r in meta["rows"]]
+    new_rows[0][1] = 9.99
+    draft.edit(id=tc.dc, table={**meta, "rows": new_rows})
+    tbl = hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+    assert [r["id"] for r in tbl["rowmeta"]] == rows
+    assert [c["id"] for c in tbl["columns"]] == cols
+    assert tbl["rows"][0][1] == 9.99
+    # no live id landed in the retired pool
+    assert not ({*rows, *cols} & set(tbl.get("retired_ids") or []))
+
+    # a dropped row id retires; re-supplying it refuses — the retired
+    # pool is subtracted by supplied LIVE ids, never resurrected
+    smaller = {**meta, "rows": new_rows[:1], "rowmeta": meta["rowmeta"][:1]}
+    draft.edit(id=tc.dc, table=smaller)
+    tbl2 = hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+    assert rows[1] in tbl2["retired_ids"]
+    resurrect = {
+        **tbl2,
+        "rows": [*tbl2["rows"], ["Ge", 0.67]],
+        "rowmeta": [*tbl2["rowmeta"], {"id": rows[1]}],
+    }
+    with pytest.raises(BadInput, match="already taken"):
+        draft.edit(id=tc.dc, table=resurrect)
+
+
+def test_delete_with_table_selector_refuses_naming_selector(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``delete(id='dc<N>~<rowid>')`` must not read the selector as a
+    draft slug — it refuses naming the selector form."""
+    tc = _seed_table(draft, hub)
+    rows, _ = _table_ids(hub, tc)
+    with pytest.raises(BadInput, match="row/column selector"):
+        draft.delete(id=f"{tc.dc}~{rows[0]}")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None and not chunk.retired
+
+
+def test_edit_table_replace_repairs_malformed_legacy_table(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A malformed legacy ``meta.table`` (``rows=[[1]]`` under a 2-col
+    header — the shape the id backfill counts as ``errors``) must not
+    block ``table=``, the only repair path: the lazy mint is skipped
+    when the whole grid is replaced. Every other edit still refuses
+    honestly on the broken shape."""
+    tc = _preschema_table_chunk(draft, hub, "d")
+    hub.live_store.drafts.patch_chunk_meta(
+        tc.handle, {"table": {"header": ["a", "b"], "rows": [[1]]}}
+    )
+    # non-replace edits keep refusing honestly on the ragged grid
+    with pytest.raises(BadInput, match="has 1 cells, header has 2"):
+        draft.edit(id=tc.dc, caption="x")
+    with pytest.raises(BadInput, match="has 1 cells, header has 2"):
+        draft.edit(id=tc.dc, cell="r2k7.k5f9", text="x")
+    # table= replaces the grid outright — never reads the old shape
+    draft.edit(id=tc.dc, table={"header": ["a", "b"], "rows": [[1, 2]]})
+    tbl = hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+    assert tbl["rows"] == [[1, 2]]
+    assert [c["name"] for c in tbl["columns"]] == ["a", "b"]
+    assert all(is_table_id(c["id"]) for c in tbl["columns"])
+    assert all(is_table_id(r["id"]) for r in tbl["rowmeta"])
+    # and the repaired table reads/edits like any canonical one
+    rows, cols = _table_ids(hub, tc)
+    assert "ids: rows" in draft.get(id=tc.dc).body
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[1]}", text="9")
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]["rows"][0][1] == 9
+
+
+def test_dispatch_routes_table_selector_to_draft_handler(
+    draft: DraftHandler, hub: Hub, runtime_with_store: Any
+) -> None:
+    """``get(id='dc<N>~<sel>')`` with no kind= routes through
+    ``runtime/dispatch._maybe_route_draft_chunk`` to the draft handler —
+    a bare row id, a cell address and a range all reach
+    ``_render_table_select``, not a kind-missing error."""
+    tc = _seed_table(draft, hub)
+    rows, cols = _table_ids(hub, tc)
+    out = runtime_with_store.dispatch("get", {"id": f"{tc.dc}~{rows[0]}.{cols[1]}"})
+    assert "[error:" not in out
+    assert "1.12" in out
+    out = runtime_with_store.dispatch("get", {"id": f"{tc.dc}~{rows[1]}"})
+    assert "[error:" not in out
+    assert "gap_eV=0.67" in out and "element=Ge" in out
+    out = runtime_with_store.dispatch("get", {"id": f"{tc.dc}~{rows[0]}..{rows[1]}"})
+    assert "[error:" not in out
+    assert f"{rows[0]}\tSi\t1.12" in out
+
+
+def test_normalize_table_retired_ids_must_be_a_list() -> None:
+    with pytest.raises(BadInput, match="retired_ids must be a list"):
+        normalize_table({"header": ["a"], "rows": [[1]], "retired_ids": "abcd"})
+
+
+# ── selector grammar acceptance (spec §2: ~N/~pN stay unparsed) ────────
+
+
+def test_handle_parse_table_selector_and_legacy_shapes() -> None:
+    from precis.utils import handle_registry as hr
+
+    assert hr.parse("dc5~r2k7") == ("draft", True, 5)
+    assert hr.parse("dc5~r2k7.k5f9") == ("draft", True, 5)
+    assert hr.parse("dc5~r2k7..s3ab") == ("draft", True, 5)
+    # digit-first and p-first "ids" are NOT table ids — the grammar owns
+    # ~N and ~pN already; both fail to parse, exactly as before 1a.
+    assert hr.parse("dc5~4821") is None
+    assert hr.parse("dc5~p12") is None
+    # a record handle takes no selector; a word-shaped sel on a chunk
+    # handle parses (see the persist-site guards for why it must not be
+    # stored)
+    assert hr.parse("pa5~r2k7") is None
+    assert hr.split_selector("dc5~r2k7") == ("dc5", "r2k7")
+    assert hr.split_selector("dc5") == ("dc5", None)
+
+
+def test_bracket_ref_pattern_sel_group() -> None:
+    from precis.utils import mentions
+
+    m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[dc5~r2k7.k5f9]")
+    assert m is not None and m.group("sel") == "~r2k7.k5f9"
+    m2 = mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[dc5]")
+    assert m2 is not None and m2.group("sel") is None
+    # a non-id suffix never binds the sel group
+    assert mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[dc5~xy]") is None
+
+
+def test_rung_and_supply_evidence_reject_selector_handles() -> None:
+    """``is_well_formed`` now accepts ``dc5~data`` — evidence lists that
+    persist the raw string must refuse the selector form instead of
+    storing it."""
+    from precis.handlers.quest import _check_supply_meta
+    from precis.todo.guards import check_rung_meta
+
+    rung: dict[str, Any] = {
+        "pathway": "qu1",
+        "consumes": [],
+        "produces": [
+            {
+                "capability": "qu1",
+                "key": "k",
+                "value": 1,
+                "evidence": ["dc5~data"],
+            }
+        ],
+    }
+    with pytest.raises(BadInput, match="evidence"):
+        check_rung_meta({"rung": rung})
+    with pytest.raises(BadInput, match="evidence"):
+        _check_supply_meta({"supply": {"k": {"value": 1, "evidence": ["dc5~data"]}}})
+    # plain handles still pass
+    rung["produces"][0]["evidence"] = ["fi1"]
+    check_rung_meta({"rung": rung})
+    _check_supply_meta({"supply": {"k": {"value": 1, "evidence": ["fi1"]}}})

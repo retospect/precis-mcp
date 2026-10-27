@@ -331,8 +331,10 @@ contention.
 - The 68 authored canonical tables get ids in a one-time **Python** pass
   (ids are random, so not SQL): a script under `scripts/` that walks
   `chunk_kind='table'` chunks with `meta ? 'table'`, skips any that
-  already have `columns`, and writes ids + `pos` keys through the store's
-  normal chunk-replace path (DELETE + INSERT). Idempotent, `--dry-run`
+  already have `columns`, and writes ids + `pos` keys through
+  `patch_chunk_meta` — a meta-only UPDATE that keeps `dc<N>` stable and
+  logs an `edited` chunk_event (the invariants.md carve-out for
+  draft-edit store ops; not DELETE + INSERT). Idempotent, `--dry-run`
   first; runs before any link can exist. A table the pass missed gets ids
   on its first write.
 - LaTeX-sourced draft tables with no stored grid convert to a stored grid

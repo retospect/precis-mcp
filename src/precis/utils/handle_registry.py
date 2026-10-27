@@ -425,20 +425,57 @@ def parse(handle: str) -> tuple[str, bool, int] | None:
     handle (unknown / file-backed / other-table code, non-digit body,
     legacy slug, …) — so a caller falls through to legacy id resolution
     untouched.
+
+    A chunk handle may carry a trailing ``~<sel>`` table selector
+    (``<id>`` / ``<rowid>.<colid>`` / ``<id>..<id>`` — the stable row and
+    column ids minted on ``chunk_kind='table'`` chunks); the selector is
+    validated here and resolved by the consumer — this function still
+    returns the addressed chunk. Record handles take no selector, and the
+    numeric ``~N``/``~pN`` selectors belong to the ``kind:id`` grammar,
+    not the bare handle.
     """
-    s = normalize(handle)
-    if len(s) <= CODE_LEN:
+    base, sel = split_selector(handle)
+    if len(base) <= CODE_LEN:
         return None
-    code, body = s[:CODE_LEN], s[CODE_LEN:]
+    code, body = base[:CODE_LEN], base[CODE_LEN:]
     if code not in _decimal_codes() or not body.isdigit():
         return None
     kind, is_chunk = _code_to_kind()[code]
+    if sel is not None and not (is_chunk and _TABLE_SEL_RE.match(sel)):
+        return None
     return kind, is_chunk, int(body)
 
 
 def is_well_formed(handle: str) -> bool:
     """True iff ``handle`` is a resolvable refs-backed decimal handle."""
     return parse(handle) is not None
+
+
+# --- table row/column selectors (spreadsheet-tables slice 1a) -----------
+# A chunk handle may carry a trailing ``~<sel>`` addressing inside a
+# ``chunk_kind='table'`` chunk. ``sel`` is built from stable row/column ids:
+# random 4-char lowercase Crockford base-32 (``0-9a-z`` minus ``i l o u``),
+# first char a letter other than ``p`` — the existing selector grammar
+# already owns ``~N``, ``~N..M`` and ``~pN``, so ``4821``/``p123`` shaped
+# ids would be ambiguous. 6–8-char ids are the deterministic-derivation
+# forms (BOM rows, paper tables — later slices).
+
+#: One row/column id.
+TABLE_ID_PATTERN = r"[a-hjkmnq-tv-z][0-9a-hjkmnp-tv-z]{3,7}"
+#: A ``~<sel>`` body: ``<id>`` (row or column — they share the pool),
+#: ``<rowid>.<colid>`` (one cell) or ``<id>..<id>`` (a read-time range;
+#: refused in stored references).
+TABLE_SEL_PATTERN = (
+    rf"{TABLE_ID_PATTERN}(?:\.{TABLE_ID_PATTERN}|\.\.{TABLE_ID_PATTERN})?"
+)
+_TABLE_SEL_RE = re.compile(rf"^(?:{TABLE_SEL_PATTERN})$")
+
+
+def split_selector(handle: str) -> tuple[str, str | None]:
+    """``dc<N>~<sel>`` → ``('dc<N>', '<sel>')``; no ``~`` → ``(s, None)``.
+    Syntactic split only — no validation."""
+    base, tilde, sel = normalize(handle).partition("~")
+    return base, sel if tilde else None
 
 
 # --- relative navigation grammar -------------------------------

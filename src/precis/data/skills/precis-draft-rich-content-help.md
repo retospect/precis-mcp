@@ -141,18 +141,24 @@ put(
 
 Editing: change the data, not the rendered text (`text=` is rejected on a
 table chunk); the four forms are `table={'header':…, 'rows':…}` (whole
-grid), `cell='A1'`/`{'row':,'col':}` + `text=` (one cell, 1-based, row 1 =
-header), `find=` + `text=` (find-replace across string cells, literal),
-`sub='s/a/b/'` (regex across cells, commits immediately, no dry-run); plus
-`caption=`/`regen=` for metadata only. `cell=` is type-inferred
+grid), `cell='<row-id>.<col-id>'` + `text=` (one cell — every row and
+column carries a stable 4-char id minted at creation; `get` prints them
+on an `ids:` line under the grid, and `id='dc<id>~<rowid>.<colid>'`
+reads the one cell; the column side may
+also be the column's name), `find=` + `text=` (find-replace across
+string cells, literal), `sub='s/a/b/'` (regex across cells, commits
+immediately, no dry-run); plus `caption=`/`regen=` for metadata only.
+`cell=` is type-inferred
 Excel-style (int → finite float → bool → else string): `text='1.523'`
-lands as a JSON number; a header cell (row 1) stays a string; a
+lands as a JSON number; a
 non-finite `NaN`/`inf` stays a string. Excel-eager inference turns a
 leading-zero code like `007` into int `7` — send the full `table=`
-payload to force a type. An out-of-range/malformed `cell=` is refused,
-naming the table's actual dimensions; a zero-match find-replace is
-refused too (chunk untouched); only one of `table=`/`cell=`/`find=`/`sub=`
-per edit.
+payload to force a type. An id that names no live row/column is refused
+listing the table's ids (a deleted id never reappears); a zero-match
+find-replace is refused too (chunk untouched); only one of
+`table=`/`cell=`/`find=`/`sub=` per edit. Column renames go through the
+column schema (`rename_column=`), not `cell=` — the header row carries no
+id.
 
 A LaTeX-imported table flagged `needs-table-review` recovers its grid by
 re-parsing the chunk's own raw LaTeX, so it's editable (and citable) like any
@@ -161,20 +167,25 @@ information). A chunk whose `tabular` genuinely isn't in its text refuses with
 "no stored data"; don't hand-type a `table=` grid to defeat that, it risks
 mangling live content.
 
-For a LaTeX-sourced chunk the recovered grid **only addresses** the edit, it
-never re-serialises the chunk: `cell=`/`find=`/`sub=` patch the matched span
-*inside the raw LaTeX*, leaving the rest byte-for-byte intact — no grid is
-persisted and the flag stays put, since nothing canonical was stored. The grid
-is lossy (`{caption, header, rows}` and nothing else). Two consequences:
-
-- A `cell=` address that can't be safely mapped — typically inside a
-  `\multicolumn` span — **refuses**, chunk unchanged, rather than guessing.
-- `caption=`/`regen=` can't ride along with a `cell=`/`find=`/`sub=` edit on
-  such a chunk: caption is re-derived from `\caption{}` in the text, so patching
-  metadata wouldn't be read back. Passing both is a `BadInput`.
+For a LaTeX-sourced chunk the recovered grid has **no ids** — `find=`/`sub=`
+patch the matched span *inside the raw LaTeX*, leaving the rest
+byte-for-byte intact (no grid persisted, flag stays put), while `cell=`
+needs ids it doesn't have. So the first `cell=` edit **converts** the
+chunk to the canonical id-addressed grid — the raw LaTeX layout is
+dropped (`\multicolumn` spans flatten, rules and `\,` spacing go), the
+`\caption{}` legend survives in the derived text's lead line and the
+`\label{}` anchor in `meta.label` — and then refuses, naming
+the just-minted ids you couldn't have known; the retry with a real
+`'<row-id>.<col-id>'` lands. Until that conversion, prefer `find=`/`sub=`
+if the raw LaTeX must keep its layout. `caption=`/`regen=` can't ride
+along with a `cell=`/`find=`/`sub=` edit on such a chunk: caption is
+re-derived from `\caption{}` in the text, so patching metadata wouldn't
+be read back. Passing both is a `BadInput`.
 
 `table=` is unchanged — a declared wholesale replacement, so it still re-derives
-from the grid you hand it.
+from the grid you hand it. (A pre-schema table with no ids mints them on
+its first write touch — cell=, find=, even a caption-only edit — and a
+refusing cell= names the just-minted ids so the retry lands.)
 
 For a cell holding raw LaTeX (`$\sim$` and friends), prefer `cell=`/
 `text=`/find-replace over the whole `table=` **dict**: a value nested in

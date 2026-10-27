@@ -430,7 +430,9 @@ def _check_supply_meta(meta: dict[str, Any]) -> None:
         bad = [
             h
             for h in evidence
-            if not isinstance(h, str) or not handle_registry.is_well_formed(h.strip())
+            if not isinstance(h, str)
+            or "~" in h.strip()
+            or not handle_registry.is_well_formed(h.strip())
         ]
         if bad:
             raise BadInput(

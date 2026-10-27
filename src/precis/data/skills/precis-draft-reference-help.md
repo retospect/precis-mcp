@@ -100,7 +100,7 @@ rejected on a table chunk)
 | call | effect |
 |---|---|
 | `table={'header':…, 'rows':…}` | whole grid, re-derives markdown |
-| `cell='A1'` or `{'row':,'col':}` + `text=` | one cell (1-based; row 1 = header) |
+| `cell='<row-id>.<col-id>'` + `text=` | one cell by stable ids (the `ids:` line under the grid in `get`; a column may also be named) |
 | `find=` + `text=` | find-replace across string cells (literal) |
 | `sub='s/a/b/'` | regex across cells, commits immediately, no dry-run |
 | `caption=` / `regen=` | metadata only, data untouched |

@@ -3734,9 +3734,16 @@ class DispatchMixin(RuntimeShape):
         if m is None:
             return False
         # A trailing operator must be a valid relative handle, else this is
-        # not a draft address (``dc42garbage`` falls through).
-        if m.group(2) and handle_registry.parse_relative(ident) is None:
-            return False
+        # not a draft address (``dc42garbage`` falls through). A ``~<sel>``
+        # table selector (stable row/column ids — spreadsheet-tables 1a)
+        # is a valid suffix too; the draft handler resolves it.
+        suffix = m.group(2)
+        if suffix:
+            if suffix.startswith("~"):
+                if not re.fullmatch(handle_registry.TABLE_SEL_PATTERN, suffix[1:]):
+                    return False
+            elif handle_registry.parse_relative(ident) is None:
+                return False
         explicit = args.get("kind")
         if explicit is not None and explicit != "draft":
             return False

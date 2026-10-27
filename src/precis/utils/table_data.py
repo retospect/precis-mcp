@@ -21,12 +21,162 @@ from __future__ import annotations
 import json
 import math
 import re
+import secrets
+from collections.abc import Iterable
 from typing import Any
 
 from precis.errors import BadInput
+from precis.utils.fractional import even_keys, key_between
+from precis.utils.handle_registry import TABLE_ID_PATTERN, TABLE_SEL_PATTERN
 
 #: JSON scalar types a cell may hold (preserved verbatim in ``meta.table``).
 Scalar = str | int | float | bool | None
+
+# ---------------------------------------------------------------------------
+# Stable row/column ids (spreadsheet-tables slice 1a)
+#
+# Every row and column of a canonical table carries a random 4-char id,
+# lowercase Crockford base-32 (``0-9a-z`` minus ``i l o u``), minted at
+# creation and checked unique within the table — rows and columns share one
+# pool, so an id resolves alone (``dc<id>~<id>`` is never row-vs-col
+# ambiguous). The first character is a letter other than ``p``: the selector
+# grammar already owns ``~N``, ``~N..M`` and ``~pN``, so ``4821``/``p123``
+# shaped ids would collide. A deleted id is recorded in ``retired_ids`` and
+# never re-minted. Order is separate from identity: each row/column carries
+# a fractional ``pos`` key (:mod:`precis.utils.fractional`); insert-between
+# mints a key, sort rewrites row keys only.
+# ---------------------------------------------------------------------------
+
+#: Crockford base-32 alphabet — ``0-9a-z`` minus ``i l o u``.
+_ID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
+#: First character: a letter, never ``p`` (and the dropped Crockford
+#: letters). ``handle_registry.TABLE_ID_PATTERN`` is the same rule as a regex.
+_ID_FIRST = "".join(c for c in _ID_ALPHABET if c.isalpha() and c != "p")
+
+_ID_FULL_RE = re.compile(rf"^(?:{TABLE_ID_PATTERN})$")
+_SEL_FULL_RE = re.compile(rf"^(?:{TABLE_SEL_PATTERN})$")
+
+#: ``meta.table.columns`` entries may carry these keys (only ``name`` is
+#: required; ``formula``/``from``/``role``/``key`` land semantics in later
+#: slices — the schema accepts and preserves them now).
+_COLUMN_KEYS = frozenset(
+    {"id", "pos", "name", "type", "unit", "formula", "from", "role", "key", "align"}
+)
+#: ``columns[].type`` — ``type`` is inferred from the data when absent.
+_COLUMN_TYPES = frozenset({"number", "text", "bool", "ref"})
+#: ``columns[].align`` (the structured-enrichment vocabulary).
+_COLUMN_ALIGNS = frozenset({"l", "c", "r"})
+
+
+def mint_table_id() -> str:
+    """A fresh 4-char table id: first char a letter other than ``p``, the
+    rest Crockford base-32."""
+    return secrets.choice(_ID_FIRST) + "".join(
+        secrets.choice(_ID_ALPHABET) for _ in range(3)
+    )
+
+
+def is_table_id(s: Any) -> bool:
+    """True iff ``s`` matches the stable row/column id shape."""
+    return isinstance(s, str) and _ID_FULL_RE.match(s) is not None
+
+
+def fresh_table_id(used: Iterable[str]) -> str:
+    """Mint an id absent from ``used`` (live ids plus ``retired_ids``, so a
+    deleted id never reappears). Redraws on collision."""
+    pool = set(used)
+    for _ in range(100):
+        cand = mint_table_id()
+        if cand not in pool:
+            return cand
+    raise BadInput("could not mint a unique table id after 100 draws")
+
+
+def _normalize_column(col: Any, i: int) -> dict[str, Any]:
+    """Validate one caller-supplied ``columns`` entry (an ``{id?, pos?,
+    name, type?, unit?, formula?, from?, role?, key?, align?}`` dict);
+    returns a shallow copy with only known keys."""
+    nxt = "columns=[{'name': 'gap_eV', 'type': 'number', 'unit': 'eV'}]"
+    if not isinstance(col, dict):
+        raise BadInput(f"table.columns[{i}] must be an object", next=nxt)
+    unknown = set(col) - _COLUMN_KEYS
+    if unknown:
+        raise BadInput(
+            f"table.columns[{i}] has unknown key(s) {sorted(unknown)}",
+            next=f"allowed: {sorted(_COLUMN_KEYS)}",
+        )
+    name = col.get("name")
+    if not isinstance(name, str) or not name:
+        raise BadInput(f"table.columns[{i}].name must be a non-empty string", next=nxt)
+    typ = col.get("type")
+    if typ is not None and typ not in _COLUMN_TYPES:
+        raise BadInput(
+            f"table.columns[{i}].type {typ!r} — must be one of {sorted(_COLUMN_TYPES)}",
+            next=nxt,
+        )
+    align = col.get("align")
+    if align is not None and align not in _COLUMN_ALIGNS:
+        raise BadInput(
+            f"table.columns[{i}].align {align!r} — must be one of "
+            f"{sorted(_COLUMN_ALIGNS)}",
+            next=nxt,
+        )
+    for k in ("id", "pos", "unit", "formula", "from", "role"):
+        v = col.get(k)
+        if v is not None and not isinstance(v, str):
+            raise BadInput(f"table.columns[{i}].{k} must be a string", next=nxt)
+    if col.get("key") is not None and not isinstance(col["key"], bool):
+        raise BadInput(f"table.columns[{i}].key must be a bool", next=nxt)
+    if col.get("id") is not None and not is_table_id(col["id"]):
+        raise BadInput(
+            f"table.columns[{i}].id {col['id']!r} is not a valid table id "
+            f"(shape {TABLE_ID_PATTERN})",
+            next=nxt,
+        )
+    return {k: v for k, v in col.items() if v is not None or k == "key"}
+
+
+def _normalize_rowmeta(rm: Any, i: int) -> dict[str, Any]:
+    """Validate one caller-supplied ``rowmeta`` entry (``{id?, pos?}``);
+    returns a dict with the present keys only."""
+    nxt = "rowmeta=[{'id': 'r2k7', 'pos': 'a'}] — one entry per row"
+    if not isinstance(rm, dict):
+        raise BadInput(f"table.rowmeta[{i}] must be an object", next=nxt)
+    unknown = set(rm) - {"id", "pos"}
+    if unknown:
+        raise BadInput(
+            f"table.rowmeta[{i}] has unknown key(s) {sorted(unknown)}", next=nxt
+        )
+    if rm.get("id") is not None and not is_table_id(rm["id"]):
+        raise BadInput(
+            f"table.rowmeta[{i}].id {rm['id']!r} is not a valid table id",
+            next=nxt,
+        )
+    if rm.get("pos") is not None and not isinstance(rm["pos"], str):
+        raise BadInput(f"table.rowmeta[{i}].pos must be a string", next=nxt)
+    return {k: rm[k] for k in ("id", "pos") if k in rm}
+
+
+def _fill_pos(items: list[dict[str, Any]]) -> None:
+    """Assign a fractional ``pos`` to every entry missing one, in list
+    order — a full fresh run uses :func:`even_keys`; a hole between two
+    keyed neighbours gets :func:`key_between`."""
+    if not any("pos" in it for it in items):
+        for it, key in zip(items, even_keys(len(items)), strict=True):
+            it["pos"] = key
+        return
+    for i, it in enumerate(items):
+        if "pos" in it:
+            continue
+        prev = next(
+            (items[j]["pos"] for j in range(i - 1, -1, -1) if "pos" in items[j]),
+            None,
+        )
+        nxt = next(
+            (items[j]["pos"] for j in range(i + 1, len(items)) if "pos" in items[j]),
+            None,
+        )
+        it["pos"] = key_between(prev, nxt)
 
 
 def normalize_table(obj: Any) -> dict[str, Any]:
@@ -44,6 +194,23 @@ def normalize_table(obj: Any) -> dict[str, Any]:
     forced through the nested-dict MCP wire path where a client-side
     backslash-doubling bug corrupts cell strings like ``$\\sim$`` (gr178512).
     The server never touches backslashes itself either way.
+
+    The canonical shape is ``{header, rows, columns, rowmeta}``:
+
+    - ``columns`` — ``[{id, pos, name, type?, unit?, formula?, from?,
+      role?, key?, align?}]``, the column schema; ``name`` is unique per
+      table so a column may be named by id or name.
+    - ``rowmeta`` — ``[{id, pos}]``, parallel to ``rows`` (row identity +
+      order live here, cells in ``rows``).
+    - ``header`` — the derived column-name list kept for back-compat
+      readers; recomputed from ``columns`` on every write.
+    - ``retired_ids`` — ids of deleted rows/columns (absent until a
+      delete); kept out of the mint pool so a deleted id never reappears.
+
+    Caller input needs only ``header`` + ``rows``: missing ``columns``/
+    ``rowmeta`` are synthesised (names from ``header``) and missing ids /
+    ``pos`` keys minted. Supplied ids/pos are preserved (an edit rewrites
+    cells, not identities) as long as they stay unique within the table.
     """
     nxt = (
         "table={'header': ['element', 'gap_eV'], 'rows': [['Si', 1.12], ['Ge', 0.67]]}"
@@ -57,12 +224,23 @@ def normalize_table(obj: Any) -> dict[str, Any]:
         raise BadInput(f"table must be an object, got {type(obj).__name__}", next=nxt)
     header_raw = obj.get("header")
     rows_raw = obj.get("rows")
+    cols_raw = obj.get("columns")
+    rowmeta_raw = obj.get("rowmeta")
+    retired_raw = obj.get("retired_ids") or []
+    if not isinstance(retired_raw, list):
+        raise BadInput(
+            f"table.retired_ids must be a list of ids, got "
+            f"{type(retired_raw).__name__}",
+            next=nxt,
+        )
+    if not isinstance(rows_raw, list):
+        raise BadInput("table.rows must be a list of rows", next=nxt)
+    if header_raw is None and cols_raw is not None:
+        header_raw = [c.get("name") for c in cols_raw if isinstance(c, dict)]
     if not isinstance(header_raw, list) or not header_raw:
         raise BadInput(
             "table.header must be a non-empty list of column names", next=nxt
         )
-    if not isinstance(rows_raw, list):
-        raise BadInput("table.rows must be a list of rows", next=nxt)
     header = [str(h) for h in header_raw]
     width = len(header)
     rows: list[list[Scalar]] = []
@@ -82,7 +260,70 @@ def normalize_table(obj: Any) -> dict[str, Any]:
                     next=nxt,
                 )
         rows.append(list(row))
-    return {"header": header, "rows": rows}
+
+    retired = [str(i) for i in retired_raw]
+    used = set(retired)
+    # Columns: supplied spec wins for the optional keys; names always come
+    # from it when present and must match the header positionally (the
+    # caller's header is then redundant but harmless — canonical output
+    # re-derives it from names either way).
+    if cols_raw is None:
+        columns = [{"name": h} for h in header]
+    else:
+        if not isinstance(cols_raw, list) or len(cols_raw) != width:
+            raise BadInput(
+                f"table.columns must be a list of {width} column specs",
+                next=nxt,
+            )
+        columns = [_normalize_column(c, i) for i, c in enumerate(cols_raw)]
+        names = [c["name"] for c in columns]
+        if len(set(names)) != len(names):
+            raise BadInput(
+                "table.columns names must be unique — a column is addressed "
+                "by id or name",
+                next=nxt,
+            )
+        if header_raw is not None and names != header:
+            raise BadInput(
+                f"table.columns names {names} disagree with header {header}",
+                next="pass either header= or columns= — columns' names are "
+                "the schema, header is derived from them",
+            )
+        header = names
+    if rowmeta_raw is None:
+        rowmeta: list[dict[str, Any]] = [{} for _ in rows]
+    else:
+        if not isinstance(rowmeta_raw, list) or len(rowmeta_raw) != len(rows):
+            raise BadInput(
+                f"table.rowmeta must be a list of {len(rows)} entries",
+                next=nxt,
+            )
+        rowmeta = [_normalize_rowmeta(rm, i) for i, rm in enumerate(rowmeta_raw)]
+    for entry in [*columns, *rowmeta]:
+        entry_id = entry.get("id")
+        if entry_id is not None:
+            if entry_id in used:
+                raise BadInput(
+                    f"table id {entry_id!r} is already taken in this table "
+                    "(rows and columns share one id pool)",
+                    next="drop the duplicate id and it re-mints",
+                )
+            used.add(entry_id)
+    for entry in [*columns, *rowmeta]:
+        if "id" not in entry:
+            entry["id"] = fresh_table_id(used)
+            used.add(entry["id"])
+    _fill_pos(columns)
+    _fill_pos(rowmeta)
+    out: dict[str, Any] = {
+        "header": header,
+        "rows": rows,
+        "columns": columns,
+        "rowmeta": rowmeta,
+    }
+    if retired:
+        out["retired_ids"] = retired
+    return out
 
 
 def infer_scalar(s: str) -> Scalar:
@@ -123,110 +364,71 @@ def infer_scalar(s: str) -> Scalar:
     return s
 
 
-def col_letters_to_index(letters: str) -> int:
-    """A1 column letters → 0-based column index, bijective base-26
-    (``'A'``→0, ``'Z'``→25, ``'AA'``→26 — no digit ``0``, so this is not
-    plain base-26)."""
-    idx = 0
-    for ch in letters.upper():
-        if not ("A" <= ch <= "Z"):
-            raise BadInput(
-                f"{letters!r} is not a valid A1 column (letters only)",
-                next="cell='B2'  # column letters + row number",
-            )
-        idx = idx * 26 + (ord(ch) - ord("A") + 1)
-    return idx - 1
+def cell_next_hint() -> str:
+    """The ``next=`` hint pointing at ``cell='<row-id>.<col-id>'``
+    addressing — one string shared by every refusal so it always matches
+    the ``ids:`` line ``get`` renders at read time from ``meta.table``."""
+    return (
+        "cell='<row-id>.<col-id>' — e.g. cell='r2k7.k5f9' (stable ids, "
+        "not A1); get(kind='draft', id='dc<id>') lists them on the "
+        "'ids:' line under the grid"
+    )
 
 
-def index_to_col_letters(index: int) -> str:
-    """0-based column index → A1 column letters (inverse of
-    :func:`col_letters_to_index`)."""
-    n = index + 1
-    letters = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        letters = chr(ord("A") + rem) + letters
-    return letters
+def resolve_cell(table: dict[str, Any], cell: Any) -> tuple[int, int]:
+    """Resolve a ``cell='<row-id>.<col-id>'`` address to ``(row_index,
+    col_index)`` into ``rows``/``columns``.
 
-
-_A1_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
-
-
-def parse_cell_address(
-    cell: str | dict[str, Any], *, n_rows: int, n_cols: int
-) -> tuple[int, int]:
-    """Resolve a caller-supplied cell address to ``(row1, col0)`` — a
-    1-based row where **row 1 is the header row** (data rows are
-    2..1+``n_rows``), and a 0-based column index.
-
-    Accepts an A1 string (``'B2'``) or ``{'row': int, 'col': int}`` with
-    1-based ints for both. Raises :class:`BadInput` (with the actual table
-    dimensions named in ``next=``) on a malformed address or one out of
-    range."""
-    nxt = "cell='B2'  # A1 notation (row 1 = header) — or cell={'row': 2, 'col': 2}"
-    if isinstance(cell, dict):
-        if "row" not in cell or "col" not in cell:
-            raise BadInput(
-                f"cell={cell!r} must have both 'row' and 'col' (1-based ints)",
-                next=nxt,
-            )
-        try:
-            row1 = int(cell["row"])
-            col1 = int(cell["col"])
-        except (TypeError, ValueError) as exc:
-            raise BadInput(
-                f"cell row/col must be ints, got {cell!r}", next=nxt
-            ) from exc
-        col0 = col1 - 1
-    elif isinstance(cell, str):
-        m = _A1_RE.match(cell.strip())
-        if not m:
-            raise BadInput(
-                f"cell={cell!r} is not valid A1 notation (column letters + "
-                "row number, e.g. 'B2')",
-                next=nxt,
-            )
-        col0 = col_letters_to_index(m.group(1))
-        row1 = int(m.group(2))
-    else:
+    Row ids come from ``rowmeta``; the column side resolves by id, then by
+    exact ``name`` (columns may be named either way). A1 strings
+    (``'B3'``) and ``{'row','col'}`` dicts are gone — the refusal's
+    ``next=`` shows the id form. Raises :class:`BadInput` naming the
+    offending half when an id is unknown."""
+    nxt = cell_next_hint()
+    if not isinstance(cell, str):
         raise BadInput(
-            f"cell must be an A1 string or {{'row':int,'col':int}}, got "
-            f"{type(cell).__name__}",
+            f"cell={cell!r} must be a '<row-id>.<col-id>' string",
             next=nxt,
         )
-    max_row1 = 1 + n_rows
-    if row1 < 1 or row1 > max_row1:
+    row_id, sep, col_ref = cell.strip().partition(".")
+    if not sep or not row_id or not col_ref:
         raise BadInput(
-            f"cell row {row1} out of range — table has {n_rows} data row(s) "
-            f"(+1 header row), valid rows are 1..{max_row1}",
+            f"cell={cell!r} is not a cell address — the form is '<row-id>.<col-id>'",
             next=nxt,
         )
-    if col0 < 0 or col0 >= n_cols:
+    rowmeta = table.get("rowmeta") or []
+    row_i = next((i for i, rm in enumerate(rowmeta) if rm.get("id") == row_id), None)
+    if row_i is None:
         raise BadInput(
-            f"cell column out of range — table has {n_cols} column(s) "
-            f"(A..{index_to_col_letters(n_cols - 1)})",
+            f"cell={cell!r}: no row id {row_id!r} in this table",
+            options=[rm.get("id") for rm in rowmeta[:20] if rm.get("id")],
             next=nxt,
         )
-    return row1, col0
+    columns = table.get("columns") or []
+    col_i = next((i for i, c in enumerate(columns) if c.get("id") == col_ref), None)
+    if col_i is None:
+        col_i = next(
+            (i for i, c in enumerate(columns) if c.get("name") == col_ref), None
+        )
+    if col_i is None:
+        raise BadInput(
+            f"cell={cell!r}: no column id/name {col_ref!r} in this table",
+            options=[str(c.get("id") or c.get("name")) for c in columns[:20]],
+            next=nxt,
+        )
+    return row_i, col_i
 
 
-def set_cell(
-    table: dict[str, Any], cell: str | dict[str, Any], value_str: str
-) -> dict[str, Any]:
-    """Return a NEW normalised table with one field set — the coordinate
-    edit path (the shipped draft-table-editing proposal item 1, git
-    history). Row 1 (the
-    header) coerces the value to ``str`` (a header is always a name); a
-    data-row cell is type-inferred via :func:`infer_scalar` so a numeric
-    edit stays a JSON number."""
-    header = list(table["header"])
+def set_cell(table: dict[str, Any], cell: str, value_str: str) -> dict[str, Any]:
+    """Return a NEW normalised table with one data cell set, addressed by
+    stable ids (``cell='r2k7.k5f9'`` — the ``<row-id>.<col-id>`` form that
+    replaced A1). The value is type-inferred via :func:`infer_scalar` so a
+    numeric edit stays a JSON number. Column names are set through the
+    column schema (``rename_column=``), never through a cell address."""
     rows = [list(r) for r in table["rows"]]
-    row1, col0 = parse_cell_address(cell, n_rows=len(rows), n_cols=len(header))
-    if row1 == 1:
-        header[col0] = str(value_str)
-    else:
-        rows[row1 - 2][col0] = infer_scalar(value_str)
-    return normalize_table({"header": header, "rows": rows})
+    row_i, col_i = resolve_cell(table, cell)
+    rows[row_i][col_i] = infer_scalar(value_str)
+    return normalize_table({**table, "rows": rows})
 
 
 def find_replace_cells(
@@ -269,11 +471,25 @@ def find_replace_cells(
         count += n
         return new_s
 
-    header = [_apply(h) if isinstance(h, str) else h for h in table["header"]]
     rows = [
         [_apply(c) if isinstance(c, str) else c for c in row] for row in table["rows"]
     ]
-    return normalize_table({"header": header, "rows": rows}), count
+    # With a column schema the header is derived — replace in
+    # ``columns[].name`` and let normalize_table re-derive it (a rename
+    # colliding with another name refuses there, as it should). Without
+    # one (a pre-schema table dict) the header is the name list.
+    out: dict[str, Any] = {**table, "rows": rows}
+    if table.get("columns"):
+        out["columns"] = [
+            {**c, "name": _apply(c["name"])} if isinstance(c.get("name"), str) else c
+            for c in table["columns"]
+        ]
+        out["header"] = [c["name"] for c in out["columns"]]
+    else:
+        out["header"] = [
+            _apply(h) if isinstance(h, str) else h for h in table["header"]
+        ]
+    return normalize_table(out), count
 
 
 def _cell_md(value: Scalar) -> str:
@@ -289,6 +505,40 @@ def _cell_md(value: Scalar) -> str:
     return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
 
 
+def table_ids_line(table: dict[str, Any]) -> str | None:
+    """The ``ids:`` trailer the agent-facing read paths append under the
+    grid — the stable row/column ids ``cell='<row-id>.<col-id>'`` and
+    ``dc<N>~<id>`` address by (spreadsheet-tables 1a). Ids print in grid
+    order, so the agent pairs a row's line with its id positionally and a
+    column's header with its id the same way. ``None`` for a bare
+    ``{header, rows}`` table — a pre-schema grid with no ids minted yet
+    renders as plain markdown, unchanged.
+
+    The line is rendered **from ``meta.table`` at read time**
+    (``DraftHandler._render_chunk`` / ``_render_table_select``), never
+    stored in ``chunks.text`` — keeping it out of the stored text means
+    the backfill's meta-only write needs no text re-derive, and
+    embeddings/``content_sha`` never carry it."""
+    row_ids = [
+        rm["id"]
+        for rm in table.get("rowmeta") or []
+        if isinstance(rm, dict) and rm.get("id")
+    ]
+    col_ids = [
+        c["id"]
+        for c in table.get("columns") or []
+        if isinstance(c, dict) and c.get("id")
+    ]
+    if not row_ids and not col_ids:
+        return None
+    parts = []
+    if row_ids:
+        parts.append("rows " + " ".join(row_ids))
+    if col_ids:
+        parts.append("cols " + " ".join(col_ids))
+    return "ids: " + "; ".join(parts)
+
+
 def table_to_markdown(table: dict[str, Any], *, caption: str | None = None) -> str:
     """Render a normalised ``{header, rows}`` table to a single GFM block.
 
@@ -296,7 +546,11 @@ def table_to_markdown(table: dict[str, Any], *, caption: str | None = None) -> s
     blank-line splitter keeps the whole table in one chunk. An optional
     ``caption`` (the table's legend) is rendered as a leading ``**…**``
     line so it stays in the embeddable ``text`` projection without
-    breaking the block.
+    breaking the block. The stored text is always plain GFM — the
+    ``ids:`` line naming the table's stable row/column ids is NOT part
+    of it; ``get`` renders it from ``meta.table`` at read time
+    (:func:`table_ids_line`), so ids never reach the embedding or
+    ``content_sha``.
     """
     header = table["header"]
     rows = table["rows"]
@@ -821,121 +1075,6 @@ def _skip_colspec(text: str, start: int) -> int:
         while i < n and text[i].isspace():
             i += 1
     return i
-
-
-def _trim_row_leading_noise(text: str, start: int, end: int) -> int:
-    """Advance `start` past interleaved whitespace + rule-macro tokens
-    (``\\toprule``/``\\midrule``/…) at the front of a row's span. The
-    ``\\\\``-based row split folds a rule macro sitting between two row
-    separators into the FOLLOWING row's segment (it has no ``&``/``\\`` of
-    its own to delimit it) — without this trim it would leak into that
-    row's first cell."""
-    i = start
-    while i < end:
-        j = i
-        while j < end and text[j].isspace():
-            j += 1
-        m = _RULE_MACRO_RE.match(text, j, end)
-        if m:
-            i = m.end()
-            continue
-        return j
-    return end
-
-
-def _row_spans_abs(text: str, start: int, end: int) -> list[tuple[int, int]]:
-    """``(start, end)`` absolute spans of each non-blank row within
-    ``text[start:end]`` — the position-preserving sibling of the row split
-    + blank-row filter inside :func:`parse_latex_table` (split on the same
-    ``_ROW_SPLIT_RE`` separators; a row that's blank once a leading rule
-    macro is trimmed off contributes no row, mirroring that function's
-    post-strip ``if r`` filter)."""
-    bounds: list[tuple[int, int]] = []
-    pos = start
-    for m in _ROW_SPLIT_RE.finditer(text, start, end):
-        bounds.append((pos, m.start()))
-        pos = m.end()
-    bounds.append((pos, end))
-    spans: list[tuple[int, int]] = []
-    for s, e in bounds:
-        s2 = _trim_row_leading_noise(text, s, e)
-        if text[s2:e].strip():
-            spans.append((s2, e))
-    return spans
-
-
-def _split_row_cells_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
-    """Position-preserving sibling of :func:`_split_row_cells`: ``(start,
-    end)`` absolute spans of each ``&``-delimited raw cell within
-    ``text[start:end]`` (brace-depth aware, same as the string-returning
-    original)."""
-    spans: list[tuple[int, int]] = []
-    depth = 0
-    i = start
-    cell_start = start
-    while i < end:
-        c = text[i]
-        if c == "\\" and i + 1 < end:
-            i += 2
-            continue
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-        elif c == "&" and depth == 0:
-            spans.append((cell_start, i))
-            cell_start = i + 1
-        i += 1
-    spans.append((cell_start, end))
-    return spans
-
-
-def locate_latex_cell(text: str, row1: int, col0: int) -> tuple[int, int] | None:
-    """Locate the raw-text ``(start, end)`` span of one cell in raw LaTeX
-    ``tabular``-family `text`, addressed the same way as
-    :func:`parse_cell_address` (``row1=1`` is the header row; data rows are
-    ``2..``). Returns ``None`` — refuse, don't guess — when the table's
-    row/cell shape can't be confidently re-derived: an out-of-range row, or
-    a row whose raw ``&``-count is narrower than the requested column (a
-    ``\\multicolumn`` row, whose parsed-grid width is wider than its raw
-    cell count — the exact mismatch gripe 271129 exists to never paper
-    over)."""
-    try:
-        shadow = _latex_position_shadow(text)
-        env_start, env_end = _tabular_env_span(shadow)
-        rows_start = _skip_colspec(shadow, env_start)
-        row_spans = _row_spans_abs(shadow, rows_start, env_end)
-        row_idx = row1 - 1
-        if row_idx < 0 or row_idx >= len(row_spans):
-            return None
-        r_start, r_end = row_spans[row_idx]
-        cell_spans = _split_row_cells_spans(shadow, r_start, r_end)
-        if col0 < 0 or col0 >= len(cell_spans):
-            return None
-        return cell_spans[col0]
-    except Exception:
-        return None
-
-
-def patch_latex_cell(text: str, row1: int, col0: int, value: str) -> str | None:
-    """Return `text` with the addressed cell's raw content replaced by
-    `value` — the LaTeX sibling of :func:`set_cell`. The cell's own
-    surrounding whitespace is kept (so column alignment/spacing style is
-    otherwise undisturbed) but its content is fully overwritten, same
-    "set this field" semantics as the JSON-grid path (any macro/math
-    wrapping *on that one cell* is not preserved — only the OTHER cells,
-    the label, spans and rules are the guarantee here). Returns ``None``
-    (refuse, don't guess) when :func:`locate_latex_cell` can't confidently
-    locate the addressed cell."""
-    span = locate_latex_cell(text, row1, col0)
-    if span is None:
-        return None
-    start, end = span
-    raw = text[start:end]
-    lstripped = raw.lstrip()
-    lead = raw[: len(raw) - len(lstripped)]
-    trail = lstripped[len(lstripped.rstrip()) :]
-    return text[:start] + lead + value + trail + text[end:]
 
 
 def _caption_inner_span(text: str) -> tuple[int, int] | None:
