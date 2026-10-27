@@ -79,7 +79,20 @@ _TOKEN_IN_TEXT = re.compile(
 #: A ``fisheye+2hop`` count line as rendered (already HTML-escaped) by
 #: ``eye_render._second_hop``: "  12 paper via cites". The label may read
 #: ``&lt;-rel`` for an inbound edge with no inverse name.
-_SECOND_HOP_LINE = re.compile(r"(?m)^  (\u2265?\d+) ([a-z][a-z0-9-]*) via (\S+)[ \t]*$")
+_SECOND_HOP_LINE = re.compile(r"(?m)^  (≥?\d+) ([a-z][a-z0-9-]*) via (\S+)[ \t]*$")
+
+#: The ``… +N more · get(…)`` overflow hint as rendered (already
+#: linkified) by ``eye_render._render_first_hop`` —
+#: ``_more_hint_factory``'s scoped re-read for a capped 1-hop group, and
+#: the hub-member listing's ``q='contains'`` line (gr520244: the hint
+#: text was there but dead — no link). Matches the anchor
+#: ``linkify_handles`` already wrapped around the handle inside
+#: ``id='…'``.
+_MORE_HINT = re.compile(
+    r"(?P<more>… \+\d+ more) · get\(kind='[^']*', "
+    r"id='<a class=\"eye-handle[^\"]*\" href=\"[^\"]*\">(?P<handle>[^<]+)</a>', "
+    r"extent='(?P<extent>[^']*)', q='(?P<label>[^']*)'\)"
+)
 
 
 def _eye_href(
@@ -125,11 +138,13 @@ def linkify_handles(
             return tok
         if h.startswith(_SKILL_PREFIX) or "~" in h or "#a" in h:
             href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
-            return f'<a class="eye-handle" href="{href}">{h}</a>{tail}'
+            return (
+                f'<a class="eye-handle text-info underline" href="{href}">{h}</a>{tail}'
+            )
         if handle_registry.parse(h) is None:
             return tok  # ``sp2``/``mx3``-shaped non-handles stay text
         href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
-        return f'<a class="eye-handle" href="{href}">{h}</a>{tail}'
+        return f'<a class="eye-handle text-info underline" href="{href}">{h}</a>{tail}'
 
     escaped = html.escape(text, quote=False)
     return _TOKEN_IN_TEXT.sub(_link, escaped)
@@ -176,9 +191,39 @@ def _linkify_second_hop(
         kind, label = m.group(2), html.unescape(m.group(3))
         href = _eye_href(handle, extent, kinds=kinds, spaces=spaces)
         href += "&q=" + quote(f"{kind}:{label}", safe="")
-        return f'  <a class="eye-handle" href="{href}">{m.group(0).strip()}</a>'
+        return (
+            f'  <a class="eye-handle text-info underline" href="{href}">'
+            f"{m.group(0).strip()}</a>"
+        )
 
     return _SECOND_HOP_LINE.sub(_sub, body_html)
+
+
+def _linkify_more_hints(
+    body_html: str,
+    *,
+    kinds: frozenset[str] | None = None,
+    spaces: frozenset[str] | None = None,
+) -> str:
+    """Wrap the ``… +N more`` head of a capped-group overflow line in a
+    link to the group's own expansion — the ``get(…, q='<label>')`` call
+    the line already prints, made clickable (gr520244). Runs AFTER
+    :func:`linkify_handles` (it matches the anchor that pass wrapped
+    around the hint's handle); the rest of the line stays text so the
+    agent-facing call remains visible. The link keeps the ring filter;
+    the rung comes from the hint itself (``fisheye+1hop``)."""
+
+    def _sub(m: re.Match[str]) -> str:
+        href = _eye_href(
+            m.group("handle"), m.group("extent"), kinds=kinds, spaces=spaces
+        )
+        href += "&q=" + quote(html.unescape(m.group("label")), safe="")
+        return (
+            f'<a class="eye-handle text-info underline" href="{href}">'
+            f"{m.group('more')}</a>"
+        )
+
+    return _MORE_HINT.sub(_sub, body_html)
 
 
 def _handle_target(handle: str, store: Any = None) -> dict[str, Any] | None:
@@ -304,11 +349,15 @@ def _up_link(
     """The header's "up" link under :data:`refeye.UP_RELATIONS`:
     ``{"href", "handle", "label", "rel", "others", "more"}`` when the focus
     hangs on a node, else ``{"reason"}`` (the rule's own for a disabled
-    kind, a chunk or skill handle's, or which relations were tried). The
-    focus resolves ``include_deleted`` like the ``/graph`` page's zoom-out
-    — a soft-deleted focus keeps its up link; :func:`resolve_up` still
-    wants a live far end. ``None`` for a ref that doesn't exist — the body
-    already says so. The link keeps the rung and the ring filter."""
+    kind, a skill handle's, or which relations were tried). A chunk focus
+    (``pc<id>``) hangs on its owning *record* — the ref the chunk belongs
+    to, resolved through :meth:`store.resolve_handle` — with ``rel``
+    ``"record"`` (gr520288: "zoom out from its record" made actionable).
+    The focus resolves ``include_deleted`` like the ``/graph`` page's
+    zoom-out — a soft-deleted focus keeps its up link; :func:`resolve_up`
+    still wants a live far end. ``None`` for a ref that doesn't exist —
+    the body already says so. The link keeps the rung and the ring
+    filter."""
     store = get_store(request)
     if target["kind"] == "skill":
         return {"reason": resolve_up(store, "skill", 0)["reason"]}
@@ -316,13 +365,29 @@ def _up_link(
     if parsed is None:
         return None
     kind, is_chunk, pk = parsed
-    if is_chunk:
-        return {"reason": "a chunk handle; zoom out from its record"}
-    ref = store.get_ref(kind=kind, id=pk, include_deleted=True)
     # Another owner's profile is a missing ref here too (gr490266): no
     # up link, no title — on the focus itself or on an up target.
     user = current_user(request)
     login = user.login if user is not None else None
+    if is_chunk:
+        resolved = store.resolve_handle(str(target["id"]))
+        if resolved is None:
+            return None
+        ref = store.get_ref(
+            kind=resolved.kind, id=resolved.public_id, include_deleted=True
+        )
+        if ref is None or not profiles.visible_to(ref, login):
+            return None
+        record_handle = handle_registry.format_handle(ref.kind, int(ref.id))
+        return {
+            "handle": record_handle,
+            "label": ref.title or "",
+            "href": _eye_href(record_handle, extent, kinds=kinds, spaces=spaces),
+            "rel": "record",
+            "others": [],
+            "more": 0,
+        }
+    ref = store.get_ref(kind=kind, id=pk, include_deleted=True)
     if ref is None or not profiles.visible_to(ref, login):
         return None
     up = resolve_up(store, kind, pk, parent_id=ref.parent_id)
@@ -456,7 +521,13 @@ async def eye_focus(
                 "extent": extent,
                 "q": q or "",
                 "body": _linkify_second_hop(
-                    linkify_handles(body, extent=extent, kinds=kinds, spaces=spaces),
+                    _linkify_more_hints(
+                        linkify_handles(
+                            body, extent=extent, kinds=kinds, spaces=spaces
+                        ),
+                        kinds=kinds,
+                        spaces=spaces,
+                    ),
                     canonical,
                     extent,
                     kinds=kinds,

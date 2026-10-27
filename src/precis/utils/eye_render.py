@@ -59,6 +59,7 @@ worker-internal, not an agent-facing verb.
 from __future__ import annotations
 
 import logging
+import re
 import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -354,13 +355,30 @@ def _chunk_handle(kind: str, block: Any) -> str:
     return handle_registry.format_handle(kind, int(block.id), chunk=True)
 
 
+#: ``**bold**`` / ``*italics*`` wrappers stripped from preview text.
+_EMPHASIS_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
+
+
+def _preview_text(text: str) -> str:
+    """A chunk's text as a one-line preview surface: LaTeX/HTML markup
+    folded to its reading form (``<sup>`` author marks, ``$…$`` math and
+    split ``|`` cells out — the author-line ``<sup>`` leak of gr520231)
+    and emphasis wrappers unwrapped."""
+    from precis.utils.text import markup_surface
+
+    return _EMPHASIS_RE.sub(r"\1", markup_surface(text))
+
+
 def _chunk_summary(block: Any) -> str:
     """A one-line summary for a chunk: its KeyBERT keywords, else its first line
-    of text, whitespace-collapsed and capped."""
+    of text cleaned of markup, whitespace-collapsed and capped."""
     kws = block.keywords or []
     if kws:
         return _cap(", ".join(kws), _CHUNK_SUMMARY_CAP)
-    return _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
+    return _cap(
+        " ".join(_preview_text(getattr(block, "text", "") or "").split()),
+        _CHUNK_SUMMARY_CAP,
+    )
 
 
 def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
@@ -471,6 +489,9 @@ def _render_doc_eye(
             body = _fisheye_split(kind, clusters, int(rh.chunk_ord), ext)
         else:
             body = _cluster_map(kind, clusters)
+            lead = _abstract_lead(store, ref, ref_id)
+            if lead:
+                body = f"{lead}\n\n{body}"
         block = f"{head}\n{body}"
     else:
         block = head  # no body chunks yet — head alone, but the ring still shows
@@ -479,6 +500,29 @@ def _render_doc_eye(
     # paper linked to a note still surfaces that note at fisheye+1hop.
     sections = _rings(store, ref_id, kind, ext, recall=recall, expand=expand, ring=ring)
     return "\n\n".join([block, *sections])
+
+
+def _abstract_lead(store: Store, ref: Any, ref_id: int) -> str:
+    """The whole-doc eye's lead line: ``meta.abstract`` (JATS-stripped)
+    when on file, else the leading body text marked as such — an
+    abstract *synthesised* from the chunks is labelled so it never reads
+    as the publisher's (gr520232: the fisheye showed no abstract even
+    when one was on file)."""
+    abstract = (getattr(ref, "meta", None) or {}).get("abstract")
+    if abstract:
+        from precis.handlers._paper_format import _strip_jats
+
+        return _cap(" ".join(_strip_jats(str(abstract)).split()), _SUMMARY_CAP)
+    try:
+        preview = store.chunks.abstract_previews([ref_id]).get(ref_id)
+    except Exception:
+        log.debug("abstract preview read failed", exc_info=True)
+        return ""
+    if not preview:
+        return ""
+    return "Abstract (from body text): " + _cap(
+        " ".join(str(preview).split()), _SUMMARY_CAP
+    )
 
 
 # ── link kinds: the note + its link graph (memory / finding / …) ──────

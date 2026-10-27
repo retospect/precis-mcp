@@ -13,7 +13,7 @@
     <p class="mt-1 text-xs text-fg-subtle" aria-label="zoom out">
       {% if up.href %}
       <a href="{{ up.href }}" class="rounded border border-line px-1.5 py-0.5 hover:bg-surface-muted"
-         data-zoom-out="{{ up.handle }}" rel="up" title="{{ up.label }}">↑ up</a>
+         data-zoom-out="{{ up.handle }}" rel="up" title="{{ up.label }}" data-key="U ArrowUp">↑ up</a>
       <span class="font-mono">{{ up.rel }}</span>
       <a href="{{ up.href }}" class="font-mono underline">{{ up.handle }}</a>
       <span>{{ up.label | truncate(60) }}</span>

@@ -6372,6 +6372,15 @@ class PaperHandler(Handler):
             # the same helper view='abstract' uses, so the two
             # paths agree on cleanup.
             lines.append(_excerpt(_strip_jats(str(abstract)), limit=500))
+        else:
+            # gr520232: a Marker-ingested paper often has the abstract
+            # only as leading body text — show it, labelled so it never
+            # reads as the publisher's meta.
+            preview = self.store.chunks.abstract_previews([ref.id]).get(ref.id)
+            if preview:
+                lines.append("")
+                lines.append("_no abstract on file — leading body text:_")
+                lines.append(_excerpt(str(preview), limit=500))
 
         body = "\n".join(lines)
         next_steps = [
@@ -7977,28 +7986,39 @@ _RETRACTION_LABELS: dict[str, str] = {
 
 
 def _toc_readiness_line(store: Store, ref_id: int) -> str | None:
-    """``readiness: embedded N/M · summarised N/M`` for ``get(kind='paper',
-    view='toc')`` (read-for-question loop, slice 4 / docs/backlog/
-    embed-status-hint-three-state.md) — lets a caller that just edited a
-    paper's chunks poll "is my edit embedded/summarised yet" instead of
-    guessing or re-searching blindly.
+    """``readiness: embedded N/M · summarised N/M · keyworded N/M`` for
+    ``get(kind='paper', view='toc')`` (read-for-question loop, slice 4 /
+    docs/backlog/embed-status-hint-three-state.md) — lets a caller that
+    just edited a paper's chunks poll "is my edit embedded/summarised
+    yet" instead of guessing or re-searching blindly.
 
     ``None`` when the paper has no body chunks yet (nothing to report —
     :func:`~precis.utils.toc_db._empty_body` already says so). Body chunks
-    only (``ord >= 0``). The two fractions have independent denominators —
+    only (``ord >= 0``). The three fractions have independent denominators —
     ``embedded``'s is :func:`~precis.workers.embed.eligible_chunk_count`
     (excludes ``EmbedHandler.skip_chunk_kinds`` + ``no_index``),
     ``summarised``'s is
     :func:`~precis.workers.llm_summarize.eligible_chunk_count` (excludes
     ``SKIP_KINDS``, the ``[MIN_CHUNK_CHARS, MAX_CHUNK_CHARS]`` window, and
-    ``no_index``) — each matches the predicate its own "not done" count
+    ``no_index``), ``keyworded``'s is
+    :func:`~precis.workers.chunk_keywords.keyword_eligible_chunk_count`
+    (``_SKIP_KINDS``, the ``_MIN_CHUNK_CHARS`` floor, ``no_index``) —
+    each matches the predicate its own "not done" count
     uses, so a structurally-ineligible chunk (a ``table``, or a stub below
     ``MIN_CHUNK_CHARS``) never reads as silently "done" in a denominator it
     can't actually satisfy. ``· failed N`` is appended only when the
     scoped embed count reports a genuine failure
     (:func:`~precis.workers.embed.failed_embedding_count`) — most papers
-    show none. Counted entirely in SQL — no chunk rows are fetched here.
+    show none. A ``— keywords pending for N chunks`` tail names the
+    still-NULL ``keywords`` backlog (gr520238 — the fraction alone reads
+    as broken on a paper whose labels are sections while the
+    ``chunk_keywords`` backlog drains). Counted entirely in SQL — no
+    chunk rows are fetched here.
     """
+    from precis.workers.chunk_keywords import (
+        keyword_eligible_chunk_count,
+        unkeyworded_chunk_count,
+    )
     from precis.workers.embed import (
         eligible_chunk_count as eligible_embed_chunk_count,
     )
@@ -8016,14 +8036,23 @@ def _toc_readiness_line(store: Store, ref_id: int) -> str | None:
         failed = failed_embedding_count(conn, ref_id=ref_id)
         eligible_summary = eligible_summary_chunk_count(conn, ref_id=ref_id)
         not_summarised = unsummarized_chunk_count(conn, ref_id=ref_id)
+        eligible_keywords = keyword_eligible_chunk_count(conn, ref_id=ref_id)
+        not_keyworded = unkeyworded_chunk_count(conn, ref_id=ref_id)
     embedded = eligible_embed - not_embedded
     summarised = eligible_summary - not_summarised
+    keyworded = eligible_keywords - not_keyworded
     line = (
         f"readiness: embedded {embedded}/{eligible_embed} · "
-        f"summarised {summarised}/{eligible_summary}"
+        f"summarised {summarised}/{eligible_summary} · "
+        f"keyworded {keyworded}/{eligible_keywords}"
     )
     if failed:
         line += f" · failed {failed}"
+    if not_keyworded:
+        line += (
+            f" — keywords pending for {not_keyworded} chunks; "
+            "labels appear as chunk_keywords drains"
+        )
     return line
 
 

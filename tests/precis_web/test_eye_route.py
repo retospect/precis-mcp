@@ -94,6 +94,21 @@ def test_focus_page_on_a_skill_and_on_a_dead_handle(
     assert client.get("/eye/not-a-handle").status_code == 404
 
 
+def test_chunk_focus_up_link_targets_its_record(client: TestClient, store: Any) -> None:
+    """gr520288: a ``pc<id>`` focus's "up" is its owning record. The old
+    disabled "a chunk handle; zoom out from its record" reason left the
+    reader one manual step from the link they wanted."""
+    from precis.store.types import ChunkInsert
+
+    ref = store.insert_ref(kind="paper", slug="uplink26", title="Host paper")
+    chunks = store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="body text")])
+    page = client.get(f"/eye/pc{chunks[0].id}")
+    assert page.status_code == 200
+    assert f'data-zoom-out="pa{ref.id}"' in page.text
+    assert f'href="/eye/pa{ref.id}?extent=fisheye%2B1hop"' in page.text
+    assert 'data-key="U ArrowUp"' in page.text
+
+
 def test_focus_page_keeps_the_up_link_on_a_soft_deleted_focus(
     client: TestClient, store: Any
 ) -> None:
@@ -200,6 +215,25 @@ def test_focus_page_second_hop_counts_link_to_their_expansion(
     assert f"/eye/td{focus.id}?extent=fisheye%2B2hop&q=paper%3Acites" in page.text
 
 
+def test_more_hint_overflow_line_links_to_the_group_expansion(
+    client: TestClient, store: Any
+) -> None:
+    """gr520244: the ``… +N more · get(…)`` overflow line's get() hint is
+    clickable — the link is that call, ``q=<label>`` on the same page."""
+    focus = store.insert_ref(kind="todo", slug=None, title="Hub")
+    for i in range(10):
+        q = store.insert_ref(kind="quest", slug=None, title=f"Goal {i}")
+        store.add_link(src_ref_id=focus.id, dst_ref_id=q.id, relation="serves")
+    page = client.get(f"/eye/td{focus.id}")  # default rung: fisheye+1hop
+    assert page.status_code == 200
+    assert "serves (10):" in page.text
+    href = f"/eye/td{focus.id}?extent=fisheye%2B1hop&q=serves"
+    assert (
+        f'<a class="eye-handle text-info underline" href="{href}">… +2 more</a>'
+        in page.text
+    )
+
+
 def test_index_redirects_a_handle_and_searches_a_query(
     client: TestClient, store: Any
 ) -> None:
@@ -216,8 +250,8 @@ def test_linkify_handles_links_only_real_handles() -> None:
         "see me4641 and pc13 — not ab12, mao18 or 5mx20; sk:precis-get-help"
     )
     assert (
-        '<a class="eye-handle" href="/eye/me4641?extent=fisheye%2B1hop">me4641</a>'
-        in out
+        '<a class="eye-handle text-info underline" '
+        'href="/eye/me4641?extent=fisheye%2B1hop">me4641</a>' in out
     )
     assert 'href="/eye/pc13?' in out
     assert "ab12" in out and 'href="/eye/ab12' not in out

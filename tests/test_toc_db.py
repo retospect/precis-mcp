@@ -23,10 +23,15 @@ from precis.utils.toc_db import build_toc_segments, render_from_store
 
 @dataclass
 class _Stub:
-    """Minimal stand-in for ``ChunkRow`` — renderer reads ord + keywords."""
+    """Minimal stand-in for ``ChunkRow`` — the renderer reads ``ord`` +
+    ``keywords`` always, ``meta``/``text``/``chunk_kind`` only for the
+    section-path fallback and the pending note."""
 
     ord: int
     keywords: list[str] = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
+    text: str = ""
+    chunk_kind: str = "paragraph"
 
 
 class _StubStore:
@@ -276,6 +281,109 @@ class TestDrillHierarchy:
         # Bucketed headline names a cluster count; the per-chunk fallback
         # would omit it. This pins the fix.
         assert "clusters" in out
+
+
+# ── section_path fallback (gr520232: the keyword backlog drains) ─────
+
+
+def _sec(ord_: int, title: str | None, **kw) -> _Stub:
+    meta = {"section_path": [title]} if title is not None else {}
+    return _Stub(ord=ord_, meta=meta, **kw)
+
+
+class TestSectionPathFallback:
+    def _outline(self, n: int = 40) -> list[_Stub]:
+        """A keyword-barren body under three numbered sections — the
+        pa519908 shape (0 keyworded chunks)."""
+        blocks: list[_Stub] = [_sec(0, None), _sec(1, "1. Introduction")]
+        for i in range(2, 25):
+            blocks.append(_sec(i, f"2.{i - 1}. Method detail {i - 1}"))
+        for i in range(25, n):
+            blocks.append(_sec(i, "3. Results"))
+        return blocks
+
+    def test_keyword_barren_body_groups_by_section_heading(self) -> None:
+        out = _render(self._outline())
+        rows = [ln for ln in out.splitlines() if ln.startswith("pa1~")]
+        # 4 groups (pathless front matter, 1. Intro, section-2 run,
+        # section-3 run), not 40 flat rows and not the degenerate
+        # 2-unlabelled-range shape.
+        assert len(rows) == 4
+        assert any("Introduction" in ln for ln in rows)
+        assert any("Results" in ln for ln in rows)
+        # The section-2 run groups under its top-level number and is
+        # labelled by a section-2 title, not left empty.
+        sec2 = next(ln for ln in rows if "Method detail" in ln or "2." in ln)
+        assert "~2..24" in sec2
+
+    def test_subsections_group_under_the_top_level_number(self) -> None:
+        """``2.1.`` … ``2.9.`` are ONE group (keyed on top-level ``2``),
+        and a shallow ``2. Methods`` title wins as its name."""
+        blocks = [
+            _sec(0, "2.1. First"),
+            _sec(1, "2. Methods"),
+            _sec(2, "2.2. Second"),
+            *[_sec(i, f"3.{i}. Sub") for i in range(3, 40)],
+        ]
+        segs = _segments(blocks)
+        assert len(segs) == 2
+        assert segs[0]["lo"] == 0 and segs[0]["hi"] == 2
+        assert segs[0]["keywords"] == ["2. Methods"]
+
+    def test_bold_titles_group_and_render_clean(self) -> None:
+        blocks = [_sec(i, "**1. Introduction**") for i in range(20)] + [
+            _sec(i, "2. Methods") for i in range(20, 40)
+        ]
+        out = _render(blocks)
+        assert "Introduction" in out
+        assert "**" not in out
+
+    def test_degenerate_outline_falls_back_to_per_chunk(self) -> None:
+        """No section_path anywhere → one unlabelled mega-group is worse
+        than per-chunk rows; fall back."""
+        blocks = [_sec(i, None) for i in range(40)]
+        out = _render(blocks)
+        rows = [ln for ln in out.splitlines() if ln.startswith("pa1~")]
+        assert len(rows) == 40
+        assert "clusters" not in out
+
+    def test_keywords_still_win_above_the_coverage_floor(self) -> None:
+        """A quarter-or-more keyworded body keeps the Jaccard clustering —
+        the fallback only engages below ``_KEYWORD_COVERAGE_MIN``."""
+        blocks = [
+            _sec(i, "1. Section", keywords=(["alpha"] if i < 20 else ["gamma"]))
+            for i in range(40)
+        ]
+        out = _render(blocks)
+        assert "alpha" in out and "gamma" in out
+        assert "Section" not in out
+
+    def test_leading_pathless_run_gets_an_empty_label(self) -> None:
+        blocks = [_sec(i, None) for i in range(3)] + [
+            _sec(i, "1. Introduction") for i in range(3, 40)
+        ]
+        segs = _segments(blocks)
+        assert segs[0]["lo"] == 0 and segs[0]["hi"] == 2
+        assert segs[0]["keywords"] == []
+
+    def test_sections_mode_announces_its_label_source(self) -> None:
+        """The heading-labelled outline names its label source — without
+        the note a section-label column reads as a new keyword shape
+        (gr520238). Stubs carry no ``text`` → nothing pending."""
+        out = _render(self._outline())
+        assert "_(labels: section headings)_" in out
+
+    def test_sections_notice_counts_pending_keyword_chunks(self) -> None:
+        """Long keywordless blocks are the pending drain the notice
+        names; skip-kinds and below-floor stubs never carry labels and
+        don't count."""
+        blocks = [_sec(i, "1. Introduction", text="x" * 200) for i in range(20)]
+        blocks += [_sec(i, "2. Methods", text="x" * 200) for i in range(20, 40)]
+        blocks[3] = _sec(3, "1. Introduction", text="x" * 200, chunk_kind="table")
+        blocks[4] = _sec(4, "1. Introduction", text="tiny")
+        out = _render(blocks)
+        assert "keywords pending for 38 chunks" in out
+        assert "keyword labels appear as chunk_keywords drains" in out
 
 
 # ── readiness line (read-for-question loop, slice 4) ─────────────────────

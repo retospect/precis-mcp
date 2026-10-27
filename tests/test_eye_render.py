@@ -31,13 +31,15 @@ def _pe(body: str) -> str:
 @dataclass
 class _B:
     """A minimal ChunkRow stand-in for the pure cluster-render helpers — they read
-    ``id`` / ``ord`` / ``keywords`` / ``text`` / ``chunk_kind`` only."""
+    ``id`` / ``ord`` / ``keywords`` / ``text`` / ``chunk_kind`` only, and
+    ``meta`` for the section-path fallback (gr520232)."""
 
     id: int
     ord: int
     keywords: list[str] = field(default_factory=list)
     text: str = ""
     chunk_kind: str = "paragraph"
+    meta: dict = field(default_factory=dict)
 
 
 def test_memory_eye_1hop_shows_link_neighborhood_by_relation(hub: Hub) -> None:
@@ -441,6 +443,78 @@ def test_doc_eye_chunk_handle_opens_that_chunk(hub: Hub) -> None:
     out = render_eye(store, pc, "verbatim")
     assert f"▸ {pc}" in out  # the eye chunk, marked
     assert "body of chunk 2" in out  # its verbatim text
+
+
+def test_doc_eye_leads_with_the_meta_abstract(hub: Hub) -> None:
+    """gr520232: the whole-doc eye opens on the abstract, then the
+    outline — before the fix it was head + bare cluster rows only."""
+    store = hub.live_store
+    ref_id = _seed_paper_with_keyworded_body(
+        store, slug="abs19", title="Wet sensors", regimes=[["a"], ["b"]]
+    )
+    store.stamp_ref_meta(ref_id, {"abstract": "We measured leaf wetness."})
+    out = render_eye(store, handle_registry.format_handle("paper", ref_id), "summary")
+    lines = out.splitlines()
+    abs_i = next(i for i, ln in enumerate(lines) if "leaf wetness" in ln.lower())
+    map_i = next(i for i, ln in enumerate(lines) if "clusters" in ln)
+    assert abs_i < map_i
+
+
+def test_doc_eye_marks_a_body_derived_abstract_as_such(hub: Hub) -> None:
+    """No ``meta.abstract`` → the leading body paragraph still leads,
+    labelled so it never reads as the publisher's abstract."""
+    store = hub.live_store
+    ref = store.insert_ref(kind="paper", slug="bodyabs", title="T")
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text="We study leaf wetness sensor exposure in the field.",
+                meta={"section_path": ["Abstract"]},
+            )
+        ],
+    )
+    out = render_eye(store, handle_registry.format_handle("paper", ref.id), "summary")
+    assert "Abstract (from body text):" in out
+    assert "sensor exposure" in out
+
+
+def test_doc_eye_labels_clusters_by_section_when_keywords_pending(
+    hub: Hub,
+) -> None:
+    """gr520232 root cause: a keyword-barren body clustered into two
+    unlabelled ranges. The section_path outline labels it instead."""
+    store = hub.live_store
+    ref = store.insert_ref(kind="paper", slug="secpaper", title="Sectioned")
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=i,
+                text="x" * 200,
+                meta={"section_path": ["1. Introduction" if i < 15 else "2. Methods"]},
+            )
+            for i in range(30)
+        ],
+    )
+    out = render_eye(store, handle_registry.format_handle("paper", ref.id), "verbatim")
+    assert "Introduction" in out and "Methods" in out
+
+
+def test_chunk_summary_preview_strips_markup(hub: Hub) -> None:
+    """gr520231: cluster previews leaked ``<sup>`` author marks and
+    ``**`` emphasis verbatim."""
+    from precis.utils.eye_render import _chunk_summary
+
+    block = _B(
+        id=1,
+        ord=0,
+        text="**Citation:** Gleason<sup>c</sup>, Sentelhasa — sensor exposure.",
+    )
+    out = _chunk_summary(block)
+    assert "<sup>" not in out and "**" not in out
+    assert "sensor exposure" in out
 
 
 def test_paper_eye_1hop_surfaces_a_linked_note_both_ways(hub: Hub) -> None:

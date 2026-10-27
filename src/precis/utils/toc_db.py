@@ -58,6 +58,7 @@ call ``get(...)`` without ``view='toc'``.
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
@@ -113,6 +114,30 @@ _TOPICS_RATIO = 0.75
 #: Cap on Topics-line keywords; same shape as per-row labels.
 _TOPICS_TOP_K = 5
 
+#: Fraction of in-scope chunks that must carry KeyBERT keywords before
+#: the Jaccard clusterer is trusted. Below it the keyword graph
+#: degenerates — empty sets contribute distance 0 to either side, so
+#: ``segment_dp`` cuts arbitrarily and every label renders empty
+#: (gr520232: every paper ingested since ~2026-09-11 sits at 0 coverage
+#: while the ``chunk_keywords`` backlog drains). The TOC then falls back
+#: to the ``chunks.section_path`` heading outline, which needs no worker.
+_KEYWORD_COVERAGE_MIN = 0.25
+
+#: A section title's display cap in the keywords column.
+_SECTION_TITLE_CAP = 80
+
+#: ``**bold**`` / ``*italics*`` wrappers on extracted section titles.
+_EMPHASIS_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
+
+#: Leading section number — ``2.``, ``4.3.4.`` — grouping subsections
+#: under their top-level number.
+_SECTION_NUM_RE = re.compile(r"^(\d+)\.")
+
+#: The full leading ``N.``/``N.M.`` run of a numbered section title —
+#: its dot count is the title's depth, so a ``2. Methods`` heading
+#: (depth 1) outranks ``2.1. …`` as a merged group's name.
+_SECTION_DEPTH_RE = re.compile(r"^((?:\d+\.)+)")
+
 
 def render_from_store(
     *,
@@ -150,36 +175,23 @@ def render_from_store(
         return _empty_body(handle=handle, kind=kind, scope=scope)
 
     n = len(blocks)
-    if not _should_cluster(n, scope):
+    groups, mode = _clusters(blocks, scope=scope)
+    if mode == "per-chunk":
         return _render_per_chunk(
             handle=handle, blocks=blocks, scope=scope, readiness_line=readiness_line
         )
-
-    target_k = _target_k(n, scope)
-    distances = _adjacent_jaccard_distances(blocks)
-    if not distances:
-        return _render_per_chunk(
-            handle=handle, blocks=blocks, scope=scope, readiness_line=readiness_line
-        )
-
-    raw_segments = segment_dp(distances, k=target_k)
-    segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
 
     rows: list[dict[str, str]] = []
     row_keyword_sets: list[list[str]] = []
     fat_clusters: list[str] = []
-    for seg in segments:
-        bucket = blocks[seg.start : seg.end + 1]
-        if not bucket:
-            continue
+    for bucket, label_terms in groups:
         lo_pos = bucket[0].ord
         hi_pos = bucket[-1].ord
         row_handle = (
             f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
-        label_kws = _top_keywords(bucket, top_k=_LABEL_TOP_K)
-        rows.append({"handle": row_handle, "keywords": ", ".join(label_kws)})
-        row_keyword_sets.append(label_kws)
+        rows.append({"handle": row_handle, "keywords": ", ".join(label_terms)})
+        row_keyword_sets.append(label_terms)
         # Hint a drill exactly when re-clustering this bucket would yield
         # sub-groups (same predicate the drill-down path uses), so the
         # agent surface only points at handles that actually go deeper.
@@ -192,10 +204,26 @@ def render_from_store(
     parts: list[str] = [headline]
     if readiness_line:
         parts.append(readiness_line)
+    # Sections mode means the keyword clusterer was not trusted — say
+    # so, or the heading labels read as a new (and wrong) keyword shape
+    # (gr520238). The pending count tells the caller the keyword labels
+    # are coming rather than absent by design.
+    if mode == "sections":
+        pending = _pending_keyword_chunks(blocks)
+        if pending:
+            parts.append(
+                f"_(labels: section headings — keywords pending for {pending} "
+                "chunks; keyword labels appear as chunk_keywords drains)_"
+            )
+        else:
+            parts.append("_(labels: section headings)_")
     parts.append("")
-    topics = _topics_line(row_keyword_sets)
-    if topics:
-        parts.extend([f"Topics: {topics}", ""])
+    # The Topics line is keyword-summary machinery — a section-label
+    # column would only echo a heading that survived the merge.
+    if mode == "keywords":
+        topics = _topics_line(row_keyword_sets)
+        if topics:
+            parts.extend([f"Topics: {topics}", ""])
     parts.append(table)
     if fat_clusters:
         parts.extend(
@@ -238,40 +266,9 @@ def build_toc_segments(
     if not blocks:
         return []
 
-    n = len(blocks)
-    if not _should_cluster(n, scope):
-        return [
-            {
-                "handle": f"{handle}~{b.ord}",
-                "lo": b.ord,
-                "hi": b.ord,
-                "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
-                "n": 1,
-            }
-            for b in blocks
-        ]
-
-    distances = _adjacent_jaccard_distances(blocks)
-    if not distances:
-        return [
-            {
-                "handle": f"{handle}~{b.ord}",
-                "lo": b.ord,
-                "hi": b.ord,
-                "keywords": _top_keywords([b], top_k=_LABEL_TOP_K),
-                "n": 1,
-            }
-            for b in blocks
-        ]
-
-    raw_segments = segment_dp(distances, k=_target_k(n, scope))
-    segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
-
+    groups, _mode = _clusters(blocks, scope=scope)
     out: list[dict[str, Any]] = []
-    for seg in segments:
-        bucket = blocks[seg.start : seg.end + 1]
-        if not bucket:
-            continue
+    for bucket, label_terms in groups:
         lo_pos = bucket[0].ord
         hi_pos = bucket[-1].ord
         seg_handle = (
@@ -282,7 +279,7 @@ def build_toc_segments(
                 "handle": seg_handle,
                 "lo": lo_pos,
                 "hi": hi_pos,
-                "keywords": _top_keywords(bucket, top_k=_LABEL_TOP_K),
+                "keywords": label_terms,
                 "n": len(bucket),
             }
         )
@@ -305,16 +302,48 @@ def cluster_blocks(
     ``slug~pos`` form. A short or keyword-barren body that shouldn't cluster
     (:func:`_should_cluster`) yields one single-block cluster per block, so the
     contract is uniform regardless of size. ``keyword_label`` is the bucket's
-    top-K label (possibly empty when no member carries keywords yet)."""
+    top-K label (possibly empty when no member carries keywords yet); under
+    the keyword-coverage floor it is the dominant ``section_path`` heading
+    instead — see :func:`_clusters`."""
     if not blocks:
         return []
+    groups, _mode = _clusters(blocks, scope=scope)
+    return groups
+
+
+def _clusters(
+    blocks: Sequence[Any], *, scope: tuple[int, int] | None = None
+) -> tuple[list[tuple[list[Any], list[str]]], str]:
+    """``([(bucket, label_terms)], mode)`` — one grouping pass shared by
+    every entry point above, so the markdown table, the web nav segments
+    and the fisheye map all render the same outline.
+
+    Three modes:
+
+    * ``"per-chunk"`` — a range that shouldn't cluster
+      (:func:`_should_cluster`), or the fallback when neither signal
+      yields structure: one singleton bucket per block, labelled by its
+      own keywords.
+    * ``"keywords"`` — the F20 adjacent-Jaccard DP, trusted once at
+      least ``_KEYWORD_COVERAGE_MIN`` of the range carries keywords.
+    * ``"sections"`` — below that floor (the ``chunk_keywords`` backlog
+      drains, gr520232) the ``section_path`` heading outline takes over:
+      consecutive runs grouped by major heading, labelled per
+      :func:`_bucket_label`. Degenerate outlines (< 2 groups) fall back
+      to per-chunk rather than render one unlabelled mega-row.
+    """
     n = len(blocks)
     singles = [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
     if not _should_cluster(n, scope):
-        return singles
+        return singles, "per-chunk"
+    if _keyword_coverage(blocks) < _KEYWORD_COVERAGE_MIN:
+        groups = [(g, _bucket_label(g)) for g in _section_groups(blocks)]
+        if len(groups) >= 2:
+            return groups, "sections"
+        return singles, "per-chunk"
     distances = _adjacent_jaccard_distances(blocks)
     if not distances:
-        return singles
+        return singles, "per-chunk"
     raw_segments = segment_dp(distances, k=_target_k(n, scope))
     segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
     out: list[tuple[list[Any], list[str]]] = []
@@ -322,7 +351,148 @@ def cluster_blocks(
         bucket = list(blocks[seg.start : seg.end + 1])
         if bucket:
             out.append((bucket, _top_keywords(bucket, top_k=_LABEL_TOP_K)))
-    return out
+    if not out:
+        return singles, "per-chunk"
+    return out, "keywords"
+
+
+def _keyword_coverage(blocks: Sequence[Any]) -> float:
+    """Fraction of ``blocks`` carrying ``chunks.keywords`` — the signal
+    the Jaccard clusterer needs. Below ``_KEYWORD_COVERAGE_MIN`` empty
+    sets contribute distance 0 to either side, so ``segment_dp`` cuts
+    arbitrarily and every label renders empty (gr520232)."""
+    if not blocks:
+        return 0.0
+    keyed = sum(1 for b in blocks if getattr(b, "keywords", None))
+    return keyed / len(blocks)
+
+
+def _pending_keyword_chunks(blocks: Sequence[Any]) -> int:
+    """In-scope blocks ``chunk_keywords`` still owes labels — the N in
+    the sections-mode notice. A block counts when its ``keywords`` are
+    unset and it clears the worker's own eligibility predicate (a
+    non-:data:`_SKIP_KINDS` kind, ``len(text) >= _MIN_CHUNK_CHARS``):
+    skip-kinds and stubs would *never* carry labels, so counting them
+    would overstate the drain. ``getattr``-safe — a stub block without
+    ``text``/``chunk_kind`` contributes 0.
+
+    The worker constants are lazy-imported: this module sits under
+    ``precis.utils`` and stays free of the worker import chain (the
+    embedder client) at module load."""
+    from precis.workers import chunk_keywords as ck
+
+    n = 0
+    for b in blocks:
+        if getattr(b, "keywords", None):
+            continue
+        if getattr(b, "chunk_kind", "paragraph") in ck._SKIP_KINDS:
+            continue
+        if len(getattr(b, "text", "") or "") < ck._MIN_CHUNK_CHARS:
+            continue
+        n += 1
+    return n
+
+
+# ── helpers: section_path outline (the keyword-backlog fallback) ──────
+
+
+def _section_path(block: Any) -> list[str]:
+    """The chunk's ``meta['section_path']`` as a list of titles (the
+    mapper stashes the TEXT[] column there); ``[]`` when absent.
+    ``getattr``-safe: test stubs carry no ``meta``."""
+    meta = getattr(block, "meta", None) or {}
+    sp = meta.get("section_path")
+    return [str(s) for s in sp] if isinstance(sp, (list, tuple)) else []
+
+
+def _clean_section_title(raw: str) -> str:
+    """A ``section_path`` element for grouping/display: ``**bold**`` /
+    ``*italics*`` wrappers off, trimmed, capped at ``_SECTION_TITLE_CAP``."""
+    t = _EMPHASIS_RE.sub(r"\1", str(raw)).strip()
+    return t[:_SECTION_TITLE_CAP].rstrip() if len(t) > _SECTION_TITLE_CAP else t
+
+
+def _section_key(block: Any) -> str | None:
+    """The grouping key of a chunk's leaf section title: its top-level
+    number for a numbered title (``2.1. Sensors`` and ``2.3. Other``
+    both key section 2), the lowercased title otherwise; ``None`` when
+    the chunk carries no usable path."""
+    path = _section_path(block)
+    if not path:
+        return None
+    title = _clean_section_title(path[-1])
+    if not title:
+        return None
+    m = _SECTION_NUM_RE.match(title)
+    if m:
+        return m.group(1)
+    return title.lower()
+
+
+def _section_groups(blocks: Sequence[Any]) -> list[list[Any]]:
+    """Consecutive runs grouped by :func:`_section_key`.
+
+    A pathless chunk joins the open group (a leading pathless run opens
+    its own, unlabelled, group). Past ``_BUCKET_MAX_COUNT`` groups the
+    smallest merges into its smaller neighbour — a long paper with many
+    tiny sections still fits the table."""
+    groups: list[list[Any]] = []
+    keys: list[str | None] = []
+    for b in blocks:
+        key = _section_key(b)
+        if groups and (key is None or key == keys[-1]):
+            groups[-1].append(b)
+        else:
+            groups.append([b])
+            keys.append(key)
+    while len(groups) > _BUCKET_MAX_COUNT:
+        i = min(range(len(groups)), key=lambda j: len(groups[j]))
+        if i == 0:
+            j = 1
+        elif i == len(groups) - 1:
+            j = i - 1
+        else:
+            j = i - 1 if len(groups[i - 1]) <= len(groups[i + 1]) else i + 1
+        groups[j].extend(groups[i])
+        del groups[i]
+    return groups
+
+
+def _bucket_label(bucket: Sequence[Any]) -> list[str]:
+    """A section-mode bucket's label: real keywords when present, else
+    the dominant section title, else ``[]``."""
+    kws = _top_keywords(bucket, top_k=_LABEL_TOP_K)
+    if kws:
+        return kws
+    title = _dominant_section_title(bucket)
+    return [title] if title else []
+
+
+def _dominant_section_title(bucket: Sequence[Any]) -> str:
+    """The title a merged group is named after: the *shallowest*
+    numbered title (``2. Methods`` names a group spanning 2.1–2.4 better
+    than the most frequent subsection), ties broken by frequency then
+    reading order."""
+    counter: Counter[str] = Counter()
+    first_seen: dict[str, int] = {}
+    for idx, b in enumerate(bucket):
+        path = _section_path(b)
+        if not path:
+            continue
+        title = _clean_section_title(path[-1])
+        if not title:
+            continue
+        counter[title] += 1
+        first_seen.setdefault(title, idx)
+    if not counter:
+        return ""
+
+    def _rank(title: str) -> tuple[int, int, int]:
+        m = _SECTION_DEPTH_RE.match(title)
+        depth = m.group(1).count(".") if m else 99
+        return (depth, -counter[title], first_seen[title])
+
+    return min(counter, key=_rank)
 
 
 # ── helpers: cluster shape ───────────────────────────────────────────

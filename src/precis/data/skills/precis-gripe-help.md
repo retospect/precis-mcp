@@ -65,6 +65,10 @@ their own too — a tick's `needs` lands as a `quest:<id>` +
 sighting becomes a comment, so comment on the existing one rather than
 re-filing.)
 
+Well-formed-but-useless results are friction too — empty labels,
+placeholder text, an unhelpful default view. One line naming the call
+you ran is enough.
+
 <!-- write -->
 Misled by a skill? Every skill ends with a ready-made line: add
 `link='skill:<id>', rel='raises-concern-about'` to the gripe and say what

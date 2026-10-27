@@ -203,6 +203,67 @@ def claim_chunks_without_keywords(
     return out
 
 
+def keyword_eligible_chunk_count(conn: Connection, *, ref_id: int) -> int:
+    """Body chunks (``ord >= 0``) of ``ref_id`` eligible for keyword
+    extraction — the denominator the toc readiness line pairs with
+    :func:`unkeyworded_chunk_count` (``keyworded N/<eligible>``).
+
+    The structural half of :func:`claim_chunks_without_keywords`'s
+    predicate: not a :data:`_SKIP_KINDS` kind, ``length(text) >=
+    _MIN_CHUNK_CHARS``, not ``meta.no_index``. The claim's other
+    clauses (a current embedding to score against, keywords missing or
+    stale) are *processing* preconditions, not eligibility, so they are
+    not part of this denominator — same split as
+    :func:`~precis.workers.llm_summarize.eligible_chunk_count`.
+    """
+    row = conn.execute(
+        """
+        SELECT count(*)
+          FROM chunks c
+         WHERE c.ref_id = %(ref_id)s
+           AND c.ord >= 0
+           AND c.chunk_kind <> ALL(%(skip_kinds)s)
+           AND length(c.text) >= %(min_chars)s
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+        """,
+        {
+            "ref_id": ref_id,
+            "skip_kinds": list(_SKIP_KINDS),
+            "min_chars": _MIN_CHUNK_CHARS,
+        },
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def unkeyworded_chunk_count(conn: Connection, *, ref_id: int) -> int:
+    """Eligible body chunks of ``ref_id`` still carrying NULL
+    ``keywords`` — the pending backlog the toc readiness line's
+    ``— keywords pending for N chunks`` tail names.
+
+    ``keywords IS NULL`` only: a version- or ``content_sha``-stale row
+    re-queues in :func:`claim_chunks_without_keywords` but keeps its old
+    labels meanwhile, so it is not "pending" the way a never-labelled
+    chunk is."""
+    row = conn.execute(
+        """
+        SELECT count(*)
+          FROM chunks c
+         WHERE c.ref_id = %(ref_id)s
+           AND c.ord >= 0
+           AND c.chunk_kind <> ALL(%(skip_kinds)s)
+           AND length(c.text) >= %(min_chars)s
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           AND c.keywords IS NULL
+        """,
+        {
+            "ref_id": ref_id,
+            "skip_kinds": list(_SKIP_KINDS),
+            "min_chars": _MIN_CHUNK_CHARS,
+        },
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def ensure_paper_abbrevs(conn: Connection, ref_id: int) -> dict[str, str]:
     """Return ``{SHORT: long}`` for the paper, populating it on first ask.
 

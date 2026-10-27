@@ -497,7 +497,13 @@ def test_toc_readiness_line_renders(runtime_with_store: PrecisRuntime) -> None:
         "get", {"kind": "paper", "id": _pa(ref.id), "view": "toc"}
     )
     assert not is_error
-    assert "readiness: embedded 1/3 · summarised 1/3 · failed 1" in body
+    # All three chunks are keyword-eligible paragraphs with NULL
+    # keywords — the keyworded fraction reports the drain backlog.
+    assert (
+        "readiness: embedded 1/3 · summarised 1/3 · keyworded 0/3 · failed 1"
+        " — keywords pending for 3 chunks; "
+        "labels appear as chunk_keywords drains" in body
+    )
 
 
 @pytest.mark.db
@@ -556,4 +562,10 @@ def test_toc_readiness_line_excludes_structurally_ineligible_chunks(
     # and stub chunks stay in its denominator (3). Summarize skips both
     # 'table' and anything below MIN_CHUNK_CHARS, so its denominator drops
     # to just the one eligible chunk, not the naive body-chunk total.
-    assert "readiness: embedded 1/3 · summarised 1/1" in body
+    # Keywords skip the same two (its _SKIP_KINDS covers 'table', its
+    # floor is _MIN_CHUNK_CHARS=150) → eligible 1, all pending.
+    assert (
+        "readiness: embedded 1/3 · summarised 1/1 · keyworded 0/1"
+        " — keywords pending for 1 chunks; "
+        "labels appear as chunk_keywords drains" in body
+    )

@@ -628,6 +628,16 @@ def ref_hint_line(
 
     if not parts:
         return None
+    # gr520232: when EVERY shown axis is pending, the per-axis dump is
+    # noise on the landing view — collapse it to one honest clause. A
+    # single-axis pending read stays expanded (it names the axis).
+    if len(parts) > 1 and all(
+        p.endswith(NOT_YET) or p.endswith(NO_VALUE) for p in parts
+    ):
+        return (
+            "categorizers (machine — filter hint, not curated truth): "
+            "all axes pending classification"
+        )
     return "categorizers (machine — filter hint, not curated truth): " + " · ".join(
         parts
     )

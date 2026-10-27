@@ -66,6 +66,25 @@ def test_hint_line_marks_enabled_axis_unclassified(store: Store) -> None:
     assert "topic:" not in line
 
 
+def test_hint_line_collapses_when_every_axis_is_pending(store: Store) -> None:
+    """gr520232: a landing view whose every categorizer part is
+    ``(not yet classified)``/``(no value)`` collapses to one honest
+    clause — the per-axis dump is noise there. A single pending axis
+    keeps its expanded form (it names the axis)."""
+    ref = _paper(store, "hint-all-pending-paper")
+    try:
+        set_service_prio(store, ALL_HOSTS, "axis:domain", 5, actor="test")
+        set_service_prio(store, ALL_HOSTS, "axis:material", 5, actor="test")
+        line = catz.ref_hint_line(store, ref)
+    finally:
+        clear_service_config(store, ALL_HOSTS, "axis:domain")
+        clear_service_config(store, ALL_HOSTS, "axis:material")
+    assert line == (
+        "categorizers (machine — filter hint, not curated truth): "
+        "all axes pending classification"
+    )
+
+
 def test_hint_line_shows_values_and_marker_states(store: Store) -> None:
     ref = _paper(store, "hint-tagged-paper")
     store.add_tag(ref.id, Tag.closed("DOMAIN", "chemistry"), set_by="agent")
