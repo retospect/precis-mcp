@@ -15,9 +15,11 @@ precis token reaches Kimi the next time a tree starts.
   flat `.claude/commands/*.md` from the project root, so /skill:land,
   /skill:qland, /skill:go, /skill:bug ... resolve), and at the end
   one `[[hooks]]` entry per event calling scripts/hooks/kimi-adapt.py
-  (which dispatches to `.claude/settings.json`'s hooks), plus
-  `default_permission_mode = "yolo"` and Claude's Bash/MCP allow list as
-  `[[permission.rules]]`. Hooks are user-level in Kimi, so each
+  (which dispatches to `.claude/settings.json`'s hooks), a `PreToolUse`
+  hook on Grep/Bash calling scripts/hooks/kimi-grep-python-kind.py
+  (mirrors ripgrep patterns through the precis python kind, advisory),
+  plus `default_permission_mode = "yolo"` and Claude's Bash/MCP allow
+  list as `[[permission.rules]]`. Hooks are user-level in Kimi, so each
   command no-ops outside a precis-mcp tree.
 
 Project instructions need no install: Kimi reads AGENTS.md and
@@ -44,6 +46,16 @@ HOOK_CMD = (
     "git rev-parse --path-format=absolute --git-common-dir 2>/dev/null "
     "| grep -q precis-mcp || exit 0; "
     'exec "$f" {event}'
+)
+# The ripgrep→python-kind nudge: a Grep tool call or a bare rg/grep Bash
+# inside a precis-mcp checkout gets the same pattern mirrored through
+# search(kind='python', mode='pattern') on the local MCP, advisory-only
+# (exit 0 — the call still runs; the python-kind digest rides as context).
+PYKIND_HOOK_CMD = (
+    'f=scripts/hooks/kimi-grep-python-kind.py; [ -x "$f" ] || exit 0; '
+    "git rev-parse --path-format=absolute --git-common-dir 2>/dev/null "
+    "| grep -q precis-mcp || exit 0; "
+    'exec "$f"'
 )
 EVENTS = (("PreToolUse", 60), ("PostToolUse", 60), ("SessionStart", 300))
 ROOT = Path(__file__).resolve().parent.parent
@@ -102,6 +114,14 @@ def tables_block() -> str:
             f"timeout = {timeout}",
             "",
         ]
+    lines += [
+        "[[hooks]]",
+        'event = "PreToolUse"',
+        'matcher = "^(Grep|Bash)$"',
+        f"command = {json.dumps(PYKIND_HOOK_CMD)}",
+        "timeout = 30",
+        "",
+    ]
     for pat in claude_allow_patterns():
         lines += [
             "[[permission.rules]]",
