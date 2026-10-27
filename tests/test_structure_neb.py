@@ -485,6 +485,13 @@ def test_job_one_seed_is_untrusted_not_failed(
     ms = next(r for r in row["trust"] if r["check"] == "multistart")
     assert ms["verdict"] == "marginal"
 
+    # gr522897: the job summary names the refusing check with its
+    # measured counts vs the stamped tolerance — not a bare "untrusted".
+    summary = next(t for k, t in events if k == "job_summary")
+    assert "untrusted: multistart marginal" in summary
+    assert "n_valid=1" in summary and "n_at_min=1" in summary
+    assert "tol 0.05 eV" in summary
+
 
 # -- slice 5: the TS-image saddle (frequency) check ---------------------------
 
@@ -1122,6 +1129,85 @@ def test_view_neb_run_renders_scalars_trust_and_band(
     assert "aC1–aH1" in body and "aH1–aO1" in body
 
 
+def test_view_neb_refusal_names_check_measured_tol_and_subject(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr522897: a refused gate must let a reader tell a real
+    disagreement from tolerance noise — the trust table carries
+    ``measured``/``tol``/``where`` per record, and the seeds table puts
+    each init seed's barrier next to the pooled spread vs tol."""
+    _put_is_fs(structure)
+    _relax_both(store)
+    _pin_nodes(monkeypatch)
+    _neb(structure)
+    is_ref = _ref(store, "ch_is")
+    run = _only_run(store, is_ref.id)
+    store.struct_neb_update_run(
+        run["id"],
+        status="succeeded",
+        converged=True,
+        barrier_fwd_ev=0.9,
+        trusted=False,
+        trust=[
+            {
+                "id": "r-det",
+                "check": "detachment",
+                "verdict": "fail",
+                "severity": "fatal",
+                "seed": 1,
+                "engine": "autocatpath-test-1",
+                "evidence": {
+                    "events": [{"image": 6, "fragment": "CH2", "closest_A": 4.69}],
+                    "reason": "mid-band fragment desorbed",
+                },
+            },
+            {
+                "id": "r-ms",
+                "check": "multistart",
+                "verdict": "marginal",
+                "severity": "warn",
+                "seed": 0,
+                "engine": "autocatpath-test-1",
+                "evidence": {"n_valid": 1, "n_at_min": 1, "tol_eV": 0.05},
+            },
+        ],
+        multistart={
+            "n_seeds": 2,
+            "n_valid": 2,
+            "selected_seed": 0,
+            "starts": [
+                {
+                    "init_seed": 0,
+                    "barrier_eV": 0.9,
+                    "converged": True,
+                    "valid": True,
+                    "desorbed_images": 0,
+                    "ts_image": 4,
+                },
+                {
+                    "init_seed": 1,
+                    "barrier_eV": 1.7,
+                    "converged": True,
+                    "valid": True,
+                    "desorbed_images": 0,
+                    "ts_image": 5,
+                },
+            ],
+        },
+    )
+    body = structure.get(id="ch_is", view="neb", args={"run": run["id"]}).body
+    assert "trust: untrusted" in body
+    # the failing detachment row names image + fragment + distance
+    assert "img6 CH2 4.69 Å" in body and "s1" in body
+    # the marginal multistart row shows measured counts vs its stamped tol
+    assert "n_valid=1" in body and "n_at_min=1" in body
+    assert "tol 0.05 eV" in body
+    # the seeds table prices each init seed against the pooled spread
+    assert "seeds (barrier_eV per path init)" in body
+    assert "seed spread 0.800 eV vs tol 0.05 eV" in body
+    assert "mid-band fragment desorbed" in body
+
+
 def test_view_neb_failed_run_shows_reason_and_next(
     structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1146,7 +1232,8 @@ def test_view_neb_failed_run_shows_reason_and_next(
         ],
     )
     body = structure.get(id="ch_is", view="neb", args={"run": run["id"]}).body
-    assert "failed: 2 images collapsed into endpoints" in body
+    assert "failed: collapsed_band fail" in body
+    assert "2 images collapsed into endpoints" in body
     assert "next:" in body and "trust: untrusted" in body
 
 

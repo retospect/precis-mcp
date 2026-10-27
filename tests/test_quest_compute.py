@@ -3529,6 +3529,57 @@ class TestProvisionalReasonsSelectivityBlockers:
         assert "barrier untrusted: NEB not converged" in reasons
         assert any("selectivity unavailable" in r and "on-route" in r for r in reasons)
 
+    def test_barrier_untrusted_names_seed_blocker_and_blocked_by(self) -> None:
+        """gr522897: the provisional reason names the refusing checks —
+        the seed-independence synthetic plus each blocked-by record id
+        (``{state|step}#s{seed}#{check}``, capped at 3) — and points at
+        the run's ``view='neb'`` readout."""
+        c = Candidate(
+            1,
+            "st1",
+            "A",
+            {},
+            True,
+            flags={
+                "barrier_trusted": False,
+                "barrier_seed_blocker": "seeds:1-independent",
+                "barrier_blocked_by": [
+                    "R->M#s0#detachment",
+                    "endpoint:union-disagree",
+                    "no_route",
+                    "M->P#s1#endpoint_agreement",
+                ],
+                "neb_run_id": 42,
+            },
+        )
+        reasons = _provisional_reasons(c, [], {})
+        assert reasons == [
+            "barrier untrusted: seeds:1-independent, detachment on R->M, "
+            "endpoint:union-disagree, no_route — see view='neb' args={'run': 42}"
+        ]
+
+    def test_barrier_untrusted_without_neb_run_points_at_trust_view(self) -> None:
+        c = Candidate(
+            1,
+            "st1",
+            "A",
+            {},
+            True,
+            flags={
+                "barrier_trusted": False,
+                "barrier_blocked_by": ["R->M#s0#endpoint_agreement"],
+            },
+        )
+        reasons = _provisional_reasons(c, [], {})
+        assert reasons == [
+            "barrier untrusted: endpoint_agreement on R->M — see view='trust'"
+        ]
+
+    def test_barrier_untrusted_no_blockers_stays_bare(self) -> None:
+        """No blocker stamps → the pre-gr522897 bare reason, unchanged."""
+        c = Candidate(1, "st1", "A", {}, True, flags={"barrier_trusted": False})
+        assert _provisional_reasons(c, [], {}) == ["barrier untrusted"]
+
 
 # ── kinetics cutover: kinetics_trusted/kinetics_note/drc_top/atom_cost_dearest ──
 
@@ -4591,6 +4642,80 @@ class TestAutocatpathHarvest:
         ]
         assert any("seed-independence gate" in b.text for b in logs)
 
+    def test_gate_refused_logbook_names_check_measured_tol_and_subject(
+        self, store: Any
+    ) -> None:
+        """gr522897: a refused gate's logbook entry resolves the blocker
+        ids back to the pathway's stored records — the check, its
+        measured value vs tolerance, and which state/seed failed."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="pathway",
+            slug="pw-refused",
+            title="pw",
+            meta={
+                "status": "ready",
+                "candidate_ref": sid,
+                "autocatpath_version": "0.39.0",
+                "tier": "neb",
+                "results": {
+                    "trust_schema": 2,
+                    "route_steps": ["R->A"],
+                    "trust": [
+                        {
+                            "id": "R->A#s0#neb_convergence",
+                            "check": "neb_convergence",
+                            "verdict": "pass",
+                            "severity": "fatal",
+                            "seed": 0,
+                            "step": "R->A",
+                            "evidence": {},
+                        },
+                        {
+                            "id": "R#s1#endpoint_agreement",
+                            "check": "endpoint_agreement",
+                            "verdict": "fail",
+                            "severity": "fatal",
+                            "seed": 1,
+                            "state": "R",
+                            "evidence": {
+                                "delta_meV": 317,
+                                "tol_eV": 0.05,
+                                "reason": "endpoints disagree across seeds",
+                            },
+                        },
+                    ],
+                    "trust_summary": {
+                        "barrier": {
+                            "available": False,
+                            "blocked_by": ["R#s1#endpoint_agreement"],
+                        },
+                        "selectivity": {"available": True, "blocked_by": []},
+                    },
+                },
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_blocked_by"] == ["R#s1#endpoint_agreement"]
+        logs = [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        refused = next(b for b in logs if "trust gate refused" in b.text)
+        assert "endpoint_agreement fail" in refused.text
+        assert "delta_meV=317" in refused.text
+        assert "tol 0.05 eV" in refused.text
+        assert "R; s1" in refused.text
+        assert "endpoints disagree across seeds" in refused.text
+
     def test_two_seed_neb_pathway_stays_trusted(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
@@ -5420,6 +5545,66 @@ class TestStructNebHarvest:
         pc = next(p for p in fr.provisional if p.candidate.ref_id == sid)
         assert pc.measures["barrier"] == 0.5
         assert "barrier" in pc.untrusted_keys
+
+    def test_untrusted_warnings_carry_measured_tol_and_subject(
+        self, store: Any
+    ) -> None:
+        """gr522897: the harvested warnings and the logbook result entry
+        name each refusing check with its measured value vs tolerance and
+        which seed/image failed — a bare ``check: fail`` can't tell a
+        real disagreement from tolerance noise."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        # consume the relax run's own result entry so the logbook scan
+        # below reads only the neb lane's
+        assert compute_mod.harvest_measures(store, qid).results_harvested == 1
+        trust: list[dict[str, Any]] = [
+            {
+                "check": "detachment",
+                "verdict": "fail",
+                "severity": "fatal",
+                "seed": 1,
+                "evidence": {
+                    "events": [{"image": 6, "fragment": "CH2", "closest_A": 4.69}],
+                    "reason": "mid-band fragment desorbed",
+                },
+            },
+            {
+                "check": "multistart",
+                "verdict": "marginal",
+                "severity": "warn",
+                "evidence": {"n_valid": 1, "n_at_min": 1, "tol_eV": 0.05},
+            },
+        ]
+        self._neb_run(store, sid, barrier_fwd_ev=0.5, trusted=False, trust=trust)
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["warnings"][0].startswith("detachment: fail")
+        assert "s1" in meta["warnings"][0]
+        assert "img6 CH2 4.69 Å" in meta["warnings"][0]
+        assert "mid-band fragment desorbed" in meta["warnings"][0]
+        assert meta["warnings"][1].startswith("multistart: marginal")
+        assert "n_valid=1" in meta["warnings"][1]
+        assert "tol 0.05 eV" in meta["warnings"][1]
+        logs = [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        neb_log = next(b for b in logs if "struct_neb result" in b.text)
+        assert "; untrusted: detachment: fail" in neb_log.text
+        assert "img6 CH2 4.69 Å" in neb_log.text
+        assert "multistart: marginal" in neb_log.text
 
     def test_stale_engine_run_harvests_untrusted(self, store: Any) -> None:
         """gr517804's strict-engine ruling: a run minted on another engine

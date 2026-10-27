@@ -529,6 +529,26 @@ def _priced(outcome: dict[str, Any]) -> bool:
     )
 
 
+def _untrusted_digest(records: list[dict[str, Any]]) -> str:
+    """Why the gate refused, for the job summary and the harvest warnings
+    (gr522897): every non-``pass`` record as ``check verdict — measured
+    (vs tol) — where``, plus each REQUIRED check the engine never graded
+    as ``not-run`` — a silent check blocks trust by the presence rule, so
+    it must be named, not left implicit."""
+    from precis.utils.trust_gate import record_line
+
+    bits = [
+        record_line(r)
+        for r in records
+        if isinstance(r, dict) and r.get("verdict") not in (None, "pass")
+    ]
+    seen = {r.get("check") for r in records if isinstance(r, dict)}
+    for check in _NEB_REQUIRED_CHECKS:
+        if check not in seen:
+            bits.append(f"{check} not-run — the check emitted no record")
+    return "; ".join(bits)
+
+
 def _dispatch(ctx: Any, _spec: Any) -> None:
     """Plugin dispatcher invoked by ``ssh_node`` for a claimed job. ``ctx``
     is a :class:`~precis.workers.executors._context.DispatchContext`."""
@@ -803,10 +823,12 @@ def _record_outcome(
             if collapsed
             else "no transition state found"
         )
+        gate = _untrusted_digest(records)
         ctx.append_chunk(
             "job_summary",
-            f"neb[ml] run {run_id}: {why} — not priced (NULL barriers); "
-            "try a denser band (more images), more seeds, or fix the "
+            f"neb[ml] run {run_id}: {why} — not priced (NULL barriers)"
+            + (f"; gate: {gate}" if gate else "")
+            + "; try a denser band (more images), more seeds, or fix the "
             "endpoint geometry",
         )
         ctx.record_failure(
@@ -823,6 +845,14 @@ def _record_outcome(
     summary += f" · {'trusted' if trusted else 'untrusted'}"
     if ts_ref_id:
         summary += f" · TS → st{ts_ref_id}"
+    if priced and not trusted:
+        # gr522897: a refused gate must name each failing check, its
+        # measured value, tolerance and which image/seed — a bare
+        # "untrusted" is why qu164903 could not tell a real endpoint
+        # disagreement from tolerance noise.
+        digest = _untrusted_digest(records)
+        if digest:
+            summary += f" · untrusted: {digest}"
     ctx.append_chunk("job_summary", summary)
     ctx.set_status("succeeded")
 

@@ -116,9 +116,8 @@ link(kind="quest", id=12, target="quest:7", rel="serves")  # sub-quest → grand
 
 Always link from the server's side with `rel='serves'` — the inverse
 `link(kind='quest', ..., rel='served-by')` "succeeds" but writes the edge
-backwards: the tree rollup's cycle-guard then renders the quest as one of
-its *own* servers (a bogus self-referencing leaf) while the real server
-never appears at all (gripe 161912).
+backwards: the tree rollup's cycle-guard then renders the quest as its
+*own* server while the real server never appears (gripe 161912).
 
 A quest may serve a grander quest — a **DAG of strivings** above the
 ordinary tree of deeds. One concept can serve several quests (m2m); the
@@ -191,19 +190,19 @@ that serve it (`served-by`, sub-quests then findings first) capped at 8
 per group, see
 `precis-fisheye-help`. The table views (`results`, `frontier`, `series`,
 `measures`) are in the next section.
-Note the trap: this doc says *deeds* constantly, but it isn't a view — a
-*deed* is just the milestone-typed slice of the log. Bare `get(id=N)` shows a
-digest with only the logbook **tail** (last 10 entries, cheap even on a quest
-with thousands); `view='logbook'` is the complete append-only notebook;
-`view='log'` is the raw ref-events ledger, a different (generic) thing.
+A *deed* is not a view — it is the milestone-typed slice of the log. Bare
+`get(id=N)` digests the logbook **tail** (last 10 entries, cheap even on a
+quest with thousands); `view='logbook'` is the complete append-only
+notebook; `view='log'` is the raw ref-events ledger, a different
+(generic) thing.
 `view='status'` is the one-line lifecycle read (striving status · priority ·
 horizon) for "is this quest still live"; `view='rubric'` prints just the
 measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
 scalars + meta + a capped links section (`view='links'` is the full graph).
 
-`view='served'` is the served-by listing: every live ref with an inbound
-`serves` edge, one row each with a `fulltext` flag (body chunks held) and a
-count line. `args={'has_fulltext': True|False}` filters it:
+`view='served'` lists every live ref with an inbound `serves` edge, one
+row each with a `fulltext` flag (body chunks held), plus a count line.
+`args={'has_fulltext': True|False}` filters it:
 
 ```python
 get(kind="quest", id=164903, view="served", args={"has_fulltext": True})
@@ -215,29 +214,27 @@ with a **health** line and a **gaps** list at the foot. On a `"roadmap"`-
 body root it also renders the capability ledger table — see
 [[precis-roadmap-help]].
 
-All of the above is also visible on the web: `/refs/quest/<id>` is a
-dedicated hub dashboard (header + momentum/tote, dossier + logbook tail,
-frontier/gaps panels, servers-lite) rather than the generic ref-detail
-render — a human can read a quest's state without calling `get(view=…)`
-by hand.
+All of this is on the web too: `/refs/quest/<id>` is a dedicated hub
+dashboard (header + momentum/tote, dossier + logbook tail, frontier/gaps
+panels, servers-lite) — readable without calling `get(view=…)`.
 
 ## Read a quest's numbers — results, frontier, series, measures
 
 `view='results'` is one row per candidate across
 *every* band (not just the frontier), grouped by lineage (dopant, then
-what varies) rather than by band — the same table the tick prompt itself
-embeds, so it doubles as "what would the next tick see right now".
-`view='results'` and `view='frontier'` are **budgeted** like the tick's
-copy (2500 tokens; rows drop from the tail, never the newest ten, and the
-body says `(+K … rows omitted)`); `args={'budget': 8000}` widens it.
-On an `inquiry`-body quest (see "Patch quest meta" below) `view='frontier'`
-says plainly that the body has no Pareto frontier instead of rendering an
-empty one — it never proposes, so nothing ever converges.
+what varies) rather than band — the same table the tick prompt embeds,
+so it doubles as "what the next tick would see now". `view='results'`
+and `view='frontier'` are **budgeted** like the tick's copy (2500
+tokens; rows drop from the tail, never the newest ten; the body says
+`(+K … rows omitted)`); `args={'budget': 8000}` widens it. On an
+`inquiry`-body quest (see "Patch quest meta" below) `view='frontier'`
+says the body has no Pareto frontier — it never proposes, so nothing
+converges.
 `view='series'` re-cuts the same rows as **controlled comparisons**: one
 block per set of candidates that share a base and differ in exactly one
 axis (`dopant · n_dopant · site · coads`), so a difference down a block is
-attributable to that axis. It recognises the series already in the data —
-it never enumerates a grid, and it says plainly when there are none. A
+attributable to that axis. It recognises series already in the data —
+never enumerates a grid, says plainly when there are none. A
 level's numbers are comparable only where `trusted=yes`. The axes come from
 each candidate's `meta.params`, stamped at proposal time from its structure
 ops (a co-adsorbate carries the named site it was placed on, e.g.
@@ -253,16 +250,15 @@ reports its row count and no best. Rows that are ambiguous, flagged
 across groups. See `precis-measure-help`.
 
 `view='pourbaix'` is the resting-state surface-Pourbaix validity map per
-candidate structure that serves the quest: the stored `surface_coverage_scan`
+candidate structure serving the quest: stored `surface_coverage_scan`
 sweeps folded into validity regions per U interval (two bands per boundary —
 propagated and model-form, never summed), the bulk Pourbaix verdict as a
 labelled uncertain overlay, one map per footing (partitioned, never
 blended), the `needs_anchor` ranking, and a `dropped:` line per cause for
 anchors the sweep left out (detached configurations, uncorrected or
-other-footing models). Candidates without scans are
-listed as `no anchors`. Same map on a structure
-(`view='pourbaix'` on `kind='structure'`) and as an SVG page at
-`/pourbaix/<handle>`.
+other-footing models). Candidates without scans list as `no anchors`.
+Same map on a structure (`view='pourbaix'` on `kind='structure'`) and as
+an SVG at `/pourbaix/<handle>`.
 
 To judge a candidate's reaction staircase at one point on that map, pass
 the point to `view='staircase'` on the structure or its pathway:
@@ -272,8 +268,8 @@ get(kind="structure", id="pd111", view="staircase", args={"U": -0.3, "pH": 7})
 get(kind="pathway", id="pw483780", view="staircase", args={"point": "-0.3,7"})
 ```
 
-Each rung line gains a state. Each merged proton-electron step is judged
-once; both of its halves show the result.
+Each rung line gains a state; a merged proton-electron step is judged
+once and both halves show it.
 
 - `off_map`: the map rests on a different surface at U than the one the
   pathway was computed on.
@@ -284,10 +280,9 @@ once; both of its halves show the result.
 
 A point block follows the rungs: `window inside | outside | outside
 (HER)`, the resting termination, and the worst rung with its reason. On
-the web page, click, drag or use the arrow keys on the map to pick the
-point. Rung rows recolour from `/pourbaix/<handle>/states?U=&pH=`, which
-is the same verdict, and the map's overlay toggles show where each rung
-is viable.
+the web page, click, drag or arrow-key the map to pick the point. Rung
+rows recolour from `/pourbaix/<handle>/states?U=&pH=` (the same
+verdict); overlay toggles show where each rung is viable.
 
 ## Health + gaps — the exploration queue
 
@@ -295,11 +290,10 @@ A quest is measured by *striving*, not finishing, so the tree rollup ends
 with two read-time, mechanical reads (no `% done`):
 
 - **health** — *momentum* (`quiet` / `stalled` / `warming` / `active`,
-  from recent logbook entries + recent server activity + open todos
-  moving − any `child-failed` bubble) and an *alignment* floor (cosine
-  proximity between the quest's card vector and each server's — a
-  best-effort "is this still on-aim?" flag; servers not yet embedded are
-  skipped).
+  from recent logbook entries, server activity, open todos moving and
+  any `child-failed` bubble) and an *alignment* floor (cosine proximity
+  of the quest's card vector to each server's — a best-effort on-aim
+  flag; unembedded servers are skipped).
 - **gaps** — the exploration queue: **thin-support** (almost nothing
   serves it), **no-literature** (work under way with no `paper`
   grounding), **low-mastery** (a served `concept` you don't understand
@@ -352,8 +346,8 @@ Parentheses do not linkify, so `(st164913)` is a dead reference.
 linked `dossier-of` (or `paper-of`) is refused with `Unsupported` — a
 generic draft-hygiene pass once "normalised" a live dossier into 13 chunks
 and stranded 12 of them, feeding weeks-stale prose back to the loop under
-the banner "the living synthesis". Read it however you like; to change it,
-run a tick.
+the banner "the living synthesis". Read it freely; to change it, run a
+tick.
 
 ### The attempt ledger — why the proposer doesn't re-tread
 
@@ -415,44 +409,43 @@ To re-measure ONE named candidate on demand — a deliberate rerun to test a
 credited pass's reproducibility — call
 `put(kind='structure', id=<st<id> or slug>, mode='rerun')`
 (`args={'tier': 'screening'|'neb'|'verify'}` overrides the rung; default is
-the candidate's own highest completed rung; `args={'seeds': [<ints>]}`
-names the seed set the evaluation dispatches — multi-seed at dispatch
-time, at most 8 — default is the reaction config's pinned seeds). The
-rerun mints a fresh
-seed+aggregate tree under a `rerun:` nonce so it never dedups onto the
-earlier result; the new `pathway` carries `meta.rerun_of` plus a
-`derived-from` link to the prior one, which stays `ready` (not superseded)
-so both results can be compared. It is bounded: one in-flight evaluation
-per candidate — a second request while one's running is refused — and it
-respects the quest's compute lane (`meta.compute_lane='off'` refuses). The
-same door is on the tick's tool surface: a tick emits
+the candidate's highest completed rung; `args={'seeds': [<ints>]}`
+names the dispatched seed set — at most 8, default the reaction config's
+pinned seeds). The rerun mints a fresh seed+aggregate tree under a
+`rerun:` nonce so it never dedups onto the earlier result; the new
+`pathway` carries `meta.rerun_of` plus a `derived-from` link to the
+prior one, which stays `ready` (not superseded) so both results
+compare. Bounded: one in-flight evaluation per candidate — a second
+request while one runs is refused — and it respects the quest's compute
+lane (`meta.compute_lane='off'` refuses). The same door is on the
+tick's tool surface: a tick emits
 `"reruns": [{"structure": "<handle>", "why": "…", "seeds": [<ints>]}]`
-(cap 2/tick) and the compute stage executes each through the same path,
-with per-entry refusals recorded as logbook observations. Fresh seed
-numbers give the `endpoint_agreement` trust check new basins to compare;
+(cap 2/tick); the compute stage runs each through the same path,
+recording per-entry refusals as logbook observations. Fresh seeds give
+the `endpoint_agreement` trust check new basins to compare;
 `get(kind='pathway', view='trust')` shows the whole trust gate — each
-check's verdict, input and threshold — then per-state `delta_meV` next to
-the `tol_eV` it was judged against (see `precis-pathway-help`).
+check's verdict, input and threshold — plus per-state `delta_meV`
+beside the `tol_eV` it was judged against (see `precis-pathway-help`).
 
-Where the new seeds run: by default they round-robin over the live gpu
-nodes. `--node <name>` pins every new seed to that node; `--spread` gives
-each to the least-loaded live node (queued plus running gpu jobs, ties by
-name). Neither picks a node whose ssh_node lane is retired, and the ack
-names the per-node counts. Seeds already queued stay where they are
-(`job` `mode='retarget'` moves those).
+New seeds round-robin over the live gpu nodes by default. `--node
+<name>` pins them all to that node; `--spread` gives each to the
+least-loaded live node (queued + running gpu jobs, ties by name).
+Neither picks a retired ssh_node lane; the ack names the per-node
+counts. Already-queued seeds stay put (`job` `mode='retarget'` moves
+those).
 
 A margin measured on an older reaction network (another catpath template or
-version) does not rank. It shows as provisional with the reason "measured on
-an older reaction network (template@version)" until that candidate is
-re-measured. `backfill-network-basis` stamps the network on pre-stamp
-candidates, but only where a completed pathway reproduces the stored value.
+version) does not rank — it shows provisional with reason "measured on an
+older reaction network (template@version)" until re-measured.
+`backfill-network-basis` stamps the network on pre-stamp candidates, only
+where a completed pathway reproduces the stored value.
 
 ## A research tick — searches and compute
 
 **Searches go local first.** A tick's `searches` hit our own graph (papers,
 findings, drafts, concepts, memories) before anything outside. Semantic
-Scholar is queried and papers acquired only when fewer than 3 relevant local
-hits come back; an S2 failure keeps the local hits. Local papers, findings
+Scholar is queried and papers acquired only under 3 relevant local hits;
+an S2 failure keeps them. Local papers, findings
 and concepts are linked `serves` (max 3 per query); drafts and memories
 count as hits but are not linked. The logbook line per query reads
 `[local N, acquired M; …]`.
@@ -505,10 +498,9 @@ argues them like any other candidate — it never sees the search
 internals.
 
 The autonomous *scheduling* of ticks (a perpetual per-quest coordinator
-loop, not a single step) is dark by default: nothing mints a loop
-automatically, and compute is off unless you pass `--compute`
-(`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the manual CLI
-runs regardless).
+loop, not a single step) is dark by default: `PRECIS_QUEST_LOOP_ENABLED`
+gates it, the manual CLI runs regardless, and compute stays off without
+`--compute`.
 
 ## Patch quest meta — compute_lane / lit_lane / quest_body / rubric_objectives / reaction_config
 
@@ -537,11 +529,11 @@ that's wedged.
   a third body for a striving that reads, reasons, and synthesises rather
   than searching a materials space — same logbook/dossier/ledger/dialectic/
   lit-search machinery, but **no proposal menu and no Pareto frontier**
-  (`view='frontier'` says so plainly instead of "(none converged yet)").
-  Never inferred from other meta (a live materials quest can carry no
-  `reaction_config`/`compute_lane`/`rubric_objectives` at all) — set it
-  explicitly when a striving genuinely has no candidate materials to
-  propose, e.g. a literature-synthesis or landscape-mapping quest.
+  (`view='frontier'` says so plainly). Never inferred from other meta (a
+  live materials quest can carry no `reaction_config`/`compute_lane`/
+  `rubric_objectives` at all) — set it explicitly for a striving with no
+  candidate materials to propose (literature synthesis, landscape
+  mapping).
 - **`rubric_objectives`** — the frontier's measured-axis override, see
   "A research tick" above. On a catalyst quest with
   `surface_coverage_scan` anchors the **window/Shapley fields** stamp on
@@ -590,6 +582,11 @@ frontier/top provisional band). Seeds must agree:
 `endpoint:union-disagree` / `endpoint:union-not-run`. **A barrier near
 0 eV carries none of these flags** — a broken/degenerate NEB, not a
 record-low — treat as invalid until checked.
+
+A refused gate names its blockers (`barrier_seed_blocker`,
+`barrier_blocked_by` check + subject) and points at
+`view='neb' args={'run': N}` / `view='trust'`; logbook results carry
+the same digest.
 
 A single **low** trusted barrier is strong evidence — an upper bound, since
 a path that cheap exists. A single **high** barrier rules nothing out — the

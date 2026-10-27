@@ -603,6 +603,145 @@ def replay_barrier_gate(
     )
 
 
+#: Evidence keys a record diagnostic renders as MEASURED values, in
+#: display order (gr522897): what the check actually read — energy deltas,
+#: counts, forces, curvatures. A record's other scalar evidence keys
+#: append after these (a check minting an unstamped key still shows it).
+_MEASURE_KEYS: tuple[str, ...] = (
+    "delta_meV",
+    "e_eV",
+    "e_min_eV",
+    "spread_eV",
+    "barrier_eV",
+    "n_valid",
+    "n_at_min",
+    "n_seeds",
+    "n_imag",
+    "imag_cm1",
+    "collapsed_images",
+    "desorbed_images",
+    "ts_fmax",
+    "curvature_eV",
+    "converged",
+    "d_nn_A",
+    "disp_max_A",
+    "bonds_broken",
+    "bonds_formed",
+)
+
+#: Evidence keys naming the TOLERANCE the record was judged against —
+#: stamped at mint (gr508948 stamped ``tol_eV``; ``bound_eV``/
+#: ``cutoff_cm1`` ride the precis-side records) — with the short label
+#: and unit each renders under. ``fmax`` is deliberately not here: on
+#: engine records it is the convergence knob the run carried, not a
+#: trust threshold — it renders under measured.
+_TOL_KEYS: dict[str, tuple[str, str]] = {
+    "tol_eV": ("tol", "eV"),
+    "bound_eV": ("bound", "eV"),
+    "cutoff_cm1": ("cutoff", "cm⁻¹"),
+}
+
+#: The rule label a check was judged under when no tolerance key is
+#: stamped — the check's stated criterion, not a number we invent.
+_CHECK_RULE: dict[str, str] = {
+    "endpoint_agreement": "Δ endpoint energy across seeds",
+    "detachment": "no mid-band fragment > 3.5 Å off slab (engine bound)",
+    "saddle_verified": "TS interior, curvature < 0, climb residual ≤ 2·fmax",
+    "neb_convergence": "converged",
+    "collapsed_band": "0 collapsed or desorbed images",
+    "multistart": "≥ 2 valid seeds at the minimum",
+    "absurd_magnitude": "|barrier| within bound",
+    "frequency": "exactly 1 imaginary mode past cutoff",
+}
+
+#: Record-level and evidence keys naming WHICH subject failed — a route
+#: state, a band image, a seed, an IS/FS endpoint (gr522897: a refused
+#: gate must say which endpoint/image, not just the check).
+_WHERE_TOP: tuple[str, ...] = ("state", "step", "seed")
+_WHERE_EV: tuple[str, ...] = ("image", "ts_image", "init_seed", "endpoint")
+
+#: Evidence keys a diagnostic never double-reports — prose already
+#: rendered, or a nested structure handled on its own.
+_DIAG_SKIP: frozenset[str] = frozenset(
+    {"reason", "detail", "events", "fingerprint", "model"}
+)
+
+
+def _fmt_ev_value(v: Any) -> str:
+    return f"{v:g}" if isinstance(v, float) else str(v)
+
+
+def record_diagnostic(rec: dict[str, Any]) -> dict[str, str]:
+    """One trust record as a diagnostic row (gr522897): ``measured``
+    (the values the check read), ``tol`` (the stamped tolerance, else the
+    check's rule label — ``assumed`` never gets invented), ``where``
+    (the route state / seed / band image that failed), ``reason`` (the
+    minted prose). A caller can render a refusal as
+    ``check verdict — measured vs tol — where — reason`` and a reader can
+    tell a real disagreement from tolerance noise without opening the
+    raw record."""
+    ev = rec.get("evidence")
+    ev = ev if isinstance(ev, dict) else {}
+    parts: dict[str, list[str]] = {"measured": [], "tol": [], "where": []}
+    for k in _MEASURE_KEYS:
+        if k in ev and ev[k] is not None:
+            parts["measured"].append(f"{k}={_fmt_ev_value(ev[k])}")
+    for k, (label, unit) in _TOL_KEYS.items():
+        if k in ev and ev[k] is not None:
+            parts["tol"].append(f"{label} {_fmt_ev_value(ev[k])} {unit}")
+    for k in _WHERE_TOP:
+        v = rec.get(k)
+        if v is not None:
+            parts["where"].append(f"s{v}" if k == "seed" else str(v))
+    for k in _WHERE_EV:
+        if k in ev and ev[k] is not None:
+            parts["where"].append(f"{k} {ev[k]}")
+    events = ev.get("events")
+    if isinstance(events, list):
+        for e in events:
+            if isinstance(e, dict):
+                parts["where"].append(
+                    f"img{e.get('image')} {e.get('fragment', '')}".rstrip()
+                    + (f" {e['closest_A']} Å" if e.get("closest_A") is not None else "")
+                )
+    measured_keys = set(_MEASURE_KEYS)
+    for k, v in ev.items():
+        if (
+            k in measured_keys
+            or k in _TOL_KEYS
+            or k in _WHERE_EV
+            or k in _DIAG_SKIP
+            or isinstance(v, bool)
+            or not isinstance(v, (int, float, str))
+        ):
+            continue
+        parts["measured"].append(f"{k}={_fmt_ev_value(v)}")
+    tol = ", ".join(parts["tol"]) or _CHECK_RULE.get(str(rec.get("check")), "")
+    return {
+        "check": str(rec.get("check") or "?"),
+        "verdict": str(rec.get("verdict") or "?"),
+        "measured": ", ".join(parts["measured"]),
+        "tol": tol,
+        "where": "; ".join(parts["where"]),
+        "reason": str(ev.get("reason") or ev.get("detail") or ""),
+    }
+
+
+def record_line(rec: dict[str, Any], *, sep: str = " ") -> str:
+    """The one-line refusal digest: ``check<sep>verdict — measured (vs tol)
+    — where — reason``, skipping empty slots. ``sep=': '`` renders the
+    ``check: verdict`` head the harvest warnings list is pinned to."""
+    d = record_diagnostic(rec)
+    tail = d["measured"]
+    if d["tol"]:
+        tail = f"{tail} (vs {d['tol']})" if tail else f"vs {d['tol']}"
+    if d["where"]:
+        tail = f"{tail} — {d['where']}" if tail else d["where"]
+    if d["reason"]:
+        tail = f"{tail} — {d['reason']}" if tail else d["reason"]
+    return f"{d['check']}{sep}{d['verdict']}" + (f" — {tail}" if tail else "")
+
+
 def _subject(rec: dict[str, Any]) -> str:
     state, step = rec.get("state"), rec.get("step")
     if state and step:

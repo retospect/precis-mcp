@@ -3025,12 +3025,11 @@ def _struct_neb_measures_from_run(
     for r in records:
         if not isinstance(r, dict) or r.get("verdict") in (None, "pass", "not-run"):
             continue
-        ev_raw = r.get("evidence")
-        ev = ev_raw if isinstance(ev_raw, dict) else {}
-        reason = ev.get("reason") or ev.get("detail") or ""
-        warnings.append(
-            f"{r.get('check')}: {r.get('verdict')}" + (f" — {reason}" if reason else "")
-        )
+        # ``check: verdict — measured (vs tol) — where — reason``
+        # (gr522897): the pinned ``check: verdict`` head, then the same
+        # diagnostic tail ``view='neb'`` renders — a warning must let a
+        # reader tell a real disagreement from tolerance noise.
+        warnings.append(trust_gate.record_line(r, sep=": "))
 
     def _fails(check: str) -> int:
         return sum(
@@ -4508,6 +4507,47 @@ def harvest_measures(
                 entry_type="result",
                 by=MEASURED_BY,
             )
+            blocked_by = measures.get("barrier_blocked_by")
+            if (
+                measures.get("barrier_trusted") is False
+                and isinstance(blocked_by, list)
+                and blocked_by
+            ):
+                # gr522897: a refused gate must name each failing check,
+                # its measured value vs tolerance, and which endpoint —
+                # resolve the blocker ids back to the pathway's stored
+                # records; a synthetic id (``seeds:…``, ``engine:…``,
+                # ``no_route``) passes through verbatim.
+                pw_results = (
+                    pw_meta.get("results") if isinstance(pw_meta, dict) else None
+                )
+                pw_recs = (
+                    pw_results.get("trust") if isinstance(pw_results, dict) else None
+                )
+                by_id = {
+                    str(r.get("id")): r
+                    for r in (pw_recs if isinstance(pw_recs, list) else [])
+                    if isinstance(r, dict) and r.get("id") is not None
+                }
+                named = [
+                    (
+                        trust_gate.record_line(by_id[str(b)])
+                        if str(b) in by_id
+                        else str(b)
+                    )
+                    for b in blocked_by[:3]
+                ]
+                if len(blocked_by) > 3:
+                    named.append(f"+{len(blocked_by) - 3} more")
+                append_entry(
+                    store,
+                    quest_id,
+                    text=(
+                        f"trust gate refused [{handle}] ({name}): " + "; ".join(named)
+                    ),
+                    entry_type="result",
+                    by=MEASURED_BY,
+                )
             harvested += 1
             if absurd:
                 append_entry(
@@ -4669,6 +4709,11 @@ def harvest_measures(
             ) or (f"st{fs_id}" if fs_id is not None else "?")
             b = measures["barrier"]
             trusted_txt = "trusted" if measures["barrier_trusted"] else "untrusted"
+            warn_tail = ""
+            if not measures["barrier_trusted"]:
+                ws = [w for w in (measures.get("warnings") or []) if w]
+                if ws:
+                    warn_tail = "; untrusted: " + "; ".join(str(w) for w in ws[:3])
             append_entry(
                 store,
                 quest_id,
@@ -4676,6 +4721,7 @@ def harvest_measures(
                     f"struct_neb result for [{handle}] ({name}): "
                     f"barrier={b:g} eV ({trusted_txt}), "
                     f"run {run['id']}, edge [{fs_handle}], TS [{ts_handle}]"
+                    f"{warn_tail}"
                 ),
                 entry_type="result",
                 by=MEASURED_BY,

@@ -159,3 +159,11 @@ have relaxed at `ml`.
 
 Clean pair → `put(mode="neb", args={"final": <slug>})` queues a
 `struct_neb` job (`ml` rung, deduped); `view="neb"` reads it.
+`view="neb" args={"run": N}` renders one run's gate: the `trust:` table
+is one row per check with `measured` (the values the check read), `tol`
+(the stamped tolerance, else the check's rule), `where` (which image,
+seed or endpoint failed) and `note`; a `## seeds` table prices each
+init seed's barrier next to the pooled spread vs the multistart
+tolerance. An `untrusted` verdict names the refusing check with its
+measured value against its bound — a real disagreement reads different
+from tolerance noise.

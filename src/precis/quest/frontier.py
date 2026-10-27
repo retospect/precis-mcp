@@ -1505,6 +1505,13 @@ def _candidate_from_structure(
         flags["barrier_blocked_by"] = meta.get("barrier_blocked_by")
     if "selectivity_blocked_by" in meta:
         flags["selectivity_blocked_by"] = meta.get("selectivity_blocked_by")
+    # The seed-independence blocker + run provenance (gr522897): the
+    # provisional reason names them so a refused gate points at the
+    # diagnostic surface instead of reading bare "untrusted".
+    if "barrier_seed_blocker" in meta:
+        flags["barrier_seed_blocker"] = meta.get("barrier_seed_blocker")
+    if "neb_run_id" in meta:
+        flags["neb_run_id"] = meta.get("neb_run_id")
     if "barrier_marginal_count" in meta:
         flags["barrier_marginal_count"] = meta.get("barrier_marginal_count")
     if "barrier_trust_note" in meta:
@@ -1906,6 +1913,31 @@ def _provisional_reasons(
             reasons.append("barrier untrusted: adsorbate detached")
         if n_wrong_site:
             reasons.append("barrier untrusted: wrong binding site")
+        # gr522897: name the blocker, not just the verdict — the
+        # seed-independence synthetic and each ``blocked_by`` record id
+        # (``{state|step}#s{seed}#{check}``, capped at 3), then point at
+        # the surface carrying measured-vs-tolerance detail
+        # (``view='neb'`` on the struct_neb run, else ``view='trust'``).
+        detail: list[str] = []
+        seed_blk = c.flags.get("barrier_seed_blocker")
+        if seed_blk:
+            detail.append(str(seed_blk))
+        blocked_by = c.flags.get("barrier_blocked_by")
+        if isinstance(blocked_by, list):
+            for bid in blocked_by[:3]:
+                s = str(bid)
+                parts = s.rsplit("#", 2)
+                detail.append(
+                    s if len(parts) != 3 or ":" in s else f"{parts[2]} on {parts[0]}"
+                )
+        if detail:
+            run_id = c.flags.get("neb_run_id")
+            pointer = (
+                f"see view='neb' args={{'run': {run_id}}}"
+                if isinstance(run_id, int) and not isinstance(run_id, bool)
+                else "see view='trust'"
+            )
+            reasons.append("barrier untrusted: " + ", ".join(detail) + f" — {pointer}")
         if not reasons:
             reasons.append("barrier untrusted")
     if c.flags.get("selectivity_trusted") is False:

@@ -3177,6 +3177,9 @@ class StructureHandler(Handler):
             lines += [f"failed: {reason}", f"next: {nxt}"]
         lines.append("")
         lines.append(self._neb_trust_table(recs=list(run.get("trust") or []), run=run))
+        seeds = self._neb_seed_table(run)
+        if seeds:
+            lines += ["", seeds]
         images = self.store.struct_neb_images(run_id)
         if images:
             lines.append("")
@@ -3190,8 +3193,9 @@ class StructureHandler(Handler):
         or fix the endpoint)."""
         recs = [r for r in (run.get("trust") or []) if r.get("verdict") == "fail"]
         if recs:
-            ev = recs[0].get("evidence") or {}
-            reason = str(ev.get("reason") or f"{recs[0].get('check')} failed")
+            from precis.utils.trust_gate import record_line
+
+            reason = record_line(recs[0])
         else:
             reason = f"failed before pricing — see job jo{run.get('job_ref_id')}"
         return reason, (
@@ -3208,10 +3212,19 @@ class StructureHandler(Handler):
         rows for required checks the engine never graded (a check that
         emitted no records is not a passing one — trust_gate's rule),
         plus the slice-5 ``frequency`` slot — ``not checked`` until the
-        saddle frequency pass exists. A record stamped to a different
-        engine than the run's own renders ``stale, rerun on current``
-        (the same-version-seeds ruling, gr517804)."""
-        from precis.utils.trust_gate import is_stale, record_engine
+        saddle frequency pass exists. ``measured``/``tol``/``where``
+        carry the diagnostic (gr522897): the values the check read, the
+        tolerance it was judged against, and which image/seed/endpoint
+        failed — so a refused gate names a real disagreement, not noise.
+        A record stamped to a different engine than the run's own renders
+        ``stale, rerun on current`` (the same-version-seeds ruling,
+        gr517804)."""
+        from precis.utils.trust_gate import (
+            _CHECK_RULE,
+            is_stale,
+            record_diagnostic,
+            record_engine,
+        )
         from precis.workers.job_types.struct_neb import _NEB_REQUIRED_CHECKS
 
         engines = [e for e in (record_engine(r) for r in recs) if e]
@@ -3233,12 +3246,16 @@ class StructureHandler(Handler):
             )
             if r.get("check") == "frequency" and not note:
                 note = freq_note
+            diag = record_diagnostic(r)
             rows.append(
                 {
                     "check": r.get("check"),
                     "verdict": r.get("verdict"),
                     "severity": r.get("severity"),
                     "engine": record_engine(r) or "—",
+                    "measured": diag["measured"] or "—",
+                    "tol": diag["tol"] or "—",
+                    "where": diag["where"] or "—",
                     "note": note,
                 }
             )
@@ -3253,6 +3270,9 @@ class StructureHandler(Handler):
                         "verdict": "not-run",
                         "severity": "—",
                         "engine": "—",
+                        "measured": "—",
+                        "tol": _CHECK_RULE.get(check, "—"),
+                        "where": "—",
                         "note": "check emitted no records",
                     }
                 )
@@ -3263,12 +3283,91 @@ class StructureHandler(Handler):
                     "verdict": "not checked" if n_imag is None else "checked",
                     "severity": "—",
                     "engine": "—",
+                    "measured": "—",
+                    "tol": _CHECK_RULE["frequency"],
+                    "where": "—",
                     "note": freq_note,
                 }
             )
         verdict = "trusted" if run.get("trusted") else "untrusted"
         return f"trust: {verdict}\n" + render_agent_table(
-            rows, schema=["check", "verdict", "severity", "engine", "note"]
+            rows,
+            schema=[
+                "check",
+                "verdict",
+                "severity",
+                "engine",
+                "measured",
+                "tol",
+                "where",
+                "note",
+            ],
+        )
+
+    @staticmethod
+    def _neb_seed_table(run: Mapping[str, Any]) -> str:
+        """``## seeds`` — the run's per-init-seed barriers off
+        ``multistart.starts`` with the pooled-seed agreement bound
+        (gr522897): which seed priced which barrier against the
+        ``tol_eV`` the multistart check was judged under, so a spread is
+        readable as a real disagreement, not noise. Empty when the run
+        carried no multistart block (single-start, or pre-stamp)."""
+        ms = run.get("multistart")
+        starts = ms.get("starts") if isinstance(ms, Mapping) else None
+        if not isinstance(starts, list) or not starts:
+            return ""
+        recs = [r for r in (run.get("trust") or []) if isinstance(r, dict)]
+        tol = next(
+            (
+                ev["tol_eV"]
+                for r in recs
+                if r.get("check") == "multistart"
+                and isinstance((ev := r.get("evidence")), dict)
+                and isinstance(ev.get("tol_eV"), (int, float))
+            ),
+            None,
+        )
+        selected = ms.get("selected_seed") if isinstance(ms, Mapping) else None
+        barriers = [
+            float(st["barrier_eV"])
+            for st in starts
+            if isinstance(st, dict)
+            and st.get("valid")
+            and isinstance(st.get("barrier_eV"), (int, float))
+            and not isinstance(st.get("barrier_eV"), bool)
+        ]
+        rows = []
+        for st in starts:
+            if not isinstance(st, dict):
+                continue
+            b = st.get("barrier_eV")
+            rows.append(
+                {
+                    "init_seed": st.get("init_seed"),
+                    "barrier_eV": f"{b:.3f}" if isinstance(b, (int, float)) else "—",
+                    "converged": st.get("converged"),
+                    "valid": st.get("valid"),
+                    "desorbed": st.get("desorbed_images"),
+                    "ts_image": st.get("ts_image"),
+                    "picked": "*" if st.get("init_seed") == selected else "",
+                }
+            )
+        spread = (
+            f" · seed spread {max(barriers) - min(barriers):.3f} eV vs tol {tol:g} eV"
+            if len(barriers) > 1 and tol is not None
+            else ""
+        )
+        return f"seeds (barrier_eV per path init){spread}:\n" + render_agent_table(
+            rows,
+            schema=[
+                "init_seed",
+                "barrier_eV",
+                "converged",
+                "valid",
+                "desorbed",
+                "ts_image",
+                "picked",
+            ],
         )
 
     def _neb_band_table(
