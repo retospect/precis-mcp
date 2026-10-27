@@ -55,7 +55,7 @@ guard = _load()
         "/home/deploy/.env.prod",
         "/Users/reto/.ssh/id_ed25519",
         "/Users/hermes/.claude_oauth_token",
-        "/Users/reto/.kimi-code/mcp.json",  # scripts/kimi-setup's precis token
+        "/Users/reto/.kimi-code/mcp.json",  # MCP configs can carry bearer tokens
         "/Users/reto/.kimi-code/oauth/kimi-code-env-0",
     ],
 )

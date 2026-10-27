@@ -8,8 +8,10 @@ Idempotent; scripts/kimi-tree runs it before every launch, so a rotated
 precis token reaches Kimi the next time a tree starts.
 
 - mcp.json: the `precis` server, copied from the user-scope entry in
-  ~/.claude.json (same URL and Authorization header Claude uses; the file
-  is written mode 600). Other servers are left alone.
+  ~/.claude.json (same URL; a `Bearer` Authorization header is converted —
+  the token is written to ~/.secrets/pw/PRECIS_MCP_TOKEN, mode 600, and
+  the entry carries `bearerTokenEnvVar` instead, so no credential sits in
+  mcp.json itself). Other servers are left alone.
 - config.toml: two managed blocks between `# >>> precis-mcp` markers — a
   top-level `extra_skill_dirs` (Kimi loads `.claude/skills/` and the
   flat `.claude/commands/*.md` from the project root, so /skill:land,
@@ -19,7 +21,9 @@ precis token reaches Kimi the next time a tree starts.
   hook on Grep/Bash calling scripts/hooks/kimi-grep-python-kind.py
   (mirrors ripgrep patterns through the precis python kind, advisory),
   plus `default_permission_mode = "yolo"` and Claude's Bash/MCP allow
-  list as `[[permission.rules]]`. Hooks are user-level in Kimi, so each
+  list as `[[permission.rules]]`. An `[mcp]` table sets
+  `startup_timeout_ms` so a slow-starting precis server outlives the
+  client's default patience. Hooks are user-level in Kimi, so each
   command no-ops outside a precis-mcp tree.
 
 Project instructions need no install: Kimi reads AGENTS.md and
@@ -40,6 +44,15 @@ TOP_BEGIN = "# >>> precis-mcp kimi-setup: top-level >>>"
 TOP_END = "# <<< precis-mcp kimi-setup: top-level <<<"
 TAB_BEGIN = "# >>> precis-mcp kimi-setup: hooks + rules >>>"
 TAB_END = "# <<< precis-mcp kimi-setup: hooks + rules <<<"
+MCP_BEGIN = "# >>> precis-mcp kimi-setup: mcp timeouts >>>"
+MCP_END = "# <<< precis-mcp kimi-setup: mcp timeouts <<<"
+
+#: How long the client waits for an MCP server to come up before giving
+#: up, ms. The precis dev server is a local uvicorn that can sit behind a
+#: cold venv for longer than the client's default patience — a reconnect
+#: then fails 2-3 quick tries and leaves the session without precis
+#: until a manual restart (Reto 2026-10-27: don't give up before ~10 s).
+MCP_STARTUP_TIMEOUT_MS = 30_000
 
 HOOK_CMD = (
     'f=scripts/hooks/kimi-adapt.py; [ -x "$f" ] || exit 0; '
@@ -134,20 +147,64 @@ def tables_block() -> str:
     return "\n".join(lines)
 
 
+def mcp_block() -> str:
+    """The ``[mcp]`` table — a TOML table, so it belongs AFTER all
+    top-level keys (see :func:`render_config`), not in ``top_block``."""
+    return "\n".join(
+        [
+            MCP_BEGIN,
+            "[mcp]",
+            f"startup_timeout_ms = {MCP_STARTUP_TIMEOUT_MS}",
+            MCP_END,
+        ]
+    )
+
+
 def strip_block(text: str, begin: str, end: str) -> str:
     pat = re.compile(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", re.S)
     return pat.sub("", text)
 
 
 def render_config(text: str) -> str:
-    text = strip_block(strip_block(text, TOP_BEGIN, TOP_END), TAB_BEGIN, TAB_END)
+    text = strip_block(
+        strip_block(strip_block(text, TOP_BEGIN, TOP_END), MCP_BEGIN, MCP_END),
+        TAB_BEGIN,
+        TAB_END,
+    )
     # Top-level keys must precede the first table header.
     m = re.search(r"^\[", text, re.M)
     at = m.start() if m else len(text)
     head, tail = text[:at], text[at:]
     head = head.rstrip("\n") + ("\n\n" if head.strip() else "")
-    out = head + top_block(text) + "\n\n" + tail.rstrip("\n") + "\n\n" + tables_block()
+    out = (
+        head
+        + top_block(text)
+        + "\n\n"
+        + mcp_block()
+        + "\n\n"
+        + tail.rstrip("\n")
+        + "\n\n"
+        + tables_block()
+    )
     return out + "\n"
+
+
+def _secrets_token(token: str) -> None:
+    """Write the bearer token to the user's secrets file (mode 600) when
+    it is missing or stale — the same ``~/.secrets/pw/PRECIS_MCP_TOKEN``
+    the shell's export sources, so the env var the config names actually
+    exists. No-op when the file already holds the token."""
+    path = Path.home() / ".secrets" / "pw" / "PRECIS_MCP_TOKEN"
+    try:
+        if path.read_text(encoding="utf-8").strip() == token:
+            return
+    except OSError:
+        pass
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True)
+        os.chmod(path.parent, 0o700)
+    path.write_text(token + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
 
 
 def precis_entry() -> dict:
@@ -160,7 +217,19 @@ def precis_entry() -> dict:
             "next= run scripts/mcp-entry-preflight, then re-run kimi-setup"
         )
     entry = {"url": src["url"]}
-    if src.get("headers"):
+    bearer_env = src.get("bearerTokenEnvVar")
+    auth = (src.get("headers") or {}).get("Authorization", "")
+    if bearer_env:
+        entry["bearerTokenEnvVar"] = bearer_env
+    elif auth.startswith("Bearer "):
+        # Secret-clean output: the token moves to the user's secrets
+        # file and the entry references it by env var — the same
+        # Authorization header on the wire, nothing credentialled in
+        # mcp.json itself (kimi-setup rewrites it on every tree launch,
+        # so an inline token would live forever on disk).
+        _secrets_token(auth.removeprefix("Bearer ").strip())
+        entry["bearerTokenEnvVar"] = "PRECIS_MCP_TOKEN"
+    elif src.get("headers"):
         entry["headers"] = src["headers"]
     return entry
 
