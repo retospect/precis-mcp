@@ -8,9 +8,8 @@ prio: normal
 # Shared core layers for cad / se / pcb
 
 Draft for Reto's review. Design call, not a build order. Parent gripe:
-gr522030. The owning thread (proposed slug `shared-core-layers`) carries
-`design-review: yes` (thread front matter, `threads/README.md`); the thread
-file is created on approval.
+gr522030. Owning thread: `threads/shared-core-layers.md` (`design-review:
+yes`). Reto ruled Q1–Q8 on 2026-10-27 (gr522030 comment 2).
 
 ## Motivation / why
 
