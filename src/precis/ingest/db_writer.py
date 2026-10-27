@@ -260,7 +260,9 @@ def resolve_cite_key(
 
     Probes ``ref_identifiers`` for keys starting with ``cite_key_prefix``
     and asks :func:`precis.identity.make_cite_key` to choose the next
-    free suffix.
+    free suffix. ``cite_key_alias`` rows count as taken too (gr521515):
+    a rekeyed paper's old key is reserved — minting it afresh would
+    silently retarget every ``\\cite{<old>}`` onto the new ref.
 
     The probe is cheap thanks to the ``cite_key_trgm`` index on
     ``ref_identifiers (id_value)``. The set of "taken" keys is
@@ -271,7 +273,7 @@ def resolve_cite_key(
 
     sql = (
         "SELECT id_value FROM ref_identifiers "
-        "WHERE id_kind = 'cite_key' AND id_value LIKE %s"
+        "WHERE id_kind IN ('cite_key', 'cite_key_alias') AND id_value LIKE %s"
     )
     rows = conn.execute(sql, (cite_key_prefix + "%",)).fetchall()
     taken = {row[0] for row in rows}
@@ -333,13 +335,15 @@ def resolve_slug(slug: str, *, conn: Connection, limit: int = 1000) -> str:
     the same policy :func:`precis.ingest.pres._resolve_pres_slug` uses
     for pres slugs, not ``make_cite_key``'s ``a``/``b`` letters. The
     probe grabs ``slug`` plus ``slug-*`` once so the pick is one
-    round-trip.
+    round-trip. ``cite_key_alias`` rows count as taken (gr521515) — a
+    displaced key stays reserved, never re-minted.
     """
     if not slug:
         raise ValueError("slug must be non-empty")
     rows = conn.execute(
         "SELECT id_value FROM ref_identifiers "
-        "WHERE id_kind = 'cite_key' AND (id_value = %s OR id_value LIKE %s)",
+        "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
+        "AND (id_value = %s OR id_value LIKE %s)",
         (slug, slug + "-%"),
     ).fetchall()
     taken = {row[0] for row in rows}

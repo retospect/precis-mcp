@@ -845,6 +845,33 @@ def apply_resolution(
             keywords=[],
         )
         store.remove_tag(res.ref_id, TRIAGE_TAG, conn=conn)
+    if res.author_dicts or res.year is not None:
+        # The repair just made the byline/year real — a junk-mint key
+        # (anon*/user*/the*) goes with it (gr521515). Post-commit so the
+        # rekey's own transaction and PDF move see the write; the old key
+        # stays resolvable as a cite_key_alias redirect. The
+        # REKEY_DEADLINE_S bound keeps a wedged corpus mount from
+        # stalling the resolver queue.
+        from precis.store.paper_rekey import REKEY_DEADLINE_S, remint_junk_cite_key
+        from precis.utils.deadline import DeadlineExceeded, call_with_deadline
+
+        try:
+            reminted = call_with_deadline(
+                lambda: remint_junk_cite_key(store, res.ref_id, source=source),
+                deadline_s=REKEY_DEADLINE_S,
+                label="remint_junk_cite_key",
+            )
+        except DeadlineExceeded:
+            # The abandoned thread may still finish; the junk-key sweep
+            # catches whatever it leaves behind.
+            log.warning(
+                "apply_resolution: auto-remint of ref %d exceeded %.0fs",
+                res.ref_id,
+                REKEY_DEADLINE_S,
+            )
+            reminted = None
+        if reminted:
+            log.info("apply_resolution: %s", reminted)
 
 
 def park_mismatch(

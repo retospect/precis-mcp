@@ -148,6 +148,13 @@ class TestResolveCiteKey:
         with store.pool.connection() as conn, pytest.raises(ValueError):
             resolve_cite_key("", conn=conn)
 
+    def test_alias_held_key_counts_as_taken(self, store):
+        """gr521515: a displaced key kept as cite_key_alias is reserved —
+        never minted again."""
+        _seed_ref(store, identifiers={"cite_key_alias": "smith24"})
+        with store.pool.connection() as conn:
+            assert resolve_cite_key("smith24", conn=conn) == "smith24a"
+
 
 # ---------------------------------------------------------------------------
 # resolve_slug + datasheet_slug_base — whole-slug minting (gr520126)
@@ -173,6 +180,11 @@ class TestResolveSlug:
     def test_empty_raises(self, store):
         with store.pool.connection() as conn, pytest.raises(ValueError):
             resolve_slug("", conn=conn)
+
+    def test_alias_held_slug_counts_as_taken(self, store):
+        _seed_ref(store, identifiers={"cite_key_alias": "kemet-fc"})
+        with store.pool.connection() as conn:
+            assert resolve_slug("kemet-fc", conn=conn) == "kemet-fc-2"
 
 
 class TestDatasheetSlugBase:

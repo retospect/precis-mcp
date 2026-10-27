@@ -129,12 +129,19 @@ def _resolve_ref_id(
         except ValueError:
             return None
     # Slug kind: cite_key / pub_id slug first, then a verified numeric
-    # ref_id. cite_key wins on the (rare) chance a value collides.
+    # ref_id. A live cite_key wins, then pub_id; a ``cite_key_alias``
+    # (a rekeyed paper's old-key redirect, gr521515) resolves only when
+    # no live identifier claims the value. Retired refs are excluded —
+    # a dead ref's leftover ``cite_key`` row must not shadow a live
+    # ref's alias redirect (previously the probe returned the dead id).
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM ref_identifiers "
-            "WHERE id_kind IN ('cite_key', 'pub_id') AND id_value = %s "
-            "ORDER BY (id_kind = 'cite_key') DESC LIMIT 1",
+            "SELECT ri.ref_id FROM ref_identifiers ri "
+            "JOIN refs r ON r.ref_id = ri.ref_id "
+            "WHERE ri.id_kind IN ('cite_key', 'pub_id', 'cite_key_alias') "
+            "AND ri.id_value = %s AND r.retired_at IS NULL "
+            "ORDER BY (ri.id_kind = 'cite_key') DESC, "
+            "(ri.id_kind = 'pub_id') DESC LIMIT 1",
             (raw_id,),
         ).fetchone()
         if row is not None:

@@ -324,12 +324,13 @@ def resolve_handle_ref(
     """Resolve a handle's ``ident`` to a ``Ref`` (or ``None``).
 
     Numeric idents fetch by id; slugs go through ``ref_identifiers``
-    matching ``id_kind IN ('cite_key', 'pub_id')`` — the latter is how a
-    ``finding`` is addressed (its 6-char base32 ``pub_id``), so a
-    ``finding:<pub_id>`` mention resolves. The same two-step the web
-    preview route uses. Kind is intentionally not re-checked:
-    ``memory:6134`` resolves ref 6134 whatever its kind, matching the
-    read-time behaviour.
+    matching ``id_kind IN ('cite_key', 'pub_id', 'cite_key_alias')`` —
+    ``pub_id`` is how a ``finding`` is addressed (its 6-char base32 id),
+    so a ``finding:<pub_id>`` mention resolves, and ``cite_key_alias``
+    is the rekeyed paper's old-key redirect (gr521515). The same
+    two-step the web preview route uses. Kind is intentionally not
+    re-checked: ``memory:6134`` resolves ref 6134 whatever its kind,
+    matching the read-time behaviour.
     """
     ident = ident.lstrip("#")
     try:
@@ -340,13 +341,21 @@ def resolve_handle_ref(
         return store.fetch_refs_by_ids([numeric], include_deleted=include_deleted).get(
             numeric
         )
-    # Slug → cite_key / pub_id row → ref_id (cite_key wins on collision).
+    # Slug → cite_key / pub_id row → ref_id. A live cite_key wins, then a
+    # live pub_id; a cite_key_alias redirect only fires when neither a
+    # real key nor a pub_id claims the value (gr521515: an alias never
+    # shadows a live identifier). Live refs outrank retired ones first —
+    # a dead ref's leftover row must not shadow a live alias's redirect.
     try:
         with store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT ref_id FROM ref_identifiers "
-                "WHERE id_kind IN ('cite_key', 'pub_id') AND id_value = %s "
-                "ORDER BY (id_kind = 'cite_key') DESC LIMIT 1",
+                "SELECT ri.ref_id FROM ref_identifiers ri "
+                "JOIN refs r ON r.ref_id = ri.ref_id "
+                "WHERE ri.id_kind IN ('cite_key', 'pub_id', 'cite_key_alias') "
+                "AND ri.id_value = %s "
+                "ORDER BY (r.retired_at IS NULL) DESC, "
+                "(ri.id_kind = 'cite_key') DESC, "
+                "(ri.id_kind = 'pub_id') DESC LIMIT 1",
                 (ident,),
             ).fetchone()
     except Exception:

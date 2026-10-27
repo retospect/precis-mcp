@@ -286,6 +286,22 @@ def inherit_missing_identity(
                     (loser_ref_id, survivor_ref_id),
                 )
                 filled.append("authors")
+    if "authors" in filled:
+        # The survivor just gained a real byline — a junk-mint cite_key
+        # (anon*/user*/the*) goes with it (gr521515). In-transaction:
+        # only the identifier flips + event here; the PDF keeps its
+        # storage path (the authoritative lookup). The loser's own
+        # non-junk key is adopted before a suffix mints — drafts citing
+        # it keep resolving after the loser retires.
+        from precis.store.paper_rekey import remint_junk_cite_key
+
+        remint_junk_cite_key(
+            store,
+            survivor_ref_id,
+            source=source,
+            conn=conn,
+            adopt_from_ref_id=loser_ref_id,
+        )
     return filled
 
 
@@ -561,6 +577,24 @@ def merge_duplicate(
         "UPDATE ref_identifiers SET ref_id = %s "
         "WHERE ref_id = %s AND id_kind = ANY(%s)",
         (survivor_ref_id, duplicate_ref_id, list(_MIGRATABLE_ID_KINDS)),
+    )
+    # A rekeyed loser's ``cite_key_alias`` redirects follow too
+    # (gr521515): left on the retired ref they stop resolving, breaking
+    # drafts that cite the loser's old keys. The survivor may already
+    # hold the same alias value — drop the loser's copy first (the PK
+    # is (id_kind, id_value); first claim wins, the survivor's alias
+    # points at the same ref set anyway).
+    conn.execute(
+        "DELETE FROM ref_identifiers d USING ref_identifiers s "
+        " WHERE d.ref_id = %s AND s.ref_id = %s "
+        "   AND d.id_kind = 'cite_key_alias' AND s.id_kind = 'cite_key_alias' "
+        "   AND d.id_value = s.id_value",
+        (duplicate_ref_id, survivor_ref_id),
+    )
+    conn.execute(
+        "UPDATE ref_identifiers SET ref_id = %s "
+        "WHERE ref_id = %s AND id_kind = 'cite_key_alias'",
+        (survivor_ref_id, duplicate_ref_id),
     )
     _merge_cleared_markers(
         conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id

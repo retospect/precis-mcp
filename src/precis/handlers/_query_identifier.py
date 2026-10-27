@@ -102,8 +102,12 @@ def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
     # cite_key probe: the ``(id_kind, id_value)`` pair is unique, so a hit
     # is a single ref — never an ambiguity report. Slugs carry no ``/``;
     # the gate skips multi-word queries and DOI forms (handled below).
+    # The ``cite_key_alias`` fallback keeps a rekeyed paper's old key
+    # resolving (gr521515); a live cite_key — probed first — always wins.
     if "/" not in text and _CITE_KEYISH_RE.match(text) is not None:
-        ref_id = store.find_ref_by_identifier("cite_key", text)
+        ref_id = store.find_ref_by_identifier(
+            "cite_key", text
+        ) or store.find_ref_by_identifier("cite_key_alias", text)
         if ref_id is not None:
             key_ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
             if key_ref is not None:

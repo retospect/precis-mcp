@@ -334,6 +334,7 @@ _EDIT_DOOR_ARGS = (
     "clear_abstract",
     "convert_to",
     "drop_identifier",
+    "cite_key",
 )
 
 
@@ -591,6 +592,7 @@ class PaperHandler(Handler):
                 "convert_to",
                 "subtype",
                 "drop_identifier",
+                "cite_key",
                 "reason",
             }
         ),
@@ -3289,6 +3291,8 @@ class PaperHandler(Handler):
         call. ``args={'merge_into': <survivor>}`` folds this live ref into
         a confirmed duplicate's survivor (:meth:`_merge_duplicate_into`),
         taking ``args['reason']`` and no other field.
+        ``args={'cite_key': '<newkey>', 'reason': '<why>'}`` re-keys a
+        paper and relocates its stored PDF (:meth:`_rekey`).
         ``args={'drop_identifier': {'scheme': …, 'value': …}}`` removes
         exactly one ``ref_identifiers`` row — the surgical fix for a
         wrong id sitting next to correct ones
@@ -3439,6 +3443,10 @@ class PaperHandler(Handler):
                     next=f"make the {door} call alone, then edit the rest",
                 )
             reason = str(raw_args.get("reason") or _kw.get("reason") or "").strip()
+            if door == "cite_key":
+                return self._rekey(
+                    id, raw_args["cite_key"], reason=reason, dry=bool(dry_mode)
+                )
             if door == "retire":
                 return self._retire_stub(
                     id, raw_args["retire"], reason=reason, dry=bool(dry_mode)
@@ -3726,8 +3734,42 @@ class PaperHandler(Handler):
             changed.append(f"authors({len(new_authors)})")
         changed.extend(meta_patch.keys())
         changed.extend(extra_changes)
+        reminted = None
+        if new_authors or year is not None:
+            # A byline/year repair can retire a junk-mint cite_key
+            # (gr521515): when the paper's current key is
+            # anon*/user*/the*-shaped and the new metadata mints a real
+            # one, re-mint it — the old key stays resolvable as a
+            # cite_key_alias redirect. Runs post-commit so rekey's own
+            # transaction and PDF move see the write above — under the
+            # same REKEY_DEADLINE_S bound the explicit rekey door uses:
+            # the corpus-mount probes inside must not hang the request.
+            from precis.store.paper_rekey import (
+                REKEY_DEADLINE_S,
+                remint_junk_cite_key,
+            )
+            from precis.utils.deadline import DeadlineExceeded, call_with_deadline
+
+            try:
+                reminted = call_with_deadline(
+                    lambda: remint_junk_cite_key(
+                        self.store, ref_id, source="auto-remint"
+                    ),
+                    deadline_s=REKEY_DEADLINE_S,
+                    label="remint_junk_cite_key",
+                )
+            except DeadlineExceeded:
+                # The abandoned thread may still finish the rekey; the
+                # junk-key sweep catches whatever it leaves behind.
+                log.warning(
+                    "edit: auto-remint of ref %d exceeded %.0fs",
+                    ref_id,
+                    REKEY_DEADLINE_S,
+                )
         changed_str = ", ".join(changed) if changed else "no change"
         body = f"updated {self.spec.kind} id={ref_id}: {changed_str}."
+        if reminted:
+            body += f" cite_key re-minted — {reminted}"
         if doi_edit_check is not None:
             # Runs after the tx above has committed — see
             # _doi_edit_warning's docstring for why.
@@ -4862,6 +4904,48 @@ class PaperHandler(Handler):
                 f"pdf first: edit(kind='{kind}', id='{tgt_h}', args="
                 "{'drop_body': True, 'reason': '<why>'})",
             )
+
+    def _rekey(
+        self, id: str | int, new_key: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """Use the same cite-key and PDF rename operation as the web editor.
+
+        The corpus-mount probes and DB lock waits inside run under the
+        same wall-clock bound the web route applies
+        (:data:`~precis.store.paper_rekey.REKEY_DEADLINE_S`) — here via a
+        bounded worker thread rather than ``asyncio.wait_for``; an
+        expired bound abandons the thread, which may still complete the
+        rename in the background.
+        """
+        from precis.store.paper_rekey import REKEY_DEADLINE_S, rekey_paper
+        from precis.utils.deadline import DeadlineExceeded, call_with_deadline
+
+        ref_id = self._resolve_paper_ref_id(id)
+        try:
+            body = call_with_deadline(
+                lambda: rekey_paper(
+                    self.store,
+                    ref_id,
+                    new_key,
+                    reason=reason,
+                    dry_run=dry,
+                    kinds=(self.spec.kind,),
+                ),
+                deadline_s=REKEY_DEADLINE_S,
+                label="rekey_paper",
+            )
+        except DeadlineExceeded as exc:
+            raise BadInput(
+                f"cite_key rekey of {self.spec.kind} id={ref_id} did not "
+                f"finish within {REKEY_DEADLINE_S:.0f}s — the corpus mount "
+                "or a DB lock is not answering (the worker thread may "
+                "still complete the rename in the background)",
+                next=(
+                    f"get(kind='{self.spec.kind}', id='{ref_id}') to check "
+                    "the handle; retry the edit if it is unchanged"
+                ),
+            ) from exc
+        return Response(body=body)
 
     def _enqueue_pdf_attach(
         self,

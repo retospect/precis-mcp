@@ -116,6 +116,31 @@ mis-filed record's year and venue repair the same way — `year=2007`,
 and the locator fields `volume=`/`issue=`/`pages=`/`url=` — the BibTeX
 export reads them, so don't stuff them into the `journal=` string).
 
+## Re-key a paper's cite_key — aliases and auto re-mints
+
+Re-key a paper with `edit(kind='paper', id='pa<N>', args={'cite_key':
+'smith24', 'reason': '<why>'})`, alone (`^[a-z0-9]+$`); `dry_run=True`
+previews. A key held by another live ref or kept as another ref's alias
+is refused; a `cite_key_changed` ref_event records old → new and the
+reason, and the stored PDF moves to the new key's shard
+(`pdfs.storage_path` follows — the receipt names a failed move). The
+displaced key is re-recorded as a `cite_key_alias` identifier row:
+`paper:<old-key>`, slug lookups and draft `@key`/`[cite]` references
+still resolve. An alias is *reserved* — it is never minted or re-keyed
+onto a different ref, so existing `\cite{<old>}` references can't
+silently retarget; a live `cite_key` still outranks an alias at read
+time.
+
+Re-keys also happen automatically: a repair that gives a paper on a
+*junk* key — `anon\d+`, `user\d+`, `the\d+` mints from empty/garbage
+ingest metadata (`is_junk_cite_key`, gr521515) — a real byline/year
+re-mints via `suggest_cite_key` (this `edit` door on `authors`/`year`,
+the fix-metadata sweep, registry resolution, stub reconcile/merge),
+reason `auto re-mint after metadata repair`. A non-junk key is never
+re-minted, a still-junk suggestion is skipped, and a collision lands on
+the suggester's letter suffix — never a steal. The standing sweep is
+`precis paper-remint-junk` (dry-run default, `--apply` to write).
+
 The needs-triage backfill (`precis.ingest.metadata_resolve`, "Bucket B")
 guards against pulling in the *wrong* identity (gr353804): a Crossref/S2
 registry hit whose title shares zero distinctive words with the paper's

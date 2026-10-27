@@ -933,13 +933,15 @@ class RefsMixin:
                         return int(cid), False
 
             # No collapse hit — mint a stub. Derive a non-colliding
-            # cite_key from the title's first word + year.
+            # cite_key from the title's first word + year. Alias rows
+            # count as taken (gr521515): a displaced key is reserved.
             first_word = (title or "").split()
             authors = [{"family": first_word[0] if first_word else "anon"}]
             base = make_cite_key(authors, year)
             taken_rows = c.execute(
                 "SELECT id_value FROM ref_identifiers "
-                "WHERE id_kind = 'cite_key' AND id_value LIKE %s",
+                "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
+                "AND id_value LIKE %s",
                 (base + "%",),
             ).fetchall()
             taken = {str(r[0]) for r in taken_rows}
@@ -1655,10 +1657,19 @@ class RefsMixin:
         # the full ref row. Two queries beats one big JOIN here because
         # the ref_identifiers pkey lookup is the fast path; the JOIN
         # would force a hash join under cost-based planning.
+        # ``cite_key_alias`` is the rekeyed-paper redirect (gr521515):
+        # it resolves only when no live ``cite_key`` claims the value.
+        # Live refs outrank retired ones first — a dead ref's leftover
+        # ``cite_key`` row must not shadow a live alias (the ref fetch
+        # below would then return None instead of the redirect).
         with nullcontext(conn) if conn is not None else self.pool.connection() as c:
             ident_row = c.execute(
-                "SELECT ref_id FROM ref_identifiers "
-                "WHERE id_kind = 'cite_key' AND id_value = %s",
+                "SELECT ri.ref_id FROM ref_identifiers ri "
+                "JOIN refs r ON r.ref_id = ri.ref_id "
+                "WHERE ri.id_kind IN ('cite_key', 'cite_key_alias') "
+                "AND ri.id_value = %s "
+                "ORDER BY (r.retired_at IS NULL) DESC, "
+                "(ri.id_kind = 'cite_key') DESC LIMIT 1",
                 (id,),
             ).fetchone()
             if ident_row is None:
@@ -1677,14 +1688,20 @@ class RefsMixin:
         ``get_ref``'s kind filter cannot answer "is this slug taken?":
         cite_key is a global namespace, so a slug held by a different
         kind reads as free through a kind-scoped probe and the insert
-        then orphans the new ref (gr517405). Handlers minting a fresh
-        slug-addressed ref probe here first."""
+        then orphans the new ref (gr517405). A ``cite_key_alias`` row on
+        a live ref counts too (gr521515): minting over a redirect
+        silently retargets the references it serves. Handlers minting a
+        fresh slug-addressed ref probe here first."""
         with nullcontext(conn) if conn is not None else self.pool.connection() as c:
             row = c.execute(
                 f"SELECT {_REFS_COLS} FROM refs "
                 "WHERE ref_id = ("
-                "  SELECT ref_id FROM ref_identifiers "
-                "  WHERE id_kind = 'cite_key' AND id_value = %s"
+                "  SELECT ri.ref_id FROM ref_identifiers ri "
+                "  JOIN refs r2 ON r2.ref_id = ri.ref_id "
+                "  WHERE ri.id_kind IN ('cite_key', 'cite_key_alias') "
+                "  AND ri.id_value = %s "
+                "  ORDER BY (r2.retired_at IS NULL) DESC, "
+                "           (ri.id_kind = 'cite_key') DESC LIMIT 1"
                 ") AND retired_at IS NULL",
                 (slug,),
             ).fetchone()

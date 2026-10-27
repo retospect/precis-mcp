@@ -761,7 +761,8 @@ def _next_notice_seq(store: Store, parent_slug: str, relation: LinkRelation) -> 
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT id_value FROM ref_identifiers "
-            "WHERE id_kind = 'cite_key' AND id_value LIKE %s",
+            "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
+            "AND id_value LIKE %s",
             (pattern,),
         ).fetchall()
     nums: list[int] = []

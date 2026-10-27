@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.corpus_layout import corpus_pdf_dest
-from precis.identity import make_cite_key
+from precis.identity import is_junk_cite_key
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.dedup import merge_duplicate
 from precis.ingest.pdf_metadata import extract_metadata_from_sources
@@ -158,22 +158,6 @@ def classify(title: str) -> str:
     return "triage" if _title_is_junk(title) else "fix"
 
 
-def _new_cite_key(
-    conn: Any, author_dicts: list[dict[str, str]], year: int | None
-) -> str:
-    """Mint a collision-free cite_key for the recovered authors+year."""
-    base = make_cite_key(author_dicts, year)
-    # Probe the live index for the prefix's family (surname+yy) so the
-    # canonical minter can pick the next free letter suffix.
-    prefix = base.rstrip("abcdefghijklmnopqrstuvwxyz") or base
-    rows = conn.execute(
-        "SELECT id_value FROM ref_identifiers "
-        "WHERE id_kind = 'cite_key' AND id_value LIKE %s",
-        (prefix + "%",),
-    ).fetchall()
-    return make_cite_key(author_dicts, year, taken={r[0] for r in rows})
-
-
 def _locate_pdf(corpus_dirs: tuple[Path, ...], cite_key: str) -> Path | None:
     """First existing ``<root>/<letter>/<cite_key>.pdf`` across roots."""
     if not cite_key:
@@ -251,15 +235,16 @@ def remediate_one(
             )
 
     if dry_run:
-        # Compute the would-be cite_key for the report without writing.
-        # Only rename when an author was actually recovered — otherwise the
-        # cite_key surname stays "anon" and a rename is pointless (and the
-        # anon<yy> space overflows past 26 collisions).
-        if author_dicts:
-            with store.pool.connection() as conn:
-                new_key = _new_cite_key(conn, author_dicts, meta.year)
-        else:
-            new_key = suspect.cite_key
+        # Compute the would-be cite_key for the report without writing —
+        # the same gate _apply_fix applies: only a junk-mint current key
+        # plus a recovered non-junk suggestion means a rename.
+        new_key = suspect.cite_key
+        if author_dicts and is_junk_cite_key(suspect.cite_key):
+            suggested = store.suggest_cite_key(
+                author_dicts, meta.year, exclude_ref_id=suspect.ref_id
+            )
+            if suggested and not is_junk_cite_key(suggested):
+                new_key = suggested
         return Outcome(
             ref_id=suspect.ref_id,
             action="fixed",
@@ -305,12 +290,23 @@ def _apply_fix(
     new_key = suspect.cite_key
     try:
         with store.tx() as conn:
-            # Rename only when an author was recovered (real surname);
-            # otherwise leave the anon<yy> cite_key as-is and just repair
-            # the title/authors/abstract in place. Avoids pointless
-            # anon->anon renames and the anon<yy> CiteKeyOverflow.
-            if author_dicts:
-                new_key = _new_cite_key(conn, author_dicts, year)
+            # Rename only when an author was recovered AND the current key
+            # is a junk mint (gr521515): a real — possibly operator-set —
+            # key is never re-minted, and a suggestion that is still junk
+            # (anon base, or a user*/the* junk surname) is no improvement.
+            # Avoids pointless anon->anon renames and the anon<yy>
+            # CiteKeyOverflow. The displaced key stays resolvable:
+            # set_ref_identifier re-records it as a cite_key_alias
+            # redirect.
+            if author_dicts and is_junk_cite_key(suspect.cite_key):
+                suggested = store.suggest_cite_key(
+                    author_dicts,
+                    year,
+                    exclude_ref_id=suspect.ref_id,
+                    conn=conn,
+                )
+                if suggested and not is_junk_cite_key(suggested):
+                    new_key = suggested
             store.update_paper_fields(
                 suspect.ref_id,
                 title=title,
@@ -328,9 +324,22 @@ def _apply_fix(
             # Stage the file copy before the cite_key flips so the DB never
             # commits a slug whose file isn't in place.
             if new_key != suspect.cite_key:
+                from precis.store.paper_rekey import AUTO_REMINT_REASON
+
                 staged_dest = _stage_pdf_copy(pdf, corpus_dirs, new_key)
                 store.set_ref_identifier(
                     suspect.ref_id, "cite_key", new_key, source=source, conn=conn
+                )
+                store.append_event(
+                    suspect.ref_id,
+                    source=source,
+                    event="cite_key_changed",
+                    payload={
+                        "old": suspect.cite_key,
+                        "new": new_key,
+                        "reason": AUTO_REMINT_REASON,
+                    },
+                    conn=conn,
                 )
             rewrite_cards(
                 conn,

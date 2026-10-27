@@ -610,6 +610,30 @@ def make_cite_key(
     raise CiteKeyOverflow(base, taken_set)  # unreachable for a finite taken set
 
 
+#: Junk-mint cite_key shapes (gr521515): keys minted from empty or garbage
+#: metadata at ingest — ``anon`` when the byline was unknown
+#: (:func:`make_cite_key`'s empty-author placeholder), ``user``/``the``
+#: when a junk ``/Info`` author string survived old parsing as the
+#: "surname". After the word the mint is digits (the 2-digit year) then
+#: the collision suffix — letters only — so ``[a-z]*`` covers the
+#: ``a``…``z``/``aa``… roll too. A real surname can't collide: it is
+#: ``[a-z]+`` by construction, and ``anon``/``user``/``the`` aren't
+#: surnames the metadata repair paths produce.
+_JUNK_CITE_KEY_RE = re.compile(r"(?:anon|user|the)\d+[a-z]*")
+
+
+def is_junk_cite_key(key: str | None) -> bool:
+    """True when ``key`` is a junk-mint cite_key shape (gr521515).
+
+    >>> [is_junk_cite_key(k) for k in
+    ...  ("anon13a", "user88", "the24z", "anon00", "murty88", "theo88", None)]
+    [True, True, True, True, False, False, False]
+    """
+    return (
+        key is not None and _JUNK_CITE_KEY_RE.fullmatch(key.strip().lower()) is not None
+    )
+
+
 def make_node_id(paper_id: str, page: int | None, block_index: int) -> str:
     """8-character opaque handle for a chunk-like node within a paper.
 
@@ -637,6 +661,7 @@ def make_node_id(paper_id: str, page: int | None, block_index: int) -> str:
 __all__ = [
     "PLACEHOLDER_TITLE",
     "CiteKeyOverflow",
+    "is_junk_cite_key",
     "is_placeholder_title",
     "make_cite_key",
     "make_content_hash",

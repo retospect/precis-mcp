@@ -2069,6 +2069,22 @@ def _reconcile_orphan_stub(
         """,
         (survivor_ref_id, stub_id),
     )
+    # The stub's ``cite_key_alias`` redirects follow too (gr521515) —
+    # left on the retired row they stop resolving. Unlike the external
+    # ids above, the survivor may already hold the same alias value, so
+    # dedupe before the repoint (PK is (id_kind, id_value)).
+    conn.execute(
+        "DELETE FROM ref_identifiers d USING ref_identifiers s "
+        " WHERE d.ref_id = %s AND s.ref_id = %s "
+        "   AND d.id_kind = 'cite_key_alias' AND s.id_kind = 'cite_key_alias' "
+        "   AND d.id_value = s.id_value",
+        (stub_id, survivor_ref_id),
+    )
+    conn.execute(
+        "UPDATE ref_identifiers SET ref_id = %s "
+        "WHERE ref_id = %s AND id_kind = 'cite_key_alias'",
+        (survivor_ref_id, stub_id),
+    )
     _merge_cleared_markers(conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id)
     _merge_dropped_markers(conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id)
 

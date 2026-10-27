@@ -277,6 +277,11 @@ COMMANDS: tuple[Command, ...] = (
     ),
     _c("draft", "draft", "Operate on draft documents (export, …)."),
     _c("paper", "paper", "Operate on paper refs (authors-resplit, …)."),
+    _c(
+        "paper-remint-junk",
+        "paper_remint_junk",
+        "Re-mint papers whose cite_key is a junk mint (anon*/user*/the*).",
+    ),
     _c("verify", "verify", "Mark a finding's citation chain as human-verified."),
     _c(
         "tools",

@@ -51,6 +51,7 @@ from precis.errors import BadInput, NotFound
 from precis.export.latex import DATASHEET_SUBTYPE_LABELS
 from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
 from precis.identity import normalize_doi
+from precis.store.paper_rekey import REKEY_DEADLINE_S, rekey_paper
 from precis.store.si_links import queue_si_on_attention
 from precis.store.types import BibEntry
 from precis.utils.authors import (
@@ -128,9 +129,6 @@ def _parse_identifier_conflict(body: str) -> dict[str, Any] | None:
         "value": m.group("value").strip("'"),
         "owner_id": int(m.group("owner")),
     }
-
-
-_SLUG_RE = re.compile(r"[a-z0-9]+")
 
 
 def _suggest_slug(store: Store, ref: Any, prefill: dict[str, Any] | None) -> str:
@@ -2209,16 +2207,18 @@ async def edit(
     return RedirectResponse(url=f"/papers/{ref_id}?tab=Meta", status_code=303)
 
 
-#: Bound on the re-slug await. ``_rename_slug`` does filesystem work on the
-#: corpus mount (``is_file`` / ``mkdir`` / ``rename`` probes — the corpus
-#: lives on NFS) and DB writes that can wait on another transaction's row
-#: lock; neither carries an in-process timeout, so a wedged mount or a stuck
-#: lock used to hang the request forever (2026-08-17: 12+ minutes, the
-#: cite_key never changed — the hang was before the identifier write).
+#: Bound on the re-slug await — the shared :data:`REKEY_DEADLINE_S` the
+#: MCP door's ``call_with_deadline`` uses too. ``_rename_slug`` does
+#: filesystem work on the corpus mount (``is_file`` / ``mkdir`` /
+#: ``rename`` probes — the corpus lives on NFS) and DB writes that can
+#: wait on another transaction's row lock; neither carries an in-process
+#: timeout, so a wedged mount or a stuck lock used to hang the request
+#: forever (2026-08-17: 12+ minutes, the cite_key never changed — the
+#: hang was before the identifier write).
 #: A fired timeout cannot kill the worker thread (threads are
 #: uninterruptible) — it may still complete the rename in the background,
 #: which the error message says honestly.
-_RENAME_SLUG_TIMEOUT_S = 30.0
+_RENAME_SLUG_TIMEOUT_S = REKEY_DEADLINE_S
 
 
 async def _rename_slug_bounded(
@@ -2243,49 +2243,23 @@ async def _rename_slug_bounded(
 def _rename_slug(
     request: Request, ref_id: int, old_slug: str, new_slug: str
 ) -> str | None:
-    """Re-slug a paper: replace its ``cite_key`` and move the PDF on disk.
-
-    Web-only (a direct store + filesystem op, not dispatched). Returns an
-    error string for the caller to surface, or ``None`` on success.
-
-    The on-disk PDF is named ``<cite_key>.pdf`` under a sharded corpus
-    root, so the rename must move it too or the in-browser viewer 404s.
-    The old path is resolved *before* the DB change (so we still have the
-    handle to it), then the identifier is swapped (which raises on a
-    cross-ref clash), then the file is moved best-effort.
-    """
-    if not _SLUG_RE.fullmatch(new_slug):
-        return (
-            f"handle {new_slug!r} is invalid — use lowercase letters and "
-            "digits only (e.g. piela07)."
-        )
+    """Adapt the shared re-key operation to the web form's error contract."""
     store = get_store(request)
     cfg = get_web_config(request)
-    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
     old_pdf = _resolve_pdf(cfg.corpus_dirs, old_slug) if old_slug else None
     try:
-        store.set_ref_identifier(ref_id, "cite_key", new_slug, source="web-edit")
-    except BadInput as exc:
+        rekey_paper(
+            store,
+            ref_id,
+            new_slug,
+            reason="web metadata editor: short handle correction",
+            source="web-edit",
+            corpus_dirs=cfg.corpus_dirs,
+            old_pdf=old_pdf,
+            kinds=_DOC_FAMILY,
+        )
+    except (BadInput, NotFound) as exc:
         return str(exc)
-    if old_pdf is not None:
-        # Same shard math as the fetcher/resolver — one definition.
-        new_pdf = corpus_pdf_dest(new_slug, old_pdf.parent.parent)
-        try:
-            new_pdf.parent.mkdir(parents=True, exist_ok=True)
-            if not new_pdf.exists():
-                old_pdf.rename(new_pdf)
-            # Keep the authoritative path honest: the resolver prefers
-            # ``pdfs.storage_path``, so a move that didn't update it would
-            # leave the resolver pointing at the vanished old shard (a
-            # false "held but missing"). ``pdf_sha256`` keys the pdfs row.
-            sha = getattr(ref, "pdf_sha256", None) if ref is not None else None
-            if sha and new_pdf.is_file():
-                store.set_pdf_storage_path(sha, str(new_pdf))
-        except OSError:
-            # DB is updated; the file move is best-effort. The detail page's
-            # "file expected but missing" panel will self-diagnose if the
-            # move didn't land.
-            pass
     return None
 
 

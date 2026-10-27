@@ -152,11 +152,15 @@ def _try_cite_key(store: Any, key: str | None) -> int | None:
     as ``id_kind='cite_key'`` aliases, so the key usually IS the paper's
     handle. Look it up explicitly (case-insensitively, via the identifier
     normaliser), scoped to ``kind='paper'`` so a same-named draft slug can't
-    shadow it."""
+    shadow it. The ``cite_key_alias`` fallback keeps a bib key citing a
+    paper's pre-rekey handle resolving (gr521515); a live ``cite_key``
+    — probed first — always outranks an alias."""
     if not key:
         return None
     try:
-        return store.find_ref_by_identifier("cite_key", key, kind="paper")
+        return store.find_ref_by_identifier(
+            "cite_key", key, kind="paper"
+        ) or store.find_ref_by_identifier("cite_key_alias", key, kind="paper")
     except Exception:
         return None
 

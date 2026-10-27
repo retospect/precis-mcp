@@ -656,6 +656,21 @@ class IdentifiersMixin:
         ``merge_refs``, leaves its ``ref_identifiers`` rows), which would
         otherwise wedge the survivor's DOI / arXiv id permanently.
 
+        ``scheme='cite_key'`` additionally keeps every displaced value
+        resolvable: each removed ``cite_key`` row is re-inserted as a
+        ``cite_key_alias`` row (gr521515 — a rekeyed paper's old key is a
+        redirect, not a dead end). Aliases never shadow: resolution
+        checks ``cite_key`` first and ``cite_key_alias`` only on a miss,
+        the alias insert is ``ON CONFLICT DO NOTHING`` (first claim
+        wins), and a value the operator suppressed via
+        ``drop_identifier`` stays suppressed. An alias is also
+        *reserved* (gr521515 decision): ``suggest_cite_key``/
+        ``resolve_cite_key`` count ``cite_key_alias`` rows in their
+        taken set and ``rekey_paper`` refuses a value another ref
+        holds as an alias, so a displaced key is never re-minted and
+        an existing ``\\cite{<old>}`` can't silently retarget to a
+        different paper.
+
         A scheme marked human-cleared
         (:data:`CLEARED_IDENTIFIERS_META_KEY`, gr515246) refuses
         *machine*-sourced writes — ``False`` with a log line, so a
@@ -722,15 +737,58 @@ class IdentifiersMixin:
                     "DELETE FROM ref_identifiers WHERE id_kind = %s AND id_value = %s",
                     (s, v),
                 )
-            c.execute(
-                "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
-                (ref_id, s),
+            displaced = (
+                [
+                    str(r[0])
+                    for r in c.execute(
+                        "DELETE FROM ref_identifiers "
+                        "WHERE ref_id = %s AND id_kind = %s "
+                        "RETURNING id_value",
+                        (ref_id, s),
+                    ).fetchall()
+                ]
+                if s == "cite_key"
+                else None
             )
+            if displaced is None:
+                c.execute(
+                    "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
+                    (ref_id, s),
+                )
+            if s == "cite_key":
+                # A value being (re-)promoted to cite_key drops this
+                # ref's own alias row for it, if any.
+                c.execute(
+                    "DELETE FROM ref_identifiers "
+                    "WHERE ref_id = %s AND id_kind = 'cite_key_alias' "
+                    "AND id_value = %s",
+                    (ref_id, v),
+                )
             c.execute(
                 "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
                 "VALUES (%s, %s, %s, %s)",
                 (s, v, ref_id, src),
             )
+            for old in displaced or ():
+                # Keep the replaced key resolvable as a redirect
+                # (gr521515). ON CONFLICT DO NOTHING: an alias already
+                # claimed by another ref wins — never steal it. A pair
+                # the operator dropped (gr517591, on either spelling)
+                # stays suppressed — a machine rekey must not resurrect
+                # it; ``dropped`` was read on this conn above.
+                if (
+                    old == v
+                    or old in dropped.get("cite_key", ())
+                    or old in dropped.get("cite_key_alias", ())
+                ):
+                    continue
+                c.execute(
+                    "INSERT INTO ref_identifiers "
+                    "(id_kind, id_value, ref_id, source) "
+                    "VALUES ('cite_key_alias', %s, %s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    (old, ref_id, src),
+                )
             if s in marked:
                 # Reached only for a human-sourced write (the machine
                 # branch returned above) — an explicit re-add lifts the
@@ -917,6 +975,7 @@ class IdentifiersMixin:
         year: int | None,
         *,
         exclude_ref_id: int | None = None,
+        extra_taken: Iterable[str] = (),
         conn: Connection | None = None,
     ) -> str:
         """Suggest a free ``cite_key`` for ``authors`` + ``year``.
@@ -924,10 +983,19 @@ class IdentifiersMixin:
         Mirrors the ingest-time minting (:func:`precis.identity.make_cite_key`
         + the prefix-collision probe in ``db_writer.resolve_cite_key``): the
         bare ``surname<yy>`` form when free, else the next ``a``..``z`` suffix.
-        ``exclude_ref_id`` drops that ref's own current cite_key from the
-        taken set so re-suggesting for the paper being edited is stable
-        (it never collides with itself). Returns ``""`` only when authors
-        are unknown enough that the base would be the ``anon`` placeholder.
+        ``exclude_ref_id`` drops that ref's own rows — ``cite_key`` *and*
+        ``cite_key_alias`` — from the taken set so re-suggesting for the
+        paper being edited is stable (it never collides with itself, and
+        it may reclaim a key it displaced). ``extra_taken`` lets a batch
+        caller (``paper-remint-junk``) reserve the keys it has already
+        planned this run so two rows in one sweep can't collide.
+
+        The taken set counts ``cite_key_alias`` rows (gr521515
+        decision): a displaced key stays reserved — a fresh mint may
+        never hand it out again, or an existing ``\\cite{<old>}`` would
+        silently retarget to a different paper. Returns ``""`` only when
+        authors are unknown enough that the base would be the ``anon``
+        placeholder.
         """
         from precis.identity import make_cite_key
 
@@ -938,18 +1006,20 @@ class IdentifiersMixin:
         def _do(c: Connection) -> str:
             rows = c.execute(
                 "SELECT id_value FROM ref_identifiers "
-                "WHERE id_kind = 'cite_key' AND id_value LIKE %s",
+                "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
+                "AND id_value LIKE %s",
                 (base + "%",),
             ).fetchall()
             taken = {str(r[0]) for r in rows}
             if exclude_ref_id is not None:
-                own = c.execute(
+                for own in c.execute(
                     "SELECT id_value FROM ref_identifiers "
-                    "WHERE id_kind = 'cite_key' AND ref_id = %s",
+                    "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
+                    "AND ref_id = %s",
                     (exclude_ref_id,),
-                ).fetchone()
-                if own is not None:
+                ).fetchall():
                     taken.discard(str(own[0]))
+            taken |= {str(v) for v in extra_taken}
             return make_cite_key(authors, year, taken=taken)
 
         if conn is not None:

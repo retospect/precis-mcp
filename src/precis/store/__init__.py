@@ -24,6 +24,12 @@ role protocol from :mod:`precis.store.protocols` (import-light, no
 cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed
 ``Store | None``; ``Hub.live_store`` narrows it for store-backed paths.
 
+Paper re-keying lives in :mod:`precis.store.paper_rekey` so MCP and web
+edits share collision checks, audit history and PDF relocation. The key
+and reason commit together; filesystem moves remain best-effort, keeping
+the old storage path on failure because a database transaction cannot
+roll back a corpus filesystem operation.
+
 Drive date ordering uses existing ref timestamps: ``recent_refs(created=True)``
 orders browse by creation; cross-kind chunk search accepts ``created`` and
 ``modified`` alongside legacy ``recency``. Explicit new names avoid changing
