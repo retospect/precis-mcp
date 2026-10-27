@@ -389,18 +389,29 @@ def test_minted_ids_avoid_column_names() -> None:
 def test_normalize_20k_rows_is_linear_enough() -> None:
     """The used-id set is kept, not copied per mint (the old per-mint copy
     made this quadratic). Guarded by a 20k/2k time ratio, not wall clock:
-    linear is ~10, quadratic ~100, and load scales both sides alike."""
+    linear is ~10, quadratic ~100, and load scales both sides alike. GC is
+    off and each side takes its best of three, so a collection or a noisy
+    2k sample can't push a linear run past the cap (36 seen under xdist)."""
+    import gc
     import time
 
     def timed(n: int) -> tuple[float, dict]:
-        t0 = time.process_time()
-        out = normalize_table({"header": ["a"], "rows": [[i] for i in range(n)]})
-        return time.process_time() - t0, out
+        rows = [[i] for i in range(n)]
+        best, out = float("inf"), {}
+        for _ in range(3):
+            t0 = time.process_time()
+            out = normalize_table({"header": ["a"], "rows": rows})
+            best = min(best, time.process_time() - t0)
+        return best, out
 
-    t_small, _ = timed(2_000)
-    t_big, t = timed(20_000)
+    gc.disable()
+    try:
+        t_small, _ = timed(2_000)
+        t_big, t = timed(20_000)
+    finally:
+        gc.enable()
     assert len(t["rowmeta"]) == 20_000
-    assert t_big / max(t_small, 1e-3) < 30
+    assert t_big / max(t_small, 1e-3) < 50
 
 
 def test_resolve_cell_id_address() -> None:
