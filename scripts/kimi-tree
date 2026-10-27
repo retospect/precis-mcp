@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Launch Kimi Code in its own task worktree (here, or in a tmux window).
+#
+#   scripts/kimi-tree NAME [--purpose TEXT] [--prompt TEXT] [--model ALIAS]
+#                          [--mode yolo|auto|manual] [--tmux [SESSION]]
+#                          [--dry-run]
+#
+# Mirrors `claude -w NAME` and scripts/devin-tree: worktree
+# .claude/worktrees/NAME on branch worktree-NAME, cut from origin/main (an
+# existing tree/branch is reused, never reset), .venv seeded from main. The
+# tree is locked `pid <N>` to the Kimi process — scripts/inflight and the
+# reaper read that as liveness (session-start-lock.sh only finds Claude), so
+# a merged+clean tree auto-reaps after Kimi exits.
+# Runs scripts/kimi-setup first (precis MCP entry, hook adapter, skills).
+# --mode: yolo (default; Kimi's "Ask When Needed", the analogue of Claude's
+# auto mode), auto (Never Ask, builder waves), manual. --prompt runs one
+# prompt non-interactively (`kimi -p`). --tmux opens a window in SESSION
+# (default: the current one) instead of taking over this terminal.
+# PRECIS_CO_AUTHOR is exported so scripts/ship's fallback footer names Kimi.
+#
+# Internal: `--exec TREE [KIMI ARGS]` re-locks TREE to its own pid, then
+# execs Kimi under that same pid.
+set -euo pipefail
+
+root=$(git rev-parse --path-format=absolute --git-common-dir)
+root=${root%/.git}
+here=$(dirname "$(realpath "$0")")
+
+if [[ ${1:-} == --exec ]]; then
+	tree=$2
+	shift 2
+	git -C "$root" worktree unlock "$tree" >/dev/null 2>&1 || true
+	git -C "$root" worktree lock --reason "pid $$" "$tree"
+	export PATH="$HOME/.kimi-code/bin:$HOME/.local/bin:$PATH"
+	export PRECIS_CO_AUTHOR="${PRECIS_CO_AUTHOR:-Kimi Code <noreply@moonshot.ai>}"
+	cd "$tree"
+	exec kimi "$@"
+fi
+
+usage() { sed -n '4,6p' "$0" | sed 's/^# *//' >&2; exit 2; }
+[[ $# -ge 1 && ${1:0:1} != - ]] || usage
+name=$1
+shift
+[[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "kimi-tree: bad name: $name" >&2; exit 2; }
+purpose="" prompt="" model="" mode=yolo tmux_session="" use_tmux=0 dry_run=0
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--purpose) purpose=$2; shift 2 ;;
+	--prompt) prompt=$2; shift 2 ;;
+	--model) model=$2; shift 2 ;;
+	--mode) mode=$2; shift 2 ;;
+	--tmux)
+		use_tmux=1
+		if [[ ${2:-} && ${2:0:1} != - ]]; then tmux_session=$2; shift; fi
+		shift ;;
+	--dry-run) dry_run=1; shift ;;
+	*) usage ;;
+	esac
+done
+case $mode in
+yolo) kimi_args=(--yolo) ;;
+auto) kimi_args=(--auto) ;;
+manual) kimi_args=() ;;
+*) echo "kimi-tree: --mode must be yolo|auto|manual" >&2; exit 2 ;;
+esac
+[[ -n $model ]] && kimi_args+=(--model "$model")
+[[ -n $prompt ]] && kimi_args+=(--prompt "$prompt")
+if ((use_tmux)) && [[ -z $tmux_session ]]; then
+	[[ -n ${TMUX:-} ]] || { echo "kimi-tree: not in tmux; name a session: --tmux SESSION" >&2; exit 2; }
+	tmux_session=$(tmux display-message -p '#S')
+fi
+tree=$root/.claude/worktrees/$name
+branch=worktree-$name
+
+if ((dry_run)); then
+	printf 'tree=%s branch=%s tmux=%s kimi=%s\n' "$tree" "$branch" "${tmux_session:--}" \
+		"kimi ${kimi_args[*]:-}"
+	exit 0
+fi
+
+"$here/kimi-setup" || { echo "kimi-tree: kimi-setup failed; fix it first" >&2; exit 1; }
+
+if [[ ! -d $tree ]]; then
+	git -C "$root" fetch -q origin main
+	if git -C "$root" show-ref -q --verify "refs/heads/$branch"; then
+		git -C "$root" worktree add -q "$tree" "$branch"
+	else
+		git -C "$root" worktree add -q -b "$branch" "$tree" origin/main
+	fi
+fi
+"$here/seed-worktree-venv" "$tree" "$root" \
+	|| echo "kimi-tree: venv seed failed; first uv run will build it" >&2
+git -C "$root" worktree unlock "$tree" >/dev/null 2>&1 || true
+git -C "$root" worktree lock --reason "pid $$" "$tree"
+[[ -n $purpose ]] && printf '%s\n' "$purpose" >"$tree/.claude/purpose"
+
+if ((!use_tmux)); then
+	exec "$(realpath "$0")" --exec "$tree" ${kimi_args[@]+"${kimi_args[@]}"}
+fi
+tmux new-window -t "=$tmux_session:" -n "kimi-$name" -c "$tree" \
+	"exec $(printf '%q ' "$(realpath "$0")" --exec "$tree" ${kimi_args[@]+"${kimi_args[@]}"})"
+# Wait (≤10 s) for the window to take the lock over before this pid exits.
+for _ in $(seq 50); do
+	reason=$(git -C "$root" worktree list --porcelain |
+		awk -v t="worktree $tree" '$0==t{f=1} f&&/^locked/{print; exit} f&&/^$/{exit}')
+	[[ $reason != "locked pid $$" ]] && break
+	sleep 0.2
+done
+echo "kimi-tree: $name → $tree (tmux $tmux_session:kimi-$name)"

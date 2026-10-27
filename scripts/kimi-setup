@@ -1,0 +1,159 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""Install this repo's agent setup into Kimi Code's user config.
+
+    scripts/kimi-setup            write ~/.kimi-code/{mcp.json,config.toml}
+    scripts/kimi-setup --check    report drift only; exit 1 when stale
+
+Idempotent; scripts/kimi-tree runs it before every launch, so a rotated
+precis token reaches Kimi the next time a tree starts.
+
+- mcp.json: the `precis` server, copied from the user-scope entry in
+  ~/.claude.json (same URL and Authorization header Claude uses; the file
+  is written mode 600). Other servers are left alone.
+- config.toml: two managed blocks between `# >>> precis-mcp` markers — a
+  top-level `extra_skill_dirs` (Kimi loads `.claude/skills/` from the
+  project root, so /land, /qland, /go, /bug ... resolve), and at the end
+  one `[[hooks]]` entry per event calling scripts/hooks/kimi-adapt.py
+  (which dispatches to `.claude/settings.json`'s hooks) plus allow rules
+  for the read-only precis verbs. Hooks are user-level in Kimi, so each
+  command no-ops outside a precis-mcp tree.
+
+Project instructions need no install: Kimi reads AGENTS.md and
+.kimi-code/AGENTS.md from the tree. KIMI_CODE_HOME and CLAUDE_JSON
+override the paths (tests).
+"""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+HOME = Path(os.environ.get("KIMI_CODE_HOME", Path.home() / ".kimi-code"))
+CLAUDE_JSON = Path(os.environ.get("CLAUDE_JSON", Path.home() / ".claude.json"))
+
+TOP_BEGIN = "# >>> precis-mcp kimi-setup: top-level >>>"
+TOP_END = "# <<< precis-mcp kimi-setup: top-level <<<"
+TAB_BEGIN = "# >>> precis-mcp kimi-setup: hooks + rules >>>"
+TAB_END = "# <<< precis-mcp kimi-setup: hooks + rules <<<"
+
+HOOK_CMD = (
+    'f=scripts/hooks/kimi-adapt.py; [ -x "$f" ] || exit 0; '
+    "git rev-parse --path-format=absolute --git-common-dir 2>/dev/null "
+    "| grep -q precis-mcp || exit 0; "
+    'exec "$f" {event}'
+)
+EVENTS = (("PreToolUse", 60), ("PostToolUse", 60), ("SessionStart", 300))
+READ_VERBS = ("get", "search", "more")
+
+
+def top_block() -> str:
+    return "\n".join(
+        [
+            TOP_BEGIN,
+            'extra_skill_dirs = [".claude/skills"]',
+            TOP_END,
+        ]
+    )
+
+
+def tables_block() -> str:
+    lines = [TAB_BEGIN]
+    for event, timeout in EVENTS:
+        cmd = HOOK_CMD.format(event=event)
+        lines += [
+            "[[hooks]]",
+            f'event = "{event}"',
+            f"command = {json.dumps(cmd)}",
+            f"timeout = {timeout}",
+            "",
+        ]
+    for verb in READ_VERBS:
+        lines += [
+            "[[permission.rules]]",
+            'decision = "allow"',
+            f'pattern = "mcp__precis__{verb}"',
+            'reason = "precis read verb (Claude allows the same)"',
+            "",
+        ]
+    lines.append(TAB_END)
+    return "\n".join(lines)
+
+
+def strip_block(text: str, begin: str, end: str) -> str:
+    pat = re.compile(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", re.S)
+    return pat.sub("", text)
+
+
+def render_config(text: str) -> str:
+    text = strip_block(strip_block(text, TOP_BEGIN, TOP_END), TAB_BEGIN, TAB_END)
+    # Top-level keys must precede the first table header.
+    m = re.search(r"^\[", text, re.M)
+    at = m.start() if m else len(text)
+    head, tail = text[:at], text[at:]
+    head = head.rstrip("\n") + ("\n\n" if head.strip() else "")
+    out = head + top_block() + "\n\n" + tail.rstrip("\n") + "\n\n" + tables_block()
+    return out + "\n"
+
+
+def precis_entry() -> dict:
+    try:
+        servers = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))["mcpServers"]
+        src = servers["precis"]
+    except (OSError, ValueError, KeyError) as exc:
+        sys.exit(
+            f"kimi-setup: no user-scope `precis` MCP entry in {CLAUDE_JSON} ({exc}); "
+            "next= run scripts/mcp-entry-preflight, then re-run kimi-setup"
+        )
+    entry = {"url": src["url"]}
+    if src.get("headers"):
+        entry["headers"] = src["headers"]
+    return entry
+
+
+def render_mcp(text: str) -> str:
+    try:
+        data = json.loads(text) if text.strip() else {}
+    except ValueError:
+        sys.exit(f"kimi-setup: {HOME / 'mcp.json'} is not valid JSON; fix or remove it")
+    data.setdefault("mcpServers", {})["precis"] = precis_entry()
+    return json.dumps(data, indent=2) + "\n"
+
+
+def main() -> int:
+    check = sys.argv[1:] == ["--check"]
+    if sys.argv[1:] not in ([], ["--check"]):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    stale = []
+    for name, render, mode in (
+        ("mcp.json", render_mcp, 0o600),
+        ("config.toml", render_config, None),
+    ):
+        path = HOME / name
+        old = path.read_text(encoding="utf-8") if path.exists() else ""
+        new = render(old)
+        if new == old:
+            continue
+        stale.append(name)
+        if check:
+            continue
+        HOME.mkdir(parents=True, exist_ok=True)
+        targets = [(path, new)]
+        if old:
+            targets.insert(0, (path.with_name(name + ".bak"), old))
+        for p, body in targets:
+            p.write_text(body, encoding="utf-8")
+            if mode is not None:
+                p.chmod(mode)
+    if check:
+        print(
+            f"kimi-setup: stale: {', '.join(stale)}" if stale else "kimi-setup: in sync"
+        )
+        return 1 if stale else 0
+    print(f"kimi-setup: wrote {', '.join(stale)}" if stale else "kimi-setup: in sync")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

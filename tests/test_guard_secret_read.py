@@ -55,6 +55,8 @@ guard = _load()
         "/home/deploy/.env.prod",
         "/Users/reto/.ssh/id_ed25519",
         "/Users/hermes/.claude_oauth_token",
+        "/Users/reto/.kimi-code/mcp.json",  # scripts/kimi-setup's precis token
+        "/Users/reto/.kimi-code/oauth/kimi-code-env-0",
     ],
 )
 def test_read_of_a_secret_path_is_denied(path: str) -> None:

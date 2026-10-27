@@ -52,6 +52,8 @@ import sys
 # the whole path, case-insensitively.
 SECRET_PATHS = (
     r"\.claude/mcp\.json$",  # MCP env blocks — the incident above
+    r"\.kimi-code/mcp\.json$",  # precis bearer token (scripts/kimi-setup)
+    r"/\.kimi-code/(oauth|credentials)/",  # Kimi login tokens
     r"\.vault-pass$",  # ansible vault password
     r"/\.secrets/",  # ~/.secrets/pw/* — the repo's own creds dir
     r"\.pgpass$",  # libpq password file
