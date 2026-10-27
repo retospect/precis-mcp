@@ -82,8 +82,10 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   (script/pid/ppid/cwd) so the container records who created it, and
   `precis-status` shows the mounted host paths as `src_host`/`main_host`.
 - Before deleting a checkout on this host (a strays/second-copy cleanup),
-  run `precis-mcp-http-ensure.sh --check-path <path>` — exit 0 means a
-  canonical-checkout marker or a container mount still references it (the
+  run `precis-mcp-http-ensure.sh --check-path <path>` — delete ONLY on
+  exit 10 ("free"). Exit 0 means a canonical-checkout marker or a
+  container mount still references it; any other code means the probe
+  could not prove the path free (e.g. docker down) — leave it alone (the
   manual version: `main-checkout`, `--status`, `precis-status`
   `src_host`/`main_host`, or `docker inspect` of the backends).
   `scripts/fleet-cleanup` runs the same probe itself. On 2026-10-25 a

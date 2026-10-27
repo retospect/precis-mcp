@@ -378,12 +378,40 @@ fi
 # mounted it as /src and /main; docker recreated the path empty and
 # crash-looped a backend. Read-only: no lock, no guard, no writes.
 #
-#   --check-path PATH → exit 0 "IN USE" (each reference printed), 1 "free",
-#   2 usage. A missing docker binary prints a warning and decides on the
-#   markers alone (never silently green).
+#   --check-path PATH → exit 0 "IN USE" (each reference printed), 10 "free",
+#   2 usage, anything else "unknown". Fail closed: "free" needs a code
+#   nothing else produces — under `set -euo pipefail` a generic 1 is also
+#   how any internal failure exits, so callers (scripts/fleet-cleanup,
+#   /workspace-cleanup) must delete ONLY on 10 and treat every other code
+#   as "leave it alone". A docker daemon that cannot be queried means the
+#   mounts are unverifiable → "unknown", never "free".
+_check_path_matches() {
+    # Is $1 the target or underneath it? Both sides are compared in raw AND
+    # symlink-resolved form ((cd X && pwd -P) when X exists) so a marker or
+    # mount recorded through a symlink still hits (gr516960 follow-up).
+    local cand="$1" cand_res t
+    cand_res="$(cd "$cand" 2>/dev/null && pwd -P || printf '%s' "$cand")"
+    for t in "$_CP_TARGET" "$_CP_RESOLVED"; do
+        case "$cand" in "$t"|"$t"/*) return 0 ;; esac
+        [ "$cand_res" = "$cand" ] && continue
+        case "$cand_res" in "$t"|"$t"/*) return 0 ;; esac
+    done
+    return 1
+}
+
 check_path_in_use() {
-    local target="$1" resolved marker canon cid cname src reasons=0
-    resolved="$(cd "$target" 2>/dev/null && pwd -P || printf '%s' "$target")"
+    local target="$1" marker canon cid cname src reasons=0 docker_proven=1
+    local containers mounts
+    # Visible to _check_path_matches via bash's dynamic scoping.
+    local _CP_TARGET="$target"
+    local _CP_RESOLVED
+    _CP_RESOLVED="$(cd "$target" 2>/dev/null && pwd -P || printf '%s' "$target")"
+
+    # / is always in use — nothing may ever get a "free" for it.
+    if [ "$_CP_RESOLVED" = "/" ]; then
+        printf '/: IN USE (root)\n'
+        return 0
+    fi
 
     # 1. Canonical-checkout markers: this server's own state dir plus any
     #    sibling precis-mcp state dirs (per-worktree servers record theirs
@@ -400,41 +428,56 @@ check_path_in_use() {
     for marker in $(printf '%s\n' "${markers[@]+"${markers[@]}"}" | sort -u); do
         canon="$(tr -d '[:space:]' < "$marker")"
         [ -n "$canon" ] || continue
-        case "$canon" in
-            "$resolved"|"$resolved"/*)
-                printf 'in use: %s is the canonical main checkout recorded in %s\n' \
-                    "$canon" "$marker"
-                reasons=$((reasons + 1)) ;;
-        esac
+        if _check_path_matches "$canon"; then
+            printf 'in use: %s is the canonical main checkout recorded in %s\n' \
+                "$canon" "$marker"
+            reasons=$((reasons + 1))
+        fi
     done
 
     # 2. Container mounts: deleting a mounted host path breaks the same way
     #    the 2026-10-25 backends did — flag a mount source equal to, or
-    #    underneath, <path> on ANY container, not only this family's.
+    #    underneath, <path> on ANY container, not only this family's. An
+    #    empty `docker ps` only counts when the call SUCCEEDED; a failed ps
+    #    or inspect leaves mounts unverifiable and the verdict drops to
+    #    "unknown" below.
     if command -v docker >/dev/null 2>&1; then
-        while IFS= read -r cid; do
-            [ -n "$cid" ] || continue
-            cname="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null)"
-            while IFS= read -r src; do
-                [ -n "$src" ] || continue
-                case "$src" in
-                    "$resolved"|"$resolved"/*)
+        if ! containers="$(docker ps -aq 2>/dev/null)"; then
+            printf 'precis-mcp: warning: docker ps failed — container mounts unverifiable\n' >&2
+            docker_proven=0
+        else
+            while IFS= read -r cid; do
+                [ -n "$cid" ] || continue
+                cname="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null || true)"
+                if ! mounts="$(docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$cid" 2>/dev/null)"; then
+                    printf 'precis-mcp: warning: docker inspect %s failed — its mounts unverifiable\n' "${cname:-$cid}" >&2
+                    docker_proven=0
+                    continue
+                fi
+                while IFS= read -r src; do
+                    [ -n "$src" ] || continue
+                    if _check_path_matches "$src"; then
                         printf 'in use: container %s mounts %s\n' "$cname" "$src"
-                        reasons=$((reasons + 1)) ;;
-                esac
-            done < <(docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' \
-                        "$cid" 2>/dev/null)
-        done < <(docker ps -aq 2>/dev/null)
+                        reasons=$((reasons + 1))
+                    fi
+                done <<< "$mounts"
+            done <<< "$containers"
+        fi
     else
+        # No docker binary → no containers exist to check; markers decide.
         printf 'precis-mcp: warning: docker not on PATH — container mounts unchecked\n' >&2
     fi
 
     if [ "$reasons" -gt 0 ]; then
-        printf '%s: IN USE (%d reference(s))\n' "$resolved" "$reasons"
+        printf '%s: IN USE (%d reference(s))\n' "$_CP_RESOLVED" "$reasons"
         return 0
     fi
-    printf '%s: free — no marker or mount references it\n' "$resolved"
-    return 1
+    if [ "$docker_proven" -ne 1 ]; then
+        printf '%s: unknown — container mounts unverifiable\n' "$_CP_RESOLVED"
+        return 1
+    fi
+    printf '%s: free — no marker or mount references it\n' "$_CP_RESOLVED"
+    return 10
 }
 
 if [ "$MODE" = check_path ]; then

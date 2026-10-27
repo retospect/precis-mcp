@@ -243,7 +243,8 @@ def test_marker_naming_a_missing_path_refuses_then_recovers(
 #
 # The probe is read-only and runs before the lock — no docker needed beyond
 # a stub on PATH. Exit 0 "IN USE" when a marker or a container mount
-# references the path (or sits under it), 1 "free", 2 on a missing argument.
+# references the path (or sits under it), 10 "free", 2 on a missing
+# argument, anything else "unknown" (unverifiable → callers fail closed).
 
 
 def test_check_path_flags_the_recorded_checkout(
@@ -285,11 +286,59 @@ def test_check_path_flags_a_container_mount_under_the_path(
 def test_check_path_free_when_nothing_references_it(
     env: dict[str, str], tmp_path: Path
 ) -> None:
+    """Free is the dedicated code 10 — a stub docker answering `ps` with
+    an empty list keeps the verdict provable on any host."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "docker").write_text(
+        '#!/bin/sh\nif [ "$1" = ps ]; then exit 0; fi\nexit 1\n',
+        encoding="utf-8",
+    )
+    (fakebin / "docker").chmod(0o755)
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
     free = tmp_path / "elsewhere"
     free.mkdir()
     r = _ensure(env, "--check-path", str(free))
-    assert r.returncode == 1
+    assert r.returncode == 10
     assert "free" in r.stdout
+
+
+def test_check_path_unknown_when_docker_ps_fails(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A docker daemon that cannot list containers leaves the mounts
+    unverifiable — the verdict is "unknown" (any code but 0/10), never
+    "free" off an empty list from a failed ps."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "docker").write_text(
+        "#!/bin/sh\nexit 1\n",
+        encoding="utf-8",
+    )
+    (fakebin / "docker").chmod(0o755)
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
+    free = tmp_path / "elsewhere"
+    free.mkdir()
+    r = _ensure(env, "--check-path", str(free))
+    assert r.returncode not in (0, 10)
+    assert "unknown" in r.stdout
+
+
+def test_check_path_flags_a_symlinked_marker(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A marker recording the checkout through a symlink must still hit
+    the real path — both sides are compared raw AND resolved."""
+    canon = tmp_path / "canon"
+    (canon / ".git").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path)
+    state = Path(env["PRECIS_MCP_HTTP_STATE"])
+    state.mkdir()
+    (state / "main-checkout").write_text(str(link / "canon") + "\n", encoding="utf-8")
+    r = _ensure(env, "--check-path", str(canon))
+    assert r.returncode == 0
+    assert "IN USE" in r.stdout
 
 
 def test_check_path_requires_an_argument(env: dict[str, str]) -> None:

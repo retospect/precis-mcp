@@ -148,14 +148,17 @@ def inflight_live(repo_path):
 
 
 def path_in_use(repo_path, path):
-    """True when the mcp-http `--check-path` probe reports `path` referenced
-    by a canonical-checkout marker or a container mount (gr516960 ask 4 —
-    a cleanup deleted the marker's checkout while live backends mounted it).
-    A missing script or a probe error answers False: `git worktree remove`
-    and the merged/locked bucketing still guard the removal."""
+    """True UNLESS the mcp-http `--check-path` probe proves `path` free:
+    exit 10 means no canonical-checkout marker or container mount
+    references it (gr516960 ask 4 — a cleanup deleted the marker's
+    checkout while live backends mounted it). Fail closed — a missing
+    script, a probe exception or timeout, or any other exit code (0 =
+    in use, 2 = usage, the rest = unknown) answers True, and the reason
+    is printed so the skipped removal is never silent."""
     script = os.path.join(repo_path, "deploy/mcp-http/precis-mcp-http-ensure.sh")
     if not os.path.isfile(script):
-        return False
+        print(f"      -> probe script missing ({script}); treating as in use")
+        return True
     try:
         r = subprocess.run(
             ["bash", script, "--check-path", path],
@@ -164,9 +167,16 @@ def path_in_use(repo_path, path):
             encoding="utf-8",
             timeout=60,
         )
-    except Exception:
+    except Exception as exc:
+        print(f"      -> probe failed ({exc}); treating as in use")
+        return True
+    if r.returncode == 10:
         return False
-    return r.returncode == 0
+    lines = (r.stdout.strip().splitlines() or r.stderr.strip().splitlines()) or [
+        f"exit {r.returncode}"
+    ]
+    print(f"      -> probe: {lines[-1]}")
+    return True
 
 
 def commit_info(repo, ref):
@@ -217,7 +227,7 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
         )
         if kind == "remove" and apply:
             if name == "precis-mcp" and path_in_use(path, p):
-                print("      -> SKIP: still referenced by an mcp-http marker or mount")
+                print("      -> SKIP: --check-path could not prove it free")
             else:
                 rc, out = git(path, "worktree", "remove", p)
                 print(f"      -> {'removed' if rc == 0 else 'FAILED: ' + out}")

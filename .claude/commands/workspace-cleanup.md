@@ -33,9 +33,11 @@ Live state at invocation:
 3. **Probe before deleting anything.** Before any worktree/checkout removal
    executes (the housekeeper's confirmed `safe_remove` set included), run
    `deploy/mcp-http/precis-mcp-http-ensure.sh --check-path <path>` on it —
-   exit 0 means a canonical-checkout marker or a container mount still
-   references the path, so leave it alone (gr516960: a strays cleanup once
-   deleted the recorded checkout out from under the live backends).
+   delete only on exit 10 ("free"). Exit 0 means a canonical-checkout
+   marker or a container mount still references the path; any other code
+   means the probe could not prove it free (docker down, probe error) —
+   leave it alone either way (gr516960: a strays cleanup once deleted the
+   recorded checkout out from under the live backends).
 
 4. **Judge the ambiguous ones yourself.** For each `needs_judgment` worktree
    (from the housekeeper's report, or directly from the JSON if you skipped
