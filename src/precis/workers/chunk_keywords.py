@@ -170,16 +170,29 @@ def _eligibility_sql(prefix: str) -> str:
 #: The eligibility fragment as the claim's SELECT uses it (aliased ``c.``).
 _ELIGIBILITY_SQL = _eligibility_sql("c.")
 
-#: Run the tier-3 stale re-derive claim only every Nth pass: it
-#: seq-scans ``chunk_embeddings`` (~4.7M rows) on every underfilled
-#: pass, and a stale re-derive delayed N×tick costs nothing
-#: user-visible (gr520236 review).
+#: Run the tier-3 stale re-derive claim only every Nth pass — but only
+#: while no stale backlog is draining. The claim seq-scans
+#: ``chunk_embeddings`` (~4.7M rows) on every underfilled pass, and a
+#: stale re-derive delayed N×tick costs nothing user-visible (gr520236
+#: review). The exception: a ``KEYWORDS_VERSION`` bump re-derives the
+#: whole corpus and that backlog drains ONLY through tier 3, so pacing
+#: it to every Nth pass stretches a full re-derive N× — while the
+#: previous tier-3 claim returned rows it runs on every pass
+#: (:data:`_stale_draining`), falling back to the paced cadence after
+#: a claim comes back empty.
 _STALE_CLAIM_EVERY = 10
 
 #: Passes this process has run (:func:`run_chunk_keywords_pass` bumps
 #: it); the stale claim fires when it hits a multiple of
-#: :data:`_STALE_CLAIM_EVERY`.
+#: :data:`_STALE_CLAIM_EVERY`, or on every pass while
+#: :data:`_stale_draining` holds.
 _pass_count = 0
+
+#: True while the previous tier-3 claim returned rows — a live stale
+#: backlog (a ``KEYWORDS_VERSION`` re-derive) drains on every pass.
+#: Per-process like :data:`_pass_count`: whichever host holds the
+#: single-runner lock paces off its own last observation.
+_stale_draining = False
 
 
 def is_keyword_eligible(chunk: Any) -> bool:
@@ -200,7 +213,11 @@ def is_keyword_eligible(chunk: Any) -> bool:
 
 
 def claim_chunks_without_keywords(
-    conn: Connection, *, limit: int, include_stale: bool = True
+    conn: Connection,
+    *,
+    limit: int,
+    include_stale: bool = True,
+    stale_claimed: list[int] | None = None,
 ) -> list[tuple[int, int, str, str | None]]:
     """Return up to ``limit`` chunks needing keyword extraction.
 
@@ -231,13 +248,20 @@ def claim_chunks_without_keywords(
        ``content_sha`` NULL so NULL-vs-NULL never fires). Skipped when
        ``include_stale`` is false — the claim seq-scans
        ``chunk_embeddings``, so :func:`run_chunk_keywords_pass` runs
-       it only every :data:`_STALE_CLAIM_EVERY` passes.
+       it every pass only while the previous tier-3 claim returned
+       rows, else every :data:`_STALE_CLAIM_EVERY` passes.
 
     Returns rows of ``(chunk_id, ref_id, text, embedding)`` — the
     embedding is pulled from ``chunk_embeddings`` via JOIN so the
     worker can score candidates without re-embedding the chunk.
     ``embedding`` is ``None`` when no embedding exists yet (worker
     pass ordering: embed runs before keybert).
+
+    ``stale_claimed``: when a list is passed, the number of rows the
+    tier-3 claim added is appended to it (nothing is appended when
+    tier 3 did not run — ``include_stale`` false or the earlier tiers
+    already filled ``limit``). :func:`run_chunk_keywords_pass` reads
+    it to pace the seq-scan off the backlog it actually saw.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -288,10 +312,13 @@ def claim_chunks_without_keywords(
     if len(out) < limit:
         _claim("r.kind NOT IN ('conv', 'draft') AND c.keywords IS NULL", ())
     if include_stale and len(out) < limit:
+        before = len(out)
         _claim(
             f"r.kind NOT IN ('conv', 'draft') AND c.keywords IS NOT NULL AND {pending}",
             (KEYWORDS_VERSION,),
         )
+        if stale_claimed is not None:
+            stale_claimed.append(len(out) - before)
     return out
 
 
@@ -603,7 +630,12 @@ _EMBED_TEXTS_PER_CALL = 512
 
 
 def _run_chunk_keywords_batch(
-    store: Store, embedder: Embedder, *, batch_size: int, include_stale: bool
+    store: Store,
+    embedder: Embedder,
+    *,
+    batch_size: int,
+    include_stale: bool,
+    stale_claimed: list[int] | None = None,
 ) -> dict[str, int]:
     """The claim + per-chunk work. Runs while the caller
     (:func:`run_chunk_keywords_pass`) holds the single-runner advisory
@@ -620,7 +652,9 @@ def _run_chunk_keywords_batch(
        commits immediately — releasing the lock well before the slow
        per-chunk work below runs, not held for the whole batch as the
        pre-fix single-transaction version did. ``include_stale`` gates
-       the seq-scanning tier-3 claim (see ``_STALE_CLAIM_EVERY``).
+       the seq-scanning tier-3 claim (see ``_STALE_CLAIM_EVERY``);
+       ``stale_claimed`` is forwarded to the claim so the caller can
+       see how much tier 3 contributed.
     2. **Prepare** (per chunk, no embedder): parse the stored vector,
        :func:`_ensure_paper_abbrevs_retrying` (per ref, cached — its
        own short retried transaction), then RAKE candidates via
@@ -647,7 +681,10 @@ def _run_chunk_keywords_batch(
     """
     with store.pool.connection() as conn:
         rows = claim_chunks_without_keywords(
-            conn, limit=batch_size, include_stale=include_stale
+            conn,
+            limit=batch_size,
+            include_stale=include_stale,
+            stale_claimed=stale_claimed,
         )
         conn.commit()
     claimed = len(rows)
@@ -804,17 +841,24 @@ def run_chunk_keywords_pass(
     if not store.dsn:
         return idle
 
-    global _pass_count
+    global _pass_count, _stale_draining
     with try_xact_advisory_lock(store.dsn, _LOCK_KEY) as got:
         if not got:
             return idle  # another node owns this pass this cycle
         _pass_count += 1
-        return _run_chunk_keywords_batch(
+        stale: list[int] = []
+        result = _run_chunk_keywords_batch(
             store,
             embedder,
             batch_size=batch_size,
-            include_stale=(_pass_count % _STALE_CLAIM_EVERY) == 0,
+            include_stale=_stale_draining or (_pass_count % _STALE_CLAIM_EVERY) == 0,
+            stale_claimed=stale,
         )
+        # The tier-3 claim only reports when it actually ran; a pass
+        # filled by the earlier tiers leaves _stale_draining untouched.
+        if stale:
+            _stale_draining = stale[0] > 0
+        return result
 
 
 # ── helpers ─────────────────────────────────────────────────────────

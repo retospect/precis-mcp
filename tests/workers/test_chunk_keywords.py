@@ -92,6 +92,22 @@ def _seed_long_chunk(
     return chunk_id
 
 
+def _mark_stale(store: Store, chunk_id: int) -> None:
+    """Stamp ``chunk_id`` as a tier-3 stale re-derive: keywords present,
+    ``keywords_meta.version`` behind :data:`KEYWORDS_VERSION`."""
+    stale_meta = {
+        "version": "0.0-stale",
+        "embedder": "bge-m3",
+        "keywords": [{"short": None, "long": "stale", "score": 1.0}],
+    }
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET keywords = %s, keywords_meta = %s WHERE chunk_id = %s",
+            (["stale"], Jsonb(stale_meta), chunk_id),
+        )
+        conn.commit()
+
+
 # Sentence long enough to clear ``MIN_CHUNK_CHARS=150`` and dense
 # enough for RAKE to produce candidates.
 _BODY_TEXT_1 = (
@@ -288,17 +304,56 @@ class TestClaimQuery:
         """gr520236 review: the partial index only helps when the
         planner can prove the claim WHERE implies its predicate — the
         claim inlines :func:`_eligibility_sql` literals, and the
-        migration's predicate must be the same text."""
+        migration's predicate must be the same text, including inside
+        the ops hints (the wrong-predicate guard refuses with a
+        DROP + runnable CREATE INDEX CONCURRENTLY rebuild)."""
         mig = (
             Path(chunk_keywords.__file__).resolve().parent.parent
             / "migrations"
             / "0261_chunks_keywords_pending_idx.sql"
         ).read_text(encoding="utf-8")
-        norm = " ".join(mig.split())
+        # Unescape SQL '' -> ' so literals embedded in HINT strings
+        # compare against the claim's own text; collapse whitespace so
+        # statements split across lines still match.
+        norm = " ".join(mig.replace("''", "'").split())
         want = " ".join(
             f"keywords IS NULL AND {chunk_keywords._eligibility_sql('')}".split()
         )
         assert want in norm
+        # The guard's rebuild hints carry the same literals as a
+        # runnable statement.
+        assert (
+            "CREATE INDEX CONCURRENTLY chunks_keywords_pending_idx "
+            f"ON chunks (chunk_id DESC) WHERE {want}"
+        ) in norm
+        # … and the predicate check itself compares in Postgres's
+        # deparsed form (NOT IN -> <> ALL over an ARRAY[...] literal,
+        # explicit ::text casts).
+        kinds = ", ".join(f"'{k}'::text" for k in sorted(chunk_keywords.SKIP_KINDS))
+        deparse = (
+            f"((keywords IS NULL) AND (chunk_kind <> ALL (ARRAY[{kinds}])) "
+            f"AND (length(text) >= {chunk_keywords.MIN_CHUNK_CHARS}) "
+            "AND ((meta ->> 'no_index'::text) IS DISTINCT FROM 'true'::text))"
+        )
+        assert deparse in norm
+
+    def test_index_predicate_matches_postgres_deparse(self, store: Store) -> None:
+        """The 0261 guard compares the recorded indexdef to a literal
+        deparse — pin that literal to what this Postgres actually
+        prints for the live index."""
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pg_get_expr(i.indpred, i.indrelid) FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE c.relname = 'chunks_keywords_pending_idx'"
+            ).fetchone()
+        assert row is not None
+        kinds = ", ".join(f"'{k}'::text" for k in sorted(chunk_keywords.SKIP_KINDS))
+        assert row[0] == (
+            f"((keywords IS NULL) AND (chunk_kind <> ALL (ARRAY[{kinds}])) "
+            f"AND (length(text) >= {chunk_keywords.MIN_CHUNK_CHARS}) "
+            "AND ((meta ->> 'no_index'::text) IS DISTINCT FROM 'true'::text))"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -584,25 +639,17 @@ class TestRunChunkKeywordsPass:
     def test_stale_claim_runs_every_nth_pass(
         self, store: Store, monkeypatch: Any
     ) -> None:
-        """gr520236 review: the tier-3 stale re-derive claim seq-scans
-        ``chunk_embeddings`` on every underfilled pass — it only runs
-        when the pass count hits :data:`_STALE_CLAIM_EVERY`."""
+        """gr520236 review: with no stale backlog draining, the tier-3
+        stale re-derive claim — a ``chunk_embeddings`` seq-scan on every
+        underfilled pass — only runs when the pass count hits
+        :data:`_STALE_CLAIM_EVERY`."""
         ref_id = seed_ref(store)
-        stale_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
-        stale_meta = {
-            "version": "0.0-stale",
-            "embedder": "bge-m3",
-            "keywords": [{"short": None, "long": "stale", "score": 1.0}],
-        }
-        with store.pool.connection() as conn:
-            conn.execute(
-                "UPDATE chunks SET keywords = %s, keywords_meta = %s "
-                "WHERE chunk_id = %s",
-                (["stale"], Jsonb(stale_meta), stale_id),
-            )
-            conn.commit()
+        _mark_stale(
+            store, _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        )
         # An off-multiple pass skips the stale claim entirely.
         monkeypatch.setattr(chunk_keywords, "_pass_count", 0)
+        monkeypatch.setattr(chunk_keywords, "_stale_draining", False)
         result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
         assert result == {"claimed": 0, "ok": 0, "failed": 0}
         # The _STALE_CLAIM_EVERY-th pass picks it up.
@@ -613,6 +660,52 @@ class TestRunChunkKeywordsPass:
         )
         result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
         assert result["claimed"] == 1 and result["ok"] == 1
+
+    def test_stale_claim_drains_every_pass_until_empty(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr520236 follow-up: a live stale backlog (a KEYWORDS_VERSION
+        re-derive drains only through tier 3) runs on EVERY pass while
+        the previous tier-3 claim returned rows; the first empty claim
+        drops the pace back to :data:`_STALE_CLAIM_EVERY`."""
+        ref_id = seed_ref(store)
+        emb = make_mock_bge_m3()
+        monkeypatch.setattr(chunk_keywords, "_pass_count", 0)
+        monkeypatch.setattr(chunk_keywords, "_stale_draining", False)
+
+        _mark_stale(
+            store, _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        )
+        # Off-multiple, not draining: the stale claim is skipped.
+        assert run_chunk_keywords_pass(store, emb, batch_size=10)["claimed"] == 0
+        # The paced pass claims the stale chunk — a non-empty tier-3
+        # claim latches draining on.
+        monkeypatch.setattr(
+            chunk_keywords,
+            "_pass_count",
+            chunk_keywords._STALE_CLAIM_EVERY - 1,
+        )
+        r = run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert r["claimed"] == 1 and r["ok"] == 1
+        # The very next pass is off-multiple but still runs tier 3.
+        _mark_stale(
+            store, _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        )
+        r = run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert r["claimed"] == 1 and r["ok"] == 1
+        # Tier 3 runs once more, returns empty, and the pace falls back:
+        # a fresh stale chunk now waits for the next multiple again.
+        assert run_chunk_keywords_pass(store, emb, batch_size=10)["claimed"] == 0
+        _mark_stale(
+            store, _seed_long_chunk(store, ref_id=ref_id, ord=2, text=_BODY_TEXT_1)
+        )
+        assert run_chunk_keywords_pass(store, emb, batch_size=10)["claimed"] == 0
+        monkeypatch.setattr(
+            chunk_keywords,
+            "_pass_count",
+            chunk_keywords._STALE_CLAIM_EVERY - 1,
+        )
+        assert run_chunk_keywords_pass(store, emb, batch_size=10)["claimed"] == 1
 
     def test_fallback_skips_embed_for_empty_candidates(
         self, store: Store, monkeypatch: Any

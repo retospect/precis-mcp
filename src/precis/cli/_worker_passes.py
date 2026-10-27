@@ -78,7 +78,9 @@ def build_ref_passes(
         # amortises better than the shared-loop default (32). The
         # floor below wins over the loop's --batch-size (max() only
         # ever raises) — PRECIS_CHUNK_KEYWORDS_BATCH is the ONLY knob
-        # under the 128 floor.
+        # under the 128 floor. Hand-parsed, not env_int(): env_int
+        # falls back to the default silently on a bad value, and a
+        # malformed knob should warn.
         try:
             _kw_batch_floor = int(os.environ.get("PRECIS_CHUNK_KEYWORDS_BATCH") or 128)
         except ValueError:

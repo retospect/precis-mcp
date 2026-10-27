@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -313,6 +314,67 @@ def test_check_path_unknown_when_docker_ps_fails(
     fakebin.mkdir()
     (fakebin / "docker").write_text(
         "#!/bin/sh\nexit 1\n",
+        encoding="utf-8",
+    )
+    (fakebin / "docker").chmod(0o755)
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
+    free = tmp_path / "elsewhere"
+    free.mkdir()
+    r = _ensure(env, "--check-path", str(free))
+    assert r.returncode not in (0, 10)
+    assert "unknown" in r.stdout
+
+
+def test_check_path_root_is_always_in_use(env: dict[str, str]) -> None:
+    """`/` must never get a "free" — the probe answers IN USE before any
+    marker or docker lookup."""
+    r = _ensure(env, "--check-path", "/")
+    assert r.returncode == 0
+    assert "IN USE" in r.stdout
+
+
+def test_check_path_unknown_without_docker_binary(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """No docker on PATH: the mounts can't be checked, so a path nothing
+    references is "unknown" (fail closed), never "free" — but a marker
+    that DOES reference it still proves "in use"."""
+    # A PATH with only the tools the probe needs (bash to launch, tr and
+    # sort for the marker scan) — docker is deterministically absent.
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    for tool in ("bash", "tr", "sort"):
+        real = shutil.which(tool)
+        assert real, f"{tool} not found on PATH"
+        (fakebin / tool).symlink_to(real)
+    env["PATH"] = str(fakebin)
+    free = tmp_path / "elsewhere"
+    free.mkdir()
+    r = _ensure(env, "--check-path", str(free))
+    assert r.returncode not in (0, 10)
+    assert "unknown" in r.stdout
+    # A marker reference still proves "in use" without docker.
+    state = Path(env["PRECIS_MCP_HTTP_STATE"])
+    state.mkdir()
+    (state / "main-checkout").write_text(str(free) + "\n", encoding="utf-8")
+    r = _ensure(env, "--check-path", str(free))
+    assert r.returncode == 0
+    assert "IN USE" in r.stdout
+
+
+def test_check_path_unknown_when_one_inspect_fails(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """One un-inspectable container leaves its mounts unverifiable —
+    "unknown", even when every other container proves nothing."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "docker").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = ps ]; then printf "c1\\nc2\\n"; exit 0; fi\n'
+        'if [ "$1" = inspect ] && [ "$4" = c2 ]; then exit 1; fi\n'
+        'if [ "$1" = inspect ] && [ "$3" = "{{.Name}}" ]; then echo /c1; '
+        'else printf "%s\\n" /unrelated/mount; fi\n',
         encoding="utf-8",
     )
     (fakebin / "docker").chmod(0o755)

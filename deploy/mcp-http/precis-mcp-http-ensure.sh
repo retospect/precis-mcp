@@ -383,8 +383,9 @@ fi
 #   nothing else produces — under `set -euo pipefail` a generic 1 is also
 #   how any internal failure exits, so callers (scripts/fleet-cleanup,
 #   /workspace-cleanup) must delete ONLY on 10 and treat every other code
-#   as "leave it alone". A docker daemon that cannot be queried means the
-#   mounts are unverifiable → "unknown", never "free".
+#   as "leave it alone". A docker daemon that cannot be queried — or no
+#   docker binary at all — means the mounts are unverifiable → "unknown",
+#   never "free".
 _check_path_matches() {
     # Is $1 the target or underneath it? Both sides are compared in raw AND
     # symlink-resolved form ((cd X && pwd -P) when X exists) so a marker or
@@ -464,8 +465,11 @@ check_path_in_use() {
             done <<< "$containers"
         fi
     else
-        # No docker binary → no containers exist to check; markers decide.
+        # No docker binary → the mounts are unverifiable the same as a
+        # failed ps: a marker may still prove the path in use, but
+        # nothing can prove it free.
         printf 'precis-mcp: warning: docker not on PATH — container mounts unchecked\n' >&2
+        docker_proven=0
     fi
 
     if [ "$reasons" -gt 0 ]; then
