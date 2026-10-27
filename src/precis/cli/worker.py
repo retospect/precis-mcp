@@ -324,6 +324,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_deep_review_pass": PassPriority.BACKGROUND,
     "_dream_agent_pass": PassPriority.BACKGROUND,
     "_openalex_snapshot_pass": PassPriority.BACKGROUND,
+    "_citer_watch_pass": PassPriority.BACKGROUND,
 }
 
 
@@ -449,6 +450,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "quota_check",
             "disk_check",
             "watch_poll",
+            "citer_watch",
             "news_poll",
             "parts_refresh",
             "mail_poll",

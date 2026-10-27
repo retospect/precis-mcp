@@ -1332,6 +1332,25 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr513769: the OpenAlex cited-by watch (workers/citer_watch.py).
+        # No `default_profiles`: the STANDING trigger is the daily
+        # `citer_watch` scheduler cadence, which fires and advances its
+        # lease while dark — the pass no-ops until a service_config row
+        # lights `citer_watch` (prio > 0), so enabling is the prod flag
+        # `precis service prio '*' citer_watch 1`. This registration is
+        # for a manual `--only citer_watch` run only (the operator
+        # escape hatch: enabled=True, still under the daily mint cap).
+        name="citer_watch",
+        label="OpenAlex cited-by watch",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        uses_external=("openalex",),
+        one_line="Poll OpenAlex for new works citing used held papers; "
+        "top scorers mint stubs under a daily cap; dark until lit.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="news_poll",
         label="News ingestion",
         category="acquisition",

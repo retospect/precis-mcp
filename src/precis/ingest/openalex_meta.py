@@ -240,6 +240,80 @@ def search_openalex_works(
     return results if isinstance(results, list) else []
 
 
+def fetch_citing_works(
+    openalex_ids: list[str],
+    *,
+    since: str,
+    email: str = "",
+    timeout: float = _TIMEOUT_S,
+    per_page: int = 200,
+    max_pages: int = 5,
+) -> list[dict[str, Any]]:
+    """``GET /works?filter=cites:W1|W2|…,from_publication_date:<since>``.
+
+    The forward-citation poll the ``citer_watch`` worker runs: one call
+    covers a whole batch of seed works (OpenAlex ORs ``|``-joined values
+    inside a single filter), restricted to works published on/after
+    ``since`` (``YYYY-MM-DD``). Only the fields the caller scores and
+    mints stubs from are ``select``ed — ``referenced_works`` is what
+    tells the caller *which* of the batched seeds each citing work
+    actually cites.
+
+    Cursor-paginates (``cursor=*`` … ``meta.next_cursor``) up to
+    ``max_pages``; a truncated walk is logged, never silently dropped.
+    Same client / ``call_with_backoff`` / shared ``openalex`` limiter
+    row as :func:`_fetch_work`: a first-attempt limiter refusal raises
+    :class:`precis.utils.rate_limit.RateLimited` (the caller defers);
+    HTTP errors raise after the politeness core's retries.
+    """
+    ids = [_short_id(i) for i in openalex_ids]
+    ids = ["W" + i[1:] if i[:1].lower() == "w" else i for i in ids if i]
+    if not ids:
+        return []
+    params = _params(email)
+    params["filter"] = f"cites:{'|'.join(ids)},from_publication_date:{since}"
+    params["select"] = "id,doi,title,publication_year,referenced_works,is_retracted"
+    params["per-page"] = str(per_page)
+    params["cursor"] = "*"
+
+    out: list[dict[str, Any]] = []
+    for _page in range(max_pages):
+        page_params = dict(params)
+
+        def once(page_params: dict[str, str] = page_params) -> Any:
+            with http_client(
+                timeout=timeout, headers={"User-Agent": _ua(email)}
+            ) as client:
+                resp = request_with_deadline(
+                    client,
+                    2 * timeout,
+                    lambda: client.get(_OPENALEX_WORKS, params=page_params),
+                )
+                resp.raise_for_status()
+                return resp.json()
+
+        data = call_with_backoff(once, service="openalex")
+        results = (data or {}).get("results") if isinstance(data, dict) else None
+        if isinstance(results, list):
+            out.extend(w for w in results if isinstance(w, dict))
+        next_cursor = (
+            ((data or {}).get("meta") or {}).get("next_cursor")
+            if isinstance(data, dict)
+            else None
+        )
+        if not next_cursor or not results:
+            return out
+        params["cursor"] = str(next_cursor)
+    log.warning(
+        "fetch_citing_works: hit %d-page cap at %d works (cites:%s, since %s)",
+        max_pages,
+        len(out),
+        "|".join(ids),
+        since,
+    )
+    return out
+
+
 def _short_id(openalex_url: str | None) -> str:
     """``https://openalex.org/W123`` → ``W123`` (bare id)."""
     if not openalex_url:
@@ -454,6 +528,7 @@ __all__ = [
     "ENRICH_VERSION",
     "OpenAlexEnrichment",
     "enrich_ref",
+    "fetch_citing_works",
     "fetch_openalex_work",
     "fetch_openalex_work_by_id",
     "fetch_openalex_work_by_identifier",

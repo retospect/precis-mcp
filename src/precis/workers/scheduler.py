@@ -493,6 +493,30 @@ def _run_cfp_watch(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_citer_watch(store: Store, batch_size: int) -> None:
+    """Daily OpenAlex cited-by watch (gr513769): poll ``cites:`` for
+    works published since the last poll that cite the held, used papers,
+    score by how many held papers each cites, mint the top scorers as
+    stubs under a daily cap, write a ``kind='memory'`` digest.
+    Dark-gated inside the pass: no ``citer_watch`` service_config row
+    (prio > 0) → all-zeros no-op, so the cadence's lease advances
+    harmlessly while dark (the ``dream_consolidate`` shape — a
+    never-claimed lease would read as "stopped firing" to health_digest).
+    ``batch_size`` is unused — the pass bounds itself via the seed cap
+    and the daily mint cap. spends=False: no LLM — the OpenAlex calls
+    draw on the shared ``openalex`` limiter row, not the model budget."""
+    del batch_size
+    from precis.workers.citer_watch import run_citer_watch_pass
+
+    result = run_citer_watch_pass(store)
+    log.info(
+        "scheduler: citer_watch inner result claimed=%d ok=%d failed=%d",
+        result["claimed"],
+        result["ok"],
+        result["failed"],
+    )
+
+
 def _run_secret_check(store: Store, batch_size: int) -> None:
     """Weekly credential probe (gr496305 item 4): runs
     ``secret_status.weekly_report`` and raises one ``secret_check`` alert
@@ -1028,6 +1052,20 @@ CADENCES: tuple[Cadence, ...] = (
         name="memory_thread_sweep",
         interval_s=24 * 3600 + 43 * 60,
         run=_run_memory_thread_sweep,
+    ),
+    # gr513769: the OpenAlex cited-by watch — daily, host-agnostic, off
+    # the exact day boundary (+57m, clear of the other daily fires).
+    # Ships DISABLED: the cadence fires and the lease advances, but the
+    # pass no-ops until a `service_config` row lights `citer_watch`
+    # (prio > 0) — `precis service prio '*' citer_watch 1` is the prod
+    # flag. No `service=` gate on the cadence on purpose: that gate
+    # leaves the lease unclaimed while dark, which health_digest's
+    # cadence-staleness check reports as "stopped firing" forever.
+    # spends=False: no LLM; the OpenAlex calls draw the shared limiter.
+    Cadence(
+        name="citer_watch",
+        interval_s=24 * 3600 + 57 * 60,
+        run=_run_citer_watch,
     ),
     # 2026-10 dream hygiene: consolidate stale dreams — retire unrecalled+
     # untouched dreams (60d; 90d for thread: memories) behind one supersedes

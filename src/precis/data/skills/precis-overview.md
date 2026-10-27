@@ -295,6 +295,7 @@ Corpus-pipeline services documenting against this skill:
 | `context_sentence` | one method/evidence sentence per grounding paper |
 | `classify_topics` | paper→topic-dossier cascade (`topic:` tags) |
 | `watch_poll` | S2 citing-paper poll → stubs |
+| `citer_watch` | daily OpenAlex cited-by watch for held papers; mints stub papers for new citing works (capped per day) and writes a digest memory; dark unless service_config enables it |
 | `mail_poll` / `inject_scan` | email poll + depth-0 scan, then model-scores flagged mail |
 | `dream_agent` | reflective memory pass (scheduler cadence) |
 | `watch` (daemon) | PDF-inbox ingestor — alerts `watch:elsevier_truncation/elsevier-truncation:<ref>` (truncated PDF) and `ingest:marker-fallback` (extractor fallback) |

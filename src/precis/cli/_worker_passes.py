@@ -1249,6 +1249,22 @@ def build_ref_passes(
 
         ref_passes.append(_watch_poll_pass)
 
+    # OpenAlex cited-by watch (gr513769). Same shape as watch_poll
+    # above: no `default_profiles`, so this registration is for a
+    # manual `--only citer_watch` run only — the STANDING trigger is
+    # the daily `citer_watch` scheduler cadence. `--only` passes
+    # `enabled=True` (the operator escape hatch); the pass still
+    # honours its daily mint cap either way.
+    if _register("citer_watch"):
+        from precis.workers.citer_watch import run_citer_watch_pass
+        from precis.workers.runner import BatchResult as _BatchResult
+
+        def _citer_watch_pass(batch_size: int) -> _BatchResult:
+            r = run_citer_watch_pass(store, enabled=True)
+            return _BatchResult.from_dict("citer_watch", r)
+
+        ref_passes.append(_citer_watch_pass)
+
     # News ingestion (news kind). Walks the news_sources feed
     # registry, fetches + mints new articles as `news` refs. Like
     # watch_poll it makes external calls on a cadence, so it's
