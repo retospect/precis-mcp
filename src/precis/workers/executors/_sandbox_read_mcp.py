@@ -76,7 +76,8 @@ log = logging.getLogger(__name__)
 #: ``--network none`` script must not get public egress or a data-out
 #: channel through the host — and every paid kind (perplexity-*, websearch,
 #: llm, oracle). Datasheets read stored chunks/status only; their inherited
-#: live DOI health check is refused in read scope. Pulls remain write verbs.
+#: live DOI health check and signed image/PDF links are refused in read scope.
+#: Pulls remain write verbs.
 #: A fetch kind joins only with a cache-hit-only handler path.
 READ_KIND_ALLOWLIST = frozenset(
     {

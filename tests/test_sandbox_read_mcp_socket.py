@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.types import CallToolResult, TextContent
 
 from precis.workers.executors import _sandbox_read_mcp as read_mcp
 
@@ -197,7 +198,6 @@ def test_pcb_sources_through_sandbox_read_gate(
 ) -> None:
     """Board → staged client → serving gate, with corpus reads faked."""
     from mcp.server.fastmcp import FastMCP
-    from mcp.types import CallToolResult, TextContent
 
     from precis import server
     from precis.handlers.paper import _parse_paper_id

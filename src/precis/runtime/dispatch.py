@@ -3787,6 +3787,22 @@ class DispatchMixin(RuntimeShape):
                 or explicit != parsed[0]
             ):
                 return False
+        # The serving gate saw the caller's kind, before this redirect.
+        # Recheck the resolved kind so a conversion cannot open a live-fetch
+        # or paid handler through an otherwise allowed corpus handle.
+        if resolved.redirected_from is not None:
+            from precis.runtime.scope import current_scope
+
+            if current_scope() == "read":
+                from precis.workers.executors._sandbox_read_mcp import kind_refusal
+
+                refusal = kind_refusal(verb or "get", resolved.kind)
+                if refusal is not None:
+                    raise BadInput(
+                        refusal.splitlines()[0].removeprefix("[error:BadInput] "),
+                        next="follow this converted handle outside the sandbox, "
+                        "or read stored evidence of an allowed kind",
+                    )
         if resolved.chunk_id is not None:
             # Chunk handle → per-kind chunk selector. Slug-document kinds take
             # ``slug~ord`` (ChunkRow.ord == chunks.ord). Numeric-chunk kinds

@@ -45,8 +45,8 @@ Sandbox scripts with `precis_access='read'` can read stored datasheets via
 `ds:da123~7` (the suffix is a chunk ordinal). `Board.check()` reports missing
 chunks as `source.unresolvable` and another catalog part's sheet as
 `source.wrong_part`; transport failures remain `source.unchecked`.
-Reads do not pull a missing PDF. Writes and the live DOI `health` check
-must run outside the sandbox.
+Reads do not pull a missing PDF. Writes, the live DOI `health` check, and
+signed image/PDF URLs (`page_image` / `pdf_link`) must run outside the sandbox.
 
 ## What to pull (and where it goes)
 
