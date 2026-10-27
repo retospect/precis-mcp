@@ -3,7 +3,7 @@
 §Construction traces).
 
 The stored form is one ``ws_trace`` chunk per workspace run
-(:mod:`precis_geom.trace_schema`, schemas 1 and 2), hung on the run job's ref —
+(:mod:`precis_geom.trace_schema`, schemas 1, 2 and 3), hung on the run job's ref —
 or on the design's own ref when a containerless import ran without a job
 (:func:`precis_se.workspace_import.import_workspace_run`). Each bound
 structure/cad ref's ``meta['generated']['trace'] = {'run_job', 'root'}``
@@ -28,7 +28,9 @@ from typing import Any, Literal
 
 #: Frame fields a run-vs-run diff compares — identity (key/parent/qual/
 #: file/line/occ) is never a "change"; a rerun differs only here.
-_DIFF_FIELDS = ("args", "made", "touched")
+# Timing is diagnostic, not a semantic change on every identical rerun.
+_DIFF_FIELDS = ("args", "args_last", "args_digest", "ret", "returns", "made", "touched")
+_SCHEMA3_DIFF_FIELDS = frozenset({"args_last", "args_digest", "ret", "returns"})
 
 
 @dataclass(frozen=True)
@@ -430,9 +432,16 @@ def _structural_paths(trace: Trace) -> dict[str, tuple[tuple[str, int], ...]]:
 def diff(old: Trace, new: Trace) -> list[DiffRow]:
     """``{'against': run}`` — frames added/removed/changed by ``key``;
     schema-1 migrations match qualified paths and occurrences instead. A
-    subtree unchanged end-to-end folds to one line at its root."""
+    subtree unchanged end-to-end folds to one line at its root. Across
+    schemas 1/2 and 3, compare new capture fields only when both frames
+    carry them: an upgrade alone is not a semantic change."""
     rows: list[DiffRow] = []
     old_schema, new_schema = old.doc.get("schema", 1), new.doc.get("schema", 1)
+    schema_upgrade = (
+        old_schema != new_schema
+        and 3 in (old_schema, new_schema)
+        and (old_schema in (1, 2) or new_schema in (1, 2))
+    )
     if old_schema != new_schema and 1 in (old_schema, new_schema):
         old_paths = _structural_paths(old)
         old_by_path = {path: old.by_key[key] for key, path in old_paths.items()}
@@ -444,9 +453,21 @@ def diff(old: Trace, new: Trace) -> list[DiffRow]:
     else:
         matches = {key: old.by_key[key] for key in new.by_key if key in old.by_key}
 
+    def changed_fields(o: dict[str, Any], f: dict[str, Any]) -> list[str]:
+        return [
+            k
+            for k in _DIFF_FIELDS
+            if not (
+                schema_upgrade
+                and k in _SCHEMA3_DIFF_FIELDS
+                and (k not in o or k not in f)
+            )
+            and o.get(k) != f.get(k)
+        ]
+
     def same(f: dict[str, Any]) -> bool:
         o = matches.get(f["key"])
-        return o is not None and all(o.get(k) == f.get(k) for k in _DIFF_FIELDS)
+        return o is not None and not changed_fields(o, f)
 
     def subtree_same(f: dict[str, Any]) -> bool:
         if not same(f):
@@ -466,7 +487,7 @@ def diff(old: Trace, new: Trace) -> list[DiffRow]:
         if o is None:
             rows.append(DiffRow("added", f, depth))
         elif not same(f):
-            changed = [k for k in _DIFF_FIELDS if o.get(k) != f.get(k)]
+            changed = changed_fields(o, f)
             rows.append(DiffRow("changed", f, depth, ",".join(changed)))
         for c in new.children.get(f["key"], []):
             walk(c, depth + 1)

@@ -23,6 +23,11 @@ it against the previous run, so a stable order is part of the contract.
 ``precis_geom.trace.traced`` (structure-workspaces slice 2, on the same
 base): ``with precis_geom.trace.run(): build()`` records one ``core``
 frame per call (``pcb.Board.part`` …) with the user frames between them.
+Parts and nets retain their creating frame's run-local ``maker`` id;
+``made`` counts belong to the primitive that actually creates the entity
+(so ``wire`` delegates net creation to ``net`` without double-counting).
+The stamps stay out of ``to_batch``: they describe this construction run,
+not authored board content, whose bytes remain stable across runs.
 
 **Intent markers on pins** (``unused``/``nc``/``must_terminate``) emit the
 store's bool shorthand (``{"name": "2", "unused": true}``,
@@ -484,6 +489,7 @@ class Part:
         """
         self.board = board
         self.refdes = refdes
+        self.maker = _trace.leaf_id()
         self.lcsc = lcsc
         self.label = label
         self.footprint = footprint
@@ -897,6 +903,7 @@ class Net:
         """
         self.board = board
         self.name = name
+        self.maker = _trace.leaf_id()
         self.cls = cls
         self.current = current
         self.voltage = voltage
@@ -1619,6 +1626,7 @@ class Board:
             p._declared_pins.add(pin.name)
         self._parts[qualified] = p
         self._part_order.append(qualified)
+        _trace.record(made={"parts": 1})
         return p
 
     @traced
@@ -1694,6 +1702,7 @@ class Board:
         frame = self._frame
         if frame is not None:
             frame.allowed_net_names.add(qualified)
+        _trace.record(made={"nets": 1})
         return n
 
     def _connect(

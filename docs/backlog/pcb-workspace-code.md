@@ -311,6 +311,28 @@ import step when `manifest.kind == 'pcb'`:
 
 ## Construction traces for boards
 
+Remaining integration (gr521596): the recorder supplies Part/Net maker IDs
+and creation counts, but these do not yet reach a stored board. This needs
+the following pipeline before the views below can resolve creators:
+
+- Add PCB manifest import and persist the run's `ws_trace`/`ws_manifest`.
+  `src/precis_geom/pcb.py::write_manifest` writes local artifacts; the existing
+  `src/precis_se/workspace_import.py::import_workspace_run` is the SE storage
+  pattern and its `_vet_manifest` requires SE blocks.
+- Export a separate entity-to-frame mapping alongside `Board.to_batch`,
+  whose authored payload excludes maker stamps; persist component, instance
+  and net bindings to their run (`src/precis/store/_pcb_ops.py::PcbMixin._pcb_insert_component`
+  currently filters component metadata). Extend capture/bindings to
+  connections, holes and the other entity types in the table below.
+- Bind the board to its trace run and resolve it using the pattern in
+  `src/precis_se/persist.py::trace_doc_resolver`; then reuse
+  `src/precis_se/traceview.py::Trace`, `card` and `diff` for the four asks.
+- Choose backward-compatible routing: `src/precis/handlers/pcb.py::PcbHandler._render_view`
+  already uses `view='trace', args={'net': ...}` for connectivity through
+  `src/precis/pcb/eyes.py::trace`. The proposed creator lookup collides with that call.
+- Exercise import → persistence → handler lookup in integration tests,
+  including collapsed frames and historical runs.
+
 The frame object, keys, capture and storage are structures §Construction
 traces, unchanged. What differs is the entity set and the solver frames.
 

@@ -1,5 +1,5 @@
-"""The construction-trace wire format — ``out/trace.json`` schema 2
-(reads schema 1 and 2).
+"""The construction-trace wire format — ``out/trace.json`` schema 3
+(reads schema 1, 2 and 3).
 
 A workspace run's **construction trace** is a tree of **frames**: one frame
 per call that placed or changed geometry (structure-workspaces spec,
@@ -11,7 +11,7 @@ live exactly once — stdlib only, since the same file ships inside the
 
 Top level::
 
-    {"schema": 2,
+    {"schema": 3,
      "run": {"workspace": <slug|null>, "job": <int|null>,
              "script_sha": <str|null>, "lock_sha": <str|null>,
              "started_utc": <iso|null>, "finished_utc": <iso|null>,
@@ -51,7 +51,19 @@ Frame fields (all present unless noted)::
     kind     ``root`` | ``user`` | ``core`` | ``module`` | ``service`` |
              ``op``.
     args     bounded digest: scalars and short strings verbatim, floats
-             ``%.6g``, objects ``<Class sha8>``.
+             ``%.6g``, objects ``<Class n sha8>``. Capture visits at most
+             256 values, depth 16 and 4096 payload bytes, and hashes at most
+             4096 canonical bytes. Already materialised content hashes can
+             replace traversal. ``capped`` before the closing ``>`` marks
+             a partial sample (not whole-content equality); large strided
+             arrays fall back to shape. No unbounded custom repr is called.
+    dur_ms   schema 3 — inclusive elapsed milliseconds, using a monotonic
+             clock. Sampled user frames cover only the observed interval;
+             live frames report elapsed time at dump, completed ones freeze.
+    ret      schema 3 — optional bounded return digest, using the same
+             recipe as args so consumers can join to producers. Absent for
+             failed calls, synthetic roots and sampled user/context frames;
+             a successful None return is explicitly null.
     made     ``{entity_type: int}`` — what this frame alone placed.
     touched  ``{entity_type: int | [[lo, hi], ...]}`` — what it changed.
     error    optional — the exception type name (``ValueError``) when
@@ -64,6 +76,10 @@ frame carrying ``occ`` = 64, ``occ_end`` = N, ``collapsed`` = count,
 ``id``/``id_end`` spanning the folded run, and ``made``/``touched`` =
 their sums. The folded frame's key is ``frame_key(parent, qual, 64)``,
 unchanged as the group grows.
+Schema 3 also carries ``args_last`` and ``args_digest`` (hash of all folded
+argument dictionaries in order), summed ``dur_ms``, and ``returns`` with
+successful return count, first/last digest, and a hash of the ordered
+return-presence/digest pairs. These summaries stay bounded as the fold grows.
 
 Schema 1 vs 2: schema-1 docs keep their line-bearing keys and lack
 ``line_in_def``/``src``/``run.key_collisions``. Duplicate ``key`` values
@@ -78,11 +94,11 @@ import hashlib
 import json
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Schema versions ``loads`` accepts. Schema 1 predates the structural
 #: key (``line`` was hashed in) and the ``line_in_def``/``src`` fields.
-SCHEMA_VERSIONS = frozenset({1, SCHEMA_VERSION})
+SCHEMA_VERSIONS = frozenset({1, 2, SCHEMA_VERSION})
 
 #: Frame ``kind`` values. ``root`` is the synthetic run node every
 #: top-level frame parents to; the rest come from the spec's table.
@@ -97,7 +113,9 @@ COLLAPSE_SIBLINGS = 64
 MAX_FRAMES = 20_000
 
 #: Entity types ``made``/``touched`` count.
-ENTITY_TYPES = frozenset({"atoms", "bonds", "instances", "faces", "blocks", "ports"})
+ENTITY_TYPES = frozenset(
+    {"atoms", "bonds", "instances", "faces", "blocks", "ports", "parts", "nets"}
+)
 
 
 def sha8(text: str) -> str:
@@ -133,7 +151,7 @@ def loads(text: str) -> dict[str, Any]:
     if not isinstance(frames, list):
         raise ValueError("trace.json: 'frames' must be a list")
     required = ("id", "key", "qual", "file", "line", "occ", "kind") + (
-        ("line_in_def", "src") if schema == SCHEMA_VERSION else ()
+        ("line_in_def", "src") if schema >= 2 else ()
     )
     seen: set[int] = set()
     keys: set[str] = set()

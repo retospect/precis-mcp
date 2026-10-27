@@ -82,7 +82,7 @@ def test_identical_keys_across_runs() -> None:
             docs.append(tr.dump())
     keys = lambda doc: [f["key"] for f in doc["frames"]]
     assert keys(docs[0]) == keys(docs[1])
-    assert docs[0]["schema"] == 2
+    assert docs[0]["schema"] == 3
     assert all("line_in_def" in f and "src" in f for f in docs[0]["frames"])
     trace_schema.loads(trace_schema.dumps(docs[0]))  # round-trips clean
 
@@ -232,7 +232,7 @@ def test_schema1_trace_doc_still_loads(tmp_path: Path) -> None:
     for f in doc["frames"]:
         del f["line_in_def"], f["src"]
     assert trace_schema.loads(trace_schema.dumps(doc))["schema"] == 1
-    doc["schema"] = 3
+    doc["schema"] = 4
     with pytest.raises(ValueError, match="schema"):
         trace_schema.loads(trace_schema.dumps(doc))
 

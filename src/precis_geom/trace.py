@@ -16,7 +16,8 @@ sandbox). Each ``@traced`` call:
    structure only: an inserted line above the call keeps the key);
 3. records ``args`` as a bounded digest (scalars verbatim, ``%.6g``
    floats, ``<Class sha8>`` for objects);
-4. on exit pops itself (a call that raised first marks its frame
+4. on exit records elapsed milliseconds and a bounded return digest,
+   then pops itself (a call that raised first marks its frame
    ``error`` = the exception type name — the innermost traced frame it
    left); the frame stays in the tree under its parent.
 
@@ -25,7 +26,7 @@ entities it placed/changed on *its own* frame; ``leaf_id()`` is the stamp
 entities carry (``Instance.maker`` …). ``with trace("name"):`` mints a
 named user frame without a function boundary.
 
-``Tracer.dump()`` emits the schema-2 document (``trace_schema.dumps``),
+``Tracer.dump()`` emits the schema-3 document (``trace_schema.dumps``),
 applying the sibling collapse (past ``COLLAPSE_SIBLINGS`` same-``qual``
 childless siblings fold into one frame with an ``occ`` range) and the
 ``MAX_FRAMES`` cap (``run.truncated``). ``line_in_def``/``src`` carry the
@@ -43,11 +44,13 @@ import json
 import os
 import re
 import sys
+import time
 import types
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from itertools import islice
 from typing import Any, TypeVar
 
 from precis_geom import trace_schema as ts
@@ -61,6 +64,11 @@ _INFRA_FILES = frozenset({"precis_client.py"})
 _ACTIVE: ContextVar[Tracer | None] = ContextVar("precis_geom_trace", default=None)
 
 _ADDR_RE = re.compile(r"0x[0-9a-fA-F]+")
+_NO_RETURN = object()
+_DIGEST_MAX_BYTES = 4096
+_DIGEST_MAX_ITEMS = 256
+_DIGEST_MAX_DEPTH = 16
+_CONTENT_HASH_RE = re.compile(r"[0-9a-fA-F]{16,128}\Z")
 
 
 def _utcnow() -> str:
@@ -93,6 +101,9 @@ class _Frame:
     #: Exception type name when the call raised — set on the innermost
     #: traced frame the exception left; ``dump`` omits it when ``None``.
     error: str | None = None
+    t0: float = field(default_factory=lambda: time.perf_counter())
+    dur_ms: float | None = None
+    ret: Any = _NO_RETURN
 
 
 class Tracer:
@@ -240,6 +251,8 @@ class Tracer:
             and id(stack[prefix].py) in live_ids
         ):
             prefix += 1
+        for stale in stack[prefix:]:
+            self._finish(stale)
         del stack[prefix:]
         # Consume the surviving prefix in stack order, then mint /work
         # frames deeper than it. Pushes grow ``stack`` but ``matched`` is
@@ -300,6 +313,20 @@ class Tracer:
 
     # -- failure anchoring ----------------------------------------------------
 
+    def _finish(self, fr: _Frame) -> None:
+        if fr.dur_ms is None:
+            fr.dur_ms = (time.perf_counter() - fr.t0) * 1000
+
+    def _leave(self, fr: _Frame) -> None:
+        # A traced function may have called user helpers whose sampled frames
+        # still sit above it. Close that whole suffix, not just the top entry.
+        for i, active in enumerate(self.stack):
+            if active is fr:
+                for done in self.stack[i:]:
+                    self._finish(done)
+                del self.stack[i:]
+                break
+
     def mark_raise(self, exc: BaseException) -> None:
         """Mark the innermost live frame ``error`` for an ``exc`` that
         left user code without crossing a ``@traced`` call (a bare
@@ -343,7 +370,7 @@ class Tracer:
     # -- serialization ------------------------------------------------------
 
     def dump(self, run: dict[str, Any] | None = None) -> dict[str, Any]:
-        """The schema-2 trace document (post-collapse, capped).
+        """The schema-3 trace document (post-collapse, capped).
 
         A ``_sync`` re-mint can in principle repeat a ``(parent, qual,
         occ)`` key (a re-entered generator under the same parent): the
@@ -355,6 +382,10 @@ class Tracer:
         collapsed = 0
         key_collisions = 0
         emitted: dict[str, int] = {}
+        now = time.perf_counter()
+
+        def duration(fr: _Frame) -> float:
+            return fr.dur_ms if fr.dur_ms is not None else (now - fr.t0) * 1000
 
         def _emit_dict(d: dict[str, Any]) -> None:
             nonlocal key_collisions
@@ -384,7 +415,10 @@ class Tracer:
                 "args": fr.args,
                 "made": fr.made,
                 "touched": fr.touched,
+                "dur_ms": duration(fr),
             }
+            if fr.ret is not _NO_RETURN:
+                d["ret"] = fr.ret
             if fr.error is not None:
                 d["error"] = fr.error
             _emit_dict(d)
@@ -420,6 +454,12 @@ class Tracer:
                             "collapsed": len(rest),
                             "kind": grp[0].kind,
                             "args": rest[0].args,
+                            "args_last": rest[-1].args,
+                            "args_digest": ts.sha8(
+                                json.dumps([c.args for c in rest], sort_keys=True)
+                            ),
+                            "dur_ms": sum(duration(c) for c in rest),
+                            "returns": _fold_returns(rest),
                             "made": _sum_counts(c.made for c in rest),
                             "touched": _sum_counts(c.touched for c in rest),
                         }
@@ -450,6 +490,24 @@ class Tracer:
         return {"schema": ts.SCHEMA_VERSION, "run": meta, "frames": frames}
 
 
+def _fold_returns(frames: list[_Frame]) -> dict[str, Any]:
+    values = [c.ret for c in frames if c.ret is not _NO_RETURN]
+    return {
+        "count": len(values),
+        "first": values[0] if values else None,
+        "last": values[-1] if values else None,
+        "digest": ts.sha8(
+            json.dumps(
+                [
+                    [c.ret is not _NO_RETURN, None if c.ret is _NO_RETURN else c.ret]
+                    for c in frames
+                ],
+                sort_keys=True,
+            )
+        ),
+    }
+
+
 def _sum_counts(dicts: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for d in dicts:
@@ -461,54 +519,182 @@ def _sum_counts(dicts: Any) -> dict[str, Any]:
     return out
 
 
-def _stable_repr(v: Any) -> str:
-    try:
-        r = repr(v)
-    except Exception:
-        r = f"<unrepr {type(v).__name__}>"
-    return _ADDR_RE.sub("0x…", r)[:4096]
+@dataclass
+class _DigestBudget:
+    items: int = _DIGEST_MAX_ITEMS
+    bytes: int = _DIGEST_MAX_BYTES
+    capped: bool = False
+
+    def text(self, value: str) -> str:
+        # Slice before encoding: even one huge string cannot allocate an
+        # unbounded UTF-8 buffer. JSON escaping is bounded separately below.
+        prefix = value[: self.bytes].encode("utf-8", errors="replace")[: self.bytes]
+        text = prefix.decode("utf-8", errors="ignore")
+        self.bytes -= len(prefix)
+        self.capped |= len(text) != len(value)
+        return text
 
 
-def _canon(v: Any) -> Any:
-    """A json-able canonical form for hashing — ndarray content goes in as
-    ``tobytes()`` (C-speed; ``repr`` of an array is the dominant cost)."""
-    if v is None or isinstance(v, (bool, int, float, str)):
+def _stored_digest(v: Any) -> str | None:
+    # Read already materialised attributes only. Calling a hash property or
+    # method can itself walk the entire geometry and defeat the budget.
+    for name in ("content_sha", "sha", "digest"):
+        value = inspect.getattr_static(v, name, None)
+        if isinstance(value, str) and _CONTENT_HASH_RE.fullmatch(value):
+            return value
+    return None
+
+
+def _canon(v: Any, budget: _DigestBudget, depth: int = 0) -> Any:
+    """Bounded canonical sample; ordinary small values keep their old form."""
+    if budget.items <= 0 or budget.bytes <= 0 or depth >= _DIGEST_MAX_DEPTH:
+        budget.capped = True
+        return "<capped>"
+    budget.items -= 1
+    if v is None or isinstance(v, (bool, float)):
         return v
+    if isinstance(v, int):
+        if v.bit_length() > _DIGEST_MAX_BYTES:
+            budget.capped = True
+            return f"<int {v.bit_length()} bits>"
+        text = str(v)
+        text_prefix = budget.text(text)
+        return v if text_prefix == text else text_prefix
+    if isinstance(v, str):
+        return budget.text(v)
     if isinstance(v, (bytes, bytearray)):
-        return ts.sha8(bytes(v).hex())
-    if hasattr(v, "tobytes") and hasattr(v, "shape"):  # numpy array, duck-typed
-        return ["nd", list(v.shape), ts.sha8(v.tobytes().hex())]
+        byte_prefix = bytes(v[: budget.bytes // 2])
+        budget.bytes -= len(byte_prefix) * 2
+        budget.capped |= len(byte_prefix) != len(v)
+        return ts.sha8(byte_prefix.hex())
+    if isinstance(v, (list, tuple, dict)):
+        # Never sort or copy an entire large container just to take a sample.
+        limit = budget.items
+        values: Any = v.items() if isinstance(v, dict) else v
+        out: Any = {} if isinstance(v, dict) else []
+        for i, value in enumerate(islice(values, limit)):
+            if budget.items <= 0 or budget.bytes <= 0:
+                budget.capped = True
+                break
+            if isinstance(v, dict):
+                key, value = value
+                # Avoid arbitrary __str__/__repr__ on custom mapping keys.
+                if isinstance(key, int) and key.bit_length() > _DIGEST_MAX_BYTES:
+                    budget.capped = True
+                    key = f"<int {key.bit_length()} bits>"
+                elif key is not None and not isinstance(key, (str, int, float, bool)):
+                    key_sample = _canon(key, budget, depth + 1)
+                    # Atom dictionaries commonly use tuple IDs. Preserve
+                    # their bounded contents rather than aliasing all tuples.
+                    key = (
+                        repr(tuple(key_sample))
+                        if isinstance(key, tuple) and isinstance(key_sample, list)
+                        else json.dumps(key_sample, sort_keys=True)
+                    )
+                key = budget.text(str(key))
+                out[key] = _canon(value, budget, depth + 1)
+            else:
+                out.append(_canon(value, budget, depth + 1))
+            if i + 1 < len(v) and (budget.items <= 0 or budget.bytes <= 0):
+                budget.capped = True
+                break
+        budget.capped |= len(out) < len(v)
+        return out
+    digest = _stored_digest(v)
+    if digest is not None:
+        return [type(v).__name__, "content_digest", budget.text(digest)]
+    view: memoryview | None
+    try:
+        view = memoryview(v)
+    except TypeError:
+        view = None
+    if view is not None:
+        # A contiguous view can be sliced without copying the full array.
+        # Small strided arrays retain their full C-order bytes; large strided
+        # arrays emit shape only rather than materialising an unbounded copy.
+        if view.c_contiguous:
+            raw = view.cast("B")[: budget.bytes // 2].tobytes()
+        elif view.nbytes <= budget.bytes // 2:
+            raw = view.tobytes()
+        else:
+            raw = b""
+        budget.bytes -= len(raw) * 2
+        budget.capped |= len(raw) != view.nbytes
+        return ["nd", list(view.shape or ()), ts.sha8(raw.hex())]
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        return [
-            type(v).__name__,
-            [[f.name, _canon(getattr(v, f.name))] for f in dataclasses.fields(v)],
-        ]
-    if isinstance(v, (list, tuple)):
-        return [_canon(x) for x in v]
-    if isinstance(v, dict):
-        return {
-            str(k): _canon(x) for k, x in sorted(v.items(), key=lambda kv: str(kv[0]))
-        }
-    return _stable_repr(v)
+        fields = dataclasses.fields(v)
+        members = []
+        for f in islice(fields, budget.items):
+            if budget.items <= 0 or budget.bytes <= 0:
+                break
+            members.append(
+                [budget.text(f.name), _canon(getattr(v, f.name), budget, depth + 1)]
+            )
+        budget.capped |= len(members) < len(fields)
+        return [type(v).__name__, members]
+    # A custom repr may traverse an arbitrarily large graph. Default object
+    # repr is constant-cost and preserves the existing address-free digest.
+    if type(v).__repr__ is object.__repr__:
+        return budget.text(_ADDR_RE.sub("0x…", object.__repr__(v)))
+    budget.capped = True
+    return f"<{type(v).__name__}>"
 
 
 def _arg_digest(v: Any) -> Any:
-    """Bounded, deterministic digest of one call argument."""
-    if v is None or isinstance(v, (bool, int)):
+    """Budgeted summary shared by arguments and returns so their digests join.
+
+    At most 256 values, depth 16 and 4096 payload bytes are inspected; the
+    final canonical hash input is capped at 4096 bytes too. A ``capped``
+    suffix means a sample, not proof of whole-object content equality.
+    """
+    if v is None or isinstance(v, bool):
+        return v
+    if isinstance(v, int) and v.bit_length() <= _DIGEST_MAX_BYTES:
         return v
     if isinstance(v, float):
         return float(f"{v:.6g}")
-    if isinstance(v, str):
-        return v if len(v) <= 80 else f"<str {len(v)} {ts.sha8(v)}>"
-    if isinstance(v, (bytes, bytearray)):
-        return f"<bytes {len(v)} {ts.sha8(bytes(v).hex())}>"
-    canon = _canon(v)
+    if isinstance(v, str) and len(v) <= 80:
+        return v
+    budget = _DigestBudget()
     try:
-        canon_s = json.dumps(canon, sort_keys=True)
-    except (TypeError, ValueError):
-        canon_s = str(canon)[:4096]
-    n = len(v) if hasattr(v, "__len__") else ""
-    return f"<{type(v).__name__} {n} {ts.sha8(canon_s)}>"
+        canon = _canon(v, budget)
+        if isinstance(v, str):
+            canon_s = canon
+        elif isinstance(v, (bytes, bytearray)):
+            # Keep the existing bytes digest for complete small values.
+            canon_s = bytes(v[: _DIGEST_MAX_BYTES // 2]).hex()
+        else:
+            canon_s = None
+        chunks = (
+            (canon_s,)
+            if canon_s is not None
+            else json.JSONEncoder(sort_keys=True).iterencode(canon)
+        )
+        encoded = bytearray()
+        for chunk in chunks:
+            remaining = _DIGEST_MAX_BYTES - len(encoded)
+            part = chunk[: remaining + 1].encode("utf-8")
+            encoded.extend(part[:remaining])
+            if len(part) > remaining:
+                budget.capped = True
+                break
+        canon_s = encoded.decode("utf-8", errors="ignore")
+    except Exception:
+        # Instrumentation must not turn a successful call into a failure
+        # when its result has cycles or an uncooperative value protocol.
+        canon_s = f"<{type(v).__name__}>"
+        budget.capped = True
+    n: int | str = ""
+    if isinstance(v, (str, bytes, bytearray, list, tuple, dict)):
+        n = len(v)
+    else:
+        try:
+            shape = memoryview(v).shape
+            n = shape[0] if shape else ""
+        except TypeError:
+            pass
+    capped = " capped" if budget.capped else ""
+    return f"<{type(v).__name__} {n} {ts.sha8(canon_s)}{capped}>"
 
 
 def _frame_args(f: types.FrameType) -> dict[str, Any]:
@@ -561,6 +747,10 @@ def start(
 
 
 def stop() -> None:
+    tr = _ACTIVE.get()
+    if tr is not None:
+        for fr in tr.stack:
+            tr._finish(fr)
     _ACTIVE.set(None)
 
 
@@ -576,6 +766,8 @@ def run(
     try:
         yield tr
     finally:
+        for fr in tr.stack:
+            tr._finish(fr)
         _ACTIVE.set(prev)
 
 
@@ -670,14 +862,17 @@ def traced(
                 sys._getframe(0),
             )
             try:
-                return f(*args, **kwargs)
+                result = f(*args, **kwargs)
+                tr._finish(fr)
+                fr.ret = _arg_digest(result)
+                return result
             except BaseException as exc:
                 if exc not in tr._raised:
                     fr.error = type(exc).__name__
                     tr._raised.add(exc)
                 raise
             finally:
-                tr.stack.pop()
+                tr._leave(fr)
 
         return wrapper
 
@@ -708,10 +903,7 @@ def trace(name: str) -> Iterator[None]:
     try:
         yield
     finally:
-        if tr.stack and tr.stack[-1] is fr:
-            tr.stack.pop()
-        elif fr in tr.stack:
-            tr.stack.remove(fr)
+        tr._leave(fr)
 
 
 __all__ = [

@@ -9,7 +9,17 @@ package — the pieces that are *the script's own surface*:
 - :mod:`precis_geom.trace` — the construction trace: ``@traced`` on every
   public primitive pushes a frame; ``precis_ws.out`` dumps it to
   ``out/trace.json`` (``precis_geom.trace_schema`` is the wire format both
-  the writer and the importer share).
+  the writer and the importer share). Schema 3 retains schema 1/2 readers
+  and adds inclusive frame timing, bounded return digests joinable to input
+  digests, and folded argument/return summaries. Timing stays out of semantic
+  diffs; sampled user frames measure only their observed interval because
+  tracing every Python return would impose a profiling hook on all calls.
+  Arguments and returns share a 256-value, depth-16, 4096-byte digest budget;
+  stored content hashes bypass traversal. Capped samples are marked explicitly
+  because they cannot prove equality of unseen content. This bounds repeated
+  capture of nested geometry without breaking producer/consumer joins.
+  PCB parts/nets carry run-local maker stamps and primitive creation counts;
+  stamps stay outside the authored batch so tracing cannot change its bytes.
 - :mod:`precis_geom.out` — the dev-loop ``out/`` writer: a scratch script
   on the host records blocks/instances/connects and gets the same
   ``manifest.json`` + ``trace.json`` + ``blocks/…`` tree the importer
@@ -18,7 +28,10 @@ package — the pieces that are *the script's own surface*:
   importer's geometry format, duck-typed on the scene protocol so this
   package never imports ``precis``.
 - ``precis_geom.assembly`` (``pga``) — the one assembly implementation
-  scripts and MCP ops share (slice 2a).
+  scripts and MCP ops share (slice 2a). Transforms record touches while
+  retaining creator stamps, so frame selection still reaches the source.
+  Fusion retains source/placement makers; coincident atoms and duplicate
+  bonds use the earliest copy's representative rather than a tile stamp.
 - :mod:`precis_geom.flow` — the DB-free cad solid → thin-gap ``Domain``
   adapter, and :mod:`precis_geom.physics` — ``evaluate(shape, physics,
   spec, *, seed, cells)``, the toolkit's one physics call (flow first;

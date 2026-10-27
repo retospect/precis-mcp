@@ -10,9 +10,9 @@ inputs produce the same block.
 
 Products are **immutable**: every call returns a new :class:`Geom`; a
 move is a recipe edit plus a rebuild, never an in-place transform (the
-spec's immutable-products ruling). Each call is ``@traced`` — its own
-creator frame, and the object's atoms carry that frame's id as their
-``maker``:
+spec's immutable-products ruling). Construction calls are ``@traced``;
+atoms carry their creator or placement frame as ``maker``. Transforms
+preserve those stamps and record the affected atoms in ``touched``:
 
 - ``assembly`` mints an ``assembly`` frame plus one ``instance`` frame
   per direct child; a leaf child's atoms are stamped with its
@@ -23,10 +23,11 @@ creator frame, and the object's atoms carry that frame's id as their
   (``tile#0..#n-1``) — packed, the ``array_block`` shape — or, from a
   bare template *name*, a symbolic array the manifest writes and the
   importer replays through the ``array_block`` op.
-- ``tile(..., fused=True)`` mints one ``tile`` frame whose ``made`` is
-  the seam: translational copies at the period step, coincident atoms
-  identified, bonds/rings unioned (the guard-column overlap of a
-  periodic sheet, k2 across each boundary).
+- ``tile(..., fused=True)`` mints one ``tile`` frame whose ``made`` counts
+  the merged output; surviving atoms/bonds keep their source makers
+  (the earlier copy wins coincident sites). Copies at the period step
+  identify coincident atoms and union bonds/rings (the guard-column
+  overlap of a periodic sheet, k2 across each boundary).
 - ``translate``/``rotate``/``transform`` mint a ``pose`` frame,
   ``mirror`` a ``mirror`` frame (improper transform — atomic emits the
   ``chirality.flipped`` INFO and flips ``meta['chiral_index']``),
@@ -579,8 +580,8 @@ def _rot_axis(axis: np.ndarray, rad: float) -> np.ndarray:
     return np.eye(3) + math.sin(rad) * ux + (1.0 - math.cos(rad)) * (ux @ ux)
 
 
-def _transform_scene(scene: Any, T: Transform, *, maker: int | None) -> Any:
-    """A Scene under ``T`` — atoms remapped (``maker`` re-stamped), cell
+def _transform_scene(scene: Any, T: Transform) -> Any:
+    """A Scene under ``T`` — atoms remapped with source makers intact, cell
     and bonds carried (orthonormal ``R`` preserves cartesian
     distances)."""
     from precis.structure.scene import Atom, Scene
@@ -588,11 +589,11 @@ def _transform_scene(scene: Any, T: Transform, *, maker: int | None) -> Any:
     atoms: dict[str, Atom] = {}
     for la, a in scene.atoms.items():
         cart = T.apply(scene.cell.frac_to_cart(a.frac))
-        atoms[la] = replace(a, frac=scene.cell.cart_to_frac(cart), maker=maker)
+        atoms[la] = replace(a, frac=scene.cell.cart_to_frac(cart))
     return Scene(
         cell=scene.cell,
         atoms=atoms,
-        bonds=[replace(b, maker=maker) for b in scene.bonds],
+        bonds=[replace(b) for b in scene.bonds],
         measures=list(scene.measures),
         label_hi=dict(scene.label_hi),
     )
@@ -613,16 +614,17 @@ def _transform_ports(ports: dict[str, Port], T: Transform) -> dict[str, Port]:
     return out
 
 
-def _apply_T(g: Geom, T: Transform, *, maker: int | None) -> Geom:
+def _apply_T(g: Geom, T: Transform) -> Geom:
     """``T`` applied to ``g`` as a whole object — the invariant is
     ``result.flatten() == T(g.flatten())``: a **posed** object is
     repositioned in its parent frame (``pose = T ∘ g.pose``, local
     geometry untouched); an unposed object has ``T`` baked into its
     geometry eagerly (atoms, placements, ports, array axis). The two
     paths agree because ``pose=None`` is the identity placement."""
+    _trace.record(touched={"atoms": _geom_atom_count(g)})
     if g.pose is not None:
         return replace(g, pose=T.compose(g.pose))
-    scene = _transform_scene(g.scene, T, maker=maker) if g.scene is not None else None
+    scene = _transform_scene(g.scene, T) if g.scene is not None else None
     placements = tuple((c, T.compose(xf), fid) for c, xf, fid in g.placements)
     array = g.array
     if array is not None:
@@ -646,7 +648,7 @@ def transform(obj: Any, T: Transform) -> Geom:
     """``obj`` moved by ``T`` — a new object, never moved in place; the
     ``pose`` frame. On a posed object ``T`` composes the pose (a move
     in the parent frame); otherwise it bakes into the geometry."""
-    return _apply_T(geom(obj), T, maker=_leaf())
+    return _apply_T(geom(obj), T)
 
 
 def translate(obj: Any, v: Any) -> Geom:
@@ -703,7 +705,7 @@ def mirror(obj: Any, plane: Any = "yz") -> Geom:
         )
     else:
         findings.append("chirality.flipped: geometry mirrored (improper transform)")
-    return replace(_apply_T(g, T, maker=_leaf()), meta=meta, findings=tuple(findings))
+    return replace(_apply_T(g, T), meta=meta, findings=tuple(findings))
 
 
 # ── tile ─────────────────────────────────────────────────────────────────
@@ -771,7 +773,7 @@ def tile(
             period=tuple(step),
             meta=dict(g.meta),
         )
-    # fused: eager merge, one frame, made = seam bonds
+    # fused: eager merge, one frame counts the merged output
     if isinstance(obj, str):
         raise BadInput(
             "tile fused=True needs geometry, not a template name",
@@ -797,7 +799,9 @@ def _fuse_copies(g: Geom, n: int, step: np.ndarray) -> Geom:
     flat = _flatten_atomic(g)
     labels, elements, carts = _scene_carts(flat)
     bonds = _scene_bonds(flat, labels)
-    base_maker = _leaf()
+    source_bond_makers = [
+        b.maker for b in flat.bonds if b.i in flat.atoms and b.j in flat.atoms
+    ]
 
     order: list[int] = []  # source atom index per kept merged atom
     merged_pos: list[np.ndarray] = []
@@ -815,21 +819,24 @@ def _fuse_copies(g: Geom, n: int, step: np.ndarray) -> Geom:
                 merged_pos.append(p)
                 order.append(i)
             remap[(k, i)] = hit
-    new_bonds: set[tuple[int, int, float]] = set()
+    new_bonds: dict[tuple[int, int, float], int | None] = {}
     for k in range(n):
-        for i, j, o in bonds:
+        for (i, j, o), maker in zip(bonds, source_bond_makers):
             a, b = remap[(k, i)], remap[(k, j)]
             if a == b:
                 continue
-            new_bonds.add((min(a, b), max(a, b), o))
+            new_bonds.setdefault((min(a, b), max(a, b), o), maker)
     atoms_el = [elements[i] for i in order]
     pos = np.asarray(merged_pos, dtype=np.float64)
     new_scene = _scene_from_parts(
         atoms_el,
         pos,
         sorted(new_bonds),
-        maker=base_maker,
     )
+    for atom, source in zip(new_scene.atoms.values(), order):
+        atom.maker = flat.atoms[labels[source]].maker
+    for bond, key in zip(new_scene.bonds, sorted(new_bonds)):
+        bond.maker = new_bonds[key]
     _record(atoms=len(atoms_el), bonds=len(new_bonds))
     return Geom(
         scene=new_scene,
@@ -845,13 +852,15 @@ def _fuse_copies(g: Geom, n: int, step: np.ndarray) -> Geom:
 def _flatten_atomic(g: Geom) -> Any:
     """Merge ``g`` into one Scene — placements expanded in order, atoms
     re-labelled ``a<El><n>``, ``maker`` from each placement's frame id
-    (a nested assembly's atoms keep their own inner stamps)."""
+    (a nested assembly's atoms keep their own inner stamps). Without
+    a placement, preserve each source atom and bond's creator stamp."""
     from precis.structure.scene import Atom, Bond, Scene
 
     labels_out: list[str] = []
     elements_out: list[str] = []
     carts_out: list[np.ndarray] = []
     bonds_out: list[tuple[int, int, float]] = []
+    bond_makers: list[int | None] = []
     makers: list[int | None] = []
     counters: dict[str, int] = {}
 
@@ -870,8 +879,12 @@ def _flatten_atomic(g: Geom) -> Any:
                     bonds_out.append(
                         (base + idx_map[b.i], base + idx_map[b.j], float(b.order))
                     )
+                    bond_makers.append(maker if maker is not None else b.maker)
             labels_out.extend(labels)
-            makers.extend([maker] * len(labels))
+            makers.extend(
+                maker if maker is not None else sub.scene.atoms[la].maker
+                for la in labels
+            )
         for child, cxf, fid in sub.placements:
             if sub.meta.get("_asm"):
                 # a nested assembly's atoms keep the stamps of its own
@@ -914,9 +927,9 @@ def _flatten_atomic(g: Geom) -> Any:
                 i=new_labels[a],
                 j=new_labels[b],
                 order=o,
-                maker=makers[a] if makers[a] == makers[b] else None,
+                maker=maker,
             )
-            for a, b, o in bonds_out
+            for (a, b, o), maker in zip(bonds_out, bond_makers)
         ],
     )
 
