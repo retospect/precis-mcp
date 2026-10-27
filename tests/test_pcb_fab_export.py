@@ -511,12 +511,17 @@ def test_export_dir_refuses_paths_outside_the_export_root(
     bad_dirs = ["/etc", "../../x", str(escape), str(outside)]
 
     slug = _seed(pcb)
-    before = set(outside.iterdir())
+
+    # other xdist tests drop dotfiles (.scratch) at the repo root; exports never do
+    def visible():
+        return {p for p in outside.iterdir() if not p.name.startswith(".")}
+
+    before = visible()
     for view in ("bom", "gerber", "fab", "epro"):
         for bad in bad_dirs:
             with pytest.raises(BadInput, match="outside the export root"):
                 pcb.get(id=slug, view=view, args={"dir": bad})
-    assert set(outside.iterdir()) == before
+    assert visible() == before
 
 
 def test_export_dir_accepts_a_dir_under_each_root(pcb, tmp_path, monkeypatch):
