@@ -1999,9 +1999,12 @@ class PcbMixin:
         # precis resolves on.
         # `supplies` (pcb-lazy-netlist-and-checks.md §1b) is the successor
         # and rides the same way (already normalised by `_pcb_apply`).
+        # `frame` (gr521596): the creator frame id a workspace run
+        # stamps — the binding ``view='frames'`` resolves against the
+        # run's ws_trace doc.
         component_meta = {
             k: c[k]
-            for k in ("pin_swap_groups", "pin_decls", "supplies", "polarized")
+            for k in ("pin_swap_groups", "pin_decls", "supplies", "polarized", "frame")
             if c.get(k) is not None
         }
         if c.get("part_meta"):
@@ -2794,6 +2797,8 @@ class PcbMixin:
         # (the soft pin) is the exception: migration 0219 made it a column
         # (with fixed_side / room_id / group_fixed), and `pcb_graph` hoists
         # it back under the same key.
+        # `frame` (gr521596) rides the same way — the creator frame id a
+        # workspace run stamps, resolved by ``view='frames'``.
         meta = {
             k: c[k]
             for k in (
@@ -2802,6 +2807,7 @@ class PcbMixin:
                 "pattern",
                 "pattern_instance",
                 "edge_mate",
+                "frame",
             )
             if c.get(k) is not None
         }
@@ -2888,6 +2894,8 @@ class PcbMixin:
         meta_patch = dict(n.get("meta") or {})
         if n.get("rail") is not None:
             meta_patch["rail"] = str(n["rail"]).strip()
+        if n.get("frame") is not None:
+            meta_patch["frame"] = n["frame"]
         if meta_patch:
             sets.append("meta = pcb_nets.meta || %s::jsonb")
             values.append(Jsonb(meta_patch))
@@ -2914,6 +2922,10 @@ class PcbMixin:
         meta = dict(n.get("meta") or {})
         if n.get("rail") is not None:
             meta["rail"] = str(n["rail"]).strip()
+        # `frame` (gr521596) — the net's creator frame id, a first-class
+        # key like `rail`; ``view='frames'`` resolves it.
+        if n.get("frame") is not None:
+            meta["frame"] = n["frame"]
         row = conn.execute(
             f"""
             INSERT INTO pcb_nets

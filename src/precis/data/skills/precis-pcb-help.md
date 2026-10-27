@@ -390,6 +390,11 @@ get(
 get(
     kind="pcb", id="s", view="trace", args={"net": "I2C_SCL"}
 )  # logical hop through 2-pin series R/C
+get(
+    kind="pcb", id="s", view="frames", args={"refdes": "U2.CIN"}
+)  # which script line made it — the workspace run's construction
+# trace; also args={"net": "<name>"}, args={"frame": "<key|id>"} (the
+# frame card: what it made), no args = the run summary
 get(kind="pcb", id="s", view="measures")  # evaluate the design's measuring tapes
 get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 # before any placement (matching labels ARE the connections; also on the
@@ -404,6 +409,12 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 - **trace** walks series 2-pin parts (a resistor/cap in line) automatically; a
   multi-pin part terminates the auto-walk — you supply the next hop from the
   datasheet ([[precis-datasheet-help]]).
+- **frames** is the construction trace, not routing: it answers "which
+  script line made U1" for a workspace-built board. Its bindings come
+  from a batch put carrying the run's `trace.json` (`args={'trace': ...,
+  'run_job': <job ref|omit>}` → `meta.generated.trace` on the board,
+  `meta.frame` on the rows, the trace as a `ws_trace` chunk) — a hand-put
+  or epro-imported board has none and the view says so.
 - **Peeking at a rendered board** (`tests/test_pcb_render_fixture.py` → SVG →
   `qlmanage`) is an occasional human confirmation, not the iteration loop —
   the numeric views above are cheaper and are what the placer scores

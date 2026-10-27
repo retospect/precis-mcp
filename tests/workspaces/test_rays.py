@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
 from precis.structure import probe as st_probe
@@ -434,6 +435,54 @@ def test_observe_then_relax_against_last(a2: SeHandler, store: Store) -> None:
     assert not any("aC4" in ln for ln in body.splitlines()[3:])  # unchanged folded
     rays = a2.get(id=SLUG, view="rays").body
     assert "Δ changed since last observe" in rays
+
+
+def test_against_v1_replays_the_revision_checkpoint(
+    a2: SeHandler, store: Store
+) -> None:
+    """gr521594: ``against='v<N>'`` reads the rev-N checkpoint's stored
+    digest — the diff reaches back past the 5-digest ring to any rev."""
+    _edit(a2, SLUG, [AXIS, {"op": "observe_ray", "name": "axis"}])
+    sref = store.get_ref(kind="structure", id=f"{SLUG}-p")
+    assert sref is not None
+    tree = persist.load_tree(store, _se_id(store, SLUG))
+    v0 = tree.blocks["p"].rays["axis"].digests[0]["structures"][f"{SLUG}-p"]
+    scene, _h = store.structure_load(sref.id)
+    for la in ("aC14", "aC15"):
+        cart = scene.cell.frac_to_cart(scene.atoms[la].frac) + np.array([0.0, 0.2, 0.0])
+        scene.atoms[la].frac = scene.cell.cart_to_frac(cart)
+    store.structure_save(
+        slug=f"{SLUG}-p",
+        title=str(sref.title),
+        scene=scene,
+        version=int(v0) + 1,
+        card_text="relaxed",
+        meta_extra={"generated": (sref.meta or {}).get("generated")},
+    )
+    # a second save mints rev-2 — v1's digest is now two saves back
+    _edit(a2, SLUG, [{"op": "set_desc", "block": "p", "desc": "rev two"}])
+    body = _ray(a2, SLUG, name="axis", against="v1")
+    assert "against v1 " in body
+    assert "→v" in _ray(a2, SLUG, name="axis", against="V1")
+    assert f"{SLUG}-p v{v0}→v{int(v0) + 1}" in body
+    moved = [
+        ln
+        for ln in body.splitlines()
+        if ln.strip().startswith("moved") and " pass " in ln
+    ]
+    assert {m.group(1) for ln in moved if (m := re.search(r"p#(aC\d+)", ln))} == {
+        "aC14",
+        "aC15",
+    }
+
+
+def test_against_missing_revision_or_digest_refuses(a2: SeHandler) -> None:
+    _edit(a2, SLUG, [AXIS])
+    with pytest.raises(BadInput, match="no rev-9") as exc:
+        _ray(a2, SLUG, name="axis", against="v9")
+    assert "view='revisions'" in (exc.value.next or "")
+    with pytest.raises(BadInput, match="no digest for ray"):
+        _ray(a2, SLUG, name="axis", against="v1")
 
 
 def test_out_ray_imports_with_made_by(store: Store, tmp_path: Path) -> None:

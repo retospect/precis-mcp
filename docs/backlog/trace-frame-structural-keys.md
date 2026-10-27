@@ -104,6 +104,9 @@ has no answer. Options:
   module another tree is changing.
 
 Recommendation: A (one mechanism; the key is now stable enough to carry it).
+Option A shipped (gr521596): every entity-creating `Board` primitive
+stamps `made=`, and `view='frames'` resolves `meta.frame` bindings to
+maker chains.
 
 ## Migration
 

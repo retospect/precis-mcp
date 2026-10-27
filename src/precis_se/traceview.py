@@ -369,9 +369,7 @@ def card(trace: Trace, key: str, *, samples: list[str] | None = None) -> str:
         return f"frame {key} not in this trace"
     out = [line(fr, trace.ws)]
     made = _counts_text(fr.get("made")) or "—"
-    sub_made = _counts(
-        {e: v for f in trace.subtree(key) for e, v in (f.get("made") or {}).items()}
-    )
+    sub_made = sum(_counts(f.get("made")) for f in trace.subtree(key))
     own = _counts(fr.get("made"))
     out.append(f"made {made}" + (f" · subtree {sub_made}" if sub_made != own else ""))
     touched = _counts_text(fr.get("touched"))

@@ -774,10 +774,11 @@ def pick_digest(
         ):
             return spec.digests[-2]
         return newest
-    if isinstance(against, str) and against.startswith("v"):
+    if isinstance(against, str) and against.strip().lower().startswith("v"):
         raise RayError(
-            "against='v<n>' (a design revision) needs the revision's "
-            "checkpoint replay — not yet wired; use 'last' or a digest index"
+            "against='v<n>' (a design revision) resolves through "
+            "view='ray' — the revision checkpoint read needs the store; "
+            "use 'last' or a digest index here"
         )
     try:
         return spec.digests[int(against)]

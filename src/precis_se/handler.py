@@ -2364,7 +2364,8 @@ class SeHandler(Handler):
         """``view='ray'`` (structure-workspaces 2r): a stored ray by
         ``name`` — or a transient one from ``block``/``origin``/
         ``direction``/``length`` — recomputed; ``from`` resumes past the
-        hit cap; ``against`` (``'last'``/digest index) diffs against the
+        hit cap; ``against`` (``'last'``/digest index/``'v<N>'`` — a
+        design revision's checkpoint digest, gr521594) diffs against the
         events recomputed at that digest's structure versions."""
         from precis.utils.units import parse_quantity
         from precis_se import rays as se_rays
@@ -2405,9 +2406,17 @@ class SeHandler(Handler):
                 se_rays.apply_fields(spec, args, partial=False)
             obs = se_rays.observe(tree, block, spec, slug=slug)
             if args.get("against") is not None:
-                dg = se_rays.pick_digest(
-                    spec, args["against"], current_hash=se_rays.event_hash(obs)
-                )
+                against = args["against"]
+                if isinstance(against, str) and re.fullmatch(
+                    r"v\d+", against.strip(), re.IGNORECASE
+                ):
+                    dg = self._ray_digest_at_revision(
+                        ref, spec, int(against.strip()[1:])
+                    )
+                else:
+                    dg = se_rays.pick_digest(
+                        spec, against, current_hash=se_rays.event_hash(obs)
+                    )
                 scenes = {}
                 for sslug, ver in (dg.get("structures") or {}).items():
                     sref = self.store.get_ref(kind="structure", id=sslug)
@@ -2452,6 +2461,38 @@ class SeHandler(Handler):
             lines.append(made)
         lines.extend(se_rays.hit_lines(obs, start=start))
         return "\n".join(lines)
+
+    def _ray_digest_at_revision(self, ref: Any, spec: Any, n: int) -> dict[str, Any]:
+        """``against='v<N>'`` (gr521594): the newest digest the rev-N
+        checkpoint stored for this ray. Its ``structures`` map is the
+        version pin ``observe(scenes=…)`` replays at — a rev-N snapshot
+        carries each block's ``rays`` with their digests, so "what did
+        this ray see at rev N" is a checkpoint read, not a replay. The
+        digest's ``at`` may predate the rev (digests land on observe,
+        checkpoints on save); the versions are what matter."""
+        slug = str(ref.slug)
+        if n < 1:
+            raise BadInput(
+                "against='v<N>' — revisions are 1-based",
+                next=f"get(kind='se', id={slug!r}, view='revisions')",
+            )
+        ckpt = design_history.load_checkpoint(self.store, ref.id, f"rev-{n}")
+        if ckpt is None:
+            revs = design_history.list_revisions(self.store, ref.id)
+            raise BadInput(
+                f"{slug} has no rev-{n} ({len(revs)} revision(s) recorded)",
+                next=f"get(kind='se', id={slug!r}, view='revisions')",
+            )
+        for b in ckpt.payload.get("blocks") or []:
+            ray = (b.get("rays") or {}).get(spec.name)
+            if ray is not None and ray.get("digests"):
+                return dict(ray["digests"][-1])
+        raise BadInput(
+            f"rev-{n}'s checkpoint has no digest for ray {spec.name!r} — "
+            "the ray was not observed before that revision",
+            next=f"get(kind='se', id={slug!r}, view='ray', "
+            "args={'name': '<name>', 'against': 'last'})",
+        )
 
     def _render_trace(
         self, tree: SeTree, ref_id: int, args: dict[str, Any] | None = None

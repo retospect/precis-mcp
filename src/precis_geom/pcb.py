@@ -26,8 +26,10 @@ frame per call (``pcb.Board.part`` …) with the user frames between them.
 Parts and nets retain their creating frame's run-local ``maker`` id;
 ``made`` counts belong to the primitive that actually creates the entity
 (so ``wire`` delegates net creation to ``net`` without double-counting).
-The stamps stay out of ``to_batch``: they describe this construction run,
-not authored board content, whose bytes remain stable across runs.
+A traced build stamps each component/net batch row ``frame`` with its
+``maker`` — the entity→frame bindings the store persists through the
+``meta`` whitelists (gr521596). An untraced build emits no ``frame``
+key, so authored batches stay byte-stable.
 
 **Intent markers on pins** (``unused``/``nc``/``must_terminate``) emit the
 store's bool shorthand (``{"name": "2", "unused": true}``,
@@ -908,6 +910,8 @@ class Part:
             d["supplies"] = copy.deepcopy(self.supply_blocks)
         if self.pin_swap_groups is not None:
             d["pin_swap_groups"] = copy.deepcopy(self.pin_swap_groups)
+        if self.maker is not None:
+            d["frame"] = self.maker
         return d
 
     def _pin_decls(self) -> dict[str, Any]:
@@ -1075,6 +1079,8 @@ class Net:
             d["width_mm"] = self.width_mm
         if self.meta is not None:
             d["meta"] = dict(self.meta)
+        if self.maker is not None:
+            d["frame"] = self.maker
         return d
 
 
@@ -1614,6 +1620,7 @@ class Board:
         if prev is None:
             self._footprints[fp.name] = fp
             self._footprint_order.append(fp.name)
+            _trace.record(made={"footprints": 1})
         elif prev is not fp:
             raise PcbBuilderError(
                 f"footprint {fp.name!r} already registered on board {self.slug!r}"
@@ -1881,6 +1888,7 @@ class Board:
                 verbatim into ``net_classes``.
         """
         self._net_classes[name] = rules
+        _trace.record(made={"net_classes": 1})
         return rules
 
     @traced
@@ -1893,6 +1901,7 @@ class Board:
         """
         r = Role(name=name, voltage=voltage)
         self._roles[name] = r
+        _trace.record(made={"roles": 1})
         return r
 
     # -- copper layers by index (R-d, gr514459) ----------------------------
@@ -1957,6 +1966,7 @@ class Board:
             "priority": priority,
         }
         self._features.append(entry)
+        _trace.record(made={"features": 1})
         return entry
 
     @traced
@@ -1982,6 +1992,7 @@ class Board:
         if note is not None:
             f_["note"] = note
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2014,6 +2025,7 @@ class Board:
         if note is not None:
             f_["note"] = note
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2026,6 +2038,7 @@ class Board:
         """
         f_ = {"ftype": "fiducial", "x": x, "y": y}
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2045,6 +2058,7 @@ class Board:
         if y is not None:
             f_["y"] = y
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2052,6 +2066,7 @@ class Board:
         """Mounting nuts at the board corners (``corner_nuts``)."""
         f_ = {"ftype": "corner_nuts"}
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2076,6 +2091,7 @@ class Board:
         if reason is not None:
             f_["reason"] = reason
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2089,6 +2105,7 @@ class Board:
         """
         f_: dict[str, Any] = {"ftype": ftype, **fields}
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     # -- non-copper fab layers (gr520329) ----------------------------------
@@ -2156,6 +2173,7 @@ class Board:
             "geom": {"polygon": self._fab_poly(Board.coverlay_opening, polygon)},
         }
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2207,6 +2225,7 @@ class Board:
             },
         }
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2225,6 +2244,7 @@ class Board:
             "geom": {"polygon": self._fab_poly(Board.adhesive, polygon)},
         }
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2248,6 +2268,7 @@ class Board:
             "geom": {"polygon": self._fab_poly(Board.tape_mask, polygon), "kind": kind},
         }
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2286,6 +2307,7 @@ class Board:
             )
         f_ = {"ftype": "doc_note", "x": x, "y": y, "layer": layer, "note": text}
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     @traced
@@ -2367,6 +2389,7 @@ class Board:
             "geom": {"line": pts, "radius_mm": r, "angle_deg": a},
         }
         self._features.append(f_)
+        _trace.record(made={"features": 1})
         return f_
 
     def near(self, a: Part, b: Part, within_mm: float) -> dict[str, Any]:
@@ -2435,6 +2458,7 @@ class Board:
         if goal is not None:
             m["goal"] = goal
         self._measures.append(m)
+        _trace.record(made={"measures": 1})
         return m
 
     @traced
@@ -2449,6 +2473,7 @@ class Board:
         """
         g = {"name": name, "generator": generator, "params": params}
         self._generators.append(g)
+        _trace.record(made={"generators": 1})
         return g
 
     @traced

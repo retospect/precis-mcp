@@ -134,6 +134,10 @@ _PAD_CALL_KEYS = {
     "paste",
 }
 _PAD_KEYS = ("w", "h", "poly", "drill", "role", "mask", "paste")
+#: Run stamps a traced ``to_batch`` puts on entity rows (gr521596) —
+#: construction provenance, not authored content: known, never emitted
+#: (a rebuilt run re-mints its own ``maker`` ids).
+_RUN_KEYS = frozenset({"frame"})
 _MEASURE_KEYS = {"metric", "operands", "bound", "goal", "hard", "weight"}
 
 
@@ -270,7 +274,7 @@ def _emit_part(
     board: str = "b",
     refdes: str | None = None,
 ) -> list[str]:
-    for k in set(c) - _PART_KEYS:
+    for k in set(c) - _PART_KEYS - _RUN_KEYS:
         loss.append(f"part {c['refdes']!r}: {k!r} cannot emit")
     refdes = refdes if refdes is not None else c["refdes"]
     pins: list[Any] = []
@@ -477,13 +481,13 @@ def emit(
                 "not the builder's"
             )
     for n in batch["nets"]:
-        for k in set(n) - set(_NET_KEYS):
+        for k in set(n) - set(_NET_KEYS) - _RUN_KEYS:
             loss.append(f"net {n['name']!r}: {k!r} cannot emit")
     for k in batch["connections"]:
         if set(k) - {"net", "refdes", "pin", "note"}:
             loss.append(f"connection {k!r}: unknown keys")
     for c in batch["components"]:
-        for k in set(c) - _PART_KEYS:
+        for k in set(c) - _PART_KEYS - _RUN_KEYS:
             loss.append(f"part {c['refdes']!r}: {k!r} cannot emit")
     for fp in batch.get("footprints") or []:
         for k in set(fp) - {
@@ -554,7 +558,11 @@ def emit(
         kw = {
             k: v
             for k, v in (
-                {_NET_KEYS[k] or k: v for k, v in n.items() if k != "name"}
+                {
+                    _NET_KEYS[k] or k: v
+                    for k, v in n.items()
+                    if k != "name" and k not in _RUN_KEYS
+                }
             ).items()
             if v is not None
         }

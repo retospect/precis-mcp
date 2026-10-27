@@ -128,6 +128,32 @@ def test_frame_card(se: SeHandler) -> None:
     assert "w1/(0,0,A)" in body
 
 
+def test_card_subtree_sums_made_per_frame() -> None:
+    """sub_made sums each subtree frame's made — the old dict merge keyed
+    on entity type collapsed three children's atoms to one."""
+    from precis_se.traceview import Trace, card
+
+    doc: dict[str, Any] = {
+        "schema": 3,
+        "frames": [
+            {"id": 0, "key": "r", "qual": "run", "kind": "root", "parent": None},
+            {"id": 1, "key": "a", "qual": "main.build", "kind": "user", "parent": "r"},
+            *[
+                {
+                    "id": 2 + i,
+                    "key": f"c{i}",
+                    "qual": "seam.atom",
+                    "kind": "core",
+                    "parent": "a",
+                    "made": {"atoms": 1},
+                }
+                for i in range(3)
+            ],
+        ],
+    }
+    assert "subtree 3" in card(Trace(doc), "a")
+
+
 def _add_stale_measure(store: Store, se: SeHandler, slug: str) -> None:
     ref = store.get_ref(kind="se", id=slug)
     assert ref is not None

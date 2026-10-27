@@ -114,7 +114,22 @@ MAX_FRAMES = 20_000
 
 #: Entity types ``made``/``touched`` count.
 ENTITY_TYPES = frozenset(
-    {"atoms", "bonds", "instances", "faces", "blocks", "ports", "parts", "nets"}
+    {
+        "atoms",
+        "bonds",
+        "instances",
+        "faces",
+        "blocks",
+        "ports",
+        "parts",
+        "nets",
+        "footprints",
+        "net_classes",
+        "roles",
+        "features",
+        "measures",
+        "generators",
+    }
 )
 
 
@@ -162,6 +177,8 @@ def loads(text: str) -> dict[str, Any]:
         for req in required:
             if req not in fr:
                 raise ValueError(f"trace.json: frames[{i}] lacks '{req}'")
+        if not isinstance(fr["key"], str):
+            raise ValueError(f"trace.json: frames[{i}].key must be a string")
         if fr["kind"] not in FRAME_KINDS:
             raise ValueError(
                 f"trace.json: frames[{i}].kind {fr['kind']!r} not in "
@@ -181,6 +198,8 @@ def loads(text: str) -> dict[str, Any]:
         )
     for i, fr in enumerate(frames):
         parent = fr.get("parent")
+        if parent is not None and not isinstance(parent, str):
+            raise ValueError(f"trace.json: frames[{i}].parent must be a string or null")
         if parent is not None and parent not in keys:
             raise ValueError(f"trace.json: frames[{i}] parent {parent!r} has no frame")
     return doc

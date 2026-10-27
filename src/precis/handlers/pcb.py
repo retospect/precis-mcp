@@ -230,6 +230,10 @@ _SESSION_VIEWS = ("congestion", "planes", "stackup", "channel-map")
 #: summary, the pairwise part map, elites, the placement SVG, and a
 #: run-vs-run pose/crossing diff (:meth:`PcbHandler._render_topo`).
 _TOPO_VIEWS = ("topo",)
+#: gr521596 — the board's construction-trace asks (a workspace run's
+#: frame walk), kept off ``view='trace'`` which already means a net's
+#: route path through series passives (:meth:`PcbHandler._render_frames`).
+_TRACE_VIEWS = ("frames",)
 
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
@@ -265,9 +269,13 @@ _VIEWS = (
     *_STATUS_VIEWS,
     *_SESSION_VIEWS,
     *_TOPO_VIEWS,
+    *_TRACE_VIEWS,
     *_RENDER_VIEWS,
     *_OTHER_VIEWS,
 )
+#: ``next=`` hint every ``view='frames'`` refusal carries (mcp-authoring).
+_FRAMES_NEXT = "get(kind='pcb', id='<slug>', view='frames')"
+
 #: ``view=`` spellings with exactly one reading (gr495607: prod callers sent
 #: ``view='easyeda'`` for the EasyEDA Pro export); run as the canonical view
 #: with an ``interpreted:`` line.
@@ -1046,6 +1054,11 @@ class PcbHandler(Handler):
                 # op='check': force the inline run past reuse (gr496242).
                 "fresh",
                 # op='order' (_op_order / _order_dry_run); gr495025.
+                # view='frames' producer (gr521596): args['trace'] = the
+                # run's trace.json; 'run_job' names the job ref the
+                # ws_trace chunk stores on (absent = the board ref).
+                "trace",
+                "run_job",
                 "achieve_date",
                 "billing_address",
                 "billing_address_flag",
@@ -1088,6 +1101,10 @@ class PcbHandler(Handler):
                 "run",
                 "against",
                 "part",
+                # view='frames' (gr521596): refdes/net → the entity's
+                # maker frame, frame=<key|id> → what the frame made.
+                "refdes",
+                "frame",
                 # view='check'/'drc': force the inline run past reuse
                 # (gr496242).
                 "fresh",
@@ -1255,6 +1272,13 @@ class PcbHandler(Handler):
             )
         slug = str(id).strip()
         op = args.get("op")
+        if op is not None and args.get("trace") is not None:
+            raise BadInput(
+                f"op={op!r} takes no 'trace' — args['trace'] binds a "
+                "construction run's trace.json on a batch put",
+                next="put(kind='pcb', id=..., args={...batch..., "
+                "'trace': <trace.json>})",
+            )
         if op is not None:
             # pcb-guided-place-route Slice 10 tool surface: place/route/the
             # inline edits address an EXISTING design and never blend with
@@ -1291,6 +1315,40 @@ class PcbHandler(Handler):
             else None
         )
 
+        # view='frames' producer (gr521596): a batch put carrying the
+        # run's trace.json stores it as a ws_trace chunk (on 'run_job',
+        # or the board ref when absent — the containerless path) and binds
+        # meta.generated.trace, so the entity 'frame' stamps the batch
+        # rows carry resolve to maker frames.
+        from precis.pcb import frames as pcb_frames
+
+        trace_doc: dict[str, Any] | None = None
+        trace_root: str | None = None
+        if args.get("trace") is not None:
+            trace_doc, trace_root = pcb_frames.vet_trace(args["trace"])
+        run_job: int | None = None
+        if args.get("run_job") is not None:
+            if trace_doc is None:
+                raise BadInput(
+                    "args['run_job'] means nothing without args['trace']",
+                    next="pass the run's trace.json as args['trace'] — "
+                    "run_job names the job ref its ws_trace chunk stores on",
+                )
+            try:
+                run_job = int(args["run_job"])
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"args['run_job'] must be a job ref id, got {args['run_job']!r}",
+                    next="omit 'run_job' — the trace then stores on the "
+                    "board ref itself",
+                ) from None
+            if self.store.get_ref(kind="job", id=run_job) is None:
+                raise BadInput(
+                    f"args['run_job'] {run_job} is not a job ref",
+                    next="omit 'run_job' — the trace then stores on the "
+                    "board ref itself",
+                )
+
         self._reject_non_electrical(nets)
         for comp in components:
             if isinstance(comp, dict) and comp.get("max_travel_mm") is not None:
@@ -1309,6 +1367,15 @@ class PcbHandler(Handler):
             # a committed design followed by a BadInput implying nothing
             # happened (gr — pcb-guided-place-route Slice 1 review).
             existing = self.store.get_ref(kind="pcb", id=slug)
+            if trace_doc is not None:
+                meta = pcb_frames.bind_trace_meta(
+                    meta,
+                    run_job=run_job,
+                    root=trace_root,
+                    prior=(existing.meta or {}).get("generated")
+                    if existing is not None
+                    else None,
+                )
             if isinstance(net_classes, dict) and net_classes:
                 self._refuse_bad_clearance_rules(
                     existing.id if existing is not None else None, net_classes
@@ -1337,6 +1404,14 @@ class PcbHandler(Handler):
                     ignored=ignored,
                     applied=applied,
                 )
+                if trace_doc is not None:
+                    pcb_frames.bind_trace(
+                        self.store,
+                        conn,
+                        int(ref.id),
+                        trace_doc,
+                        run_job=run_job,
+                    )
                 if profile is not None:
                     self.store.pcb_set_board_profile(ref.id, profile, conn=conn)
                 n_classes = 0
@@ -3958,6 +4033,8 @@ class PcbHandler(Handler):
                     "view='links')",
                 )
             return render_links_view(self.store, ref, sense="pcb")
+        if view == "frames":
+            return self._render_frames(ref_id, args)
         graph = pcb_session.sorted_graph(self._effective_graph(ref_id))
         if view in ("crossings", "ratsnest", "feasibility"):
             placed = {
@@ -5426,6 +5503,89 @@ class PcbHandler(Handler):
             options=["summary", "pairs", "elites", "svg"],
             next="get(kind='pcb', id='<slug>', view='topo', args={'part':'pairs'})",
         )
+
+    def _render_frames(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """``view='frames'`` (gr521596) — the construction-trace asks on
+        a workspace-built board: ``refdes``/``net`` → the maker frame's
+        root→leaf chain, ``frame`` → the frame card, no args → the run
+        summary. Bindings read ``meta.generated.trace`` on the ref and
+        ``meta.frame`` on the instance/net rows (:mod:`precis.pcb.frames`;
+        set→LCA, run-vs-run and modifier frames are later slices)."""
+        from precis.pcb import frames as pcb_frames
+
+        a = args or {}
+        asks = any(k in a for k in ("refdes", "net", "frame"))
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = (ref.slug if ref is not None else None) or str(ref_id)
+        trace_ref = (
+            ((ref.meta or {}).get("generated") or {}).get("trace")
+            if ref is not None
+            else None
+        )
+        doc = None
+        if isinstance(trace_ref, dict):
+            home = trace_ref.get("run_job")
+            doc = pcb_frames.read_ws_trace(
+                self.store,
+                ref_id if home is None else int(home),
+                trace_ref.get("root"),
+            )
+        if doc is None:
+            msg = (
+                f"no construction trace bound to {slug} — bindings land "
+                "via a batch put carrying args={'trace': <run's "
+                "trace.json>} (meta.generated.trace)"
+            )
+            if asks:
+                raise BadInput(msg, next=_FRAMES_NEXT)
+            return Response(body=msg)
+        tr = pcb_frames.Trace(doc)
+        parts, nets = pcb_frames.bound_frames(self.store, ref_id)
+        for arg, entities in (("refdes", parts), ("net", nets)):
+            if arg not in a:
+                continue
+            name = str(a[arg]).strip()
+            if name not in entities:
+                raise NotFound(
+                    f"no {'instance' if arg == 'refdes' else 'net'} {name!r} "
+                    f"on board {slug}",
+                    next=f"get(kind='pcb', id='{slug}') for the netlist TOC",
+                )
+            fr = tr.maker_frame(entities[name])
+            if fr is None:
+                return Response(body=f"{name}: no maker — not placed by a traced call")
+            return Response(body=pcb_frames.chain_line(tr.path(fr), fr, ws=tr.ws))
+        if "frame" in a:
+            raw = a["frame"]
+            key = str(raw).strip()
+            fr = tr.frame(key)
+            if fr is None and (isinstance(raw, int) or key.isdigit()):
+                fr = tr.maker_frame(int(raw))
+            if fr is None:
+                raise BadInput(
+                    f"frame {raw!r} is not in this board's trace",
+                    next=_FRAMES_NEXT,
+                    options=[f["key"] for f in tr.children.get(None, [])],
+                )
+            ids = tr.subtree_ids(str(fr["key"]))
+            samples = [r for r, fid in parts.items() if fid in ids] + [
+                f"@{n}" for n, fid in nets.items() if fid in ids
+            ]
+            return Response(body=pcb_frames.card(tr, str(fr["key"]), samples=samples))
+        run = tr.run
+        lines = [
+            f"trace — workspace {run.get('workspace')}, {len(tr.frames)} frames"
+            + (f", script_sha {run['script_sha']}" if run.get("script_sha") else "")
+        ]
+        bound_parts = sum(1 for fid in parts.values() if fid is not None)
+        bound_nets = sum(1 for fid in nets.values() if fid is not None)
+        lines.append(f"bound entities: {bound_parts} parts, {bound_nets} nets")
+        for f in tr.children.get(None, []):
+            lines.append(f"  {pcb_frames.line(f, tr.ws)}")
+        lines.append(
+            "asks: args={'refdes': '<refdes>'|'net': '<name>'|'frame': '<key|id>'}"
+        )
+        return Response(body="\n".join(lines))
 
     def _render_congestion(self, ref_id: int) -> Response:
         """The latest ``op='route'`` run's congestion digest — per-gap
