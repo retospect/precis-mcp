@@ -2161,9 +2161,12 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # main through --quick lands (churn report 2026-10-17, item 5 —
         # docs/backlog/tool-description-budgets.md slice 1). The paper-text
         # gate joined because a fixture-only --quick land could sneak
-        # upstream-copyrighted chunk text past the lint (gr510171).
+        # upstream-copyrighted chunk text past the lint (gr510171). The
+        # seeded-table classifier joined after an unclassified vault._key
+        # seed rode a --quick land to a red r97 release gate (gr514386) —
+        # DB-free and seconds, so the qland lane pays it like the ratchets.
         HYGIENE='uv run pytest -q -n0 tests/test_doc_pointers.py tests/test_skill_prose.py tests/test_deploy_tree_no_secrets.py tests/test_vocab_lint.py tests/test_paper_text_gate.py'
-        CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py tests/test_utc_time_convention.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_size.py tests/test_pcb_dead_exports.py tests/test_startup_skills.py tests/test_token_budget.py'
+        CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py tests/test_utc_time_convention.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_size.py tests/test_pcb_dead_exports.py tests/test_startup_skills.py tests/test_token_budget.py tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified'
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else

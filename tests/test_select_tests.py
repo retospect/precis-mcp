@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -172,6 +173,23 @@ def test_new_migration_selects_seed_classifier(selector: sel.Selector) -> None:
     (migration 0239) rode a --quick land to a red release gate (r97)."""
     targets, _ = selector.select(["src/precis/migrations/9999_zz_fake.sql"])
     assert "tests/test_baseline_seed_tables.py" in targets
+
+
+def test_seed_classifier_rides_contract_and_qland_lint() -> None:
+    """gr514386: the classifier is DB-free and seconds — it must run on
+    every lane a migration can take. The contract set covers --checked
+    and ``test --selected`` on ANY diff (a SEED_TABLES/NOT_VOCAB edit
+    unclassifies without touching a .sql), and ship's CODE_HYGIENE covers
+    --quick, which runs no selected pytest at all."""
+    node = "tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified"
+    assert node in sel.CONTRACT
+    ship = (REPO / "scripts" / "ship").read_text(encoding="utf-8")
+    m = re.search(r"(?m)^\s*CODE_HYGIENE='([^']*)'", ship)
+    assert m, "CODE_HYGIENE lint set not found in scripts/ship"
+    assert node in m.group(1), (
+        "ship --quick's lint must run the seed classifier — the r97 red "
+        "came from exactly that lane"
+    )
 
 
 @_POSIX_MODULE_KEYS

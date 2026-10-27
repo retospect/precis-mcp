@@ -47,9 +47,11 @@ aizynth_worker_user: deploy
 # to skip once the image is present:
 #   ansible-playbook playbooks/43-aizynth.yml -e aizynth_build_image=false
 aizynth_build_image: true
-# The build context is precis-mcp's docker/aizynth (Dockerfile + shim), on the
-# ansible controller (this laptop), rsync'd to the node.
-aizynth_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-mcp/docker/aizynth"
+# The build context is precis-mcp's docker/aizynth (Dockerfile + shim), rsync'd
+# from the ansible controller to the node. Derived from playbook_dir so it
+# follows whichever checkout runs the playbook — a $HOME-relative default only
+# ever fits one laptop layout and breaks under a worktree (gr519682).
+aizynth_src_dir: "{{ playbook_dir }}/../../docker/aizynth"
 
 # Download AiZynth's public models into aizynth_models_dir (one-time, hundreds
 # of MB from figshare via AiZynth's `download_public_data`). Idempotent: skipped

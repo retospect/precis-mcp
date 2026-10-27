@@ -198,6 +198,10 @@ CONTRACT: list[str] = [
     "tests/test_migration_numbering.py",
     "tests/test_schema_baseline.py",
     "tests/test_schema_design.py",
+    # The seeded-table classifier — the DB-free inventory leg only (the
+    # fresh_db load leg stays migration-triggered). An unclassified
+    # vault._key seed rode a --quick land to a red r97 gate (gr514386).
+    "tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified",
     # cross-cutting wire-shape guards (gr277298 — a mid-red map drops the edge)
     "tests/test_token_budget.py",
     "tests/test_mcp_verb_kwarg_parity.py",

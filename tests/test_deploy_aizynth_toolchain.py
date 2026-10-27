@@ -99,6 +99,26 @@ def _all_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def test_src_dir_default_follows_the_playbook_tree() -> None:
+    """gr519682: the ``aizynth_src_dir`` default baked a laptop path
+    (``~/work/projects/...`` — plural, absent on this host and wrong for
+    every worktree), so 43-aizynth failed at the controller-side rsync.
+    The default must derive from ``playbook_dir`` — the only value that
+    always names the checkout the playbook is running from."""
+    defaults = yaml.safe_load(_DEFAULTS.read_text(encoding="utf-8"))
+    src = defaults["aizynth_src_dir"]
+    assert "playbook_dir" in src, (
+        "aizynth_src_dir must derive from playbook_dir, not $HOME — a "
+        "machine-layout path default cannot hold across hosts/worktrees"
+    )
+    assert "HOME" not in src and "env" not in src, (
+        "aizynth_src_dir carries a host env lookup again"
+    )
+    # The role's only caller is deploy/playbooks/43-aizynth.yml, so
+    # playbook_dir/../.. lands on the checkout root — where docker/aizynth is.
+    assert (_REPO_ROOT / "docker" / "aizynth" / "Dockerfile").is_file()
+
+
 def test_node_build_keeps_legacy_builder() -> None:
     tasks: list[dict[str, Any]] = yaml.safe_load(_TASKS.read_text(encoding="utf-8"))
     build = [
