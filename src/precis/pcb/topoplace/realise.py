@@ -134,11 +134,6 @@ class RoutePlan:
     #: honest geometry), and land on the caller's ``pcb_routes`` row as
     #: ``failed: no via site`` (gr520901).
     no_via: tuple[int, ...] = ()
-    #: Corridor edges whose routed demand exceeded capacity (gr520904).
-    #: Always 0 on a returned plan — a nonzero cut refuses the route in
-    #: :func:`route_design` (:class:`CorridorOverflow`), so this is the
-    #: bench's "the corridor did not overflow" number.
-    corridor_overflow: int = 0
 
     @property
     def n_routed_nets(self) -> int:

@@ -298,13 +298,20 @@ def _topo_route(
     layers = [str(layer.get("name")) for layer in ir.stackup]
     outline = pcb_session.outline_from_features(features or [])
     keepouts = pcb_session.keepouts_from_features(features or [])
-    net_rules = pcb_session.route_net_rules(ctx.store.pcb_load(pcb_ref_id), capability)
+    loaded = ctx.store.pcb_load(pcb_ref_id)
+    net_rules = pcb_session.route_net_rules(loaded, capability)
     plan, rres = _tprealise.route_design(td_route, ir, net_rules=net_rules)
+
+    # The widen oracle's own map — the FULL clearance resolution (per-net
+    # class floors included), not the route map's signal-width variant.
+    drc_net_rules = pcb_session.clearance_net_rules(loaded, capability)
 
     def _drc_errors(result: Any) -> int:
         # The widen stage's clearance oracle — the SAME model + rules the
-        # view='drc' gate runs (pads + emitted copper + keepouts), so
-        # "clearance allows" is exactly what the gate accepts.
+        # view='drc' gate runs (pads + emitted copper + keepouts + per-net
+        # clearance), so "clearance allows" is exactly what the gate
+        # accepts — a class ``min_clearance_mm`` is an error tier the fab
+        # floor alone would let a widened rail violate.
         model = pcb_session._copper_model(
             ir,
             pcb_realize.result_copper_rows(result, ir, layers, derived=True),
@@ -313,7 +320,11 @@ def _topo_route(
         return sum(
             1
             for f in pcb_drc.run_geometric_drc(
-                model, capability=capability, outline=outline, keepouts=keepouts
+                model,
+                capability=capability,
+                outline=outline,
+                keepouts=keepouts,
+                net_rules=drc_net_rules,
             )
             if f.severity == "error"
         )
@@ -431,7 +442,9 @@ def _topo_route(
         "vias": len(rres.vias),
         "crossings": len(plan.crossings),
         "unreachable": len(plan.unreachable),
-        "corridor_overflow": getattr(plan, "corridor_overflow", 0),
+        # the corridor column is the REFUSAL count — a route that ran
+        # had no over-capacity cut (a nonzero record raises instead)
+        "corridor_overflow": 0,
         "widened": {str(k): v for k, v in widths.items()},
     }
     widened_line = ""
@@ -835,9 +848,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 route_meta = {"error": route_error}
                 # a corridor overflow carries its cut count so the
                 # bench's corridor column still reads a number (S6)
-                n_ovf = getattr(exc, "count", None)
-                if n_ovf is not None:
-                    route_meta["corridor_overflow"] = n_ovf
+                from precis.pcb.topoplace.wires import CorridorOverflow
+
+                if isinstance(exc, CorridorOverflow):
+                    route_meta["corridor_overflow"] = exc.count
         # Decision 20: the whole run payload rides the job ref's meta for
         # ``view='topo'`` drill-down; the summary text is the same file.
         # ``route`` stays absent when the stage never ran.

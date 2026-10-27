@@ -10,6 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 import precis_geom.pcb as pcb
 from precis.pcb import drc
@@ -91,6 +92,20 @@ def test_sanity_board_every_wire_layered_every_via_sited_zero_drc() -> None:
     assert errors == [], [f"{f.rule}: {f.detail}" for f in errors]
 
 
+def test_returned_plan_carries_no_corridor_overflow_counter() -> None:
+    """gr520904 S6 follow-up: ``RoutePlan.corridor_overflow`` was always
+    0 — ``route_design`` refuses a non-empty cut record before a plan
+    exists, so the field could only ever misreport. The plan drops it;
+    the bench column reads the refusal count off the job meta instead."""
+    board = _sanity_board()
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, net_classes=design.graph.get("net_classes"))
+    plan, _res = route_design(td, ir)
+    assert not hasattr(plan, "corridor_overflow")
+
+
 def test_route_planes_admits_plane_class_nets() -> None:
     """``route_planes=True`` (the slice-5 ruling: GND/power route as
     normal nets) admits a plane-classed net to ``net_pins``; the default
@@ -159,6 +174,40 @@ def _drc_errors(result: pcb_realize.RealizeResult, ir: PcbIR, layers: list[str])
         )
         if f.severity == "error"
     )
+
+
+def test_widen_oracle_judges_class_min_clearance(tmp_path) -> None:
+    """gr520904 S6 follow-up: ``topo_place``'s widen oracle must run the
+    FULL per-net rule map, not the capability floor alone — a rail that
+    fits the fab's 0.15 mm floor but breaks a class's hard 0.8 mm
+    ``min_clearance_mm`` is refused, not committed. The rail's wire runs
+    0.94 mm below a pad of the hv-classed net: fine at the born 0.15 mm
+    width (0.865 gap), an oracle without net_rules would still take the
+    1.0 mm ladder step (0.44 gap ≥ floor); the class floor forces it
+    down to the first step that clears 0.8."""
+    fp = pcb.Footprint(
+        "SIP2W",
+        [
+            pcb.pad("1", "rect", -1.0, 0.0, w=0.8, h=1.0),
+            pcb.pad("2", "rect", 1.0, 0.0, w=0.8, h=1.0),
+        ],
+    )
+    b = pcb.Board("widen-cls", stackup=4, outline=pcb.rect(30.0, 15.0))
+    f = b.footprint(fp)
+    g1 = b.part("G1", footprint=f, pins=["1", "2"]).at(8.0, 5.0)
+    g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(22.0, 5.0)
+    b.net("GND", cls="gnd").tie(g1["2"], g2["1"])
+    # hv class: a hard 0.8 mm floor — the pad NEAREST the rail is the
+    # classed copper the widened track's gap is judged against.
+    s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(15.0, 6.44)
+    s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(27.0, 6.44)
+    b.net_class("hv", min_clearance_mm=0.8)
+    b.net("SIG", cls="hv").tie(s1["2"], s2["1"])
+
+    run = kernel.topo_place(b, effort=200, seed=1, out=str(tmp_path / "topo"))
+    assert run.route is not None, run.files.get("route.json")
+    widened = run.files["route.json"]["widened"]
+    assert widened["GND"] == pytest.approx(0.25)
 
 
 def test_widen_power_widens_gnd_where_clearance_allows() -> None:

@@ -145,12 +145,14 @@ class CorridorCut:
     the phase-3 cut condition (R11). ``owners`` names what bounds the
     corridor: the refdes of every part whose pads ring or endpoint the
     edge, the name of every contributing zone, ``"outline"`` for the
-    board edge."""
+    board edge. ``nets`` names the nets whose wires make the demand —
+    the ones a caller would reroute or relax."""
 
     edge: int
     demand: float  # finest-rule trace slots
     cap: float  # total traces the corridor takes (all layers)
     owners: tuple[str, ...]
+    nets: tuple[str, ...]
     x: float  # edge midpoint, world mm
     y: float
 
@@ -159,17 +161,37 @@ class CorridorOverflow(BadInput):
     """``failed: corridor overflow`` — a mesh edge's routed demand
     exceeds its capacity, so the route refuses rather than emitting
     copper that cannot fit (gr520904). Carries the full cut record;
-    ``str()`` names the worst edge and its owners."""
+    ``str()`` names the worst edges — bounding owners and demanding net
+    names, so the reader sees WHAT to move and WHICH wires to reroute —
+    capped at three edges, six nets each, the rest counted."""
+
+    _MSG_EDGES = 3
+    _MSG_NETS = 6
 
     def __init__(self, cuts: tuple[CorridorCut, ...]) -> None:
         self.cuts = cuts
         self.count = len(cuts)
-        worst = max(cuts, key=lambda c: c.demand - c.cap)
+        worst = sorted(cuts, key=lambda c: c.demand - c.cap, reverse=True)[
+            : self._MSG_EDGES
+        ]
+        shown = []
+        for c in worst:
+            nets = " ".join(c.nets[: self._MSG_NETS])
+            if len(c.nets) > self._MSG_NETS:
+                nets += f" +{len(c.nets) - self._MSG_NETS} more"
+            shown.append(
+                f"edge at ({c.x:.2f}, {c.y:.2f}) between "
+                f"{', '.join(c.owners)}, demand {c.demand:g} > cap {c.cap:g}, "
+                f"nets {nets}"
+            )
         super().__init__(
-            f"corridor overflow: edge {worst.edge} at "
-            f"({worst.x:.2f},{worst.y:.2f}) between {', '.join(worst.owners)} "
-            f"— demand {worst.demand:g} wires > capacity {worst.cap:g}"
-            + (f" (+{len(cuts) - 1} more edge(s))" if len(cuts) > 1 else ""),
+            "corridor overflow: "
+            + "; ".join(shown)
+            + (
+                f" (+{len(cuts) - self._MSG_EDGES} more edge(s))"
+                if len(cuts) > self._MSG_EDGES
+                else ""
+            ),
             next=(
                 "spread the bounding parts to widen the corridor, reroute "
                 "a net around it, or relax the net's design rule — no "
@@ -2189,12 +2211,23 @@ def build_wires(
             return bool((gap_free[e] > need + 1e-9).any())
         return bool(capacity_mm[e] > t_k + 2 * c_k + 1e-9)
 
+    def _cut_nets(e: int) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    str(d.net_name[k]) if k < len(d.net_name) else str(k)
+                    for k in demanders[int(e)]
+                }
+            )
+        )
+
     overflow = tuple(
         CorridorCut(
             edge=int(e),
             demand=float(demand[e]),
             cap=float(cap_total[e]),
             owners=_owners(int(e)),
+            nets=_cut_nets(int(e)),
             x=float((ctx.eu[e][0] + ctx.ev[e][0]) / 2.0),
             y=float((ctx.eu[e][1] + ctx.ev[e][1]) / 2.0),
         )

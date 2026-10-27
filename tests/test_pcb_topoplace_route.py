@@ -1253,6 +1253,55 @@ def test_corridor_overflow_recorded_and_refused() -> None:
     assert "next:" in msg
 
 
+def test_corridor_cut_names_its_demanding_nets() -> None:
+    """gr520904 S6 follow-up: a cut carries the NAMES of the nets whose
+    routed demand overflows it, and the refusal's message lists them —
+    capped at 3 edges x 6 nets with ``+N more`` — so the failure points
+    at the nets to reroute, not just an edge index."""
+    from precis.pcb.topoplace.mesh import build_mesh
+    from precis.pcb.topoplace.wires import CorridorOverflow, build_wires
+
+    d = _channel_wall_design(6)
+    w = build_wires(build_mesh(d, d.pose0), d, 2)
+    assert w.overflow
+    cut = max(w.overflow, key=lambda c: c.demand - c.cap)
+    assert cut.demand == pytest.approx(3.0)
+    assert cut.nets == ("N0", "N1", "N2")
+
+    msg = str(CorridorOverflow(w.overflow))
+    assert f"at ({cut.x:.2f}, {cut.y:.2f})" in msg
+    assert "nets N0 N1 N2" in msg
+
+
+def test_corridor_overflow_message_caps_edges_and_nets() -> None:
+    """The refusal shows the worst three edges, six net names each, and
+    counts the rest — the format a real refusal on a dense board
+    (nano: 'edge at (38.70, 37.89) between J_N1, demand 6 > cap 4, nets
+    D10 D7 D8 D9 SW9') must land in."""
+    from precis.pcb.topoplace.wires import CorridorCut, CorridorOverflow
+
+    cuts = tuple(
+        CorridorCut(
+            edge=i,
+            demand=10.0 - i,
+            cap=2.0,
+            owners=(f"J{i}",),
+            nets=tuple(f"N{i}{c}" for c in "abcdefg"),
+            x=float(i),
+            y=0.5,
+        )
+        for i in range(5)
+    )
+    msg = str(CorridorOverflow(cuts))
+    assert "edge at (0.00, 0.50) between J0, demand 10 > cap 2" in msg
+    assert "edge at (1.00, 0.50) between J1, demand 9 > cap 2" in msg
+    assert "edge at (2.00, 0.50) between J2, demand 8 > cap 2" in msg
+    assert "nets N0a N0b N0c N0d N0e N0f +1 more" in msg
+    # worst-3 cap: edges 3 and 4 are counted, not described
+    assert "J3" not in msg and "J4" not in msg
+    assert "+2 more edge(s)" in msg
+
+
 def test_power_net_routes_at_routing_width_not_widen_target() -> None:
     """gr520904 follow-up (Reto's widen ruling): a rail's
     ``est_current_a`` resolves to an IPC-2221 width (~2.8 mm at 5 A) —

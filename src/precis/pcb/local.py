@@ -940,6 +940,11 @@ def topo_place(
             ir.inst_bottom[i] = side >= 0.5
         layers = design.layer_names
         keepouts = pcb_session.keepouts_from_features(design.features)
+        # The widen oracle's own map — the FULL clearance resolution
+        # (per-net class floors), not the route map's signal-width
+        # variant; a class ``min_clearance_mm`` is an error tier the fab
+        # floor alone would let a widened rail violate.
+        drc_net_rules = pcb_session.clearance_net_rules(design.graph, design.fab_caps)
 
         def _drc_errors(rres_: Any) -> int:
             model = pcb_realize.to_gerber_model(
@@ -955,6 +960,7 @@ def topo_place(
                     capability=design.fab_caps,
                     outline=model["outline"],
                     keepouts=keepouts,
+                    net_rules=drc_net_rules,
                 )
                 if f.severity == "error"
             )
@@ -984,7 +990,8 @@ def topo_place(
             "vias": len(rres.vias),
             "crossings": [list(c) for c in plan.crossings],
             "unreachable": [str(td_route.net_name[k]) for k in plan.unreachable],
-            "corridor_overflow": plan.corridor_overflow,
+            # the refusal count — a route that returned had no cut
+            "corridor_overflow": 0,
             "widened": {str(ir.net_name[k]): w for k, w in widths.items()},
         }
         files["route.json"] = route_json

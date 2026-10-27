@@ -315,6 +315,88 @@ def test_topo_place_writes_copper(store: Store) -> None:
     assert route_meta.get("nets") == 2
     assert route_meta.get("realized", 0) > 0
     assert route_meta.get("tracks", 0) > 0
+    # the corridor column is the refusal count — 0 on a route that ran
+    assert route_meta.get("corridor_overflow") == 0
+
+
+def test_topo_route_widen_oracle_respects_class_min_clearance(
+    store: Store,
+) -> None:
+    """gr520904 S6 follow-up on the job seam: ``_topo_route``'s widen
+    oracle must judge against the resolved per-net rules — a class's
+    hard ``min_clearance_mm`` is an error tier the fab floor never
+    sees. The fixed-pose board runs a GND rail 0.94 mm under an
+    hv-classed pad: the capability floor would still take the 1.0 mm
+    ladder step (0.44 gap), the class floor forces 0.25."""
+    design: dict[str, Any] = {
+        "footprints": [
+            {
+                "name": "sip2w",
+                "pads": [
+                    {
+                        "pin": "1",
+                        "shape": "rect",
+                        "x": -1.0,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 1.0,
+                    },
+                    {
+                        "pin": "2",
+                        "shape": "rect",
+                        "x": 1.0,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 1.0,
+                    },
+                ],
+            }
+        ],
+        "components": [
+            {
+                "refdes": r,
+                "label": "hdr",
+                "footprint": "sip2w",
+                "x": x,
+                "y": y,
+                "fixed": "both",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            }
+            for r, x, y in (
+                ("G1", 8.0, 5.0),
+                ("G2", 22.0, 5.0),
+                ("S1", 15.0, 6.44),
+                ("S2", 27.0, 6.44),
+            )
+        ],
+        "nets": [
+            {"name": "GND", "net_class": "gnd"},
+            {"name": "SIG", "net_class": "hv"},
+        ],
+        "connections": [
+            {"net": "GND", "refdes": "G1", "pin": "2"},
+            {"net": "GND", "refdes": "G2", "pin": "1"},
+            {"net": "SIG", "refdes": "S1", "pin": "2"},
+            {"net": "SIG", "refdes": "S2", "pin": "1"},
+        ],
+        "net_classes": {"hv": {"min_clearance_mm": 0.8}},
+        "features": [closed_outline(0.0, 0.0, 30.0, 15.0)],
+    }
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="widen-cls", args=design).body
+    side, _stage = tb._topo_side(
+        store, pcb, "widen-cls", seed=1, effort=200, force=True
+    )
+    assert side.routed == 2, side.note
+    ref = store.get_ref(kind="pcb", id="widen-cls")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    gnd_widths = {
+        r["width_mm"]
+        for r in store.pcb_copper_list(board_id)
+        if r["ctype"] == "track" and r["net"] == "GND"
+    }
+    assert gnd_widths == {0.25}
 
 
 def _latest_job(store: Store, ref_id: int) -> int:
