@@ -3,8 +3,9 @@
    plus the overview.
 
    This module owns the schematic <object>'s URL state: dataset.sheet
-   ('' = overview) and dataset.focus (pcb-focus.js's handle) on the
-   object element, rebuilt into ?sheet=&focus= on refresh(). pcb-focus
+   ('' = overview), dataset.focus (pcb-focus.js's handle) and
+   dataset.only ('1' = hide non-focus, gr520807) on the object element,
+   rebuilt into ?sheet=&focus=&only= on refresh(). pcb-focus
    reloads through refresh() so a sheet switch keeps an active focus
    and a focus keeps the current sheet; the cross-probe calls pickSheet
    to switch the pane to the sheet holding a clicked object.
@@ -21,12 +22,13 @@
   let map = {};
   try { map = mapEl ? JSON.parse(mapEl.textContent) : {}; } catch (_) { map = {}; }
 
-  // Rebuild the object's data URL from its dataset.sheet/.focus — the
-  // single place sheet and focus params are combined.
+  // Rebuild the object's data URL from its dataset.sheet/.focus/.only —
+  // the single place the three params are combined.
   function refresh() {
     const p = new URLSearchParams();
     if (obj.dataset.sheet) p.set('sheet', obj.dataset.sheet);
     if (obj.dataset.focus) p.set('focus', obj.dataset.focus);
+    if (obj.dataset.only) p.set('only', obj.dataset.only);
     const q = p.toString();
     obj.setAttribute('data', obj.dataset.base + (q ? '?' + q : ''));
   }

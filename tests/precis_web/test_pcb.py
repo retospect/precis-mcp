@@ -213,6 +213,147 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
     assert "board.svg?shown=" in r.text
 
 
+def test_sheet_tabs_name_their_groups_parts(pcb_client, runtime_with_store) -> None:
+    """gr520805: a sheet tab's tooltip names the parts its placement
+    group holds; the overview tab names the ungrouped parts that live
+    only there, or says the overview holds every group when none are
+    ungrouped."""
+    from precis.handlers.pcb import PcbHandler
+
+    handler = PcbHandler(hub=runtime_with_store.hub)
+    handler.put(
+        id="web_sheets",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "MCU",
+                    "pins": [{"name": "1"}],
+                    "group": "hdr",
+                },
+                {
+                    "refdes": "R1",
+                    "label": "RES",
+                    "pins": [{"name": "1"}],
+                    "group": "hdr",
+                },
+                {"refdes": "C1", "label": "CAP", "pins": [{"name": "1"}]},
+            ],
+            "nets": [{"name": "SIG"}],
+            "connections": [
+                {"net": "SIG", "refdes": "U1", "pin": "1"},
+                {"net": "SIG", "refdes": "C1", "pin": "1"},
+            ],
+        },
+    )
+    r = pcb_client.get("/pcb/web_sheets")
+    assert r.status_code == 200
+    assert 'data-sheet="hdr"' in r.text
+    assert "placement group &#39;hdr&#39; — R1, U1" in r.text
+    assert "the whole design — ungrouped parts C1 plus cross-sheet nets" in r.text
+
+    # every part grouped: the overview names the groups, not parts
+    handler.put(
+        id="web_sheets_full",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "MCU",
+                    "pins": [{"name": "1"}],
+                    "group": "core",
+                },
+            ],
+            "nets": [{"name": "SIG"}],
+            "connections": [{"net": "SIG", "refdes": "U1", "pin": "1"}],
+        },
+    )
+    r = pcb_client.get("/pcb/web_sheets_full")
+    assert r.status_code == 200
+    assert "placement group &#39;core&#39; — U1" in r.text
+    assert "the whole design — every group and the nets that cross sheets" in r.text
+
+
+def test_schematic_draws_the_declared_pad_number(
+    pcb_client, runtime_with_store
+) -> None:
+    """gr520803: a pin declared with a ``pad`` binding draws that number
+    above the stub — the physical pad a layout reader looks for, which
+    the pin NAME never carries ('VSS' on pad 7)."""
+    from precis.handlers.pcb import PcbHandler
+
+    PcbHandler(hub=runtime_with_store.hub).put(
+        id="web_pinno",
+        args={
+            "components": [
+                {
+                    "refdes": "U2",
+                    "label": "PMIC",
+                    "pins": [{"name": "VSS", "pad": "7"}, {"name": "1"}],
+                },
+            ],
+            "nets": [{"name": "GND", "class": "ground"}],
+            "connections": [{"net": "GND", "refdes": "U2", "pin": "VSS"}],
+        },
+    )
+    r = pcb_client.get("/pcb/web_pinno/schematic.svg")
+    assert r.status_code == 200
+    assert 'class="pinno">7</text>' in r.text
+
+
+def test_schematic_only_drops_non_focus_parts_and_pins(
+    pcb_client, runtime_with_store
+) -> None:
+    """gr520807: ``?only=1`` with a live focus removes the dimmed parts
+    and the kept parts' off-focus pins outright; without it the same
+    focus only dims. The 'only connected' button rides this query."""
+    from precis.handlers.pcb import PcbHandler
+
+    PcbHandler(hub=runtime_with_store.hub).put(
+        id="web_only",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "MCU",
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                },
+                {
+                    "refdes": "R1",
+                    "label": "RES",
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                },
+                {
+                    "refdes": "C1",
+                    "label": "CAP",
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                },
+            ],
+            "nets": [{"name": "GND", "class": "ground"}, {"name": "SIG"}],
+            "connections": [
+                {"net": "SIG", "refdes": "U1", "pin": "1"},
+                {"net": "SIG", "refdes": "R1", "pin": "1"},
+                {"net": "GND", "refdes": "U1", "pin": "2"},
+                {"net": "GND", "refdes": "C1", "pin": "1"},
+            ],
+        },
+    )
+    dim = pcb_client.get("/pcb/web_only/schematic.svg?focus=U1").text
+    assert '<g class="sch-part dimmed" data-handle="C1"' in dim
+
+    only = pcb_client.get("/pcb/web_only/schematic.svg?focus=U1&only=1").text
+    assert 'data-handle="C1"' not in only
+    assert "sch-part dimmed" not in only
+    assert 'data-handle="U1.2"' in only  # the focus part keeps every pin
+    assert 'data-handle="R1.1"' in only
+    assert 'data-handle="R1.2"' not in only  # off-focus pins drop too
+    assert "connected only" in only
+
+    net = pcb_client.get("/pcb/web_only/schematic.svg?focus=net:SIG&only=1").text
+    assert 'data-handle="U1.1"' in net
+    assert 'data-handle="U1.2"' not in net
+
+
 def test_detail_carries_a_stale_board_reload_control(
     pcb_client, runtime_with_store
 ) -> None:

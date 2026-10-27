@@ -319,7 +319,12 @@
     }
     if (h.includes(':')) {
       const o = objects.get(h);
-      return o ? selRefdeses({handle: handleOf(o)}) : [];
+      const next = o && handleOf(o);
+      // A layout-only object (outline/silk/via/fiducial) resolves to its
+      // own key — recursing on it never terminates: under proper tail
+      // calls (strict mode, e.g. Safari) it is a true infinite loop and
+      // the click freezes the pane with no console line (gr520791).
+      return next && next !== h ? selRefdeses({handle: next}) : [];
     }
     return [h.includes('.') ? h.split('.')[0] : h];
   }
@@ -378,8 +383,15 @@
     };
     obj.addEventListener('load', onload);
     if (obj.contentDocument && obj.contentDocument.documentElement) onload();
+    // The in-document mouseleave misses a fast exit or a scroll that
+    // slides the pane out from under the pointer; the stale hover then
+    // kept the strip's 'hovering' class and the selection stayed hidden
+    // behind it forever (gr520541). Clear on leaving the <object> and on
+    // any scroll.
+    obj.addEventListener('mouseleave', () => setHover(null));
   }
 
+  window.addEventListener('scroll', () => setHover(null), {capture: true, passive: true});
   if (boardObj) wire(boardObj);
   if (schemObj) wire(schemObj);
 

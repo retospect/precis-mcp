@@ -348,6 +348,26 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
                 for r in view.raw["tables"]["pcb_instances"]
                 if not r.get("retired_at") and (r.get("meta") or {}).get("group")
             }
+            # Tab tooltips (gr520805): a sheet tab says which parts its
+            # group() holds; the overview tab names the ungrouped parts
+            # that live only there plus the cross-sheet nets it shows.
+            _members_of: dict[str, list[str]] = {}
+            for _rd, _grp in _sheets_of.items():
+                _members_of.setdefault(_grp, []).append(_rd)
+            _ungrouped = sorted(
+                r["refdes"]
+                for r in view.raw["tables"]["pcb_instances"]
+                if not r.get("retired_at") and r["refdes"] not in _sheets_of
+            )
+            _sheet_titles = {
+                s: f"placement group '{s}' — {', '.join(sorted(refs))}"
+                for s, refs in _members_of.items()
+            }
+            _sheet_titles[""] = "the whole design — " + (
+                f"ungrouped parts {', '.join(_ungrouped)} plus cross-sheet nets"
+                if _ungrouped
+                else "every group and the nets that cross sheets"
+            )
             ctx = {
                 "active_tab": "pcb",
                 "slug": ref.slug,
@@ -356,6 +376,7 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
                 **_notes_ctx(store, ref, conn),
                 "pcb_sheets": sorted(set(_sheets_of.values())),
                 "pcb_sheet_map": _sheets_of,
+                "pcb_sheet_titles": _sheet_titles,
                 "pcb_context": view.context,
                 "pcb_part_cards": pcb_parts.cards(view),
                 "pcb_instances": view.instances,
@@ -698,6 +719,7 @@ async def pcb_schematic_svg(
     slug: str,
     focus: str | None = None,
     sheet: str | None = None,
+    only: str | None = None,
 ) -> RawResponse:
     store = get_store(request)
     try:
@@ -709,8 +731,12 @@ async def pcb_schematic_svg(
     # <object> with this query; the render stays a pure fn of the graph).
     # ?sheet=<group> renders one placement-group sheet (slice 2): absent is
     # the overview, unknown falls back to it too.
+    # ?only=1 (gr520807) drops the dimmed parts and non-focus pins outright
+    # — the compact relayout dimming cannot give.
     args = {
-        k: v for k, v in (("focus", focus), ("sheet", sheet)) if v and v.strip()
+        k: v
+        for k, v in (("focus", focus), ("sheet", sheet), ("only", only))
+        if v and v.strip()
     } or None
     resp = _handler(store).get(id=ref.slug, view="schematic", args=args)
     return _svg_response(resp.body)

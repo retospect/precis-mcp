@@ -86,6 +86,20 @@
     return attrs ? refdes + '/(' + attrs + ')' : refdes;
   }
 
+  // The same attrs without the parens — "C2/10uF 0603 6.3V" (gr520541).
+  // A label fallback like "C 1.0pF" repeats the refdes's class letter, so
+  // that leading "C " token is dropped too.
+  function partLine(facts, refdes) {
+    const p = facts.parts[refdes] || {};
+    let value = p.value;
+    const prefix = refdes.match(/^[A-Za-z]+/);
+    if (value && prefix && value.indexOf(prefix[0] + ' ') === 0) {
+      value = value.slice(prefix[0].length + 1);
+    }
+    const attrs = [value, p.package, p.rating].filter(Boolean).join(' ');
+    return attrs ? refdes + '/' + attrs : refdes;
+  }
+
   function failure(facts, name) {
     const net = facts.nets[name];
     if (!net || !net.status || net.status === 'realized') return null;
@@ -144,12 +158,13 @@
     return parts.join('/');
   }
 
-  /* A silkscreen object: the owning part's tooltip plus the silk role
-     ("R1/(10k 0603 0.1W)/silk refdes"), or the layer for board-level silk. */
+  /* A silkscreen object: refdes / value+package / element — "C3/1pF 0402/
+     silk outline" (gr520541: the "(...)" label form was noise), or the
+     layer for board-level silk. */
   function silkText(facts, silk) {
     const anchor = silk.anchor || {};
     if (anchor.kind === 'instance' && anchor.refdes) {
-      return partText(facts, anchor.refdes) + '/silk ' + (silk.role || 'outline');
+      return partLine(facts, anchor.refdes) + '/silk ' + (silk.role || 'outline');
     }
     return 'Silkscreen ' + (silk.role || 'art') + '/' + (silk.layer || 'unknown layer');
   }

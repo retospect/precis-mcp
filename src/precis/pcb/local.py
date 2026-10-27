@@ -211,14 +211,20 @@ def batch_to_graph(
         list(batch.get("connections") or []), fp_by_refdes, live
     )
 
-    def _facts(refdes: str, pin: str) -> tuple[list[str], dict[str, Any]]:
+    def _facts(refdes: str, pin: str) -> tuple[list[str], dict[str, Any], str | None]:
         d = pin_decls.get(refdes, {}).get(pin)
         if d is not None:
-            return pcb_rows.pin_tags_meta(d, refdes, declared.get(refdes))
+            tags, meta = pcb_rows.pin_tags_meta(d, refdes, declared.get(refdes))
+            pad = d.get("pad")
+            return tags, meta, (str(pad) if pad is not None else None)
         ent = completed.get(refdes, {}).get(pin)
         if ent is not None:
-            return list(ent.get("tags") or []), {"completed_from_footprint": True}
-        return [], {}  # a connection-minted ghost pin — no facts
+            return (
+                list(ent.get("tags") or []),
+                {"completed_from_footprint": True},
+                None,
+            )
+        return [], {}, None  # a connection-minted ghost pin — no facts
 
     # ``_pcb_connect`` upserts per (instance, pin): a pin wired twice
     # lands ONE netconn on the LAST connection's net — dedupe the same
@@ -231,9 +237,15 @@ def batch_to_graph(
     members: dict[str, list[dict[str, Any]]] = {}
     wired: dict[str, set[str]] = {}
     for (refdes, pin), net in pin_net.items():
-        tags, meta = _facts(refdes, pin)
+        tags, meta, pad = _facts(refdes, pin)
         members.setdefault(net, []).append(
-            {"refdes": refdes, "pin": pin, "tags": tags, "meta": meta}
+            {
+                "refdes": refdes,
+                "pin": pin,
+                "tags": tags,
+                "meta": meta,
+                **({"pad": pad} if pad is not None else {}),
+            }
         )
         wired.setdefault(refdes, set()).add(pin)
 
@@ -259,9 +271,15 @@ def batch_to_graph(
     for refdes in sorted(live):
         wired_here = wired.get(refdes) or set()
         for pin in sorted(live[refdes] - wired_here):
-            tags, meta = _facts(refdes, pin)
+            tags, meta, pad = _facts(refdes, pin)
             unconnected.append(
-                {"refdes": refdes, "pin": pin, "tags": tags, "meta": meta}
+                {
+                    "refdes": refdes,
+                    "pin": pin,
+                    "tags": tags,
+                    "meta": meta,
+                    **({"pad": pad} if pad is not None else {}),
+                }
             )
 
     instances = []

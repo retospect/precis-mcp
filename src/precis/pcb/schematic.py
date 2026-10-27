@@ -24,7 +24,20 @@ Reading aids, all deterministic:
 * a pin on no net ends in a small open circle (the no-connect mark) —
   visibly intentional, not missing;
 * every stub carries a ``<title>`` naming the net and its full member
-  list, so hover answers "where does this go".
+  list, so hover answers "where does this go";
+* a pin whose physical pad number differs from its name (``pin_numbers``
+  — the footprint ``pin_map`` inverted by the handler, gr520803) draws
+  the number small above the stub at the box edge, so "VSTOR" reads as
+  pad 13 without inventing a second name for a passive's '1'/'2';
+* every stub carries a direction mark at mid-stub (gr520809): the §1i
+  etype as a KiCad-style glyph — input/output chevrons, bidi diamond,
+  tristate chevron + open diamond, open_drain chevron + open circle,
+  passive square, nc ×, power in/out chevron + tip bar — and a ``?``
+  when the pin declares none, because "direction unknown" must be
+  VISIBLE, never absent. The stub's ``<title>`` is multi-line: the net
+  and its members, the pin's etype and pad, the net's declared spec
+  (class, current, working voltage, impedance, edge rate, hint), and
+  the pin's bounds / functions / flex-slot assignment.
 
 **Focus mode and pinning** (``docs/backlog/pcb-workbench-layout.md``
 slice 1). ``render_schematic_svg(graph, focus=<handle>)`` dims every part
@@ -65,7 +78,7 @@ import zlib
 from typing import Any
 from xml.sax.saxutils import escape
 
-from precis.pcb import handles
+from precis.pcb import PIN_ETYPES, handles
 from precis.utils.text import esc
 
 # ── geometry constants (px) ──────────────────────────────────────────
@@ -133,35 +146,41 @@ def _focus_set(
     parts_on_net: dict[str, set[str]],
     nets_of_part: dict[str, set[str]],
     net_class_of: dict[str, str | None],
-) -> tuple[set[str] | None, str | None]:
+) -> tuple[set[str] | None, str | None, set[str] | None]:
     """The one-hop neighbourhood to keep bright in focus mode, else
-    ``(None, None)`` for no focus (nothing dimmed). ``focus`` is a
+    ``(None, None, None)`` for no focus (nothing dimmed). ``focus`` is a
     cross-probe handle: a refdes (``U1``), a pin (``U1.3`` — focuses its
     part), or a net (``net:GND``). A part focus expands through its SIGNAL
     nets only — power/ground nets are shared board-wide, so expanding
     through them would flood the view with everything; excluding them is
     the same rule the click cross-probe follows (static/pcb-crossprobe.js).
     A focus target the design doesn't hold is a no-op (returns no focus),
-    never a view dimmed down to one missing part."""
+    never a view dimmed down to one missing part.
+
+    The third value, ``focus_nets``, is what ``only=True`` keeps pins on:
+    a net focus keeps ``{name}``; a part focus keeps the part's signal
+    nets (the same expansion the bright set follows); no focus → None."""
     f = (focus or "").strip()
     if not f:
-        return None, None
+        return None, None, None
     if f.startswith("net:"):
         name = f[4:]
         if name not in net_names:
-            return None, None
-        return set(parts_on_net.get(name, set())), None
+            return None, None, None
+        return set(parts_on_net.get(name, set())), None, {name}
     refdes = f.split(".", 1)[0] if "." in f else f
     if refdes not in all_refdes:
-        return None, None
+        return None, None, None
     bright = {refdes}
+    signal = set()
     for net in nets_of_part.get(refdes, set()):
         if _is_ground(net, net_class_of.get(net)) or _is_power(
             net, net_class_of.get(net)
         ):
             continue
+        signal.add(net)
         bright |= parts_on_net.get(net, set())
-    return bright, refdes
+    return bright, refdes, signal
 
 
 class _Part:
@@ -176,6 +195,7 @@ class _Part:
         *,
         fixed: bool = False,
         pin_off: dict[str, list[str]] | None = None,
+        pin_extra: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.refdes = refdes
         self.label = label
@@ -183,6 +203,10 @@ class _Part:
         #: pin → the sheet names its net continues on (off-sheet
         #: connector), absent for same-sheet/power/ground/no-connect.
         self.pin_off = pin_off or {}
+        #: pin → declared extras for the hover title (gr520809):
+        #: ``functions`` (pin_functions), ``max_current_a`` and ``slot``
+        #: (the flex slot the pin was assigned), absent when undeclared.
+        self.pin_extra = pin_extra or {}
         #: the instance carries a placement lock (``pcb_instances.fixed`` is
         #: 'xy'/'both') — "I want this part to stay here". Drawn as a pushpin
         #: and stamped ``data-pinned`` so the pin survives a reload.
@@ -258,6 +282,138 @@ def _label_glyph(
     )
 
 
+def _pin_dir_glyph(
+    etype: str | None, mx: float, py: float, tip: float, out: float
+) -> str:
+    """The mid-stub direction mark (gr520809) — drawn on EVERY pin, an
+    explicit ``?`` when the etype is undeclared: direction unknown must
+    be visible, not absent. ``mx`` is mid-stub, ``out`` ±1 the stub's
+    direction off the box edge, ``tip`` the stub's far end (the power
+    bar rides it)."""
+
+    def chevron(d: float, x: float) -> str:
+        # vertex leads in direction d (±1), arms trail
+        return (
+            f"M {x - 2.6 * d:.1f} {py - 3.0:.1f} L {x + 3.4 * d:.1f} {py:.1f} "
+            f"L {x - 2.6 * d:.1f} {py + 3.0:.1f}"
+        )
+
+    def path(d: str) -> str:
+        return f'<path d="{d}" class="pindir"/>'
+
+    if etype == "input":
+        return path(chevron(-out, mx))
+    if etype == "output":
+        return path(chevron(out, mx))
+    if etype == "bidi":
+        return path(
+            f"M {mx - 3.4:.1f} {py:.1f} L {mx:.1f} {py - 3.4:.1f} "
+            f"L {mx + 3.4:.1f} {py:.1f} L {mx:.1f} {py + 3.4:.1f} Z"
+        )
+    if etype == "passive":
+        return (
+            f'<rect x="{mx - 3.0:.1f}" y="{py - 3.0:.1f}" width="6" '
+            f'height="6" class="pindir"/>'
+        )
+    if etype == "nc":
+        return path(
+            f"M {mx - 3.0:.1f} {py - 3.0:.1f} L {mx + 3.0:.1f} {py + 3.0:.1f} "
+            f"M {mx + 3.0:.1f} {py - 3.0:.1f} L {mx - 3.0:.1f} {py + 3.0:.1f}"
+        )
+    bar = path(f"M {tip:.1f} {py - 4.0:.1f} V {py + 4.0:.1f}")
+    if etype == "power_in":
+        return path(chevron(-out, mx)) + bar
+    if etype == "power_out":
+        return path(chevron(out, mx)) + bar
+    if etype == "tristate":
+        dx = mx + 4.6 * out
+        return path(chevron(out, mx - 2.0 * out)) + path(
+            f"M {dx - 2.4 * out:.1f} {py:.1f} L {dx:.1f} {py - 2.4:.1f} "
+            f"L {dx + 2.4 * out:.1f} {py:.1f} L {dx:.1f} {py + 2.4:.1f} Z"
+        )
+    if etype == "open_drain":
+        return path(chevron(out, mx - 2.0 * out)) + (
+            f'<circle cx="{mx + 4.6 * out:.1f}" cy="{py:.1f}" r="2" class="pindir"/>'
+        )
+    # undeclared (or outside the closed vocabulary): '?' — "direction
+    # unknown" is required-visible, never a missing glyph
+    return (
+        f'<text x="{mx:.1f}" y="{py + 3.0:.1f}" text-anchor="middle" '
+        f'class="pindirt">?</text>'
+    )
+
+
+#: §1j/Slice-5 per-pin bounds the hover title lists when declared
+#: (``pcb_pins.meta`` — the same keys the ERC rules read).
+_PIN_BOUND_KEYS = (
+    "max_voltage_v",
+    "vih",
+    "vil",
+    "max_current_a",
+    "est_current_a",
+    "current_role",
+    "rail",
+    "min_dielectric",
+)
+
+
+def _pin_title(
+    refdes: str,
+    pin: str,
+    net: str,
+    etype: str | None,
+    pad: str | None,
+    members: list[str] | None,
+    net_rec: dict[str, Any] | None,
+    meta: dict[str, Any] | None,
+    extra: dict[str, Any] | None,
+) -> list[str]:
+    """The stub's multi-line hover (gr520809): the net/members line
+    (verbatim — tests assert it), then the pin's etype or "direction
+    unknown", the net's declared spec fields, and the pin's bounds,
+    functions and flex slot — everything declared, nothing guessed."""
+    lines = [
+        f"net {net} — " + ", ".join(members or [])
+        if net
+        else f"{refdes}.{pin} — no connect"
+    ]
+    lines.append(
+        f"{refdes}.{pin}"
+        + (f" (pad {pad})" if pad is not None else "")
+        + f" — {etype or 'direction unknown'}"
+    )
+    if net and net_rec:
+        bits = []
+        if net_rec.get("net_class"):
+            bits.append(f"class {net_rec['net_class']}")
+        if net_rec.get("est_current_a") is not None:
+            bits.append(f"est {net_rec['est_current_a']}A")
+        if net_rec.get("working_voltage_v") is not None:
+            bits.append(f"working {net_rec['working_voltage_v']}V")
+        if net_rec.get("impedance_ohm") is not None:
+            bits.append(f"{net_rec['impedance_ohm']}Ω")
+        if net_rec.get("edge_rate_v_per_ns") is not None:
+            bits.append(f"edge {net_rec['edge_rate_v_per_ns']}V/ns")
+        if net_rec.get("function_hint") is not None:
+            bits.append(str(net_rec["function_hint"]))
+        if bits:
+            lines.append(f"net {net} — " + " · ".join(bits))
+    meta = meta or {}
+    bounds = [f"{k}={meta[k]}" for k in _PIN_BOUND_KEYS if meta.get(k) is not None]
+    if bounds:
+        lines.append("pin — " + ", ".join(bounds))
+    extra = extra or {}
+    fns = extra.get("functions") or []
+    if fns:
+        seg = "functions " + ", ".join(fns)
+        if extra.get("max_current_a") is not None:
+            seg += f" (max {extra['max_current_a']}A)"
+        lines.append("pin — " + seg)
+    if extra.get("slot"):
+        lines.append(f"pin — flex slot {extra['slot']}")
+    return lines
+
+
 def _offsheet_glyph(
     x: float, y: float, name: str, dests: list[str], *, rightward: bool
 ) -> str:
@@ -289,6 +445,8 @@ def render_schematic_svg(
     title: str = "schematic",
     focus: str | None = None,
     sheet: str | None = None,
+    pin_numbers: dict[str, dict[str, str]] | None = None,
+    only: bool = False,
 ) -> str:
     """The design as a net-label schematic SVG (see module doc).
 
@@ -302,20 +460,45 @@ def render_schematic_svg(
     in off-sheet connectors. ``None`` is the overview — every part, no
     connectors; an unknown sheet name renders the overview too, the same
     graceful no-op an unknown focus target gets.
+
+    ``pin_numbers`` (gr520803) maps refdes → pin name → the physical pad
+    number the footprint binds it to; a pin whose number differs from
+    its name gets a small ``pinno`` label at the box edge.
+
+    ``only`` (gr520807) turns focus dimming into removal: with a live
+    ``focus`` the dimmed parts and every pin off the focus's nets are
+    dropped outright — the compact relayout a grey-out cannot give. No
+    focus (or an unknown target) makes ``only`` a no-op.
     """
     net_class_of: dict[str, str | None] = {}
     net_members: dict[str, list[str]] = {}
+    net_rec: dict[str, dict[str, Any]] = {}
     pin_net: dict[tuple[str, str], str] = {}
     parts_on_net: dict[str, set[str]] = {}
     nets_of_part: dict[str, set[str]] = {}
+    pin_etype: dict[tuple[str, str], str | None] = {}
+    pin_meta: dict[tuple[str, str], dict[str, Any]] = {}
+    pin_pad: dict[tuple[str, str], str] = {}
     for net in graph.get("nets", []):
         name = str(net.get("name", "?"))
         net_class_of[name] = net.get("net_class")
+        net_rec[name] = net
         members = [f"{m['refdes']}.{m['pin']}" for m in net.get("members", [])]
         net_members[name] = members
         for m in net.get("members", []):
             refdes = str(m["refdes"])
-            pin_net[(refdes, str(m["pin"]))] = name
+            pin = str(m["pin"])
+            pin_net[(refdes, pin)] = name
+            # the §1i etype is the PIN_ETYPES word among the pin's tags
+            # (same resolution drc._pin_etype uses); tags/meta/pad feed
+            # the stub's direction glyph and hover lines (gr520809)
+            pin_etype[(refdes, pin)] = next(
+                (t for t in PIN_ETYPES if t in (m.get("tags") or [])), None
+            )
+            if m.get("meta"):
+                pin_meta[(refdes, pin)] = dict(m["meta"])
+            if m.get("pad") is not None:
+                pin_pad[(refdes, pin)] = str(m["pad"])
             parts_on_net.setdefault(name, set()).add(refdes)
             nets_of_part.setdefault(refdes, set()).add(name)
 
@@ -346,14 +529,75 @@ def render_schematic_svg(
     for (refdes, pin), _ in pin_net.items():
         pins_of.setdefault(refdes, set()).add(pin)
     for u in graph.get("unconnected", []):
-        pins_of.setdefault(str(u["refdes"]), set()).add(str(u["pin"]))
+        refdes_u, pin_u = str(u["refdes"]), str(u["pin"])
+        pins_of.setdefault(refdes_u, set()).add(pin_u)
+        pin_etype[(refdes_u, pin_u)] = next(
+            (t for t in PIN_ETYPES if t in (u.get("tags") or [])), None
+        )
+        if u.get("meta"):
+            pin_meta[(refdes_u, pin_u)] = dict(u["meta"])
+        if u.get("pad") is not None:
+            pin_pad[(refdes_u, pin_u)] = str(u["pad"])
+
+    bright, focus_ref, focus_nets = _focus_set(
+        focus,
+        {
+            str(i["refdes"])
+            for i in graph.get("instances", [])
+            if sheet is None or sheet_of.get(str(i["refdes"])) == sheet
+        },
+        set(net_members),
+        parts_on_net,
+        nets_of_part,
+        net_class_of,
+    )
+    keep = bright if only else None  # 'only connected' (gr520807): drop, not dim
 
     parts: list[_Part] = []
     for inst in sorted(graph.get("instances", []), key=lambda i: str(i["refdes"])):
         refdes = str(inst["refdes"])
         if sheet is not None and sheet_of.get(refdes) != sheet:
             continue
+        if keep is not None and refdes not in keep:
+            continue
         pins = sorted(pins_of.get(refdes, set()), key=_natural_key)
+        if keep is not None and focus_nets is not None and refdes != focus_ref:
+            # a kept neighbour shows only the pins tying it to the focus
+            # — filter BEFORE _Part builds its geometry off the list
+            pins = [p for p in pins if pin_net.get((refdes, p)) in focus_nets]
+        # the 1b declarations' hover extras (gr520809): pin_functions
+        # (a record {functions, max_current_a} or a bare list — the same
+        # normalize topoplace's _funcs_of does) and the flex slot a pin
+        # was assigned to
+        decl = inst.get("pin_decls") or {}
+        funcs_of = decl.get("pin_functions") or {}
+        slot_of = {
+            str(p): str(s["name"])
+            for s in decl.get("slots") or []
+            for p in s.get("pins") or []
+            if s.get("name") is not None
+        }
+        pin_extra: dict[str, dict[str, Any]] = {}
+        for p in pins:
+            rec = funcs_of.get(p)
+            ex = {
+                "functions": [
+                    str(f)
+                    for f in (
+                        (rec.get("functions") if isinstance(rec, dict) else rec) or []
+                    )
+                ],
+                "max_current_a": (
+                    rec.get("max_current_a") if isinstance(rec, dict) else None
+                ),
+                "slot": slot_of.get(p),
+            }
+            if (
+                ex["functions"]
+                or ex["max_current_a"] is not None
+                or ex["slot"] is not None
+            ):
+                pin_extra[p] = ex
         parts.append(
             _Part(
                 refdes,
@@ -366,17 +610,9 @@ def render_schematic_svg(
                     for p in pins
                     if (refdes, p) in pin_net and pin_net[(refdes, p)] in net_dests
                 },
+                pin_extra=pin_extra,
             )
         )
-
-    bright, focus_ref = _focus_set(
-        focus,
-        {p.refdes for p in parts},
-        set(net_members),
-        parts_on_net,
-        nets_of_part,
-        net_class_of,
-    )
 
     # ── shelf packing: fill rows left-to-right, wrap at the target width
     rows: list[list[_Part]] = [[]]
@@ -443,10 +679,25 @@ def render_schematic_svg(
                     else:
                         edge, tip = bx + part.box_w, bx + part.box_w + _STUB_LEN
                         pin_x, pin_anchor = bx + part.box_w - 5.0, "end"
-                    hover = (
-                        f"net {net} — " + ", ".join(net_members.get(net, []))
-                        if net
-                        else f"{part.refdes}.{pin} — no connect"
+                    out = -1.0 if side == "L" else 1.0
+                    pad = (
+                        pin_numbers.get(part.refdes, {}).get(pin)
+                        if pin_numbers
+                        else None
+                    ) or pin_pad.get((part.refdes, pin))
+                    etype = pin_etype.get((part.refdes, pin))
+                    hover = "\n".join(
+                        _pin_title(
+                            part.refdes,
+                            pin,
+                            net,
+                            etype,
+                            pad,
+                            net_members.get(net),
+                            net_rec.get(net),
+                            pin_meta.get((part.refdes, pin)),
+                            part.pin_extra.get(pin),
+                        )
                     )
                     pin_attrs = (
                         f'data-handle="{esc(handles.pad_handle(part.refdes, pin), quote=True)}"'
@@ -461,6 +712,7 @@ def render_schematic_svg(
                     body.append(
                         f"<g {pin_attrs}><title>{escape(hover)}</title>"
                         f'<path d="M {edge:.1f} {py:.1f} H {tip:.1f}" class="stub"/>'
+                        + _pin_dir_glyph(etype, edge + out * 10.0, py, tip, out)
                     )
                     if net:
                         dests = part.pin_off.get(pin)
@@ -489,6 +741,23 @@ def render_schematic_svg(
                         body.append(
                             f'<circle cx="{tip:.1f}" cy="{py:.1f}" r="2.6" class="nc"/>'
                         )
+                    num = (
+                        pin_numbers.get(part.refdes, {}).get(pin)
+                        if pin_numbers
+                        else None
+                    )
+                    if num is not None and str(num) != pin:
+                        # the physical pad number rides just outside the
+                        # box edge above the stub (gr520803); skipped when
+                        # the pin name IS the number — a two-pin
+                        # passive's '1'/'2' already says it.
+                        pnx = bx - 2.0 if side == "L" else bx + part.box_w + 2.0
+                        pn_anchor = "end" if side == "L" else "start"
+                        body.append(
+                            f'<text x="{pnx:.1f}" y="{py - 3.5:.1f}" '
+                            f'text-anchor="{pn_anchor}" class="pinno">'
+                            f"{escape(str(num))}</text>"
+                        )
                     body.append(
                         f'<text x="{pin_x:.1f}" y="{py + 3.5:.1f}" '
                         f'text-anchor="{pin_anchor}" class="pin">{escape(pin)}</text>'
@@ -507,6 +776,8 @@ def render_schematic_svg(
         heading += escape(f" · sheet {sheet}")
     if bright is not None:
         heading += escape(f" · focus {focus_ref or (focus or '').strip()}")
+        if keep is not None:
+            heading += escape(" · connected only")
     # Attribute position: escape() alone leaves `"` intact, which would let a
     # slug break out of aria-label.
     aria = escape(title, {'"': "&quot;"})
@@ -518,10 +789,15 @@ def render_schematic_svg(
   .refdes {{ font-weight: 700; }}
   .plabel {{ font-size: 9px; fill: #666; }}
   .pin {{ font-size: 10px; fill: #333; }}
+  .pinno {{ font-size: 8px; fill: #888; }}
   .netlabel {{ font-size: 11px; font-weight: 600; }}
   .part {{ fill: #fdfdf6; stroke: #222; stroke-width: 1.4; rx: 3; }}
   .stub {{ stroke: #444; stroke-width: 1.3; fill: none; }}
   .nc {{ fill: none; stroke: #999; stroke-width: 1.3; }}
+  /* the §1i direction marks at mid-stub (gr520809) — '?' is text, so it
+     gets its own fill rule (the paths are all stroke, no fill) */
+  .pindir {{ stroke: #666; stroke-width: 1.1; fill: none; }}
+  .pindirt {{ font-size: 9px; fill: #666; }}
   /* focus mode: the one-hop neighbourhood stays bright, the rest dims in
      place (static/pcb-focus.js reloads the schematic with a focus query). */
   .sch-part.dimmed {{ opacity: 0.16; }}

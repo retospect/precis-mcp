@@ -3648,8 +3648,10 @@ class PcbMixin:
             for r in conn.execute(
                 # `p.tags`/`p.meta` carry the §1i etype + §1j markers +
                 # the Slice-5 bounds (max_voltage_v, vih/vil, rail) the
-                # ERC rules read.
-                "SELECT k.net_id, i.refdes, p.name, p.tags, p.meta "
+                # ERC rules read. `p.pad` is the physical pad binding
+                # (gr520803 — the schematic draws it as the pin number);
+                # absent when the pin never named one.
+                "SELECT k.net_id, i.refdes, p.name, p.tags, p.meta, p.pad "
                 "FROM pcb_netconns k "
                 "JOIN pcb_nets n ON n.net_id = k.net_id "
                 "JOIN pcb_instances i ON i.instance_id = k.instance_id "
@@ -3666,6 +3668,7 @@ class PcbMixin:
                             "pin": r[2],
                             "tags": list(r[3] or []),
                             "meta": dict(r[4] or {}),
+                            **({"pad": r[5]} if r[5] is not None else {}),
                         }
                     )
             unconnected = [
@@ -3678,9 +3681,10 @@ class PcbMixin:
                     "pin": r[1],
                     "tags": list(r[2] or []),
                     "meta": dict(r[3] or {}),
+                    **({"pad": r[4]} if r[4] is not None else {}),
                 }
                 for r in conn.execute(
-                    "SELECT i.refdes, p.name, p.tags, p.meta "
+                    "SELECT i.refdes, p.name, p.tags, p.meta, p.pad "
                     "FROM pcb_instances i "
                     "JOIN pcb_pins p ON p.component_id = i.component_id "
                     "  AND p.retired_at IS NULL "

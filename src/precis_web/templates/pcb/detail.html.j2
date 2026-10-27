@@ -89,6 +89,9 @@
         <span id="pcb-focus-label" class="font-mono text-fg-secondary"></span>
         <button type="button" id="pcb-focus-pin"
                 title="pin this part in place (lock its placement)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">pin</button>
+        <button type="button" id="pcb-focus-only" aria-pressed="false"
+                title="show only the parts and pins on the focus"
+                class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">only connected</button>
         <button type="button" id="pcb-focus-exit"
                 title="leave focus (Esc)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">exit focus</button>
       </span>
@@ -104,9 +107,10 @@
        <object>'s ?sheet= (+ ?focus=) URL state via its dataset. #}
     <div id="pcb-sheet-tabs" role="tablist" aria-label="schematic sheets">
       <button type="button" role="tab" data-sheet="" aria-pressed="true"
-              title="the whole design">overview</button>
+              title="{{ pcb_sheet_titles.get('', 'the whole design') }}">overview</button>
       {% for s in pcb_sheets %}
-      <button type="button" role="tab" data-sheet="{{ s }}" aria-pressed="false">{{ s }}</button>
+      <button type="button" role="tab" data-sheet="{{ s }}" aria-pressed="false"
+              title="{{ pcb_sheet_titles.get(s, s) }}">{{ s }}</button>
       {% endfor %}
     </div>
     {% endif %}

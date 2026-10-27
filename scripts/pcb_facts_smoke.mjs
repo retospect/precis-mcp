@@ -15,6 +15,7 @@ const F = createRequire(import.meta.url)(
 const facts = {
   parts: {
     C2: { value: '10uF', package: '0603', rating: '6.3V', lcsc: 'C19702' },
+    C3: { value: 'C 1.0pF', package: null, rating: null, lcsc: null },
     R9: { value: '<img src=x onerror=alert(1)>', package: null, rating: null, lcsc: 'javascript:alert(1)' },
     J1: { value: null, package: null, rating: null, lcsc: null },
   },
@@ -62,9 +63,13 @@ assert.equal(
 assert.equal(F.viaText(facts, { ...via, net: null }), 'no net via/drill 0.3mm/pad 0.6mm/F.Cu-B.Cu/not stitching');
 assert.equal(F.isGround({ nets: { X: { net_class: 'ground' } } }, 'X'), true, 'class beats name');
 assert.equal(F.isGround({ nets: { GND: { net_class: 'power' } } }, 'GND'), false, 'class beats name');
-// silkscreen: the owning part's tooltip, else the layer
-const silkR9 = { role: 'refdes', layer: 'F_Silkscreen', anchor: { kind: 'instance', refdes: 'C2', instance_id: 1 } };
-assert.equal(F.silkText(facts, silkR9), 'C2/(10uF 0603 6.3V)/silk refdes');
+// silkscreen: the owning part's tooltip, else the layer (gr520541: the
+// parenthesised label form dropped; a value repeating the refdes's class
+// letter loses that token — 'C 1.0pF' on C3 reads '1.0pF')
+const silkC2 = { role: 'refdes', layer: 'F_Silkscreen', anchor: { kind: 'instance', refdes: 'C2', instance_id: 1 } };
+assert.equal(F.silkText(facts, silkC2), 'C2/10uF 0603 6.3V/silk refdes');
+const silkC3 = { role: 'outline', layer: 'F_Silkscreen', anchor: { kind: 'instance', refdes: 'C3', instance_id: 2 } };
+assert.equal(F.silkText(facts, silkC3), 'C3/1.0pF/silk outline');
 assert.equal(F.silkText(facts, { role: 'title', layer: 'F_Silkscreen', anchor: { kind: 'board' } }),
   'Silkscreen title/F_Silkscreen');
 

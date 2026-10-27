@@ -76,6 +76,13 @@
   };
 
   const hide = () => { tip.style.display = 'none'; };
+  // The tip is position:fixed — a page scroll slides the board out from
+  // under it while no mouse event fires, so it stayed stuck in space
+  // (gr520541). Capture scroll anywhere and hide; likewise leaving the
+  // <object> itself (the in-document mouseleave misses a fast exit or a
+  // scroll-out).
+  window.addEventListener('scroll', hide, {capture: true, passive: true});
+  object.addEventListener('mouseleave', hide);
   const bind = () => {
     try { svgDoc = object.contentDocument; } catch (_) { svgDoc = null; }
     if (!svgDoc || !svgDoc.documentElement || svgDoc.__pcbHoverWired) return;

@@ -19,6 +19,7 @@
   const label = el('pcb-focus-label');
   const pinBtn = el('pcb-focus-pin');
   const exitBtn = el('pcb-focus-exit');
+  const onlyBtn = el('pcb-focus-only');
   const base = schemObj.dataset.base;
   const pinUrl = schemObj.dataset.pinUrl;
   const cssEsc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s);
@@ -76,6 +77,16 @@
     }
     if (cur && label) label.textContent = 'focus ' + cur.handle;
     paintPin();
+    paintOnly();
+  }
+
+  // 'only connected' (gr520807): ?only=1 asks the renderer to drop the
+  // dimmed parts and non-focus pins entirely — the compact relayout a
+  // grey-out cannot give. The state rides dataset.only so a sheet
+  // switch keeps it (pcb-sheets.js refresh()).
+  function paintOnly() {
+    if (!onlyBtn) return;
+    onlyBtn.setAttribute('aria-pressed', String(!!schemObj.dataset.only));
   }
 
   function enter(target) {
@@ -89,6 +100,7 @@
     if (!cur) return;
     cur = null;
     delete schemObj.dataset.focus;
+    delete schemObj.dataset.only;
     reload();
     render();
   }
@@ -133,6 +145,15 @@
   bindDoc();
 
   if (exitBtn) exitBtn.addEventListener('click', exit);
+  if (onlyBtn) {
+    onlyBtn.addEventListener('click', () => {
+      if (schemObj.dataset.only) delete schemObj.dataset.only;
+      else schemObj.dataset.only = '1';
+      if (cur) reload();
+      paintOnly();
+    });
+    paintOnly();
+  }
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') exit();
   });

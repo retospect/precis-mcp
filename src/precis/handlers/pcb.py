@@ -784,6 +784,40 @@ _FOOTPRINT_SCHEMA = [
 ]
 
 
+def _schematic_pin_numbers(
+    store: Any, ref_id: int, graph: dict[str, Any]
+) -> dict[str, dict[str, str]]:
+    """pin name → pad number per refdes, for the schematic's pin-number
+    labels (gr520803). ``pcb_pins.pad`` is usually NULL — the physical
+    numbers live in the FOOTPRINT ``pin_map`` — so the map is inverted
+    pad-by-pad through :func:`precis.pcb.padplace.pad_label` (the one
+    label resolution, gr451276). A member's declared ``pad`` still wins:
+    an authored pin→pad binding overrides the footprint's."""
+    local = store.pcb_local_footprints_for(ref_id)
+    catalog = store.pcb_footprints_for(ref_id)
+    out: dict[str, dict[str, str]] = {}
+    for inst in graph.get("instances", []):
+        fp = local.get(str(inst.get("footprint") or "")) or catalog.get(
+            str(inst.get("part_lcsc") or "")
+        )
+        if not fp:
+            continue
+        pin_map = fp.get("pin_map") or {}
+        out[str(inst["refdes"])] = {
+            padplace.pad_label(pad, pin_map): str(pad["number"])
+            for pad in fp.get("pads") or []
+            if pad.get("number") is not None
+        }
+    for net in graph.get("nets", []):
+        for m in net.get("members", []):
+            if m.get("pad") is not None:
+                out.setdefault(str(m["refdes"]), {})[str(m["pin"])] = str(m["pad"])
+    for u in graph.get("unconnected", []):
+        if u.get("pad") is not None:
+            out.setdefault(str(u["refdes"]), {})[str(u["pin"])] = str(u["pad"])
+    return out
+
+
 @dataclasses.dataclass
 class JudgeReport:
     """What a judged mutation left behind: ``ripped`` maps each router net it
@@ -3821,9 +3855,23 @@ class PcbHandler(Handler):
             slug = (ref.slug if ref is not None else None) or "pcb"
             focus = str((args or {}).get("focus") or "").strip() or None
             sheet = str((args or {}).get("sheet") or "").strip() or None
+            # ?only=1 (gr520807): drop the dimmed parts and non-focus
+            # pins outright — the compact relayout a grey-out can't give.
+            only = str((args or {}).get("only") or "").strip().lower() in (
+                "1",
+                "true",
+                "on",
+                "yes",
+            )
+            graph = self.store.pcb_graph(ref_id)
             return Response(
                 body=schematic.render_schematic_svg(
-                    self.store.pcb_graph(ref_id), title=slug, focus=focus, sheet=sheet
+                    graph,
+                    title=slug,
+                    focus=focus,
+                    sheet=sheet,
+                    pin_numbers=_schematic_pin_numbers(self.store, ref_id, graph),
+                    only=only,
                 )
             )
         if view == "footprints":

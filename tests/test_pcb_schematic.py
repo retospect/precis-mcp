@@ -334,6 +334,148 @@ def test_sheet_render_stays_deterministic_and_well_formed() -> None:
     ET.fromstring(a)
 
 
+def test_only_drops_dimmed_parts_and_off_focus_pins() -> None:
+    """gr520807: ``only`` trims to the focus's one-hop set outright —
+    no dimmed shell of the rest, and a kept neighbour shows only the
+    pins tying it to the focus (the focus part keeps all of its own)."""
+    svg = render_schematic_svg(_graph(), title="t", focus="U1", only=True)
+    assert 'data-handle="C1"' not in svg  # dropped, not dimmed
+    assert "sch-part dimmed" not in svg
+    assert '<g class="sch-part focused" data-handle="U1"' in svg
+    assert 'data-handle="R1.1"' in svg and 'data-handle="R1.2"' in svg
+    assert 'data-handle="U1.3"' in svg  # the focus part keeps every pin
+    assert "connected only" in svg
+
+
+def test_only_on_a_net_focus_keeps_just_that_nets_pins() -> None:
+    svg = render_schematic_svg(_graph(), title="t", focus="net:SDA", only=True)
+    assert 'data-handle="C1"' not in svg
+    assert 'data-handle="U1.1"' in svg
+    assert 'data-handle="U1.2"' not in svg  # the SCL pin drops under net:SDA
+    assert 'data-handle="R1.1"' in svg
+    assert 'data-handle="R1.2"' not in svg
+
+
+def test_only_without_a_focus_is_a_no_op() -> None:
+    assert render_schematic_svg(_graph(), title="t", only=True) == (
+        render_schematic_svg(_graph(), title="t")
+    )
+    svg = render_schematic_svg(_graph(), title="t", focus="U9", only=True)
+    assert 'data-handle="C1"' in svg  # unknown focus dims/drops nothing
+
+
+def test_pin_numbers_draw_only_when_they_differ_from_the_name() -> None:
+    """gr520803: the pad number rides above the stub at the box edge when
+    the pin's name is NOT its number ('VSS' → pad 7); a pin named '1'
+    already says it, so nothing draws twice. No map, no labels."""
+    graph = {
+        "instances": [{"refdes": "U2", "label": "PMIC", "n_pins": 2}],
+        "nets": [
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "members": [{"refdes": "U2", "pin": "VSS"}],
+            },
+            {
+                "name": "SIG",
+                "net_class": None,
+                "members": [{"refdes": "U2", "pin": "1"}],
+            },
+        ],
+        "unconnected": [],
+    }
+    svg = render_schematic_svg(
+        graph, title="t", pin_numbers={"U2": {"VSS": "7", "1": "1"}}
+    )
+    assert 'class="pinno">7</text>' in svg
+    assert svg.count('class="pinno"') == 1  # pin '1' draws no duplicate
+    assert 'class="pinno"' not in render_schematic_svg(graph, title="t")
+
+
+def _declared_graph() -> dict[str, Any]:
+    """Pins with etypes/meta/pad, a net with the spec fields, and a part
+    with pin_decls — the gr520809 hover/glyph material."""
+    return {
+        "instances": [
+            {
+                "refdes": "U2",
+                "label": "PMIC",
+                "n_pins": 4,
+                "pin_decls": {
+                    "pin_functions": {
+                        "VSTOR": {
+                            "functions": ["GPIO", "AIN"],
+                            "max_current_a": 0.4,
+                        },
+                        "EN": ["GPIO"],
+                    },
+                    "slots": [{"name": "buck", "pins": ["EN", "VSTOR"]}],
+                },
+            },
+        ],
+        "nets": [
+            {
+                "name": "PWR",
+                "net_class": "power",
+                "est_current_a": 0.4,
+                "working_voltage_v": 5,
+                "impedance_ohm": 50,
+                "edge_rate_v_per_ns": 2,
+                "function_hint": "buck output",
+                "members": [
+                    {
+                        "refdes": "U2",
+                        "pin": "VSTOR",
+                        "tags": ["power_out"],
+                        "meta": {"max_voltage_v": 5.5},
+                        "pad": "4",
+                    },
+                    {"refdes": "U2", "pin": "EN", "tags": ["input"]},
+                ],
+            },
+        ],
+        "unconnected": [
+            {"refdes": "U2", "pin": "NC1", "tags": ["nc"]},
+            {"refdes": "U2", "pin": "AUX"},
+        ],
+    }
+
+
+def test_every_pin_carries_a_direction_mark_and_unknown_shows() -> None:
+    """gr520809 (1): every stub gets its §1i direction glyph — chevron,
+    diamond, ×, etc. — and an undeclared pin gets an explicit '?'
+    because "direction unknown" must be visible, never absent."""
+    svg = render_schematic_svg(_declared_graph(), title="t")
+    # VSTOR power_out (chevron + tip bar = 2 paths), EN input (1),
+    # NC1 nc × (1); AUX undeclared draws '?' text instead
+    assert svg.count('class="pindir"') == 4
+    assert svg.count('class="pindirt">?</text>') == 1
+
+
+def test_stub_title_carries_etype_pad_spec_bounds_functions_slot() -> None:
+    """gr520809 (2): the pin mouseover keeps the net line verbatim and
+    adds the pin's etype/pad, the net's declared spec, and the pin's
+    bounds / functions / flex slot — unknown etype says so."""
+    svg = render_schematic_svg(_declared_graph(), title="t")
+    assert "net PWR — U2.VSTOR, U2.EN" in svg  # the old line, verbatim
+    assert "U2.VSTOR (pad 4) — power_out" in svg
+    assert "U2.EN — input" in svg
+    assert "U2.AUX — direction unknown" in svg
+    assert (
+        "net PWR — class power · est 0.4A · working 5V · 50Ω · "
+        "edge 2V/ns · buck output" in svg
+    )
+    assert "max_voltage_v=5.5" in svg
+    assert "functions GPIO, AIN (max 0.4A)" in svg
+    assert "flex slot buck" in svg
+
+
+def test_stub_title_keeps_the_no_connect_line_first() -> None:
+    svg = render_schematic_svg(_graph(), title="t")
+    assert "U1.10 — no connect" in svg
+    assert "U1.10 — direction unknown" in svg
+
+
 def test_hostile_slug_cannot_escape_the_aria_label_attribute() -> None:
     """``title`` is the raw agent-supplied design slug and lands in an
     ATTRIBUTE (aria-label). ``xml.sax.saxutils.escape`` alone leaves ``"``
