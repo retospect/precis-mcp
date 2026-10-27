@@ -145,7 +145,13 @@ class _DeadlineCalc:
     factory produces: each evaluation entry point delegates to the inner
     calculator bracketed by a clock check. ``results`` and everything
     else — ``implemented_properties``, ``parameters``,
-    ``calculation_required`` — fall through to the inner object."""
+    ``calculation_required`` — fall through to the inner object.
+
+    The check fires only between calculator calls — a call in flight
+    can't be preempted, so one long or hung call overruns the cap by
+    that call's own length plus the lease's +1 h margin. A hung call
+    ends as a lease-expiry zombie — dead job, live ``running`` row —
+    that ``struct_neb_reap_dead`` clears (gr518100)."""
 
     def __init__(self, inner: Any, deadline: float, timeout_s: float) -> None:
         self._inner = inner

@@ -844,7 +844,13 @@ def _final_geometry(
 
 
 class _RelaxDeadline(RuntimeError):
-    """The in-process relax blew its wall-clock cap (see :func:`_relax_timeout_s`)."""
+    """The in-process relax blew its wall-clock cap (see :func:`_relax_timeout_s`).
+
+    The cap is checked between optimiser steps — a calculator call in
+    flight can't be preempted, so one long or hung call overruns by that
+    call's own length plus the lease's +1 h margin. A hung call ends as
+    a lease-expiry kill (``struct_runs`` is written only on completion,
+    so no zombie row is left to reap)."""
 
 
 def _default_ml_runner(

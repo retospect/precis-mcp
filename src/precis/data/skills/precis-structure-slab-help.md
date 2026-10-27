@@ -166,4 +166,9 @@ seed or endpoint failed) and `note`; a `## seeds` table prices each
 init seed's barrier next to the pooled spread vs the multistart
 tolerance. An `untrusted` verdict names the refusing check with its
 measured value against its bound — a real disagreement reads different
-from tolerance noise.
+from tolerance noise. The run's wall-clock deadline is checked only
+between calculator calls, so one long or hung call can overrun by its
+own length plus the lease's +1 h margin. A hung call ends as a
+lease-expiry zombie — dead job, still-`running` row — that
+`struct_neb_reap_dead` clears the next time the edge is minted or
+harvested.
