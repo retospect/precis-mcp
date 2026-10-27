@@ -172,7 +172,9 @@ class PollResult(TypedDict, total=False):
     error: str
     tail: str
     infra: bool
-    # no-envelope failures only; exit_* present only when this process reaped
+    # no-envelope failures only; exit_* keys present only when this process
+    # reaped the child — the ``error`` text spells them out every time
+    # ("unknown" when it didn't, "none" for a signal-less exit).
     stderr_tail: str  # last ~40 stderr lines minus *Warning noise
     exit_code: int  # negative = died by signal
     exit_signal: str  # e.g. "SIGKILL"

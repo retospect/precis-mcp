@@ -131,7 +131,23 @@ class ChildKilledError(RuntimeError):
     positive nonzero ``returncode`` WITH the result file present (an
     unhandled-but-non-fatal child exception, distinct from an environment
     kill) still raises a bare ``RuntimeError`` — content-class, unchanged.
+
+    ``exit_code``/``exit_signal`` carry the structured fields the message
+    text spells out (gr522921: the failure detail needs them every time,
+    not just interpolated into prose) — ``exit_signal`` is ``None`` for an
+    envelope-less clean exit.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        exit_code: int | None = None,
+        exit_signal: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.exit_signal = exit_signal
 
 
 #: A ``subprocess`` ``returncode`` is negative-N when the child was
@@ -872,8 +888,15 @@ def _run_request_subprocess(
                         tail = str(json.load(fh).get("error") or tail)
                 except (OSError, ValueError):
                     pass
+            exit_signal_name: str | None = None
+            if _died_by_signal(proc.returncode):
+                try:
+                    exit_signal_name = signal.Signals(-proc.returncode).name
+                except ValueError:
+                    exit_signal_name = f"SIG{-proc.returncode}"
             msg = (
-                f"{job_name} subprocess failed (rc={proc.returncode}, "
+                f"{job_name} subprocess failed (rc={proc.returncode}"
+                f"{f', {exit_signal_name}' if exit_signal_name else ''}, "
                 f"{unit}); last output: {tail!r}"
             )
             # INFRA-class: the child was signal-killed (SIGKILL/OOM, a
@@ -884,7 +907,11 @@ def _run_request_subprocess(
             # case that reaches this branch (via the OR's first arm) without
             # being infra-classifiable — stays a bare RuntimeError.
             if _died_by_signal(proc.returncode) or not os.path.exists(out_path):
-                raise ChildKilledError(msg)
+                raise ChildKilledError(
+                    msg,
+                    exit_code=proc.returncode,
+                    exit_signal=exit_signal_name,
+                )
             raise RuntimeError(msg)
 
         with open(out_path, encoding="utf-8") as fh:
@@ -1397,14 +1424,26 @@ def poll_seed_partial_detached(
     # from the detached (no captured returncode) side rather than raised —
     # ``"infra": True`` tells ``seed_job._poll`` to pass
     # ``open_tag="infra:child-killed"`` through to ``ctx.record_failure``.
+    # The error text names ``exit_code``/``exit_signal`` EVERY time
+    # (gr522921): the structured keys exist only when THIS process reaped
+    # the child — after a worker restart the reparented child's status is
+    # gone, which used to leave the failure text silent on how it died.
+    info = _exit_info(pid)
+    if info:
+        exit_code: Any = info.get("exit_code", "unknown")
+        exit_signal: Any = info.get("exit_signal", "none")
+    else:
+        exit_code = exit_signal = "unknown"
     result = {
         "state": "failed",
-        "error": "child process exited without writing result.json",
+        "error": (
+            "child process exited without writing result.json "
+            f"(exit_code={exit_code}, exit_signal={exit_signal})"
+        ),
         "tail": _tail_logs(scratch),
         "stderr_tail": _stderr_tail(scratch),
         "infra": True,
     }
-    info = _exit_info(pid)
     if "exit_code" in info:
         result["exit_code"] = info["exit_code"]
     if "exit_signal" in info:

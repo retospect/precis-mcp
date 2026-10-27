@@ -227,6 +227,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # the bounded infra-retry in ``_job_bubble.bubble_job_failure``
         # applies instead of an immediate content-class latch.
         log.warning("autocatpath_seed: run failed (child killed)", exc_info=True)
+        exit_meta = {
+            k: v
+            for k, v in (
+                ("exit_code", exc.exit_code),
+                ("exit_signal", exc.exit_signal),
+            )
+            if v is not None
+        }
+        if exit_meta:
+            ctx.set_meta(**exit_meta)
         ctx.record_failure(
             f"autocatpath_seed: run failed: {exc}",
             open_tag="infra:child-killed",
@@ -373,17 +383,23 @@ def _poll(ctx: Any, handle: Any) -> bool:
     if state == "failed":
         tail = status.get("tail") or ""
         reason = f"autocatpath_seed: run failed: {status.get('error')}"
-        status_d = dict(status)
-        exit_bits = [
-            f"{k}={status_d[k]}" for k in ("exit_code", "exit_signal") if k in status_d
-        ]
-        if exit_bits:
-            reason = f"{reason} ({', '.join(exit_bits)})"
         stderr_tail = status.get("stderr_tail") or ""
         if stderr_tail:
             reason = f"{reason}\n--- stderr (warnings removed) ---\n{stderr_tail}"
         if tail:
             reason = f"{reason}\n--- tail ---\n{tail}"
+        # The no-envelope error text already spells out
+        # ``exit_code``/``exit_signal`` every time; the structured meta
+        # copy is for a harvester that reads fields, not prose (the
+        # gripe filer's failure detail — gr522921).
+        status_d = dict(status)
+        exit_meta = {
+            k: status_d[k]
+            for k in ("exit_code", "exit_signal")
+            if status_d.get(k) is not None
+        }
+        if exit_meta:
+            ctx.set_meta(**exit_meta)
         # INFRA-class (parked-leaf-recovery, docs/backlog/
         # parked-leaf-recovery.md): ``poll_seed_partial_detached`` sets
         # ``"infra"`` only on its no-envelope branch (the child exited

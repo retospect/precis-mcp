@@ -4018,7 +4018,14 @@ def _file_infra_gripe(
 
     detail = {
         k: job_meta.get(k)
-        for k in ("failure_class", "error", "note", "job_type")
+        for k in (
+            "failure_class",
+            "error",
+            "note",
+            "job_type",
+            "exit_code",
+            "exit_signal",
+        )
         if k in job_meta
     }
     # ``lease_host`` is stamped at claim time (see the executor claim path in

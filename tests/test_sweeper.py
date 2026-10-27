@@ -1201,10 +1201,14 @@ def test_dead_node_queued_pinned_job_is_reaped(
     assert "reaped:dead-node-queued" in job_tags
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT meta->>'failure_class' FROM refs WHERE ref_id = %s", (job_id,)
+            "SELECT meta->>'failure_class', meta->>'error' FROM refs WHERE ref_id = %s",
+            (job_id,),
         ).fetchone()
     assert row is not None
     assert row[0] == "infra"
+    # gr522898: the harvested failure detail must not be a bare class —
+    # meta.error names the dead-node cause.
+    assert row[1] and "dead-node queued" in row[1]
     events = store.events_for(job_id)
     assert any(e.event == "job-reaped" for e in events)
     # Infra-class bubble under the retry cap: parent stays unlatched.

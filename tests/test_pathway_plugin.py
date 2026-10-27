@@ -1965,7 +1965,11 @@ def test_seed_job_dispatch_child_killed_error_tags_infra_child_killed(
     from precis_pathway import seed_job
 
     def _fake_sub(*a: Any, **k: Any) -> Any:
-        raise runner.ChildKilledError("autocatpath_seed subprocess failed (rc=-9, …)")
+        raise runner.ChildKilledError(
+            "autocatpath_seed subprocess failed (rc=-9, SIGKILL, …)",
+            exit_code=-9,
+            exit_signal="SIGKILL",
+        )
 
     monkeypatch.setattr(runner, "run_seed_partial_subprocess", _fake_sub)
 
@@ -1983,6 +1987,8 @@ def test_seed_job_dispatch_child_killed_error_tags_infra_child_killed(
     assert ctx.open_tag == "infra:child-killed"
     assert ctx.failure_class == "infra"
     assert "rc=-9" in (ctx.failure or "")
+    assert ctx.meta_updates["exit_code"] == -9
+    assert ctx.meta_updates["exit_signal"] == "SIGKILL"
 
 
 def test_seed_job_dispatch_generic_error_does_not_tag_infra_child_killed(
@@ -2261,8 +2267,10 @@ def test_run_seed_partial_subprocess_signal_death_raises_child_killed_error(
         return subprocess.CompletedProcess(cmd, -9, stdout="", stderr="")
 
     monkeypatch.setattr("subprocess.run", _fake_run)
-    with pytest.raises(runner.ChildKilledError, match="rc=-9"):
+    with pytest.raises(runner.ChildKilledError, match="rc=-9, SIGKILL") as exc_info:
         runner.run_seed_partial_subprocess({}, 0, 0, timeout=10)
+    assert exc_info.value.exit_code == -9
+    assert exc_info.value.exit_signal == "SIGKILL"
 
 
 def test_run_seed_partial_subprocess_no_result_file_raises_child_killed_error(
@@ -3426,8 +3434,23 @@ def test_poll_no_envelope_records_signal_and_drops_warning_noise(
     )
     assert res["state"] == "failed" and res["infra"] is True
     assert res["exit_signal"] == "SIGKILL" and res["exit_code"] == -9
+    assert "(exit_code=-9, exit_signal=SIGKILL)" in res["error"]
     assert res["stderr_tail"] == "MemoryError: boom"
     assert "UserWarning" in res["tail"]  # existing key unchanged
+
+
+@_needs_waitid
+def test_poll_no_envelope_records_sigterm(tmp_path: Path) -> None:
+    """gr522921: an earlyoom SIGTERM kill reports the signal in the error
+    text every time — the gripe's job record must name how the child died."""
+    res = _poll_dead_child(
+        tmp_path,
+        "import os, signal; os.kill(os.getpid(), signal.SIGTERM)",
+        "killed mid-run\n",
+    )
+    assert res["state"] == "failed" and res["infra"] is True
+    assert res["exit_signal"] == "SIGTERM" and res["exit_code"] == -15
+    assert "(exit_code=-15, exit_signal=SIGTERM)" in res["error"]
 
 
 @_needs_waitid
@@ -3435,7 +3458,28 @@ def test_poll_no_envelope_records_nonzero_exit(tmp_path: Path) -> None:
     res = _poll_dead_child(tmp_path, "raise SystemExit(3)", "Traceback\nOops\n")
     assert res["exit_code"] == 3
     assert "exit_signal" not in res
+    assert "(exit_code=3, exit_signal=none)" in res["error"]
     assert res["stderr_tail"] == "Traceback\nOops"
+
+
+def test_poll_no_envelope_reports_unknown_exit_when_not_reaped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr522921's shape: the child was reaped by init/a prior worker
+    generation (``_exit_info`` has nothing) — the error text still names
+    the fields as ``unknown`` instead of dropping them."""
+    monkeypatch.setattr(runner, "_process_alive", lambda pid: False)
+    monkeypatch.setattr(runner, "_exit_info", lambda pid: {})
+    handle: DetachedHandle = {
+        "pid": 424242,
+        "pgid": 424242,
+        "dir": str(tmp_path),
+        "started_at": 0.0,
+    }
+    res = runner.poll_seed_partial_detached(handle)
+    assert res["state"] == "failed" and res["infra"] is True
+    assert "exit_code" not in res and "exit_signal" not in res
+    assert "(exit_code=unknown, exit_signal=unknown)" in res["error"]
 
 
 @_needs_waitid
@@ -3484,6 +3528,9 @@ def test_stderr_tail_keeps_only_last_forty_lines(tmp_path: Path) -> None:
 def test_seed_job_poll_failure_reason_carries_exit_and_stderr(
     pathway_store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The runner's no-envelope error text already spells out the exit
+    fields; ``_poll`` passes it through verbatim and mirrors them onto
+    job meta for the gripe filer's failure detail (gr522921)."""
     from precis_pathway import seed_job
 
     monkeypatch.setattr(
@@ -3491,7 +3538,10 @@ def test_seed_job_poll_failure_reason_carries_exit_and_stderr(
         "poll_seed_partial_detached",
         lambda handle, **_kw: {
             "state": "failed",
-            "error": "child process exited without writing result.json",
+            "error": (
+                "child process exited without writing result.json "
+                "(exit_code=-9, exit_signal=SIGKILL)"
+            ),
             "tail": "",
             "stderr_tail": "MemoryError: boom",
             "exit_code": -9,
@@ -3504,6 +3554,8 @@ def test_seed_job_poll_failure_reason_carries_exit_and_stderr(
     assert ctx.failure is not None
     assert "exit_code=-9, exit_signal=SIGKILL" in ctx.failure
     assert "MemoryError: boom" in ctx.failure
+    assert ctx.meta_updates["exit_code"] == -9
+    assert ctx.meta_updates["exit_signal"] == "SIGKILL"
 
 
 def test_search_finds_pathways_by_text_and_handle(pathway_store: Store) -> None:

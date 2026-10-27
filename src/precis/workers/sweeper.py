@@ -1343,6 +1343,17 @@ def _transition_dead_node_queued_to_failed(
             set_by="system",
             conn=conn,
         )
+        # The reason goes where a reader of the job record looks —
+        # ``meta.error`` plus a ``job_event`` chunk (gr522898: without it
+        # the harvested failure detail was a bare ``failure_class``).
+        reason = (
+            f"sweeper: failed dead-node queued job — pinned target_node="
+            f"{orphan.target_node} provably dead before any claim "
+            f"(queued {grace_s}s+ past grace with no live worker or "
+            "heartbeat); the compute never ran"
+        )
+        set_meta(conn, orphan.ref_id, error=reason)
+        append_chunk(store, orphan.ref_id, JOB_EVENT_KIND, reason, conn=conn)
         store.append_event(
             orphan.ref_id,
             source="sweeper",
