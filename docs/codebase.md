@@ -102,6 +102,9 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 PCB selection binds raw board snapshots and instance IDs to optional Gerber
 SVG targets. The shared web design-chat engine stores proposals in conversations;
 PCB Apply reuses the handler and design history on one guarded connection.
+The script-side ``Board.check()`` runs the stdlib ``precis_geom.pcb_motifs``
+registry on declared netlist topology; motif checks share ``CheckFinding``
+with the builder's pin checks and require no server or copper geometry.
 
 Surfaces on top: the **MCP server** (`precis serve`, the 8 verbs — the
 product; network transports gate on `PRECIS_MCP_TOKEN`; `PRECIS_MCP_PROFILE=command`

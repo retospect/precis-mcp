@@ -2701,6 +2701,9 @@ class Board:
         findings += self._pin_name_findings()
         findings += self._unwired_pin_findings()
         findings += self._pin_requirement_findings()
+        from precis_geom.pcb_motifs import motif_findings
+
+        findings += motif_findings(self)
         findings += self._over_voltage_findings()
         findings += self._source_findings()
         return CheckResult(
@@ -3135,15 +3138,9 @@ class Board:
         requirement is checkable, not a comment. A wired or candidate
         pin whose declared ``max_current_a`` (pin meta or the part's
         ``pin_functions`` entry) sits under the requirement is
-        ``over_current`` — the same rule name the server ERC uses; a
-        requirement that reaches an LED pin with no current-limit part
-        in series is ``led_without_limit``.
-
-        Detection (spec-call, recorded in the topo-place progress note):
-        an LED pin is one whose part's ``pin_functions`` entry lists a
-        function starting ``LED``; a current-limit part is a part with
-        exactly two wired pins, one declaring ``current_role("series")``
-        — a bridge that carries the through current."""
+        ``over_current`` — the same rule name the server ERC uses.
+        Current-path topology (``led_without_limit``) lives in the
+        netlist motif registry alongside buck and LDO checks."""
         reqs = [
             c
             for c in self._connections
@@ -3220,65 +3217,6 @@ class Board:
                     )
                 )
 
-        req_nets = {c["net"] for c in reqs} | {
-            fp.net for fp in slot_reqs if fp.net is not None
-        }
-        pin_nets_map: dict[str, dict[str, str]] = {}
-        for c in self._connections:
-            pin_nets_map.setdefault(c["refdes"], {})[c["pin"]] = c["net"]
-        led_pins = [
-            (r, p, pin_nets_map[r][p])
-            for r in self._part_order
-            for p, rec in self._parts[r]._pin_functions.items()
-            if any(str(f_).upper().startswith("LED") for f_ in rec.get("functions", ()))
-            and p in pin_nets_map.get(r, {})
-        ]
-        if led_pins:
-
-            def is_limiter(refdes: str) -> bool:
-                part = self._parts[refdes]
-                return any(
-                    (part._pins.get(p) is not None)
-                    and part._pins[p].meta.get("current_role") == "series"
-                    for p in pin_nets_map[refdes]
-                )
-
-            net_to_parts: dict[str, set[str]] = {}
-            for c in self._connections:
-                net_to_parts.setdefault(c["net"], set()).add(c["refdes"])
-            # Nets reachable from a requirement net through non-limiting
-            # 2-pin bridges. A limiter on the path breaks the reach — a
-            # series resistor is exactly the fix the check asks for.
-            reached = set(req_nets)
-            frontier = list(req_nets)
-            while frontier:
-                n = frontier.pop()
-                for r in net_to_parts.get(n, ()):
-                    if len(pin_nets_map.get(r, {})) != 2 or is_limiter(r):
-                        continue
-                    for n2 in pin_nets_map[r].values():
-                        if n2 not in reached:
-                            reached.add(n2)
-                            frontier.append(n2)
-            for r, p, net in led_pins:
-                if net in reached:
-                    pin = self._parts[r]._pins.get(p)
-                    out.append(
-                        CheckFinding(
-                            code="led_without_limit",
-                            refdes=r,
-                            net=net,
-                            pin=p,
-                            site=(
-                                (pin.site if pin is not None else None)
-                                or self._parts[r]._pin_function_sites.get(p)
-                            ),
-                            message=(
-                                f"{r}.{p} (LED) sits on a current path with "
-                                "no series current-limit part"
-                            ),
-                        )
-                    )
         return out
 
     # -- the 3-D shape (slice 0b) -------------------------------------------

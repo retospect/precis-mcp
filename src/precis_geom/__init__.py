@@ -32,6 +32,15 @@ package — the pieces that are *the script's own surface*:
   retaining creator stamps, so frame selection still reaches the source.
   Fusion retains source/placement makers; coincident atoms and duplicate
   bonds use the earliest copy's representative rather than a tile stamp.
+- :mod:`precis_geom.pcb_motifs` — the stdlib netlist motif registry called
+  by ``Board.check()``. Each ``Motif`` declares eligibility and a check
+  returning the existing ``CheckFinding`` shape: LED current limiting,
+  buck SW/inductor/output and FB divider, and LDO input/output capacitors.
+  Pin functions override semantic pin labels; unclassified parts are
+  ineligible. The buck divider identifies its output independently of the
+  inductor, so moving the inductor to another power rail is detectable.
+  Passive roles or conventional R/C/L designators identify bridges without
+  importing a catalog or the server; no placement or copper is needed.
 - :mod:`precis_geom.flow` — the DB-free cad solid → thin-gap ``Domain``
   adapter, and :mod:`precis_geom.physics` — ``evaluate(shape, physics,
   spec, *, seed, cells)``, the toolkit's one physics call (flow first;

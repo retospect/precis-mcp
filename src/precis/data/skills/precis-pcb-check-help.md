@@ -22,6 +22,15 @@ kinds: [pcb]
 `view='check'` is THE check surface; `view='drc'` stays as its preset —
 same findings, same table.
 
+Workspace `Board.check()` also runs the stdlib `precis_geom.pcb_motifs.MOTIFS`
+registry at netlist time: `led_without_limit` retains its current-path rule;
+`motif.buck` checks SW–inductor–output against the FB divider and FB resistance
+to GND; `motif.ldo` checks VIN/VOUT capacitors to GND. Eligibility reads
+`pin_functions` or semantic pin labels (`SW`, `FB`, `VIN`, `VOUT`, `GND`);
+unclassified parts are ineligible. Passive roles or R/C/L designators identify
+bridges. Each `Motif` has a name, eligibility predicate and check callback;
+findings name the violating pin and net. High-side gate checks are deferred.
+
 - `args={'rule':'a,b'}`/`{'severity':'error'}` filter the table;
   `{'phase':'netlist|placed|routed|fab'}` judges AT that phase:
   `netlist` runs only geometry-free rules and never reads copper;
