@@ -11,8 +11,9 @@ precis token reaches Kimi the next time a tree starts.
   ~/.claude.json (same URL and Authorization header Claude uses; the file
   is written mode 600). Other servers are left alone.
 - config.toml: two managed blocks between `# >>> precis-mcp` markers — a
-  top-level `extra_skill_dirs` (Kimi loads `.claude/skills/` from the
-  project root, so /land, /qland, /go, /bug ... resolve), and at the end
+  top-level `extra_skill_dirs` (Kimi loads `.claude/skills/` and the
+  flat `.claude/commands/*.md` from the project root, so /skill:land,
+  /skill:qland, /skill:go, /skill:bug ... resolve), and at the end
   one `[[hooks]]` entry per event calling scripts/hooks/kimi-adapt.py
   (which dispatches to `.claude/settings.json`'s hooks), plus
   `default_permission_mode = "yolo"` and Claude's Bash/MCP allow list as
@@ -52,7 +53,9 @@ CLAUDE_SETTINGS = Path(
 
 
 def top_block(rest: str) -> str:
-    lines = [TOP_BEGIN, 'extra_skill_dirs = [".claude/skills"]']
+    # .claude/commands/*.md are flat skill files to Kimi (name = filename),
+    # so /land, /qland, /go ... load as /skill:land etc.
+    lines = [TOP_BEGIN, 'extra_skill_dirs = [".claude/skills", ".claude/commands"]']
     # Claude runs `defaultMode: auto`; Kimi's analogue is yolo ("Ask When
     # Needed": routine edits and commands run, risky ones still ask). A mode
     # the user set by hand outside the block wins.

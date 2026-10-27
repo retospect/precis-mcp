@@ -33,8 +33,12 @@ allow list as permission rules. `kimi doctor` validates it;
   before grep, memory recall at task start, product data through the MCP
   before `scripts/prod-psql`). Discover with
   `search(kind='skill', q='<goal>')`.
-- **Skills.** `.claude/skills/` loads as Kimi skills: `land`, `qland`,
-  `go`, `bug`, `remember`, `flow` and the rest work as in Claude. Steps
+- **Skills and slash commands.** `.claude/skills/` (`bug`, `remember`,
+  `flow`, ...) and `.claude/commands/*.md` (`land`, `qland`, `go`, `qgo`,
+  `next`, ...) both load as Kimi skills; the user types `/skill:qland`
+  where Claude takes `/qland`. Command files carry Claude-only syntax:
+  a `` !`cmd` `` line is live state Claude injects — run `cmd` yourself;
+  `$ARGUMENTS` is whatever the user typed after the command. Steps
   that name a Claude tool (`Agent` subagent types from `.claude/agents/`,
   `SendMessage`, `EnterWorktree`) — do that step yourself, or use Kimi's
   `Agent` tool with the remit text from the named `.claude/agents/<name>.md`.
