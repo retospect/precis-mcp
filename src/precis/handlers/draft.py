@@ -82,6 +82,24 @@ from precis.utils.table_data import (
     table_payload,
     table_to_markdown,
 )
+from precis.utils.table_toon import (
+    REPLY_ROW_CAP,
+    apply_patch,
+    check_table_base,
+    journal_append,
+    op_add_column,
+    op_drop_column,
+    op_drop_rows,
+    op_insert_rows,
+    op_move_column,
+    op_move_row,
+    op_rename_column,
+    op_sort_rows,
+    table_content_hash,
+    table_diff,
+    table_from_toon,
+    table_toon,
+)
 
 log = logging.getLogger(__name__)
 
@@ -385,8 +403,39 @@ class DraftHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"limit", "offset", "page", "page_size", "rel", "of_kind"}),
-        "edit": ArgsSpec({"char_target"}),
+        "get": ArgsSpec(
+            {
+                "limit",
+                "offset",
+                "page",
+                "page_size",
+                "rel",
+                "of_kind",
+                # spreadsheet-tables 1b — view='toon'/'table' filters
+                "cols",
+                "rows",
+                "where",
+            }
+        ),
+        "edit": ArgsSpec(
+            {
+                "char_target",
+                # spreadsheet-tables 1b — TOON patch/replace + structure
+                # ops on chunk_kind='table' chunks (ride args=).
+                "patch",
+                "toon",
+                "base",
+                "add_column",
+                "drop_column",
+                "rename_column",
+                "move_column",
+                "move_row",
+                "rows",
+                "at",
+                "drop_rows",
+                "sort",
+            }
+        ),
     }
 
     #: ``edit(id=[...])`` repeats the same edit per id in one transaction
@@ -795,13 +844,18 @@ class DraftHandler(Handler):
                 return self._render_history(s, args)
             if view == "proposals":  # open anchored todos carrying proposed_text
                 return self._render_proposals(s)
+            if view in ("toon", "table"):
+                # spreadsheet-tables 1b — the id-addressed TOON grid
+                # (``args={'cols','rows','where'}`` filter it); 'table' is
+                # the same selection as the plain GFM render.
+                return self._render_table_toon(s, view, args)
             if view is not None:
                 # No silent degrade to the lone-chunk render (was the bug —
                 # an unrecognized view fell through here unnoticed).
                 raise BadInput(
                     f"unknown draft chunk view {view!r}",
                     next="view ∈ backfill|toc|wordcount|review-diff|history|"
-                    "proposals, or a "
+                    "proposals|toon|table, or a "
                     f"focus-ladder label {'|'.join(EYE_LADDER)}",
                 )
             return self._render_chunk(s)
@@ -2262,6 +2316,25 @@ class DraftHandler(Handler):
         scaffold: str | None = None,
         dry_run: bool | str = False,
         source: dict[str, Any] | None = None,
+        # spreadsheet-tables 1b — the TOON patch/replace surface and the
+        # id-addressed structure ops (all chunk_kind='table' only):
+        # patch='<toon>' (subset edit; mode='update'|'upsert'),
+        # toon='<toon>' (full replace), base=<content hash> guards any
+        # of the table writes, and add_column=/drop_column=/
+        # rename_column=/move_column=/move_row=/rows=[…]+at=/drop_rows=/
+        # sort= reshape the grid by stable ids. Reachable via args=.
+        patch: str | None = None,
+        toon: str | None = None,
+        base: str | None = None,
+        add_column: dict[str, Any] | None = None,
+        drop_column: str | None = None,
+        rename_column: Any = None,
+        move_column: str | None = None,
+        move_row: str | None = None,
+        rows: list[Any] | None = None,
+        at: Any = None,
+        drop_rows: list[Any] | None = None,
+        sort: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``source`` is a code/provenance-caller convenience (not documented
@@ -2345,6 +2418,18 @@ class DraftHandler(Handler):
                     "caption": caption,
                     "regen": regen,
                     "cell": cell,
+                    "patch": patch,
+                    "toon": toon,
+                    "base": base,
+                    "add_column": add_column,
+                    "drop_column": drop_column,
+                    "rename_column": rename_column,
+                    "move_column": move_column,
+                    "move_row": move_row,
+                    "rows": rows,
+                    "at": at,
+                    "drop_rows": drop_rows,
+                    "sort": sort,
                     "meta": meta,
                     "voice": voice,
                     "lang": lang,
@@ -2654,7 +2739,22 @@ class DraftHandler(Handler):
                 self._attribute_touch([c.chunk_id])
             return Response(body=f"moved {(c or _base).dc}")
         is_table = _base.chunk_kind == "table"
-        if is_table or table is not None or regen is not None:
+        if (
+            is_table
+            or table is not None
+            or regen is not None
+            or patch is not None
+            or toon is not None
+            or base is not None
+            or add_column is not None
+            or drop_column is not None
+            or rename_column is not None
+            or move_column is not None
+            or move_row is not None
+            or rows is not None
+            or drop_rows is not None
+            or sort is not None
+        ):
             return self._edit_table(
                 handle,
                 _base,
@@ -2667,6 +2767,19 @@ class DraftHandler(Handler):
                 sub=sub,
                 base_sha=base_sha,
                 dry_mode=dry_mode,
+                mode=mode,
+                patch=patch,
+                toon=toon,
+                base=base,
+                add_column=add_column,
+                drop_column=drop_column,
+                rename_column=rename_column,
+                move_column=move_column,
+                move_row=move_row,
+                rows=rows,
+                at=at,
+                drop_rows=drop_rows,
+                sort=sort,
             )
         # ``find=`` substitutes *within* the chunk — never a wholesale
         # overwrite. Presence of ``find`` is the sole signal: the wire
@@ -3616,6 +3729,19 @@ class DraftHandler(Handler):
         sub: dict[str, Any] | str | None = None,
         base_sha: str | None,
         dry_mode: str | None = None,
+        mode: str | None = None,
+        patch: str | None = None,
+        toon: str | None = None,
+        base: str | None = None,
+        add_column: dict[str, Any] | None = None,
+        drop_column: str | None = None,
+        rename_column: Any = None,
+        move_column: str | None = None,
+        move_row: str | None = None,
+        rows: list[Any] | None = None,
+        at: Any = None,
+        drop_rows: list[Any] | None = None,
+        sort: str | None = None,
     ) -> Response:
         """Edit a chunk_kind='table' chunk — precedence (the shipped draft-table-editing proposal item 1, git history): (1) ``table=`` replaces the whole
         canonical structure; (2) ``cell='<row-id>.<col-id>'`` (stable ids —
@@ -3671,18 +3797,49 @@ class DraftHandler(Handler):
                 ("cell", cell),
                 ("find", find),
                 ("sub", sub),
+                ("patch", patch),
+                ("toon", toon),
+                ("add_column", add_column),
+                ("drop_column", drop_column),
+                ("rename_column", rename_column),
+                ("move_column", move_column),
+                ("move_row", move_row),
+                ("rows", rows),
+                ("drop_rows", drop_rows),
+                ("sort", sort),
             )
             if val is not None
         ]
         if len(_selectors) > 1:
             raise BadInput(
                 f"conflicting table edit selectors: {', '.join(s + '=' for s in _selectors)} "
-                "— pass only one of table=/cell=/find=/sub= per edit",
+                "— pass only one of table=/cell=/find=/sub=/patch=/toon= "
+                "or a structure op per edit",
                 next=f"edit(kind='draft', id={chunk.dc!r}, {_selectors[0]}=…)  "
                 "# one selector at a time",
             )
+        if at is not None and not (
+            rows is not None
+            or add_column is not None
+            or move_column is not None
+            or move_row is not None
+        ):
+            raise BadInput(
+                "at= positions a row/column insert or move — it needs "
+                "rows=, add_column=, move_column= or move_row=",
+                next="edit(kind='draft', id='dc<id>', rows=[[…]], "
+                "at={'after': '<row id>'})",
+            )
         cur = self.store.drafts.draft_chunk_meta(handle)
         cur_table = cur.get("table")
+        # Compare-and-swap baseline for every write below: the write's
+        # ``edit_text`` locks the row FOR UPDATE and refuses unless the
+        # stored ``meta.table`` still equals this snapshot — a concurrent
+        # write landing between this read and the write can no longer be
+        # silently clobbered (the ``base=`` journal check ran on this
+        # same snapshot). Updated when a write below changes the stored
+        # baseline mid-flow (the minted-legacy persist).
+        cas_table = cur_table
         # Lazy mint (spreadsheet-tables 1a, spec §13): a pre-schema
         # canonical table — ``meta.table = {header, rows}`` only, from
         # before the column schema — gains stable ids on its first write
@@ -3700,6 +3857,7 @@ class DraftHandler(Handler):
         minted_legacy = False
         if (
             table is None
+            and toon is None
             and isinstance(cur_table, dict)
             and (not cur_table.get("columns") or "rowmeta" not in cur_table)
         ):
@@ -3769,10 +3927,33 @@ class DraftHandler(Handler):
             "this table chunk has no stored data — pass table={header, rows}",
             next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
         )
+        _structure_op = next(
+            (
+                n
+                for n, v in (
+                    ("patch", patch),
+                    ("add_column", add_column),
+                    ("drop_column", drop_column),
+                    ("rename_column", rename_column),
+                    ("move_column", move_column),
+                    ("move_row", move_row),
+                    ("rows", rows),
+                    ("drop_rows", drop_rows),
+                    ("sort", sort),
+                )
+                if v is not None
+            ),
+            None,
+        )
         if (
             is_latex_source
             and cur_table
-            and (cell is not None or find is not None or sub is not None)
+            and (
+                cell is not None
+                or find is not None
+                or sub is not None
+                or _structure_op is not None
+            )
         ):
             if cell is not None:
                 # Spreadsheet-tables 1a: cells are addressed by stable ids
@@ -3834,7 +4015,11 @@ class DraftHandler(Handler):
                         ),
                     )
                 c = self.store.drafts.edit_text(
-                    handle, md_conv, base_sha=base_sha, meta_patch=conv_patch
+                    handle,
+                    md_conv,
+                    base_sha=base_sha,
+                    meta_patch=conv_patch,
+                    expect_table=cas_table,
                 )
                 if c is not None:
                     self._attribute_touch([c.chunk_id])
@@ -3854,6 +4039,63 @@ class DraftHandler(Handler):
                     f"cell='{row_ids[0]}.{col_ids[0]}', text='…')"
                     if row_ids and col_ids
                     else f"get(kind='draft', id={chunk.dc!r})",
+                )
+            if _structure_op is not None:
+                # Spreadsheet-tables 1b: patch= and the structure ops need
+                # the stable ids a LaTeX-sourced chunk doesn't have — the
+                # first such edit CONVERTS it to the canonical id-addressed
+                # grid (same conversion as cell= above: raw LaTeX layout
+                # dropped, caption/label kept in meta) and then refuses
+                # naming the just-minted ids; the retry lands.
+                if caption is not None or regen is not None:
+                    raise BadInput(
+                        f"caption=/regen= don't apply together with a "
+                        f"{_structure_op}= edit on this LaTeX-sourced table "
+                        "chunk",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, "
+                        f"{_structure_op}=…)  # then caption=/regen= "
+                        "separately",
+                    )
+                norm_conv = cur_table
+                cap_c = cur.get("caption") or recovered_caption or None
+                md_conv = table_to_markdown(norm_conv, caption=cap_c)
+                conv_mpatch: dict[str, Any] = {"table": norm_conv}
+                if recovered_label:
+                    conv_mpatch["label"] = recovered_label
+                if cur.get("flag") == "needs-table-review":
+                    conv_mpatch["flag"] = None
+                if dry_mode is not None:
+                    return self._render_draft_dry_run(
+                        chunk.dc,
+                        chunk.text or "",
+                        md_conv,
+                        mode=dry_mode,
+                        note=(
+                            "would convert this LaTeX-sourced table to the "
+                            "canonical id-addressed grid (raw LaTeX layout "
+                            "is dropped)"
+                        ),
+                    )
+                c = self.store.drafts.edit_text(
+                    handle,
+                    md_conv,
+                    base_sha=base_sha,
+                    meta_patch=conv_mpatch,
+                    expect_table=cas_table,
+                )
+                if c is not None:
+                    self._attribute_touch([c.chunk_id])
+                    self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
+                row_ids = [rm.get("id") for rm in norm_conv.get("rowmeta", [])]
+                col_ids = [cc.get("id") for cc in norm_conv.get("columns", [])]
+                raise BadInput(
+                    f"{_structure_op}= needs the table's stable ids — but "
+                    f"the edit DID convert {(c or chunk).dc} to the "
+                    f"canonical grid: rows={row_ids[:12]}, cols={col_ids}. "
+                    "Raw LaTeX layout was dropped (caption/label kept in "
+                    "meta).",
+                    next=f"get(kind='draft', id={chunk.dc!r}, view='toon') "
+                    "for the id-addressed grid, then retry",
                 )
             # Non-destructive path for a LaTeX-sourced chunk (gripe 271129):
             # patch the raw LaTeX text in place instead of re-deriving
@@ -3877,7 +4119,27 @@ class DraftHandler(Handler):
                 recovered_label=recovered_label,
                 label_loss_hint=label_loss_hint,
             )
+        # Persist the lazy mint BEFORE an id-addressed op runs on a
+        # pre-schema table (spreadsheet-tables 1b): the op's refusals
+        # (unmatched patch row, unknown drop_rows id, …) must name ids a
+        # follow-up ``get`` actually shows — the same write-then-refuse
+        # contract as ``cell=`` above.
+        if minted_legacy and _structure_op is not None and dry_mode is None:
+            assert isinstance(cur_table, dict)  # minted_legacy implies normalized
+            self._persist_minted_table_ids(handle, cur, cur_table)
+            minted_legacy = False
+            cas_table = cur_table  # the stored baseline is now the minted table
+        if mode in ("update", "upsert") and patch is None:
+            raise BadInput(
+                f"mode={mode!r} applies to patch= — it has no meaning "
+                "for the other table ops",
+                next="edit(kind='draft', id='dc<id>', patch='<toon>', mode='upsert')",
+            )
         replace_count: int | None = None
+        patch_report: dict[str, Any] | None = None
+        op_reply: str | None = None
+        reply_rows: list[str] | None = None
+        reply_cols: list[str] | None = None
         if table is not None:
             tobj: Any = table
             if isinstance(tobj, str):
@@ -4000,16 +4262,142 @@ class DraftHandler(Handler):
                     f"no cell matches /{pattern}/ in {chunk.dc}{mint_note}",
                     next=f"get(kind='draft', id={chunk.dc!r})",
                 )
+        elif patch is not None:
+            # spreadsheet-tables 1b §9: TOON subset patch — columns by id
+            # or name, rows by id or declared key column; '' = unchanged,
+            # 'null' = clear; mode='update' (default) refuses the whole
+            # patch on any unmatched row, 'upsert' appends them.
+            if not cur_table or not cur_table.get("columns"):
+                raise no_data_err
+            norm, patch_report = apply_patch(
+                cur_table,
+                str(patch),
+                mode="upsert" if mode == "upsert" else "update",
+            )
+            op_reply = (
+                f"patched table {chunk.dc}: {patch_report['changed_cells']} "
+                f"cell(s) in {len(patch_report['changed_row_ids'])} row(s)"
+                + (
+                    f"; appended {len(patch_report['appended_row_ids'])} row(s)"
+                    if patch_report["appended_row_ids"]
+                    else ""
+                )
+            )
+            reply_rows = (
+                patch_report["changed_row_ids"] + patch_report["appended_row_ids"]
+            )
+        elif toon is not None:
+            # §9: full replace — calculated/pulled columns may be omitted
+            # (they persist); '#' cells carry the row ids to keep.
+            norm = table_from_toon(
+                cur_table if isinstance(cur_table, dict) else {}, str(toon)
+            )
+            op_reply = f"replaced table {chunk.dc}"
+        elif add_column is not None:
+            if not cur_table:
+                raise no_data_err
+            old_ids = {c.get("id") for c in cur_table.get("columns") or []}
+            norm = op_add_column(cur_table, add_column, at)
+            newc = next(c for c in norm["columns"] if c["id"] not in old_ids)
+            op_reply = f"added column {newc['name']} ({newc['id']})"
+            reply_cols = [newc["id"]]
+        elif drop_column is not None:
+            if not cur_table:
+                raise no_data_err
+            norm = op_drop_column(cur_table, drop_column)
+            op_reply = f"dropped column {drop_column}"
+        elif rename_column is not None:
+            if not cur_table:
+                raise no_data_err
+            norm = op_rename_column(cur_table, rename_column)
+            renamed = next(
+                (
+                    c
+                    for c, o in zip(
+                        norm["columns"],
+                        cur_table.get("columns") or [],
+                        strict=False,
+                    )
+                    if c.get("id") == o.get("id") and c.get("name") != o.get("name")
+                ),
+                None,
+            )
+            if renamed is not None:
+                op_reply = f"renamed column {renamed['id']} → {renamed['name']}"
+                reply_cols = [renamed["id"]]
+            else:
+                op_reply = f"renamed column {rename_column}"
+        elif move_column is not None:
+            if not cur_table:
+                raise no_data_err
+            norm = op_move_column(cur_table, move_column, at)
+            op_reply = f"moved column {move_column}"
+            cid = next(
+                c["id"]
+                for c in norm["columns"]
+                if c.get("id") == move_column or c.get("name") == move_column
+            )
+            reply_cols = [cid]
+        elif move_row is not None:
+            if not cur_table:
+                raise no_data_err
+            norm = op_move_row(cur_table, move_row, at)
+            op_reply = f"moved row {move_row}"
+            reply_rows = [str(move_row)]
+        elif rows is not None:
+            if not cur_table:
+                raise no_data_err
+            norm = op_insert_rows(cur_table, rows, at)
+            added = [
+                r[1:] for r in table_diff(cur_table, norm)["rows"] if r.startswith("+")
+            ]
+            op_reply = f"inserted {len(added)} row(s)"
+            reply_rows = added
+        elif drop_rows is not None:
+            if not cur_table:
+                raise no_data_err
+            norm = op_drop_rows(cur_table, drop_rows)
+            n_dropped = sum(
+                1 for r in table_diff(cur_table, norm)["rows"] if r.startswith("-")
+            )
+            op_reply = f"dropped {n_dropped} row(s)"
+        elif sort is not None:
+            if not cur_table:
+                raise no_data_err
+            norm = op_sort_rows(cur_table, sort)
+            op_reply = f"sorted rows by {sort!r}"
         elif caption is not None or regen is not None:
             norm = cur_table or {}
         else:
             raise BadInput(
                 "a table chunk's text is derived from its data — pass "
-                "find=, cell=, table=, or caption= (not text=)",
+                "find=, cell=, table=, patch=, toon=, a structure op, or "
+                "caption= (not text=)",
                 next=f"edit(kind='draft', id={chunk.dc!r}, find='old', text='new')",
             )
         if not norm:
             raise no_data_err
+        # Spreadsheet-tables 1b: ``base=<hash>`` optimistic guard over the
+        # table content (not the chunk-text ``base_sha``) + the bounded
+        # ``recent`` journal the guard diffs against. ``touched`` is this
+        # edit's own diff, so a concurrent write to cells this op doesn't
+        # change doesn't collide (spec §9: "unless the touched cells
+        # don't overlap").
+        _cur = cur_table if isinstance(cur_table, dict) else {}
+        _diff = table_diff(_cur, norm)
+        if base is not None:
+            check_table_base(
+                _cur,
+                str(base),
+                touched=_diff,
+                dc=chunk.dc,
+                full=table is not None or toon is not None,
+            )
+        new_hash = table_content_hash(norm)
+        if _diff["cells"] or _diff["rows"] or _diff["cols"]:
+            norm = {**norm, "recent": journal_append(_cur, _diff, new_hash)}
+        elif _cur.get("recent"):
+            norm = {**norm, "recent": _cur["recent"]}
         # Caption: an explicit string (even "") replaces the legend; None
         # keeps the stored one. Derive the markdown from the SAME resolved
         # caption we persist, so clearing a caption drops the ``**…**`` lead
@@ -4021,13 +4409,13 @@ class DraftHandler(Handler):
         else:
             cap = cur.get("caption") or recovered_caption or None
         md = table_to_markdown(norm, caption=cap)
-        patch: dict[str, Any] = {"table": norm}
+        mpatch: dict[str, Any] = {"table": norm}
         # Carry a recovered `\label{...}` into `meta.label` (gripe 271129):
         # once this write lands, `chunk.text` is markdown — the anchor no
         # longer sits in raw LaTeX to re-parse, so this is now its only
         # durable home.
         if recovered_label:
-            patch["label"] = recovered_label
+            mpatch["label"] = recovered_label
         # The review flag only ever meant "no canonical data was recoverable at
         # import". Once we persist a grid the flag is false, and leaving it set
         # would keep the chunk in every "table-blocked" census forever — the
@@ -4036,19 +4424,33 @@ class DraftHandler(Handler):
         # row out of `meta->>'flag' = 'needs-table-review'` and out of every
         # equality check in code.
         if cur.get("flag") == "needs-table-review":
-            patch["flag"] = None
+            mpatch["flag"] = None
         if caption is not None:
-            patch["caption"] = cap or ""
+            mpatch["caption"] = cap or ""
         if regen is not None:
-            patch["regen"] = regen
+            mpatch["regen"] = regen
         if dry_mode is not None:
+            if op_reply is not None:
+                # The 1b ops' own report IS the meaningful preview
+                # (changed cells/rows as TOON) — not the GFM diff.
+                return Response(
+                    body="dry-run — nothing written\n"
+                    + self._table_op_reply(
+                        chunk.dc,
+                        norm,
+                        op_reply,
+                        rows=reply_rows,
+                        cols=reply_cols,
+                        new_hash=new_hash,
+                    )
+                )
             # Same diff/full rendering as the plain text-edit paths — write
             # NOTHING (no edit_text, no meta patch). The metadata side
-            # effects folded into ``patch`` above ride silently on a real
+            # effects folded into ``mpatch`` above ride silently on a real
             # edit_text call; surface them as a one-line note here instead
             # of refusing the whole preview.
             meta_notes = []
-            if "flag" in patch:
+            if "flag" in mpatch:
                 meta_notes.append("clears the needs-table-review flag")
             if caption is not None:
                 meta_notes.append(
@@ -4060,17 +4462,63 @@ class DraftHandler(Handler):
             return self._render_draft_dry_run(
                 chunk.dc, chunk.text or "", md, mode=dry_mode, note=note
             )
-        c = self.store.drafts.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)
+        c = self.store.drafts.edit_text(
+            handle, md, base_sha=base_sha, meta_patch=mpatch, expect_table=cas_table
+        )
         if c is not None:
             self._attribute_touch([c.chunk_id])
             self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
-        rows, cols = len(norm["rows"]), len(norm["header"])
+        if op_reply is not None:
+            return Response(
+                body=self._table_op_reply(
+                    (c or chunk).dc,
+                    norm,
+                    op_reply,
+                    rows=reply_rows,
+                    cols=reply_cols,
+                    new_hash=new_hash,
+                )
+                + label_loss_hint
+            )
+        n_rows, n_cols = len(norm["rows"]), len(norm["header"])
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
-            body=f"edited table {(c or chunk).dc} ({rows}×{cols}){extra}; "
+            body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
             f"markdown re-derived{label_loss_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
         )
+
+    def _table_op_reply(
+        self,
+        dc: str,
+        norm: dict[str, Any],
+        op_reply: str,
+        *,
+        rows: list[str] | None,
+        cols: list[str] | None,
+        new_hash: str,
+    ) -> str:
+        """The spec-§9 write reply for the 1b ops: the one-line verb
+        summary + ``hash:`` (the ``base=`` token for a chained edit) +
+        the new TOON — filtered to the touched part once the table is
+        past the large-table threshold."""
+        body = f"{op_reply}; hash: {new_hash}"
+        n = len(norm.get("rows") or [])
+        if rows is None and cols is None and n > REPLY_ROW_CAP:
+            sel = [rm["id"] for rm in (norm.get("rowmeta") or [])[:20]]
+            return (
+                body
+                + "\n"
+                + table_toon(norm, rows=sel)
+                + f"\n… {n} rows — get(kind='draft', id='{dc}', "
+                "view='toon') for the rest"
+            )
+        try:
+            return body + "\n" + table_toon(norm, rows=rows, cols=cols)
+        except BadInput:
+            # A reply filter naming an id the op just dropped (drop_rows)
+            # must not sink the write's ack — fall back to the plain grid.
+            return body + "\n" + table_toon(norm)
 
     def _persist_minted_table_ids(
         self, handle: str, cur: dict[str, Any], table: dict[str, Any]
@@ -4086,7 +4534,9 @@ class DraftHandler(Handler):
         patch: dict[str, Any] = {"table": table}
         if cur.get("flag") == "needs-table-review":
             patch["flag"] = None
-        c = self.store.drafts.edit_text(handle, md, meta_patch=patch)
+        c = self.store.drafts.edit_text(
+            handle, md, meta_patch=patch, expect_table=cur.get("table")
+        )
         if c is not None:
             self._attribute_touch([c.chunk_id])
             self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
@@ -5066,6 +5516,80 @@ class DraftHandler(Handler):
             "(deleted ids never reappear)",
             next=nxt,
         )
+
+    def _render_table_toon(
+        self, handle: str, view: str, args: dict[str, Any] | None
+    ) -> Response:
+        """``view='toon'`` / ``view='table'`` on a table chunk
+        (spreadsheet-tables 1b): the id-addressed TOON grid —
+        ``{#}`` row-id column, ``<id>:<name> [unit] <from> =formula``
+        header cells — or the same selection as GFM. Filters ride
+        ``args={'cols','rows','where'}``; every read ends in the
+        ``hash:`` line ``base=`` guards a ``patch=`` with."""
+        a = dict(args or {})
+        chunk = self.store.drafts.get_draft_chunk(handle)
+        if chunk is None or chunk.retired:
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists "
+                "live chunk handles",
+            )
+        if chunk.chunk_kind != "table":
+            raise BadInput(
+                f"view={view!r} applies to a chunk_kind='table' chunk — "
+                f"{chunk.dc} is {chunk.chunk_kind!r}",
+                next=f"get(kind='draft', id={chunk.dc!r}) for the plain read",
+            )
+        meta = chunk.meta or {}
+        tbl = meta.get("table") or {}
+        if not tbl.get("columns"):
+            raise BadInput(
+                f"{chunk.dc} has no stable row/column ids (a pre-schema "
+                "table or a recovered LaTeX grid)",
+                next="any table edit mints them — e.g. "
+                f"edit(kind='draft', id={chunk.dc!r}, caption='…'); "
+                "then re-read",
+            )
+        cols, rows, where = a.get("cols"), a.get("rows"), a.get("where")
+        h = table_content_hash(tbl)
+        if view == "table":
+            # The same selection rendered as GFM (humans / export shape)
+            # + the ids: trailer of the filtered grid.
+            from precis.utils.table_toon import (
+                _resolve_col_list,
+                _resolve_row_list,
+                compile_where,
+            )
+
+            columns = tbl.get("columns") or []
+            rowmeta = tbl.get("rowmeta") or []
+            data = tbl.get("rows") or []
+            ci = _resolve_col_list(columns, cols)
+            ri = _resolve_row_list(rowmeta, rows)
+            if where is not None:
+                pred = compile_where(str(where), columns)
+                ri = [i for i in ri if i < len(data) and pred(data[i])]
+            sub = {
+                "header": [columns[i]["name"] for i in ci],
+                "rows": [[data[i][j] for j in ci] for i in ri],
+            }
+            md = table_to_markdown(sub, caption=meta.get("caption") or None)
+            ids = table_ids_line(
+                {
+                    "rowmeta": [rowmeta[i] for i in ri],
+                    "columns": [columns[j] for j in ci],
+                }
+            )
+            body = f"{chunk.dc}\n{md}"
+            if ids:
+                body += f"\n{ids}"
+            return Response(body=f"{body}\nhash: {h}")
+        body = (
+            f"{chunk.dc}\n"
+            + table_toon(tbl, cols=cols, rows=rows, where=where)
+            + f"\nhash: {h}"
+        )
+        return Response(body=body)
 
     def _render_chunk(self, handle: str) -> Response:
         # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``

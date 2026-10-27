@@ -155,10 +155,20 @@ non-finite `NaN`/`inf` stays a string. Excel-eager inference turns a
 leading-zero code like `007` into int `7` — send the full `table=`
 payload to force a type. An id that names no live row/column is refused
 listing the table's ids (a deleted id never reappears); a zero-match
-find-replace is refused too (chunk untouched); only one of
-`table=`/`cell=`/`find=`/`sub=` per edit. Column renames go through the
-column schema (`rename_column=`), not `cell=` — the header row carries no
-id.
+find-replace is refused too (chunk untouched); only one selector per
+edit. Column renames go through the column schema (`rename_column=`),
+not `cell=` — the header row carries no id.
+
+For anything beyond single-cell edits use the **TOON surface**
+(precis-table-help): `get(id='dc<id>', view='toon')` renders the grid
+with `#` row ids and `<id>:<name>` header cells plus a `hash:` line;
+`patch=` edits a subset (`''`=unchanged, `null`=clear,
+`mode='update'|'upsert'`), `toon=` replaces the whole grid, `base=<hash>`
+guards against clobbering a concurrent write, and `add_column=`/
+`drop_column=`/`rename_column=`/`move_column=`/`move_row=`/`rows=`+`at=`/
+`drop_rows=`/`sort=` reshape by stable id — all via `args={…}`.
+
+## LaTeX-imported tables
 
 A LaTeX-imported table flagged `needs-table-review` recovers its grid by
 re-parsing the chunk's own raw LaTeX, so it's editable (and citable) like any

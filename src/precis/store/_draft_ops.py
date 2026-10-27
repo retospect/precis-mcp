@@ -66,6 +66,11 @@ from precis.utils.wordcount import PROSE_CHUNK_KINDS as PROSE_CHUNK_KINDS
 
 _HANDLE_RETRIES = 6
 
+#: ``expect_table`` sentinel for :meth:`DraftStore.edit_text` — marks
+#: "no meta.table compare-and-swap requested" so a plain ``None`` stays
+#: meaningful ("expect no stored table").
+_TABLE_UNSET: Any = object()
+
 #: An ``ask-user`` / ``halt`` tag value of the form ``see-chunk-N`` is a
 #: redirect handle: the real (long / whitespaced) prose lives in a
 #: ``tag_overflow`` chunk at ``ord = N`` on the ref
@@ -3584,6 +3589,7 @@ class DraftStore(_AbbrevMixin):
         source: dict[str, Any] | None = None,
         meta_patch: dict[str, Any] | None = None,
         kind: str = "draft",
+        expect_table: Any = _TABLE_UNSET,
     ) -> DraftChunk | None:
         """In-place text edit: bump `content_sha`, log an `edited` event
         with `prev_text`. The handle (and references to it) survive;
@@ -3599,11 +3605,43 @@ class DraftStore(_AbbrevMixin):
         underneath it, so two agents editing the same chunk don't silently
         clobber each other. Omit for a force-overwrite.
 
+        ``expect_table`` is the compare-and-swap counterpart for
+        ``meta.table``: the row is locked ``FOR UPDATE`` inside this
+        transaction and the write refuses when the stored ``meta->'table'``
+        no longer equals it — closing the read→check→write window a caller
+        that computed its patch (and its ``base=`` journal check) on an
+        earlier ``draft_chunk_meta`` snapshot would otherwise lose a
+        concurrent write through. Pass ``None`` to mean "expect no stored
+        table"; omit for no CAS.
+
         ``meta_patch`` shallow-merges into ``chunks.meta`` (NULL-safe) in
         the same statement — updates a ``table``'s canonical ``meta.table``
         alongside its re-derived markdown ``text`` atomically.
         """
         with self.tx() as conn:
+            if expect_table is not _TABLE_UNSET:
+                row = conn.execute(
+                    "SELECT meta, retired_at FROM chunks WHERE handle = %s FOR UPDATE",
+                    (_bare(handle),),
+                ).fetchone()
+                if row is None:
+                    raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+                if row[1] is not None:
+                    raise Gone(
+                        f"¶{_bare(handle)} is retired — it was removed or "
+                        "replaced; edit the current live chunk instead"
+                    )
+                if (row[0] or {}).get("table") != expect_table:
+                    raise BadInput(
+                        f"¶{_bare(handle)}'s table changed since this edit "
+                        "read it — the write was refused rather than "
+                        "clobber the newer one",
+                        next=(
+                            f"get(kind='draft', id='¶{_bare(handle)}', "
+                            "view='toon') for the current table + hash, "
+                            "then redo the edit"
+                        ),
+                    )
             self.edit_text_in_tx(
                 conn,
                 handle,

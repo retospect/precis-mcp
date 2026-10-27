@@ -98,3 +98,4 @@ Empty cells render as the empty string. `None` → empty;
 - [[precis-overview]] — verbs and kinds
 - [[precis-search-help]] — search response shape
 - [[precis-toc-help]] — TOC machinery + drill-in
+- [[precis-table-help]] — draft tables' id-addressed TOON variant (`{#}` row ids, `<id>:<name>` header cells) and its patch/replace write path

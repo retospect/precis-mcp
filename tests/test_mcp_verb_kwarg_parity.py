@@ -235,6 +235,22 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # char_target= (33b29a545): args= by design, declared in
         # DraftHandler.ARGS_KEYS; word_target= is the verb-level sibling.
         ("draft", "edit", "char_target"),
+        # -- edit: draft table TOON patch/replace + structure ops
+        # (spreadsheet-tables 1b), args= by design — a dozen
+        # chunk_kind='table'-only params are not worth advertised schema
+        # weight on every agent's tools/list; skills document the door.
+        ("draft", "edit", "patch"),
+        ("draft", "edit", "toon"),
+        ("draft", "edit", "base"),
+        ("draft", "edit", "add_column"),
+        ("draft", "edit", "drop_column"),
+        ("draft", "edit", "rename_column"),
+        ("draft", "edit", "move_column"),
+        ("draft", "edit", "move_row"),
+        ("draft", "edit", "rows"),
+        ("draft", "edit", "at"),
+        ("draft", "edit", "drop_rows"),
+        ("draft", "edit", "sort"),
         # -- edit: finding acquisition-mode's dead-end flip side ----------
         ("finding", "edit", "unacquirable_mode"),
         ("finding", "edit", "unacquirable_note"),
