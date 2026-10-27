@@ -57,7 +57,9 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal
 
+from precis_diag import RunResult
 from precis_geom import extxyz as _extxyz
+from precis_geom import run_diag as _run_diag
 from precis_geom import trace as _trace
 from precis_geom import trace_schema as _ts
 
@@ -389,6 +391,10 @@ class Run:
         #: ``{"poses_moved", "blocks_changed", "blocks_unknown"}`` name
         #: lists (gr514248); ``None`` on a first run.
         self.manifest_diff: dict[str, Any] | None = None
+        #: The failed run's structured record — set by :meth:`fail`
+        #: (gr522025: the Diag anchored on the error-marked trace frame);
+        #: ``None`` on a clean run.
+        self.result: RunResult | None = None
         #: ``check=`` from :func:`run` — ``False`` opts the fit check out
         #: (Decision 13), a dict carries ``check()`` kwargs; ``True`` is the
         #: default run-at-``finish()``.
@@ -808,6 +814,14 @@ class Run:
         doc = self.manifest()
         doc["status"] = "failed"
         doc["error"] = _error_entry(exc, tr, trace_doc)
+        # gr522025: the structured failure record — the Diag anchors on
+        # the user-facing traced op; its key rides the manifest
+        # ``error`` too so the record alone names the culprit.
+        self.result = _run_diag.failed_run_result(
+            doc, trace_doc, run=str(self.root / "trace.json")
+        )
+        if self.result.diags[0].anchor.frame_key:
+            doc["error"]["frame"] = self.result.diags[0].anchor.frame_key
         if notes is not None:
             doc["notes"] = str(notes)
         (self.root / "manifest.json").write_text(
@@ -826,9 +840,12 @@ class Run:
             )
         at = doc["error"].get("at") or {}
         loc = f" at {at['file']}:{at['line']}" if "file" in at else ""
+        frame = doc["error"].get("frame")
+        fk = f" frame {frame}" if frame else ""
         where = "trace.json" if trace_doc is not None else "manifest.json"
         print(
-            f"out.run: failed -> {self.root}/{where} (error={type(exc).__name__}{loc})",
+            f"out.run: failed -> {self.root}/{where} "
+            f"(error={type(exc).__name__}{loc}){fk}",
             file=sys.stderr,
         )
         return self.root
@@ -879,7 +896,12 @@ def _error_path(
         cur = by_key.get(cur.get("parent"))
     anchor = cur if cur is not None and cur.get("kind") == "user" else None
     path = [
-        {"qual": f["qual"], "file": f["file"], "line": f["line"]}
+        {
+            "frame_key": f.get("key", ""),
+            "qual": f["qual"],
+            "file": f["file"],
+            "line": f["line"],
+        }
         for f in reversed(below)
     ]
     return anchor, path

@@ -702,7 +702,7 @@ override-dependencies = ["pillow>=12.3.0", "filelock>=4.2.1"]
 autocatpath = { git = "https://github.com/retospect/catpath", rev = "ca54d7ebf9fce911914bf2601192c749dbba39bb" }  # v0.40.0 (kinetics v2 slice 8, CHE)
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain", "src/precis_flow", "src/precis_geom", "src/precis_ws"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain", "src/precis_flow", "src/precis_geom", "src/precis_ws", "src/precis_diag"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
@@ -772,6 +772,11 @@ root_packages = [
     # third-party deps either — the `precis-geom` wheel under
     # `packaging/geom/` (structure-workspaces slice 2).
     "precis_geom",
+    # `precis_diag` is the domain-free diagnostics core (shared-core-layers
+    # S1a): stdlib only, `precis.utils.units` the one allowed precis edge;
+    # ships in the precis-geom wheel AND the server wheel (precis_se's
+    # adapters import it).
+    "precis_diag",
 ]
 
 [[tool.importlinter.contracts]]
@@ -853,6 +858,25 @@ ignore_imports = [
 # packages (`precis_flow`, `precis_chain`, `hexfold`, `precis_ws`) are
 # separate roots below and need no entry. The stdlib-only AST belt
 # narrows to `precis_geom.pcb` (`tests/workspaces/test_pcb_board.py`).
+
+[[tool.importlinter.contracts]]
+name = "precis_diag imports only precis.utils.units"
+type = "forbidden"
+source_modules = ["precis_diag"]
+forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
+unmatched_ignore_imports_alerting = "none"
+ignore_imports = [
+    "precis_diag -> precis",
+    "precis_diag.* -> precis",
+    "precis_diag -> precis.utils",
+    "precis_diag.* -> precis.utils",
+    "precis_diag -> precis.utils.units",
+    "precis_diag.* -> precis.utils.units",
+]
+# The diagnostics core is domain-free: the one allowed `precis` edge is
+# `precis.utils.units` (shared-core-layers S1a). The lazy
+# `hexfold.report` import inside `finding_from_diag` is fine — hexfold
+# is not a forbidden module and ships in the same wheel.
 
 [[tool.importlinter.contracts]]
 name = "precis_geom never reaches server-side precis (store/fetch/web) even via carved modules"

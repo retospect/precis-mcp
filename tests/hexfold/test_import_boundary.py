@@ -1,10 +1,11 @@
-"""hexfold imports nothing from precis — the monorepo fold-in boundary.
+"""hexfold imports no server code — the monorepo fold-in boundary.
 
 `src/hexfold/` is MIT-marked and lives in this monorepo only to simplify
 deployment during rapid development (`docs/backlog/hexfold-integration.md`,
 spec §30 last bullet: "Monorepo for now ... imports no `precis*`"). A
-`precis*`/`asa_bot`/`asa_slack` import anywhere under `src/hexfold/` would
-wire the package to this repo and break the later pip re-export.
+server `precis`/`asa_bot`/`asa_slack` import under `src/hexfold/` would
+wire the package to this repo and break the later pip re-export. The
+independent workspace siblings precis_geom and precis_diag are allowed.
 """
 
 from __future__ import annotations
@@ -21,7 +22,9 @@ _FORBIDDEN_PREFIXES = ("precis", "asa_bot", "asa_slack")
 #: script-side half, shipped inside precis-geom *alongside* hexfold
 #: (structure-workspaces §Packaging). sheetnet imports its tracer
 #: optionally (soft-import) so standalone hexfold still works without it.
-_WHEEL_SIBLINGS = ("precis_geom",)
+#: The explicit hexfold.diag adapter also depends on the stdlib-only
+#: precis_diag sibling, never on the server's precis package.
+_WHEEL_SIBLINGS = ("precis_geom", "precis_diag")
 
 
 def _is_forbidden(module: str | None) -> bool:

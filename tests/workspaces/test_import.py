@@ -635,8 +635,9 @@ def test_manifest_top_level_unknown_key_refuses(store: Store, tmp_path: Path) ->
         _import(store, bad)
 
 
+@pytest.mark.parametrize("with_trace", [False, True])
 def test_failed_run_manifest_refuses_naming_the_failure(
-    store: Store, tmp_path: Path
+    store: Store, tmp_path: Path, with_trace: bool
 ) -> None:
     """gr514210 — a ``status="failed"`` manifest (``Run.fail``'s record
     shape) is refused as a failed run, not as an "unknown key" — and
@@ -646,14 +647,57 @@ def test_failed_run_manifest_refuses_naming_the_failure(
     shutil.copytree(FIXTURE, bad)
     m = json.loads((bad / "manifest.json").read_text(encoding="utf-8"))
     m["status"] = "failed"
-    m["error"] = {"type": "ValueError", "message": "rows must be >= 1"}
+    m["error"] = {
+        "type": "ValueError",
+        "message": "rows must be >= 1",
+        "at": {"file": "main.py", "line": 9},
+    }
     (bad / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    if not with_trace:
+        (bad / "trace.json").unlink()
     with pytest.raises(BadInput, match="run failed") as exc:
         _import(store, bad)
     assert "ValueError" in str(exc.value)
+    assert "at main.py:9" in str(exc.value)
+    assert "(frame " not in str(exc.value)
+    refusal: Any = exc.value
+    assert refusal.result.run == str(bad / "trace.json")
     se_ref = store.get_ref(kind="se", id="ws-test")
     assert se_ref is not None
     assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
+@pytest.mark.parametrize(
+    "error", [None, {}, {"type": "ValueError", "message": "bad rows"}]
+)
+def test_manifest_vet_uses_shared_failed_run_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, error: Any
+) -> None:
+    """Direct manifest vetting delegates both refusal fields to the adapter."""
+    from precis_diag import Diag, RunResult, Status
+    from precis_se import workspace_import
+
+    manifest = {"schema": 1, "status": "failed", "error": error}
+    diagnostic = Diag(
+        status=Status.ERROR,
+        code="cad.run-failed",
+        message="shared failure text",
+        next="shared recovery hint",
+    )
+    calls = []
+
+    def failed_run_result(data, trace_doc):
+        calls.append((data, trace_doc))
+        return RunResult(diags=(diagnostic,))
+
+    monkeypatch.setattr(
+        workspace_import.run_diag, "failed_run_result", failed_run_result
+    )
+    with pytest.raises(BadInput) as exc:
+        workspace_import._vet_manifest(manifest)
+    assert exc.value.cause == diagnostic.message
+    assert exc.value.next == diagnostic.next
+    assert calls == [(manifest, None)]
 
 
 def test_block_cap_refuses_before_any_write(store: Store, tmp_path: Path) -> None:

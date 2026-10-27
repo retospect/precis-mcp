@@ -57,6 +57,7 @@ _SRC_TO_WHEEL = {
 
 #: Directories shipped in the wheel → their import roots.
 _SHIPPED_DIRS = [
+    _SRC / "precis_diag",
     _SRC / "precis_geom",
     _SRC / "precis_ws",
     _SRC / "hexfold",
@@ -132,6 +133,7 @@ _ALLOW = (
     "precis.fit_classes",
     "precis_chain",
     "precis_flow",
+    "precis_diag",
     "precis_geom",
     "precis_ws",
     "hexfold",

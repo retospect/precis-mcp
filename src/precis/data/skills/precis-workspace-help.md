@@ -360,6 +360,7 @@ directly.
 
 ## See also
 
+- [[precis-diag-help]] — a failed run's structured record: the Diag anchored on the error-marked trace frame
 - [[precis-workspace-optimize-help]] — `precis_geom.physics.evaluate`: score a script-built shape
 - [[precis-se-help]] — the se call surface: ops, views, units, BOM
 - [[precis-se-atomic-help]] — the atomic leg: chemistry over the block tree

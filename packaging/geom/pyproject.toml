@@ -60,6 +60,7 @@ pcb-kernel = [
 # half of the session split — everything else in session.py is pure).
 [tool.hatch.build.targets.wheel.force-include]
 "../../src/precis_geom" = "precis_geom"
+"../../src/precis_diag" = "precis_diag"
 "../../src/precis_ws" = "precis_ws"
 "../../src/hexfold" = "hexfold"
 "../../src/precis_chain" = "precis_chain"

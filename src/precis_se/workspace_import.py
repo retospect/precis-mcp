@@ -133,7 +133,7 @@ from precis.store.types import ChunkInsert
 from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
 from precis.utils.md_parse import _normalize_segment
 from precis.utils.units import UnitRequiredError, parse_quantity
-from precis_geom import trace_schema
+from precis_geom import run_diag, trace_schema
 from precis_se import persist, traceview
 from precis_se.atomic.generate import (
     PendingGenerate,
@@ -381,17 +381,8 @@ def _vet_manifest(
         raise BadInput("manifest.json must be a JSON object")
     _unknown_keys(data, _TOP_KEYS, "manifest.json")
     if data.get("status") == "failed":
-        err = data.get("error") or {}
-        detail = (
-            f" — {err['type']}: {err.get('message', '')}"
-            if isinstance(err, dict) and err.get("type")
-            else ""
-        )
-        raise BadInput(
-            f"manifest.json: run failed{detail}",
-            next="fix the script and re-run — a failed run's out/ is a "
-            "record of where it stopped, not importable state",
-        )
+        diag = run_diag.failed_run_result(data, None).diags[0]
+        raise BadInput(diag.message, next=diag.next)
     if data.get("schema") != 1:
         raise BadInput(f"manifest.json: schema must be 1, got {data.get('schema')!r}")
     blocks_raw = data.get("blocks")
@@ -1176,6 +1167,24 @@ def import_workspace_run(
         except (TypeError, ValueError):
             return ""
         return f" at {loc}" if loc else ""
+
+    # gr522025: a failed run refuses through the Diag adapter — the
+    # RunResult rides the BadInput for programmatic access (exc.result),
+    # and the refusal names the user-facing op's key + script call site.
+    if isinstance(manifest_raw, dict) and manifest_raw.get("status") == "failed":
+        rr = run_diag.failed_run_result(
+            manifest_raw,
+            {"run": trace.run, "frames": trace.frames} if trace is not None else None,
+            run=str(out_path / "trace.json"),
+        )
+        _d = rr.diags[0]
+        _a = _d.anchor
+        at = f" at {_a.file}:{_a.line}" if _a.file else ""
+        if _a.frame_key:
+            at += f" (frame {_a.frame_key})"
+        refusal: Any = BadInput(f"{_d.message}{at}", next=_d.next)
+        refusal.result = rr
+        raise refusal
 
     # Vet runs after the trace load so instance/block refusals cite the
     # entries' script sites too; everything still refuses before a write.

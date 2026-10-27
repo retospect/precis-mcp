@@ -51,9 +51,15 @@ package's roll-up: ``lattice.site_uv`` is the same ``(u, v)`` for a lattice
 site. numpy/stdlib only, so the fold-in boundary holds.
 
 Vendored into precis as its own package: MIT (``LICENSE`` here), never
-imports ``precis*`` (``tests/test_hexfold_import_boundary.py``), exported
+imports the server's ``precis`` package
+(``tests/hexfold/test_import_boundary.py``), exported
 as its own pip later.  Export seed (README, examples, CITATION) is the
 repo-root ``hexfold/`` directory.
+The optional workspace siblings are independent: ``precis_geom`` supplies
+tracing, and the explicit ``hexfold.diag`` S2 adapter imports the stdlib-only
+``precis_diag`` to convert Diags to Findings. Keeping this reverse conversion
+here leaves the shared core free of domain imports; importing ``report``
+does not require the adapter.
 
 ``from hexfold import build`` (and ``check``, ``stick``,
 ``canonical_json``) yields the verb callable. The first three are the
