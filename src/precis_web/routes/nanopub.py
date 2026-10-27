@@ -399,6 +399,39 @@ async def nanopub_refine_now(request: Request, hub_id: int) -> Response:
     return _back_to_hub(hub_id)
 
 
+@router.post("/nanopub/fi{hub_id}/sweep", response_model=None)
+async def nanopub_sweep(request: Request, hub_id: int) -> Response:
+    """The coverage panel's "Sweep for opposition" button (gr521535):
+    queue a ``conflict_sweep`` job for this hub through
+    :func:`precis.workers.conflict_search.enqueue_conflict_sweep` — the
+    same mint the mint trigger and the approve-time refresh use, keyed
+    ``refresh:<UTC date>`` so a click coalesces with the day's queued
+    refresh (one sweep per hub per day). Dark service → the re-rendered
+    panel says so ("No re-sweep queued — the service is off")."""
+    from datetime import UTC, datetime
+
+    from precis.taproot.seniority import is_claim_hub
+    from precis.workers.conflict_search import enqueue_conflict_sweep
+
+    store = get_store(request)
+    if not is_claim_hub(store, hub_id):
+        # A sweep only makes sense against a claim hub — refuse arbitrary
+        # ids before they can mint job rows (gr521535 follow-up).
+        return _error(
+            request,
+            "Sweep refused",
+            f"fi{hub_id} is not a claim hub — sweeps run on TAPROOT:claim findings only",
+            404,
+        )
+    enqueue_conflict_sweep(
+        store,
+        hub_id,
+        reason=f"refresh:{datetime.now(UTC):%Y-%m-%d}",
+        refresh=True,
+    )
+    return _back_to_hub(hub_id)
+
+
 @router.post("/nanopub/fi{hub_id}/reopen", response_model=None)
 async def nanopub_reopen(request: Request, hub_id: int) -> Response:
     store = get_store(request)

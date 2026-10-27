@@ -151,6 +151,19 @@ class SmartDraftFakeStore(FakeStore):
             return _DRAFT
         return super().get_ref(kind=kind, id=id)
 
+    def get_draft_chunk(self, handle, *, kind="draft"):
+        # _draft_ref's dc<N> branch: chunk ids 1..11 belong to the fixture
+        # draft (ref 700); anything else is a miss.
+        parsed = handle_registry.parse(handle)
+        if (
+            parsed is not None
+            and parsed[0] == "draft"
+            and parsed[1]
+            and parsed[2] in {c.chunk_id for c in self._chunks}
+        ):
+            return SimpleNamespace(ref_id=700, dc=handle, chunk_id=parsed[2])
+        return None
+
     def list_refs(self, *, kind=None, limit=50, offset=0, **kw):
         if kind == "draft":
             return [_DRAFT]
@@ -2182,3 +2195,60 @@ def test_smartdraft_no_around_button_without_pins(
     assert r.status_code == 200
     assert 'onclick="smartAround()"' not in r.text
     assert '"eyes": []' in r.text
+
+
+# ── gr521676: open a draft from whatever id form was handed over ──────────
+
+
+def test_smartdraft_dr_handle_opens_draft(smartdraft_client: TestClient) -> None:
+    """``/smartdraft/dr<N>`` resolves the record handle to its draft."""
+    r = smartdraft_client.get("/smartdraft/dr700")
+    assert r.status_code == 200
+
+
+def test_smartdraft_dc_handle_redirects_to_focused_draft(
+    smartdraft_client: TestClient,
+) -> None:
+    """``/smartdraft/dc<N>`` bounces to the owning draft with ?focus=dc<N>."""
+    r = smartdraft_client.get("/smartdraft/dc3", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/smartdraft/sdt?focus=dc3"
+    land = smartdraft_client.get("/smartdraft/dc3")
+    assert land.status_code == 200
+
+
+def test_smartdraft_unique_prefix_opens_draft(
+    smartdraft_client: TestClient,
+) -> None:
+    """An unambiguous slug prefix opens the draft instead of dead-paging."""
+    r = smartdraft_client.get("/smartdraft/sd", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/smartdraft/sdt"
+
+
+def test_smartdraft_slug_typo_offers_did_you_mean(
+    smartdraft_client: TestClient,
+) -> None:
+    """A one-letter typo 404s WITH a did-you-mean link, not a dead page."""
+    r = smartdraft_client.get("/smartdraft/sdu")
+    assert r.status_code == 404
+    assert "Did you mean" in r.text
+    assert 'href="/smartdraft/sdt"' in r.text
+
+
+def test_smartdraft_unknown_ident_plain_404(smartdraft_client: TestClient) -> None:
+    """Nothing close → the plain 404, no bogus suggestions."""
+    r = smartdraft_client.get("/smartdraft/zzz-no-such-draft")
+    assert r.status_code == 404
+    assert "Did you mean" not in r.text
+
+
+def test_draft_alias_routes_carry_handle_idents(
+    smartdraft_client: TestClient,
+) -> None:
+    """``/draft/<ident>`` / ``/drafts/<ident>`` still 307 through — handles
+    resolve on the smartdraft side."""
+    for path in ("/draft/dc3", "/drafts/dr700"):
+        r = smartdraft_client.get(path, follow_redirects=False)
+        assert r.status_code == 307
+        assert r.headers["location"].startswith("/smartdraft/")

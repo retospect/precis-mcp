@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import difflib
 import logging
 import re
 import tempfile
@@ -252,12 +253,56 @@ def _flag(request: Request, name: str) -> bool:
 
 
 def _draft_ref(store: Store, ident: str) -> Any:
-    """Resolve a draft by slug or numeric ref_id (``get_ref`` handles
-    both). Returns the live ``Ref`` or ``None``."""
+    """Resolve a draft by slug, numeric ref_id, or universal handle
+    (``get_ref`` handles the first two). A ``dr<N>`` record handle reads
+    as its ref_id; a ``dc<N>`` chunk handle resolves to the chunk's owning
+    draft so every id the MCP prints opens in the browser as-is
+    (gr521676). Returns the live ``Ref`` or ``None``."""
+    parsed = handle_registry.parse(ident)
+    if parsed is not None and parsed[0] == "draft":
+        if parsed[1]:  # dc<N> chunk handle → the owning draft
+            chunk = store.drafts.get_draft_chunk(ident)
+            if chunk is not None:
+                return store.get_ref(kind="draft", id=int(chunk.ref_id))
+        else:  # dr<N> record handle → its ref_id
+            ref = store.get_ref(kind="draft", id=parsed[2])
+            if ref is not None:
+                return ref
     key: int | str = int(ident) if ident.lstrip("#").isdigit() else ident
     if isinstance(key, str) and key.startswith("#"):
         key = int(key[1:])
     return store.get_ref(kind="draft", id=key)
+
+
+#: Cap on drafts pulled for the near-miss slug scan — same bounded-corpus
+#: posture as ``_suggest_paper_slugs`` (handlers/paper.py).
+_SLUG_SUGGEST_CAP = 5000
+
+
+def _draft_slug_suggestions(store: Store, ident: str) -> tuple[Any | None, list[Any]]:
+    """``(auto_open, candidates)`` for a draft ident that resolved to nothing.
+
+    * ``auto_open`` — when ``ident`` is a strict prefix of exactly one live
+      draft slug (Reto's ``se-constraint-cad-nanobud`` vs the real
+      ``…-buds``), that ref: the reader opens it instead of dead-paging.
+    * ``candidates`` — every prefix match plus up to three difflib close
+      matches (a one-letter typo), for the error page's did-you-mean list.
+      Empty → the caller shows the plain 404.
+    """
+    ident = ident.strip()
+    if len(ident) < 2 or ident.isdigit():
+        return None, []
+    refs = [r for r in store.list_refs(kind="draft", limit=_SLUG_SUGGEST_CAP) if r.slug]
+    prefix = [r for r in refs if str(r.slug).startswith(ident)]
+    if len(prefix) == 1:
+        return prefix[0], prefix
+    by_slug = {str(r.slug): r for r in refs}
+    seen = {str(r.slug) for r in prefix}
+    out = list(prefix)
+    for slug in difflib.get_close_matches(ident, list(by_slug), n=3, cutoff=0.6):
+        if slug not in seen:
+            out.append(by_slug[slug])
+    return None, out[:8]
 
 
 def _project_id(store: Store, ref_id: int) -> int | None:

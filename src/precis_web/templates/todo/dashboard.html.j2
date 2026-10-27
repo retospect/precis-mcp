@@ -367,11 +367,14 @@
             {% else %}
             <span class="text-sm break-words {% if r.status in ['done',"won't-do"] %}line-through text-fg-faint{% endif %}">{{ (r.title or '').split('\n', 1)[0] | truncate(80, killwords=False, end='…') | linkify_refs }}</span>
             {% endif %}
-            {% if r.title and '\n' in r.title or (r.title and r.title|length > 80) %}
+            {% if (r.title and '\n' in r.title) or (r.title and r.title|length > 80) or r.body %}
             <div x-show="tip" x-cloak x-transition.opacity.duration.150ms
                  class="absolute z-40 left-0 top-full mt-1 w-[44rem] max-w-[80vw] rounded-lg border border-line bg-surface p-3 shadow-xl"
                  style="white-space: pre-line">
               <p class="text-xs text-fg-secondary break-words">{{ r.title | linkify_refs }}</p>
+              {% if r.body %}
+              <p class="mt-2 text-xs text-fg-secondary break-words border-t border-line-subtle pt-2">{{ r.body | linkify_refs }}</p>
+              {% endif %}
             </div>
             {% endif %}
           </span>
@@ -500,6 +503,17 @@
                   class="text-xs text-fg-faint hover:text-fg-secondary">⋯</button>
           {% endif %}
         </div>
+        {% if r.kind == 'todo' and r.body %}
+        {# The details body (todo_body chunk) — the decision/brief a
+           review-note todo carries. Always one click away on the row;
+           OPEN when this node is the ?focus= target, where the body IS
+           the page subject (gr521530). #}
+        <details class="mt-1" {% if r.id == focus_id %}open{% endif %}
+                 style="margin-left: {{ (r.depth * 1.25) + 1.5 }}rem">
+          <summary class="cursor-pointer text-xs text-fg-faint">details</summary>
+          <div class="mt-1 whitespace-pre-wrap break-words text-sm text-fg-secondary">{{ r.body | linkify_refs }}</div>
+        </details>
+        {% endif %}
         {% if r.kind == 'todo' %}
         <!-- Tags strip: always visible (not gated by the ⋯ panel, which
              collapses on the post-redirect reload) so a just-added tag

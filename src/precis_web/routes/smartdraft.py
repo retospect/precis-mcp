@@ -21,10 +21,11 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.store._tags_ops import escape_like
 from precis.store.types import Tag
+from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS
 from precis_web import draft_eyes, smartdraft
@@ -43,6 +44,7 @@ from precis_web.routes.drafts import (
     _connection_chips,
     _draft_author_lines,
     _draft_ref,
+    _draft_slug_suggestions,
     _draft_version,
     _is_dc,
     _owner_workspace,
@@ -94,7 +96,22 @@ async def reader(
     is the active-signal letter set (e.g. ``vkts``); ``sview`` is ``list``/``toc``."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
+    if ref is not None and not focus:
+        parsed = handle_registry.parse(ident)
+        if parsed is not None and parsed[0] == "draft" and parsed[1]:
+            # A dc<N> chunk id opens the draft focused on that chunk —
+            # the same landing /c/<handle> produces (gr521676).
+            canon = ref.slug or str(ref.id)
+            return RedirectResponse(
+                url=f"/smartdraft/{canon}?focus={ident}", status_code=303
+            )
     if ref is None:
+        auto_open, candidates = _draft_slug_suggestions(store, ident)
+        if auto_open is not None:
+            # Unambiguous prefix — open the draft, never a dead page.
+            return RedirectResponse(
+                url=f"/smartdraft/{auto_open.slug}", status_code=303
+            )
         return templates.TemplateResponse(
             request,
             "error.html.j2",
@@ -103,6 +120,14 @@ async def reader(
                 "title": "Draft not found",
                 "status": 404,
                 "detail": f"no draft {ident!r}",
+                "suggestions": [
+                    {
+                        "href": f"/smartdraft/{r.slug}",
+                        "label": str(r.slug),
+                        "title": (r.title or "").split("\n", 1)[0],
+                    }
+                    for r in candidates
+                ],
             },
             status_code=404,
         )

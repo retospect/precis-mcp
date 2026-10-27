@@ -886,6 +886,33 @@ def _lease_active(lease_until: str | None) -> bool:
     return ts > datetime.now(UTC)
 
 
+def _todo_bodies(store: Store, todo_ids: list[int]) -> dict[int, str]:
+    """Each todo's optional details body — its ``todo_body`` chunk text
+    (``handlers/todo.py`` ``_BODY_KIND``, the details a long planner prompt
+    or a decision brief lives in).
+
+    The tree row shows only the title (first line / RAKE gist + a hover
+    popover); without this the body — the actual "what to decide" of a
+    review-note todo — is invisible anywhere on the page (gr521530).
+    Degrades to ``{}`` under the test fake (no chunks table)."""
+    out: dict[int, str] = {}
+    if not todo_ids:
+        return out
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, text FROM chunks "
+                "WHERE ref_id = ANY(%s) AND chunk_kind = 'todo_body' "
+                "AND retired_at IS NULL",
+                (todo_ids,),
+            ).fetchall()
+    except Exception:  # pragma: no cover - defensive (fake cursor)
+        return out
+    for ref_id, text in rows:
+        out[int(ref_id)] = str(text or "")
+    return out
+
+
 def _build_rows(
     store: Store, *, precis_root: Path | None = None
 ) -> list[dict[str, Any]]:
@@ -916,6 +943,9 @@ def _build_rows(
     # Failure reason / summary chunks for each job, so a job row's
     # bare status badge gets a hover tooltip explaining what happened.
     job_notes = _job_notes(store, [j["id"] for j in jobs])
+    # Details bodies (``todo_body`` chunks) — the row renders the title;
+    # the body is the decision/brief text the focus page must show.
+    bodies = _todo_bodies(store, todo_ids)
 
     # Normalise todos + jobs into a single node dict so the walk is
     # kind-agnostic.
@@ -1054,6 +1084,7 @@ def _build_rows(
                 "kind": node["kind"],
                 "parent_id": node["parent_id"],
                 "title": node["title"],
+                "body": bodies.get(node["id"], "") if node["kind"] == "todo" else "",
                 "gist": _gist(node["title"]),
                 "status": status,
                 "level": tags[node["id"]]["level"],

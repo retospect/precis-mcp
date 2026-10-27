@@ -128,10 +128,14 @@
     {% endif %}
     {% if cc.status != 'fresh' %}
       {% if cc.resweep_job_id %}
-      <p class="text-xs text-warning-strong/80">Re-sweep requested (job {{ cc.resweep_job_id }}); results land in the open questions above once it runs.</p>
+      <p class="text-xs text-warning-strong/80">Re-sweep requested (<a class="underline hover:text-warning-deep" href="/refs/job/{{ cc.resweep_job_id }}">job {{ cc.resweep_job_id }}</a>); results land in the open questions above once it runs.</p>
       {% else %}
       <p class="text-xs text-warning-strong/80">No re-sweep queued — the <code>conflict_search</code> service is off, or this claim is past review.</p>
       {% endif %}
+      <form method="post" action="/nanopub/fi{{ hub_ref_id }}/sweep" class="inline">
+        <button class="px-2 py-0.5 rounded border border-warning-strong text-warning-deep text-xs hover:bg-warning-subtle"
+                title="Queue a conflict_sweep job that hunts this claim's opposition (one per hub per day; needs the conflict_search service lit)">Sweep for opposition</button>
+      </form>
     {% endif %}
     {% if np.counter_mint %}
     <div class="rounded border border-success bg-success-subtle px-3 py-2 text-xs text-success-deep">

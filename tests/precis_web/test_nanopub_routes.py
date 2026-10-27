@@ -1439,6 +1439,7 @@ def test_coverage_panel_states_the_ledger_and_requests_a_resweep(
     from precis.workers.conflict_search import (
         CONFLICT_SEARCH_VERSION,
         CONFLICT_SWEEP_JOB_TYPE,
+        pending_sweep_job_id,
     )
     from precis.workers.service_config import ALL_HOSTS, set_service_prio
     from precis_web import nanopub_render
@@ -1474,7 +1475,10 @@ def test_coverage_panel_states_the_ledger_and_requests_a_resweep(
     # Lit service: the same render requests exactly one refresh sweep.
     set_service_prio(store, ALL_HOSTS, "conflict_search", 5)
     page = client.get(f"/claim/fi{hub}")
-    assert "Re-sweep requested (job" in page.text
+    assert "Re-sweep requested (" in page.text
+    job_id = pending_sweep_job_id(store, hub)
+    assert job_id is not None
+    assert f'href="/refs/job/{job_id}"' in page.text
     client.get(f"/claim/fi{hub}")
     jobs = _jobs()
     assert len(jobs) == 1
@@ -1795,3 +1799,71 @@ def test_claim_page_shows_the_drift_notice_after_sign_survives_a_changed_page(
     assert store.nanopub_publish_row(hub).state == "signed"
     page = client.get(f"/claim/fi{hub}")
     assert "Source changed since approval" in page.text
+
+
+def test_coverage_panel_links_the_resweep_job_and_offers_a_sweep_button(
+    client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr521535 + gr521545: the non-fresh coverage panel shows a "Sweep for
+    opposition" button posting to the sweep door, and names the queued
+    sweep job as a link to its job page — also on a past-review claim,
+    where the auto-resweep request no longer runs."""
+    from precis.workers.conflict_search import (
+        CONFLICT_SWEEP_JOB_TYPE,
+        pending_sweep_job_id,
+    )
+    from precis.workers.service_config import ALL_HOSTS, set_service_prio
+    from precis_web import nanopub_render
+
+    _stub_dedup_judge(monkeypatch)
+    monkeypatch.setattr(
+        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
+    )
+    store = _store(runtime_with_store)
+    paper, chunk, sha = _seed_paper(store)
+    title = "Pores sized for one co-substrate gate membrane transport."
+    hub = _seed_hub(store, title, paper, chunk)
+
+    # Dark service: the button is offered, no job is named, POST is a no-op.
+    page = client.get(f"/claim/fi{hub}")
+    assert f'action="/nanopub/fi{hub}/sweep"' in page.text
+    assert "Sweep for opposition" in page.text
+    resp = client.post(f"/nanopub/fi{hub}/sweep", follow_redirects=False)
+    assert resp.status_code == 303
+    assert pending_sweep_job_id(store, hub) is None
+
+    # Lit service: the click mints exactly one conflict_sweep job, and the
+    # re-rendered panel links it to its /refs/job/<id> page.
+    set_service_prio(store, ALL_HOSTS, "conflict_search", 5)
+    resp = client.post(f"/nanopub/fi{hub}/sweep", follow_redirects=False)
+    assert resp.status_code == 303
+    job_id = pending_sweep_job_id(store, hub)
+    assert job_id is not None
+    page = client.get(f"/claim/fi{hub}")
+    assert f'href="/refs/job/{job_id}"' in page.text
+    assert f"job {job_id}" in page.text
+
+    # A second click coalesces on the day's refresh idem key — still one job.
+    client.post(f"/nanopub/fi{hub}/sweep", follow_redirects=False)
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+            "AND meta->>'job_type' = %s",
+            (CONFLICT_SWEEP_JOB_TYPE,),
+        ).fetchone()
+    assert int(n[0]) == 1
+
+    # The door validates the claim hub: arbitrary ids are refused and mint
+    # nothing (follow-up — only TAPROOT:claim findings sweep).
+    resp = client.post(f"/nanopub/fi{paper}/sweep", follow_redirects=False)
+    assert resp.status_code == 404
+    assert "not a claim hub" in resp.text
+    resp = client.post("/nanopub/fi99999999/sweep", follow_redirects=False)
+    assert resp.status_code == 404
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+            "AND meta->>'job_type' = %s",
+            (CONFLICT_SWEEP_JOB_TYPE,),
+        ).fetchone()
+    assert int(n[0]) == 1  # still just the hub's job — refusals mint nothing

@@ -1044,12 +1044,17 @@ def _conflict_coverage_panel(
         CONFLICT_SEARCH_FRESH_DAYS,
         CONFLICT_SEARCH_VERSION,
         coverage_status,
+        pending_sweep_job_id,
     )
 
     if request_resweep:
         coverage, job_id = request_conflict_resweep(store, hub_ref_id, hub_meta)
     else:
-        coverage, job_id = coverage_status(hub_meta), None
+        # Read-only render, but still name a live queued/running sweep so a
+        # job minted by the sweep button (or an earlier approve view) shows
+        # instead of a bare "no re-sweep queued" (gr521535/gr521545).
+        coverage = coverage_status(hub_meta)
+        job_id = pending_sweep_job_id(store, hub_ref_id)
 
     rows = list(reversed(coverage.covered))[:_COVERAGE_LIST_CAP]
 

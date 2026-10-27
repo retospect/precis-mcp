@@ -206,6 +206,7 @@ __all__ = [
     "enqueue_conflict_sweep",
     "mint_counter_claim",
     "negate_claim",
+    "pending_sweep_job_id",
     "run_conflict_search_pass",
     "sweep_one_hub",
 ]
@@ -1684,6 +1685,44 @@ def enqueue_conflict_sweep(
         return _do(conn)
     with store.tx() as c:
         return _do(c)
+
+
+def pending_sweep_job_id(
+    store: Store, hub_ref_id: int, *, conn: Any = None
+) -> int | None:
+    """The newest live (``STATUS:queued``/``running``) ``conflict_sweep``
+    job minted for ``hub_ref_id``, or ``None``.
+
+    The coverage panel shows this even when the render isn't the one
+    asking for the sweep (``request_resweep=False`` — a claim past
+    review), so a job queued by the sweep button or an earlier approve
+    view doesn't read as "no re-sweep queued" (gr521535). Never raises:
+    same fail-soft posture as :func:`conflict_search_enabled`.
+    """
+
+    def _q(c: Any) -> int | None:
+        row = c.execute(
+            "SELECT r.ref_id FROM refs r "
+            "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+            "AND r.meta->>'job_type' = %s "
+            "AND (r.meta->'params'->>'hub_id')::int = %s "
+            "AND EXISTS ("
+            "  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "  WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+            "  AND t.value IN ('queued', 'running')"
+            ") ORDER BY r.ref_id DESC LIMIT 1",
+            (CONFLICT_SWEEP_JOB_TYPE, hub_ref_id),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    try:
+        if conn is not None:
+            return _q(conn)
+        with store.pool.connection() as c:
+            return _q(c)
+    except Exception:
+        log.warning("conflict_search: pending sweep lookup failed", exc_info=True)
+        return None
 
 
 # ── coverage reads (the ledger as a statement) ───────────────────────────
