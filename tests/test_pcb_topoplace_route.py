@@ -1163,6 +1163,229 @@ def test_build_wires_gap_priced_by_geometry() -> None:
     assert (free5[:, 0] < free5[:, 1]).any()
 
 
+def _channel_wall_design(n_nets: int = 3, drop: tuple[int, ...] = ()) -> TopoDesign:
+    """A TH pad wall at x=0 spanning the board: every gap closed except
+    one 0.6 mm channel (cap 1 per outer layer → 2 total). ``n_nets``
+    two-pin nets must all cross x=0 — demand over capacity. ``drop``
+    removes pads by index (after the channel-opening shift) to open a
+    wider single channel — e.g. ``drop=(9, 10, 11)`` leaves a 3.4 mm
+    gap between the pads at y=-1.6 and y=+2.4."""
+    sq = lambda hx, hy: np.asarray(
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]], float
+    )
+    padw = 0.6
+    # pitch 1.0 → 0.4 gaps (closed, < 0.45); the pad at y=0.4 shifted to
+    # 0.6 opens one 0.6 gap between -0.6 and +0.6. Row ends reach the
+    # outline (0.1 residual, closed) so the channel is the ONLY way.
+    ys = [-9.6 + i * 1.0 for i in range(20)]
+    ys[10] = 0.6  # the y=0.4 pad shifts to 0.6, opening the 0.6 gap
+    ys = [y for i, y in enumerate(ys) if i not in drop]
+    n_wall = len(ys)
+    parts = tuple(f"{c}{i}" for i in range(n_nets) for c in "AB") + tuple(
+        f"H{i}" for i in range(n_wall)
+    )
+    n_pins = 2 * n_nets + n_wall
+    pin_xy = [[0.0, 0.0]] * n_pins
+    pin_part = list(range(n_pins))
+    pose = [
+        [
+            (-5.0 if j % 2 == 0 else 5.0),
+            -2.0 + 2.0 * (j // 2),
+            0,
+            0,
+        ]
+        for j in range(2 * n_nets)
+    ]
+    pose += [[0.0, y, 0, 0] for y in ys]
+    nets = [j // 2 for j in range(2 * n_nets)] + [n_nets + i for i in range(n_wall)]
+    return TopoDesign(
+        parts=parts,
+        pin_xy=np.asarray(pin_xy, float),
+        pin_part=np.asarray(pin_part),
+        pin_side=np.asarray([2] * n_pins, np.int8),
+        pin_label=np.asarray(["1"] * n_pins, dtype=object),
+        pin_net=np.asarray(nets, np.int32),
+        net_pins=tuple(np.asarray([2 * i, 2 * i + 1]) for i in range(n_nets))
+        + tuple(np.asarray([2 * n_nets + i]) for i in range(n_wall)),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(len(parts), bool),
+        freedoms=np.full(len(parts), 3, np.uint8),
+        outline=np.asarray([[-10, -10], [10, -10], [10, 10], [-10, 10]], float),
+        pose0=np.asarray(pose, float),
+        part_outline=(sq(0.4, 0.4),) * (2 * n_nets)
+        + tuple(sq(padw / 2 + 0.02, padw / 2 + 0.02) for _ in range(n_wall)),
+        net_layer_force=np.full(n_nets + n_wall, -1, np.int8),
+        net_name=tuple(f"N{i}" for i in range(n_nets))
+        + tuple(f"W{i}" for i in range(n_wall)),
+        pin_wh=np.tile([[padw, padw]], (n_pins, 1)),
+    )
+
+
+def test_corridor_overflow_recorded_and_refused() -> None:
+    """gr520904 S6: three nets through a channel that takes two — the
+    demand-vs-capacity cut records the edge with its bounding owners,
+    and ``route_design`` refuses ``corridor overflow`` instead of
+    cramming copper."""
+    from precis.pcb.topoplace.mesh import build_mesh
+    from precis.pcb.topoplace.wires import CorridorOverflow, build_wires
+
+    d = _channel_wall_design(3)
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 2)
+    assert not w.unreachable
+    assert w.overflow, "three wires through a 2-slot channel must cut"
+    cut = max(w.overflow, key=lambda c: c.demand - c.cap)
+    assert cut.demand == pytest.approx(3.0)
+    assert cut.cap == pytest.approx(2.0)
+    # the channel's walls are the two H parts bounding the 0.6 mm gap
+    assert len(cut.owners) == 2 and all(o.startswith("H") for o in cut.owners)
+
+    from types import SimpleNamespace
+
+    from precis.pcb.topoplace.realise import route_design
+
+    with pytest.raises(CorridorOverflow) as excinfo:
+        route_design(d, SimpleNamespace(n_layers=2))
+    msg = str(excinfo.value)
+    assert "corridor overflow" in msg
+    assert all(o in msg for o in cut.owners)
+    assert "next:" in msg
+
+
+def test_power_net_routes_at_routing_width_not_widen_target() -> None:
+    """gr520904 follow-up (Reto's widen ruling): a rail's
+    ``est_current_a`` resolves to an IPC-2221 width (~2.8 mm at 5 A) —
+    that is the post-route ``widen_power`` TARGET, never a routing
+    demand. ``route_net_rules`` drops the current-derived bump so the
+    corridor cut and the A* occupancy price the width the track is BORN
+    at: a channel that fits the routing width does not refuse the rail,
+    and its copper is emitted thin."""
+    from types import SimpleNamespace
+
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.session import clearance_net_rules, route_net_rules
+    from precis.pcb.topoplace.realise import route_design
+
+    caps = capability_for("4layer")
+    # three rails across the wall's one 3.4 mm channel: a point survives
+    # the routing rule's growth (0.45 mm need) but not the fat target's
+    # (~3.1 mm), and under the fat map the wall-adjacent corridor band
+    # closes entirely — the nets are stranded, not merely detoured
+    d = _channel_wall_design(3, drop=(9, 10, 11))
+    design = {
+        "nets": [
+            {"name": f"N{i}", "net_class": "power", "est_current_a": 5.0}
+            for i in range(3)
+        ],
+        "net_classes": {},
+    }
+    full = clearance_net_rules(design, caps)
+    assert full["N0"].track_width_mm > 2.0
+    route_rules = route_net_rules(design, caps)
+    route_w = route_rules["N0"].track_width_mm
+    assert route_w + 2.0 * route_rules["N0"].clearance_mm <= 0.6
+    assert route_w < full["N0"].track_width_mm
+    # an authored class width is a rule width, not a widen target — it
+    # stands in the route map
+    assert route_net_rules(
+        {
+            "nets": [{"name": "N0", "net_class": "power", "est_current_a": 5.0}],
+            "net_classes": {"power": {"track_width_mm": 0.4}},
+        },
+        caps,
+    )["N0"].track_width_mm == pytest.approx(0.4)
+
+    ir = SimpleNamespace(n_layers=2, net_name=list(d.net_name))
+    # control — the full-resolution map still prices the widen target as
+    # a routing demand and the channel refuses: three rails at ~9.7
+    # finest-rule slots each against the corridor's 20
+    from precis.pcb.topoplace.wires import CorridorOverflow
+
+    with pytest.raises(CorridorOverflow):
+        route_design(d, ir, net_rules=full)
+
+    plan, res = route_design(d, ir, net_rules=route_rules)
+    assert {p.net for p in plan.pieces} >= {0, 1, 2}
+    assert all(t.width_mm == pytest.approx(route_w) for t in res.tracks)
+
+
+def _slot_wall_design() -> TopoDesign:
+    """Two parallel TH pad rows at x=±0.6 forming a 0.6 mm slot, walls
+    open only below their bottom end (y<-3.9) and closed to the top
+    outline. The near wall's only gap is at y~-3.0, the far wall's at
+    y~-1.0 — crossing x=0 through the slot takes two cap-1 channels;
+    ducking the open bottom end is ~2.6 mm longer. Two nets cross: with
+    congestion pricing the second must detour, not pile in."""
+    sq = lambda hx, hy: np.asarray(
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, hy]], float
+    )
+    padw = 0.6
+    ys = [-3.6 + i * 1.0 for i in range(14)]  # -3.6 .. 9.6, top residual 0.1
+    # shift one pad +0.2 per row: the gap below it opens 0.4 -> 0.6
+    wall = [
+        (x, y + 0.2 if i == ci else y)
+        for x, ci in ((-0.6, 1), (0.6, 3))
+        for i, y in enumerate(ys)
+    ]
+    n_wall = len(wall)
+    parts = ("A0", "B0", "A1", "B1") + tuple(f"H{i}" for i in range(n_wall))
+    n_pins = 4 + n_wall
+    pose = [
+        [-5.0, -2.9, 0, 0],
+        [5.0, -2.9, 0, 0],
+        [-5.0, -1.4, 0, 0],
+        [5.0, -1.4, 0, 0],
+    ]
+    pose += [[x, y, 0, 0] for x, y in wall]
+    nets = [0, 0, 1, 1] + [2 + i for i in range(n_wall)]
+    return TopoDesign(
+        parts=parts,
+        pin_xy=np.asarray([[0.0, 0.0]] * n_pins),
+        pin_part=np.asarray(list(range(n_pins))),
+        pin_side=np.asarray([2] * n_pins, np.int8),
+        pin_label=np.asarray(["1"] * n_pins, dtype=object),
+        pin_net=np.asarray(nets, np.int32),
+        net_pins=(np.asarray([0, 1]), np.asarray([2, 3]))
+        + tuple(np.asarray([4 + i]) for i in range(n_wall)),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(len(parts), bool),
+        freedoms=np.full(len(parts), 3, np.uint8),
+        outline=np.asarray([[-10, -10], [10, -10], [10, 10], [-10, 10]], float),
+        pose0=np.asarray(pose, float),
+        part_outline=(sq(0.4, 0.4),) * 4
+        + tuple(sq(padw / 2 + 0.02, padw / 2 + 0.02) for _ in range(n_wall)),
+        net_layer_force=np.full(2 + n_wall, -1, np.int8),
+        net_name=("N0", "N1") + tuple(f"W{i}" for i in range(n_wall)),
+        pin_wh=np.tile([[padw, padw]], (n_pins, 1)),
+    )
+
+
+def test_congestion_detours_before_refusing() -> None:
+    """gr520904 S6: two nets must cross the slot — its two cap-1
+    channels take one wire each, so the occupancy-priced A* sends the
+    second net around the walls' open bottom end instead of cramming a
+    second wire through or refusing. Without the congestion term both
+    nets take the channels and every channel edge cuts at demand 2."""
+    from precis.pcb.topoplace.mesh import build_mesh
+    from precis.pcb.topoplace.wires import build_wires
+
+    d = _slot_wall_design()
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 1)
+    assert not w.unreachable
+    assert not w.overflow
+    by_net = {int(b.net): [p for p in b.points] for b in w.branches}
+    assert 0 in by_net and 1 in by_net
+    # N0's straight line at y=-2.9 sits on the near wall's channel: it
+    # tunnels the slot (never dips below the channel mouth at -3.3)
+    assert min(p[1] for p in by_net[0]) > -3.0
+    # N1's channel would be the same corridor — occupied, it detours
+    # under the walls' bottom end (pad edge -3.9) instead
+    assert min(p[1] for p in by_net[1]) < -3.7
+
+
 def test_build_wires_caged_first_pin_keeps_net() -> None:
     """A boxed-in first pin does not drop its net: with pin order
     [0,1,2,3] and pin 0 caged by a keepout, the forest roots fresh

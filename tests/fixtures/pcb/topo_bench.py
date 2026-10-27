@@ -177,6 +177,8 @@ class TopoStage:
     #: reporting — a 0/absent run prints no note).
     shove_reason: str = ""
     mesh_errors: int | None = None
+    #: S6: corridor edges over capacity on the in-job route (gr520904).
+    corridor_overflow: int | None = None
 
 
 @dataclass(frozen=True)
@@ -313,8 +315,8 @@ def render_stage_table(rows: list[TopoBenchRow]) -> str:
     lines = [
         "",
         "| board | proxy crossings | evals | evals/s | airwire mm | place s "
-        "| odd cycles | via bracket |",
-        "|---|---|---|---|---|---|---|---|",
+        "| odd cycles | via bracket | corridor ovf |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         s = r.topo_stage
@@ -334,7 +336,9 @@ def render_stage_table(rows: list[TopoBenchRow]) -> str:
             f"| {'n/a' if s.evals_per_s is None else f'{s.evals_per_s:.0f}'} "
             f"| {'n/a' if s.airwire_mm is None else f'{s.airwire_mm:.0f}'} "
             f"| {'n/a' if s.place_s is None else f'{s.place_s:.1f}'} "
-            f"| {s.odd_cycles} | {s.via_bracket} |{shove_note}"
+            f"| {s.odd_cycles} | {s.via_bracket} "
+            f"| {'n/a' if s.corridor_overflow is None else s.corridor_overflow} |"
+            f"{shove_note}"
         )
     return "\n".join(lines)
 
@@ -402,6 +406,7 @@ def bench_json(rows: list[TopoBenchRow], *, generated_utc: str) -> dict[str, Any
                     "place_s": r.topo_stage.place_s,
                     "odd_cycles": r.topo_stage.odd_cycles,
                     "via_bracket": r.topo_stage.via_bracket,
+                    "corridor_overflow": r.topo_stage.corridor_overflow,
                 },
                 "verdicts": verdicts(r),
                 "overall": overall(r),
@@ -499,6 +504,7 @@ def _topo_stage(store: Store, job_id: int, place_wall: float) -> TopoStage:
     ``summary.txt``'s ``crossings A → B`` line, the rest from
     ``manifest.json.result``)."""
     meta = _job_meta(store, job_id)
+    route_meta = (meta.get("topo_run") or {}).get("route") or {}
     files = (meta.get("topo_run") or {}).get("files") or {}
     result = ((files.get("manifest.json") or {}).get("result")) or {}
     summary = str(files.get("summary.txt") or "")
@@ -533,6 +539,7 @@ def _topo_stage(store: Store, job_id: int, place_wall: float) -> TopoStage:
             else None
         ),
         legalize_left=(result.get("legalize") or {}).get("remaining"),
+        corridor_overflow=route_meta.get("corridor_overflow"),
     )
 
 

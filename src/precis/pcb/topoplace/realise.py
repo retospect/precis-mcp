@@ -58,7 +58,12 @@ import numpy as np
 from precis.pcb.rules import NetRules
 from precis.pcb.topoplace.design import TopoDesign, _world_to_local
 from precis.pcb.topoplace.mesh import TopoMesh
-from precis.pcb.topoplace.wires import Unreachable, WirePath, Wires
+from precis.pcb.topoplace.wires import (
+    CorridorOverflow,
+    Unreachable,
+    WirePath,
+    Wires,
+)
 
 _DEFAULT = NetRules(track_width_mm=0.15, clearance_mm=0.15)
 
@@ -129,6 +134,11 @@ class RoutePlan:
     #: honest geometry), and land on the caller's ``pcb_routes`` row as
     #: ``failed: no via site`` (gr520901).
     no_via: tuple[int, ...] = ()
+    #: Corridor edges whose routed demand exceeded capacity (gr520904).
+    #: Always 0 on a returned plan — a nonzero cut refuses the route in
+    #: :func:`route_design` (:class:`CorridorOverflow`), so this is the
+    #: bench's "the corridor did not overflow" number.
+    corridor_overflow: int = 0
 
     @property
     def n_routed_nets(self) -> int:
@@ -571,7 +581,11 @@ def route_design(
     already settled reads it straight. A caller holding the anneal's
     ``best_pose`` (``pcb.local``) passes it — the mesh is rebuilt at the
     routed pose, not the authored one. ``net_rules`` feeds BOTH the wire
-    corridor widths and the emitted track widths, per net name.
+    corridor widths and the emitted track widths, per net name — pass
+    the ROUTE-stage resolution
+    (:func:`precis.pcb.session.route_net_rules`), whose current-derived
+    IPC-2221 widths are dropped: those are ``widen_power`` targets, not
+    routing demands.
 
     The emitted :class:`RealizeResult` DROPS every branch an unresolved
     same-layer crossing still names (:attr:`RoutePlan.crossings`): that
@@ -593,7 +607,11 @@ def route_design(
         else (_DEFAULT.track_width_mm, _DEFAULT.clearance_mm)
         for k in range(len(d.net_pins))
     )
-    wires = build_wires(mesh, d, ir.n_layers, rules_t)
+    wires = build_wires(mesh, d, ir.n_layers, rules_t, pose=mesh_pose)
+    if wires.overflow:
+        # honest refusal (gr520904): a channel whose demand exceeds
+        # capacity is named with its owners — never silently crammed.
+        raise CorridorOverflow(wires.overflow)
     plan = plan_route(d, mesh, wires, ir.n_layers, net_rules=net_rules, pose=mesh_pose)
     emit = plan
     if plan.crossings:

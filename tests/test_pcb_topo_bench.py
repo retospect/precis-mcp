@@ -138,7 +138,8 @@ def test_render_tables_mark_na_and_notes() -> None:
     assert "topo place refused: 3 placement DRC" in table
     stage = tb.render_stage_table([row])
     assert (
-        "| b | n/a | n/a | n/a | n/a | 4.2 | n/a (slice 2) | n/a (slice 2) |" in stage
+        "| b | n/a | n/a | n/a | n/a | 4.2 | n/a (slice 2) | n/a (slice 2) | n/a |"
+        in stage
     )
     verdict_table = tb.render_verdicts([row])
     assert "| b | n/a | n/a | n/a | n/a | n/a | n/a |" in verdict_table
@@ -166,6 +167,7 @@ def test_render_tables_fill_when_topo_route_exists() -> None:
     assert "| b | topo+route | 10/10 | 0 | 29.9 | 7 | 15.0 |" in table
     stage = tb.render_stage_table([row])
     assert "| b | 41 → 0 | 20000 | 1500 | 120 | 13.3 |" in stage
+    assert "n/a (slice 2) | n/a (slice 2) | n/a |" in stage
     assert "| b | PASS | PASS | PASS | PASS | PASS | PASS |" in tb.render_verdicts(
         [row]
     )
@@ -196,6 +198,7 @@ def test_bench_json_shape_and_provenance() -> None:
     assert board["anneal"]["routed"] == 10
     assert board["topo"]["routed"] is None
     assert board["topo_stage"]["via_bracket"] == "n/a (slice 2)"
+    assert board["topo_stage"]["corridor_overflow"] is None
     assert board["overall"] == "n/a"
     json.dumps(doc)  # serialisable verbatim
 

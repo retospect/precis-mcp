@@ -925,7 +925,7 @@ def topo_place(
             td_route,
             ir,
             pose=result.best_pose,
-            net_rules=pcb_session.clearance_net_rules(design.graph, design.fab_caps),
+            net_rules=pcb_session.route_net_rules(design.graph, design.fab_caps),
         )
         # The oracle measures the PLACED board — write the winning pose
         # into the local ir first (it is throwaway; ``poses`` above
@@ -984,6 +984,7 @@ def topo_place(
             "vias": len(rres.vias),
             "crossings": [list(c) for c in plan.crossings],
             "unreachable": [str(td_route.net_name[k]) for k in plan.unreachable],
+            "corridor_overflow": plan.corridor_overflow,
             "widened": {str(ir.net_name[k]): w for k, w in widths.items()},
         }
         files["route.json"] = route_json

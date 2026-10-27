@@ -441,6 +441,36 @@ def clearance_net_rules(
     }
 
 
+def route_net_rules(
+    design: dict[str, Any], capability: CapabilityRow
+) -> dict[str, NetRules]:
+    """Net name → resolved :class:`~precis.pcb.rules.NetRules` for the
+    topo ROUTE stage — the same resolution as :func:`clearance_net_rules`
+    with every net's ``est_current_a`` dropped. The current-derived
+    IPC-2221 width is the rail's post-route widen TARGET
+    (:func:`~precis.pcb.topoplace.realise.widen_power` claims it where the
+    DRC oracle allows), never a routing demand: corridor capacity, the
+    A* occupancy and the emitted track width all price the width the
+    track is BORN at, and handing the router a 5 A rail's ~2.8 mm refuses
+    channels its routing width fits (Reto's ruling — GND/power route as
+    normal nets at the signal width; an authored class
+    ``track_width_mm`` still stands, it is a rule width, not a widen
+    target)."""
+    net_classes = design.get("net_classes") or {}
+    return {
+        str(n["name"]): resolve_net_rules(
+            str(n.get("net_class") or ""),
+            # An arbitrary True like clearance_net_rules' — the route
+            # stage resolves one width/clearance pair per net.
+            layer_is_outer=True,
+            fab_caps=capability,
+            overrides=net_classes.get(n.get("net_class") or ""),
+            current_a=None,
+        )
+        for n in design["nets"]
+    }
+
+
 def net_clearance_floors(
     design: dict[str, Any], capability: CapabilityRow
 ) -> dict[str, float]:

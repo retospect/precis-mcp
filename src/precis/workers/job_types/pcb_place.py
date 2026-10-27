@@ -298,9 +298,7 @@ def _topo_route(
     layers = [str(layer.get("name")) for layer in ir.stackup]
     outline = pcb_session.outline_from_features(features or [])
     keepouts = pcb_session.keepouts_from_features(features or [])
-    net_rules = pcb_session.clearance_net_rules(
-        ctx.store.pcb_load(pcb_ref_id), capability
-    )
+    net_rules = pcb_session.route_net_rules(ctx.store.pcb_load(pcb_ref_id), capability)
     plan, rres = _tprealise.route_design(td_route, ir, net_rules=net_rules)
 
     def _drc_errors(result: Any) -> int:
@@ -433,6 +431,7 @@ def _topo_route(
         "vias": len(rres.vias),
         "crossings": len(plan.crossings),
         "unreachable": len(plan.unreachable),
+        "corridor_overflow": getattr(plan, "corridor_overflow", 0),
         "widened": {str(k): v for k, v in widths.items()},
     }
     widened_line = ""
@@ -834,6 +833,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     "placement above stands, no copper written\n"
                 )
                 route_meta = {"error": route_error}
+                # a corridor overflow carries its cut count so the
+                # bench's corridor column still reads a number (S6)
+                n_ovf = getattr(exc, "count", None)
+                if n_ovf is not None:
+                    route_meta["corridor_overflow"] = n_ovf
         # Decision 20: the whole run payload rides the job ref's meta for
         # ``view='topo'`` drill-down; the summary text is the same file.
         # ``route`` stays absent when the stage never ran.
