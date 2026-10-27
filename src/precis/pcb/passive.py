@@ -17,6 +17,7 @@ pin of the spec as cannot-check, never a guessed value.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 #: ``100nF`` / ``0.1uF`` / ``22pF`` — the value token in a capacitor
@@ -84,6 +85,20 @@ def _res_unit(unit: str) -> float:
     return 1.0
 
 
+def _rated_watts(text: str) -> float | None:
+    """The rated power in a description or attribute value: ``100mW``,
+    ``0.25W``, or the fraction spelling ``1/8W``. Milliwatts read first
+    (their ``mW`` token would otherwise split into a bare ``W``)."""
+    watts = _POWER_MW_RE.search(text)
+    if watts:
+        return float(watts.group(1)) / 1000.0
+    frac = _POWER_FRAC_RE.search(text)
+    if frac and float(frac.group(2)):
+        return float(frac.group(1)) / float(frac.group(2))
+    whole = _POWER_W_RE.search(text)
+    return float(whole.group(1)) if whole else None
+
+
 def parse_passive_description(description: str | None) -> dict[str, Any] | None:
     """One catalog ``parts.description`` → the passive's parsed ratings.
 
@@ -122,14 +137,99 @@ def parse_passive_description(description: str | None) -> dict[str, Any] | None:
         if value is None:
             return None
         ohm = float(value.group(1)) * _res_unit(value.group(2))
-        watts = _POWER_MW_RE.search(description)
-        rated_w = float(watts.group(1)) / 1000.0 if watts else None
-        if rated_w is None:
-            frac = _POWER_FRAC_RE.search(description)
-            if frac and float(frac.group(2)):
-                rated_w = float(frac.group(1)) / float(frac.group(2))
-        if rated_w is None:
-            whole = _POWER_W_RE.search(description)
-            rated_w = float(whole.group(1)) if whole else None
-        return {"kind": "resistor", "ohm": ohm, "rated_w": rated_w}
+        return {"kind": "resistor", "ohm": ohm, "rated_w": _rated_watts(description)}
     return None
+
+
+# ── the part's own rating data (``parts.params``) ─────────────────────
+
+#: The ``parts.params`` attribute names a capacitor's rated voltage
+#: rides under in the jlcparts/LCSC parametric blob — ``"Voltage
+#: Rating"`` (C1578291's supercap), ``"Rated Voltage"`` and the
+#: ``"Voltage - Rated DC"`` spelling other listings use.
+_CAP_PARAM_VOLT_KEYS = (
+    "Voltage Rating",
+    "Rated Voltage",
+    "Voltage - Rated DC",
+    "Rated Voltage(DC)",
+    "Rated Voltage DC",
+    "Withstand Voltage",
+)
+
+#: …and the attribute names for a resistor's value and rated power
+#: (``"Power(Watts)"`` is the LCSC column's own spelling).
+_RES_PARAM_OHM_KEYS = ("Resistance", "Resistance (Ohms)", "Resistance(Ω)")
+_RES_PARAM_WATT_KEYS = (
+    "Power(Watts)",
+    "Rated Power",
+    "Rated Power(Watts)",
+    "Power Rating",
+)
+
+#: The ``_category`` words that declare a part's passive kind — WORD
+#: matches, so ``Supercapacitors`` (a battery charger's category text)
+#: never misreads as the capacitor it charges.
+_PARAMS_CAP_KIND_RE = re.compile(r"\bcapacitors?\b|\bmlcc\b", re.IGNORECASE)
+_PARAMS_RES_KIND_RE = re.compile(r"\bresistors?\b", re.IGNORECASE)
+
+
+def _param_text(params: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+    """The first non-empty attribute under ``keys`` — values arrive as
+    text (jlcparts ``attribute_value_name``); a bare number coerces."""
+    for key in keys:
+        val = params.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, (int, float)):
+            return str(val)
+    return None
+
+
+def params_passive_kind(params: Mapping[str, Any] | None) -> str | None:
+    """``'capacitor'``/``'resistor'`` when ``parts.params._category``
+    names the class — the vendor's own declaration — else ``None``."""
+    if not isinstance(params, Mapping):
+        return None
+    cat = str(params.get("_category") or "")
+    if _PARAMS_CAP_KIND_RE.search(cat):
+        return "capacitor"
+    if _PARAMS_RES_KIND_RE.search(cat):
+        return "resistor"
+    return None
+
+
+def params_passive_fields(
+    params: Mapping[str, Any] | None, kind: str
+) -> dict[str, Any]:
+    """The rating fields ``parts.params`` carries for ``kind`` —
+    ``{value_f, rated_v, dielectric}`` for a capacitor, ``{ohm,
+    rated_w}`` for a resistor, each ``None`` when no attribute names it
+    (the caller fills the gap from the description parse; never a guess).
+    ``{}`` for an empty blob or an unknown kind."""
+    if not isinstance(params, Mapping):
+        return {}
+    if kind == "capacitor":
+        value = _param_text(params, ("Capacitance",))
+        cap = CAP_VALUE_RE.search(value) if value else None
+        volt = _param_text(params, _CAP_PARAM_VOLT_KEYS)
+        v = _CAP_VOLT_RE.search(volt) if volt else None
+        diel = _param_text(params, ("Temperature Coefficient",))
+        d = _DIELECTRIC_RE.search(diel) if diel else None
+        return {
+            "value_f": (
+                float(cap.group(1)) * _CAP_FARADS.get(cap.group(2).lower(), 1.0)
+                if cap
+                else None
+            ),
+            "rated_v": float(v.group(1)) * (1e3 if v.group(2) else 1.0) if v else None,
+            "dielectric": d.group(1).lower() if d else None,
+        }
+    if kind == "resistor":
+        value = _param_text(params, _RES_PARAM_OHM_KEYS)
+        ohm = _RES_VALUE_RE.search(value) if value else None
+        watts = _param_text(params, _RES_PARAM_WATT_KEYS)
+        return {
+            "ohm": float(ohm.group(1)) * _res_unit(ohm.group(2)) if ohm else None,
+            "rated_w": _rated_watts(watts) if watts else None,
+        }
+    return {}

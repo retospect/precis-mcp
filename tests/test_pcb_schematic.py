@@ -282,8 +282,8 @@ def test_cross_sheet_net_gets_connectors_on_both_sheets() -> None:
     mcu = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
     power = render_schematic_svg(_grouped_graph(), title="t", sheet="power")
     assert 'class="offsheet"' in mcu and 'class="offsheet"' in power
-    assert ">SIG → " in mcu and 'data-sheet="power"' in mcu
-    assert ">SIG → " in power and 'data-sheet="MCU"' in power
+    assert ">SIG " in mcu and 'data-sheet="power"' in mcu and "→ power" in mcu
+    assert ">SIG " in power and 'data-sheet="MCU"' in power and "→ MCU" in power
     # ...while the overview shows the whole net as plain labels, no flags
     overview = render_schematic_svg(_grouped_graph(), title="t")
     assert 'class="offsheet"' not in overview
@@ -292,7 +292,21 @@ def test_cross_sheet_net_gets_connectors_on_both_sheets() -> None:
 
 def test_net_to_an_ungrouped_part_points_at_the_overview() -> None:
     svg = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
-    assert ">TAIL → " in svg and 'data-sheet=""' in svg and ">overview<" in svg
+    assert ">TAIL " in svg and 'data-sheet=""' in svg and "→ overview<" in svg
+
+
+def test_offsheet_multi_dest_gets_an_arrow_each_not_a_comma() -> None:
+    """gr520804's last open item: ``VSTOR → boost, overview`` read as a
+    comma list after one arrow. Each destination now draws its own
+    arrow — ``VSTOR → boost → overview`` — inside its own data-sheet
+    tspan, so a multi-sheet net reads as separate click targets."""
+    from precis.pcb.schematic import _offsheet_glyph
+
+    glyph = _offsheet_glyph(10.0, 20.0, "VSTOR", ["boost", "overview"], rightward=True)
+    assert ">→ boost</tspan>" in glyph
+    assert ">→ overview</tspan>" in glyph
+    assert ", " not in glyph.split("</title>")[-1]
+    assert glyph.count('class="offsheet-dest"') == 2
 
 
 def test_offsheet_flag_explains_itself_and_each_dest_is_clickable() -> None:

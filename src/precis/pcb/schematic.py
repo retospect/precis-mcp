@@ -427,9 +427,11 @@ def _offsheet_glyph(
     (gr520804 — previously one flat ``NET → a, b`` run that neither
     explained itself nor went anywhere when clicked); ``overview``
     carries ``data-sheet=""``, the key pcb-sheets.js uses for the
-    catch-all tab. The flag's own ``<title>` says what a flag means at
-    all."""
-    text = f"{name} → {', '.join(dests)}"
+    catch-all tab. Every destination draws its own arrow —
+    ``NET → boost → overview`` — so a multi-sheet net reads as separate
+    targets, not a comma list. The flag's own ``<title>` says what a
+    flag means at all."""
+    text = f"{name} " + " ".join(f"→ {dest}" for dest in dests)
     w = len(text) * _CHAR_W + 14.0
     d = 1.0 if rightward else -1.0
     pts = " ".join(
@@ -439,12 +441,12 @@ def _offsheet_glyph(
     colour = f"hsl({_net_hue(name)},55%,38%)"
     anchor = "start" if rightward else "end"
     tx = x + d * 6.0
-    runs = ", ".join(
+    runs = " ".join(
         f'<tspan data-sheet="{esc("" if dest == "overview" else dest, quote=True)}"'
         f' class="offsheet-dest">'
         f"<title>net {escape(name)} continues on sheet {escape(dest)}"
         " — click to open it</title>"
-        f"{escape(dest)}</tspan>"
+        f"{escape('→ ' + dest)}</tspan>"
         for dest in dests
     )
     return (
@@ -454,7 +456,7 @@ def _offsheet_glyph(
         f"{escape(', '.join(dests))}; click a destination to open that "
         "sheet</title></polygon>"
         f'<text x="{tx:.1f}" y="{y + 3.5:.1f}" text-anchor="{anchor}" '
-        f'class="netlabel" fill="{colour}">{escape(name + " → ")}{runs}</text>'
+        f'class="netlabel" fill="{colour}">{escape(name + " ")}{runs}</text>'
     )
 
 

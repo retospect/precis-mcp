@@ -3602,6 +3602,13 @@ class PcbMixin:
                     # is what makes an uncatalogued passive not-checked,
                     # never a guessed rating.
                     "part_description": r[15],
+                    # The part's own rating data (gr520796): ``parts.params``
+                    # — the jlcparts/LCSC attribute blob — preferred over
+                    # the description parse by ``check_passive_rating``
+                    # (``passive.params_passive_fields``); its
+                    # ``_category`` also feeds the passive gate. Hoisted
+                    # only when the catalog row carries one.
+                    **({"part_params": r[20]} if r[20] else {}),
                 }
                 for r in conn.execute(
                     "SELECT i.refdes, i.x, i.y, i.layer, i.roles, c.label, "
@@ -3625,7 +3632,7 @@ class PcbMixin:
                     "       i.fixed_side, i.group_fixed, "
                     "       (SELECT rf.feature_id FROM pcb_features rf "
                     "         WHERE rf.feature_id = i.room_id "
-                    "           AND rf.retired_at IS NULL) "
+                    "           AND rf.retired_at IS NULL), pt.params "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "  LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "

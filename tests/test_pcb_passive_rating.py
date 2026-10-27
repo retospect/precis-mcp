@@ -21,6 +21,7 @@ Covered here, per the slice's accept list:
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -48,6 +49,18 @@ def _m(refdes: str, pin: str, *, tags=(), meta=None) -> dict[str, Any]:
 
 def _inst(refdes: str, description: str | None) -> dict[str, Any]:
     return {"refdes": refdes, "part_description": description}
+
+
+def _instp(
+    refdes: str,
+    description: str | None = None,
+    params: dict[str, Any] | None = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    inst: dict[str, Any] = {"refdes": refdes, "part_description": description, **kw}
+    if params:
+        inst["part_params"] = params
+    return inst
 
 
 # ── the catalog-description parse ────────────────────────────────────
@@ -211,6 +224,186 @@ def test_passive_rating_class_vetoes_lookalike_refdes() -> None:
     # stays a resistor to rate.
     inst = {"refdes": "R5", "part_description": desc, "roles": ["noisy"]}
     assert any(f.severity == "error" for f in drc.check_passive_rating(nets, [inst]))
+
+
+# ── the part's own rating data (``parts.params``, gr520796) ───────────
+
+
+def test_params_passive_kind_reads_the_category() -> None:
+    from precis.pcb.passive import params_passive_fields, params_passive_kind
+
+    assert (
+        params_passive_kind({"_category": "Resistors / Chip Resistor - Surface Mount"})
+        == "resistor"
+    )
+    assert (
+        params_passive_kind(
+            {"_category": "Capacitors / Multilayer Ceramic Capacitors MLCC - SMD/SMT"}
+        )
+        == "capacitor"
+    )
+    # A word match, not a substring: "Supercapacitors" on a charger IC's
+    # category text never names the capacitor kind.
+    assert params_passive_kind({"_category": "PMIC / Supercapacitor Chargers"}) is None
+    assert params_passive_kind(None) is None
+    fields = params_passive_fields(
+        {
+            "Capacitance": "100nF",
+            "Voltage Rating": "16V",
+            "Temperature Coefficient": "X7R",
+        },
+        "capacitor",
+    )
+    assert fields == {
+        "value_f": pytest.approx(1e-7),
+        "rated_v": 16.0,
+        "dielectric": "x7r",
+    }
+    fields = params_passive_fields(
+        {"Resistance": "10kΩ", "Power(Watts)": "0.1W"}, "resistor"
+    )
+    assert fields == {"ohm": pytest.approx(1e4), "rated_w": pytest.approx(0.1)}
+
+
+def test_passive_rating_prefers_the_parts_own_rating_data() -> None:
+    """gr520796's open half: the rating comes from ``parts.params``, the
+    part's own data — the description only fills what the parametrics
+    do not name. A 6.3 V description on a 16 V-rated part stays clean."""
+    nets = [
+        _net("VCC", _m("C4", "1"), working_voltage_v=5.0),
+        _net("GND", _m("C4", "2"), working_voltage_v=0.0),
+    ]
+    inst = _instp(
+        "C4",
+        "100nF ±10% 6.3V Y5V 0402 Multilayer Ceramic Capacitors MLCC",
+        params={
+            "_category": "Capacitors / Multilayer Ceramic Capacitors MLCC - SMD/SMT",
+            "Capacitance": "100nF",
+            "Voltage Rating": "16V",
+            "Temperature Coefficient": "X7R",
+        },
+    )
+    assert drc.check_passive_rating(nets, [inst]) == []
+    # …and the reverse: the parametrics' 6.3 V fails the 2× policy the
+    # description's 16 V claim would have passed.
+    inst = _instp(
+        "C4",
+        "100nF ±10% 16V X7R 0402 Multilayer Ceramic Capacitors MLCC",
+        params={"Voltage Rating": "6.3V"},
+    )
+    findings = drc.check_passive_rating(nets, [inst])
+    assert [f.severity for f in findings] == ["error"]
+    assert "rated 6.3 V" in findings[0].detail
+
+
+def test_passive_rating_params_fill_gaps_the_description_lacks() -> None:
+    """A description with no voltage token is no longer cannot-check
+    when the parametrics carry one."""
+    nets = [
+        _net("VCC", _m("C4", "1"), working_voltage_v=5.0),
+        _net("GND", _m("C4", "2"), working_voltage_v=0.0),
+    ]
+    inst = _instp(
+        "C4",
+        "100nF X7R 0402 Multilayer Ceramic Capacitors",
+        params={"Voltage Rating": "16V"},
+    )
+    assert drc.check_passive_rating(nets, [inst]) == []
+
+
+def test_passive_rating_category_declares_the_kind() -> None:
+    """``_category`` naming the class is the part declaring its own
+    kind — a cataloged passive whose refdes misses the ``C``/``R``
+    convention is still rated (a description-less part included)."""
+    nets = [
+        _net("VCC", _m("X1", "1"), working_voltage_v=5.0),
+        _net("GND", _m("X1", "2"), working_voltage_v=0.0),
+    ]
+    inst = _instp(
+        "X1",
+        params={
+            "_category": "Resistors / Chip Resistor - Surface Mount",
+            "Resistance": "10Ω",
+            "Power(Watts)": "0.1W",
+        },
+    )
+    findings = drc.check_passive_rating(nets, [inst])
+    assert [(f.rule, f.severity) for f in findings] == [("passive_rating", "error")]
+    assert "X1" in findings[0].where
+
+
+def test_passive_rating_category_vetoes_a_lookalike_refdes() -> None:
+    """An IC-category catalog row on an ``R``-designated part: the
+    ``_category`` is a class word the veto reads — the rule does not
+    apply."""
+    nets = [
+        _net("VCC", _m("R5", "1"), working_voltage_v=5.0),
+        _net("GND", _m("R5", "2"), working_voltage_v=0.0),
+    ]
+    inst = _instp(
+        "R5",
+        "10Ω ±1% 100mW sense resistor — power management IC",
+        params={"_category": "PMIC / Battery Management"},
+    )
+    findings = drc.check_passive_rating(nets, [inst])
+    assert [(f.rule, f.severity) for f in findings] == [("passive_rating", "warn")]
+    assert "CANNOT be checked" in findings[0].detail
+
+
+def test_passive_rating_end_to_end_reads_part_params(
+    pcb: PcbHandler, store: Any
+) -> None:
+    """The ``parts.params`` blob reaches ``check_passive_rating`` through
+    ``pcb_graph``'s ``part_params`` hoist: C9001's description says 6.3 V
+    but its parametrics say 16 V — the check is clean where the
+    description alone would have errored."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO parts (lcsc, package, description, params) "
+            "VALUES ('C9001', '0402', %s, %s::jsonb)",
+            (
+                "100nF ±10% 6.3V Y5V 0402 Multilayer Ceramic Capacitors MLCC",
+                json.dumps(
+                    {
+                        "_category": "Capacitors / Multilayer Ceramic Capacitors "
+                        "MLCC - SMD/SMT",
+                        "Capacitance": "100nF",
+                        "Voltage Rating": "16V",
+                        "Temperature Coefficient": "X7R",
+                    }
+                ),
+            ),
+        )
+    slug = "pr-params"
+    pcb.put(
+        id=slug,
+        args={
+            "components": [
+                {
+                    "refdes": "C4",
+                    "label": "bypass",
+                    "part_lcsc": "C9001",
+                    "x": 20.0,
+                    "y": 10.0,
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                }
+            ],
+            "nets": [
+                {"name": "VCC", "voltage": 5.0},
+                {"name": "GND", "voltage": 0.0},
+            ],
+            "connections": [
+                {"net": "VCC", "refdes": "C4", "pin": "1"},
+                {"net": "GND", "refdes": "C4", "pin": "2"},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id=slug)
+    inst = next(i for i in store.pcb_graph(ref.id)["instances"] if i["refdes"] == "C4")
+    assert inst["part_params"]["Voltage Rating"] == "16V"
+    body = pcb.get(id=slug, view="check").body
+    assert "passive_rating" not in body or "CANNOT check C4" not in body
+    assert not re.search(r"C4 is rated", body)
 
 
 # ── the rule: capacitor voltage margin ───────────────────────────────

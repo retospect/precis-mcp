@@ -149,7 +149,11 @@ from precis.pcb.geom import dist as _dist
 from precis.pcb.gerber import declares_parylene_coat
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT
 from precis.pcb.padplace import pad_world_rot
-from precis.pcb.passive import parse_passive_description
+from precis.pcb.passive import (
+    params_passive_fields,
+    params_passive_kind,
+    parse_passive_description,
+)
 from precis.pcb.pose import rotate_cw as _rotate_cw
 from precis.pcb.profiles import ProfileRules
 from precis.pcb.rules import JLC_VIA_HOLE_TO_HOLE_MM as rules_hole_to_hole_mm
@@ -5492,6 +5496,12 @@ def _part_class_words(inst: dict[str, Any] | None, roles: Any = None) -> list[st
             words.append(str(part.get("part_class") or ""))
         if inst.get("part_class") is not None:
             words.append(str(inst["part_class"]))
+        # The catalog category (``parts.params._category`` — "PMIC /
+        # Battery Management") is a class word too: it vetoes the refdes
+        # convention on a cataloged IC the same way an authored role does.
+        params = inst.get("part_params")
+        if isinstance(params, Mapping) and params.get("_category"):
+            words.append(str(params["_category"]))
     return [w for w in words if w]
 
 
@@ -5594,8 +5604,16 @@ def check_passive_rating(
     declares, and a resistor's dissipation ≤ 50 % of its rated power.
 
     ``instances`` are the graph's instance dicts — the check needs
-    ``refdes`` + ``part_description`` (the ``parts`` catalog join
-    ``pcb_graph`` hoists) and reads ``roles`` for the passive gate. A
+    ``refdes`` + the ``parts`` catalog join ``pcb_graph`` hoists
+    (``part_description`` and ``part_params``) and reads ``roles`` for
+    the passive gate. The rating itself comes from the part's own
+    rating data first (gr520796): ``params_passive_fields`` reads the
+    attribute blob's ``Voltage Rating``/``Power(Watts)``/
+    ``Resistance``/``Temperature Coefficient``/``Capacitance``, and the
+    description parse fills whatever the parametrics do not name —
+    description text is the fallback, never the source of record.
+    ``params._category`` naming the class counts as the part declaring
+    its own kind, the same admission an authored role gives. A
     capacitor's working voltage is the spread
     between the nets it joins (``_net_voltage`` — authored or class
     ``working_voltage_v``); an unannotated one produces the ask-the-user
@@ -5639,13 +5657,33 @@ def check_passive_rating(
             if isinstance(inst.get("part_description"), str)
             else None
         )
-        if spec is None:
+        # The part's own rating data (``parts.params`` — the jlcparts
+        # attribute blob, ``part_params`` on the instance) beats the
+        # description parse (gr520796): a field the parametrics name
+        # comes from them, the description only fills what they lack.
+        # ``_category`` naming the kind is itself a declaration — a
+        # cataloged passive whose refdes misses the convention is still
+        # checked.
+        params = inst.get("part_params")
+        if not isinstance(params, Mapping):
+            params = None
+        cat_kind = params_passive_kind(params)
+        kind = cat_kind or (spec or {}).get("kind")
+        if kind is None:
             continue
+        merged = {"kind": kind, **params_passive_fields(params, kind)}
+        for key, val in (spec or {}).items():
+            if key != "kind" and merged.get(key) is None:
+                merged[key] = val
+        spec = merged
         declared = {w.lower() for w in _part_class_words(inst)}
         if not (
             spec["kind"] in declared
             or (
-                _PASSIVE_REFDES[spec["kind"]].fullmatch(refdes)
+                (
+                    cat_kind is not None
+                    or _PASSIVE_REFDES[spec["kind"]].fullmatch(refdes)
+                )
                 and not _declares_non_passive(declared)
             )
         ):
