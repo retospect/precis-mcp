@@ -10,18 +10,28 @@
 #
 # Usage:
 #   scripts/prod-psql "SELECT count(*) FROM refs;"    # one-shot query
-#   scripts/prod-psql "\d refs"                        # psql backslash cmds too
 #   echo "SELECT ..." | scripts/prod-psql              # piped SQL (stdin)
 #   scripts/prod-psql -f query.sql                     # SQL from a local file —
-#                                                      # read HERE and fed over
-#                                                      # stdin (the ssh hop never
-#                                                      # sees the path); composes
-#                                                      # with --ro / --explain
-#   scripts/prod-psql                                  # interactive shell
+#                                                      # read HERE and sent as
+#                                                      # one psql -c (the ssh
+#                                                      # hop never sees the
+#                                                      # path); composes with
+#                                                      # --ro / --explain
+#   scripts/prod-psql                                  # interactive shell —
+#                                                      # \d and the other
+#                                                      # meta-commands live here
 #   scripts/prod-psql --help                           # usage + schema cheat sheet
 #
 #   scripts/prod-psql --ro "SELECT ..."               # read-only: agent_ro role,
-#                                                      # wrapped in BEGIN READ ONLY
+#                                                      # wrapped in BEGIN READ ONLY;
+#                                                      # session/transaction state
+#                                                      # changes (SET/RESET/
+#                                                      # DISCARD/LOAD, DO blocks,
+#                                                      # set_config in any
+#                                                      # spelling, U& tokens, tx
+#                                                      # control, vault. refs)
+#                                                      # are refused before ssh —
+#                                                      # lexical, best-effort
 #   scripts/prod-psql --explain "SELECT … FOR UPDATE SKIP LOCKED"
 #                                                      # read-only EXPLAIN: agent_ro
 #                                                      # cannot EXPLAIN a row lock,
@@ -30,10 +40,42 @@
 #                                                      # statement is refused —
 #                                                      # EXPLAIN its driving SELECT
 #
+# Meta-command safety (gr521223): caller SQL never reaches psql's
+# meta-command lexer. On the scripted paths it is passed to the remote psql
+# as ONE -c argument — "-c "$(cat)"" fed from ssh's stdin — and psql lexes
+# a -c as a meta-command ONLY when its first byte is a backslash, so text
+# whose first non-space character is a backslash is refused (exit 2) before
+# any ssh. Run \d and friends in the interactive shell. This replaces the
+# earlier allowlist+regex filter, which could never match psql's real
+# lexer (backtick shells inside allowlisted commands, comment/literal
+# mis-stripping, \gset variable smuggling). One -c is one Query message: a
+# multi-statement text runs all-or-nothing (one implicit transaction on the
+# plain path), not statement-by-statement as piped stdin did — and one -c
+# is one argv item, so the SQL text is capped at 131071 bytes
+# (MAX_ARG_STRLEN counts the terminating NUL); a larger text is refused
+# (exit 2) rather than failing E2BIG on the hop.
+#
+# PRECIS_PROD_PSQL_OPTS is an ALLOWLIST, not a blacklist: the string is
+# first limited to a shell-safe charset — quotes, $(...), backticks, ;, |,
+# & or a newline would re-parse on the ssh host AFTER the check — then each
+# token must be a display-only psql flag (bundled -At, an allowlisted
+# -P<name>=<value>, --csv, --no-psqlrc, …). Everything else — lexer options
+# (-c/-f), variable/file options (-v/-o/-L), connection options (-U/-d/-h/-p
+# and long forms, which could retarget the connection or turn --ro back
+# into agent_rw) and bare positional tokens (psql reads them as
+# dbname/user) — is refused (exit 2) before ssh. So are the echo flags
+# (-a/-b/-e/-E and the --echo-* longs): they echo the row-cap wrapper's own
+# -c query text to stdout, and that text carries the verdict the run then
+# greps, so an echo flag could make a committed write report 'rolled back'.
+# Layout settings (-x/--expanded, -Pformat=/-Pcolumns=/-Pexpanded=/-Ptitle=
+# …) are refused for the same reason: they can reflow or break up the
+# verdict row. Each allowed token reaches the remote command individually
+# double-quoted, never as one unquoted splice.
+#
 # Schema: docs/reference/schema.md is the generated map of prod (every
 # table's columns, PK/FK, comments) — grep it before guessing a column
-# name (gr514333). To list one table's columns live:
-#   scripts/prod-psql --ro "\d <table>"
+# name (gr514333). To list one table's columns live, type \d <table> in the
+# interactive shell.
 # Frequently mistyped: refs has no `id` (PK is ref_id), embeddings live in
 # chunk_embeddings not chunks, events are in ref_events, links use
 # src_ref_id/dst_ref_id.
@@ -67,25 +109,38 @@
 #
 # Row cap (.claude/fleet/authority.md, 2026-10-15): a one-shot or piped SQL
 # text without --ro that mentions UPDATE or DELETE runs inside BEGIN; the
-# rows the transaction updated or deleted (all its statements, see
-# wrap_cap) are checked against PRECIS_PROD_WRITE_MAX_ROWS (default 100).
-# Over the cap it ROLLBACKs and exits 4; under it, COMMIT. The count is
-# printed either way. The match is on the raw text, so a read that merely
-# mentions the word runs in the wrapper too (0 rows, commits). SQL that ends the
-# transaction itself (BEGIN/COMMIT/ROLLBACK/END/ABORT) is refused, and a
-# server-side marker catches one that slips past the refusal (exit 5).
+# rows the transaction updated or deleted (all its statements) are checked
+# against PRECIS_PROD_WRITE_MAX_ROWS (default 100) by the fixed -c wrapper
+# arguments around the caller's -c (see cap_pre/cap_post). Over the cap it
+# ROLLBACKs and exits 4; under it, COMMIT. The count is printed either way.
+# The match is on the raw text, so a read that merely mentions the word runs
+# in the wrapper too (0 rows, commits). SQL that ends the transaction itself
+# (BEGIN/COMMIT/ROLLBACK/END/ABORT) is refused, and the transaction-local
+# baseline reports one that slips past as UNCAPPED (exit 5). A nominally
+# clean run whose verdict row never printed exits 6 — the write's outcome
+# is unknown (a display option reflowed it, or output was truncated), do
+# not assume it committed. The cap guards
+# against ACCIDENTS only — PRECIS_PROD_WRITE_MAX_ROWS lifts it, and a caller
+# who knows the mechanism can get around it. The real --ro boundary is the
+# agent_ro role's grants (SELECT-only, enforced per statement server-side),
+# not the BEGIN READ ONLY wrapper or this cap.
 #
 # ⚠ Never `SET` a session setting here (`SET default_transaction_read_only`,
 # `SET SESSION …`, `RESET …`). pgbouncer runs transaction pooling: a
 # session-level SET stays on the SHARED server connection and every later
 # client inherits it — on 2026-10-02 one such "read-only guard" made every
 # agent_rw write fleet-wide fail until pgbouncer was reconnected. This script
-# refuses those statements. For a read-only guard use --ro; inside your own
-# transaction, `SET LOCAL` is fine (scripts/guide-web's comment says the same).
+# refuses those statements — and DO blocks and quoted "set_config" calls,
+# which set session state the lexical scan can't see inside. For a read-only
+# guard use --ro; inside your own transaction, `SET LOCAL` is fine
+# (scripts/guide-web's comment says the same).
 #
 # Overrides (env):
 #   PRECIS_PROD_SSH_HOST=melchior     # default caspar
-#   PRECIS_PROD_PSQL_OPTS="-At"       # extra psql flags (e.g. terse -At, -x)
+#   PRECIS_PROD_PSQL_OPTS="-At"       # extra psql flags — DISPLAY flags only,
+#                                     # allowlisted (bundled shorts, -P k=v,
+#                                     # --csv, --no-psqlrc …); charset-limited
+#                                     # and each token individually quoted
 #   PRECIS_PROD_WRITE_MAX_ROWS=500    # row cap for UPDATE/DELETE (default 100)
 set -euo pipefail
 
@@ -101,10 +156,27 @@ usage: scripts/prod-psql [--ro] "SQL"     # one-shot query (or SQL on stdin)
        scripts/prod-psql --help           # this text
 
   --ro   read-only: the agent_ro role inside BEGIN READ ONLY — prefer it for
-         reads; it makes writes impossible instead of row-capped.
+         reads; it makes writes impossible instead of row-capped. Under it,
+         caller SQL may not change session or transaction state at all:
+         SET/RESET/DISCARD/LOAD, DO blocks, set_config( in any spelling
+         ("set_config" included), any U& token, transaction control
+         (BEGIN/COMMIT/ROLLBACK/SAVEPOINT…) and any vault. schema
+         reference (gr523021 — agent_ro can EXECUTE vault.reveal/set/
+         delete; secrets are not readable through prod-psql) are refused
+         anywhere in code — the same words inside a literal stay data and
+         pass. These checks are lexical and best-effort — they stop
+         accidents, not a determined caller; the agent_ro grants are the
+         read-only boundary, and session settings can persist on pooled
+         backends, so none are allowed. Plain reads never need them.
+
+Session state changes are refused on every scripted path, not only
+--ro: a session-level SET/RESET, a DO block or a "set_config" call exits
+2 before ssh — session settings persist on pgbouncer's pooled backends
+and poison later clients. SET LOCAL inside your own BEGIN … COMMIT is
+fine.
 
   -f, --file FILE   read SQL from a local file and run it through the same
-                    checks/stdin path as piped SQL — the file is read here;
+                    checks/-c path as piped SQL — the file is read here;
                     the ssh hop never sees the path. Don't pass inline SQL
                     too. A missing or unreadable file exits 2.
 
@@ -115,11 +187,43 @@ usage: scripts/prod-psql [--ro] "SQL"     # one-shot query (or SQL on stdin)
               prod-psql --explain "SELECT …the SELECT a claim/insert runs…"
 
 Env:  PRECIS_PROD_SSH_HOST          ssh hop host (default caspar)
-      PRECIS_PROD_PSQL_OPTS         extra psql flags (e.g. "-At", "-x")
-      PRECIS_PROD_WRITE_MAX_ROWS    UPDATE/DELETE row cap (default 100)
+      PRECIS_PROD_PSQL_OPTS         extra psql flags — an allowlist of
+                                    display flags only (e.g. "-At",
+                                    "-Pfooter=off", "--csv", "--no-psqlrc");
+                                    option arguments must ride inside the
+                                    token. Connection (-U/-d/-h/-p), lexer
+                                    (-c/-f), variable (-v) and file (-o/-L)
+                                    options and bare tokens are refused —
+                                    and so are echo (-a/-b/-e/-E, --echo-*)
+                                    and layout (-x/--expanded, -Pformat=
+                                    /-Pcolumns=/-Pexpanded=/-Ptitle=) flags:
+                                    they would replay the wrapper's query
+                                    text or reflow its verdict row.
+      PRECIS_PROD_WRITE_MAX_ROWS    UPDATE/DELETE row cap (default 100) —
+                                    an accident guard; this env lifts it.
+                                    --ro's real boundary is the agent_ro
+                                    role's grants, not the wrapper.
+
+The SQL text is one -c argument — capped at 131071 bytes by the remote
+argv limit (MAX_ARG_STRLEN counts the NUL); a larger text exits 2 before
+ssh (split it into smaller calls).
+
+Exit codes on the capped-write path (a non---ro text mentioning UPDATE/
+DELETE): 4 — rolled back over the row cap, nothing changed; 5 — the SQL
+ended the cap transaction itself, reported UNCAPPED, writes already
+committed; 6 — the verdict row never printed (a display option reflowed
+it or output was truncated) — the write's outcome is unknown, do not
+assume it committed. Refusals and bad arguments exit 2 before any ssh.
+
+Backslash meta-commands never reach the remote psql (gr521223): your SQL
+is sent as ONE -c argument, and psql meta-lexes a -c only when its first
+byte is a backslash — so SQL whose first non-space character is a
+backslash exits 2 before ssh. Run \d and friends in the interactive
+shell (scripts/prod-psql with no arguments). One -c is one Query message:
+a multi-statement text runs all-or-nothing, not statement-by-statement.
 
 Schema — docs/reference/schema.md is GENERATED from prod (scripts/gen-schema);
-grep it, or ask psql itself: scripts/prod-psql --ro "\d <table>".
+grep it, or type \d <table> in the interactive shell.
 Names that bite:
   refs              PK is ref_id — no `id` column; kind='job'|'alert' rows are
                     the ops queues (jobs/alerts are not tables)
@@ -184,9 +288,59 @@ fi
 PGDB=precis_prod
 OPTS="${PRECIS_PROD_PSQL_OPTS:-}"
 
-# Fixed connection string — no user input interpolated, so it's quoting-safe.
+# OPTS is an allowlist, gated twice before it reaches the remote psql
+# command line. First the WHOLE string must stay inside a shell-safe
+# charset — a quote, $, backtick, ;, |, &, <, >, backslash or newline would
+# be re-parsed by the remote sh AFTER the token check ran (the remote
+# command is one string evaluated by the ssh user's login shell, assumed
+# POSIX sh or bash). Then each whitespace-separated token must match a
+# display-only psql flag. Everything else — options that reopen the
+# meta-command lexer (-c/-f), set variables (-v) or touch files (-o/-L) on
+# the ssh host, retarget the connection (-U/-d/-h/-p and long forms, which
+# would turn --ro back into agent_rw), take their argument as a separate
+# token, or are bare positionals (psql reads them as dbname/user) — exits 2
+# before any ssh. So do the echo flags (-a/-b/-e/-E, --echo-*): they echo
+# the row-cap wrapper's -c text, which carries the verdict run_sql greps.
+# And so do layout settings (-x/--expanded and any -P name outside the
+# cosmetic allowlist — format, columns, expanded, title, xheader_width):
+# they can reflow the verdict row the greps read back. Each allowed token
+# is appended to OPTS_Q individually double-quoted — never one unquoted
+# splice.
+OPTS_Q=""
+vet_opts() {
+    local tok allowed
+    local charset='^[A-Za-z0-9 =_.,:+-]+$'
+    if [[ -n "$OPTS" && ! "$OPTS" =~ $charset ]]; then
+        echo "prod-psql: refused for safety — PRECIS_PROD_PSQL_OPTS contains a character outside [A-Za-z0-9 space =_.,:+-]; quotes and shell metacharacters would re-parse on the ssh host after the allowlist check." >&2
+        exit 2
+    fi
+    # Display/format flag bundles take no argument (-H html, -q quiet,
+    # -t tuples-only, -A no-align, -X no-psqlrc, -z/-0 zero-byte
+    # separators); echo and expanded flags are deliberately NOT in the
+    # bundle (see above). Option arguments ride INSIDE the token
+    # (-P<name>=<value>, -F/-R/-T<arg>, the long =forms) — a separate
+    # argument token is a bare positional (psql reads it as dbname/user).
+    # -P/--pset takes only a cosmetic pset name: a name that reflows cells
+    # (format, columns, expanded, title, xheader_width) can split the
+    # capped run's verdict row so neither grep matches.
+    local pset='border|fieldsep|fieldsep_zero|footer|linestyle|null|numericlocale|pager|pager_min_lines|recordsep|recordsep_zero|tableattr|tuples_only|unicode_border_linestyle|unicode_column_linestyle|unicode_header_linestyle'
+    allowed="^(-[HqtAXz0]+|-P(${pset})=.*|-[FRT].+|--(no-align|tuples-only|quiet|no-psqlrc|csv|html|field-separator-zero|record-separator-zero)|--pset=(${pset})=.*|--(field-separator|record-separator|table-attr)=.+)\$"
+    set -f  # word-split OPTS without globbing a token like '-o *' into filenames
+    for tok in $OPTS; do
+        if [[ ! "$tok" =~ $allowed ]]; then
+            echo "prod-psql: refused for safety — PRECIS_PROD_PSQL_OPTS option '$tok' is not an allowlisted display flag (allowed: -H -q -t -A -X -z -0 bundles, cosmetic -P<name>=<value>, -F/-R/-T<arg>, --csv, --no-psqlrc and the matching long forms). Connection, lexer, variable, file, echo (-a/-b/-e/-E/--echo-*) and layout (-x, -Pformat=/-Pcolumns=…) options and bare tokens are refused." >&2
+            exit 2
+        fi
+        OPTS_Q+=" \"$tok\""
+    done
+    set +f
+}
+vet_opts
+
+# Fixed connection string — no user input interpolated, so it's quoting-safe;
+# OPTS_Q is already vetted and individually quoted by vet_opts.
 # -P pager=off and ON_ERROR_STOP make one-shot output clean and fail loudly.
-REMOTE="psql -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1 ${OPTS}"
+REMOTE="psql -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1${OPTS_Q}"
 # -X (skip the remote user's ~/.psqlrc) on the SCRIPTED paths only. That file
 # is written for humans — on caspar it sets `\timing on`, `\x auto` and
 # unicode `\pset` borders — and every one of those lands on STDOUT, so a
@@ -194,43 +348,104 @@ REMOTE="psql -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off 
 # number. Bit the deploy drain (never once ran, 2026-08-22) and would bite
 # scripts/deploy's canary heartbeat check on its first use. The interactive
 # branch below deliberately keeps ~/.psqlrc — that's a human at a prompt.
-REMOTE_SCRIPTED="psql -X -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1 ${OPTS}"
+REMOTE_SCRIPTED="psql -X -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1${OPTS_Q}"
 
-# Refuse a session-level SET / RESET (see the ⚠ above). Statement-level, so
+# Emit the SQL with string literals, quoted identifiers, dollar-quoted
+# bodies and comments blanked — ONE left-to-right scan, so a '--' or /* */
+# inside a literal can't hide the statement that follows it (stripping
+# comments before literals mis-lexed exactly that). E'' takes backslash
+# escapes, other strings only double-up; $tag$ bodies close on the same
+# tag. The identifier lookbehind on E'' and both $ branches matters: '$' is
+# a valid identifier continuation, so a$$ and x$t$ are ONE identifier, not
+# an open dollar quote — treating them as one blanks the following
+# statements (a COMMIT the refusals should have seen) up to the next $$.
+# Every class takes bytes \x80-\xff as well as ASCII: non-ASCII letters
+# are identifier chars in PG, so é$$ is one identifier (not an open $$
+# quote) and $é$ IS a dollar-quote tag — an ASCII-only class mis-lexed
+# both (round-4 review). The scan runs on raw bytes; a UTF-8 letter is
+# several \x80-\xff bytes and each still matches.
+# Round-5 review (psqlbs5), three more PG lexer rules the scan must match:
+#   - a -- comment ends at \n OR \r (scan.l non_newline is [^\n\r]) — a
+#     \r-only line break un-hid a COMMIT.
+#   - /* */ comments NEST — the (?&blk) recursion counts depth; a naive
+#     non-nesting match closed the comment early and a ' inside the rest
+#     of it opened a literal that swallowed real code.
+#   - a string followed by whitespace containing a newline and another '
+#     CONTINUES the same literal — for E'' the continued segment still
+#     takes backslash escapes, so E'a'\n'\' x' is ONE literal (lexing the
+#     segment as a standard string closed it at \' and un-hid the code a
+#     later ' had swallowed). The continuation group after each closing
+#     \x27 absorbs it. The gap counts \v and -- comments as whitespace
+#     (E'a' -- c\n'b' continues; round-7) — a /* */ in the gap does NOT
+#     continue, matching pg17's lexer, so it stays excluded.
+# Two exceptions to blanking: a quoted identifier spelled exactly
+# "set_config" or "vault" (any case) is re-emitted verbatim lowercased —
+# both name calls the refusal checks must still see (a quoted name is
+# otherwise blanked, which hid "set_config"('work_mem',…) in the round-5
+# review and would hide "vault".reveal(…) the same way, gr523021).
+sql_code_only() {
+    printf '%s' "$1" | perl -0777 -pe '
+        s{(?<![A-Za-z0-9_\x24\x80-\xff])[eE]\x27(?:\\.|\x27\x27|[^\x27\\])*\x27(?:(?:[ \t\f\v]|--[^\n\r]*)*[\n\r](?:\s|--[^\n\r]*[\n\r])*\x27(?:\\.|\x27\x27|[^\x27\\])*\x27)*
+          |\x27(?:\x27\x27|[^\x27])*\x27(?:(?:[ \t\f\v]|--[^\n\r]*)*[\n\r](?:\s|--[^\n\r]*[\n\r])*\x27(?:\x27\x27|[^\x27])*\x27)*
+          |"(?:[^"]|"")*"
+          |(?<![A-Za-z0-9_\x24\x80-\xff])\$([A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)\$.*?\$\1\$
+          |(?<![A-Za-z0-9_\x24\x80-\xff])\$\$.*?\$\$
+          |--[^\n\r]*
+          |(?<blk>/\*(?:(?&blk)|\*(?!/)|[^*])*\*/)
+        }{ $& =~ /\A"(set_config|vault)"\z/i ? qq{ "\L$1" } : q{ } }gsex;'
+}
+
+# True when a stripped statement leads with the given keyword regex.
+_sql_hits() {
+    sql_code_only "$1" | _RE="$2" perl -0777 -ne '
+        my $re = $ENV{_RE};
+        for my $st (split /;/) { exit 1 if $st =~ /$re/i; }
+        exit 0;'
+}
+
+# Refuse session state changes (see the ⚠ above): a session-level SET or
+# RESET, a DO block (its dollar-quoted body blanks for the scan, and it can
+# run set_config/'SET …' inside), and a quoted "set_config" (round-5:
+# blanking quoted identifiers hid it). SET/RESET/DO are statement-level, so
 # `UPDATE … SET col = …` passes; `SET LOCAL`, `SET TRANSACTION` and
-# `SET CONSTRAINTS` are transaction-scoped and pass too.
+# `SET CONSTRAINTS` are transaction-scoped and pass too. The check is
+# lexical and best-effort — it stops accidents, not a determined caller.
 refuse_session_set() {
-    if printf '%s' "$1" | perl -0777 -ne '
-        s{--[^\n]*}{}g; s{/\*.*?\*/}{}gs;
-        for my $st (split /;/) {
-            next unless $st =~ /^\s*(SET|RESET)\b/i;
-            next if $st =~ /^\s*SET\s+(LOCAL|TRANSACTION|CONSTRAINTS)\b/i;
-            exit 1;
-        }
-        exit 0;'; then
+    if _sql_hits "$1" '^\s*(?:SET\s+(?!LOCAL\b|TRANSACTION\b|CONSTRAINTS\b)|RESET\b|DO\b)|"set_config"'; then
         return 0
     fi
-    echo "prod-psql: refused — a session-level SET/RESET through pgbouncer (transaction pooling) sticks to the shared server connection and poisons every later client. Use --ro for a read-only guard, or SET LOCAL inside BEGIN … COMMIT." >&2
+    echo "prod-psql: refused — a session-level SET/RESET, DO block or \"set_config\" call through pgbouncer (transaction pooling) sticks to the shared server connection and poisons every later client — session settings persist on pooled backends. Use --ro for a read-only guard, or SET LOCAL inside BEGIN … COMMIT." >&2
     exit 2
 }
 
-# --ro wraps the input in one read-only transaction (belt to agent_ro's
-# braces). A COMMIT inside the input would end it early; that is the
-# caller's business, the role still refuses writes. An unterminated user
-# statement would swallow the COMMIT ("syntax error at or near COMMIT"), so
-# a missing trailing `;` is appended on its own line (safe after a trailing
-# `-- comment`, and an empty statement is a no-op in psql).
-wrap_ro() {
-    if [[ $RO -eq 1 ]]; then
-        local body="$1" trimmed
-        trimmed="${body%"${body##*[![:space:]]}"}"
-        if [[ "$trimmed" != *\; ]]; then
-            body+=$'\n;'
-        fi
-        printf 'BEGIN READ ONLY;\n%s\nCOMMIT;\n' "$body"
-    else
-        printf '%s\n' "$1"
+# Caller SQL never reaches psql's meta-command lexer (gr521223): it is sent
+# as ONE -c argument, and psql lexes a -c as a meta-command ONLY when its
+# first byte is a backslash — every other -c goes to the server verbatim, so
+# a `\c` mid-text is a server-side syntax error, not a reconnect out of
+# --ro's agent_ro, and `\!`/`\o`/`\gexec` can never run. Refuse a leading
+# (after whitespace) backslash so the caller's -c slot can never be one;
+# meta-commands belong to the interactive shell, which keeps its own path.
+refuse_leading_meta() {
+    if [[ "$1" =~ ^[[:space:]]*\\[^[:space:]]* ]]; then
+        local cmd="${BASH_REMATCH[0]}"
+        cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+        printf "prod-psql: refused for safety — caller SQL may not begin with the psql meta-command '%s'. The -c slot that carries your SQL would run it as a meta-command. Run \\d and friends in the interactive shell instead: scripts/prod-psql (no arguments).\n" "$cmd" >&2
+        exit 2
     fi
+}
+
+# Build the remote command string: REMOTE_SCRIPTED plus each argument as a
+# -c. The caller's SQL is the '$(cat)' fragment — the remote shell reads
+# ssh's stdin into that -c, and a QUOTED command substitution is not
+# re-expanded, so ` " $ \ ; and newlines arrive byte-identical. The fixed
+# fragments are prod-psql's own; they must stay free of " $ ` \ (the remote
+# sh parses each -c inside double quotes).
+remote_cmd() {
+    local frag
+    printf '%s' "$REMOTE_SCRIPTED"
+    for frag in "$@"; do
+        printf ' -c "%s"' "$frag"
+    done
 }
 
 MAX_ROWS="${PRECIS_PROD_WRITE_MAX_ROWS:-100}"
@@ -246,58 +461,94 @@ needs_cap() {
         printf '%s' "$1" | grep -qiE '(^|[^[:alnum:]_])(UPDATE|DELETE)([^[:alnum:]_]|$)'
 }
 
+# Statement-leading keywords that end or replace the transaction they run
+# in — refused on the capped-write path (the wrapper owns the transaction
+# the row cap is checked in) and under --ro (BEGIN READ ONLY's guard).
+_TX_CONTROL='^\s*(BEGIN|COMMIT|ROLLBACK|END|ABORT|SAVEPOINT|START\s+TRANSACTION|PREPARE\s+TRANSACTION)\b'
+
 # A capped write leaves the transaction to the wrapper, or its own COMMIT
 # lands before the check.
 refuse_tx_control() {
-    if printf '%s' "$1" | perl -0777 -ne '
-        s{--[^\n]*}{}g; s{/\*.*?\*/}{}gs;
-        for my $st (split /;/) {
-            exit 1 if $st =~ /^\s*(BEGIN|COMMIT|ROLLBACK|END|ABORT|START\s+TRANSACTION|PREPARE\s+TRANSACTION)\b/i;
-        }
-        exit 0;'; then
+    if _sql_hits "$1" "$_TX_CONTROL"; then
         return 0
     fi
-    echo "prod-psql: refused — an UPDATE/DELETE runs inside the row-cap transaction; drop your own BEGIN/COMMIT/ROLLBACK." >&2
+    echo "prod-psql: refused — an UPDATE/DELETE runs inside the row-cap transaction; drop your own BEGIN/COMMIT/ROLLBACK/SAVEPOINT." >&2
     exit 2
 }
 
-# BEGIN, a SET LOCAL marker, the user's SQL, then psql compares the rows
-# the transaction updated or deleted to the cap and picks COMMIT or
-# ROLLBACK. The count is the server's own per-transaction tally
-# (pg_stat_xact_user_tables, readable by any role), not psql's ROW_COUNT:
-# ROW_COUNT is the LAST query's, and a trailing `;;` or `; -- note` sends an
-# empty query that resets it to 0 (measured 2026-10-15, psql 18 / PG 17).
-# Cascaded and trigger-made changes count too. That view also carries counts
-# a pooled server connection has not flushed yet from EARLIER clients'
-# transactions (prod via pgbouncer, 2026-10-15: a 1-row UPDATE read 4, a
-# 150-row one 152), so the cap is on the difference from a baseline read
-# right after BEGIN; the server flushes only between transactions, so the
-# baseline holds for ours. The marker is gone when the
-# user's SQL ended the transaction early: nothing is left to roll back, and
-# the wrapper says so. The "prod-psql: <VERDICT>" lines are what run_sql
-# reads back. The trailing `;` rule is wrap_ro's.
-wrap_cap() {
-    local body="$1" trimmed
-    trimmed="${body%"${body##*[![:space:]]}"}"
-    if [[ "$trimmed" != *\; ]]; then
-        body+=$'\n;'
+# Under --ro caller SQL may not change session or transaction state at all
+# (round-4 decision — it stops the allowlist/regex whack-a-mole). Refused
+# anywhere in CODE position — literals, quoted identifiers and comments are
+# blanked by sql_code_only first, so the same words inside a literal stay
+# data — are: SET, RESET, DISCARD and LOAD (any spelling, including SET
+# LOCAL), DO (its dollar-quoted body blanks for the scan and can hold
+# set_config/'SET …' — round-5 item 5), set_config( (its setting name is a
+# literal the scan can't see, so the function itself is refused — and a
+# quoted "set_config" survives blanking verbatim so the quoted spelling is
+# refused too, round-5 item 4), any U& token (a unicode-escape spelling
+# like U&"transaction\005fread_only" hides a name plain scanning would
+# catch — in the blanked text a U&'...'/U&"..." prefix survives as a bare
+# u& followed by a non-identifier byte) and the tx-control keywords
+# (_TX_CONTROL, statement-leading). Identifier boundaries count bytes
+# \x80-\xff too, so éSET stays one identifier. The check is lexical and
+# best-effort — it stops accidents, not a determined caller; the agent_ro
+# grants are the read-only boundary.
+_RO_STATE_CHANGE='(?<![A-Za-z0-9_\x80-\xff])(SET|RESET|DISCARD|LOAD|DO)(?![A-Za-z0-9_\x80-\xff])|(?<![A-Za-z0-9_\x80-\xff])set_config\s*\(|(?<![A-Za-z0-9_\x80-\xff])u&(?![A-Za-z0-9_\x80-\xff])|"set_config"'
+
+# The vault schema is off-limits under --ro (gr523021): agent_ro can
+# EXECUTE vault.reveal/set/delete, so a plain SELECT could read or drop a
+# secret — refuse any `vault.` reference, bare or "vault"-quoted (the
+# quoted spelling survives blanking verbatim, see sql_code_only), in any
+# case, in code position. 'vault.x' inside a literal or comment stays
+# data and passes; so does a table merely named vault (no dot follows).
+_RO_VAULT='(?<![A-Za-z0-9_\x80-\xff])vault\s*\.|"vault"\s*\.'
+refuse_ro_tx_mode() {
+    if ! _sql_hits "$1" "$_TX_CONTROL" || ! _sql_hits "$1" "$_RO_STATE_CHANGE"; then
+        echo "prod-psql: refused — --ro takes plain read queries; SET/RESET/DISCARD/LOAD/DO/set_config(\"…\" spellings too)/U&/transaction control are refused — lexical, best-effort; agent_ro grants are the real boundary" >&2
+        exit 2
     fi
-    local tally='(SELECT coalesce(sum(n_tup_upd + n_tup_del), 0) AS n FROM pg_stat_xact_user_tables) s'
-    printf 'BEGIN;\nSET LOCAL precis.prod_psql_cap = on;\n'
-    printf 'SELECT n AS prod_psql_base FROM %s \\gset\n%s\n' "$tally" "$body"
+    if ! _sql_hits "$1" "$_RO_VAULT"; then
+        echo "prod-psql: refused — secrets are not readable through prod-psql: agent_ro can EXECUTE vault.reveal/set/delete, so --ro refuses any vault. schema reference (gr523021)." >&2
+        exit 2
+    fi
+}
+
+# The row-cap wrapper, as fixed -c arguments around the caller's -c
+# (multiple -c options share one session and one open transaction, psql
+# 15+). The pre-write baseline is a TRANSACTION-LOCAL setting —
+# set_config('precis.prod_psql_base', n, true) — not a TEMP TABLE: under
+# pgbouncer's transaction pooling a temp table created without ON COMMIT
+# DROP outlives the wrapper's COMMIT on the shared backend and collides
+# with the next capped run routed to it. The tx-local GUC needs no DDL or
+# TEMP privilege and doubles as the early-exit marker: caller SQL that ends
+# the transaction drops it, so cap_post's current_setting() reads NULL →
+# UNCAPPED. The count is the server's own per-transaction tally
+# (pg_stat_xact_user_tables, readable by any role), not psql's ROW_COUNT:
+# ROW_COUNT is the LAST query's, and a trailing `;;` or `; -- note` sends
+# an empty query that resets it to 0 (measured 2026-10-15, psql 18 /
+# PG 17). Cascaded and trigger-made changes count too. That view also
+# carries counts a pooled server connection has not flushed yet from
+# EARLIER clients' transactions (prod via pgbouncer, 2026-10-15: a 1-row
+# UPDATE read 4, a 150-row one 152), so the cap is on the difference from
+# the post-BEGIN baseline; the server flushes only between transactions, so
+# the baseline holds for ours. The last -c prints the
+# "prod-psql <nonce>: <VERDICT>" line run_sql greps. Two guards keep that
+# line unfakeable: the per-run nonce keeps a result ROW echoing
+# 'prod-psql: ROLLBACK' (an UPDATE … RETURNING, a gripe body mentioning the
+# cap) from faking it, and the verdict is BUILT at runtime —
+# 'prod-psql ' || '<nonce>' || ': ROLLBACK, ' || … — so the grep target
+# never sits contiguously in this -c's text and a flag that echoed the
+# query could not print a matching line (the echo flags are refused anyway).
+# Then a runtime division-by-zero guards the COMMIT in the same -c: over
+# the cap the COMMIT never runs and the disconnect rolls the transaction
+# back.
+NONCE="n${RANDOM}${RANDOM}-$$"
+cap_pre="BEGIN; SELECT set_config('precis.prod_psql_base', (SELECT coalesce(sum(n_tup_upd + n_tup_del), 0) FROM pg_stat_xact_user_tables)::text, true);"
+cap_post() {
     cat <<EOF
-SELECT n - :prod_psql_base AS prod_psql_rows, n - :prod_psql_base > ${MAX_ROWS} AS prod_psql_over, coalesce(current_setting('precis.prod_psql_cap', true), '') = 'on' AS prod_psql_in_tx FROM ${tally} \\gset
-\\if :prod_psql_in_tx
-\\if :prod_psql_over
-\\echo prod-psql: ROLLBACK, :prod_psql_rows rows is over the cap of ${MAX_ROWS} (PRECIS_PROD_WRITE_MAX_ROWS), nothing changed
-ROLLBACK;
-\\else
-\\echo prod-psql: COMMIT, :prod_psql_rows rows, within the cap of ${MAX_ROWS}
+WITH s AS (SELECT coalesce(sum(n_tup_upd + n_tup_del), 0) AS n FROM pg_stat_xact_user_tables), v AS (SELECT s.n - b.v::bigint AS rows, b.v IS NOT NULL AS in_tx FROM s, (SELECT nullif(current_setting('precis.prod_psql_base', true), '') AS v) b) SELECT CASE WHEN NOT in_tx THEN 'prod-psql ' || '${NONCE}' || ': UNCAPPED, the SQL ended the transaction itself, its writes are already committed' WHEN rows > ${MAX_ROWS} THEN 'prod-psql ' || '${NONCE}' || ': ROLLBACK, ' || rows || ' rows is over the cap of ${MAX_ROWS} (PRECIS_PROD_WRITE_MAX_ROWS), nothing changed' ELSE 'prod-psql ' || '${NONCE}' || ': COMMIT, ' || rows || ' rows, within the cap of ${MAX_ROWS}' END AS prod_psql_verdict FROM v;
+WITH s AS (SELECT coalesce(sum(n_tup_upd + n_tup_del), 0) AS n FROM pg_stat_xact_user_tables), v AS (SELECT s.n - b.v::bigint AS rows, b.v IS NOT NULL AS in_tx FROM s, (SELECT nullif(current_setting('precis.prod_psql_base', true), '') AS v) b) SELECT 1/(rows <= ${MAX_ROWS} OR NOT in_tx)::int AS prod_psql_guard FROM v;
 COMMIT;
-\\endif
-\\else
-\\echo prod-psql: UNCAPPED, the SQL ended the transaction itself, its writes are already committed
-\\endif
 EOF
 }
 
@@ -340,7 +591,7 @@ prod_psql_error_hint() {
     if [[ -n "$hint" ]]; then
         printf 'prod-psql: hint — %s.\n' "$hint"
     fi
-    printf 'prod-psql: hint — the generated schema is docs/reference/schema.md (scripts/gen-schema); one table up close: scripts/prod-psql --ro "\\d <table>" (e.g. "\\d refs").\n'
+    printf 'prod-psql: hint — the generated schema is docs/reference/schema.md (scripts/gen-schema); one table up close: run scripts/prod-psql interactively and type \\d <table> (e.g. \\d refs).\n'
 }
 
 # --explain (gr513882): agent_ro cannot EXPLAIN a FOR UPDATE tail or a
@@ -359,12 +610,10 @@ explain_rewrite() {
           (?=\s*(?:\)|;|--|\/\*|$))//gix;
     ')"
     # A write — or a data-modifying CTE — cannot be EXPLAINed read-only.
-    # String literals, quoted identifiers and comments are blanked for this
-    # CHECK only; the rewrite above ships verbatim.
-    if printf '%s' "$s" | perl -0777 -ne '
-        s{--[^\n]*}{}g; s{/\*.*?\*/}{}gs;
-        s{\x27[^\x27]*(\x27\x27[^\x27]*)*\x27}{}g;
-        s{"[^"]*"}{}g;
+    # Literals, quoted identifiers and comments are blanked for this CHECK
+    # only (the shared scanner — a hand-rolled stripper here re-mis-lexed
+    # \r-ended comments and nested /* */); the rewrite above ships verbatim.
+    if sql_code_only "$s" | perl -0777 -ne '
         exit(/\b(?:INSERT|UPDATE|DELETE|MERGE)\b/i ? 0 : 1)'; then
         printf 'prod-psql: --explain is read-only (agent_ro) — it cannot EXPLAIN a data-modifying statement. EXPLAIN the driving SELECT instead: drop the INSERT/UPDATE wrapper and pass the SELECT it runs. A FOR UPDATE / SKIP LOCKED tail is stripped automatically.\n' >&2
         return 1
@@ -372,20 +621,44 @@ explain_rewrite() {
     printf '%s\n' "$s"
 }
 
-# Run one SQL text non-interactively. A capped write tees psql's stdout to
-# read its verdict line back: ROLLBACK exits 4, UNCAPPED exits 5. stderr is
-# captured then relayed on either path so prod_psql_error_hint can read it —
-# one-shot output is non-interactive, the delay is invisible.
+# Run one SQL text non-interactively. The caller's text is piped to ssh's
+# stdin and the remote command reads it into ONE -c "$(cat)" — the -c args
+# before and after it are the fixed wrapper's. --ro gets BEGIN READ ONLY /
+# COMMIT; a capped write gets the cap_pre/cap_post pair. A capped run tees
+# psql's stdout to read its verdict line back: ROLLBACK exits 4, UNCAPPED
+# exits 5, and a nominally clean run whose verdict row never printed exits
+# 6 — the write's outcome is then unknown. stderr is captured then
+# relayed on either path so prod_psql_error_hint can read it — one-shot
+# output is non-interactive, the delay is invisible.
 run_sql() {
-    local sql="$1" err rc=0
+    local sql="$1" err rc=0 cmd bytes
+    refuse_leading_meta "$sql"
+    if [[ $RO -eq 1 ]]; then
+        refuse_ro_tx_mode "$sql"
+    fi
     refuse_session_set "$sql"
     if [[ $EXPLAIN -eq 1 ]]; then
         sql="$(explain_rewrite "$sql")" || exit 2
         sql="EXPLAIN $sql"
     fi
+    # One -c is one argv item: Linux caps a single argv string at
+    # MAX_ARG_STRLEN — 131072 bytes INCLUDING the terminating NUL, so the
+    # largest text that execs is 131071 (measured: 131072 fails E2BIG on
+    # the hop, where stdin used to work). Checked after the --explain
+    # prepend, on the text that actually ships. Refuse locally.
+    bytes="$(printf '%s' "$sql" | wc -c | tr -d ' ')"
+    if (( bytes > 131071 )); then
+        echo "prod-psql: refused — the SQL text is ${bytes} bytes; a single -c argument tops out at 131071 bytes (MAX_ARG_STRLEN minus the NUL). Split it into smaller calls." >&2
+        exit 2
+    fi
     err="$(mktemp)"
     if ! needs_cap "$sql"; then
-        wrap_ro "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED" 2>"$err" || rc=$?
+        if [[ $RO -eq 1 ]]; then
+            cmd="$(remote_cmd 'BEGIN READ ONLY;' '$(cat)' 'COMMIT;')"
+        else
+            cmd="$(remote_cmd '$(cat)')"
+        fi
+        printf '%s' "$sql" | ssh -o IdentityAgent=none "$HOST" "$cmd" 2>"$err" || rc=$?
         if [[ -s "$err" ]]; then
             cat "$err" >&2
             prod_psql_error_hint "$sql" "$err" >&2
@@ -397,18 +670,34 @@ run_sql() {
     OUT="$(mktemp)"
     # Expanded now: $err is local and unbound when the EXIT trap runs.
     trap "rm -f '$OUT' '$err'" EXIT
-    wrap_cap "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED" 2>"$err" | tee "$OUT"
+    cmd="$(remote_cmd "$cap_pre" '$(cat)' "$(cap_post)")"
+    # || rc=$? keeps set -e from killing the script on the guard's deliberate
+    # over-cap error (psql exits nonzero so the COMMIT is skipped) — the
+    # verdict greps below decide the outcome either way.
+    printf '%s' "$sql" | ssh -o IdentityAgent=none "$HOST" "$cmd" 2>"$err" | tee "$OUT" || rc=$?
     if [[ -s "$err" ]]; then
         cat "$err" >&2
         prod_psql_error_hint "$sql" "$err" >&2
     fi
-    if grep -q '^prod-psql: ROLLBACK' "$OUT"; then
+    # The verdict arrives indented inside a result table — match without a
+    # line anchor, but anchored on the per-run NONCE so a caller's own
+    # output row containing 'prod-psql: ROLLBACK' can't fake the verdict.
+    if grep -q "prod-psql ${NONCE}: ROLLBACK" "$OUT"; then
         echo "prod-psql: rolled back — narrow the WHERE, or set PRECIS_PROD_WRITE_MAX_ROWS for a deliberate bulk change." >&2
         exit 4
     fi
-    if grep -q '^prod-psql: UNCAPPED' "$OUT"; then
+    if grep -q "prod-psql ${NONCE}: UNCAPPED" "$OUT"; then
         exit 5
     fi
+    # Fail closed: a COMMIT verdict is the only clean exit. A display
+    # option that reflows the row, or truncated output, must not read as
+    # success — if a nominally clean run printed no verdict the write's
+    # outcome is unknown, and we say so instead of returning 0.
+    if [[ $rc -eq 0 ]] && ! grep -q "prod-psql ${NONCE}: COMMIT" "$OUT"; then
+        echo "prod-psql: the capped run printed no verdict row — the write's outcome is unknown (a display option reflowed it, or output was truncated). Check PRECIS_PROD_PSQL_OPTS; do not assume it committed." >&2
+        exit 6
+    fi
+    return "$rc"
 }
 
 if [[ -n "$FILE" ]]; then
@@ -426,8 +715,9 @@ if [[ -n "$FILE" ]]; then
     fi
     run_sql "$(cat "$FILE")"
 elif [[ $# -gt 0 ]]; then
-    # One-shot: the SQL goes over ssh via psql's STDIN, never interpolated into
-    # the remote command line — so any quotes/`$`/`;` in the SQL are safe.
+    # One-shot: the SQL rides ssh's stdin into the remote -c "$(cat)",
+    # never interpolated into the remote command line locally and never
+    # re-expanded remotely — so any quotes/`$`/`\`/`;` in it are safe.
     run_sql "$*"
 elif [[ ! -t 0 ]]; then
     # Piped SQL on stdin — read it whole so it can be checked first.

@@ -70,7 +70,7 @@
     writes fleet-wide on 2026-10-02).
   enforcers:
     - path: scripts/prod-psql
-      what: "refuses session-level SET/RESET statements; passes SET LOCAL/TRANSACTION/CONSTRAINTS and UPDATE ... SET"
+      what: "refuses session-level SET/RESET, DO blocks and quoted \"set_config\" calls on every path (under --ro also vault. schema refs); passes SET LOCAL/TRANSACTION/CONSTRAINTS and UPDATE ... SET"
 - id: container-ops/prod-write-row-cap
   file: docs/conventions/container-ops.md
   section: "Container-first"

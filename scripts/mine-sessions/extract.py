@@ -522,7 +522,9 @@ def _run_prod_psql(sql: str) -> str | None:
     never issue a write even if a SQL string were wrong."""
     script = _REPO_ROOT / "scripts" / "prod-psql"
     env = dict(os.environ)
-    env["PRECIS_PROD_PSQL_OPTS"] = '-F "\t" -tA'
+    # -F takes the separator inside its own token (the OPTS allowlist keeps
+    # every character shell-safe — a quoted/backslashed token is refused).
+    env["PRECIS_PROD_PSQL_OPTS"] = "-F::: -tA"
     try:
         proc = subprocess.run(
             [str(script), "--ro", sql],
@@ -554,7 +556,7 @@ def _parse_tsv_rows(stdout: str, columns: tuple[str, ...]) -> list[dict[str, str
     for line in stdout.splitlines():
         if not line:
             continue
-        fields = line.split("\t")
+        fields = line.split(":::")  # the -F separator set in _run_prod_psql
         if len(fields) != len(columns):
             continue  # malformed row (psqlrc leakage, a warning line, ...) — skip
         rows.append(dict(zip(columns, fields)))

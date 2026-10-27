@@ -21,7 +21,12 @@ container stack, never a bare local binary pointed at ad-hoc state:
   connection and every later client inherits it — one
   `SET default_transaction_read_only = on` "read-only guard" broke every
   agent_rw write fleet-wide on 2026-10-02. The script refuses those
-  statements; `SET LOCAL` inside your own transaction is fine.
+  statements on every scripted path — and `DO` blocks and quoted
+  `"set_config"` calls, which set session state its lexical scan can't
+  see inside; under `--ro` it also refuses any `vault.` schema reference
+  (gr523021 — `agent_ro` can EXECUTE `vault.reveal`/`set`/`delete`, so
+  secrets are not readable through prod-psql). `SET LOCAL` inside your
+  own transaction is fine.
   `scripts/guide-web`'s header comment records the same trap from 2026-09-04
   and why it uses `agent_ro`.
 - Compose file: `docker/dev/compose.yaml` (checked into this repo; the

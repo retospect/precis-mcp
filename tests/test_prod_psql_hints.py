@@ -1,10 +1,11 @@
 """scripts/prod-psql's discovery affordances (gr514333): ``--help`` prints the
 usage + schema cheat sheet, and a `column/relation … does not exist` on
-psql's stderr is answered with the schema.md pointer and the ``\\d`` recipe.
+psql's stderr is answered with the schema.md pointer and the ``\\d`` recipe
+(interactive shell — scripted SQL never reaches the meta lexer, gr521223).
 
-``ssh`` is faked on PATH: it drains the wrapped SQL from stdin and emits
-``FAKE_PSQL_ERR`` on stderr with ``FAKE_PSQL_RC``. No network, no prod
-coordinates.
+``ssh`` is faked on PATH: it drains the caller's SQL from stdin — the text
+the remote shell reads into ``-c "$(cat)"`` — and emits ``FAKE_PSQL_ERR``
+on stderr with ``FAKE_PSQL_RC``. No network, no prod coordinates.
 """
 
 from __future__ import annotations
@@ -238,7 +239,9 @@ def test_explain_strips_for_update_and_wraps_in_explain(tmp_path: Path) -> None:
     )
     assert r.returncode == 0, r.stderr
     sent = _sent(tmp_path)
-    assert sent.startswith("BEGIN READ ONLY;\nEXPLAIN SELECT")
+    # The caller's -c text is the rewritten query; BEGIN READ ONLY/COMMIT are
+    # the fixed wrapper -c args around it.
+    assert sent.startswith("EXPLAIN SELECT")
     assert "FOR UPDATE" not in sent and "SKIP LOCKED" not in sent
 
 
@@ -290,7 +293,7 @@ def test_explain_implies_ro_in_either_flag_order(tmp_path: Path) -> None:
     )
     assert r.returncode == 0, r.stderr
     sent = _sent(tmp_path)
-    assert sent.startswith("BEGIN READ ONLY;\nEXPLAIN SELECT 1")
+    assert sent.startswith("EXPLAIN SELECT 1")
     assert "FOR UPDATE" not in sent
 
 

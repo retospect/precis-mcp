@@ -55,7 +55,7 @@ orphan, stuck-doable, budget) as `kind='alert'` rows. Query the currently
 namespace as colon-strings — `alert-state:open`, `alert-source:…`,
 `severity:critical`):
 
-    PRECIS_PROD_PSQL_OPTS='-F "\t" -tA' scripts/prod-psql "
+    PRECIS_PROD_PSQL_OPTS='-F::: -tA' scripts/prod-psql "
     WITH a AS (
       SELECT r.ref_id, r.title, r.updated_at,
         max(CASE WHEN t.value LIKE 'alert-state:%' THEN split_part(t.value,':',2) END) state,
