@@ -8,6 +8,14 @@ paper whose displayed key is junk-shaped
 now mint a non-junk key via :meth:`Store.suggest_cite_key` — one row per
 candidate: ref handle, old key → suggested key, title.
 
+Junk-keyed papers that are NOT candidates are reported too, as skipped
+with a reason: a byline with no person author at all (corporate/
+collective only) and a record with no publication year — minting either
+produces a bad key (a corporate token as surname, or the ``00``
+placeholder digits the junk key already carries; gr521515 dry-run:
+``group00``, ``neuralynx12``, ``boys00``). Those need metadata repair,
+not a re-mint.
+
 Dry-run by default: prints the list and writes nothing. ``--apply``
 rekeys each row through :func:`precis.store.paper_rekey.rekey_paper` —
 the displaced key stays resolvable as a ``cite_key_alias`` redirect, the
@@ -27,7 +35,7 @@ import sys
 
 from precis.cli._common import resolve_dsn
 from precis.errors import BadInput, NotFound
-from precis.identity import is_junk_cite_key
+from precis.identity import _first_person_surname, is_junk_cite_key
 
 _CANDIDATES_SQL = """
     SELECT DISTINCT ON (r.ref_id)
@@ -66,15 +74,45 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     return p
 
 
-def _candidates(store) -> list[tuple[int, str, str, str]]:
-    """``(ref_id, old_key, new_key, title)`` rows worth re-minting."""
+def _candidates(
+    store,
+) -> tuple[list[tuple[int, str, str, str]], list[tuple[int, str, str, str]]]:
+    """Remint rows plus ``(ref_id, old_key, reason, title)`` skips.
+
+    A row is skipped — reported, never minted — when its byline has no
+    person author (corporate/collective only: the mint would hand a
+    group token the surname slot) or its record has no year (the key
+    would carry the ``00`` placeholder — the same digits the junk mint
+    stamped). Both need metadata repair first, not a re-mint.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(_CANDIDATES_SQL).fetchall()
-    out: list[tuple[int, str, str, str]] = []
+    remint: list[tuple[int, str, str, str]] = []
+    skipped: list[tuple[int, str, str, str]] = []
     claimed: set[str] = set()  # keys this run already plans to take
     for ref_id, key, title, authors, year in rows:
         old = str(key or "")
         if not is_junk_cite_key(old):
+            continue
+        if not _first_person_surname(authors):
+            skipped.append(
+                (
+                    int(ref_id),
+                    old,
+                    "no person author in byline (corporate/collective only)",
+                    str(title or ""),
+                )
+            )
+            continue
+        if year is None:
+            skipped.append(
+                (
+                    int(ref_id),
+                    old,
+                    "no publication year in the record",
+                    str(title or ""),
+                )
+            )
             continue
         suggested = store.suggest_cite_key(
             authors, year, exclude_ref_id=int(ref_id), extra_taken=claimed
@@ -82,8 +120,8 @@ def _candidates(store) -> list[tuple[int, str, str, str]]:
         if not suggested or is_junk_cite_key(suggested) or suggested == old:
             continue
         claimed.add(suggested)
-        out.append((int(ref_id), old, suggested, str(title or "")))
-    return out
+        remint.append((int(ref_id), old, suggested, str(title or "")))
+    return remint, skipped
 
 
 def run(args: argparse.Namespace) -> None:
@@ -105,11 +143,11 @@ def run(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     mode = "APPLY" if args.apply else "DRY-RUN"
-    rows = _candidates(store)
+    rows, no_mint = _candidates(store)
     if args.limit is not None:
         rows = rows[: args.limit]
     print(
-        f"paper-remint-junk [{mode}]: {len(rows)} candidate(s)",
+        f"paper-remint-junk [{mode}]: {len(rows)} candidate(s), {len(no_mint)} skipped",
         file=sys.stderr,
     )
     rekeyed = 0
@@ -132,6 +170,10 @@ def run(args: argparse.Namespace) -> None:
                 rekeyed += 1
                 line = f"{line}\n    {receipt}"
         print(line)
+    if no_mint:
+        print("skipped (needs metadata repair, not a re-mint):")
+        for ref_id, old, reason, title in no_mint:
+            print(f"pa{ref_id}  {old}  {reason}  {title[:80]}")
     if args.apply:
         print(
             f"paper-remint-junk [APPLY]: rekeyed {rekeyed}, skipped {len(skipped)}",

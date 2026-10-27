@@ -133,25 +133,9 @@ def _ascii_fold(text: str, *, fallbacks: bool = False) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
 
 
-def _surname_from_string(name: str) -> str:
-    """Extract the surname from a free-text name string.
-
-    Handles the four shapes we see in the wild:
-
-    - ``"Smith, John"``  → ``smith``  (comma form: take the head)
-    - ``"John Smith"``   → ``smith``  (Western order: take last word)
-    - ``"Smith"``        → ``smith``  (mononym)
-    - ``"A.Clark"`` / ``"A.B.Clark"``  → ``clark``  (glued initials)
-    """
-    first = (name or "").strip()
-    if not first:
-        return ""
-    if "," in first:
-        surname = first.split(",", 1)[0]
-    else:
-        parts = first.split()
-        surname = parts[-1] if parts else ""
-    folded = _ascii_fold(surname.lower())
+def _key_letters(text: str) -> str:
+    """Fold a surname string to cite_key letters (``[:_SURNAME_MAX]``)."""
+    folded = _ascii_fold(text.lower())
     # "a.clark" → "clark"; "a.b.clark" → "clark". Detect a leading run
     # of one-letter dotted segments (initials) and drop them.
     if "." in folded:
@@ -163,6 +147,288 @@ def _surname_from_string(name: str) -> str:
         ):
             folded = segments[-1]
     return re.sub(r"[^a-z]", "", folded)[:_SURNAME_MAX]
+
+
+#: A whitespace-delimited token that is initials, not a surname —
+#: ``"A"``, ``"A."``, ``"A.V."``, ``"A.V"``. The "Surname I" byline form
+#: (``"Mula A"``) trails them; the last token is never the surname
+#: (gr521515 dry-run: ``a26avk``). A bare multi-letter token never
+#: matches — ``"Sa"``/``"Li"``/``"Wu"`` are surnames, not initials.
+_INITIALS_TOKEN_RE = re.compile(r"(?:[A-Za-z]\.)*[A-Za-z]\.?")
+
+#: PubMed-style unpunctuated initials: a run of 1-3 ASCII capitals
+#: (``"AV"``, ``"JK"``, ``"ABC"``). Counts as initials only after a
+#: head token carrying a lowercase letter — an all-caps head can't be
+#: told surname-from-initials, so ``"SMITH AB"`` keeps ``ab`` while
+#: ``"Mula AV"`` peels to ``mula``.
+_CAPS_INITIALS_TOKEN_RE = re.compile(r"[A-Z]{1,3}")
+
+#: Generational suffixes that trail a surname, compared case-folded on
+#: the token with any trailing dot stripped (``"Jr"``, ``"Jr."``,
+#: ``"Sr"``, ``"II"``, ``"III"``, ``"IV"``).
+_GENERATIONAL_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
+#: Nobiliary particles — the lowercase connective tokens that belong to
+#: the surname they precede ("de Sa", "van der Berg", "von Neumann").
+#: A *lowercase* token always joins; capitalized members of the smaller
+#: :data:`_CAPITALIZED_NAME_PARTICLES` set join too (see there).
+_SURNAME_PARTICLES = frozenset(
+    {
+        "de",
+        "di",
+        "da",
+        "del",
+        "della",
+        "dei",
+        "degli",
+        "des",
+        "du",
+        "dos",
+        "das",
+        "le",
+        "la",
+        "les",
+        "van",
+        "von",
+        "der",
+        "den",
+        "ten",
+        "ter",
+        "op",
+        "het",
+        "al",
+        "el",
+        "bin",
+        "ibn",
+        "ben",
+        "af",
+        "zu",
+        "zum",
+        "zur",
+    }
+)
+
+#: Particles and name prefixes that join the surname even capitalized,
+#: but only when another name token follows — the free-string form then
+#: matches :func:`_family_key`, which folds a parsed ``family`` field
+#: whole (``"Maria De La Cruz"`` → ``delacruz``, ``"Van Der Berg"`` →
+#: ``vanderberg``). ``mac``/``mc`` are surname *prefixes* (a spaced
+#: ``"Mac Donald"`` folds like ``MacDonald``), not nobiliary particles,
+#: but the fold is the same. A capitalized particle that is *not*
+#: followed by another name token is the surname itself, and a lone
+#: capitalized particle before the surname is likelier a given name
+#: (``"Le Nguyen"`` → ``lenguyen`` — a tolerated false positive).
+_CAPITALIZED_NAME_PARTICLES = frozenset(
+    {
+        "van",
+        "von",
+        "der",
+        "den",
+        "de",
+        "la",
+        "le",
+        "du",
+        "da",
+        "di",
+        "del",
+        "della",
+        "dos",
+        "das",
+        "ter",
+        "ten",
+        "bin",
+        "ben",
+        "ibn",
+        "al",
+        "mac",
+        "mc",
+    }
+)
+
+
+def _surname_from_string(name: str) -> str:
+    """Extract the surname from a free-text name string.
+
+    Handles the shapes we see in the wild:
+
+    - ``"Smith, John"``  → ``smith``  (comma form: take the head)
+    - ``"John Smith"``   → ``smith``  (Western order: take last word)
+    - ``"Smith"``        → ``smith``  (mononym)
+    - ``"A.Clark"`` / ``"A.B.Clark"``  → ``clark``  (glued initials)
+    - ``"Mula A"`` / ``"Mula A.V."`` / ``"Mula AV"`` → ``mula``
+      (surname + trailing initials — gr521515 dry-run: ``a26avk``;
+      the bare ``"AV"`` is PubMed's unpunctuated form)
+    - ``"Smith Jr"`` / ``"Smith III"`` → ``smith``  (generational
+      suffixes peel like initials)
+    - ``"John de Sa"`` / ``"Jan van der Berg"`` → ``desa`` /
+      ``vanderberg``  (lowercase nobiliary particles join the surname —
+      gr521515 dry-run: ``sa98``)
+    - ``"Maria De La Cruz"`` / ``"Van Der Berg"`` / ``"Mac Donald"`` →
+      ``delacruz`` / ``vanderberg`` / ``macdonald``  (capitalized
+      particles join when another name token follows — the parsed
+      ``family`` field folds the same text whole)
+    """
+    first = (name or "").strip()
+    if not first:
+        return ""
+    if "," in first:
+        return _key_letters(first.split(",", 1)[0])
+    parts = first.split()
+    # Peel trailing non-surname tokens: dotted/single initials
+    # ("A.", "A.V."), bare caps initials after a mixed-case head
+    # ("Mula AV"), and generational suffixes ("Jr", "III").
+    while len(parts) > 1:
+        tail = parts[-1]
+        if (
+            _INITIALS_TOKEN_RE.fullmatch(tail)
+            or tail.rstrip(".").lower() in _GENERATIONAL_SUFFIXES
+            or (
+                _CAPS_INITIALS_TOKEN_RE.fullmatch(tail)
+                and any(ch.islower() for ch in parts[-2])
+            )
+        ):
+            parts.pop()
+        else:
+            break
+    surname = parts[-1] if parts else ""
+    # Join the run of particles immediately before it: a lowercase
+    # particle always joins; a capitalized member of
+    # _CAPITALIZED_NAME_PARTICLES joins when another name token follows
+    # it — true for every token inside this scan, so the run grows left
+    # until a non-particle head.
+    i = len(parts) - 2
+    particles: list[str] = []
+    while i >= 0:
+        letters = re.sub(r"[^a-z]", "", parts[i].lower())
+        if letters in _CAPITALIZED_NAME_PARTICLES or (
+            parts[i].islower() and letters in _SURNAME_PARTICLES
+        ):
+            particles.insert(0, parts[i])
+            i -= 1
+        else:
+            break
+    if particles:
+        surname = " ".join([*particles, surname])
+    return _key_letters(surname)
+
+
+def _family_key(family: str) -> str:
+    """A parsed ``family`` field → cite_key letters, used WHOLE.
+
+    The field is already the surname — no last-token guess: compound
+    surnames (``"Fidler Mis"`` → ``fidlermis``) and particle surnames
+    (``"de Sa"`` → ``desa``) keep every part; spaces simply drop in the
+    letter fold (gr521515 dry-run: ``mis26``, ``sa98``). A pathological
+    ``"Family, Given"`` blob still takes the head.
+    """
+    s = str(family)
+    if "," in s:
+        s = s.split(",", 1)[0]
+    return _key_letters(s)
+
+
+#: Collective/corporate byline tokens — a ``refs.authors`` entry
+#: carrying one is a group or an organisation, not a person
+#: ("Parkinson Study Group", "Neuralynx, Inc.", "LHCb Collaboration").
+#: Matched whole-word, case-insensitively, across the entry's whole
+#: name text (the token can land in ``given`` — ``{"given": "Inc.",
+#: "family": "Neuralynx"}``). The mint walks past a collective to the
+#: next person author; with none it falls back to ``anon``, staying
+#: junk-shaped and sweep-visible (gr521515 dry-run: ``group00``,
+#: ``neuralynx12``).
+_COLLECTIVE_TOKENS = frozenset(
+    {
+        "group",
+        "consortium",
+        "committee",
+        "study",
+        "collaboration",
+        "society",
+        "team",
+        "network",
+        "project",
+        "investigators",
+        "investigator",
+        "trialists",
+        "collective",
+        "alliance",
+        "initiative",
+        "working",
+        "taskforce",
+        "association",
+        "foundation",
+        "institute",
+        "institutes",
+        "university",
+        "academy",
+        "council",
+        "federation",
+        "commission",
+        "agency",
+        "bureau",
+        "ministry",
+        "authority",
+        "administration",
+        "department",
+        "dept",
+        "division",
+        "laboratory",
+        "laboratories",
+        "center",
+        "centre",
+        "inc",
+        "ltd",
+        "llc",
+        "corp",
+        "corporation",
+        "company",
+        "gmbh",
+        "pty",
+        "plc",
+        "bv",
+        "pharma",
+        "pharmaceuticals",
+        "technologies",
+        "labs",
+        "systems",
+        "holdings",
+        "enterprises",
+        "industries",
+    }
+)
+
+
+def _is_collective_name(text: str) -> bool:
+    """True when a byline entry's name text is a collective or an
+    organisation rather than a person — a collective token, or digits
+    (no person-name shape)."""
+    lowered = text.lower()
+    if any(ch.isdigit() for ch in lowered):
+        return True
+    return any(tok in _COLLECTIVE_TOKENS for tok in re.findall(r"[a-z]+", lowered))
+
+
+def _entry_is_collective(entry: Any) -> bool:
+    """True when one ``refs.authors`` element is a collective/org."""
+    if isinstance(entry, Mapping):
+        text = " ".join(
+            str(entry.get(k) or "") for k in ("given", "family", "last", "name")
+        )
+        return _is_collective_name(text)
+    return _is_collective_name(str(entry or ""))
+
+
+def _entry_surname(entry: Any) -> str:
+    """Best surname guess for one byline entry, in any stored shape."""
+    if isinstance(entry, Mapping):
+        family = entry.get("family") or entry.get("last")
+        if family:
+            return _family_key(str(family))
+        name = entry.get("name")
+        return _surname_from_string(str(name)) if name else ""
+    if isinstance(entry, str):
+        return _surname_from_string(entry)
+    return ""
 
 
 #: Literal title stamped on a paper minted with no title of its own — a
@@ -213,13 +479,32 @@ def _first_author_surname(authors: Any) -> str:
         first = next(iter(authors))
     except TypeError:
         return ""
-    if isinstance(first, Mapping):
-        family = first.get("family") or first.get("last") or first.get("name")
-        if not family:
-            return ""
-        return _surname_from_string(str(family))
-    if isinstance(first, str):
-        return _surname_from_string(first)
+    return _entry_surname(first)
+
+
+def _first_person_surname(authors: Any) -> str:
+    """Surname of the first *person* author — collectives skipped.
+
+    A corporate/collective byline entry ("Parkinson Study Group",
+    ``{"given": "Inc.", "family": "Neuralynx"}``) never supplies the
+    surname — the mint walks to the next person author instead
+    (gr521515 dry-run: ``group00``, ``neuralynx12``). Returns ``""``
+    when no person author exists, which is what lets the caller fall
+    back to the junk-detectable ``anon`` placeholder rather than
+    minting a corporate token as a surname.
+    """
+    if not authors:
+        return ""
+    try:
+        entries = iter(authors)
+    except TypeError:
+        return ""
+    for entry in entries:
+        if _entry_is_collective(entry):
+            continue
+        surname = _entry_surname(entry)
+        if surname:
+            return surname
     return ""
 
 
@@ -594,7 +879,7 @@ def make_cite_key(
             ``a``…``z``, ``aa``…``zz``, ``aaa``… so a real (finite)
             corpus never overflows.
     """
-    surname = _first_author_surname(authors) or "anon"
+    surname = _first_person_surname(authors) or "anon"
     yy = f"{year % 100:02d}" if year is not None else "00"
     base = f"{surname}{yy}"
     taken_set = set(taken)

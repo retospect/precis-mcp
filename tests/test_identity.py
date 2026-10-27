@@ -539,6 +539,117 @@ def test_cite_key_charset_ascii_lower() -> None:
 
 
 # ---------------------------------------------------------------------------
+# gr521515 dry-run mint bugs — the shapes the prod sweep produced
+# ---------------------------------------------------------------------------
+
+
+def test_cite_key_corporate_author_uses_next_person() -> None:
+    """gr521515 dry-run: a collective first author minted its own token
+    as the 'surname' ('Parkinson Study Group' → ``group00``, 'Neuralynx,
+    Inc.' → ``neuralynx12``). The mint walks past it to the next person
+    author."""
+    # The real stored rows behind group00 / neuralynx12:
+    group_first = [
+        {"family": "Parkinson Study Group", "openalex_author_id": "A5023314663"},
+        {"given": "J.", "family": "Smith"},
+    ]
+    assert make_cite_key(group_first, 2000) == "smith00"
+    # "Neuralynx, Inc." was parsed into given/family — the collective
+    # token can sit in *given*, so detection looks at the whole entry.
+    inc_first = [
+        {"given": "Inc.", "family": "Neuralynx"},
+        {"given": "A.", "family": "Doe"},
+    ]
+    assert make_cite_key(inc_first, 2012) == "doe12"
+    assert make_cite_key(["Neuralynx, Inc.", "Doe, A."], 2012) == "doe12"
+
+
+def test_cite_key_all_collective_byline_stays_anon() -> None:
+    """No person author at all → the junk-detectable ``anon``
+    placeholder, never a corporate token — the remint sweep reports
+    the paper as skipped instead of minting."""
+    assert make_cite_key([{"family": "Parkinson Study Group"}], 2000) == "anon00"
+    assert make_cite_key([{"given": "Inc.", "family": "Neuralynx"}], 2012) == "anon12"
+    assert make_cite_key(["LHCb Collaboration"], 2020) == "anon20"
+
+
+def test_cite_key_surname_then_initials_form() -> None:
+    """gr521515 dry-run: ``{"name": "Mula A"}`` (surname first, initials
+    trailing) minted ``a26avk`` — a trailing single-letter / dotted-
+    initial token is an initial, not the surname."""
+    mula = [{"name": "Mula A"}, {"name": "Yan Bai"}, {"name": "Yulin Wang"}]
+    assert make_cite_key(mula, 2026) == "mula26"
+    assert make_cite_key(["Mula A.V."], 2026) == "mula26"
+    assert make_cite_key(["Mula A V"], 2026) == "mula26"
+
+
+def test_cite_key_particle_family_used_whole() -> None:
+    """gr521515 dry-run: ``{"family": "de Sa"}`` minted ``sa98`` —
+    nobiliary particles belong to the surname — and ``{"family":
+    "Fidler Mis"}`` minted ``mis26`` — a parsed family field is used
+    whole, spaces removed."""
+    desa = [
+        {"given": "Virginia R.", "family": "de Sa"},
+        {"given": "Geoffrey E.", "family": "Hinton"},
+    ]
+    assert make_cite_key(desa, 1998) == "desa98"
+    assert make_cite_key([{"given": "Nataša", "family": "Fidler Mis"}], 2026) == (
+        "fidlermis26"
+    )
+    # Free-text Western order joins the lowercase particles too.
+    assert make_cite_key(["Jan van der Berg"], 2020) == "vanderberg20"
+    assert make_cite_key(["John von Neumann"], 1945) == "vonneumann45"
+
+
+def test_cite_key_pubmed_caps_initials() -> None:
+    """Same bad-key class as ``a26avk``: PubMed's unpunctuated all-caps
+    initials (``Mula AV``) trail the surname. A trailing run of 1-3
+    ASCII capitals after a mixed-case head token is initials."""
+    assert make_cite_key(["Mula AV"], 2026) == "mula26"
+    assert make_cite_key(["Smith AB"], 2026) == "smith26"
+    assert make_cite_key(["Smith JK"], 2026) == "smith26"
+    assert make_cite_key(["Smith ABC"], 2026) == "smith26"
+
+
+def test_cite_key_caps_token_can_stay_surname() -> None:
+    """A short mixed-case surname is never an initial — ``Wu``/``Li``/
+    ``Sa``/``Ng`` stay the surname; a single dotted/bare letter still
+    peels even off an all-caps surname (``SMITH J``)."""
+    assert make_cite_key(["Ming Wu"], 2026) == "wu26"
+    assert make_cite_key(["Yan Li"], 2026) == "li26"
+    assert make_cite_key(["Maria Sa"], 2026) == "sa26"
+    assert make_cite_key(["Anthony Ng"], 2026) == "ng26"
+    assert make_cite_key(["SMITH J"], 2026) == "smith26"
+
+
+def test_cite_key_generational_suffixes() -> None:
+    """A trailing generational suffix is not the surname either —
+    ``Jr``/``Jr.``/``Sr``/``II``/``III``/``IV`` peel like initials."""
+    assert make_cite_key(["Smith Jr"], 2026) == "smith26"
+    assert make_cite_key(["Smith Jr."], 2026) == "smith26"
+    assert make_cite_key(["Smith Sr"], 2026) == "smith26"
+    assert make_cite_key(["Smith II"], 2026) == "smith26"
+    assert make_cite_key(["Smith III"], 2026) == "smith26"
+    assert make_cite_key(["Smith IV"], 2026) == "smith26"
+
+
+def test_cite_key_capitalized_particles() -> None:
+    """The family field folds ``"De La Cruz"`` whole — the free-string
+    form now matches it: a *capitalized* particle joins the surname
+    when another name token follows it (a trailing particle-shaped
+    token is the surname itself)."""
+    assert make_cite_key(["Van Der Berg"], 2026) == "vanderberg26"
+    assert make_cite_key(["Maria De La Cruz"], 2026) == "delacruz26"
+    # Lowercase particles join as before.
+    assert make_cite_key(["Ludwig van Beethoven"], 2026) == "vanbeethoven26"
+    # Spaced Mac/Mc surnames fold like the glued forms.
+    assert make_cite_key(["Mac Donald"], 2026) == "macdonald26"
+    assert make_cite_key(["Mc Donald"], 2026) == "mcdonald26"
+    # A capitalized particle can be a given name — tolerated.
+    assert make_cite_key(["Le Nguyen"], 2026) == "lenguyen26"
+
+
+# ---------------------------------------------------------------------------
 # make_node_id
 # ---------------------------------------------------------------------------
 

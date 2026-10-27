@@ -531,6 +531,94 @@ def test_cli_apply_rekeys_each_candidate(
     assert events[0].source == "paper-remint-junk"
 
 
+def test_remint_door_refuses_a_yearless_record(store: Store) -> None:
+    """pa448244 'Boys' minted ``boys00`` — its digits came from the
+    no-year placeholder, indistinguishable from the junk key's own. A
+    record with no year is never re-minted; the sweep reports it as
+    skipped so the year can be repaired first."""
+    from precis.store.paper_rekey import remint_junk_cite_key
+
+    ref_id = _seed(
+        store,
+        "the00bf",
+        authors=[
+            {"given": "S. F.", "family": "Boys"},
+            {"given": "F.", "family": "Bernardi"},
+        ],
+        year=None,
+    )
+
+    assert remint_junk_cite_key(store, ref_id, source="test") is None
+    assert store.find_ref_by_identifier("cite_key", "the00bf") == ref_id
+    assert store.events_for(ref_id, event="cite_key_changed") == []
+
+
+def test_cli_dry_run_reports_skips_with_reasons(
+    store: Store, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """The four dry-run mint bugs, with the stored rows that produced
+    them: corporate authors minted as surnames (group00, neuralynx12),
+    a trailing initial as surname (a26avk), a truncated particle family
+    (sa98, mis26), and the no-year placeholder mint (boys00)."""
+    corp = _seed(
+        store,
+        "anon00a",
+        authors=[{"family": "Parkinson Study Group"}],
+        year=2000,
+    )
+    inc = _seed(
+        store,
+        "anon12a",
+        authors=[{"given": "Inc.", "family": "Neuralynx"}],
+        year=2012,
+    )
+    noyr = _seed(
+        store,
+        "the00bf",
+        authors=[{"given": "S. F.", "family": "Boys"}],
+        year=None,
+    )
+    desa = _seed(
+        store,
+        "anon10d",
+        authors=[
+            {"given": "Virginia R.", "family": "de Sa"},
+            {"given": "Geoffrey E.", "family": "Hinton"},
+        ],
+        year=1998,
+    )
+    fidlermis = _seed(
+        store,
+        "the26py",
+        authors=[{"given": "Nataša", "family": "Fidler Mis"}],
+        year=2026,
+    )
+    mula = _seed(
+        store,
+        "the26pj",
+        authors=[{"name": "Mula A"}, {"name": "Yan Bai"}],
+        year=2026,
+    )
+    _patch_cli_runtime(store, monkeypatch)
+    before = _write_snapshot(store)
+
+    remint_cli.run(argparse.Namespace(apply=False, limit=None, database_url=None))
+
+    out = capsys.readouterr()
+    assert f"pa{desa}  anon10d -> desa98" in out.out
+    assert f"pa{fidlermis}  the26py -> fidlermis26" in out.out
+    assert f"pa{mula}  the26pj -> mula26" in out.out
+    # Skipped papers are listed separately, each with its reason —
+    # never as ``old -> new`` candidate lines.
+    lines = out.out.splitlines()
+    for rid in (corp, inc):
+        skip = [l for l in lines if l.startswith(f"pa{rid} ")]
+        assert len(skip) == 1 and "no person author" in skip[0]
+    noyr_lines = [l for l in lines if l.startswith(f"pa{noyr} ")]
+    assert len(noyr_lines) == 1 and "no publication year" in noyr_lines[0]
+    assert _write_snapshot(store) == before
+
+
 def test_cli_plans_collision_aware_keys(
     store: Store, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:

@@ -287,8 +287,15 @@ def _remint_target(
     *,
     conn: Connection | None = None,
 ) -> str | None:
-    """The suggested replacement key, or ``None`` when no re-mint applies."""
-    if not is_junk_cite_key(old_key):
+    """The suggested replacement key, or ``None`` when no re-mint applies.
+
+    A record with no publication year never re-mints: the suggested key
+    would carry the ``00`` placeholder — digits indistinguishable from
+    the junk mint's own (gr521515 dry-run: ``boys00``). The key stays
+    junk until a repair supplies the year; the sweep reports the paper
+    as skipped instead of guessing.
+    """
+    if not is_junk_cite_key(old_key) or year is None:
         return None
     new_key = store.suggest_cite_key(authors, year, exclude_ref_id=ref_id, conn=conn)
     if not new_key or is_junk_cite_key(new_key) or new_key == old_key:
