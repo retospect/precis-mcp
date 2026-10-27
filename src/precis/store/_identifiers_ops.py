@@ -997,11 +997,11 @@ class IdentifiersMixin:
         authors are unknown enough that the base would be the ``anon``
         placeholder.
         """
-        from precis.identity import make_cite_key
+        from precis.identity import _byline_key_word, make_cite_key
 
-        base = make_cite_key(authors, year)  # bare surname+yy prefix
-        if base.startswith("anon"):
+        if not _byline_key_word(authors):
             return ""
+        base = make_cite_key(authors, year)  # bare word+yy prefix
 
         def _do(c: Connection) -> str:
             rows = c.execute(

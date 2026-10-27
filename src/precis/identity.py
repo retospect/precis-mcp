@@ -133,6 +133,100 @@ def _ascii_fold(text: str, *, fallbacks: bool = False) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
 
 
+#: Cyrillic → Latin romanisation for the cite-key fold (gr523665).
+#: NFKD does not decompose Cyrillic, so ``_ascii_fold`` alone erased a
+#: Cyrillic byline to nothing — pa497788 ("Батманова, А.Н.") skipped
+#: the remint sweep as "no person author". Digraphs are the common
+#: scholarly romanisation (ж→zh, х→kh, ц→ts, ч→ch, ш→sh, щ→shch,
+#: ю→yu, я→ya, й→y); ё→e (``gorbachev``, not ``gorbachyov``); the
+#: Russian hard/soft signs fold away (Bulgarian reads ъ as a vowel —
+#: Russian text dominates the corpus, so the silent fold wins).
+#: Covers the Slavic Cyrillic alphabets plus the commonest Turkic
+#: letters; anything unmapped still folds away under NFKD.
+_CYRILLIC_LOWER = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "ґ": "g",
+    "д": "d",
+    "ђ": "dj",
+    "ѓ": "gj",
+    "е": "e",
+    "ѐ": "e",
+    "ё": "e",
+    "є": "ye",
+    "ж": "zh",
+    "з": "z",
+    "ѕ": "dz",
+    "и": "i",
+    "і": "i",
+    "ї": "yi",
+    "ѝ": "i",
+    "й": "y",
+    "ј": "j",
+    "к": "k",
+    "л": "l",
+    "љ": "lj",
+    "м": "m",
+    "н": "n",
+    "њ": "nj",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "ћ": "c",
+    "ќ": "kj",
+    "у": "u",
+    "ў": "u",
+    "ф": "f",
+    "х": "kh",
+    "ц": "ts",
+    "ч": "ch",
+    "џ": "dz",
+    "ш": "sh",
+    "щ": "shch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+    # The commonest non-Slavic (Turkic etc.) Cyrillic letters.
+    "ә": "a",
+    "ғ": "g",
+    "қ": "q",
+    "ң": "ng",
+    "һ": "h",
+    "ө": "o",
+    "ү": "u",
+    "ұ": "u",
+    "ҳ": "h",
+    "ҷ": "j",
+    "ӣ": "i",
+    "ӯ": "u",
+}
+_CYRILLIC_TO_LATIN = str.maketrans(
+    {
+        **_CYRILLIC_LOWER,
+        **{k.upper(): v.capitalize() for k, v in _CYRILLIC_LOWER.items()},
+    }
+)
+
+
+def _transliterate(text: str) -> str:
+    """Romanise letters ``_ascii_fold`` would erase — Cyrillic, today.
+
+    Runs before the surname parse so the ASCII-shaped heuristics
+    (trailing-initial peels, particle joins) work on the romanised
+    text: ``"Иванов И.В."`` → ``"Ivanov I.V."`` peels to ``ivanov``.
+    Scripts without a table entry (CJK, Arabic, …) pass through and
+    still fold to nothing downstream.
+    """
+    return text.translate(_CYRILLIC_TO_LATIN)
+
+
 def _key_letters(text: str) -> str:
     """Fold a surname string to cite_key letters (``[:_SURNAME_MAX]``)."""
     folded = _ascii_fold(text.lower())
@@ -267,8 +361,11 @@ def _surname_from_string(name: str) -> str:
       ``delacruz`` / ``vanderberg`` / ``macdonald``  (capitalized
       particles join when another name token follows — the parsed
       ``family`` field folds the same text whole)
+    - ``"Батманова, А.Н."`` / ``"Иванов И.В."`` → ``batmanova`` /
+      ``ivanov``  (Cyrillic romanises first, gr523665 — then the
+      comma/initials rules apply to the Latin text)
     """
-    first = (name or "").strip()
+    first = _transliterate((name or "").strip())
     if not first:
         return ""
     if "," in first:
@@ -321,7 +418,7 @@ def _family_key(family: str) -> str:
     letter fold (gr521515 dry-run: ``mis26``, ``sa98``). A pathological
     ``"Family, Given"`` blob still takes the head.
     """
-    s = str(family)
+    s = _transliterate(str(family))
     if "," in s:
         s = s.split(",", 1)[0]
     return _key_letters(s)
@@ -408,14 +505,18 @@ def _is_collective_name(text: str) -> bool:
     return any(tok in _COLLECTIVE_TOKENS for tok in re.findall(r"[a-z]+", lowered))
 
 
-def _entry_is_collective(entry: Any) -> bool:
-    """True when one ``refs.authors`` element is a collective/org."""
+def _entry_name_text(entry: Any) -> str:
+    """One ``refs.authors`` element → its whole name text."""
     if isinstance(entry, Mapping):
-        text = " ".join(
+        return " ".join(
             str(entry.get(k) or "") for k in ("given", "family", "last", "name")
         )
-        return _is_collective_name(text)
-    return _is_collective_name(str(entry or ""))
+    return str(entry or "")
+
+
+def _entry_is_collective(entry: Any) -> bool:
+    """True when one ``refs.authors`` element is a collective/org."""
+    return _is_collective_name(_entry_name_text(entry))
 
 
 def _entry_surname(entry: Any) -> str:
@@ -489,9 +590,8 @@ def _first_person_surname(authors: Any) -> str:
     ``{"given": "Inc.", "family": "Neuralynx"}``) never supplies the
     surname — the mint walks to the next person author instead
     (gr521515 dry-run: ``group00``, ``neuralynx12``). Returns ``""``
-    when no person author exists, which is what lets the caller fall
-    back to the junk-detectable ``anon`` placeholder rather than
-    minting a corporate token as a surname.
+    when no person author exists; the caller then tries
+    :func:`_first_org_key_word` before the ``anon`` placeholder.
     """
     if not authors:
         return ""
@@ -506,6 +606,97 @@ def _first_person_surname(authors: Any) -> str:
         if surname:
             return surname
     return ""
+
+
+#: Words that carry no organisational identity — articles, connectives
+#: and the leading particles that also open org names ("De La Salle").
+#: Together with :data:`_COLLECTIVE_TOKENS` (which already holds the
+#: legal forms — ``inc``/``ltd``/``gmbh``/…) they are skipped when
+#: picking the significant org word (gr523665), so "The Royal Society"
+#: keys on ``royal`` and "Study Group" alone leaves nothing.
+_ORG_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "of",
+        "for",
+        "and",
+        "or",
+        "in",
+        "on",
+        "at",
+        "by",
+        "to",
+        "de",
+        "del",
+        "la",
+        "le",
+        "les",
+        "di",
+        "da",
+        "des",
+        "du",
+        "dos",
+        "van",
+        "von",
+        "der",
+        "den",
+        "ten",
+        "ter",
+    }
+)
+
+
+def _org_key_word(text: str) -> str:
+    """First significant word of an organisation name → cite_key stem.
+
+    Skips :data:`_ORG_STOP_WORDS` and the collective designators in
+    :data:`_COLLECTIVE_TOKENS`, so "The Royal Society" → ``royal``,
+    "Parkinson Study Group" → ``parkinson``, "Neuralynx, Inc." →
+    ``neuralynx``. Digits keep their place in the word ("3M" →
+    ``3m``); a name reduced to stop words yields ``""`` — the caller
+    falls back to the ``anon`` placeholder.
+    """
+    folded = _ascii_fold(_transliterate(text).lower(), fallbacks=True)
+    for word in re.findall(r"[a-z0-9]+", folded):
+        if word in _ORG_STOP_WORDS or word in _COLLECTIVE_TOKENS:
+            continue
+        return word[:_SURNAME_MAX]
+    return ""
+
+
+def _first_org_key_word(authors: Any) -> str:
+    """Key stem from the first collective byline entry (gr523665).
+
+    Only consulted when no *person* surname exists — a byline mixing
+    collectives and people still keys on the person. Walks collectives
+    in order; the first whose name yields a significant word wins.
+    """
+    if not authors:
+        return ""
+    try:
+        entries = iter(authors)
+    except TypeError:
+        return ""
+    for entry in entries:
+        if _entry_is_collective(entry):
+            word = _org_key_word(_entry_name_text(entry))
+            if word:
+                return word
+    return ""
+
+
+def _byline_key_word(authors: Any) -> str:
+    """The cite_key stem a byline yields — or ``""`` when it has none.
+
+    First *person* surname (:func:`_first_person_surname`), else the
+    first collective's significant org word
+    (:func:`_first_org_key_word`, gr523665). ``""`` means the mint can
+    only stamp the junk-detectable ``anon`` placeholder — the sweep
+    reports the paper as skipped rather than minting.
+    """
+    return _first_person_surname(authors) or _first_org_key_word(authors)
 
 
 # ---------------------------------------------------------------------------
@@ -847,8 +1038,14 @@ def make_cite_key(
 ) -> str:
     """Mint a LaTeX-friendly citation handle.
 
-    Format: ``<surname><yy>[<letter>]`` — first-author surname, 2-digit
-    year, optional one-letter collision suffix.
+    Format: ``<word><yy>[<letter>]`` — 2-digit year, optional
+    letter collision suffix. The word comes from
+    :func:`_byline_key_word`: the first *person* author's surname —
+    non-Latin names are romanised first (:func:`_transliterate`,
+    gr523665) — or, for an all-collective byline, the first
+    significant word of the org name ("Parkinson Study Group" →
+    ``parkinson``). Only when neither yields a word does the key
+    carry the ``anon`` placeholder.
 
     Examples (with ``taken`` empty unless noted):
 
@@ -864,6 +1061,8 @@ def make_cite_key(
         'anon23'
         >>> make_cite_key(["Miller"], None)
         'miller00'
+        >>> make_cite_key([{"family": "LHCb Collaboration"}], 2020)
+        'lhcb20'
 
     Args:
         authors: Iterable of strings or ``{"family", "given"}`` dicts.
@@ -879,9 +1078,9 @@ def make_cite_key(
             ``a``…``z``, ``aa``…``zz``, ``aaa``… so a real (finite)
             corpus never overflows.
     """
-    surname = _first_person_surname(authors) or "anon"
+    word = _byline_key_word(authors) or "anon"
     yy = f"{year % 100:02d}" if year is not None else "00"
-    base = f"{surname}{yy}"
+    base = f"{word}{yy}"
     taken_set = set(taken)
     if base not in taken_set:
         return base

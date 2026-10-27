@@ -564,13 +564,34 @@ def test_cite_key_corporate_author_uses_next_person() -> None:
     assert make_cite_key(["Neuralynx, Inc.", "Doe, A."], 2012) == "doe12"
 
 
-def test_cite_key_all_collective_byline_stays_anon() -> None:
-    """No person author at all → the junk-detectable ``anon``
-    placeholder, never a corporate token — the remint sweep reports
-    the paper as skipped instead of minting."""
-    assert make_cite_key([{"family": "Parkinson Study Group"}], 2000) == "anon00"
-    assert make_cite_key([{"given": "Inc.", "family": "Neuralynx"}], 2012) == "anon12"
-    assert make_cite_key(["LHCb Collaboration"], 2020) == "anon20"
+def test_cite_key_all_collective_byline_uses_org_word() -> None:
+    """gr523665: an all-collective byline keys on the first significant
+    word of the org name — the old ``anon`` fallback left the paper
+    junk-keyed and skipped by the sweep forever."""
+    assert make_cite_key([{"family": "Parkinson Study Group"}], 2000) == ("parkinson00")
+    assert make_cite_key([{"given": "Inc.", "family": "Neuralynx"}], 2012) == (
+        "neuralynx12"
+    )
+    assert make_cite_key(["LHCb Collaboration"], 2020) == "lhcb20"
+    # Articles/connectives/legal forms are not significant words; an
+    # org name reduced to them alone still falls back to ``anon``.
+    assert make_cite_key(["The Royal Society"], 2020) == "royal20"
+    assert make_cite_key(["The Study Group"], 2020) == "anon20"
+
+
+def test_cite_key_cyrillic_author_transliterates() -> None:
+    """gr523665: pa497788 ("Батманова, А.Н.", 2025) was swept as
+    "corporate/collective only" — a Cyrillic person surname folds to
+    nothing under NFKD. It romanises first, then keys."""
+    assert make_cite_key(["Батманова, А.Н."], 2025) == "batmanova25"
+    assert make_cite_key([{"family": "Батманова", "given": "А.Н."}], 2025) == (
+        "batmanova25"
+    )
+    # Western order + Cyrillic initials peel after romanisation.
+    assert make_cite_key(["Иванов И.В."], 2026) == "ivanov26"
+    assert make_cite_key(["Щукин, П."], 2024) == "shchukin24"
+    # Scripts outside the table still fold to the ``anon`` placeholder.
+    assert make_cite_key(["李"], 2023) == "anon23"
 
 
 def test_cite_key_surname_then_initials_form() -> None:

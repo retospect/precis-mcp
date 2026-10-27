@@ -9,12 +9,15 @@ now mint a non-junk key via :meth:`Store.suggest_cite_key` — one row per
 candidate: ref handle, old key → suggested key, title.
 
 Junk-keyed papers that are NOT candidates are reported too, as skipped
-with a reason: a byline with no person author at all (corporate/
-collective only) and a record with no publication year — minting either
-produces a bad key (a corporate token as surname, or the ``00``
+with a reason naming each missing field (gr523665): a byline yielding
+no usable word (no authors, or names that fold to nothing even after
+Cyrillic romanisation — ``precis.identity._transliterate``) and/or a
+record with no publication year (minting would stamp the ``00``
 placeholder digits the junk key already carries; gr521515 dry-run:
-``group00``, ``neuralynx12``, ``boys00``). Those need metadata repair,
-not a re-mint.
+``boys00``). An all-corporate byline is NOT skipped: it mints the
+first significant word of the org name ("Parkinson Study Group" →
+``parkinson``). What remains skipped needs metadata repair, not a
+re-mint.
 
 Dry-run by default: prints the list and writes nothing. ``--apply``
 rekeys each row through :func:`precis.store.paper_rekey.rekey_paper` —
@@ -35,7 +38,7 @@ import sys
 
 from precis.cli._common import resolve_dsn
 from precis.errors import BadInput, NotFound
-from precis.identity import _first_person_surname, is_junk_cite_key
+from precis.identity import _byline_key_word, is_junk_cite_key
 
 _CANDIDATES_SQL = """
     SELECT DISTINCT ON (r.ref_id)
@@ -79,11 +82,15 @@ def _candidates(
 ) -> tuple[list[tuple[int, str, str, str]], list[tuple[int, str, str, str]]]:
     """Remint rows plus ``(ref_id, old_key, reason, title)`` skips.
 
-    A row is skipped — reported, never minted — when its byline has no
-    person author (corporate/collective only: the mint would hand a
-    group token the surname slot) or its record has no year (the key
-    would carry the ``00`` placeholder — the same digits the junk mint
-    stamped). Both need metadata repair first, not a re-mint.
+    A row is skipped — reported, never minted — when its byline yields
+    no usable key word (no authors, or names that fold to nothing even
+    romanised — an all-corporate byline still yields the org's first
+    significant word, so corporate-only is a *candidate*), when its
+    record has no year (the key would carry the ``00`` placeholder —
+    the same digits the junk mint stamped), or when the suggested key
+    is still junk-shaped. The reason names every missing field —
+    a paper lacking both says so (gr523665). What remains skipped
+    needs metadata repair first, not a re-mint.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(_CANDIDATES_SQL).fetchall()
@@ -94,30 +101,30 @@ def _candidates(
         old = str(key or "")
         if not is_junk_cite_key(old):
             continue
-        if not _first_person_surname(authors):
-            skipped.append(
-                (
-                    int(ref_id),
-                    old,
-                    "no person author in byline (corporate/collective only)",
-                    str(title or ""),
-                )
+        reasons: list[str] = []
+        if not _byline_key_word(authors):
+            reasons.append(
+                "no authors on the record"
+                if not authors
+                else "no usable author or organisation name in byline"
             )
-            continue
         if year is None:
-            skipped.append(
-                (
-                    int(ref_id),
-                    old,
-                    "no publication year in the record",
-                    str(title or ""),
-                )
-            )
+            reasons.append("no publication year in the record")
+        if reasons:
+            skipped.append((int(ref_id), old, "; ".join(reasons), str(title or "")))
             continue
         suggested = store.suggest_cite_key(
             authors, year, exclude_ref_id=int(ref_id), extra_taken=claimed
         )
         if not suggested or is_junk_cite_key(suggested) or suggested == old:
+            skipped.append(
+                (
+                    int(ref_id),
+                    old,
+                    f"suggested key {suggested!r} is still junk-shaped",
+                    str(title or ""),
+                )
+            )
             continue
         claimed.add(suggested)
         remint.append((int(ref_id), old, suggested, str(title or "")))

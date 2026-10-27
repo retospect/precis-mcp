@@ -557,9 +557,11 @@ def test_cli_dry_run_reports_skips_with_reasons(
     store: Store, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     """The four dry-run mint bugs, with the stored rows that produced
-    them: corporate authors minted as surnames (group00, neuralynx12),
-    a trailing initial as surname (a26avk), a truncated particle family
-    (sa98, mis26), and the no-year placeholder mint (boys00)."""
+    them: corporate authors minted as surnames (group00, neuralynx12 —
+    gr523665 made them candidates keyed on the org word), a trailing
+    initial as surname (a26avk), a truncated particle family (sa98,
+    mis26), the no-year placeholder mint (boys00), and a Cyrillic
+    person author mislabelled corporate (pa497788)."""
     corp = _seed(
         store,
         "anon00a",
@@ -572,12 +574,21 @@ def test_cli_dry_run_reports_skips_with_reasons(
         authors=[{"given": "Inc.", "family": "Neuralynx"}],
         year=2012,
     )
+    cyrillic = _seed(
+        store,
+        "anon25s",
+        authors=[{"family": "Батманова", "given": "А.Н."}],
+        year=2025,
+    )
     noyr = _seed(
         store,
         "the00bf",
         authors=[{"given": "S. F.", "family": "Boys"}],
         year=None,
     )
+    noauth = _seed(store, "anon07", year=2007)
+    nonlatin = _seed(store, "anon08", authors=[{"family": "李"}], year=2008)
+    nothing = _seed(store, "anon09", year=None)
     desa = _seed(
         store,
         "anon10d",
@@ -605,17 +616,30 @@ def test_cli_dry_run_reports_skips_with_reasons(
     remint_cli.run(argparse.Namespace(apply=False, limit=None, database_url=None))
 
     out = capsys.readouterr()
+    assert f"pa{corp}  anon00a -> parkinson00" in out.out
+    assert f"pa{inc}  anon12a -> neuralynx12" in out.out
+    assert f"pa{cyrillic}  anon25s -> batmanova25" in out.out
     assert f"pa{desa}  anon10d -> desa98" in out.out
     assert f"pa{fidlermis}  the26py -> fidlermis26" in out.out
     assert f"pa{mula}  the26pj -> mula26" in out.out
-    # Skipped papers are listed separately, each with its reason —
-    # never as ``old -> new`` candidate lines.
+    # Skipped papers are listed separately, each reason naming the
+    # missing field(s) — never as ``old -> new`` candidate lines.
     lines = out.out.splitlines()
-    for rid in (corp, inc):
-        skip = [l for l in lines if l.startswith(f"pa{rid} ")]
-        assert len(skip) == 1 and "no person author" in skip[0]
     noyr_lines = [l for l in lines if l.startswith(f"pa{noyr} ")]
     assert len(noyr_lines) == 1 and "no publication year" in noyr_lines[0]
+    noauth_lines = [l for l in lines if l.startswith(f"pa{noauth} ")]
+    assert len(noauth_lines) == 1 and "no authors on the record" in noauth_lines[0]
+    nonlatin_lines = [l for l in lines if l.startswith(f"pa{nonlatin} ")]
+    assert (
+        len(nonlatin_lines) == 1
+        and "no usable author or organisation name" in nonlatin_lines[0]
+    )
+    # A record missing BOTH fields says so — not just the author half.
+    nothing_lines = [l for l in lines if l.startswith(f"pa{nothing} ")]
+    assert (
+        len(nothing_lines) == 1
+        and "no authors on the record; no publication year" in nothing_lines[0]
+    )
     assert _write_snapshot(store) == before
 
 
