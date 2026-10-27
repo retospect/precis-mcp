@@ -20,7 +20,7 @@ run's failure, refused naming the key)::
                              "expected_element"?, "expected_hybridization"?,
                              "frame"?}],
                  "relax"?, "desc"?, "frame"?, "bonds"?, "bonds_sha"?,
-                 "mode"?, "sha"?, "notes"?,
+                 "mode"?, "material"?, "sha"?, "notes"?,
                  "measures"?: [{"name", "value"?|"min"?/"max"?, "unit"?,
                                 "strength"?, "reason"?, "relation"?,
                                 "datum"?, "origin"?}],
@@ -40,11 +40,14 @@ run's failure, refused naming the key)::
   frame (the ray's ``made-by:``), ``in`` its reference frame. They
   replace this workspace's previous rays; one the run stops writing
   retires.
-* ``mode``/``measures``/``loads`` on a block (gr514245): replayed as the
-  ``set_mode``/``add_measure``/``set_load`` ops — the block's
-  manufacturing mode, its named measures and its load declarations. Like
-  ports/rays they are replace semantics: a facet the new manifest drops
-  is cleared on the block it was declared on.
+* ``mode``/``material``/``measures``/``loads`` on a block (gr514245):
+  replayed as the ``set_mode``/``set_material``/``add_measure``/
+  ``set_load`` ops — the block's manufacturing mode, its explicit
+  ``kind='material'`` slug (which wins over ``mode``'s
+  ``family/material`` half — :func:`precis_se.ops.effective_material`),
+  its named measures and its load declarations. Like ports/rays they are
+  replace semantics: a facet the new manifest drops is cleared on the
+  block it was declared on.
 * ``notes`` on a block (gr514245): a list of ``{"name", "kind", "text",
   "re"?, "about"?, "origin"?}`` — ``add_note`` entries on the design's
   interrogation ledger (``about`` defaults to the declaring block,
@@ -222,6 +225,7 @@ _BLOCK_KEYS = frozenset(
         "frame",
         "bonds",
         "mode",
+        "material",
         "measures",
         "loads",
         "notes",
@@ -350,6 +354,7 @@ class BlockEntry:
     frame: int | None
     bonds: str | None
     mode: str | None
+    material: str | None
     measures: list[dict[str, Any]]
     loads: dict[str, Any] | None
     notes: list[dict[str, Any]]
@@ -443,6 +448,13 @@ def _vet_manifest(
             raise BadInput(
                 f"manifest {where}: 'mode' must be a non-empty mode key "
                 f"('fdm/asa', 'purchase', 'stock-cut/steel-1045', …)"
+            )
+        material = raw.get("material")
+        if material is not None and not str(material).strip():
+            raise BadInput(
+                f"manifest {where}: 'material' must be a non-empty "
+                "kind='material' slug ('copper-c110', 'steel-1045', …) — "
+                "or drop the key"
             )
         measures = raw.get("measures")
         if measures is not None:
@@ -538,6 +550,7 @@ def _vet_manifest(
                 frame=int(frame) if frame is not None else None,
                 bonds=str(bonds_path).strip() if bonds_path is not None else None,
                 mode=str(mode).strip() if mode is not None else None,
+                material=(str(material).strip() if material is not None else None),
                 measures=[dict(m) for m in measures or []],
                 loads=dict(loads) if loads is not None else None,
                 notes=[dict(n) for n in notes or []],
@@ -1624,6 +1637,14 @@ def import_workspace_run(
             # merge) semantics on a re-import.
             if entry.mode is not None:
                 ops.append({"op": "set_mode", "block": entry.name, "mode": entry.mode})
+            if entry.material is not None:
+                ops.append(
+                    {
+                        "op": "set_material",
+                        "block": entry.name,
+                        "material": entry.material,
+                    }
+                )
             if entry.loads is not None:
                 ops.append({"op": "set_load", "block": entry.name, "clear": True})
                 ops.append({"op": "set_load", "block": entry.name, **entry.loads})
@@ -1756,6 +1777,7 @@ def import_workspace_run(
         # was declared on — when that block still exists ──
         new_loads = {e.name for e in manifest["blocks"] if e.loads is not None}
         new_modes = {e.name for e in manifest["blocks"] if e.mode is not None}
+        new_materials = {e.name for e in manifest["blocks"] if e.material is not None}
         new_measures = {
             f"{e.name}.{m['name']}" for e in manifest["blocks"] for m in e.measures
         }
@@ -1775,6 +1797,14 @@ def import_workspace_run(
                 and prev_node.mode is not None
             ):
                 drop_ops.append({"op": "set_mode", "block": blk, "mode": None})
+        for blk in sorted(set(prev.get("materials") or []) - new_materials):
+            prev_node = tree.blocks.get(blk)
+            if (
+                prev_node is not None
+                and prev_node.template is None
+                and prev_node.material is not None
+            ):
+                drop_ops.append({"op": "set_material", "block": blk, "material": None})
         for key in sorted(set(prev.get("measures") or []) - new_measures):
             blk, _sep, mname = key.partition(".")
             if blk in tree.blocks and any(
@@ -2074,6 +2104,7 @@ def import_workspace_run(
                                 "measures": sorted(new_measures),
                                 "loads": sorted(new_loads),
                                 "modes": sorted(new_modes),
+                                "materials": sorted(new_materials),
                                 "templates": sorted(
                                     e.name for e in manifest["blocks"] if e.template
                                 ),

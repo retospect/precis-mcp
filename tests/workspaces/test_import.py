@@ -1067,6 +1067,126 @@ def test_block_facets_dropped_on_reimport(store: Store, tmp_path: Path) -> None:
     assert sc is not None and sc.scenario_id == "prototype"
 
 
+def test_block_material_import(store: Store, tmp_path: Path) -> None:
+    """gr514245: a block's ``material`` lands as its explicit material —
+    a kind='material' slug that wins over mode's family/material half —
+    and persists through save/load."""
+    from precis_se.ops import effective_material
+
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    "name": "axle",
+                    "file": "blocks/axle.cad",
+                    "scale": "macro",
+                    "mode": "stock-cut/steel-1045",
+                    "material": "aluminium-6061",
+                }
+            ],
+        },
+        files={"blocks/axle.cad": "a add cyl:r10mmh100mm\n"},
+    )
+    _import(store, out)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    node = tree.blocks["axle"]
+    assert node.material == "aluminium-6061"
+    # explicit wins over the mode half (the fallback)
+    assert effective_material(tree, node) == "aluminium-6061"
+
+
+def test_block_material_dropped_on_reimport(store: Store, tmp_path: Path) -> None:
+    """gr514245: replace semantics — a material the re-run no longer
+    declares is cleared; the mode half then answers as the fallback."""
+    from precis_se.ops import effective_material
+
+    _design(store)
+    files = {"blocks/axle.cad": "a add cyl:r10mmh100mm\n"}
+    manifest: dict[str, Any] = {
+        "schema": 1,
+        "blocks": [
+            {
+                "name": "axle",
+                "file": "blocks/axle.cad",
+                "scale": "macro",
+                "mode": "stock-cut/steel-1045",
+                "material": "aluminium-6061",
+            }
+        ],
+    }
+    _import(store, _write_out(tmp_path, manifest=manifest, files=files))
+    manifest["blocks"][0].pop("material")
+    _import(store, _write_out(tmp_path, manifest=manifest, files=files))
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    node = tree.blocks["axle"]
+    assert node.material is None
+    assert effective_material(tree, node) == "steel-1045"
+
+
+def test_block_material_template_resolution(store: Store, tmp_path: Path) -> None:
+    """gr514245: an instance resolves material from its template — the
+    same instance→template rule every realization facet follows."""
+    from precis_se.ops import effective_material
+
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    "name": "t_wheel",
+                    "file": "blocks/t_wheel.cad",
+                    "scale": "macro",
+                    "template": True,
+                    "material": "pla",
+                }
+            ],
+            "instances": [{"name": "wheel", "template": "t_wheel"}],
+        },
+        files={"blocks/t_wheel.cad": "w add cyl:r30mmh8mm\n"},
+    )
+    _import(store, out)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    tree = persist.load_tree(store, se_ref.id)
+    assert tree.blocks["wheel"].material is None
+    assert effective_material(tree, tree.blocks["wheel"]) == "pla"
+
+
+def test_block_material_vet_errors(store: Store, tmp_path: Path) -> None:
+    """gr514245 vet shape: an empty ``material`` refuses before any
+    write."""
+    _design(store)
+    out = _write_out(
+        tmp_path,
+        manifest={
+            "schema": 1,
+            "blocks": [
+                {
+                    "name": "axle",
+                    "file": "blocks/axle.cad",
+                    "scale": "macro",
+                    "material": "  ",
+                }
+            ],
+        },
+        files={"blocks/axle.cad": "a add cyl:r10mmh100mm\n"},
+    )
+    with pytest.raises(BadInput, match="'material' must be a non-empty"):
+        _import(store, out)
+    se_ref = store.get_ref(kind="se", id="ws-test")
+    assert se_ref is not None
+    assert persist.load_tree(store, se_ref.id).blocks == {}
+
+
 def _notes_manifest(**kw: Any) -> dict[str, Any]:
     """One file'd block carrying gr514245's ledger ``notes`` key."""
     manifest: dict[str, Any] = {

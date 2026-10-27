@@ -380,7 +380,7 @@ class SeHandler(Handler):
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
             "add_pocket/set_pocket/remove_pocket/"
             "add_ray/set_ray/remove_ray/observe_ray/"
-            "set_mode/set_binding/add_bom/remove_bom/add_note/"
+            "set_mode/set_material/set_binding/add_bom/remove_bom/add_note/"
             "remove_note/formfind/declare_threading/remove_threading/"
             "declare_dof/clear_dof/bind_structure/unbind_structure/"
             "generate/realize/set_build_frame/clear_build_frame/"

@@ -413,6 +413,7 @@ class Run:
         relax: dict[str, Any] | None = None,
         desc: str | None = None,
         mode: str | None = None,
+        material: str | None = None,
         measures: list[dict[str, Any]] | None = None,
         loads: dict[str, Any] | None = None,
         template: bool | None = None,
@@ -429,8 +430,9 @@ class Run:
         ``name`` and the block kwargs are unused on that path
         (gr513754). ``ports``/``relax``/``desc``
         pass through to the manifest entry verbatim (the importer's
-        vet is the contract), as do ``mode``/``measures``/``loads`` —
-        the block's manufacturing mode, named measures and load
+        vet is the contract), as do ``mode``/``material``/``measures``/
+        ``loads`` — the block's manufacturing mode, its explicit
+        ``kind='material'`` slug, named measures and load
         declarations (gr514245) — and a Geom's findings
         (``chirality.flipped`` &c.) ride the row as ``findings``
         (gr514205). A hexfold Net's structural census rides as
@@ -476,6 +478,8 @@ class Run:
             entry["desc"] = str(desc)
         if mode is not None:
             entry["mode"] = str(mode)
+        if material is not None:
+            entry["material"] = str(material)
         if measures is not None:
             entry["measures"] = [dict(m) for m in measures]
         if loads is not None:

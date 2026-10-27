@@ -267,6 +267,8 @@ def _facet_ops(tree: SeTree) -> list[dict[str, Any]]:
         intent = (node.build_frame or {}).get("intent")
         if node.mode is not None or intent is not None:
             ops.append(_op("set_mode", block=name, mode=node.mode, intent=intent))
+        if node.material is not None:
+            ops.append(_op("set_material", block=name, material=node.material))
         if node.bound_kind is not None:
             ops.append(
                 _op("set_binding", block=name, kind=node.bound_kind, design=node.bound)

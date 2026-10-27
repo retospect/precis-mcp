@@ -150,7 +150,7 @@ _BLOCK_COLS = (
     "id, uid, parent_block_id, template_ref, template_uid, name, pose_xyz, "
     "pose_rot, envelope, array_spec, descr, use_, objectives, mode, "
     "bound_kind, bound_design, origins, dof, chromophore, process_overrides, "
-    "build_frame, chain, provenance, insertion"
+    "build_frame, chain, provenance, insertion, material"
 )
 _PORT_COLS = (
     "block_id, name, roles, direction, annotations, expected_element, "
@@ -419,6 +419,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             mode=r["mode"],
             bound_kind=r["bound_kind"],
             bound=r["bound_design"],
+            material=r["material"],
             origins=dict(r["origins"] or {}),
             provenance=dict(r["provenance"] or {}),
             insertion=(dict(r["insertion"]) if r["insertion"] is not None else None),
@@ -1578,9 +1579,9 @@ def save_tree(
                 " name, pose_xyz, pose_rot, envelope, array_spec, descr, "
                 " use_, objectives, mode, bound_kind, bound_design, origins, "
                 " dof, chromophore, process_overrides, build_frame, chain, "
-                " provenance, insertion) "
+                " provenance, insertion, material) "
                 "VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "RETURNING id",
                 (
                     ref_id,
@@ -1617,6 +1618,7 @@ def save_tree(
                     Jsonb(node.chain) if node.chain is not None else None,
                     Jsonb(node.provenance) if node.provenance else None,
                     Jsonb(node.insertion) if node.insertion is not None else None,
+                    node.material,
                 ),
             ).fetchone()
             assert row is not None

@@ -132,6 +132,7 @@ def block(
     desc: str | None = None,
     bonds: Any = None,
     mode: str | None = None,
+    material: str | None = None,
     measures: list[dict[str, Any]] | None = None,
     loads: dict[str, Any] | None = None,
     template: bool | None = None,
@@ -140,8 +141,9 @@ def block(
     """Register one output block; the file is written at :func:`finish`.
 
     ``ports``/``relax`` are manifest rows verbatim (the importer vets
-    them), as are ``mode``/``measures``/``loads`` — the block's
-    manufacturing mode, named measures and load declarations (gr514245).
+    them), as are ``mode``/``material``/``measures``/``loads`` — the
+    block's manufacturing mode, its explicit ``kind='material'`` slug,
+    named measures and load declarations (gr514245).
     ``template=True`` marks a library part: instanced by
     :func:`instance`, never itself placed in the assembly (gr514241).
     ``bonds`` may be a JSON-able structure written to
@@ -185,6 +187,8 @@ def block(
         entry["desc"] = desc
     if mode is not None:
         entry["mode"] = mode
+    if material is not None:
+        entry["material"] = material
     if measures is not None:
         entry["measures"] = list(measures)
     if loads is not None:

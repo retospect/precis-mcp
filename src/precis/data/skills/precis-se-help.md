@@ -203,7 +203,7 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
 
 - `set_mode` — `block`, `mode` = `"family"` or `"family/material"` or
   null. Families: `purchase · fdm · sla · cnc-2.5ax · laser ·
-  molding · stock-cut · atomic` (e.g. `"fdm/asa"`).
+  molding · stock-cut · atomic`.
 - `set_binding` — `block` + (`kind` ∈ `cad|structure|component|part|pcb` +
   `design`) or `clear: true`. `pcb` binds a board design by slug, resolved
   at tree load (not an op): the board's `mechanical_profile` derives one
@@ -211,6 +211,9 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
   ports. Unknown slug → `pcb_binding_unresolved` (warn); heights taken from
   the package-class table rather than a part's own `height_mm` →
   `pcb_height_proposed` (warn).
+- `set_material` — `block`, `material` = `kind='material'` slug or null;
+  wins over `mode`'s `family/material` half; manifest `material`
+  replays it (gr514245).
 - `realize` — `block`, `mode` (req): mints the block's first
   implementation (a `cad` design from its envelope, bound + moded) ·
   `set_process_override`/`clear_process_override`

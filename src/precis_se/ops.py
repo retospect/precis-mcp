@@ -159,6 +159,11 @@ the ops for things you *don't* make:
   ``design`` (the slug / C-number), or ``clear=true``. The binding is
   name/slug-keyed text resolved at read time — binding a component that
   doesn't exist yet is legal and reported, not rejected.
+- ``set_material``    — a block's explicit ``kind='material'`` slug
+  (gr514245, se-native-fields.md ruling Q3), or clear it with ``null``.
+  Slug-keyed like the binding — resolved at read, and the explicit slug
+  wins over ``mode``'s ``family/material`` half (the fallback for
+  op-made blocks).
 - ``add_bom`` / ``remove_bom`` — a bought ``component``/``part`` hung off
   a block (``block=``) or a connect (``a=``/``b=``), with a
   per-occurrence ``qty`` (:mod:`precis_se.bom`, which owns the
@@ -645,6 +650,15 @@ class SeBlock(BlockNode):
     #: both ``None`` when the block's solid is still just its envelope.
     bound_kind: str | None = None
     bound: str | None = None
+    #: The block's explicit material — a ``kind='material'`` ref slug
+    #: (gr514245, docs/backlog/se-native-fields.md ruling Q3),
+    #: template-owned like ``mode``: an instance resolves it from its
+    #: template (:func:`effective_material`). ``None`` = undeclared, and
+    #: readers fall back to ``mode``'s ``family/material`` half; a slug
+    #: that resolves to no material row is a read-time not-applicable,
+    #: never a write-time rejection — the same slug-keyed posture as
+    #: ``bound``.
+    material: str | None = None
     #: Per-block overrides of a :mod:`precis_se.capabilities` figure,
     #: keyed by field name (``{'max_overhang': 35}``) — the override tier
     #: :func:`precis_se.capabilities.resolve` reads first, migration
@@ -1212,6 +1226,32 @@ def effective_dof(tree: SeTree, node: SeBlock) -> dict[str, Any] | None:
         template_node = resolve_template(tree, node.template)
         return getattr(template_node, "dof", None)
     return node.dof
+
+
+def effective_material(tree: SeTree, node: SeBlock) -> str | None:
+    """The material slug "seen" at ``node`` (gr514245, se-native-fields.md
+    ruling Q3): its own ``material`` first — the explicit assignment
+    wins — else its ``mode``'s ``family/material`` half, resolved through
+    the template for an instance (an instance's own ``material``/``mode``
+    are always ``None`` — :func:`_template_owned`), the same
+    instance→template rule as :func:`effective_dof`. ``None`` =
+    undeclared: an honest "no material", never an assumed one."""
+    target: Any = node
+    if node.template is not None:
+        target = resolve_template(tree, node.template)
+        if target is None:
+            return None
+    material = getattr(target, "material", None)
+    if material is not None:
+        return str(material)
+    mode = getattr(target, "mode", None)
+    if mode is not None:
+        try:
+            _family, half = parse_mode(str(mode))
+        except ModeError:
+            return None
+        return half
+    return None
 
 
 def template_names(tree: SeTree) -> frozenset[str]:
@@ -2947,6 +2987,33 @@ def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
     explicit = _vet_provenance(op, opname="set_binding", param="geometry")
     if explicit is not None:
         node.provenance["geometry"] = explicit
+
+
+def _op_set_material(tree: SeTree, op: dict[str, Any]) -> None:
+    """Assign (or clear, with ``material=null``) a block's explicit
+    material — a ``kind='material'`` ref slug (gr514245,
+    se-native-fields.md ruling Q3). Slug-keyed and resolved at read time,
+    ``set_binding``'s own posture: naming a material that isn't in the
+    store yet is legal recorded intent — readers answer a named
+    not-applicable, never a write-time rejection. The explicit slug wins
+    over ``mode``'s ``family/material`` half, which stays the fallback
+    (:func:`effective_material`)."""
+    name = _require_name(op, "block", "set_material")
+    node = _template_owned(tree, name, opname="set_material", what="material")
+    if "material" not in op:
+        raise OpError(
+            "set_material needs 'material' (a material slug, or null to clear)"
+        )
+    raw = op.get("material")
+    if raw is None:
+        node.material = None
+        return
+    slug = str(raw).strip()
+    if not slug:
+        raise OpError(
+            f"set_material: 'material' must be a non-empty material slug, got {raw!r}"
+        )
+    node.material = slug
 
 
 def _op_set_process_override(tree: SeTree, op: dict[str, Any]) -> None:
@@ -4696,6 +4763,7 @@ _OPS = {
     "remove_ray": _op_remove_ray,
     "observe_ray": _op_observe_ray,
     "set_mode": _op_set_mode,
+    "set_material": _op_set_material,
     "set_binding": _op_set_binding,
     "set_process_override": _op_set_process_override,
     "clear_process_override": _op_clear_process_override,

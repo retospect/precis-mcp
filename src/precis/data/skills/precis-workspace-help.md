@@ -2,7 +2,7 @@
 id: precis-workspace-help
 family: se
 title: precis — build an se design with a workspace script (out.run → import)
-summary: the script loop for building an se design — precis_geom (pg/pga) + out.run writes scratch/out/<run> (manifest.json + trace.json + blocks/), then the import_workspace edit op lands it in a design. The out.* API verbatim (block/instance/connect/ray), every manifest key, atomic vs macro geometry forms, the cad DSL frame conventions (cyl base z=0 axis +z, box centred in x/y, rot = Rz·Ry·Rx, polar about the node's z), the t_ template-name convention, the trace asks, and what the manifest cannot yet say (no material/measure/binding/BOM keys).
+summary: the script loop for building an se design — precis_geom (pg/pga) + out.run writes scratch/out/<run> (manifest.json + trace.json + blocks/), then the import_workspace edit op lands it in a design. The out.* API verbatim (block/instance/connect/ray), every manifest key, atomic vs macro geometry forms, the cad DSL frame conventions (cyl base z=0 axis +z, box centred in x/y, rot = Rz·Ry·Rx, polar about the node's z), the t_ template-name convention, the trace asks, and what the manifest cannot yet say (no binding/BOM keys — design-owned).
 answers:
   - how do I build a macro mechanical design by script workspace?
   - what do out.run / o.block / o.instance / o.connect / o.ray write to the manifest?
@@ -73,7 +73,8 @@ with out.run("hcol") as o:  # scratch/out/hcol/
 # exit: manifest.json + trace.json written
 ```
 
-- `o.block(name, geom, *, scale=, ports=, relax=, desc=, frame=)` —
+- `o.block(name, geom, *, scale=, ports=, relax=, desc=, mode=,
+  material=, measures=, loads=, template=, frame=)` —
   `geom` decides `scale`: a structure `Scene` → `scale='atomic'` →
   `blocks/<name>.extxyz` (bonds ride `blocks/<name>.bonds.json`); a
   cad `SceneSpec` → `scale='macro'` → `blocks/<name>.cad.json`; DSL
@@ -169,7 +170,7 @@ is refused by name — the vet is the contract, and the key set is:
 
 | entry | keys |
 |---|---|
-| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `bonds_sha`, `mode`, `measures`, `loads`, `notes`, `template`, `findings`, `census`, `frame`, `sha` |
+| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `bonds_sha`, `mode`, `material`, `measures`, `loads`, `notes`, `template`, `findings`, `census`, `frame`, `sha` |
 | port (inside `ports`) | `name`, `atom` (atomic only), `roles`, `direction`, `expected_element`, `expected_hybridization`, `pose`, `annotations`, `frame` |
 | instance | `name`, `template`, `parent`, `pose`, `rot`, `pose_unit`, `rot_unit`, `linear`, `polar`, `frame` |
 | connect | `a`, `b`, `kind`, `joint`, `objectives`, `frame` |
@@ -186,6 +187,9 @@ A block's `mode`/`measures`/`loads` are its manufacturing mode, named
 measures and load declarations — replayed on import as the
 `set_mode`/`add_measure`/`set_load` ops; `template` (`true`) marks a
 library part that is never itself placed (gr514241). A block's
+`material` is its explicit `kind='material'` slug — replayed as
+`set_material`; it wins over `mode`'s `family/material` half, which
+stays the fallback (gr514245). A block's
 `findings` is a list of strings — the Geom findings `out.block` stamps
 (`chirality.flipped` and the like); `census` is an object — a hexfold Net's junction/seam/valence summary `out.block` stamps (gr514059), run-record only, never imported; import echoes each as
 `block '<name>': <finding>` so a mirrored hand shows in the run record
@@ -209,12 +213,11 @@ block, `origin` to `generated`); the ledger is append-only, so a
 re-imported identical note is skipped and a same-named different one
 refuses (gr514245).
 
-**Not yet supported.** The manifest has no `material`, `measure`,
-`binding` or `bom` keys — the vet refuses them as unknown. Ruling
-(Reto 2026-10-24): material and measure keys are script-owned (a
-later manifest slice); binding and BOM are design-owned — write them
-on the design after import with the ordinary ops (`set_binding`, BOM
-ops in [[precis-se-help]]).
+**Not yet supported.** The manifest has no `binding` or `bom` keys —
+the vet refuses them as unknown. Ruling (Reto 2026-10-24): binding and
+BOM are design-owned — write them on the design after import with the
+ordinary ops (`set_binding`, BOM ops in [[precis-se-help]]). The
+script-owned `material`/`measure` keys landed (gr514245).
 
 ## Two scales, one design — Å vs macro
 
