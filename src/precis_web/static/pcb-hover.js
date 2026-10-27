@@ -10,7 +10,7 @@
   'use strict';
   const object = document.getElementById('pcb-board-object');
   if (!object || !window.PcbFacts) return;
-  let svgDoc = null, facts = null, objects = new Map();
+  let svgDoc = null, facts = null, objects = new Map(), readout = null;
   const tip = document.createElement('div');
   tip.id = 'pcb-hover-tip';
   tip.setAttribute('role', 'tooltip');
@@ -20,7 +20,6 @@
     background: '#111827', color: '#f9fafb', whiteSpace: 'pre-wrap',
   });
   document.body.appendChild(tip);
-  const readout = document.getElementById('pcb-cursor-readout');
   const IDLE = 'x — y — mm';
 
   const layerOff = (key) => {
@@ -88,6 +87,10 @@
     if (!svgDoc || !svgDoc.documentElement || svgDoc.__pcbHoverWired) return;
     facts = window.PcbFacts.load(svgDoc);
     objects = catalogue();
+    // The cursor readout is a <text> row inside the document's own layer
+    // legend box (gr520537) — looked up per bind, never from the page DOM.
+    readout = svgDoc.getElementById('pcb-cursor-readout');
+    if (readout) readout.textContent = IDLE;
     // Native <title> tooltips would stack under ours; the text is the same facts.
     svgDoc.querySelectorAll('title').forEach((t) => t.remove());
     svgDoc.addEventListener('mousemove', (event) => {
@@ -106,7 +109,6 @@
     });
     svgDoc.__pcbHoverWired = true;
   };
-  if (readout) readout.textContent = IDLE;
   object.addEventListener('load', bind);
   if (object.contentDocument && object.contentDocument.documentElement) bind();
 })();

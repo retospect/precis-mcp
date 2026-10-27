@@ -253,10 +253,36 @@ def test_outline_segments_and_fiducials() -> None:
     assert not any(k.startswith("pad:") and "29.0000" in k for k in got)
 
 
-def test_net_hits_are_its_tracks_and_pours() -> None:
+def test_track_segments_are_their_own_objects() -> None:
+    """gr520542: each wire (copper ``ctype=='track'`` item) is its own
+    selectable — a click resolves the segment, not the whole net. The
+    object carries net/layer/width and its rounded endpoints; the hit is
+    the segment's polyline in its layer group."""
     got = _build()
-    assert [h["shape"] for h in got["net:7"].hits] == ["stroke"]
-    assert got["net:7"].hits[0]["width"] == 0.25
+    track = got["track:1"]
+    assert track.identity == {
+        "kind": "track",
+        "key": "track:1",
+        "net": "SIG",
+        "net_id": 7,
+        "layer": "F.Cu",
+        "width_mm": 0.25,
+        "start": [2.0, 2.0],
+        "end": [10.0, 2.0],
+    }
+    (hit,) = track.hits
+    assert hit["shape"] == "stroke" and hit["layer"] == "F_Cu"
+    assert hit["width"] == 0.25
+    # a segment outranks its net in the hit order but still loses to pads
+    order = selectables.KIND_ORDER
+    assert order.index("net") < order.index("track") < order.index("pad")
+
+
+def test_net_hits_are_its_pours_only() -> None:
+    """gr520542: track strokes left the net's hit list — each is its own
+    'track' object; a net keeps only its pour regions as hits."""
+    got = _build()
+    assert got["net:7"].hits == []
     assert [(h["shape"], h["layer"]) for h in got["net:8"].hits] == [("poly", "In1_Cu")]
     assert got["net:8"].identity == {
         "kind": "net",
@@ -299,6 +325,7 @@ def test_json_safe_and_overlay_renders_objects_in_priority_order() -> None:
     svg = gerber_view.render_fab_svg(files, title="t", selection_manifest=manifest)
     assert '<g class="pcb-select">' in svg and 'id="pcb-objects"' in svg
     assert 'data-pcb-object="pad:1:1"' in svg and 'data-pcb-kind="via"' in svg
+    assert 'data-pcb-kind="track"' in svg  # gr520542: the wire is selectable
     kinds = re.findall(r'data-pcb-kind="(\w+)"', svg)
     order = [selectables.KIND_ORDER.index(k) for k in kinds]
     assert order == sorted(order)

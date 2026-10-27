@@ -8,11 +8,19 @@
 //      (board outline, key 'outline:220') used to freeze the pane:
 //      selRefdeses recursed onto the SAME handle forever (a strict-mode
 //      tail call, so Safari never even logged a RangeError).
-//   2. gr520541 — a hover left the info strip's 'hovering' class stuck
+//   2. gr520541 — a hover left the panel's 'hovering' class stuck
 //      (hiding the selection behind it) when the pointer exited via a
-//      fast leave or a scroll; a window scroll now clears it.
+//      fast leave or a scroll; a window scroll now clears it. (gr520537:
+//      the display moved into #pcb-selection-panel — the old
+//      #pcb-info-strip is gone.)
 //   3. gr520541 — the position:fixed hover tip outlived the board under
 //      a page scroll; the same scroll hides it.
+//   4. gr520537 — the cursor readout is a <text> inside the board
+//      document's layer legend; pcb-hover.js binds it from the svgDoc.
+//   5. pcb-sheets.js — ?only= rides the schematic URL with sheet=.
+//   6. pcb-focus.js — a part dblclick enters focus (?focus=), the
+//      'only connected' button toggles ?only= alongside it, and exit
+//      clears both (gr520807).
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -46,7 +54,11 @@ function elem(tag) {
     style: {},
     classList: classList(),
     children: [],
+    listeners: {},
     textContent: '',
+    addEventListener(t, f) {
+      (this.listeners[t] = this.listeners[t] || []).push(f);
+    },
     setAttribute(k, v) {
       this.attrs[k] = String(v);
     },
@@ -168,11 +180,11 @@ const objects = [
 const boardDoc = svgDoc({
   'pcb-facts': { textContent: JSON.stringify(facts) },
   'pcb-objects': { textContent: JSON.stringify(objects) },
+  'pcb-cursor-readout': elem('text'),
 });
-ids['pcb-info-detail'] = elem('div'); // the strip
-ids['pcb-info-hover'] = elem('span');
-ids['pcb-info-selection'] = elem('span');
-ids['pcb-cursor-readout'] = elem('span');
+ids['pcb-selection-panel'] = elem('div'); // the one selection display
+ids['pcb-selection-hover'] = elem('div');
+ids['pcb-selection-identity'] = elem('pre');
 ids['pcb-part-cards'] = { textContent: '{}' };
 ids['pcb-sheet-map'] = { textContent: JSON.stringify({ U1: 'hdr' }) };
 ids['pcb-board-object'] = objectEl();
@@ -180,13 +192,21 @@ ids['pcb-board-object'].dataset.base = '/pcb/web_pcb';
 ids['pcb-board-object'].contentDocument = boardDoc;
 ids['pcb-schematic-object'] = objectEl();
 ids['pcb-schematic-object'].dataset.base = '/pcb/web_pcb/schematic.svg';
-const strip = ids['pcb-info-detail'];
-const hoverEl = ids['pcb-info-hover'];
+const schemDoc = svgDoc();
+ids['pcb-schematic-object'].contentDocument = schemDoc;
+ids['pcb-focus-bar'] = elem('span');
+ids['pcb-focus-label'] = elem('span');
+ids['pcb-focus-pin'] = elem('button');
+ids['pcb-focus-only'] = elem('button');
+ids['pcb-focus-exit'] = elem('button');
+const panel = ids['pcb-selection-panel'];
+const hoverEl = ids['pcb-selection-hover'];
 const schemObj = ids['pcb-schematic-object'];
 
 // Real modules, load order as detail.html.j2 (facts before consumers).
 globalThis.PcbFacts = require(stat('pcb-facts.js'));
 require(stat('pcb-sheets.js'));
+require(stat('pcb-focus.js'));
 require(stat('pcb-crossprobe.js'));
 require(stat('pcb-hover.js'));
 
@@ -215,7 +235,7 @@ assert.equal(
 schemObj.dataset.sheet = ''; // reset for the next cases
 schemObj.attrs.data = undefined;
 
-// ── 2. gr520541: a scroll clears the strip's stuck 'hovering' ───────
+// ── 2. gr520541: a scroll clears the panel's stuck 'hovering' ──────
 const handleEl = { dataset: {}, getAttribute: () => 'U1' };
 boardDoc._els = [
   {
@@ -224,10 +244,10 @@ boardDoc._els = [
   },
 ];
 fire(boardDoc, 'mousemove', { clientX: 1, clientY: 1 });
-assert(strip.classList.contains('hovering'), 'hover marks the strip');
+assert(panel.classList.contains('hovering'), 'hover marks the panel');
 assert.equal(hoverEl.textContent, 'U1/(10k 0402)');
 globalThis.dispatchEvent({ type: 'scroll' });
-assert(!strip.classList.contains('hovering'), 'scroll clears the stuck hover');
+assert(!panel.classList.contains('hovering'), 'scroll clears the stuck hover');
 assert.equal(hoverEl.textContent, '');
 
 // ── 3. gr520541: the hover tip shows on mousemove, hides on scroll ──
@@ -240,6 +260,57 @@ assert.equal(tip.style.display, 'block', 'mousemove shows the tip');
 assert(tip.textContent.startsWith('SIG/'), `tip text: ${tip.textContent}`);
 globalThis.dispatchEvent({ type: 'scroll' });
 assert.equal(tip.style.display, 'none', 'scroll hides the fixed tip');
-assert(!strip.classList.contains('hovering'), '…and the strip is clean');
+assert(!panel.classList.contains('hovering'), '…and the panel is clean');
+
+// ── 4. gr520537: the cursor readout bound from the board document ──
+const readout = boardDoc.getElementById('pcb-cursor-readout');
+assert(readout, 'the legend carries the readout row');
+assert.equal(readout.textContent, 'x — y — mm', 'bind wrote the idle text');
+
+// ── 5. pcb-sheets.js: ?only= rides the schematic URL with the rest ──
+schemObj.dataset.sheet = 'hdr';
+window.PcbSchem.refresh();
+assert.equal(schemObj.attrs.data, '/pcb/web_pcb/schematic.svg?sheet=hdr');
+schemObj.dataset.only = '1';
+window.PcbSchem.refresh();
+assert.equal(
+  schemObj.attrs.data,
+  '/pcb/web_pcb/schematic.svg?sheet=hdr&only=1',
+  'only= survives alongside sheet=');
+delete schemObj.dataset.sheet;
+delete schemObj.dataset.only;
+window.PcbSchem.refresh();
+assert.equal(schemObj.attrs.data, '/pcb/web_pcb/schematic.svg');
+
+// ── 6. pcb-focus.js: dblclick focuses; 'only connected' toggles ?only= ──
+const onlyBtn = ids['pcb-focus-only'];
+const exitBtn = ids['pcb-focus-exit'];
+const focusBar = ids['pcb-focus-bar'];
+const partEl = {
+  getAttribute: (a) => (a === 'data-pcb-part' ? 'U1' : null),
+  hasAttribute: (a) => a === 'data-pcb-part',
+};
+fire(schemDoc, 'dblclick', {
+  target: { closest: (sel) => (sel === '[data-pcb-part]' ? partEl : null) },
+  preventDefault() {},
+});
+assert.equal(schemObj.dataset.focus, 'U1', 'dblclick enters focus');
+assert.equal(schemObj.attrs.data, '/pcb/web_pcb/schematic.svg?focus=U1');
+assert(focusBar.classList.contains('inline-flex'), 'focus bar shows');
+fire(onlyBtn, 'click');
+assert.equal(schemObj.dataset.only, '1', 'only button sets dataset.only');
+assert.equal(onlyBtn.getAttribute('aria-pressed'), 'true');
+assert.equal(
+  schemObj.attrs.data,
+  '/pcb/web_pcb/schematic.svg?focus=U1&only=1',
+  'only= reloads with the focus');
+fire(onlyBtn, 'click');
+assert.equal(schemObj.dataset.only, undefined, 'second click clears only');
+assert.equal(onlyBtn.getAttribute('aria-pressed'), 'false');
+assert.equal(schemObj.attrs.data, '/pcb/web_pcb/schematic.svg?focus=U1');
+fire(exitBtn, 'click');
+assert.equal(schemObj.dataset.focus, undefined, 'exit clears the focus');
+assert.equal(schemObj.attrs.data, '/pcb/web_pcb/schematic.svg');
+assert(focusBar.classList.contains('hidden'), 'focus bar hides on exit');
 
 console.log('pcb viewer smoke: ok');

@@ -17,6 +17,7 @@ this module never writes or rewrites it.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from precis.pcb import catalog
@@ -46,6 +47,21 @@ def _ohms(v: float) -> str:
     return f"{_num(v)}R"
 
 
+#: An opaque footprint snapshot — the EasyEDA uuid, optionally prefixed —
+#: is not a package name a human can read (gr520540).
+_OPAQUE_FOOTPRINT = re.compile(r"^(?:easyeda:)?[0-9a-f]{32}$", re.IGNORECASE)
+
+
+def _package(row: dict[str, Any], component: dict[str, Any]) -> str | None:
+    pkg = row.get("package")
+    if pkg:
+        return pkg
+    fp = component.get("footprint")
+    if fp and not _OPAQUE_FOOTPRINT.match(str(fp)):
+        return fp
+    return None
+
+
 def part_summary(part: dict[str, Any] | None, component: dict[str, Any]) -> dict:
     """``{value, package, rating, lcsc}`` display strings for one component;
     a field is ``None`` when the catalogue row does not carry it."""
@@ -65,9 +81,10 @@ def part_summary(part: dict[str, Any] | None, component: dict[str, Any]) -> dict
         value = row.get("mfr_part") or component.get("label") or None
     return {
         "value": value,
-        "package": row.get("package") or component.get("footprint") or None,
+        "package": _package(row, component),
         "rating": rating,
         "lcsc": component.get("part_lcsc") or None,
+        "datasheet": row.get("datasheet_url") or None,
     }
 
 

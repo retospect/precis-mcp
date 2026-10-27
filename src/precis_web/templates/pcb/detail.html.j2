@@ -73,11 +73,20 @@
   #pcb-divider:hover, #pcb-divider:focus-visible,
   #pcb-height:hover, #pcb-height:focus-visible { background: rgb(var(--bg-surface-emphasis)); }
   #pcb-height { height: 7px; cursor: row-resize; border-radius: 4px; margin: 2px 0; }
-  /* Reto's rule: the strip shows the selection; a hover temporarily
-     replaces it, and leaving restores it. */
-  #pcb-info-detail.hovering #pcb-info-selection { display: none; }
-  #pcb-info-hover:empty { display: none; }
-  #pcb-info-detail { white-space: pre-wrap; }
+  /* Reto's rule: the panel shows the selection; a hover temporarily
+     replaces it, and leaving restores it (gr520537 — one model, the old
+     #pcb-info-strip's second display is gone). */
+  #pcb-selection-panel.hovering #pcb-selection-layout { display: none; }
+  #pcb-selection-hover:empty { display: none; }
+  #pcb-selection-hover { white-space: pre-wrap; }
+  /* gr520538: selection info and preview lay out as two boxes — side by
+     side while the panel is wide, stacked when it narrows. The preview
+     shows the part's cached JLCPCB image when one exists. */
+  #pcb-selection-layout { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
+  #pcb-selection-layout > #pcb-selection-body { flex: 1 1 26rem; min-width: 0; }
+  #pcb-selection-preview { flex: 0 1 auto; margin-left: auto; }
+  #pcb-selection-preview img { max-height: 8rem; max-width: 16rem;
+    object-fit: contain; border-radius: 4px; }
 </style>
 <div id="pcb-workbench" class="mb-1">
   <section id="pcb-pane-schematic" class="pcb-pane rounded border border-line bg-surface p-2">
@@ -128,6 +137,9 @@
       <span class="font-normal text-xs text-fg-faint">click a pad, part or track to drop its handle into the argument below</span>
       <a href="/pcb/{{ slug | urlencode }}/export.epro2" class="font-normal text-xs text-fg-faint underline hover:text-fg-secondary">download .epro2 (EasyEDA Pro)</a>
       <span class="vp-tools float-right inline-flex gap-1">
+        <button type="button" id="pcb-granularity" aria-pressed="false"
+                title="selection granularity — 'detail' picks the pad, outline or track segment under the pointer; 'part' selects the whole part"
+                class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">select: detail</button>
         <button type="button" id="pcb-layers-toggle" aria-pressed="true"
                 title="hide or show the layer panel" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">hide layers</button>
         <button type="button" id="pcb-flip" aria-pressed="false"
@@ -160,25 +172,55 @@
    remembered per user, double-click resets, arrows adjust. #}
 <div id="pcb-height" role="separator" aria-orientation="horizontal" tabindex="0"
      aria-label="workbench height" title="drag to resize · double-click resets · arrows adjust"></div>
-{# The info strip: hover/selection details left, the board cursor readout
-   right (moved here from the old board box). #}
-<div id="pcb-info-strip" class="mb-3 flex items-baseline justify-between gap-4 rounded border border-line bg-surface px-2 py-1 text-xs text-fg-subtle">
-  <span id="pcb-info-detail" aria-live="polite"><span id="pcb-info-selection"></span><span id="pcb-info-hover"></span></span>
-  <span id="pcb-cursor-readout" aria-live="off" title="cursor position, board origin"
-        class="whitespace-nowrap font-mono">x — y — mm</span>
-</div>
+{# gr520806: the in-viewer manual — one short collapsible panel covering
+   the panes, selection/hover, sheets, cross-probing, the layer box and
+   the keyboard shortcuts. #}
+<details id="pcb-help" class="mb-3 rounded border border-line bg-surface px-2 py-1 text-xs text-fg-subtle">
+  <summary class="cursor-pointer select-none font-semibold text-fg-secondary">Viewer manual</summary>
+  <ul class="mt-1 list-disc space-y-0.5 pl-5">
+    <li><b>Panes</b> — schematic left, board layout right; drag the divider to resize (double-click resets), same for the height handle.</li>
+    <li><b>Hover</b> shows the object under the pointer (part card or net/via/track line) and lights its net and part in both panes; it never changes the selection.</li>
+    <li><b>Click</b> selects: a pad, part, via, silkscreen, track segment, net or outline — the Selection box below keeps it until you click elsewhere or press <kbd>Esc</kbd>. Its links hop pad ↔ net ↔ part.</li>
+    <li><b>select: detail/part</b> — detail picks the exact object under the pointer; part resolves a pad, part-body or part-silkscreen click to the whole part, and a track click to its net (board outline and vias stay detail).</li>
+    <li><b>Schematic</b> — sheet tabs switch placement groups; double-click a part or net label to focus it (only connected trims to its neighbourhood, pin locks the part's placement — persisted); a click selects the same board object and jumps to its sheet.</li>
+    <li><b>Layers</b> — the legend box in the board's left gutter toggles each layer and shows the cursor's board x/y; <i>hide layers</i> collapses it, <i>bottom view</i> mirrors the board.</li>
+    <li><b>Keys</b> — <kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>f</kbd> fit, <kbd>0</kbd> reset, <kbd>Esc</kbd> deselect or leave focus.</li>
+    <li><b>Design chat</b> — Ask answers without changing anything; Propose suggests an edit and always needs explicit Apply.</li>
+  </ul>
+</details>
+{# gr520537: ONE selection display. The panel shows the clicked object and
+   keeps it; a hover in either pane temporarily replaces it in the same
+   box (#pcb-selection-hover swaps in for #pcb-selection-body). The board
+   cursor readout moved into the fab SVG's layer-legend box. #}
 <div id="pcb-selection-panel" class="rounded border p-3 mb-3">
   <h2 class="text-sm font-semibold">Selection</h2>
-  <p id="pcb-selection-status" role="status">Select a board object.</p>
-  <label>Object <select id="pcb-object-choice"><option value="">Select…</option>
-    <optgroup label="Components">{% for item in pcb_instances %}<option value="{{ item.key }}">{{ item.refdes }} · instance {{ item.instance_id }}</option>{% endfor %}</optgroup>
-  </select></label>
-  <p id="pcb-selection-facts" class="text-sm"></p>
-  <pre id="pcb-selection-identity"></pre>
-  <button type="button" id="pcb-copy-selection" disabled>Copy selection</button>
-  <button type="button" id="pcb-select-component" disabled>Select component</button>
-  <button type="button" id="pcb-select-net" disabled>Select net</button>
-  <button type="button" id="pcb-deselect">Deselect</button>
+  <div id="pcb-selection-layout">
+    <div id="pcb-selection-body">
+      <p id="pcb-selection-status" role="status">Select a board object.</p>
+      <label>Object <select id="pcb-object-choice"><option value="">Select…</option>
+        <optgroup label="Components">{% for item in pcb_instances %}<option value="{{ item.key }}">{{ item.refdes }}</option>{% endfor %}</optgroup>
+      </select></label>
+      <p id="pcb-selection-facts" class="text-sm"></p>
+      <p id="pcb-selection-nav" class="text-sm"></p>
+      <pre id="pcb-selection-identity"></pre>
+    </div>
+    <div id="pcb-selection-preview"><img id="pcb-selection-thumb" alt="" hidden></div>
+  </div>
+  <div id="pcb-selection-hover" aria-live="polite"></div>
+  {# gr520539: real buttons — styled, each with a hover tooltip, and
+     greyed out whenever they cannot apply (deselect included). #}
+  <button type="button" id="pcb-copy-selection" disabled
+          title="copy the selected object's identity JSON to the clipboard"
+          class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary disabled:opacity-50 disabled:cursor-not-allowed">Copy selection</button>
+  <button type="button" id="pcb-select-component" disabled
+          title="select the whole component the selected pad or silkscreen belongs to"
+          class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary disabled:opacity-50 disabled:cursor-not-allowed">Select component</button>
+  <button type="button" id="pcb-select-net" disabled
+          title="select the net the selected pad, via or track belongs to"
+          class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary disabled:opacity-50 disabled:cursor-not-allowed">Select net</button>
+  <button type="button" id="pcb-deselect" disabled
+          title="clear the current selection (Esc)"
+          class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary disabled:opacity-50 disabled:cursor-not-allowed">Deselect</button>
 </div>
 
 {# ONE chat box (workbench spec slice 3): Ask posts to /note (question

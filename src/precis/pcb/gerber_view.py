@@ -1354,6 +1354,14 @@ def render_fab_svg(
             f'<text x="32" y="{ty + 2}">Ratsnest</text>'
             "</g>"
         )
+    # The board cursor readout lives at the bottom of the legend box — the
+    # "box that holds the layer selection" (gr520537); pcb-hover.js fills
+    # its text on mousemove.
+    cursor_y = 18 + len(rows) * 20
+    rows.append(
+        f'<text id="pcb-cursor-readout" x="12" y="{cursor_y + 2}" '
+        'fill="#9ca3af">x — y — mm</text>'
+    )
     legend_h = 20 * len(rows) + 12
 
     # The whole document is in PIXELS, not millimetres, and the board is

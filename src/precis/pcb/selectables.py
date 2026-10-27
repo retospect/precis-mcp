@@ -35,8 +35,9 @@ from precis.pcb import gerber, gerber_view
 
 #: Rendering/priority order of the kinds, bottom to top. The viewer paints its
 #: hit overlay in this order and the client picks the LAST kind present under
-#: the pointer, so a pad beats the part body and the net it sits on.
-KIND_ORDER = ("instance", "net", "outline", "silk", "pad", "via", "fiducial")
+#: the pointer, so a pad beats the part body and the net it sits on. A track
+#: segment sits just above its net (gr520542: the wire itself is selectable).
+KIND_ORDER = ("instance", "net", "track", "outline", "silk", "pad", "via", "fiducial")
 
 #: Minimum clickable stroke width (mm) — a 0.1 mm board edge is not hittable.
 MIN_HIT_WIDTH_MM = 0.3
@@ -405,6 +406,48 @@ def build(
             )
         )
 
+    # -- tracks (gr520542) ----------------------------------------------
+    # Each track segment is its own object — a click resolves the wire,
+    # not the whole net (the net keeps only its pours as hits).
+    tracks: list[tuple[tuple[Any, ...], SelectObject]] = []
+    for item in copper:
+        if item.get("ctype") != "track" or item.get("role") == "fiducial":
+            continue
+        pts = _draw_points(item)
+        if len(pts) < 2:
+            continue
+        name = str(item.get("net") or "")
+        mlayer = str(item.get("layer") or "")
+        start, end = [_r(pts[0][0]), _r(pts[0][1])], [_r(pts[-1][0]), _r(pts[-1][1])]
+        twidth = _num(item.get("width_mm"))
+        ident = {
+            "kind": "track",
+            "net": name or None,
+            "net_id": net_id(name),
+            "layer": mlayer,
+            "width_mm": twidth,
+            "start": start,
+            "end": end,
+        }
+        sort_key = (mlayer, *start, *end, twidth or 0.0)
+        tracks.append(
+            (
+                sort_key,
+                SelectObject(
+                    ident,
+                    [
+                        _stroke_hit(
+                            layer_key(mlayer), pts, float(item.get("width_mm") or 0.0)
+                        )
+                    ],
+                ),
+            )
+        )
+    tracks.sort(key=lambda t: t[0])
+    for i, (_, obj) in enumerate(tracks, start=1):
+        obj.identity["key"] = f"track:{i}"
+        out["track"].append(obj)
+
     # -- nets -----------------------------------------------------------
     net_hits: dict[str, list[dict[str, Any]]] = {}
     for item in copper:
@@ -412,13 +455,7 @@ def build(
         if not name or item.get("role") == "fiducial":
             continue
         lkey = layer_key(str(item.get("layer") or ""))
-        if item.get("ctype") == "track":
-            pts = _draw_points(item)
-            if len(pts) >= 2:
-                net_hits.setdefault(name, []).append(
-                    _stroke_hit(lkey, pts, float(item.get("width_mm") or 0.0))
-                )
-        elif item.get("ctype") == "pour" and item.get("polygon"):
+        if item.get("ctype") == "pour" and item.get("polygon"):
             net_hits.setdefault(name, []).append(_poly_hit(lkey, item["polygon"]))
     for n in sorted(live_nets, key=lambda n: int(n["net_id"])):
         nid = net_id(n["name"])

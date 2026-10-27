@@ -3,9 +3,11 @@
    with ONE handle in both panes.
 
    Hover over a part/pin/net/via/track in either pane temporarily replaces
-   the info strip's selection slot with that object's details and lights
-   its expansion in both panes; leaving restores the selection. Hover
-   never changes the selection. Click in the schematic selects the same
+   the Selection panel's selection view with that object's details and
+   lights its expansion in both panes; leaving restores the selection.
+   Hover never changes the selection (gr520537: one display model — the
+   clicked item lives in the panel and the hover borrows it, no second
+   strip). Click in the schematic selects the same
    board object (via the `pcb-cross-select` event pcb-selection.js owns),
    which drops its handle into the chat as before.
 
@@ -21,10 +23,10 @@
 (function () {
   'use strict';
   const el = (id) => document.getElementById(id);
-  const strip = el('pcb-info-detail');
-  if (!strip || !window.PcbFacts) return;
-  const hoverEl = el('pcb-info-hover');
-  const selEl = el('pcb-info-selection');
+  const panel = el('pcb-selection-panel');
+  if (!panel || !window.PcbFacts) return;
+  const hoverEl = el('pcb-selection-hover');
+  const selEl = el('pcb-selection-identity');
   const boardObj = el('pcb-board-object');
   const schemObj = el('pcb-schematic-object');
 
@@ -121,10 +123,14 @@
   // facts member lists); a part pulls in its pins.
   function expansion(t) {
     const out = {nets: new Set(), pins: [], parts: new Set(), keys: new Set()};
-    const h = t.handle;
+    let h = t.handle;
     if (t.object) {
       out.keys.add(t.object.key);
-      return out;
+      // A track segment lights its net (and the net's pins/parts) the way
+      // a pad does — the wire itself is the selected object (gr520542).
+      if (t.object.kind !== 'track' || !t.object.net) return out;
+      out.nets.add(t.object.net);
+      h = null; // fall through to the member expansion only
     }
     if (t.net) out.nets.add(t.net);
     if (!h) return out;
@@ -197,6 +203,7 @@
       const o = t.object;
       if (o.kind === 'via') return window.PcbFacts.viaText(facts, o);
       if (o.kind === 'silk') return window.PcbFacts.silkText(facts, o);
+      if (o.kind === 'track') return window.PcbFacts.trackText(facts, o);
       if (o.kind === 'net') return window.PcbFacts.netText(facts, o.name || '');
       return o.key;
     }
@@ -262,9 +269,9 @@
       const card = refdes && !refdes.includes(':') ? partCard(refdes) : null;
       if (card) hoverEl.appendChild(card);
       else hoverEl.textContent = describe(t);
-      strip.classList.add('hovering');
+      panel.classList.add('hovering');
     } else {
-      strip.classList.remove('hovering');
+      panel.classList.remove('hovering');
     }
   }
 
@@ -385,7 +392,7 @@
     if (obj.contentDocument && obj.contentDocument.documentElement) onload();
     // The in-document mouseleave misses a fast exit or a scroll that
     // slides the pane out from under the pointer; the stale hover then
-    // kept the strip's 'hovering' class and the selection stayed hidden
+    // kept the panel's 'hovering' class and the selection stayed hidden
     // behind it forever (gr520541). Clear on leaving the <object> and on
     // any scroll.
     obj.addEventListener('mouseleave', () => setHover(null));
@@ -395,8 +402,8 @@
   if (boardObj) wire(boardObj);
   if (schemObj) wire(schemObj);
 
-  // The selection panel stays the source of truth for what the strip
-  // shows between hovers; pcb-selection.js announces it here.
+  // The selection panel is the one display (gr520537): pcb-selection.js
+  // announces the clicked object here and the hover borrows its spot.
   document.addEventListener('pcb-selection-changed', (ev) => {
     const d = ev.detail || {};
     selEl.textContent = d.text || '';

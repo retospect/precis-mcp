@@ -170,9 +170,11 @@ def test_pin_unknown_refdes_is_404(pcb_client, runtime_with_store) -> None:
 
 def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -> None:
     """The workbench layout (docs/backlog/pcb-workbench-layout.md slice 1):
-    schematic left, layout right, a divider between them, the info strip
-    below carrying the cursor readout, and the flip control — with
-    viewport.js and the workbench glue loaded."""
+    schematic left, layout right, a divider between them, the Selection
+    panel below as the one hover/selection display (gr520537 — the old
+    pcb-info-strip is gone; the cursor readout lives in the fab SVG's own
+    layer-legend box), and the flip control — with viewport.js and the
+    workbench glue loaded."""
     _seed(runtime_with_store)
     r = pcb_client.get("/pcb/web_pcb")
     assert r.status_code == 200
@@ -183,8 +185,8 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
         'id="pcb-divider"',
         'id="pcb-height"',
         'aria-orientation="horizontal"',
-        'id="pcb-info-strip"',
-        'id="pcb-cursor-readout"',
+        'id="pcb-selection-panel"',
+        'id="pcb-selection-hover"',
         'id="pcb-flip"',
         'id="pcb-focus-bar"',
         'id="pcb-schematic-object"',
@@ -194,18 +196,22 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
         "/static/pcb-focus.js",
     ):
         assert marker in r.text, marker
-    # schematic is the left pane; the strip sits below both panes
+    # gr520537: the second display is gone — no strip, and the readout is
+    # a <text> row inside the fab SVG's legend, not a page element
+    assert 'id="pcb-info-strip"' not in r.text
+    assert 'id="pcb-cursor-readout"' not in r.text
+    # schematic is the left pane; the panel sits below both panes
     assert (
         r.text.index('id="pcb-pane-schematic"')
         < r.text.index('id="pcb-pane-layout"')
-        < r.text.index('id="pcb-info-strip"')
+        < r.text.index('id="pcb-selection-panel"')
     )
     # the row-resize handle (gr496860) sits between the workbench and the
-    # strip; the page overrides base's main_class to full width (gr496857)
+    # panel; the page overrides base's main_class to full width (gr496857)
     assert (
         r.text.index('id="pcb-workbench"')
         < r.text.index('id="pcb-height"')
-        < r.text.index('id="pcb-info-strip"')
+        < r.text.index('id="pcb-selection-panel"')
     )
     assert '<main class="px-4 py-6">' in r.text
     # both panes are <object> documents (each svg keeps its own scripts)
@@ -556,21 +562,138 @@ def test_schematic_handles_resolve_through_the_argue_parser(
     assert kinds["net:SIG"] == "net"
 
 
-def test_info_strip_has_hover_and_selection_slots(
+def test_selection_panel_has_hover_and_selection_slots(
     pcb_client, runtime_with_store
 ) -> None:
-    """The strip's two slots (workbench spec, cross-probing slice): the
-    selection view plus the hover view that temporarily replaces it, and
-    the cross-probe script that drives both panes."""
+    """gr520537: the ONE display — the panel's selection body plus the
+    hover slot that temporarily replaces it while the pointer is over a
+    board object, and the cross-probe script that drives both panes."""
     _seed(runtime_with_store)
     r = pcb_client.get("/pcb/web_pcb")
     assert r.status_code == 200
     for marker in (
-        'id="pcb-info-selection"',
-        'id="pcb-info-hover"',
+        'id="pcb-selection-body"',
+        'id="pcb-selection-hover"',
+        'id="pcb-selection-identity"',
         "pcb-crossprobe.js",
     ):
         assert marker in r.text, marker
+    # a hover hides the selection view inside the one panel
+    assert "#pcb-selection-panel.hovering #pcb-selection-layout" in r.text
+
+
+def test_selection_panel_lays_out_info_and_preview(
+    pcb_client, runtime_with_store
+) -> None:
+    """gr520538: the selection info and the part preview are two boxes in
+    one flex row (side by side when wide, stacked when narrow); the
+    preview element waits for pcb-selection.js to point it at the part's
+    cached JLCPCB thumbnail."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    for marker in (
+        'id="pcb-selection-layout"',
+        'id="pcb-selection-preview"',
+        'id="pcb-selection-thumb"',
+        "#pcb-selection-layout { display: flex; flex-wrap: wrap",
+    ):
+        assert marker in r.text, marker
+    # the thumbnail is driven from the cached part route, never a hotlink
+    sel_js = (
+        pathlib.Path(__file__).parents[2] / "src/precis_web/static/pcb-selection.js"
+    ).read_text(encoding="utf-8")
+    assert "/part/" in sel_js and "/thumb" in sel_js
+    assert "showPreview(o)" in sel_js and "showPreview(null)" in sel_js
+
+
+def test_selection_controls_are_styled_titled_and_disabled(
+    pcb_client, runtime_with_store
+) -> None:
+    """gr520539: the four selection controls read as buttons — styled,
+    each carrying a hover tooltip saying what it does, and disabled when
+    it cannot apply (Deselect included: nothing selected, nothing to
+    clear)."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    for bid in (
+        "pcb-copy-selection",
+        "pcb-select-component",
+        "pcb-select-net",
+        "pcb-deselect",
+    ):
+        i = r.text.index(f'id="{bid}"')
+        tag = r.text[r.text.rindex("<button", 0, i) : r.text.index(">", i)]
+        assert "disabled" in tag, bid
+        assert 'title="' in tag, bid
+        assert "rounded border border-line" in tag, bid
+        assert "disabled:opacity-50" in tag, bid
+    sel_js = (
+        pathlib.Path(__file__).parents[2] / "src/precis_web/static/pcb-selection.js"
+    ).read_text(encoding="utf-8")
+    # Deselect's enabled state is wired like the other controls'
+    assert "deselect.disabled = true" in sel_js
+    assert "deselect.disabled = false" in sel_js
+
+
+def test_granularity_toggle_switches_part_and_detail_selection(
+    pcb_client, runtime_with_store
+) -> None:
+    """gr520543: the layout toolbar carries a two-mode selection
+    granularity toggle — 'detail' keeps the top-kind pick (pad, outline
+    or track segment), 'part' resolves the click to the whole part (a
+    track to its net). Remembered per user like the other toggles."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    i = r.text.index('id="pcb-granularity"')
+    tag = r.text[r.text.rindex("<button", 0, i) : r.text.index(">", i)]
+    assert 'title="' in tag and "select: detail" in r.text[i:]
+    sel_js = (
+        pathlib.Path(__file__).parents[2] / "src/precis_web/static/pcb-selection.js"
+    ).read_text(encoding="utf-8")
+    assert "granularity() === 'part'" in sel_js
+    assert "instance:${o.instance_id}" in sel_js  # pad/part → whole part
+    assert "net:${o.net_id}" in sel_js  # a track resolves to its net
+    assert "precis:pcb-workbench:granularity" in sel_js
+
+
+def test_selection_nav_links_related_objects(pcb_client, runtime_with_store) -> None:
+    """gr520544: a selection is not a dead end — the panel carries a nav
+    line and pcb-selection.js links pad→part+net, via/track→net,
+    net→its pads and part→its pads and nets (click re-selects)."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    assert 'id="pcb-selection-nav"' in r.text
+    sel_js = (
+        pathlib.Path(__file__).parents[2] / "src/precis_web/static/pcb-selection.js"
+    ).read_text(encoding="utf-8")
+    assert "showNav(o)" in sel_js and "showNav(null)" in sel_js
+    assert "padsOf" in sel_js and "navLink" in sel_js
+    assert "`instance:${o.instance_id}`" in sel_js
+    assert "`net:${o.net_id}`" in sel_js
+
+
+def test_in_viewer_manual_covers_the_controls(pcb_client, runtime_with_store) -> None:
+    """gr520806: the workbench carries its own manual — a short
+    collapsible panel naming the panes, selection vs hover, the layer
+    box and the keyboard shortcuts."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    assert '<details id="pcb-help"' in r.text
+    body = r.text[r.text.index('id="pcb-help"') : r.text.index("</details>")]
+    for phrase in (
+        "Panes",
+        "Hover",
+        "Click",
+        "select: detail/part",
+        "Layers",
+        "Keys",
+    ):
+        assert phrase in body, phrase
 
 
 def test_one_chat_box_and_part_card_render(pcb_client, runtime_with_store) -> None:
@@ -634,6 +757,41 @@ def test_part_thumbnail_via_safe_get_cached_on_ref(
     # the production fetch's two hops go through the SSRF guard
     src = __import__("pathlib").Path(pcb_parts.__file__).read_text(encoding="utf-8")
     assert "safe_get(" in src
+
+
+def test_part_thumbnail_refuses_a_non_raster_upstream(
+    runtime_with_store, monkeypatch
+) -> None:
+    """An upstream ``image/svg+xml`` (or any non-allowlisted type) is a
+    miss, and so is a poisoned cache entry — a same-origin SVG thumb
+    would execute script on a direct navigation."""
+    from precis_web import pcb_parts
+
+    store = runtime_with_store.hub.store
+    ref = store.insert_ref(kind="part", slug="C88888", title="t")
+    monkeypatch.setattr(store, "ensure_part_ref", lambda lcsc, **kw: ref.id)
+    fetched = pcb_parts.thumbnail(
+        store, "C88888", fetch=lambda lcsc: (b"<svg/>", "image/svg+xml")
+    )
+    assert fetched is None
+    assert store.get_ref(kind="part", id=ref.id).meta["thumb"] == {"miss": True}
+    # a cached non-raster mime is refused too (pre-allowlist entries)
+    ref2 = store.insert_ref(kind="part", slug="C77777", title="t2")
+    monkeypatch.setattr(store, "ensure_part_ref", lambda lcsc, **kw: ref2.id)
+    import base64 as _b64
+
+    from psycopg.types.json import Jsonb
+
+    meta = dict(ref2.meta or {})
+    meta["thumb"] = {"mime": "image/svg+xml", "b64": _b64.b64encode(b"<svg/>").decode()}
+    with store.tx() as conn:
+        conn.execute("UPDATE refs SET meta=%s WHERE ref_id=%s", (Jsonb(meta), ref2.id))
+    assert pcb_parts.thumbnail(store, "C77777") is None
+    # the served response sniffs nothing
+    routes_src = (
+        pathlib.Path(pcb_parts.__file__).with_name("routes") / "pcb.py"
+    ).read_text(encoding="utf-8")
+    assert '"X-Content-Type-Options": "nosniff"' in routes_src
 
 
 def test_board_endpoint_renders_even_before_placement(

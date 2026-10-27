@@ -46,7 +46,15 @@ def test_page_carries_poses_and_the_cursor_readout(
 ) -> None:
     _seed_placed(runtime_with_store, "web_hover")
     html = pcb_client.get("/pcb/web_hover").text
-    assert 'id="pcb-cursor-readout"' in html
+    # gr520537: the readout left the page — it is a <text> row in the fab
+    # SVG's own layer-legend box (pcb-hover.js fills it per bind).
+    assert 'id="pcb-cursor-readout"' not in html
+    board = pcb_client.get("/pcb/web_hover/board.svg")
+    assert board.status_code == 200
+    assert 'id="pcb-cursor-readout"' in board.text
+    assert board.text.index('class="legend"') < board.text.index(
+        'id="pcb-cursor-readout"'
+    )
     raw = re.search(
         r'<script type="application/json" id="pcb-selection-manifest">(.*?)</script>',
         html,
@@ -118,3 +126,16 @@ def test_selection_box_shows_part_placement_and_never_drops_the_line() -> None:
     assert "Placement: not placed" in block
     assert "placement(o.instance_id)" in selection  # instance + pad
     assert "placement(o.anchor.instance_id)" in selection  # anchored silkscreen
+
+
+def test_selection_box_shows_package_not_raw_ids() -> None:
+    """gr520540: the Selection box names the catalog package (read off the
+    same part-cards JSON the hover cards use), never the easyeda footprint
+    id, and the instance number Reto called useless is gone from the
+    human-readable text (it stays in the identity data itself)."""
+    selection = _js("pcb-selection.js")
+    assert "Package: ${packageOf(o.refdes)" in selection
+    assert "pcb-part-cards" in selection
+    # 'Footprint: easyeda:"…"' and '· instance N' render paths are gone
+    assert "fp.scheme" not in selection
+    assert "instance ${" not in selection

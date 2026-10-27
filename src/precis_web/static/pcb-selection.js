@@ -14,24 +14,35 @@
   const factsBox = el('pcb-selection-facts');
   const copy = el('pcb-copy-selection'), send = form.querySelector('button');
   const toComponent = el('pcb-select-component'), toNet = el('pcb-select-net');
+  const deselect = el('pcb-deselect');
+  const thumb = el('pcb-selection-thumb');
   // Bottom to top, as the SVG overlay paints them: the top kind under the
   // pointer wins, so a pad beats the part body and the net beneath it.
-  const PRIORITY = ['instance', 'net', 'outline', 'silk', 'pad', 'via', 'fiducial'];
+  const PRIORITY = ['instance', 'net', 'track', 'outline', 'silk', 'pad', 'via', 'fiducial'];
   const GROUPS = {pad: 'Pads', via: 'Vias', silk: 'Silkscreen', outline: 'Board outline',
-                  fiducial: 'Fiducials', net: 'Nets'};
+                  track: 'Tracks', fiducial: 'Fiducials', net: 'Nets'};
   let selected = null, svgDoc = null, bound = false, observer = null;
   let catalogue = new Map();
   const canon = (v) => JSON.stringify(v, (_, x) =>
     x && typeof x === 'object' && !Array.isArray(x)
       ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x);
   const pt = (p) => `(${p[0]}, ${p[1]})`;
+  // The catalog package name per refdes (gr520540) — the same
+  // #pcb-part-cards JSON the hover cards read, so the Selection box shows
+  // "0402", never the opaque easyeda footprint id.
+  const partCards = (() => {
+    try { return JSON.parse(el('pcb-part-cards').textContent); } catch (_) { return {}; }
+  })();
+  const packageOf = (refdes) => (partCards[refdes] || {}).package || null;
   const label = (o) => {
     switch (o.kind) {
-      case 'instance': return `${o.refdes} · instance ${o.instance_id}`;
+      case 'instance': return `${o.refdes}`;
       case 'pad': return `Pad ${o.pin} of ${o.refdes || '?'} · ${o.layer}` + (o.net ? ` · ${o.net}` : '');
       case 'via': return `Via ${pt([o.x, o.y])}` + (o.net ? ` · ${o.net}` : '');
       case 'silk': return `Silk ${o.layer} · ${o.role}` + (o.content ? ` · ${o.content}` : '');
       case 'outline': return `Outline segment ${o.index}`;
+      case 'track': return `Track ${o.net || 'no net'} · ${o.layer}` +
+        (o.width_mm != null ? ` · ${o.width_mm}mm` : '');
       case 'fiducial': return `Fiducial ${o.id}`;
       case 'net': return `Net ${o.name}`;
       default: return o.key;
@@ -48,17 +59,15 @@
   };
   const describe = (o) => {
     switch (o.kind) {
-      case 'instance': {
-        const fp = o.footprint;
-        return `Instance ${o.instance_id} · ${o.refdes}\n` +
+      case 'instance':
+        return `${o.refdes}\n` +
           `${placement(o.instance_id)}\n` +
-          `Footprint: ${fp.available ? fp.scheme + ':' + JSON.stringify(fp.id) : 'unavailable'}\n` +
-          `Part: ${fp.part_lcsc || 'unavailable'} · package label: ${fp.label || 'unavailable'}`;
-      }
+          `Package: ${packageOf(o.refdes) || 'unavailable'}\n` +
+          `Part: ${o.footprint.part_lcsc || 'unavailable'}`;
       case 'pad': {
         const g = o.geometry;
         return `Pad ${o.pin} of ${o.refdes || 'no component'}` +
-          (o.instance_id == null ? ' (not a component pad)' : ` · instance ${o.instance_id}`) + '\n' +
+          (o.instance_id == null ? ' (not a component pad)' : '') + '\n' +
           `Pin: ${o.pin_name ?? 'unmatched'} · pad number: ${o.pad_number ?? 'unmatched'}\n` +
           `Geometry: ${g.shape} at ${pt([g.x, g.y])}` + (g.w != null ? ` · ${g.w}` + (g.h != null ? `×${g.h}` : '') + ' mm' : '') +
           (g.drill != null ? ` · drill ${g.drill} mm` : '') + (g.vertices ? ` · ${g.vertices} vertices` : '') + '\n' +
@@ -71,10 +80,14 @@
           `Layers: ${o.layers.join(', ')}${o.fixed ? ' · fixed' : ''}`;
       case 'silk':
         return `Silkscreen ${o.role}\nLayer: ${o.layer}\nContent: ${o.content ?? 'not recorded'}\n` +
-          `Anchor: ${o.anchor.kind === 'instance' ? o.anchor.refdes + ' (instance ' + o.anchor.instance_id + ')' : 'board'}` +
+          `Anchor: ${o.anchor.kind === 'instance' ? o.anchor.refdes : 'board'}` +
           (o.anchor.kind === 'instance' ? `\nPart ${o.anchor.refdes}: ${placement(o.anchor.instance_id)}` : '');
       case 'outline':
         return `Board outline segment ${o.index}\nLayer: ${o.layer}\n${pt(o.start)} → ${pt(o.end)}`;
+      case 'track':
+        return `Track on ${o.net ?? 'no net'}\n` +
+          `Layer: ${o.layer} · width ${o.width_mm ?? 'unknown'} mm\n` +
+          `${pt(o.start)} → ${pt(o.end)}`;
       case 'fiducial':
         return `Fiducial ${o.id}\nPosition: ${pt([o.x, o.y])}\nCopper diameter: ${o.copper_dia_mm ?? 'unknown'} mm\nLayers: ${o.layers.join(', ')}`;
       case 'net': return `Net ${o.name} (id ${o.net_id})`;
@@ -89,7 +102,7 @@
       case 'instance': return {kind: 'part', refdes: o.refdes};
       case 'silk': return o.anchor.kind === 'instance' ? {kind: 'part', refdes: o.anchor.refdes} : null;
       case 'net': return {kind: 'net', net: o.name};
-      case 'via': return o.net ? {kind: 'net', net: o.net} : null;
+      case 'via': case 'track': return o.net ? {kind: 'net', net: o.net} : null;
       default: return null;
     }
   };
@@ -104,6 +117,39 @@
       a.href = d.url; a.textContent = d.lcsc; a.target = '_blank'; a.rel = 'noopener noreferrer';
       factsBox.append(' · LCSC ', a);
     }
+    // gr520537: the datasheet link sits next to the C-number, in a new tab.
+    if (d.datasheet) {
+      const a = document.createElement('a');
+      a.href = d.datasheet; a.textContent = 'datasheet ↗';
+      a.target = '_blank'; a.rel = 'noopener noreferrer';
+      factsBox.append(' ', a);
+    }
+  };
+  // gr520538: the preview box shows the part's cached JLCPCB image (same
+  // /part/<refdes>/thumb route the hover card uses — always our own
+  // cached copy, never a hotlink) when the selection names a part.
+  const SLUG = ((object.dataset.base || '').split('/pcb/')[1] || '').split('/')[0];
+  const previewRefdes = (o) => {
+    if (!o) return null;
+    if (o.kind === 'instance' || o.kind === 'pad') return o.refdes || null;
+    if (o.kind === 'silk' && o.anchor.kind === 'instance') return o.anchor.refdes;
+    return null;
+  };
+  const showPreview = (o) => {
+    if (!thumb) return;
+    const refdes = previewRefdes(o);
+    if (!refdes) {
+      thumb.hidden = true;
+      thumb.removeAttribute('src');
+      return;
+    }
+    thumb.onerror = () => {
+      thumb.hidden = true;
+      thumb.removeAttribute('src');
+    };
+    thumb.src = `/pcb/${encodeURIComponent(SLUG)}/part/${encodeURIComponent(refdes)}/thumb`;
+    thumb.alt = `${refdes} part image`;
+    thumb.hidden = false;
   };
   const highlight = (key) => {
     if (!svgDoc) return;
@@ -112,10 +158,76 @@
       if (n.dataset.pcbObject === key) n.classList.add('pcb-selected');
     });
   };
+  // gr520544: fisheye navigation — a selection is never a dead end. The
+  // nav line links the related objects: pad → part + net, via/track →
+  // net, net → its pads, part → its pads and their nets.
+  const nav = el('pcb-selection-nav');
+  const navLink = (key, text) => {
+    const a = document.createElement('a');
+    a.href = '#';
+    a.textContent = text;
+    a.className = 'underline hover:text-fg-secondary';
+    a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      if (catalogue.has(key)) select(key);
+    });
+    return a;
+  };
+  const padsOf = (pred) =>
+    [...catalogue.values()].filter((x) => x.kind === 'pad' && pred(x));
+  const netName = (nid) => (catalogue.get(`net:${nid}`) || {}).name || `net ${nid}`;
+  const showNav = (o) => {
+    if (!nav) return;
+    nav.textContent = '';
+    if (!o) return;
+    const add = (label, links) => {
+      if (!links.length) return;
+      const span = document.createElement('span');
+      span.append(`${label} `);
+      links.forEach(([key, text], i) => {
+        if (i) span.append(' ');
+        span.appendChild(navLink(key, text));
+      });
+      nav.appendChild(span);
+      nav.append(' ');
+    };
+    const padLabel = (p) => `${p.refdes || '?'}.${p.pin}`;
+    switch (o.kind) {
+      case 'pad':
+        add('part', o.instance_id != null && o.refdes
+          ? [[`instance:${o.instance_id}`, o.refdes]] : []);
+        add('net', o.net_id != null && o.net ? [[`net:${o.net_id}`, o.net]] : []);
+        break;
+      case 'via':
+      case 'track':
+        add('net', o.net_id != null && o.net ? [[`net:${o.net_id}`, o.net]] : []);
+        break;
+      case 'net':
+        add('pads', padsOf((p) => p.net_id === o.net_id).map((p) => [p.key, padLabel(p)]));
+        break;
+      case 'instance': {
+        const pads = padsOf((p) => p.instance_id === o.instance_id);
+        add('pads', pads.map((p) => [p.key, padLabel(p)]));
+        const nids = [...new Set(pads.map((p) => p.net_id).filter((n) => n != null))];
+        add('nets', nids.map((nid) => [`net:${nid}`, netName(nid)]));
+        break;
+      }
+      case 'silk':
+        if (o.anchor.kind === 'instance' && o.anchor.refdes) {
+          add('part', [[`instance:${o.anchor.instance_id}`, o.anchor.refdes]]);
+        }
+        break;
+      default:
+        break;
+    }
+  };
   const clear = (message = 'Select a board object.') => {
     selected = null; choice.value = ''; hidden.value = ''; identity.textContent = '';
     factsBox.textContent = '';
-    copy.disabled = send.disabled = toComponent.disabled = toNet.disabled = true;
+    showPreview(null);
+    showNav(null);
+    copy.disabled = send.disabled = toComponent.disabled = toNet.disabled =
+      deselect.disabled = true;
     status.textContent = message;
     highlight(null);
     document.dispatchEvent(new CustomEvent('pcb-selection-changed', {detail: {object: null, text: ''}}));
@@ -130,7 +242,7 @@
       case 'pad':
         return o.refdes && o.pin ? `${o.refdes}.${o.pin}` : (o.net ? `net:${o.net}` : null);
       case 'net': return o.name ? `net:${o.name}` : null;
-      case 'via': case 'silk': case 'outline': case 'fiducial': return o.key || null;
+      case 'via': case 'silk': case 'outline': case 'track': case 'fiducial': return o.key || null;
       default: return null;
     }
   };
@@ -143,12 +255,14 @@
     if ([...choice.options].some((opt) => opt.value === key)) choice.value = key;
     identity.textContent = describe(o);
     showFacts(o);
+    showPreview(o);
+    showNav(o);
     hidden.value = JSON.stringify({...manifest.context, selected: [o]});
-    copy.disabled = false; send.disabled = false;
+    copy.disabled = false; send.disabled = false; deselect.disabled = false;
     const instanceId = o.kind === 'pad' ? o.instance_id : (o.kind === 'silk' && o.anchor.kind === 'instance' ? o.anchor.instance_id : null);
     toComponent.disabled = instanceId == null || !catalogue.has(`instance:${instanceId}`);
     toComponent.dataset.target = instanceId == null ? '' : `instance:${instanceId}`;
-    const netId = (o.kind === 'pad' || o.kind === 'via') ? o.net_id : null;
+    const netId = (o.kind === 'pad' || o.kind === 'via' || o.kind === 'track') ? o.net_id : null;
     toNet.disabled = netId == null || !catalogue.has(`net:${netId}`);
     toNet.dataset.target = netId == null ? '' : `net:${netId}`;
     status.textContent = o.kind === 'instance'
@@ -214,6 +328,25 @@
       if (!kinds.length) return;
       const top = kinds[kinds.length - 1];
       const keys = [...found].filter(([, k]) => k === top).map(([key]) => key);
+      // gr520543 'part' granularity: a pad, the part body or anchored
+      // silkscreen resolves to the whole part; a track resolves to its
+      // net. The first resolvable object in hit order wins.
+      if (granularity() === 'part') {
+        const instKey = (o) => {
+          if (!o) return null;
+          if (o.kind === 'instance') return `instance:${o.instance_id}`;
+          if (o.kind === 'pad') return o.instance_id == null ? null : `instance:${o.instance_id}`;
+          if (o.kind === 'silk' && o.anchor.kind === 'instance') return `instance:${o.anchor.instance_id}`;
+          if (o.kind === 'track') return o.net_id == null ? null : `net:${o.net_id}`;
+          return null;
+        };
+        for (const kind of [...kinds].reverse()) {
+          for (const [key] of [...found].filter(([, k]) => k === kind)) {
+            const target = instKey(catalogue.get(key));
+            if (target && catalogue.has(target)) { select(target); return; }
+          }
+        }
+      }
       if (keys.length > 1) { clear(`Overlapping ${top}s: choose from the list.`); return; }
       select(keys[0]);
     });
@@ -239,7 +372,26 @@
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(choice.value); }
   });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') clear(); });
-  el('pcb-deselect').addEventListener('click', () => clear());
+  deselect.addEventListener('click', () => clear());
+  // gr520543: the detail/part granularity toggle (layout pane toolbar).
+  // 'detail' keeps the top-kind pick; 'part' resolves to the whole part.
+  // Remembered per user like the other workbench toggles.
+  const granBtn = el('pcb-granularity');
+  const GRAN_KEY = 'precis:pcb-workbench:granularity';
+  let gran = 'detail';
+  try { gran = localStorage.getItem(GRAN_KEY) || 'detail'; } catch (_) { /* same */ }
+  const granularity = () => gran;
+  const paintGran = () => {
+    if (!granBtn) return;
+    granBtn.textContent = `select: ${gran}`;
+    granBtn.setAttribute('aria-pressed', String(gran === 'part'));
+  };
+  paintGran();
+  if (granBtn) granBtn.addEventListener('click', () => {
+    gran = gran === 'part' ? 'detail' : 'part';
+    try { localStorage.setItem(GRAN_KEY, gran); } catch (_) { /* same */ }
+    paintGran();
+  });
   toComponent.addEventListener('click', () => { if (toComponent.dataset.target) select(toComponent.dataset.target); });
   toNet.addEventListener('click', () => { if (toNet.dataset.target) select(toNet.dataset.target); });
   copy.addEventListener('click', async () => {

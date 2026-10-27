@@ -179,6 +179,69 @@ def test_pcb_graph_netconns_members_are_sorted(pcb, store):
     assert [m["refdes"] for m in bus["members"]] == ["A1", "M1", "Z1"]
 
 
+def test_schematic_pin_numbers_inverts_the_footprint_pin_map() -> None:
+    """gr520803: ``pcb_pins.pad`` is usually NULL — the physical numbers
+    live in the footprint's ``pin_map`` (pad number → pin). So
+    ``_schematic_pin_numbers`` inverts the map pad-by-pad through
+    ``padplace.pad_label``: a pin named in the map gets its pad's number,
+    an unmapped pad labels by its own number, and a member's declared
+    ``pad`` still wins over the map's answer."""
+    from precis.handlers.pcb import _schematic_pin_numbers
+
+    fp = {
+        "pin_map": {"1": {"name": "VDD"}, "2": {"name": "GND"}},
+        "pads": [{"number": "1"}, {"number": "2"}, {"number": "3"}],
+    }
+    stub = NS(
+        pcb_local_footprints_for=lambda ref_id: {},
+        pcb_footprints_for=lambda ref_id: {"C123": fp},
+    )
+    graph: dict[str, Any] = {
+        "instances": [{"refdes": "U1", "part_lcsc": "C123", "footprint": None}],
+        "nets": [
+            {"name": "SIG", "members": [{"refdes": "U1", "pin": "SCL", "pad": "7"}]}
+        ],
+        "unconnected": [],
+    }
+    got = _schematic_pin_numbers(stub, 1, graph)
+    assert got["U1"] == {"VDD": "1", "GND": "2", "3": "3", "SCL": "7"}
+    # a member's declared pad overrides the footprint map's answer
+    graph["nets"][0]["members"].append({"refdes": "U1", "pin": "VDD", "pad": "9"})
+    got = _schematic_pin_numbers(stub, 1, graph)
+    assert got["U1"]["VDD"] == "9"
+
+
+def test_schematic_pin_numbers_prefers_local_and_skips_unknown() -> None:
+    """gr520803: a design-local footprint (``inst.footprint`` name) beats
+    the catalog cache keyed by ``part_lcsc``; an instance with neither is
+    skipped, and an ``unconnected`` member's declared pad lands too."""
+    from precis.handlers.pcb import _schematic_pin_numbers
+
+    local_fp = {"pin_map": {}, "pads": [{"number": "A1"}, {"number": "A2"}]}
+    cat_fp = {
+        "pin_map": {"1": {"name": "X"}},
+        "pads": [{"number": "1"}],
+    }
+    stub = NS(
+        pcb_local_footprints_for=lambda ref_id: {"boardconn": local_fp},
+        pcb_footprints_for=lambda ref_id: {"C123": cat_fp},
+    )
+    graph = {
+        "instances": [
+            {"refdes": "J1", "footprint": "boardconn", "part_lcsc": None},
+            {"refdes": "U1", "footprint": "C123", "part_lcsc": "C123"},
+            {"refdes": "Q9", "footprint": None, "part_lcsc": None},
+        ],
+        "nets": [],
+        "unconnected": [{"refdes": "U1", "pin": "EP", "pad": "9"}],
+    }
+    got = _schematic_pin_numbers(stub, 1, graph)
+    # the local name wins: A1/A2 pads, not the catalog row's X
+    assert got["J1"] == {"A1": "A1", "A2": "A2"}
+    assert got["U1"] == {"X": "1", "EP": "9"}
+    assert "Q9" not in got
+
+
 def test_pcb_graph_round_trips_group_and_pattern_fields(pcb, store):
     """The placement-constraint fields (rigid super-footprint ``group`` +
     ``group_offset``, repeated-tile ``pattern`` + ``pattern_instance``)

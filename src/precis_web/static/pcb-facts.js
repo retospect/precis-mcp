@@ -107,19 +107,28 @@
     return net.reason && net.reason !== net.status ? label + ': ' + net.reason : label;
   }
 
+  // Only a web URL ever becomes a link — a stored datasheet field is user-
+  // supplied catalog data, so anything not http(s) is dropped here.
+  const WEB_URL = /^https?:\/\//i;
+  function webUrl(u) {
+    return typeof u === 'string' && WEB_URL.test(u) ? u : null;
+  }
+
   /* target: {kind:'pad', refdes, pad, net?} | {kind:'part', refdes}
              | {kind:'net'|'ratsnest', net}
-     returns {text, lcsc, url}: text is the tooltip line, lcsc/url the
-     part's stored C-number and its LCSC page (both null without one). */
+     returns {text, lcsc, url, datasheet}: text is the tooltip line,
+     lcsc/url the part's stored C-number and its LCSC page (both null
+     without one), datasheet its catalog datasheet URL (gr520537). */
   function describe(facts, target) {
-    const out = {text: '', lcsc: null, url: null};
+    const out = {text: '', lcsc: null, url: null, datasheet: null};
     let text = '';
     if (target.kind === 'pad' || target.kind === 'part') {
       text = partText(facts, target.refdes);
       if (target.kind === 'pad') text += '/Pad ' + target.pad;
-      const lcsc = (facts.parts[target.refdes] || {}).lcsc;
-      out.url = lcscUrl(lcsc);
-      out.lcsc = out.url ? lcsc : null;
+      const part = facts.parts[target.refdes] || {};
+      out.url = lcscUrl(part.lcsc);
+      out.lcsc = out.url ? part.lcsc : null;
+      out.datasheet = webUrl(part.datasheet);
       const bad = target.net ? failure(facts, target.net) : null;
       if (bad) text += '/' + target.net + ' ' + bad;
     } else if (target.net) {
@@ -158,6 +167,17 @@
     return parts.join('/');
   }
 
+  /* A track segment (gr520542): the net's own line plus the segment's
+     width and layer — "SIG/120mA/[R1.1:C2.2]/track 0.25mm F.Cu". */
+  function trackText(facts, o) {
+    const name = o.net || 'no net';
+    const base = facts.nets && facts.nets[name] ? netText(facts, name) : name;
+    const seg = ['track', o.width_mm != null ? mm(o.width_mm) : null, o.layer]
+      .filter(Boolean).join(' ');
+    const bad = o.net ? failure(facts, name) : null;
+    return base + '/' + seg + (bad ? '/' + bad : '');
+  }
+
   /* A silkscreen object: refdes / value+package / element — "C3/1pF 0402/
      silk outline" (gr520541: the "(...)" label form was noise), or the
      layer for board-level silk. */
@@ -169,5 +189,5 @@
     return 'Silkscreen ' + (silk.role || 'art') + '/' + (silk.layer || 'unknown layer');
   }
 
-  return {describe, isGround, lcscUrl, load, netText, partText, silkText, viaText, LCSC_PRODUCT};
+  return {describe, isGround, lcscUrl, load, netText, partText, silkText, trackText, viaText, webUrl, LCSC_PRODUCT};
 });

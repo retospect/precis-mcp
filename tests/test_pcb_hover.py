@@ -139,6 +139,7 @@ _TABLES: dict[str, list[dict[str, Any]]] = {
             "description": "10uF 6.3V X5R capacitor MLCC",
             "package": "0603",
             "mfr_part": "CL10A106",
+            "datasheet_url": "https://datasheet.lcsc.com/lcsc/C19702.pdf",
         },
         {
             "lcsc": "C1",
@@ -176,6 +177,7 @@ def test_facts_join_catalogue_rows_and_route_state() -> None:
         "package": "0603",
         "rating": "6.3V",
         "lcsc": "C19702",
+        "datasheet": "https://datasheet.lcsc.com/lcsc/C19702.pdf",
     }
     assert parts["R9"]["value"] == "10k" and parts["R9"]["rating"] == "0.1W"
     assert parts["J1"] == {
@@ -183,6 +185,7 @@ def test_facts_join_catalogue_rows_and_route_state() -> None:
         "package": "USB-C",
         "rating": None,
         "lcsc": None,
+        "datasheet": None,
     }
     nets = out["facts"]["nets"]
     assert nets["VBUS"]["current_a"] == 0.5 and nets["VBUS"]["reason"] is None
@@ -190,6 +193,23 @@ def test_facts_join_catalogue_rows_and_route_state() -> None:
     assert nets["CC2"]["pins"] == ["J1.5", "R9.1"]
     assert nets["CC2"]["reason"] == "no path on F.Cu"  # carried verbatim
     assert out["unrouted"] == ["CC2"] and out["failed"] == ["CC2"]
+
+
+def test_part_summary_shows_a_readable_package_never_an_easyeda_id() -> None:
+    """gr520540: an opaque footprint snapshot (the EasyEDA uuid) is not a
+    package name — the catalog ``package`` wins, a readable footprint
+    snapshot still shows, and an opaque one leaves ``package`` unset."""
+    s = pcb_hover.part_summary(
+        {"package": "0402"}, {"footprint": "c0f1e49edd994701b28afed5ddf5e652"}
+    )
+    assert s["package"] == "0402"
+    s = pcb_hover.part_summary(None, {"footprint": "QFN-40-EP(5x5)"})
+    assert s["package"] == "QFN-40-EP(5x5)"
+    for opaque in (
+        "c0f1e49edd994701b28afed5ddf5e652",
+        "easyeda:c0f1e49edd994701b28afed5ddf5e652",
+    ):
+        assert pcb_hover.part_summary(None, {"footprint": opaque})["package"] is None
 
 
 def test_unreasoned_failure_and_unrouted_net_still_say_something() -> None:

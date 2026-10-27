@@ -27,6 +27,9 @@ _OG_IMAGE = re.compile(
     re.IGNORECASE,
 )
 _MAX_IMAGE_BYTES = 256 * 1024
+#: Raster types only — an ``image/svg+xml`` thumb served same-origin would
+#: execute script on a direct navigation (reviewer finding).
+_ALLOWED_MIME = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 
 
 def cards(view: Any) -> dict[str, dict[str, Any]]:
@@ -77,7 +80,7 @@ def _fetch_thumbnail(lcsc: str) -> tuple[bytes, str] | None:
             if img.status_code != 200 or len(img.content) > _MAX_IMAGE_BYTES:
                 return None
             mime = img.headers.get("content-type", "").split(";")[0].strip()
-            if not mime.startswith("image/"):
+            if mime not in _ALLOWED_MIME:
                 return None
             return img.content, mime
     except Exception:
@@ -101,10 +104,15 @@ def thumbnail(store: Any, lcsc: str, *, fetch: Any = None) -> tuple[bytes, str] 
     cached = meta.get("thumb")
     if isinstance(cached, dict):
         if cached.get("b64"):
-            return base64.b64decode(cached["b64"]), cached.get("mime", "image/jpeg")
+            mime = cached.get("mime", "image/jpeg")
+            if mime not in _ALLOWED_MIME:
+                return None
+            return base64.b64decode(cached["b64"]), mime
         if cached.get("miss"):
             return None
     got = (fetch or _fetch_thumbnail)(lcsc)
+    if got is not None and got[1] not in _ALLOWED_MIME:
+        got = None
     thumb: dict[str, Any] = (
         {"miss": True}
         if got is None

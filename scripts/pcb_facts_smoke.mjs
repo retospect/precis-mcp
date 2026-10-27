@@ -14,9 +14,11 @@ const F = createRequire(import.meta.url)(
 
 const facts = {
   parts: {
-    C2: { value: '10uF', package: '0603', rating: '6.3V', lcsc: 'C19702' },
+    C2: { value: '10uF', package: '0603', rating: '6.3V', lcsc: 'C19702',
+          datasheet: 'https://datasheet.lcsc.com/lcsc/C19702.pdf' },
     C3: { value: 'C 1.0pF', package: null, rating: null, lcsc: null },
-    R9: { value: '<img src=x onerror=alert(1)>', package: null, rating: null, lcsc: 'javascript:alert(1)' },
+    R9: { value: '<img src=x onerror=alert(1)>', package: null, rating: null, lcsc: 'javascript:alert(1)',
+          datasheet: 'javascript:alert(1)' },
     J1: { value: null, package: null, rating: null, lcsc: null },
   },
   nets: {
@@ -54,6 +56,16 @@ assert.equal(
   F.describe(facts, { kind: 'pad', refdes: 'J1', pad: '5', net: 'CC2' }).text,
   'J1/Pad 5/CC2 FAILED: no path on F.Cu');
 
+// gr520542: a track segment reads as the net's line + the segment spec
+assert.equal(
+  F.trackText(facts, { net: 'VBUS', layer: 'F.Cu', width_mm: 0.25 }),
+  'VBUS/120mA/[J1.1:C2.1]/track 0.25mm F.Cu');
+assert.equal(
+  F.trackText(facts, { net: 'CC2', layer: 'B.Cu', width_mm: null }),
+  'CC2/signal, no current set/[J1.5:R9.1]/track B.Cu/FAILED: no path on F.Cu');
+assert.equal(F.trackText(facts, { net: null, layer: 'F.Cu', width_mm: 0.3 }),
+  'no net/track 0.3mm F.Cu');
+
 // vias: net, drill, pad, layers, stitching only on a ground net (gr496368)
 const via = { net: 'GND', drill_mm: 0.3, dia_mm: 0.6, layers: ['F.Cu', 'B.Cu'], fixed: false };
 assert.equal(F.viaText(facts, via), 'GND via/drill 0.3mm/pad 0.6mm/F.Cu-B.Cu/stitching');
@@ -85,6 +97,14 @@ const none = F.describe(facts, { kind: 'part', refdes: 'J1' });
 assert.equal(none.url, null);
 assert.equal(none.lcsc, null);
 assert.equal(F.describe(facts, { kind: 'part', refdes: 'R9' }).url, null, 'malformed C-number: no link');
+// gr520537: a stored datasheet rides describe as a link — http(s) only
+assert.equal(F.describe(facts, { kind: 'part', refdes: 'C2' }).datasheet,
+  'https://datasheet.lcsc.com/lcsc/C19702.pdf');
+assert.equal(F.describe(facts, { kind: 'pad', refdes: 'C2', pad: '1' }).datasheet,
+  'https://datasheet.lcsc.com/lcsc/C19702.pdf', 'pad and part agree');
+assert.equal(F.describe(facts, { kind: 'part', refdes: 'R9' }).datasheet, null,
+  'a non-web datasheet URL is dropped');
+assert.equal(F.describe(facts, { kind: 'part', refdes: 'J1' }).datasheet, null);
 // user text is returned as text, never altered into markup
 assert.ok(F.describe(facts, { kind: 'part', refdes: 'R9' }).text.includes('<img src=x onerror=alert(1)>'));
 
