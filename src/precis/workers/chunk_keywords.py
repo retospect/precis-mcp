@@ -150,6 +150,38 @@ _TOP_K = 8
 _RAKE_POOL = 40
 
 
+def _eligibility_sql(prefix: str) -> str:
+    """The claim's static eligibility rendered with a column ``prefix``
+    (``"c."`` for the claim's aliased chunks table, ``""`` for the
+    ``chunks_keywords_pending_idx`` partial-index predicate, migration
+    0261) — the ONE source for the literals both carry. The claim
+    inlines this text rather than binding params: the planner only
+    picks the partial index when it can prove the query's WHERE
+    implies the index predicate, which takes the same literal
+    constants, not $n."""
+    kinds = ", ".join(f"'{k}'" for k in sorted(SKIP_KINDS))
+    return (
+        f"{prefix}chunk_kind NOT IN ({kinds}) "
+        f"AND length({prefix}text) >= {MIN_CHUNK_CHARS} "
+        f"AND ({prefix}meta->>'no_index') IS DISTINCT FROM 'true'"
+    )
+
+
+#: The eligibility fragment as the claim's SELECT uses it (aliased ``c.``).
+_ELIGIBILITY_SQL = _eligibility_sql("c.")
+
+#: Run the tier-3 stale re-derive claim only every Nth pass: it
+#: seq-scans ``chunk_embeddings`` (~4.7M rows) on every underfilled
+#: pass, and a stale re-derive delayed N×tick costs nothing
+#: user-visible (gr520236 review).
+_STALE_CLAIM_EVERY = 10
+
+#: Passes this process has run (:func:`run_chunk_keywords_pass` bumps
+#: it); the stale claim fires when it hits a multiple of
+#: :data:`_STALE_CLAIM_EVERY`.
+_pass_count = 0
+
+
 def is_keyword_eligible(chunk: Any) -> bool:
     """The structural half of the claim predicate, in Python: a
     non-:data:`SKIP_KINDS` kind, ``len(text) >= MIN_CHUNK_CHARS``, and
@@ -168,7 +200,7 @@ def is_keyword_eligible(chunk: Any) -> bool:
 
 
 def claim_chunks_without_keywords(
-    conn: Connection, *, limit: int
+    conn: Connection, *, limit: int, include_stale: bool = True
 ) -> list[tuple[int, int, str, str | None]]:
     """Return up to ``limit`` chunks needing keyword extraction.
 
@@ -189,12 +221,17 @@ def claim_chunks_without_keywords(
     2. Fresh backlog (``keywords IS NULL``) — newest-first so fresh
        ingests get labels promptly, and cheap at any backlog depth:
        ``chunks_keywords_pending_idx`` (partial on ``keywords IS
-       NULL``) lets the DESC walk skip every already-done row, where
-       the previous single ascending claim re-scanned the done prefix
+       NULL`` plus the same eligibility literals the claim inlines via
+       :func:`_eligibility_sql`) lets the DESC walk skip every
+       already-done row AND the never-eligible bulk, where the
+       previous single ascending claim re-scanned the done prefix
        from id 1 on every batch.
     3. Stale re-derives — keywords exist but the version or
        ``content_sha`` drifted (edited ``draft`` chunks; papers leave
-       ``content_sha`` NULL so NULL-vs-NULL never fires).
+       ``content_sha`` NULL so NULL-vs-NULL never fires). Skipped when
+       ``include_stale`` is false — the claim seq-scans
+       ``chunk_embeddings``, so :func:`run_chunk_keywords_pass` runs
+       it only every :data:`_STALE_CLAIM_EVERY` passes.
 
     Returns rows of ``(chunk_id, ref_id, text, embedding)`` — the
     embedding is pulled from ``chunk_embeddings`` via JOIN so the
@@ -204,7 +241,6 @@ def claim_chunks_without_keywords(
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
-    skip_list = list(SKIP_KINDS)
     # ``meta->>'no_index' IS DISTINCT FROM 'true'`` filters out
     # ephemeral chunks (e.g. ``structure_draft`` annotation views
     # written by precis-dft's view_worker). NULL-safe: the vast
@@ -220,9 +256,7 @@ def claim_chunks_without_keywords(
             ON ce.chunk_id = c.chunk_id
            AND ce.embedder = %s
            AND ce.status = 'ok'
-         WHERE c.chunk_kind <> ALL(%s)
-           AND length(c.text) >= %s
-           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+         WHERE {eligibility}
            AND ce.vector IS NOT NULL
            -- only once the embedding is current for this text — KeyBERT
            -- uses ce.vector, so wait for embed to refresh after an edit
@@ -244,8 +278,8 @@ def claim_chunks_without_keywords(
 
     def _claim(where: str, params: tuple[Any, ...]) -> None:
         rows = conn.execute(
-            select.format(where=where),
-            ("bge-m3", skip_list, MIN_CHUNK_CHARS, *params, limit - len(out)),
+            select.format(where=where, eligibility=_ELIGIBILITY_SQL),
+            ("bge-m3", *params, limit - len(out)),
         ).fetchall()
         for r in rows:
             out.append((int(r[0]), int(r[1]), str(r[2]), r[3]))
@@ -253,7 +287,7 @@ def claim_chunks_without_keywords(
     _claim(f"r.kind IN ('conv', 'draft') AND {pending}", (KEYWORDS_VERSION,))
     if len(out) < limit:
         _claim("r.kind NOT IN ('conv', 'draft') AND c.keywords IS NULL", ())
-    if len(out) < limit:
+    if include_stale and len(out) < limit:
         _claim(
             f"r.kind NOT IN ('conv', 'draft') AND c.keywords IS NOT NULL AND {pending}",
             (KEYWORDS_VERSION,),
@@ -569,7 +603,7 @@ _EMBED_TEXTS_PER_CALL = 512
 
 
 def _run_chunk_keywords_batch(
-    store: Store, embedder: Embedder, *, batch_size: int
+    store: Store, embedder: Embedder, *, batch_size: int, include_stale: bool
 ) -> dict[str, int]:
     """The claim + per-chunk work. Runs while the caller
     (:func:`run_chunk_keywords_pass`) holds the single-runner advisory
@@ -585,7 +619,8 @@ def _run_chunk_keywords_batch(
        leases the batch's ``FOR UPDATE OF c SKIP LOCKED`` rows, then
        commits immediately — releasing the lock well before the slow
        per-chunk work below runs, not held for the whole batch as the
-       pre-fix single-transaction version did.
+       pre-fix single-transaction version did. ``include_stale`` gates
+       the seq-scanning tier-3 claim (see ``_STALE_CLAIM_EVERY``).
     2. **Prepare** (per chunk, no embedder): parse the stored vector,
        :func:`_ensure_paper_abbrevs_retrying` (per ref, cached — its
        own short retried transaction), then RAKE candidates via
@@ -611,7 +646,9 @@ def _run_chunk_keywords_batch(
     below): it's still unwritten, so it re-claims cleanly next pass.
     """
     with store.pool.connection() as conn:
-        rows = claim_chunks_without_keywords(conn, limit=batch_size)
+        rows = claim_chunks_without_keywords(
+            conn, limit=batch_size, include_stale=include_stale
+        )
         conn.commit()
     claimed = len(rows)
 
@@ -687,11 +724,14 @@ def _run_chunk_keywords_batch(
 
     for (chunk_id, chunk_vec, cand_meta), (lo, hi) in zip(prepared, spans, strict=True):
         try:
-            vecs = (
-                cand_vecs[lo:hi]
-                if cand_vecs is not None
-                else embedder.embed(embed_texts[lo:hi])
-            )
+            if cand_vecs is not None:
+                vecs = cand_vecs[lo:hi]
+            elif hi > lo:
+                vecs = embedder.embed(embed_texts[lo:hi])
+            else:
+                # No candidates (RAKE found nothing scoreable) — an
+                # embed call over an empty slice is a wasted round-trip.
+                vecs = []
             keywords = _topk_keywords(chunk_vec, cand_meta, vecs)
 
             def _write(
@@ -764,10 +804,17 @@ def run_chunk_keywords_pass(
     if not store.dsn:
         return idle
 
+    global _pass_count
     with try_xact_advisory_lock(store.dsn, _LOCK_KEY) as got:
         if not got:
             return idle  # another node owns this pass this cycle
-        return _run_chunk_keywords_batch(store, embedder, batch_size=batch_size)
+        _pass_count += 1
+        return _run_chunk_keywords_batch(
+            store,
+            embedder,
+            batch_size=batch_size,
+            include_stale=(_pass_count % _STALE_CLAIM_EVERY) == 0,
+        )
 
 
 # ── helpers ─────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ of ``worker._REF_PASS_PRIORITY``; keep them stable.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,8 @@ from precis import settings
 from precis.store import Store
 from precis.utils.env import env_csv_set, env_flag
 from precis.workers.service_config import ServiceConfigResolver
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from precis.workers.runner import RefPass
@@ -73,9 +76,17 @@ def build_ref_passes(
         # gr520236: keyword extraction pools each chunk's ~40 RAKE
         # candidates into shared embed calls now, so a bigger claim
         # amortises better than the shared-loop default (32). The
-        # pass's own floor/env knob governs; the loop's --batch-size
-        # still wins when set higher.
-        _kw_batch_floor = int(os.environ.get("PRECIS_CHUNK_KEYWORDS_BATCH") or 128)
+        # floor below wins over the loop's --batch-size (max() only
+        # ever raises) — PRECIS_CHUNK_KEYWORDS_BATCH is the ONLY knob
+        # under the 128 floor.
+        try:
+            _kw_batch_floor = int(os.environ.get("PRECIS_CHUNK_KEYWORDS_BATCH") or 128)
+        except ValueError:
+            log.warning(
+                "PRECIS_CHUNK_KEYWORDS_BATCH=%r is not an int — using 128",
+                os.environ.get("PRECIS_CHUNK_KEYWORDS_BATCH"),
+            )
+            _kw_batch_floor = 128
 
         def _chunk_keywords_pass(batch_size: int) -> BatchResult:
             r = run_chunk_keywords_pass(

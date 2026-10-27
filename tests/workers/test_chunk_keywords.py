@@ -20,11 +20,13 @@ Coverage shape:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from psycopg.types.json import Jsonb
 
 from precis.store import Store
+from precis.workers import chunk_keywords
 from precis.workers.chunk_keywords import (
     KEYWORDS_VERSION,
     claim_chunks_without_keywords,
@@ -281,6 +283,22 @@ class TestClaimQuery:
                 "WHERE c.relname = 'chunks_keywords_pending_idx'"
             ).fetchone()
         assert row == (True,)
+
+    def test_claim_literals_match_index_predicate(self) -> None:
+        """gr520236 review: the partial index only helps when the
+        planner can prove the claim WHERE implies its predicate — the
+        claim inlines :func:`_eligibility_sql` literals, and the
+        migration's predicate must be the same text."""
+        mig = (
+            Path(chunk_keywords.__file__).resolve().parent.parent
+            / "migrations"
+            / "0261_chunks_keywords_pending_idx.sql"
+        ).read_text(encoding="utf-8")
+        norm = " ".join(mig.split())
+        want = " ".join(
+            f"keywords IS NULL AND {chunk_keywords._eligibility_sql('')}".split()
+        )
+        assert want in norm
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +580,71 @@ class TestRunChunkKeywordsPass:
         monkeypatch.setattr(emb, "embed", picky)
         result = run_chunk_keywords_pass(store, emb, batch_size=10)
         assert result == {"claimed": 2, "ok": 2, "failed": 0}
+
+    def test_stale_claim_runs_every_nth_pass(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr520236 review: the tier-3 stale re-derive claim seq-scans
+        ``chunk_embeddings`` on every underfilled pass — it only runs
+        when the pass count hits :data:`_STALE_CLAIM_EVERY`."""
+        ref_id = seed_ref(store)
+        stale_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        stale_meta = {
+            "version": "0.0-stale",
+            "embedder": "bge-m3",
+            "keywords": [{"short": None, "long": "stale", "score": 1.0}],
+        }
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET keywords = %s, keywords_meta = %s "
+                "WHERE chunk_id = %s",
+                (["stale"], Jsonb(stale_meta), stale_id),
+            )
+            conn.commit()
+        # An off-multiple pass skips the stale claim entirely.
+        monkeypatch.setattr(chunk_keywords, "_pass_count", 0)
+        result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        # The _STALE_CLAIM_EVERY-th pass picks it up.
+        monkeypatch.setattr(
+            chunk_keywords,
+            "_pass_count",
+            chunk_keywords._STALE_CLAIM_EVERY - 1,
+        )
+        result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
+        assert result["claimed"] == 1 and result["ok"] == 1
+
+    def test_fallback_skips_embed_for_empty_candidates(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr520236 review: a chunk whose RAKE pass produced no
+        candidates costs no embed call on the per-chunk fallback
+        path — an empty slice is scored as [] instead."""
+        ref_id = seed_ref(store)
+        _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        real_candidates = chunk_keywords._keyword_candidates
+
+        def sparse(
+            text: str, abbrevs: dict[str, str]
+        ) -> tuple[list[str], list[tuple[str, str | None]]]:
+            if text == _BODY_TEXT_2:
+                return [], []
+            return real_candidates(text, abbrevs)
+
+        monkeypatch.setattr(chunk_keywords, "_keyword_candidates", sparse)
+        emb = make_mock_bge_m3()
+        seen: list[int] = []
+
+        def boom(texts: list[str]) -> list[list[float]]:
+            seen.append(len(texts))
+            raise RuntimeError("embed down")
+
+        monkeypatch.setattr(emb, "embed", boom)
+        result = run_chunk_keywords_pass(store, emb, batch_size=10)
+        # Chunk A fails on the falling embedder; chunk B scores [].
+        assert result == {"claimed": 2, "ok": 1, "failed": 1}
+        assert seen and all(n > 0 for n in seen)
 
     def test_db_level_failure_on_one_chunk_does_not_cascade(
         self, store: Store, monkeypatch: Any
