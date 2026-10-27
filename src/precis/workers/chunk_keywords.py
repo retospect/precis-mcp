@@ -46,7 +46,7 @@ LOCKED`` queries, newest-first within each: (1) ``conv``/``draft``
 chunks — they jump the whole queue regardless of freshness; (2) the
 fresh ``keywords IS NULL`` backlog, ``chunk_id DESC`` so the newest
 ingests get labels first and the ``chunks_keywords_pending_idx``
-partial index (migration 0260) yields only pending rows — the old
+partial index (migration 0261) yields only pending rows — the old
 single ascending scan re-walked every already-done row between the
 index's id-1 end and the live backlog on every claim; (3) stale
 re-derives (version / ``content_sha`` mismatch with keywords already

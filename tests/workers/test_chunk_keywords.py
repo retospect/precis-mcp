@@ -272,7 +272,7 @@ class TestClaimQuery:
         assert {r[0] for r in rows} == {fresh_id, stale_id}
 
     def test_pending_partial_index_exists(self, store: Store) -> None:
-        """The DESC fresh claim's cheapness depends on migration 0260's
+        """The DESC fresh claim's cheapness depends on migration 0261's
         partial index existing and being valid."""
         with store.pool.connection() as conn:
             row = conn.execute(

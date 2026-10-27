@@ -1,4 +1,4 @@
--- 0260_chunks_keywords_pending_idx.sql
+-- 0261_chunks_keywords_pending_idx.sql
 --
 -- chunk_keywords drain fix (gr520236): the fresh-backlog claim is
 -- `WHERE keywords IS NULL ... ORDER BY chunk_id DESC` (newest-first, so
@@ -29,4 +29,4 @@ CREATE INDEX IF NOT EXISTS chunks_keywords_pending_idx
 
 COMMIT;
 
--- End of 0260_chunks_keywords_pending_idx.sql
+-- End of 0261_chunks_keywords_pending_idx.sql
