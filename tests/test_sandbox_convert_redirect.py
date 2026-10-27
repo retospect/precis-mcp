@@ -37,7 +37,7 @@ class ConvertedStore:
         return RefsMixin.resolve_handle(cast(Any, self), handle, conn=cast(Any, self))
 
 
-@pytest.mark.parametrize("target", ["web", "paper", "markdown"])
+@pytest.mark.parametrize("target", ["patent", "paper", "markdown"])
 @pytest.mark.parametrize("read_only", [True, False], ids=["read", "write"])
 def test_converted_datasheet_target_is_gated_before_rewrite(
     target: str, read_only: bool, monkeypatch: pytest.MonkeyPatch
