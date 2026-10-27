@@ -8002,7 +8002,7 @@ def _toc_readiness_line(store: Store, ref_id: int) -> str | None:
     ``SKIP_KINDS``, the ``[MIN_CHUNK_CHARS, MAX_CHUNK_CHARS]`` window, and
     ``no_index``), ``keyworded``'s is
     :func:`~precis.workers.chunk_keywords.keyword_eligible_chunk_count`
-    (``_SKIP_KINDS``, the ``_MIN_CHUNK_CHARS`` floor, ``no_index``) —
+    (``SKIP_KINDS``, the ``MIN_CHUNK_CHARS`` floor, ``no_index``) —
     each matches the predicate its own "not done" count
     uses, so a structurally-ineligible chunk (a ``table``, or a stub below
     ``MIN_CHUNK_CHARS``) never reads as silently "done" in a denominator it

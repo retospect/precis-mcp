@@ -59,10 +59,11 @@ worker-internal, not an agent-facing verb.
 from __future__ import annotations
 
 import logging
-import re
 import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+import psycopg
 
 from precis.errors import NotFound
 from precis.store.types import _CLOSED_VOCAB
@@ -355,18 +356,14 @@ def _chunk_handle(kind: str, block: Any) -> str:
     return handle_registry.format_handle(kind, int(block.id), chunk=True)
 
 
-#: ``**bold**`` / ``*italics*`` wrappers stripped from preview text.
-_EMPHASIS_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
-
-
 def _preview_text(text: str) -> str:
     """A chunk's text as a one-line preview surface: LaTeX/HTML markup
     folded to its reading form (``<sup>`` author marks, ``$…$`` math and
     split ``|`` cells out — the author-line ``<sup>`` leak of gr520231)
     and emphasis wrappers unwrapped."""
-    from precis.utils.text import markup_surface
+    from precis.utils.text import markup_surface, strip_emphasis
 
-    return _EMPHASIS_RE.sub(r"\1", markup_surface(text))
+    return strip_emphasis(markup_surface(text))
 
 
 def _chunk_summary(block: Any) -> str:
@@ -515,7 +512,7 @@ def _abstract_lead(store: Store, ref: Any, ref_id: int) -> str:
         return _cap(" ".join(_strip_jats(str(abstract)).split()), _SUMMARY_CAP)
     try:
         preview = store.chunks.abstract_previews([ref_id]).get(ref_id)
-    except Exception:
+    except psycopg.Error:
         log.debug("abstract preview read failed", exc_info=True)
         return ""
     if not preview:

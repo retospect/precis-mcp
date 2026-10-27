@@ -562,8 +562,8 @@ def test_toc_readiness_line_excludes_structurally_ineligible_chunks(
     # and stub chunks stay in its denominator (3). Summarize skips both
     # 'table' and anything below MIN_CHUNK_CHARS, so its denominator drops
     # to just the one eligible chunk, not the naive body-chunk total.
-    # Keywords skip the same two (its _SKIP_KINDS covers 'table', its
-    # floor is _MIN_CHUNK_CHARS=150) → eligible 1, all pending.
+    # Keywords skip the same two (its SKIP_KINDS covers 'table', its
+    # floor is MIN_CHUNK_CHARS=150) → eligible 1, all pending.
     assert (
         "readiness: embedded 1/3 · summarised 1/1 · keyworded 0/1"
         " — keywords pending for 1 chunks; "

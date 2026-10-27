@@ -21,7 +21,7 @@ per-CHUNK keybert keywords and stores them directly on ``chunks``:
 
 Algorithm (per chunk):
 
-1. Skip chunks below ``_MIN_CHUNK_CHARS`` (too short for stable
+1. Skip chunks below ``MIN_CHUNK_CHARS`` (too short for stable
    KeyBERT — they fold into neighbours at TOC time via the
    empty-keyword Jaccard defence).
 2. Skip chunks whose ``chunk_kind`` is on the non-content list
@@ -102,14 +102,14 @@ _LOCK_KEY = 0x63_68_6E_6B_5F_6B_77_00 - 2**63  # "chnk_kw\x00", mapped signed
 #: scoring. We leave ``keywords`` NULL — the chunk folds into its
 #: neighbour at TOC-clustering time (Jaccard defence: empty-keyword
 #: chunks contribute zero distance to either side).
-_MIN_CHUNK_CHARS = 150
+MIN_CHUNK_CHARS = 150
 
 #: Chunk kinds whose text is non-prose and would produce noise if
 #: fed to KeyBERT. Cards (front matter), tables (cell salad),
 #: equations (LaTeX), figures (terse captions), references (citation
 #: lists). The set is small and stable; promote to ``chunk_kinds``
 #: metadata if it ever grows.
-_SKIP_KINDS: frozenset[str] = frozenset(
+SKIP_KINDS: frozenset[str] = frozenset(
     {
         "card_authors",
         "card_combined",
@@ -128,6 +128,23 @@ _TOP_K = 8
 #: RAKE candidate pool size. Wider gives KeyBERT more to score and
 #: rank from, at the cost of one extra batched embed call per chunk.
 _RAKE_POOL = 40
+
+
+def is_keyword_eligible(chunk: Any) -> bool:
+    """The structural half of the claim predicate, in Python: a
+    non-:data:`SKIP_KINDS` kind, ``len(text) >= MIN_CHUNK_CHARS``, and
+    not ``meta.no_index`` — the same filters
+    :func:`claim_chunks_without_keywords` and
+    :func:`keyword_eligible_chunk_count` express in SQL, for callers
+    that already hold chunk objects (``toc_db``'s pending-labels
+    notice). ``getattr``-safe: a stub without ``text``/``chunk_kind``
+    fields is ineligible by the length floor."""
+    if getattr(chunk, "chunk_kind", "paragraph") in SKIP_KINDS:
+        return False
+    if len(getattr(chunk, "text", "") or "") < MIN_CHUNK_CHARS:
+        return False
+    meta = getattr(chunk, "meta", None) or {}
+    return str(meta.get("no_index", "")).lower() != "true"
 
 
 def claim_chunks_without_keywords(
@@ -149,7 +166,7 @@ def claim_chunks_without_keywords(
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
-    skip_list = list(_SKIP_KINDS)
+    skip_list = list(SKIP_KINDS)
     # Conv + draft blocks jump the queue. asa_bot's mid-range digest
     # tier renders ``chunks.keywords`` for each turn, and the draft
     # reader's view-slider (keywords / summary) needs them promptly on
@@ -195,7 +212,7 @@ def claim_chunks_without_keywords(
     """
     rows = conn.execute(
         sql,
-        ("bge-m3", skip_list, _MIN_CHUNK_CHARS, KEYWORDS_VERSION, limit),
+        ("bge-m3", skip_list, MIN_CHUNK_CHARS, KEYWORDS_VERSION, limit),
     ).fetchall()
     out: list[tuple[int, int, str, str | None]] = []
     for r in rows:
@@ -209,8 +226,8 @@ def keyword_eligible_chunk_count(conn: Connection, *, ref_id: int) -> int:
     :func:`unkeyworded_chunk_count` (``keyworded N/<eligible>``).
 
     The structural half of :func:`claim_chunks_without_keywords`'s
-    predicate: not a :data:`_SKIP_KINDS` kind, ``length(text) >=
-    _MIN_CHUNK_CHARS``, not ``meta.no_index``. The claim's other
+    predicate: not a :data:`SKIP_KINDS` kind, ``length(text) >=
+    MIN_CHUNK_CHARS``, not ``meta.no_index``. The claim's other
     clauses (a current embedding to score against, keywords missing or
     stale) are *processing* preconditions, not eligibility, so they are
     not part of this denominator — same split as
@@ -228,8 +245,8 @@ def keyword_eligible_chunk_count(conn: Connection, *, ref_id: int) -> int:
         """,
         {
             "ref_id": ref_id,
-            "skip_kinds": list(_SKIP_KINDS),
-            "min_chars": _MIN_CHUNK_CHARS,
+            "skip_kinds": list(SKIP_KINDS),
+            "min_chars": MIN_CHUNK_CHARS,
         },
     ).fetchone()
     return int(row[0]) if row else 0
@@ -257,8 +274,8 @@ def unkeyworded_chunk_count(conn: Connection, *, ref_id: int) -> int:
         """,
         {
             "ref_id": ref_id,
-            "skip_kinds": list(_SKIP_KINDS),
-            "min_chars": _MIN_CHUNK_CHARS,
+            "skip_kinds": list(SKIP_KINDS),
+            "min_chars": MIN_CHUNK_CHARS,
         },
     ).fetchone()
     return int(row[0]) if row else 0
@@ -303,7 +320,7 @@ def ensure_paper_abbrevs(conn: Connection, ref_id: int) -> dict[str, str]:
            AND c.chunk_kind <> ALL(%s)
          ORDER BY c.ord
         """,
-        (ref_id, list(_SKIP_KINDS)),
+        (ref_id, list(SKIP_KINDS)),
     ).fetchall()
     full_text = "\n\n".join(r[0] or "" for r in body_rows)
     detected = find_abbreviations(full_text) if full_text else {}
@@ -655,9 +672,14 @@ def _parse_pgvector_text(s: str) -> list[float]:
 
 __all__ = [
     "KEYWORDS_VERSION",
+    "MIN_CHUNK_CHARS",
+    "SKIP_KINDS",
     "claim_chunks_without_keywords",
     "ensure_paper_abbrevs",
     "extract_chunk_keywords",
+    "is_keyword_eligible",
+    "keyword_eligible_chunk_count",
     "run_chunk_keywords_pass",
+    "unkeyworded_chunk_count",
     "write_chunk_keywords",
 ]

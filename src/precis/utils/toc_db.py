@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.format import render_agent_table
 from precis.utils.segmentation import Segment, segment_dp
+from precis.utils.text import strip_emphasis
 
 if TYPE_CHECKING:
     from precis.store.protocols import ChunkListingStore
@@ -125,9 +126,6 @@ _KEYWORD_COVERAGE_MIN = 0.25
 
 #: A section title's display cap in the keywords column.
 _SECTION_TITLE_CAP = 80
-
-#: ``**bold**`` / ``*italics*`` wrappers on extracted section titles.
-_EMPHASIS_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
 
 #: Leading section number — ``2.``, ``4.3.4.`` — grouping subsections
 #: under their top-level number.
@@ -370,27 +368,20 @@ def _keyword_coverage(blocks: Sequence[Any]) -> float:
 def _pending_keyword_chunks(blocks: Sequence[Any]) -> int:
     """In-scope blocks ``chunk_keywords`` still owes labels — the N in
     the sections-mode notice. A block counts when its ``keywords`` are
-    unset and it clears the worker's own eligibility predicate (a
-    non-:data:`_SKIP_KINDS` kind, ``len(text) >= _MIN_CHUNK_CHARS``):
+    unset and it clears the worker's own eligibility predicate
+    (:func:`~precis.workers.chunk_keywords.is_keyword_eligible`):
     skip-kinds and stubs would *never* carry labels, so counting them
     would overstate the drain. ``getattr``-safe — a stub block without
     ``text``/``chunk_kind`` contributes 0.
 
-    The worker constants are lazy-imported: this module sits under
+    The worker is lazy-imported: this module sits under
     ``precis.utils`` and stays free of the worker import chain (the
     embedder client) at module load."""
-    from precis.workers import chunk_keywords as ck
+    from precis.workers.chunk_keywords import is_keyword_eligible
 
-    n = 0
-    for b in blocks:
-        if getattr(b, "keywords", None):
-            continue
-        if getattr(b, "chunk_kind", "paragraph") in ck._SKIP_KINDS:
-            continue
-        if len(getattr(b, "text", "") or "") < ck._MIN_CHUNK_CHARS:
-            continue
-        n += 1
-    return n
+    return sum(
+        1 for b in blocks if not getattr(b, "keywords", None) and is_keyword_eligible(b)
+    )
 
 
 # ── helpers: section_path outline (the keyword-backlog fallback) ──────
@@ -408,7 +399,7 @@ def _section_path(block: Any) -> list[str]:
 def _clean_section_title(raw: str) -> str:
     """A ``section_path`` element for grouping/display: ``**bold**`` /
     ``*italics*`` wrappers off, trimmed, capped at ``_SECTION_TITLE_CAP``."""
-    t = _EMPHASIS_RE.sub(r"\1", str(raw)).strip()
+    t = strip_emphasis(str(raw)).strip()
     return t[:_SECTION_TITLE_CAP].rstrip() if len(t) > _SECTION_TITLE_CAP else t
 
 

@@ -4,7 +4,7 @@ The chunk_keywords worker is F20's replacement for the persistent
 discovery layer. It runs *after* ``embed:bge-m3`` populates
 ``chunk_embeddings`` and produces ``chunks.keywords`` (canonical
 TEXT[]) + ``chunks.keywords_meta`` (versioned JSONB) for every body
-chunk above :data:`_MIN_CHUNK_CHARS` that isn't on the skip-kind list.
+chunk above :data:`MIN_CHUNK_CHARS` that isn't on the skip-kind list.
 
 Coverage shape:
 
@@ -90,7 +90,7 @@ def _seed_long_chunk(
     return chunk_id
 
 
-# Sentence long enough to clear ``_MIN_CHUNK_CHARS=150`` and dense
+# Sentence long enough to clear ``MIN_CHUNK_CHARS=150`` and dense
 # enough for RAKE to produce candidates.
 _BODY_TEXT_1 = (
     "Metal-organic frameworks (MOFs) are porous crystalline materials "

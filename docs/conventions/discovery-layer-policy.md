@@ -31,7 +31,7 @@ There are no precomputed segment rows and no per-sentence embeddings.
 **Render from the store, cluster at request time.** The paper TOC
 view (`view='toc'`) reads `chunks.keywords` directly and DP-clusters
 them per request via `precis.utils.toc_db.render_from_store`. Chunks
-below the worker's `_MIN_CHUNK_CHARS` carry empty keyword arrays and
+below the worker's `MIN_CHUNK_CHARS` carry empty keyword arrays and
 fold into neighbours through the empty-keyword Jaccard defence — no
 "segments not yet computed" placeholder.
 

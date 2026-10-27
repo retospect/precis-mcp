@@ -33,6 +33,7 @@ __all__ = [
     "markup_surface",
     "markup_unit",
     "slugify",
+    "strip_emphasis",
 ]
 
 _SLUG_RUN_RE = re.compile(r"[^a-z0-9]+")
@@ -326,3 +327,13 @@ def markup_unit(text: str) -> str:
     s = re.sub(r"[${}]", "", s)
     s = re.sub(r"\^([-+]?)\^", r"^\1", s)  # <sup>−</sup><sup>2</sup> -> ^-^2 -> ^-2
     return re.sub(r"\s+", " ", s.replace("μ", "µ")).strip()
+
+
+#: ``**bold**`` / ``*italics*`` emphasis wrappers.
+_EMPHASIS_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
+
+
+def strip_emphasis(text: str) -> str:
+    """Markdown ``**bold**`` / ``*italics*`` wrappers unwrapped to their
+    inner text — display cleanup for extracted titles and previews."""
+    return _EMPHASIS_RE.sub(r"\1", text)

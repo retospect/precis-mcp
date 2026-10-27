@@ -89,7 +89,7 @@ log = logging.getLogger(__name__)
 SUMMARIZER_NAME = "llm-v1"
 
 #: Chunk kinds whose text is non-prose — summarizing them yields noise.
-#: Mirrors ``chunk_keywords._SKIP_KINDS`` plus the card front-matter
+#: Mirrors ``chunk_keywords.SKIP_KINDS`` plus the card front-matter
 #: (cards are themselves derived headers, not body content).
 SKIP_KINDS: frozenset[str] = frozenset(
     {

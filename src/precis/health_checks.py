@@ -82,9 +82,9 @@ def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
     # (gr483036). Import here, not at module top — same dependency-light
     # discipline as ``registry_title_mismatch``'s ingest import below.
     from precis.workers.chunk_keywords import (
-        _MIN_CHUNK_CHARS,
-        _SKIP_KINDS,
         KEYWORDS_VERSION,
+        MIN_CHUNK_CHARS,
+        SKIP_KINDS,
     )
     from precis.workers.embed import EmbedHandler
     from precis.workers.summarize import RakeLemmaHandler
@@ -177,8 +177,8 @@ def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
               ) t
             """,
             {
-                "skip": list(_SKIP_KINDS),
-                "minlen": _MIN_CHUNK_CHARS,
+                "skip": list(SKIP_KINDS),
+                "minlen": MIN_CHUNK_CHARS,
                 "emb": _EMBED_ARTIFACT,
                 "kv": KEYWORDS_VERSION,
             },
