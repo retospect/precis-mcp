@@ -170,6 +170,7 @@ from precis.pcb.rules import NetRules, clearance_rule_problems
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.link_tag_ops import (
@@ -1405,13 +1406,25 @@ class PcbHandler(Handler):
                     applied=applied,
                 )
                 if trace_doc is not None:
-                    pcb_frames.bind_trace(
-                        self.store,
+                    pending = pcb_frames.pending_trace_chunk(
                         conn,
                         int(ref.id),
                         trace_doc,
                         run_job=run_job,
                     )
+                    if pending is not None:
+                        t_home, t_ord, t_text = pending
+                        self.store.chunks.insert_chunks(
+                            t_home,
+                            [
+                                ChunkInsert(
+                                    ord=t_ord,
+                                    text=t_text,
+                                    meta={"chunk_kind": "ws_trace"},
+                                )
+                            ],
+                            conn=conn,
+                        )
                 if profile is not None:
                     self.store.pcb_set_board_profile(ref.id, profile, conn=conn)
                 n_classes = 0

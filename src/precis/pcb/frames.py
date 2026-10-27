@@ -23,7 +23,6 @@ from __future__ import annotations
 from typing import Any
 
 from precis.errors import BadInput
-from precis.store.types import ChunkInsert
 from precis_geom import trace_schema
 
 #: The ws_trace read — ``precis_se.persist._read_ws_trace``'s own query.
@@ -118,40 +117,30 @@ def bind_trace_meta(
     return {**(meta or {}), "generated": gen}
 
 
-def bind_trace(
-    store: Any,
+def pending_trace_chunk(
     conn: Any,
     ref_id: int,
     doc: dict[str, Any],
     *,
     run_job: int | None,
-) -> None:
-    """The producer half of ``view='frames'`` (gr521596): store the run's
-    trace doc as a ``ws_trace`` chunk — on ``run_job`` when the run had a
-    job ref, else on the board itself (the containerless path — the same
-    home rule ``import_workspace_run`` uses). The board's
-    ``meta.generated.trace`` stamp rides the put's own ``meta`` merge
-    (:func:`bind_trace_meta`). Runs inside ``put``'s transaction. A
-    re-put whose trace serializes to the newest existing chunk's text
-    appends nothing — the same board must not grow chunks."""
+) -> tuple[int, int, str] | None:
+    """The producer half of ``view='frames'`` (gr521596): the run's trace
+    doc as a ``ws_trace`` chunk to store, as ``(home, ord, text)`` — on
+    ``run_job`` when the run had a job ref, else on the board itself (the
+    containerless path — the same home rule ``import_workspace_run``
+    uses). The caller inserts it (this module ships in the store-free
+    geom wheel); the board's ``meta.generated.trace`` stamp rides the
+    put's own ``meta`` merge (:func:`bind_trace_meta`). A re-put whose
+    trace serializes to the newest existing chunk's text returns ``None``
+    — the same board must not grow chunks."""
     home = int(run_job) if run_job is not None else int(ref_id)
     text = trace_schema.dumps(doc)
     latest = conn.execute(_NEWEST_TRACE_SQL, (home,)).fetchone()
     if latest is not None and latest[0] == text:
-        return
+        return None
     row = conn.execute(_ORD_SQL, (home,)).fetchone()
     assert row is not None
-    store.chunks.insert_chunks(
-        home,
-        [
-            ChunkInsert(
-                ord=int(row[0]),
-                text=text,
-                meta={"chunk_kind": "ws_trace"},
-            )
-        ],
-        conn=conn,
-    )
+    return home, int(row[0]), text
 
 
 def read_ws_trace(store: Any, home: int, root: Any) -> dict[str, Any] | None:
