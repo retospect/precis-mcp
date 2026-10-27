@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import html
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -114,10 +115,11 @@ log = logging.getLogger(__name__)
 #: every board table — so a hit is provably the render of that exact
 #: board state; the 4th element keeps the bare (no ``?shown=``) render
 #: apart from the selection-manifest one.
-_FAB_SVG_CACHE: collections.OrderedDict[tuple[int, str, bool, bool], str] = (
+_FAB_SVG_CACHE: collections.OrderedDict[tuple[int, str, bool, bool], bytes] = (
     collections.OrderedDict()
 )
 _FAB_SVG_CACHE_MAX = 8
+_FAB_SVG_CACHE_MAX_BYTES = 32 * 1024 * 1024
 
 
 def _handler(store: Store) -> PcbHandler:
@@ -539,7 +541,7 @@ async def pcb_note_save(request: Request, slug: str) -> JSONResponse:
     return JSONResponse({**result, "html": html})
 
 
-def _svg_response(svg: str) -> RawResponse:
+def _svg_response(svg: str | bytes) -> RawResponse:
     return RawResponse(
         content=svg,
         media_type="image/svg+xml",
@@ -567,31 +569,48 @@ async def pcb_board_svg(
                 bool(flip),
                 shown is not None,
             )
-            cached_body = _FAB_SVG_CACHE.get(cache_key)
-            if cached_body is not None:
+            hover = pcb_hover.hover_facts(store, view) if shown is not None else None
+            body = _FAB_SVG_CACHE.get(cache_key)
+            if body is not None:
                 _FAB_SVG_CACHE.move_to_end(cache_key)
-                return _svg_response(cached_body)
-            manifest = None
-            if shown is not None:
-                manifest = {
-                    **pcb_design.selection_manifest(view),
-                    "hover": pcb_hover.hover_facts(store, view),
-                }
-            if manifest is None:
-                resp = _handler(store).get(
-                    id=ref.slug, view="svg", args={"level": "fab", "flip": flip}
-                )
             else:
-                resp = _handler(store)._render_fab_svg(
-                    ref.id,
-                    str(ref.slug),
-                    selection_manifest=manifest,
-                    flip=flip,
-                )
-            _FAB_SVG_CACHE[cache_key] = resp.body
-            _FAB_SVG_CACHE.move_to_end(cache_key)
-            while len(_FAB_SVG_CACHE) > _FAB_SVG_CACHE_MAX:
-                _FAB_SVG_CACHE.popitem(last=False)
+                if hover is None:
+                    resp = _handler(store).get(
+                        id=ref.slug, view="svg", args={"level": "fab", "flip": flip}
+                    )
+                else:
+                    manifest = {
+                        **pcb_design.selection_manifest(view),
+                        "hover": {
+                            "unrouted": hover.get("unrouted", []),
+                            "failed": hover.get("failed", []),
+                        },
+                    }
+                    resp = _handler(store)._render_fab_svg(
+                        ref.id,
+                        str(ref.slug),
+                        selection_manifest=manifest,
+                        flip=flip,
+                    )
+                body = resp.body.encode("utf-8")
+                # Oversized boards must not displace useful cached renders.
+                if len(body) <= _FAB_SVG_CACHE_MAX_BYTES:
+                    _FAB_SVG_CACHE[cache_key] = body
+                    _FAB_SVG_CACHE.move_to_end(cache_key)
+                    while (
+                        len(_FAB_SVG_CACHE) > _FAB_SVG_CACHE_MAX
+                        or sum(map(len, _FAB_SVG_CACHE.values()))
+                        > _FAB_SVG_CACHE_MAX_BYTES
+                    ):
+                        _FAB_SVG_CACHE.popitem(last=False)
+            if hover is not None and hover.get("facts") is not None:
+                metadata = (
+                    '<metadata id="pcb-facts">'
+                    + html.escape(json.dumps(hover["facts"], sort_keys=True))
+                    + "</metadata>\n"
+                ).encode("utf-8")
+                # Catalogue facts are live; only snapshot-bound geometry is cached.
+                body = body.replace(b"</svg>", metadata + b"</svg>", 1)
     except ValueError as exc:
         return RawResponse(status_code=409, content=str(exc))
     except Exception:
@@ -599,7 +618,7 @@ async def pcb_board_svg(
         return RawResponse(
             status_code=422, content="board not renderable yet (place + route it first)"
         )
-    return _svg_response(resp.body)
+    return _svg_response(body)
 
 
 @router.get("/pcb/{slug}/export.epro2")

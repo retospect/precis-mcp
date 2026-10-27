@@ -75,8 +75,11 @@ logs; secret controls are write-only.
 
 PCB component selection (``pcb_design.py``) uses exact instance IDs in
 same-origin Gerber targets, with a shown snapshot shared by HTML, SVG, chat
-context and Apply. Apply commits move/history/consumption atomically; GET
-never calls a model or writes the board. Historical revisions are summaries.
+context and Apply. SVG geometry caches UTF-8 payloads under entry and byte
+bounds to cap retained memory; live hover facts are added per request so
+catalogue updates do not require another Gerber render. Apply commits
+move/history/consumption atomically; GET never calls a model or writes the
+board. Historical revisions are summaries.
 PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
 ``design-chat-`` slugs; typed reads, append and Apply verify numeric parent
 links and ownership.

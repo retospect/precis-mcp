@@ -22,6 +22,10 @@ Two things make it more than another RAG chatbot:
   iterates. Progress is bounded by the work, not by human attention
   spans.
 
+Related reading: Arnold Engel's “Labor Replacement Is AI's Small Prize”
+([The Leverage](https://gettheleverage.com/)) shares this focus on autonomous
+scientific discovery as AI's larger opportunity.
+
 ## Narrative (the elevator version)
 
 Because LLMs are prone to hallucination, Précis is built around a RAG

@@ -8,10 +8,11 @@ answers:
   - how do I cite a paper I only have a DOI for, that isn't ingested yet?
   - I read a number in a review — how do I trace it back to who actually measured it?
   - should I use an inline handle, a finding, a citation record, or bibtex?
-applies-to: get/put/search (kind='paper'|'finding'|'citation'|'todo')
+  - how do I add a cite to a draft chunk while keeping its prose?
+applies-to: get/put/search/link/edit (kind='paper'|'finding'|'citation'|'todo'|'draft')
 status: active
 tags: [drafting, orientation]
-kinds: [paper, citation, finding, todo]
+kinds: [paper, citation, finding, todo, draft]
 ---
 
 # precis-cite-paper-help — how do I cite a paper?
@@ -27,6 +28,33 @@ hub* to drop in — and, when none exists, about which passages to mint
 one on. The full four-step procedure (search hubs → ground + mint →
 adversarial search → cite) is [[precis-citation-help]]; this file
 routes you to the branch that matches what you have.
+
+## Add a cite, keep the prose
+## Add evidence to a cite already in the chunk without editing its prose
+
+**The chunk already cites a finding hub:** attach the supporting passage
+to that hub; the chunk's text, including `[fi<id>]`, stays unchanged:
+
+```python
+link(kind="finding", id="fi42", rel="corroborates", target="pc293")
+```
+
+This adds evidence to the shared hub, affecting every passage citing it;
+it does not force a separate bibliography entry for the new paper.
+Hub editing details: [[precis-taproot-hub-edit-help]].
+
+**The chunk has no matching hub cite:** find or mint a grounded hub
+(below), then insert its returned handle beside the supported claim:
+
+```python
+edit(kind="draft", id="dc41", mode="insert", find="claim ends here.",
+     text=" [fi42]", where="after")
+```
+
+Copy an exact, unique `find=` span from `get(kind='draft', id='dc41')`.
+Insertion preserves the words but changes the chunk text by adding a
+marker; there is no chunk-level citation door that leaves its text
+byte-for-byte unchanged when no matching hub is already cited.
 
 ## How do I cite a paper?
 ## I want to add a citation to my manuscript

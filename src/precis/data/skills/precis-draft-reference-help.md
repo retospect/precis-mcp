@@ -120,6 +120,7 @@ render the ORCID as a linked iD mark after the name.
 
 - [[precis-draft-help]] — author a living document: create, search, edit, review, audit.
 - [[precis-draft-cite-help]] — citations and cross-references in draft prose.
+- [[precis-cite-paper-help]] — add a finding cite while keeping chunk prose.
 - [[precis-draft-rich-content-help]] — figures, images, and data tables.
 - [[precis-draft-export-help]] — LaTeX/PDF/Word/reMarkable export.
 - [[precis-edit-help]] — the generic edit verb across kinds.
