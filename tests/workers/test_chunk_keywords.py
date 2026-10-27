@@ -523,7 +523,7 @@ class TestRunChunkKeywordsPass:
         result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
         assert result == {"claimed": 0, "ok": 0, "failed": 0}
 
-    def test_pooled_candidate_embeds(self, store: Store) -> None:
+    def test_pooled_candidate_embeds(self, store: Store, monkeypatch: Any) -> None:
         """gr520236: the batch pools all chunks' RAKE candidates into
         shared ``embed`` calls instead of one call per chunk."""
         ref_id = seed_ref(store)
@@ -537,13 +537,15 @@ class TestRunChunkKeywordsPass:
             calls.append(len(texts))
             return real_embed(texts)
 
-        emb.embed = counting  # type: ignore[method-assign]
+        monkeypatch.setattr(emb, "embed", counting)
         result = run_chunk_keywords_pass(store, emb, batch_size=10)
         assert result == {"claimed": 3, "ok": 3, "failed": 0}
         assert sum(calls) > 0
         assert len(calls) <= 1, f"expected one pooled call, got {calls}"
 
-    def test_pooled_failure_falls_back_per_chunk(self, store: Store) -> None:
+    def test_pooled_failure_falls_back_per_chunk(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
         """A non-retryable pooled-embed failure must not sink the batch:
         the pass drops to per-chunk calls so the fault stays scoped."""
         ref_id = seed_ref(store)
@@ -557,7 +559,7 @@ class TestRunChunkKeywordsPass:
                 raise RuntimeError("too many texts")
             return real_embed(texts)
 
-        emb.embed = picky  # type: ignore[method-assign]
+        monkeypatch.setattr(emb, "embed", picky)
         result = run_chunk_keywords_pass(store, emb, batch_size=10)
         assert result == {"claimed": 2, "ok": 2, "failed": 0}
 
