@@ -14,7 +14,7 @@
 # Runs scripts/kimi-setup first (precis MCP entry, hook adapter, skills).
 # --mode: yolo (default; Kimi's "Ask When Needed", the analogue of Claude's
 # auto mode), auto (Never Ask, builder waves), manual. --prompt runs one
-# prompt non-interactively (`kimi -p`). --tmux opens a window in SESSION
+# prompt non-interactively (`kimi -p`; --mode is ignored). --tmux opens a window in SESSION
 # (default: the current one) instead of taking over this terminal.
 # PRECIS_CO_AUTHOR is exported so scripts/ship's fallback footer names Kimi.
 #
@@ -63,8 +63,9 @@ auto) kimi_args=(--auto) ;;
 manual) kimi_args=() ;;
 *) echo "kimi-tree: --mode must be yolo|auto|manual" >&2; exit 2 ;;
 esac
+# `kimi -p` refuses a mode flag ("Cannot combine --prompt with --yolo").
+[[ -n $prompt ]] && kimi_args=(--prompt "$prompt")
 [[ -n $model ]] && kimi_args+=(--model "$model")
-[[ -n $prompt ]] && kimi_args+=(--prompt "$prompt")
 if ((use_tmux)) && [[ -z $tmux_session ]]; then
 	[[ -n ${TMUX:-} ]] || { echo "kimi-tree: not in tmux; name a session: --tmux SESSION" >&2; exit 2; }
 	tmux_session=$(tmux display-message -p '#S')
