@@ -82,13 +82,16 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   (script/pid/ppid/cwd) so the container records who created it, and
   `precis-status` shows the mounted host paths as `src_host`/`main_host`.
 - Before deleting a checkout on this host (a strays/second-copy cleanup),
-  check `main-checkout` and the mounted host paths first — `--status`,
-  `precis-status` (`src_host`/`main_host`) or `docker inspect` of the
-  backends. On 2026-10-25 a cleanup removed the marker's checkout while
-  containers still mounted it; the pre-guard script then fell back to a
-  nonexistent default and crash-looped a standby backend. The guard now
-  refuses instead, but the deleted path still leaves every run refusing
-  until the marker is corrected.
+  run `precis-mcp-http-ensure.sh --check-path <path>` — exit 0 means a
+  canonical-checkout marker or a container mount still references it (the
+  manual version: `main-checkout`, `--status`, `precis-status`
+  `src_host`/`main_host`, or `docker inspect` of the backends).
+  `scripts/fleet-cleanup` runs the same probe itself. On 2026-10-25 a
+  cleanup removed the marker's checkout while containers still mounted it;
+  the pre-guard script then fell back to a nonexistent default and
+  crash-looped a standby backend. The guard now refuses instead, but the
+  deleted path still leaves every run refusing until the marker is
+  corrected.
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the
   repo. The proxy mounts the **directory** `caddy/`, so the atomic `mv` that

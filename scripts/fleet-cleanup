@@ -147,6 +147,28 @@ def inflight_live(repo_path):
         return {}
 
 
+def path_in_use(repo_path, path):
+    """True when the mcp-http `--check-path` probe reports `path` referenced
+    by a canonical-checkout marker or a container mount (gr516960 ask 4 —
+    a cleanup deleted the marker's checkout while live backends mounted it).
+    A missing script or a probe error answers False: `git worktree remove`
+    and the merged/locked bucketing still guard the removal."""
+    script = os.path.join(repo_path, "deploy/mcp-http/precis-mcp-http-ensure.sh")
+    if not os.path.isfile(script):
+        return False
+    try:
+        r = subprocess.run(
+            ["bash", script, "--check-path", path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+    except Exception:
+        return False
+    return r.returncode == 0
+
+
 def commit_info(repo, ref):
     return git(repo, "log", "-1", "--format=%cs  %an", ref)[1]
 
@@ -194,10 +216,13 @@ def sweep_repo(name, path, apply, apply_remote, stats, trees):
             + (f"  lock={wt['locked']}" if isinstance(wt.get("locked"), str) else "")
         )
         if kind == "remove" and apply:
-            rc, out = git(path, "worktree", "remove", p)
-            print(f"      -> {'removed' if rc == 0 else 'FAILED: ' + out}")
-            if rc == 0:
-                removed_branches.add(br)
+            if name == "precis-mcp" and path_in_use(path, p):
+                print("      -> SKIP: still referenced by an mcp-http marker or mount")
+            else:
+                rc, out = git(path, "worktree", "remove", p)
+                print(f"      -> {'removed' if rc == 0 else 'FAILED: ' + out}")
+                if rc == 0:
+                    removed_branches.add(br)
     checked_out = {(w.get("branch") or "").replace("refs/heads/", "") for w in wts}
     print("-- local branches")
     for br in git(path, "for-each-ref", "--format=%(refname:short)", "refs/heads")[

@@ -239,6 +239,64 @@ def test_marker_naming_a_missing_path_refuses_then_recovers(
     assert _ensure(env, cwd=Path(want)).returncode == 2
 
 
+# --- --check-path: the strays-cleanup guard (gr516960 ask 4) ------------------
+#
+# The probe is read-only and runs before the lock — no docker needed beyond
+# a stub on PATH. Exit 0 "IN USE" when a marker or a container mount
+# references the path (or sits under it), 1 "free", 2 on a missing argument.
+
+
+def test_check_path_flags_the_recorded_checkout(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    canon = tmp_path / "canon"
+    (canon / ".git").mkdir(parents=True)
+    state = Path(env["PRECIS_MCP_HTTP_STATE"])
+    state.mkdir()
+    (state / "main-checkout").write_text(str(canon) + "\n", encoding="utf-8")
+    r = _ensure(env, "--check-path", str(canon))
+    assert r.returncode == 0
+    assert "IN USE" in r.stdout and "main-checkout" in r.stdout
+
+
+def test_check_path_flags_a_container_mount_under_the_path(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """Deleting a parent dir of a mounted path breaks it the same way —
+    the probe must match a mount source sitting UNDER the path."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    mounted = tmp_path / "root" / "checkout"
+    mounted.mkdir(parents=True)
+    (fakebin / "docker").write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = ps ]; then echo c1; '
+        'elif [ "$1" = inspect ] && [ "$2" = "-f" ] && [ "$3" = "{{.Name}}" ]; '
+        "then echo /c1; else printf '%s\\n' " + str(mounted) + "; fi\n",
+        encoding="utf-8",
+    )
+    (fakebin / "docker").chmod(0o755)
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
+    r = _ensure(env, "--check-path", str(tmp_path / "root"))
+    assert r.returncode == 0
+    assert "IN USE" in r.stdout and "mounts" in r.stdout
+
+
+def test_check_path_free_when_nothing_references_it(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    free = tmp_path / "elsewhere"
+    free.mkdir()
+    r = _ensure(env, "--check-path", str(free))
+    assert r.returncode == 1
+    assert "free" in r.stdout
+
+
+def test_check_path_requires_an_argument(env: dict[str, str]) -> None:
+    r = _ensure(env, "--check-path")
+    assert r.returncode == 2
+
+
 # --- the cli python-kind root (gr520147) --------------------------------------
 #
 # The image check exits (2) before the PY_ROOTS assembly runs, so these

@@ -24,6 +24,7 @@
 #   precis-mcp-http-ensure.sh --status          # report without changing anything
 #   precis-mcp-http-ensure.sh --migrate         # one-time cutover from the single-container layout
 #   precis-mcp-http-ensure.sh --recreate-proxy  # replace the proxy container (a port gap: name a window)
+#   precis-mcp-http-ensure.sh --check-path PATH # is PATH referenced by a marker or container mount? (cleanup guard)
 #
 # WORKTREE MODE (dev-loop-scratch D1; driven by scripts/wt-mcp, never by hand):
 # PRECIS_MCP_HTTP_NAME=precis-wt-<tree> PRECIS_MCP_HTTP_PORT=880N
@@ -146,8 +147,9 @@ case "${1:-}" in
     --status)         MODE=status ;;
     --migrate)        MODE=migrate ;;
     --recreate-proxy) MODE=recreate_proxy ;;
+    --check-path)     MODE=check_path ;;
     "")               ;;
-    *)  echo "usage: $(basename "$0") [--config|--recreate|--restart|--status|--migrate|--recreate-proxy]" >&2
+    *)  echo "usage: $(basename "$0") [--config|--recreate|--restart|--status|--migrate|--recreate-proxy|--check-path PATH]" >&2
         exit 2 ;;
 esac
 
@@ -156,7 +158,8 @@ esac
 # removed the live container and recreated it on that port, and every session
 # gave up on the MCP. Overrides are for rigs, which use another NAME by
 # construction; PRECIS_MCP_LIVE=1 is the deliberate exception.
-if [ "$NAME" = precis-mcp-http ] && [ "${PRECIS_MCP_LIVE:-0}" != 1 ] && [ "$MODE" != status ]; then
+if [ "$NAME" = precis-mcp-http ] && [ "${PRECIS_MCP_LIVE:-0}" != 1 ] \
+    && [ "$MODE" != status ] && [ "$MODE" != check_path ]; then
     for var in PRECIS_MCP_HTTP_PORT PRECIS_MCP_HTTP_STATE PRECIS_MCP_IMAGE PRECIS_MCP_SRC \
                PRECIS_MCP_RUN_CMD PRECIS_MCP_ENTRYPOINT PRECIS_MCP_CADDY_IMAGE \
                PRECIS_MCP_CADDY_EXTRA PRECIS_MCP_DB_IP PRECIS_MCP_WORKTREE; do
@@ -365,6 +368,83 @@ status_report() {
 if [ "$MODE" = status ]; then
     status_report
     exit 0
+fi
+
+# --- checkout-in-use probe (gr516960) --------------------------------------
+# Before ANY cleanup deletes a checkout on this host — a strays/second-copy
+# sweep, an ad-hoc `rm -rf` of an old clone — it must check the recorded
+# canonical-checkout markers and every container's mounts. On 2026-10-25 a
+# strays cleanup deleted the marker's checkout while the live backends still
+# mounted it as /src and /main; docker recreated the path empty and
+# crash-looped a backend. Read-only: no lock, no guard, no writes.
+#
+#   --check-path PATH → exit 0 "IN USE" (each reference printed), 1 "free",
+#   2 usage. A missing docker binary prints a warning and decides on the
+#   markers alone (never silently green).
+check_path_in_use() {
+    local target="$1" resolved marker canon cid cname src reasons=0
+    resolved="$(cd "$target" 2>/dev/null && pwd -P || printf '%s' "$target")"
+
+    # 1. Canonical-checkout markers: this server's own state dir plus any
+    #    sibling precis-mcp state dirs (per-worktree servers record theirs
+    #    under ~/.cache/precis-mcp-wt/<tree>). The marker kills <path> when
+    #    it IS <path> or sits underneath it.
+    local -a markers=()
+    for marker in "${STATE_DIR}/main-checkout" \
+                  "${HOME}/.cache/precis-mcp-http/main-checkout" \
+                  "${HOME}/.cache/precis-mcp-"*/main-checkout \
+                  "${HOME}/.cache/precis-mcp-wt"/*/main-checkout; do
+        [ -f "$marker" ] || continue
+        markers+=("$marker")
+    done
+    for marker in $(printf '%s\n' "${markers[@]+"${markers[@]}"}" | sort -u); do
+        canon="$(tr -d '[:space:]' < "$marker")"
+        [ -n "$canon" ] || continue
+        case "$canon" in
+            "$resolved"|"$resolved"/*)
+                printf 'in use: %s is the canonical main checkout recorded in %s\n' \
+                    "$canon" "$marker"
+                reasons=$((reasons + 1)) ;;
+        esac
+    done
+
+    # 2. Container mounts: deleting a mounted host path breaks the same way
+    #    the 2026-10-25 backends did — flag a mount source equal to, or
+    #    underneath, <path> on ANY container, not only this family's.
+    if command -v docker >/dev/null 2>&1; then
+        while IFS= read -r cid; do
+            [ -n "$cid" ] || continue
+            cname="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null)"
+            while IFS= read -r src; do
+                [ -n "$src" ] || continue
+                case "$src" in
+                    "$resolved"|"$resolved"/*)
+                        printf 'in use: container %s mounts %s\n' "$cname" "$src"
+                        reasons=$((reasons + 1)) ;;
+                esac
+            done < <(docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' \
+                        "$cid" 2>/dev/null)
+        done < <(docker ps -aq 2>/dev/null)
+    else
+        printf 'precis-mcp: warning: docker not on PATH — container mounts unchecked\n' >&2
+    fi
+
+    if [ "$reasons" -gt 0 ]; then
+        printf '%s: IN USE (%d reference(s))\n' "$resolved" "$reasons"
+        return 0
+    fi
+    printf '%s: free — no marker or mount references it\n' "$resolved"
+    return 1
+}
+
+if [ "$MODE" = check_path ]; then
+    CHECK_PATH="${2:-}"
+    if [ -z "$CHECK_PATH" ]; then
+        echo "precis-mcp: --check-path needs a path argument" >&2
+        exit 2
+    fi
+    check_path_in_use "$CHECK_PATH"
+    exit $?
 fi
 
 # --- serialise concurrent SessionStart hooks -------------------------------

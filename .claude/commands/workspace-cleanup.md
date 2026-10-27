@@ -30,7 +30,14 @@ Live state at invocation:
    `has_unmerged_work` one, skip the agent — there's nothing for it to do —
    and go straight to step 3 with the live JSON.
 
-3. **Judge the ambiguous ones yourself.** For each `needs_judgment` worktree
+3. **Probe before deleting anything.** Before any worktree/checkout removal
+   executes (the housekeeper's confirmed `safe_remove` set included), run
+   `deploy/mcp-http/precis-mcp-http-ensure.sh --check-path <path>` on it —
+   exit 0 means a canonical-checkout marker or a container mount still
+   references the path, so leave it alone (gr516960: a strays cleanup once
+   deleted the recorded checkout out from under the live backends).
+
+4. **Judge the ambiguous ones yourself.** For each `needs_judgment` worktree
    (from the housekeeper's report, or directly from the JSON if you skipped
    step 2), look at its `diffstat`. If it's not obviously enough to decide,
    read the real diff (`git -C <path> diff`) and form a view: disposable
