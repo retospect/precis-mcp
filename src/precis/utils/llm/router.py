@@ -517,9 +517,12 @@ def rung_knobs(rung: Rung) -> dict[str, Any]:
     Returns ``{"temperature": bool, "temp_max": float | None, "thinking":
     bool, "effort": bool}``. Per transport:
 
-    * ``CLAUDE_AGENT`` / ``CLAUDE_P`` — none: the claude transports have no
-      such knobs (Anthropic's extended-thinking budget is a separate,
-      unrelated knob these fields don't touch).
+    * ``CLAUDE_AGENT`` — none: the agentic lane has no such knobs.
+    * ``CLAUDE_P`` — ``thinking`` on/off only, *caller-pinned* values:
+      an explicit ``False`` reaches the child as ``MAX_THINKING_TOKENS=0``
+      (gr506762 — the lane was billing hidden thinking tokens on
+      ``thinking=False`` calls); a tier-default fill stays off the wire
+      (:attr:`LlmRequest.thinking_explicit`). ``effort`` has no wire.
     * ``LOCAL`` — ``temperature`` (max ``2.0``); ``thinking`` not forwarded
       (no confirmed llama.cpp/llama-swap key, see :func:`_dispatch_local`);
       no UI ``effort`` knob (a chain rung may still carry
@@ -532,11 +535,18 @@ def rung_knobs(rung: Rung) -> dict[str, Any]:
       no-thinking directive only to a hosted call, same caveat as ``LOCAL``
       for a direct llama-swap endpoint); no ``effort`` (unsupported param).
     """
-    if rung.transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+    if rung.transport is Transport.CLAUDE_AGENT:
         return {
             "temperature": False,
             "temp_max": None,
             "thinking": False,
+            "effort": False,
+        }
+    if rung.transport is Transport.CLAUDE_P:
+        return {
+            "temperature": False,
+            "temp_max": None,
+            "thinking": True,
             "effort": False,
         }
     if rung.transport is Transport.LOCAL:
@@ -1261,9 +1271,25 @@ class LlmRequest:
     #: a local thinking-only model — thinking left on there yields an empty
     #: completion); every other tier gets thinking **on** + temperature
     #: **None** (provider default, field omitted from the wire). An explicit
-    #: value here always wins. No-op on the claude transports (no such knobs
-    #: — Anthropic's extended-thinking budget is unrelated).
+    #: value here always wins. On ``claude_p`` a *caller-pinned* ``False``
+    #: reaches the child as ``MAX_THINKING_TOKENS=0`` (extended thinking
+    #: off — the knob exists, the lane billed hidden thinking tokens
+    #: without it, gr506762); a tier-default fill stays off the wire —
+    #: thinking-off is a per-job opt-in (``measure_accept``,
+    #: ``survey_extract:table_recipe``), not a tier property: the
+    #: ``SMALL`` default exists for the *local* thinking-only models, and
+    #: forwarding it to ``claude -p`` darkened every claude_p rung that
+    #: tier landed on (``thinking_explicit`` below). ``claude_agent`` has
+    #: no such knob and ignores the field.
     thinking: bool | None = None
+    #: Provenance stamp for :attr:`thinking`, written once by
+    #: :func:`route` at gen-param resolution: ``None`` = not yet routed
+    #: (``thinking`` is still the raw caller value), ``True`` = the caller
+    #: pinned it, ``False`` = ``route`` filled the tier default.
+    #: :class:`ClaudePProvider` forwards ``thinking`` only when this is
+    #: not ``False`` — an unrouted request's ``thinking`` is caller-set
+    #: by definition, so it still counts as explicit.
+    thinking_explicit: bool | None = None
     temperature: float | None = None
     #: A booked OpenRouter variant (``meta.endpoints``: provider/quant/window)
     #: + reasoning effort, pinned onto the ``openai_compat`` wire so the call
@@ -1498,6 +1524,13 @@ class ClaudePProvider:
                 extra_args=req.extra_args,
                 bare=self._bare,
                 images=req.images,
+                # Forward thinking only when the caller pinned it — a
+                # tier-default fill (thinking_explicit=False) stays off
+                # the wire or every SMALL-tier request landing here would
+                # lose thinking to MAX_THINKING_TOKENS=0, a knob that
+                # exists for the *local* thinking-only rung. An unrouted
+                # request (explicit=None) is caller-set by definition.
+                thinking=(req.thinking if req.thinking_explicit is not False else None),
             )
         except ClaudeProcessError as exc:
             return _error_result(exc, model=model, tier=req.tier)
@@ -2825,10 +2858,19 @@ def route(req: LlmRequest) -> LlmResult:
     # default (_tier_gen_defaults) unless the caller already pinned one.
     # Reassigning `req` here (vs. threading two extra locals) means every
     # downstream copy already carries the resolved values.
+    # `thinking_explicit` records, once, whether `thinking` was
+    # caller-pinned — after the fill a `False` is indistinguishable from
+    # SMALL's default, and ClaudePProvider gates the wire on the stamp
+    # (thinking-off is a per-job opt-in, not a tier property).
     _default_thinking, _default_temperature = _tier_gen_defaults(req.tier)
     req = _replace(
         req,
         thinking=req.thinking if req.thinking is not None else _default_thinking,
+        thinking_explicit=(
+            req.thinking_explicit
+            if req.thinking_explicit is not None
+            else req.thinking is not None
+        ),
         temperature=(
             req.temperature if req.temperature is not None else _default_temperature
         ),
@@ -3743,6 +3785,7 @@ def _serialize_request(req: LlmRequest) -> str:
             "max_usd": req.max_usd,
             "max_tokens": req.max_tokens,
             "thinking": req.thinking,
+            "thinking_explicit": req.thinking_explicit,
             "temperature": req.temperature,
             "output_format": req.output_format,
             "disallowed_tools": list(req.disallowed_tools),

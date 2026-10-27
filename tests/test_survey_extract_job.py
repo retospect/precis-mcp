@@ -1293,6 +1293,189 @@ class TestRunLevelAcceptance:
         acc = next(v for k, v in events if k == "meta")["acceptance"]
         assert "papers" not in acc and "max_id" not in acc
 
+    def test_table_row_review_shows_row_text_and_transform(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr506762 slice-4 acceptance failure: reviewed on the bare-cell
+        span ('13.1') a table row is unverifiable — ~55 of 60 sampled rows
+        came back 'undecidable' that way. The reviewer now sees the whole
+        table ROW's text (``meta.table.row_span``), and a transform row
+        names its log scale and stored value (mx1410/mx1424 were rejected
+        'wrong' on rows the log10 transform had already applied)."""
+        store = world["store"]
+        prefactor = make_taxon(
+            store,
+            "first-order-desorption-prefactor",
+            unit="s^-1",
+            parent=world["root"],
+        )
+        text = (
+            "| Species | $\\log(\\nu/\\mathrm{s}^{-1})$ |\n"
+            "|---|---|\n"
+            "| methane | 13.1 |"
+        )
+        chunk = _seed_body_chunk(
+            store, world["paper"], ord_=9, text=text, chunk_kind="table"
+        )
+        lit = "13.1"
+        row_line = "| methane | 13.1 |"
+        row_start = text.index(row_line)
+        cell_start = text.index(lit)
+        store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=prefactor,
+                literal=lit,
+                subject_ref_id=world["paper"],
+                reported_unit="s^-1",
+                value_num=1.2589254117941673e13,
+                subject="methane",
+                tier="computed",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"],
+                    chunk,
+                    "offsets",
+                    [chunk, cell_start, cell_start + len(lit)],
+                ),
+                meta={
+                    "extraction_run": "tables-review-ctx",
+                    "transform": "log10",
+                    "printed_value": 13.1,
+                    "table": {
+                        "chunk": chunk,
+                        "table": 1,
+                        "row": 1,
+                        "col": 2,
+                        "header": "$\\log(\\nu/\\mathrm{s}^{-1})$",
+                        "row_span": [row_start, row_start + len(row_line)],
+                        "caption_chunk": None,
+                        "footnote": None,
+                        "orientation": "columns",
+                    },
+                },
+            ),
+            actor="test",
+        )
+        reqs: list[Any] = []
+
+        def _route(req: Any) -> Any:
+            reqs.append(req)
+            return llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"}),
+                "frontier-x",
+            )
+
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {
+                    "extraction_run": "tables-review-ctx",
+                    "reviews_per_slice": 50,
+                },
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert done.success
+        assert len(reqs) == 1
+        # Thinking-off is the job's explicit opt-in — route() stamps it as
+        # caller-pinned (thinking_explicit) so a claude_p rung still gets
+        # MAX_THINKING_TOKENS=0 while unpinned tier defaults stay masked.
+        assert reqs[0].thinking is False
+        prompt = reqs[0].prompt
+        # The row's text, not the bare cell — the subject label and the
+        # sibling cells are the reviewable evidence.
+        assert row_line in prompt
+        assert "series label: $\\log(\\nu/\\mathrm{s}^{-1})$" in prompt
+        assert "table cell: T1 row 1 col 2" in prompt
+        # A log-scale cell without the note reads as a misreported unit.
+        assert "transform: the cell prints log10(value)" in prompt
+        assert "the stored value is 1.25893e+13 s^-1" in prompt
+
+    def test_table_row_review_caps_a_wide_row_at_2000_chars(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wide grid's ``row_span`` slice can run to tens of KB — the
+        review prompt can't carry it whole, so the span text is capped to
+        a 2000-char window centered on the reviewed cell's offsets."""
+        store = world["store"]
+        measurand = make_taxon(
+            store, "wide-row-measurand", unit="eV", parent=world["root"]
+        )
+        pad = "q" * 5000
+        lit = "13.1"
+        row_line = f"| {pad} | {pad} | {lit} |"
+        text = f"| Species | x | v |\n|---|---|---|\n{row_line}"
+        assert len(row_line) > 10_000
+        chunk = _seed_body_chunk(
+            store, world["paper"], ord_=9, text=text, chunk_kind="table"
+        )
+        row_start = text.index(row_line)
+        cell_start = text.index(lit)
+        store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=measurand,
+                literal=lit,
+                subject_ref_id=world["paper"],
+                reported_unit="eV",
+                subject="methane",
+                tier="computed",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"],
+                    chunk,
+                    "offsets",
+                    [chunk, cell_start, cell_start + len(lit)],
+                ),
+                meta={
+                    "extraction_run": "wide-row-cap",
+                    "table": {
+                        "chunk": chunk,
+                        "table": 1,
+                        "row": 1,
+                        "col": 3,
+                        "header": "v",
+                        "row_span": [row_start, row_start + len(row_line)],
+                        "caption_chunk": None,
+                        "footnote": None,
+                        "orientation": "columns",
+                    },
+                },
+            ),
+            actor="test",
+        )
+        reqs: list[Any] = []
+
+        def _route(req: Any) -> Any:
+            reqs.append(req)
+            return llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"}),
+                "frontier-x",
+            )
+
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {
+                    "extraction_run": "wide-row-cap",
+                    "reviews_per_slice": 50,
+                },
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert done.success
+        assert len(reqs) == 1
+        span = reqs[0].prompt.split("span:\n", 1)[1]
+        assert len(span) == 2000
+        # The window keeps the reviewed cell; the row's 5 KB head is dropped.
+        assert lit in span
+        assert pad not in span
+
 
 class TestCastorTrialPrep:
     """The fable-castor-trial-review job-side fixes: a ``measurands``

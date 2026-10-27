@@ -932,7 +932,12 @@ def expand_recipe(
                 )
                 continue
             flags: list[str] = []
-            if claimed_unit is not None:
+            if claimed_unit is not None and claimed_unit != "1":
+                # '1' is the dimensionless claim (reaching here only on a
+                # canonical-'1' measurand — anything else dropped at
+                # unit_dimension_mismatch): there is no printed unit token
+                # to support, so the flag is always spurious (gr506762
+                # slice-4: correct sticking coefficients flagged).
                 support = " ".join(t for t in (label, unit_cell or "", cap_text) if t)
                 if not _verify.unit_has_text_support(claimed_unit, support):
                     flags.append("unit_without_text_support")

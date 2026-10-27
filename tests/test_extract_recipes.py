@@ -230,6 +230,17 @@ class TestSample1Columns:
         sticking = [r for r in runs if r.output.measurand_ref_id == 13]
         assert sticking and all(r.output.reported_unit == "1" for r in sticking)
 
+    def test_dimensionless_claim_never_flags_unit_support(self) -> None:
+        """gr506762 slice-4: ``claimed_unit == '1'`` is the dimensionless
+        claim — no printed unit token exists to support it, so
+        ``unit_without_text_support`` was always spurious (correct
+        sticking-coefficient rows carried it: mx1675, mx1708)."""
+        runs, _ = _expand(SAMPLE1, _recipe1())
+        sticking = [r for r in runs if r.output.measurand_ref_id == 13]
+        assert sticking
+        for run in sticking:
+            assert "unit_without_text_support" not in run.flags
+
 
 class TestSample2Rows:
     def _recipe2(self) -> dict[str, Any]:

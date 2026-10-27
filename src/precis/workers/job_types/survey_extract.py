@@ -1442,7 +1442,8 @@ def _batch_rows(
             "SELECT m.id, m.measurand_ref_id, m.literal, m.reported_unit, "
             "       m.subject, m.span, m.anchor_scheme, m.run_key, "
             "       m.conditions, l.src_chunk_id, t.meta->>'slug', "
-            "       m.subject_ref_id, m.meta->'table' "
+            "       m.subject_ref_id, m.meta->'table', m.value_num, "
+            "       m.meta->>'transform' "
             "  FROM measures m "
             "  LEFT JOIN links l ON l.link_id = m.primary_link_id "
             "  LEFT JOIN refs t ON t.ref_id = m.measurand_ref_id "
@@ -1468,6 +1469,8 @@ def _batch_rows(
             "measurand": r[10] or str(r[1]),
             "subject_ref_id": int(r[11]),
             "table_meta": r[12] if isinstance(r[12], dict) else None,
+            "value_num": r[13],
+            "transform": r[14],
         }
         for r in rows
     ]
@@ -1493,9 +1496,23 @@ def _chunk_text(store: Store, chunk_id: Any) -> str | None:
     return str(r[0]) if r and r[0] else None
 
 
-def _span_text(store: Store, row: dict[str, Any]) -> str | None:
-    """The row's anchored text: the span's slice for an offsets anchor,
-    the whole chunk otherwise (mirrors the store's own _span_text)."""
+#: The review prompt's evidence cap for a table-row span: a wide grid's
+#: ``row_span`` slice can run to tens of KB and flood the judge, so a
+#: longer row is trimmed to a window centered on the reviewed cell's
+#: offsets — the sibling cells nearest it stay in view.
+_SPAN_TEXT_CAP = 2000
+
+
+def _span_text(
+    store: Store, row: dict[str, Any], table_ctx: dict[str, Any] | None = None
+) -> str | None:
+    """The row's evidence text: for a cell-anchored table row the whole
+    table ROW's slice (``meta.table.row_span``) — a bare ``'0.37'`` cell
+    alone is unverifiable; the row prints the subject label and sibling
+    cells (gr506762 slice-4: ~55 of 60 sampled rows read 'undecidable'
+    on a bare-number span). Otherwise the span's slice for an offsets
+    anchor, the whole chunk otherwise (mirrors the store's own
+    _span_text)."""
     with store.pool.connection() as conn:
         r = conn.execute(
             "SELECT text FROM chunks WHERE chunk_id = %s", (row["chunk_id"],)
@@ -1503,6 +1520,25 @@ def _span_text(store: Store, row: dict[str, Any]) -> str | None:
     if r is None:
         return None
     text = str(r[0] or "")
+    row_span = (table_ctx or {}).get("row_span")
+    if (
+        isinstance(row_span, list)
+        and len(row_span) == 2
+        and all(isinstance(x, int) and not isinstance(x, bool) for x in row_span)
+    ):
+        start, end = row_span
+        if end - start > _SPAN_TEXT_CAP:
+            span = row.get("span")
+            mid = (
+                (span[1] + span[2]) // 2
+                if isinstance(span, list)
+                and len(span) == 3
+                and all(isinstance(x, int) for x in span)
+                else (start + end) // 2
+            )
+            start = max(start, min(mid - _SPAN_TEXT_CAP // 2, end - _SPAN_TEXT_CAP))
+            end = start + _SPAN_TEXT_CAP
+        return text[start:end]
     span = row.get("span")
     if (
         isinstance(span, list)
@@ -1658,13 +1694,6 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                 ),
             }
             continue
-        span = _span_text(ctx.store, measure)
-        if span is None:
-            verdicts[str(mid)] = {
-                "verdict": "undecidable",
-                "reason": "anchor chunk missing",
-            }
-            continue
         table_ctx = measure.get("table_meta")
         if isinstance(table_ctx, dict):
             # The reviewer's table context: the series label, the cell's
@@ -1677,6 +1706,13 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                 table_ctx["caption"] = cap_text
         else:
             table_ctx = None
+        span = _span_text(ctx.store, measure, table_ctx)
+        if span is None:
+            verdicts[str(mid)] = {
+                "verdict": "undecidable",
+                "reason": "anchor chunk missing",
+            }
+            continue
         result = route(
             LlmRequest(
                 tier=tier,
@@ -1692,6 +1728,8 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                         measure.get("conditions"),
                     ),
                     table=table_ctx,
+                    transform=measure.get("transform"),
+                    stored_value=measure.get("value_num"),
                 ),
                 source="measure_accept",
                 ref_id=measure["subject_ref_id"],

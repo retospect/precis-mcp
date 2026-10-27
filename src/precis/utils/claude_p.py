@@ -210,6 +210,7 @@ def call_claude_p(
     extra_args: tuple[str, ...] = (),
     bare: bool = False,
     images: tuple[Any, ...] = (),
+    thinking: bool | None = None,
 ) -> ClaudePResult:
     """Run ``claude -p <prompt>`` and parse the last JSON block from stdout.
 
@@ -242,6 +243,13 @@ def call_claude_p(
             bytes pipe on stdin (``cat img.png | claude -p "…"`` attaches
             piped image data as an image block); extras warn + drop.
             Vision support for card_describe's figure slice (gr497688 S3).
+        thinking: ``False`` disables extended thinking in the child via
+            ``MAX_THINKING_TOKENS=0`` — without it ``claude -p`` spends
+            hidden thinking tokens anyway: gr506762's table_recipe calls
+            billed 600-13,900 output tokens for sub-500-token replies
+            (~$0.030/call where thinking-off is ~$0.008). ``True``/``None``
+            leave the ambient env alone — an operator-set
+            ``MAX_THINKING_TOKENS`` budget still applies.
 
     Returns:
         :class:`ClaudePResult` with the parsed dict.
@@ -314,6 +322,11 @@ def call_claude_p(
     # (2026-07-12 incident) — see utils/claude_oauth. Override-safe: a token
     # already in the env (plist var / interactive shell / test) wins.
     proc_env = dict(os.environ)
+    if thinking is False:
+        # The documented off switch (Claude Code env vars): 0 omits the
+        # thinking parameter on the Anthropic API. An ambient cap the
+        # operator set is overridden — the caller asked for no thinking.
+        proc_env["MAX_THINKING_TOKENS"] = "0"
     if bare:
         # Deliberate opt-in to the billed path: do NOT call
         # prefer_oauth_over_api_key (it would scrub the key), and do not

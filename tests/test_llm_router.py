@@ -812,11 +812,13 @@ def test_dispatch_local_explicit_temperature_overrides_tier_default(
     assert seen["temperature"] == 0.0
 
 
-def test_dispatch_claude_transport_ignores_gen_params(
+def test_dispatch_claude_p_forwards_explicit_thinking_not_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """thinking/temperature are no-ops on the claude transports — never
-    raise, never reach the ``claude -p`` call."""
+    """``temperature`` is a no-op on the claude transports — never raised,
+    never reaching the ``claude -p`` call. A *caller-pinned* ``thinking``
+    IS forwarded on claude_p (off ⇒ ``MAX_THINKING_TOKENS=0`` in the child
+    env, gr506762); ``claude_agent`` still has no such knob."""
     calls: dict[str, object] = {}
 
     def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
@@ -832,8 +834,51 @@ def test_dispatch_claude_transport_ignores_gen_params(
     assert out.error is None
     kwargs = calls["kwargs"]
     assert isinstance(kwargs, dict)
-    assert "thinking" not in kwargs
+    assert kwargs["thinking"] is False
     assert "temperature" not in kwargs
+
+
+def test_dispatch_claude_p_tier_default_thinking_stays_off_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thinking-off is a per-job opt-in, not a tier property: a request
+    that leaves ``thinking`` unset inherits the tier default — SMALL's
+    ``False`` exists for the *local* thinking-only rung — and forwarding
+    that fill to ``claude -p`` (``MAX_THINKING_TOKENS=0``) darkened
+    thinking on every claude_p rung the tier landed on. Only a
+    caller-pinned value (:attr:`LlmRequest.thinking_explicit`) forwards."""
+    calls: list[dict[str, object]] = []
+
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        calls.append(kwargs)
+        return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    # select_transport never sends SMALL to claude_p, so force the rung the
+    # way prod does — a chain override (an llm.op.<source> / llm.chain.<tier>
+    # row lands here identically).
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **k: [router.Rung(Transport.CLAUDE_P, model="claude-haiku-4-5")],
+    )
+
+    # SMALL's (False, 0.0) tier default fills `thinking` but never forwards.
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+    assert out.error is None
+    assert calls[-1]["thinking"] is None
+
+    # A non-SMALL tier's defaulted True is masked the same way.
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x"))
+    assert out.error is None
+    assert calls[-1]["thinking"] is None
+
+    # The opt-in (measure_accept / table_recipe pin): caller-pinned False
+    # still reaches the wire even on a SMALL-tier request.
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", thinking=False))
+    assert out.error is None
+    assert calls[-1]["thinking"] is False
 
 
 def test_dispatch_local_routes_to_served_endpoint(
@@ -4940,14 +4985,22 @@ def test_routed_placement_slot_rules(monkeypatch: pytest.MonkeyPatch) -> None:
     assert router._routed_placement(Rung(Transport.LOCAL), None) == "local"
 
 
-def test_rung_knobs_claude_transports_have_no_knobs() -> None:
-    for transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
-        assert router.rung_knobs(Rung(transport)) == {
-            "temperature": False,
-            "temp_max": None,
-            "thinking": False,
-            "effort": False,
-        }
+def test_rung_knobs_claude_p_forwards_thinking_agent_none() -> None:
+    """claude_agent ignores every gen knob; claude_p forwards ``thinking``
+    on/off only — and only a caller-pinned value (``False`` ⇒
+    ``MAX_THINKING_TOKENS=0``, gr506762)."""
+    assert router.rung_knobs(Rung(Transport.CLAUDE_AGENT)) == {
+        "temperature": False,
+        "temp_max": None,
+        "thinking": False,
+        "effort": False,
+    }
+    assert router.rung_knobs(Rung(Transport.CLAUDE_P)) == {
+        "temperature": False,
+        "temp_max": None,
+        "thinking": True,
+        "effort": False,
+    }
 
 
 def test_rung_knobs_local_supports_temperature_only() -> None:

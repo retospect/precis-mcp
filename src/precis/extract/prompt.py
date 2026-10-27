@@ -277,13 +277,21 @@ def review_prompt(
     span_text: str,
     conditions: list[str] | None = None,
     table: dict[str, Any] | None = None,
+    transform: str | None = None,
+    stored_value: Any = None,
 ) -> str:
     """The per-row sampler prompt: is this row what the span says?
 
     ``table`` carries the row's ``meta.table`` context (recipe-extracted
     rows only) — its ``T<n>`` number, 1-based row/col, the series label
     as ``header``, the ``orientation`` and a resolved ``caption`` text —
-    without it the reviewer sees one cell with no column name."""
+    without it the reviewer sees one cell with no column name.
+
+    ``transform`` is the row's ``meta.transform`` (``log10``/``ln``): the
+    cell prints the log of the value, so the literal is the exponent —
+    without the note a log-scale row reads as a misreported unit and the
+    reviewer rejects a correct row (gr506762 slice-4, mx1410/mx1424).
+    ``stored_value`` is the row's transformed ``value_num``."""
     bits = [f"measurand: {measurand}", f"literal: {literal}"]
     if reported_unit:
         bits.append(f"reported unit: {reported_unit}")
@@ -291,6 +299,17 @@ def review_prompt(
         bits.append(f"subject: {subject_label}")
     for c in conditions or []:
         bits.append(f"condition: {c}")
+    if transform:
+        stored = (
+            f"; the stored value is {stored_value:g}"
+            + (f" {reported_unit}" if reported_unit else "")
+            if stored_value is not None
+            else ""
+        )
+        bits.append(
+            f"transform: the cell prints {transform}(value) — the literal "
+            f"is the printed exponent, not the value itself{stored}"
+        )
     if table:
         coord = (
             f"T{table.get('table')} row {table.get('row')} "
