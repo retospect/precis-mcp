@@ -486,3 +486,111 @@ def test_per_pad_exemption_agrees_with_the_place_gate() -> None:
     # U4's case: a copper-field pad covering it passes.
     electrode = {**under, "role": "electrode"}
     assert drc.check_via_pad_keepout(model([electrode]), cap) == []
+
+
+# ── layer-scoped keepouts vs bottom parts (gr520373 item 3) ─────────
+
+_KO = np.asarray(
+    [[10.0, -10.0], [24.0, -10.0], [24.0, 24.0], [10.0, 24.0], [10.0, -10.0]]
+)
+
+
+def test_fixed_zone_violation_does_not_mask_a_movable_one() -> None:
+    """gr520373 (taz-leaf-b): the zone sweep moved only the single worst
+    violator and RETURNED EARLY when it was a fixed part — a movable
+    bottom part inside the same In1/In2/B.Cu keepout was never reached.
+    The sweep must take the worst MOVABLE violation and still report the
+    fixed one."""
+    import dataclasses
+
+    zone = TopoZone(kind="keepout", ring=_KO, layers=(1, 2, 3), name="blade")
+    d = _design(
+        parts=("F1", "R28"),
+        pin_part=[0, 1],
+        pin_net=[-1, -1],
+        part_outline=(_RING, _RING),
+        zones=(zone,),
+        # F1 fixed deep on the keepout (largest overlap wins `worst`
+        # before the fix); R28 bottom-side inside it.
+        pose0=[[15.0, 0.0, 0, 1], [20.0, 0.0, 0, 1]],
+    )
+    d = dataclasses.replace(d, fixed=np.asarray([True, False]), n_layers=4)
+    res = legalize_pose(d, d.pose0)
+    np.testing.assert_allclose(res.pose[0], d.pose0[0])  # fixed never moves
+    assert not np.allclose(res.pose[1, :2], d.pose0[1, :2])  # R28 moved off
+    n = len(d.parts)
+    assert any(a == 0 and b >= n for a, b, _ in res.remaining)  # F1 reported
+    assert not any(a == 1 and b >= n for a, b, _ in res.remaining)
+
+
+def test_inner_layer_keepout_does_not_block_a_bottom_part() -> None:
+    """``_zone_blocks_part`` read the board layer count from the zones'
+    own max index: a keepout scoped to In1/In2 (1, 2) minted n_layers=3,
+    so a bottom part's outer face came out 2 — inside the keepout's
+    layers — and a legal bottom placement got shoved. With the board's
+    real count a bottom part's face is layer 3 and stays."""
+    import dataclasses
+
+    zone = TopoZone(kind="keepout", ring=_KO, layers=(1, 2), name="inner")
+    d = _design(
+        parts=("R1",),
+        pin_part=[0],
+        pin_net=[-1],
+        part_outline=(_RING,),
+        zones=(zone,),
+        pose0=[[15.0, 0.0, 0, 1]],  # bottom, inside the keepout region
+    )
+    d = dataclasses.replace(d, n_layers=4)
+    res = legalize_pose(d, d.pose0)
+    np.testing.assert_allclose(res.pose[0], d.pose0[0])
+    assert not any(b >= len(d.parts) for _a, b, _ in res.remaining)
+
+
+def test_bottom_layer_keepout_blocks_a_bottom_part() -> None:
+    """The stated case end-to-end: a keepout whose layers include B.Cu
+    moves a bottom part off it and leaves a top part alone."""
+    import dataclasses
+
+    zone = TopoZone(kind="keepout", ring=_KO, layers=(1, 2, 3), name="blade")
+    d = _design(
+        parts=("R1", "R2"),
+        pin_part=[0, 1],
+        pin_net=[-1, -1],
+        part_outline=(_RING, _RING),
+        zones=(zone,),
+        pose0=[[15.0, 0.0, 0, 1], [20.0, 0.0, 0, 0]],  # bottom / top
+    )
+    d = dataclasses.replace(d, n_layers=4)
+    res = legalize_pose(d, d.pose0)
+    assert not np.allclose(res.pose[0, :2], d.pose0[0, :2])  # bottom moved
+    np.testing.assert_allclose(res.pose[1], d.pose0[1])  # top untouched
+
+
+def test_pullback_never_lands_a_part_on_a_fixed_courtyard() -> None:
+    """gr520792 (taz-leaf-b): a free part outside the outline was pulled
+    straight onto a FIXED part's courtyard — the pull-back tested the
+    outline and zones but not other parts, so the pair sweep shoved it
+    back out, the pull dragged it back in, and the committed pose kept
+    the overlap. Courtyards are hard obstacles on the pull path now: it
+    lands on a clean spot or stays outside and reports."""
+    import dataclasses
+
+    u1_ring = np.asarray(
+        [[-1.2, -1.2], [1.2, -1.2], [1.2, 1.2], [-1.2, 1.2], [-1.2, -1.2]]
+    )
+    d = _design(
+        parts=("U1", "C8"),
+        pin_part=[0, 1],
+        pin_net=[-1, -1],
+        part_outline=(u1_ring, _RING),
+        # U1 fixed astride the outline's right edge; C8 escapes right of
+        # it — the pull toward the centroid must cross U1's ring.
+        pose0=[[24.0, 10.0, 0, 0], [28.5, 10.0, 0, 0]],
+    )
+    d = dataclasses.replace(d, fixed=np.asarray([True, False]))
+    res = legalize_pose(d, d.pose0)
+    np.testing.assert_allclose(res.pose[0], d.pose0[0])  # fixed never moves
+    u1 = Polygon(np.asarray(d.part_outline[0]) + res.pose[0][:2])
+    c8 = Polygon(np.asarray(d.part_outline[1]) + res.pose[1][:2])
+    assert not u1.intersects(c8) or u1.intersection(c8).area <= 1e-6
+    assert not any({a, b} == {0, 1} for a, b, _ in res.remaining)

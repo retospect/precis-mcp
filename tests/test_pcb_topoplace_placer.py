@@ -392,3 +392,244 @@ def test_fixed_side_strips_the_back_side_freedom() -> None:
     assert td.freedoms[1] & FREEDOM_BACK_SIDE
     td_top = design_from_ir(ir, {}, placement_sides="top")
     assert td_top.sides == "top"
+
+
+def test_authored_proximity_measure_pulls_parts_together() -> None:
+    """gr520546: an authored ``near()``/proximity measure is priced in
+    the proxy objective. U1 and U2 start ~20 mm apart with NO net
+    between them — nothing but the measure can pull them inside its
+    2 mm bound."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import TopoMeasure
+
+    d, _inst, _nets = synth_design(seed=0, n_parts=4, n_nets=0, n_multinet=0, n_fixed=0)
+    d = dataclasses.replace(
+        d,
+        measures=(
+            TopoMeasure(ia=0, ib=1, bound="upper", goal_mm=2.0, weight=1.0, hard=True),
+        ),
+    )
+    dist0 = float(np.hypot(*(d.pose0[0, :2] - d.pose0[1, :2])))
+    assert dist0 > 10.0
+    res = topo_place(
+        d,
+        objective=ObjectiveShares(
+            crossings=0.0, ratsnest=0.0, overlap=0.1, measures=1.0
+        ),
+        effort=2000,
+        seed=1,
+    )
+    dist1 = float(np.hypot(*(res.best_pose[0, :2] - res.best_pose[1, :2])))
+    assert dist1 <= 2.0 + 0.5  # inside the bound, up to the MTV epsilon
+
+
+def test_rigid_group_keeps_authored_offsets_through_the_anneal() -> None:
+    """gr520546: an authored ``group``/``group_offset`` pair is ONE rigid
+    body. A net pulls the group across the board while free parts sit
+    in the way — translate, rotate, shove and legalize must all keep
+    the authored member offset and relative rotation intact."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import qrot
+
+    d, _inst, _nets = synth_design(seed=0, n_parts=6, n_nets=4, n_multinet=0, n_fixed=0)
+    # U1/U2 are one assembly: U2 sits +12 mm x off the group's anchor,
+    # same rotation.
+    group_of = np.full(len(d.parts), -1, dtype=np.int32)
+    group_of[0] = group_of[1] = 0
+    group_off = np.zeros((len(d.parts), 3), dtype=np.float64)
+    group_off[1] = (12.0, 0.0, 0.0)
+    pose0 = d.pose0.copy()
+    pose0[0] = (10.0, 10.0, 0.0, 0.0)
+    pose0[1] = (22.0, 10.0, 0.0, 0.0)  # the authored shape at arot 0
+    d = dataclasses.replace(
+        d,
+        group_of=group_of,
+        group_members=((0, 1),),
+        group_off=group_off,
+        pose0=pose0,
+    )
+    res = topo_place(d, objective=ObjectiveShares(), effort=3000, seed=3)
+    dx = res.best_pose[1, :2] - res.best_pose[0, :2]
+    arot_q = round(res.best_pose[0, 2]) % 4
+    np.testing.assert_allclose(qrot(dx, -arot_q), (12.0, 0.0), atol=1e-6)
+    assert round(res.best_pose[0, 2]) % 4 == round(res.best_pose[1, 2]) % 4
+
+
+def test_fixed_group_member_pins_the_whole_group() -> None:
+    """gr520546: a fixed member pins the group — every member's pose0
+    is rebuilt rigidly off the pinned member's anchor (J2's authored
+    xy is overridden by its ``group_offset``), and all members land in
+    ``d.fixed`` so no mover touches them."""
+    from precis.pcb.ir import from_graph
+    from precis.pcb.topoplace.design import design_from_ir
+
+    ir = from_graph(
+        {
+            "instances": [
+                {
+                    "refdes": "J1",
+                    "pins": [{"name": "1"}],
+                    "x": 5.0,
+                    "y": 5.0,
+                    "rot": 0.0,
+                    "fixed": "xy",
+                    "group": "hdr",
+                    "group_offset": {"x": 0.0, "y": 0.0, "rot": 0.0},
+                },
+                {
+                    "refdes": "J2",
+                    "pins": [{"name": "1"}],
+                    "x": 40.0,
+                    "y": 30.0,  # authored xy IGNORED: the group shape wins
+                    "group": "hdr",
+                    "group_offset": {"x": 15.24, "y": 0.0, "rot": 0.0},
+                },
+                {
+                    "refdes": "R1",
+                    "pins": [{"name": "1"}],
+                    "x": 20.0,
+                    "y": 8.0,
+                },
+            ],
+            "nets": [],
+        }
+    )
+    td = design_from_ir(ir, {})
+    assert td.fixed[0] and td.fixed[1] and not td.fixed[2]
+    assert td.group_members == ((0, 1),)
+    np.testing.assert_allclose(td.pose0[0, :2], (5.0, 5.0))
+    np.testing.assert_allclose(td.pose0[1, :2], (20.24, 5.0))
+    assert td.pose0[1, 2] == 0.0
+
+
+def test_group_without_offsets_or_poses_stays_independent() -> None:
+    """GRIPE_FIX (gr520546 review): a group is rigid only when its shape
+    is recoverable — every member carrying an authored ``group_offset``
+    or a finite pose0. A fresh board's group (no offsets, nothing
+    placed) otherwise collapsed every member onto the anchor's xy —
+    a permanent stack the legalizer, shove LP and ``_part_hit`` all skip
+    (same-group pairs), invisible to every gate. The members place
+    independently and the run warns once, naming the group."""
+    from precis.pcb.ir import from_graph
+    from precis.pcb.topoplace.design import design_from_ir
+
+    ir = from_graph(
+        {
+            "instances": [
+                {"refdes": r, "pins": [{"name": "1"}], "group": "hdr"}
+                for r in ("J1", "J2", "J3")
+            ],
+            "nets": [],
+        }
+    )
+    td = design_from_ir(ir, {})
+    assert td.group_members == ()
+    assert (td.group_of == -1).all()
+    assert len(td.warnings) == 1
+    w = td.warnings[0]
+    assert "'hdr'" in w and "group_offset" in w and "place once" in w
+
+
+def test_group_of_posed_members_stays_rigid() -> None:
+    """The gate's keep side: no ``group_offset`` authored anywhere, but
+    every member placed — the pose0-implied shape still makes one rigid
+    body, exactly as before (only a member with NEITHER source of shape
+    demotes the group)."""
+    from precis.pcb.ir import from_graph
+    from precis.pcb.topoplace.design import design_from_ir
+
+    ir = from_graph(
+        {
+            "instances": [
+                {
+                    "refdes": "J1",
+                    "pins": [{"name": "1"}],
+                    "x": 5.0,
+                    "y": 5.0,
+                    "group": "hdr",
+                },
+                {
+                    "refdes": "J2",
+                    "pins": [{"name": "1"}],
+                    "x": 15.0,
+                    "y": 5.0,
+                    "group": "hdr",
+                },
+                {
+                    "refdes": "J3",
+                    "pins": [{"name": "1"}],
+                    "x": 25.0,
+                    "y": 5.0,
+                    "group": "hdr",
+                },
+            ],
+            "nets": [],
+        }
+    )
+    td = design_from_ir(ir, {})
+    assert td.group_members == ((0, 1, 2),)
+    assert td.warnings == ()
+    np.testing.assert_allclose(td.group_off[1, :2], (10.0, 0.0), atol=1e-9)
+    np.testing.assert_allclose(td.group_off[2, :2], (20.0, 0.0), atol=1e-9)
+
+
+def test_partly_poseless_group_stays_independent() -> None:
+    """One placed member does NOT rescue a group whose other members
+    carry neither offset nor pose: before the gate, the poseless
+    members' nonfinite rel read as offset (0,0) and the normalisation
+    stacked them onto the anchor's xy."""
+    from precis.pcb.ir import from_graph
+    from precis.pcb.topoplace.design import design_from_ir
+
+    ir = from_graph(
+        {
+            "instances": [
+                {
+                    "refdes": "J1",
+                    "pins": [{"name": "1"}],
+                    "x": 5.0,
+                    "y": 5.0,
+                    "group": "hdr",
+                },
+                {"refdes": "J2", "pins": [{"name": "1"}], "group": "hdr"},
+                {"refdes": "J3", "pins": [{"name": "1"}], "group": "hdr"},
+            ],
+            "nets": [],
+        }
+    )
+    td = design_from_ir(ir, {})
+    assert td.group_members == ()
+    assert (td.group_of == -1).all()
+    assert len(td.warnings) == 1
+    assert "'hdr'" in td.warnings[0]
+    # the placed member's pose is untouched — no anchor normalisation ran
+    np.testing.assert_allclose(td.pose0[0, :2], (5.0, 5.0))
+
+
+def test_ungrouped_run_matches_main_golden_pose_bytewise() -> None:
+    """gr520546 review (SHOULD-FIX 3): with no authored groups a seeded
+    run reproduces origin/main's ``best_pose`` byte for byte — the
+    probe/translate movers stage ``clip(pose+delta)`` again and
+    ``_scatter`` seeds a fixed part's NaN pose once more (pre-revert it
+    stayed NaN and ``_settle_pose`` crashed inside shapely on this very
+    board). Expected captured from origin/main's ``topo_place`` on this
+    design: synth seed 0, 8 parts / 4 nets / 1 fixed (part 0's pose0 xy
+    blanked), effort 2000, placer seed 7."""
+    d, _inst, _nets = synth_design(seed=0, n_parts=8, n_nets=4, n_multinet=0, n_fixed=1)
+    d.pose0[0, :2] = np.nan
+    res = topo_place(d, objective=W, effort=2000, seed=7)
+    expected = np.asarray(
+        [
+            [62.259355727257365, 88.9269524950184, 0.0, 0.0],
+            [65.67894204934903, 97.3579915676985, 0.0, 1.0],
+            [61.750907396549245, 89.30112262516882, 1.0, 1.0],
+            [1.0528827910690437, 74.77661530325685, 0.0, 0.0],
+            [59.92735564922514, 10.684827235968266, 1.0, 0.0],
+            [1.083642436802397, 74.82382768731681, 2.0, 1.0],
+            [1.9086012340484362, 73.02282868814692, 1.0, 1.0],
+            [60.33448286642105, 11.092021830309974, 0.0, 1.0],
+        ]
+    )
+    np.testing.assert_array_equal(res.best_pose, expected)

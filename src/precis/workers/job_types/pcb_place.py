@@ -26,6 +26,7 @@ Runs under the ``job_inproc`` executor (bounded, in-process — mirrors
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -186,11 +187,20 @@ def _topo_run(
             placement_sides=(
                 ((graph.get("board") or {}).get("meta") or {}).get("placement_sides")
             ),
+            measures=graph.get("measures"),
         )
         _tp.check_slots(td)
-        result = _tp.topo_place(
-            td, objective=_tp.PRESETS["compact"], effort=effort, seed=seed
+        # gr520546: authored near()/separation/align measures steer the
+        # anneal — the share is priced in only when the design carries
+        # resolvable measures (an empty tuple would zero-divide its
+        # reference magnitude to the 1.0 floor anyway, but the share
+        # staying 0 keeps every measureless run's cost byte-identical).
+        objective = (
+            dataclasses.replace(_tp.PRESETS["compact"], measures=0.2)
+            if td.measures
+            else _tp.PRESETS["compact"]
         )
+        result = _tp.topo_place(td, objective=objective, effort=effort, seed=seed)
         assignment = _tp.assign_pins(td, result.best_pose)
     except PinConflict as exc:
         ctx.record_failure(str(exc))
@@ -212,7 +222,6 @@ def _topo_run(
         if bool(ir.inst_bottom[i]) != bool(bottom_before[i])
     }
 
-    objective = _tp.PRESETS["compact"]
     board_hash = hashlib.sha256(
         json.dumps(graph, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]

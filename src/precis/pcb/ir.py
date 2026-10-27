@@ -460,6 +460,11 @@ class PcbIR:
     #: of that pattern gets stamped onto (see the tiling-stamp docstring in
     #: :mod:`precis.pcb.optimize`).
     group_pattern_index: np.ndarray
+    #: object[n_groups] -> str, the name that minted the group — the
+    #: authored ``"group"`` string, or the ``"pattern"`` family name for a
+    #: pattern-derived group. Diagnostic only: a demoted-group warning
+    #: names its group by this.
+    group_name: np.ndarray
 
     # ---- L4: metric annotations -----------------------------------------
     seg_gap_capacity: (
@@ -1017,14 +1022,23 @@ def _offset_rot(value: Any) -> float:
 
 def _parse_instance_groups(
     instances: list[dict[str, Any]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     """Parse each instance dict's optional ``"group"``/``"group_offset"``
     (an AUTHORED rigid "super footprint" — see :attr:`PcbIR.inst_group`'s
     own docstring) and ``"pattern"``/``"pattern_instance"`` (an
     AUTO-DERIVED rigid group — N congruent tiles of one sub-circuit) into
     the six parallel arrays :func:`from_graph` needs:
     ``(inst_group, inst_group_offset_dx, inst_group_offset_dy,
-    inst_group_offset_rot, group_pattern, group_pattern_index)``.
+    inst_group_offset_rot, group_pattern, group_pattern_index,
+    group_name)``.
 
     **A component names at most one of the two.** If a graph author (or a
     bad merge) supplies both ``"pattern"`` and ``"group"`` on one
@@ -1040,10 +1054,14 @@ def _parse_instance_groups(
     ``"group"``/``"pattern"`` name leaves the instance ungrouped; an
     unparseable ``"pattern_instance"`` leaves a ``"pattern"``-naming
     instance out of any pattern (there is no slot number to put it in);
-    a ``"group_offset"`` that is missing, not a dict, or has a
-    non-numeric ``x``/``y``/``rot`` defaults THAT axis to ``0.0`` (co-
-    locate with the anchor) rather than leaving a poisoning NaN in the
-    rigid-placement math a good sibling member's offset depends on.
+    a ``"group_offset"`` that is MISSING leaves all three offset axes
+    NaN — the member carries no authored shape (every reader treats NaN
+    as "no offset": ``optimize`` co-locates it with the anchor,
+    ``topoplace.design_from_ir`` derives its rigid offset from the
+    member's pose0 instead); a ``group_offset`` that is not a dict, or
+    has a non-numeric ``x``/``y``/``rot``, defaults THAT axis to ``0.0``
+    (co-locate with the anchor) rather than leaving a poisoning NaN in
+    the rigid-placement math a good sibling member's offset depends on.
     """
     n = len(instances)
     inst_group = np.full(n, -1, dtype=np.int32)
@@ -1053,6 +1071,7 @@ def _parse_instance_groups(
 
     group_pattern: list[str | None] = []
     group_pattern_index: list[int] = []
+    group_name: list[str] = []
     group_id_by_key: dict[tuple[Any, ...], int] = {}
 
     def _group_id(
@@ -1065,6 +1084,7 @@ def _parse_instance_groups(
         group_id_by_key[key] = gid
         group_pattern.append(pattern)
         group_pattern_index.append(pattern_idx)
+        group_name.append(str(key[1]))
         return gid
 
     for i, inst in enumerate(instances):
@@ -1086,6 +1106,8 @@ def _parse_instance_groups(
         gid = _group_id(("group", group), pattern=None, pattern_idx=-1)
         inst_group[i] = gid
         raw_offset = inst.get("group_offset")
+        if raw_offset is None:
+            continue  # no group_offset authored — NaN marks "no shape"
         offset = raw_offset if isinstance(raw_offset, dict) else {}
         offset_dx[i] = _safe_float(offset.get("x"), 0.0)
         offset_dy[i] = _safe_float(offset.get("y"), 0.0)
@@ -1098,6 +1120,7 @@ def _parse_instance_groups(
         offset_rot,
         _obj_array(group_pattern),
         np.array(group_pattern_index, dtype=np.int32),
+        _obj_array(group_name),
     )
 
 
@@ -1517,6 +1540,7 @@ def from_graph(
         inst_group_offset_rot,
         group_pattern,
         group_pattern_index,
+        group_name,
     ) = _parse_instance_groups(instances)
 
     ir = PcbIR(
@@ -1611,6 +1635,7 @@ def from_graph(
         inst_group_offset_rot=inst_group_offset_rot,
         group_pattern=group_pattern,
         group_pattern_index=group_pattern_index,
+        group_name=group_name,
         seg_gap_capacity=np.full(n_seg, np.nan),
         seg_region_density=np.full(n_seg, np.nan),
         seg_copper_length_mm=np.full(n_seg, np.nan),

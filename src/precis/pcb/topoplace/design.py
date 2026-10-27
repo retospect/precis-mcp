@@ -106,9 +106,21 @@ class ObjectiveShares:
     #: cluster under the ratsnest pull. 0 keeps a share vector identical
     #: to slice 2a's.
     spread: float = 0.0
+    #: Authored-measure pull in violation-mm (gr520546: ``near()`` /
+    #: separation / align measures steered nothing — the proxy priced
+    #: only crossings/ratsnest/overlap/spread). 0 keeps a share vector
+    #: identical to earlier slices'.
+    measures: float = 0.0
 
     def __post_init__(self) -> None:
-        total = self.crossings + self.ratsnest + self.vias + self.overlap + self.spread
+        total = (
+            self.crossings
+            + self.ratsnest
+            + self.vias
+            + self.overlap
+            + self.spread
+            + self.measures
+        )
         if total <= 0:
             raise ValueError("objective shares must not all be zero")
         object.__setattr__(self, "crossings", self.crossings / total)
@@ -116,6 +128,7 @@ class ObjectiveShares:
         object.__setattr__(self, "vias", self.vias / total)
         object.__setattr__(self, "overlap", self.overlap / total)
         object.__setattr__(self, "spread", self.spread / total)
+        object.__setattr__(self, "measures", self.measures / total)
 
 
 #: The named share vectors (Decision 18's presets) over the terms slice 1
@@ -134,6 +147,27 @@ PRESETS: dict[str, ObjectiveShares] = {
     "low-via": ObjectiveShares(crossings=0.75, ratsnest=0.05, overlap=0.2),
     "2-layer-only": ObjectiveShares(crossings=0.8, ratsnest=0.0, overlap=0.2),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class TopoMeasure:
+    """One resolved placement measure the proxy prices —
+    :class:`precis.pcb.optimize.MeasureSpec`'s pair-distance bound mapped
+    to part indices (``ib == -1`` for an ``align`` datum end, which reads
+    :attr:`datum` instead of a second part). The bound/goal/hard/weight
+    semantics are verbatim the legacy engine's — the same measure must
+    not price differently under a different placer."""
+
+    ia: int
+    ib: int  # -1 = the datum end (``datum`` below)
+    bound: str  # "lower" | "upper" | "target"
+    goal_mm: float
+    weight: float
+    hard: bool
+    metric: str = "dist"  # "dist" | "align"
+    axis: str = "xy"  # align only
+    offset: tuple[float, float] = (0.0, 0.0)  # align only
+    datum: tuple[float, float] | None = None  # align only: fixed end
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +303,51 @@ class TopoDesign:
     anchor_dia: np.ndarray = field(default_factory=lambda: np.zeros(0, np.float64))
     anchor_net: tuple[str, ...] = ()
     net_anchors: tuple[np.ndarray, ...] = ()
+    #: The board's copper-layer count (``ir.n_layers``) — the layer-scoped
+    #: zone check needs the REAL count: a bottom part's outer face is
+    #: layer ``n_layers - 1``, which cannot be derived from the zones'
+    #: own layer lists (gr520373: an In1/In2-only keepout minted a
+    #: phantom bottom index and blocked bottom parts; the derivation also
+    #: collapses a one-zone board's layer count to that zone's max + 1).
+    #: ``0`` = a synthetic design that never carried one — callers fall
+    #: back to the zone-derived count so hand-built ``TopoDesign``\\ s in
+    #: tests keep working.
+    n_layers: int = 0
+    #: Authored placement measures (``near()`` / separation / align) as
+    #: priced pair bounds — gr520546.
+    measures: tuple[TopoMeasure, ...] = ()
+    #: int32[N] — authored-group id per part, -1 for none. AUTHORED
+    #: groups only (``group_pattern`` is None): a pattern tile is a
+    #: post-seed stamp, never a rigid mover unit.
+    group_of: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int32))
+    #: gid → member part ids, ordered by group id.
+    group_members: tuple[tuple[int, ...], ...] = ()
+    #: float64[N, 3] — each member's offset in its group's anchor frame:
+    #: (dx mm, dy mm, drot in QUARTER turns). The authored
+    #: ``group_offset`` where given; where a group was authored with no
+    #: offsets the pose0-implied shape is stored instead, so the group
+    #: still moves as one rigid body.
+    group_off: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float64))
+    #: Advisory warnings ``design_from_ir`` raised translating the IR —
+    #: an authored group demoted to independent members names itself
+    #: here. They never fail the run; the place reply prints them.
+    warnings: tuple[str, ...] = ()
+
+
+def qrot(v: np.ndarray, q: int) -> np.ndarray:
+    """Rotate a 2-vector by ``q`` quarter-turns clockwise-from-north —
+    the same convention ``proxy.local_to_world`` applies to pose
+    rows (``q == 1``: ``(x, y) -> (y, -x)``). Group offsets and the
+    anchor-recovery math live in this frame."""
+    x, y = float(v[0]), float(v[1])
+    r = round(int(q)) % 4
+    if r == 0:
+        return np.asarray([x, y])
+    if r == 1:
+        return np.asarray([y, -x])
+    if r == 2:
+        return np.asarray([-x, -y])
+    return np.asarray([-y, x])
 
 
 def _pin_sides(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.ndarray:
@@ -564,6 +643,7 @@ def design_from_ir(
     fixed_copper: Iterable[Mapping[str, Any]] | None = None,
     route_planes: bool = False,
     placement_sides: str | None = None,
+    measures: list[dict[str, Any]] | None = None,
 ) -> TopoDesign:
     """Build the one immutable placer input from the IR.
 
@@ -704,6 +784,151 @@ def design_from_ir(
     names = _layer_name_map(ir)
     pin_side = _pin_sides(ir, footprints)
 
+    fixed = np.asarray(ir.inst_fixed_xy, dtype=bool).copy()
+
+    # Authored rigid groups (gr520546): ``group_pattern`` None marks an
+    # authored "group"/"group_offset" — the parts of a physical assembly
+    # that must move as one body. A member with fixed xy pins the WHOLE
+    # group at the authored relative shape: every member's pose0 is
+    # rebuilt off the pinned member's anchor (anchor recovery mirrors
+    # ``optimize.seed_placement``). A group with no fixed member stays
+    # movable but moves as one unit everywhere downstream.
+    group_of = np.full(n, -1, dtype=np.int32)
+    group_off = np.zeros((n, 3), dtype=np.float64)
+    members_of: list[tuple[int, ...]] = []
+    warnings: list[str] = []
+    for gid in range(int(ir.n_groups)):
+        if ir.group_pattern[gid] is not None:
+            continue  # pattern tiles are a post-seed stamp, not a mover unit
+        members = [i for i in range(n) if int(ir.inst_group[i]) == gid]
+        if len(members) < 2:
+            continue
+        # Rigid only when every member's place in the authored shape is
+        # recoverable — an authored ``group_offset`` or a finite pose0.
+        # A member with NEITHER would derive offset (0,0): the group
+        # normalisation then stacks every such member onto the anchor's
+        # xy, and the movers/legalizer/shove skip same-group pairs, so
+        # the overlap is permanent and unreported. The group stays
+        # independent instead, and the place reply warns once.
+        shapeless = [
+            m
+            for m in members
+            if not np.isfinite(
+                [
+                    ir.inst_group_offset_dx[m],
+                    ir.inst_group_offset_dy[m],
+                    ir.inst_group_offset_rot[m],
+                ]
+            ).all()
+            and not np.isfinite(pose0[m, :2]).all()
+        ]
+        if shapeless:
+            warnings.append(
+                f"group {str(ir.group_name[gid])!r} "
+                f"({', '.join(str(parts[m]) for m in members)}) places as "
+                "independent parts: "
+                + ", ".join(str(parts[m]) for m in shapeless)
+                + " has neither a group_offset nor a placed pose — author "
+                "group_offset or place once first to keep the group rigid"
+            )
+            continue
+        tid = len(members_of)
+        members_of.append(tuple(members))
+        # The anchor/pose reference: the first FIXED member (the
+        # author-pinned root) when placed, else the first placed member.
+        # A fixed member with no pose pins nothing — there is no xy to
+        # pin the group AT.
+        posed = [m for m in members if np.isfinite(pose0[m, :2]).all()]
+        pinned = [m for m in posed if bool(ir.inst_fixed_xy[m])]
+        anchor_src = pinned[0] if pinned else (posed[0] if posed else None)
+        ref = anchor_src if anchor_src is not None else members[0]
+        # When ``ref`` carries an authored offset its (offset, pose0)
+        # pair sets the frame the pose-derived members are expressed in;
+        # a pose-only ``ref`` IS the frame origin (offset (0,0,0)).
+        ref_off = (
+            (
+                float(ir.inst_group_offset_dx[ref]),
+                float(ir.inst_group_offset_dy[ref]),
+                float(round(float(ir.inst_group_offset_rot[ref]) / 90.0) % 4),
+            )
+            if np.isfinite(
+                [
+                    ir.inst_group_offset_dx[ref],
+                    ir.inst_group_offset_dy[ref],
+                    ir.inst_group_offset_rot[ref],
+                ]
+            ).all()
+            else (0.0, 0.0, 0.0)
+        )
+        ref_arot_q = (
+            (int(pose0[ref, 2]) - int(ref_off[2])) % 4
+            if np.isfinite(pose0[ref, :2]).all()
+            else 0
+        )
+        for m in members:
+            group_of[m] = tid
+            dx = float(ir.inst_group_offset_dx[m])
+            dy = float(ir.inst_group_offset_dy[m])
+            drot = float(ir.inst_group_offset_rot[m])
+            if math.isnan(dx) or math.isnan(dy) or math.isnan(drot):
+                # No authored offset — the member's rigid shape is its
+                # pose0 expressed in ref's frame (only reachable when ref
+                # is posed: the gate above guarantees this member has a
+                # pose0, and a posed member implies a posed ref).
+                rel = qrot(pose0[m, :2] - pose0[ref, :2], -ref_arot_q)
+                dx, dy = (
+                    float(rel[0]) + ref_off[0],
+                    float(rel[1]) + ref_off[1],
+                )
+                drot_q = float((int(pose0[m, 2]) - ref_arot_q) % 4)
+            else:
+                drot_q = float(round(drot / 90.0) % 4)
+            group_off[m] = (dx, dy, drot_q)
+        # ``group_offset`` is the rigid contract, not a hint: pose0 is
+        # normalised to it, anchored off the first FIXED member (the
+        # author-pinned root) or else the first placed member. A member
+        # whose authored xy/rot disagrees with its offset is moved onto
+        # the offset — authored placement loses to authored rigidity.
+        if anchor_src is not None:
+            arot_q = int(
+                (int(pose0[anchor_src, 2]) - int(group_off[anchor_src, 2])) % 4
+            )
+            anchor_xy = pose0[anchor_src, :2] - qrot(group_off[anchor_src, :2], arot_q)
+            for m in members:
+                if pinned:
+                    fixed[m] = True
+                pose0[m, 2] = float((arot_q + int(group_off[m, 2])) % 4)
+                pose0[m, :2] = anchor_xy + qrot(group_off[m, :2], arot_q)
+
+    topo_measures: list[TopoMeasure] = []
+    if measures:
+        from precis.pcb.optimize import resolve_measures
+
+        idx_of = {r: i for i, r in enumerate(parts)}
+        for spec in resolve_measures(
+            list(measures), features=[dict(f) for f in features or ()]
+        ):
+            ia = idx_of.get(spec.refdes_a)
+            ib = idx_of.get(spec.refdes_b) if spec.refdes_b else -1
+            if ia is None or (ib is None):
+                continue
+            if ib == -1 and spec.datum is None:
+                continue  # nothing to measure against
+            topo_measures.append(
+                TopoMeasure(
+                    ia=ia,
+                    ib=-1 if ib is None else ib,
+                    bound=spec.bound,
+                    goal_mm=spec.goal_mm,
+                    weight=spec.weight,
+                    hard=spec.hard,
+                    metric=spec.metric,
+                    axis=spec.axis,
+                    offset=spec.offset,
+                    datum=spec.datum,
+                )
+            )
+
     return TopoDesign(
         parts=parts,
         pin_xy=np.column_stack(
@@ -719,7 +944,7 @@ def design_from_ir(
         net_pins=tuple(net_pins),
         flex=decl["flex"],
         swap_groups=decl["swap_groups"],
-        fixed=np.asarray(ir.inst_fixed_xy, dtype=bool).copy(),
+        fixed=fixed,
         freedoms=freedoms,
         outline=outline,
         pose0=pose0,
@@ -751,6 +976,12 @@ def design_from_ir(
         anchor_dia=np.asarray(anchor_dia_l, dtype=np.float64),
         anchor_net=tuple(anchor_net_l),
         net_anchors=tuple(np.asarray(a, dtype=np.int64) for a in net_anchor_lists),
+        n_layers=int(ir.n_layers),
+        measures=tuple(topo_measures),
+        group_of=group_of,
+        group_members=tuple(members_of),
+        group_off=group_off,
+        warnings=tuple(warnings),
     )
 
 

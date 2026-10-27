@@ -51,6 +51,7 @@ from shapely.geometry import Point, Polygon
 
 from precis.pcb.topoplace.design import TopoDesign
 from precis.pcb.topoplace.legalize import (
+    _board_layers,
     _mtv,
     _pad_polys,
     _part_nets,
@@ -160,9 +161,23 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         )
     movable = np.flatnonzero(~d.fixed)
     var_of = np.full(n, -1, dtype=np.int32)
-    for m, pi in enumerate(movable):
-        var_of[int(pi)] = m
-    m_count = len(movable)
+    #: LP variables are UNITS (gr520546): an authored group's members
+    #: share one translation variable, so a solved delta moves the whole
+    #: rigid body identically. A pinned group is all-fixed already.
+    units: list[tuple[int, ...]] = []
+    seen: set[int] = set()
+    for pi in movable:
+        p = int(pi)
+        if p in seen:
+            continue
+        gid = int(d.group_of[p]) if len(d.group_of) else -1
+        mates = d.group_members[gid] if gid >= 0 else ()
+        unit = tuple(m for m in mates if not d.fixed[m]) or (p,)
+        for m in unit:
+            var_of[m] = len(units)
+        seen.update(unit)
+        units.append(unit)
+    m_count = len(units)
 
     lo = d.outline.min(axis=0) if len(d.outline) >= 3 else pose[:, :2].min(axis=0)
     hi = d.outline.max(axis=0) if len(d.outline) >= 3 else pose[:, :2].max(axis=0)
@@ -171,7 +186,7 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
     n_zones = sum(1 for z in d.zones if len(z.ring) >= 4)
     part_nets = [_part_nets(d, i) for i in range(n)] if n_zones else []
     pin_names: dict[int, str] | None = None
-    n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
+    n_layers = _board_layers(d)
 
     moved_mm = 0.0
     lp_optimum = 0.0
@@ -230,6 +245,8 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
                     continue
                 if var_of[i] < 0 and var_of[j] < 0:
                     continue  # both fixed — the final mesh reports it
+                if len(d.group_of) and 0 <= int(d.group_of[i]) == int(d.group_of[j]):
+                    continue  # rigid mates share one variable — authored shape
                 vec, depth = _mtv(
                     np.asarray(gi.exterior.coords),
                     np.asarray(gj.exterior.coords),
@@ -343,11 +360,25 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         )
         bounds: list[tuple[float, float | None]] = []
         for m in range(m_count):
-            p = int(movable[m])
             for axis_i in range(2):
-                centre = pose[p, axis_i]
-                lb = max(float(cx_lo[p, axis_i]) - centre, -_CAP_MM)
-                ub = min(float(cx_hi[p, axis_i]) - centre, _CAP_MM)
+                # the unit's delta bounds are the INTERSECTION of every
+                # member's legal box — a solved delta keeps them all inside
+                lb = max(
+                    (
+                        float(cx_lo[p, axis_i]) - float(pose[p, axis_i])
+                        for p in units[m]
+                    ),
+                    default=-_CAP_MM,
+                )
+                ub = min(
+                    (
+                        float(cx_hi[p, axis_i]) - float(pose[p, axis_i])
+                        for p in units[m]
+                    ),
+                    default=_CAP_MM,
+                )
+                lb = max(lb, -_CAP_MM)
+                ub = min(ub, _CAP_MM)
                 if lb > ub:
                     lb = ub = 0.0
                 bounds.append((lb, ub))
@@ -393,9 +424,9 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         min_tri_area = min(min_tri_area, amin)
         step = step * scale
         for m in range(m_count):
-            p = int(movable[m])
-            pose[p, 0] += step[m, 0]
-            pose[p, 1] += step[m, 1]
+            for p in units[m]:
+                pose[p, 0] += step[m, 0]
+                pose[p, 1] += step[m, 1]
         moved_mm += float(np.abs(step).sum())
         spent += 1
 

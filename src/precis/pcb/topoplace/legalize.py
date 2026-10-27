@@ -129,6 +129,25 @@ def _pin_net_names(d: TopoDesign) -> dict[int, str]:
     return net_of_pin
 
 
+def _board_layers(d: TopoDesign) -> int:
+    """The board's real layer count for :func:`_zone_blocks_part` —
+    ``d.n_layers`` when the design carries it; the legacy zone-derived
+    count otherwise (hand-built test designs)."""
+    return (
+        d.n_layers or max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
+    )
+
+
+def _mates(d: TopoDesign, part: int) -> tuple[int, ...]:
+    """The part's rigid unit — every member of its authored group, or
+    just itself (gr520546: a legalizer move on one member translates the
+    whole group; a pinned group is already all-fixed so mates are always
+    movable together)."""
+    if len(d.group_of) > part and int(d.group_of[part]) >= 0:
+        return d.group_members[int(d.group_of[part])]
+    return (part,)
+
+
 def _part_nets(d: TopoDesign, part: int) -> set[str]:
     """The net names under a part's pins — the same-net fixed-copper
     exemption the DRC gives an authored via/copper the part belongs to.
@@ -233,11 +252,17 @@ def _legalize_zones(
     same-net authored-via exemption) and skipped; for ``fixed_via``
     zones the exemption is per PAD — only an on-net pad on the ring is
     a legal cover."""
-    n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
+    n_layers = _board_layers(d)
     pin_names: dict[int, str] | None = None
     pads_of: dict[int, list[tuple[int, Any]]] = {}
     worst: tuple[int, int, float] | None = None
     worst_area = _EPS
+    #: A fixed part's zone violation is reported but must NOT mask the
+    #: movable ones — picking the single worst violator and returning
+    #: early when it is fixed left every movable part on a keepout in
+    #: place (gr520373: bottom parts kept landing inside the In1/In2/B.Cu
+    #: keepout behind a fixed violation).
+    fixed_worst: tuple[int, int, float] | None = None
     for i, gi in enumerate(geoms):
         if gi is None:
             continue
@@ -261,23 +286,31 @@ def _legalize_zones(
             elif z.net and z.net in part_nets[i]:
                 continue
             area = float(gi.intersection(zg).area)
+            if d.fixed[i]:
+                if fixed_worst is None or area > fixed_worst[2]:
+                    fixed_worst = (i, z_i, area)
+                continue
             if area > worst_area:
                 worst, worst_area = (i, z_i, area), area
     if worst is None:
-        return 0.0, None
+        return (
+            0.0,
+            (fixed_worst[0], len(d.parts) + fixed_worst[1], fixed_worst[2])
+            if fixed_worst is not None
+            else None,
+        )
     i, z_i, _area = worst
-    if d.fixed[i]:
-        return 0.0, (i, len(d.parts) + z_i, worst_area)
     vec, _depth = _mtv(
         np.asarray(zone_geoms[z_i].exterior.coords),
         np.asarray(geoms[i].exterior.coords),
     )
     vec = vec + np.sign(vec + 1e-12) * 1e-3
     moved = float(np.hypot(*vec))
-    pose[i, 0] += vec[0]
-    pose[i, 1] += vec[1]
-    geoms[i] = _ring_geom(d, pose[i], i)
-    _refresh_owned_zones(d, pose, zone_geoms, i)
+    for mate in _mates(d, i):
+        pose[mate, 0] += vec[0]
+        pose[mate, 1] += vec[1]
+        geoms[mate] = _ring_geom(d, pose[mate], mate)
+        _refresh_owned_zones(d, pose, zone_geoms, mate)
     return moved, None
 
 
@@ -307,6 +340,8 @@ def _legalize_once(
             gj = geoms[j]
             if gj is None or (sides[i] != sides[j] and not (th[i] or th[j])):
                 continue
+            if len(d.group_of) and 0 <= int(d.group_of[i]) == int(d.group_of[j]):
+                continue  # rigid mates never separate — authored shape
             bx0, by0, bx1, by1 = gj.bounds
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                 continue
@@ -332,12 +367,11 @@ def _legalize_once(
     else:
         di, dj = np.zeros(2), vec
     moved = float(np.hypot(*di) + np.hypot(*dj))
-    pose[i, 0] += di[0]
-    pose[i, 1] += di[1]
-    pose[j, 0] += dj[0]
-    pose[j, 1] += dj[1]
-    geoms[i] = _ring_geom(d, pose[i], i)
-    geoms[j] = _ring_geom(d, pose[j], j)
+    for m, dm in ((i, di), (j, dj)):
+        for mate in _mates(d, m):
+            pose[mate, 0] += dm[0]
+            pose[mate, 1] += dm[1]
+            geoms[mate] = _ring_geom(d, pose[mate], mate)
     return moved, None
 
 
@@ -382,7 +416,7 @@ def legalize_pose(
     geoms = [_ring_geom(d, pose[i], i) for i in range(n)]
     zone_geoms = _zone_geoms(d, pose)
     part_nets = [_part_nets(d, i) for i in range(n)] if zone_geoms else []
-    n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
+    n_layers = _board_layers(d)
 
     pin_names_hit: dict[int, str] | None = None
 
@@ -407,6 +441,28 @@ def legalize_pose(
             elif z.net and z.net in part_nets[part]:
                 continue
             return True
+        return False
+
+    def _part_hit(geom, part: int) -> bool:
+        """Whether ``geom`` overlaps another colliding part's courtyard —
+        the pull-back must not land a part on a courtyard while fixing
+        its outline escape: on a FIXED courtyard the pair sweep just
+        shoves it back out, the two passes fight, and the committed pose
+        keeps the overlap (gr520792: C8/C10 parked on U1's courtyard —
+        fixed courtyards are hard obstacles, like zones)."""
+        for j, gj in enumerate(geoms):
+            if j == part or gj is None:
+                continue
+            if (
+                len(d.group_of)
+                and int(d.group_of[j]) >= 0
+                and int(d.group_of[j]) == int(d.group_of[part])
+            ):
+                continue  # rigid mates share the pull — never a collision
+            if sides[part] != sides[j] and not (th[part] or th[j]):
+                continue
+            if geom.intersects(gj):
+                return True
         return False
 
     outline_geom = (
@@ -448,26 +504,34 @@ def legalize_pose(
                 gi = geoms[i]
                 if gi is None or d.fixed[i] or outline_geom.covers(gi):
                     continue
+                mates = _mates(d, i)
                 start = np.asarray(pose[i][:2])
                 for anchor in anchors:
                     target = anchor - start
                     hit = 0.0
                     for t in np.linspace(0.05, 1.0, 20):
-                        test_row = np.asarray(pose[i]).copy()
-                        test_row[:2] = start + target * t
-                        tg = _ring_geom(d, test_row, i)
-                        if (
-                            tg is not None
-                            and outline_geom.covers(tg)
-                            and not _zone_hit(tg, i, zgs, test_row)
-                        ):
+                        clean = True
+                        for mate in mates:
+                            test_row = np.asarray(pose[mate]).copy()
+                            test_row[:2] = pose[mate][:2] + target * t
+                            tg = _ring_geom(d, test_row, mate)
+                            if (
+                                tg is None
+                                or not outline_geom.covers(tg)
+                                or _zone_hit(tg, mate, zgs, test_row)
+                                or _part_hit(tg, mate)
+                            ):
+                                clean = False
+                                break
+                        if clean:
                             hit = float(t)
                             break
                     if hit > 0.0:
-                        pose[i, 0] += target[0] * hit
-                        pose[i, 1] += target[1] * hit
-                        geoms[i] = _ring_geom(d, pose[i], i)
-                        _refresh_owned_zones(d, pose, zgs, i)
+                        for mate in mates:
+                            pose[mate, 0] += target[0] * hit
+                            pose[mate, 1] += target[1] * hit
+                            geoms[mate] = _ring_geom(d, pose[mate], mate)
+                            _refresh_owned_zones(d, pose, zgs, mate)
                         moved += hit * float(np.hypot(*target))
                         break
         if moved == 0.0:
@@ -484,6 +548,8 @@ def legalize_pose(
             gj = geoms[j]
             if gj is None or (sides[i] != sides[j] and not (th[i] or th[j])):
                 continue
+            if len(d.group_of) and 0 <= int(d.group_of[i]) == int(d.group_of[j]):
+                continue  # rigid mates — authored overlap, not a residual
             x0, y0, x1, y1 = gi.bounds
             bx0, by0, bx1, by1 = gj.bounds
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
@@ -491,7 +557,7 @@ def legalize_pose(
             area = float(gi.intersection(gj).area)
             if area > 1e-6:
                 remaining.append((i, j, area))
-    n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
+    n_layers = _board_layers(d)
     pin_names_fin: dict[int, str] | None = None
     pads_fin: dict[int, list[tuple[int, Any]]] = {}
     for i, gi in enumerate(geoms):

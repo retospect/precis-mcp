@@ -803,6 +803,16 @@ _CLIP_MIN_RUN_STROKES = 4.0
 #: buried part into scattered ink and report success.
 _COURTYARD_MIN_KEPT_FRACTION = 0.5
 
+#: How many pieces a clipped courtyard outline may shatter into before
+#: the remains are dropped whole instead. Every run clears
+#: :data:`_CLIP_MIN_RUN_STROKES`, so past this cap the pieces are long
+#: enough to draw but no longer read as ONE outline — on the board they
+#: look like zigzag fragments wandering between obstacles (gr520792:
+#: a courtyard clipped by an overlapping neighbour's copper came out as
+#: confetti). Cleanly overlapped → clipped once or twice, or the
+#: courtyard is dropped honestly and ``silk_missing`` reports it.
+_COURTYARD_MAX_PIECES = 4
+
 
 def _same_point(a: Point, b: Point) -> bool:
     """Two points that came out of the SAME arithmetic, compared for
@@ -4271,6 +4281,7 @@ def _build_silk_pass(
             hard = seed_obstacles["bottom" if mirror else "top"]
             hit = None
             runs: list[list[Point]] = []
+            clip_pieces = 0
             kept_mm = 0.0
             # A whole outline is not lost to one via. Break it around
             # whatever it meets and keep the rest -- what a real silk
@@ -4290,6 +4301,7 @@ def _build_silk_pass(
                     stroke_width_mm,
                 )
                 runs += pieces
+                clip_pieces += len(pieces)
                 kept_mm += kept
             # What the outline draws on a bare board: the ring less the
             # designed gaps (board edge, and the below-floor stretch of a
@@ -4309,13 +4321,22 @@ def _build_silk_pass(
                     + ", ".join(part_outline.meets)
                     + " (drawn first)"
                 )
-            if not runs or (
-                causes
-                and (
-                    designed_mm <= 0
-                    or kept_mm / designed_mm < _COURTYARD_MIN_KEPT_FRACTION
+            # The piece cap counts what ``_clip_polyline`` PRODUCED — an
+            # outline's designed gaps (edge/shared-wall openings already
+            # broken into ``runs``) are not confetti it made.
+            shattered = clip_pieces > _COURTYARD_MAX_PIECES
+            too_little = (
+                designed_mm <= 0 or kept_mm / designed_mm < _COURTYARD_MIN_KEPT_FRACTION
+            )
+            if not runs or (causes and (too_little or shattered)):
+                tail = (
+                    f"clipped into {clip_pieces} pieces that no longer "
+                    f"read as one outline ({kept_mm:.2f} of "
+                    f"{designed_mm:.2f}mm kept)"
+                    if shattered and not too_little
+                    else "leaving too little to read as an outline "
+                    f"({kept_mm:.2f} of {designed_mm:.2f}mm)"
                 )
-            ):
                 census.append(
                     SilkPlacement(
                         refdes=refdes,
@@ -4329,8 +4350,7 @@ def _build_silk_pass(
                                 if causes
                                 else "lies wholly inside the board's silk edge margin"
                             )
-                            + f", leaving too little to read as an outline "
-                            f"({kept_mm:.2f} of {designed_mm:.2f}mm) -- dropped"
+                            + f", {tail} -- dropped"
                         ),
                         stroke_width_mm=stroke_width_mm,
                     )

@@ -3654,3 +3654,90 @@ def test_check_silk_missing_cross_check_is_side_aware():
     }
     findings = drc.check_silk_missing([placed], model)
     assert any(f.rule == "silk_missing" for f in findings)
+
+
+def test_courtyard_clipped_into_fragments_drops_whole_instead():
+    """gr520792: a courtyard ring sliced by many small obstacles drew as
+    zigzag fragments — every piece cleared the min-run floor but the
+    scatter no longer reads as one outline. Past _COURTYARD_MAX_PIECES
+    the courtyard drops whole and reports, never draws confetti."""
+    ir = from_graph(_graph("U1", 16, x=10.0, y=10.0), stackup=DEFAULT_STACKUP)
+    local = instance_courtyard_polygon(
+        ir,
+        0,
+        clearance_mm=silk.outline_offsets_mm(
+            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+        )[1],
+        pins=list(range(16)),
+    )
+    xs = [p[0] for p in local]
+    ys = [p[1] for p in local]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    # Three small pads ON each side edge: each punches one gap and the
+    # runs left between them clear the min-run floor — confetti, not a
+    # mostly-erased ring (kept fraction stays ~80%, far above the
+    # half-floor, so only the piece cap can drop it).
+    pads = [
+        {
+            "shape": "rect",
+            "x": ex,
+            "y": 10.0 + y0 + (y1 - y0) * (k + 1) / 4.0,
+            "w": 0.25,
+            "h": 0.25,
+            "net": "FOREIGN",
+            "layer": "top",
+        }
+        for k in range(3)
+        for ex in (10.0 + x0, 10.0 + x1)
+    ]
+    result = build_silk(ir, pads=pads)
+    assert any("U1" in msg and "dropped" in msg for msg in result.dropped)
+
+
+def test_courtyard_with_designed_gaps_keeps_past_the_piece_cap() -> None:
+    """GRIPE_FIX (gr520792 review): the piece cap counts what
+    ``_clip_polyline`` PRODUCED, not every surviving run — an
+    edge-mated connector's courtyard already carries designed gaps
+    (the edge opening plus the shared-wall openings, 3 runs here);
+    one small pad clip splitting a run to 3 pieces must not drop a
+    courtyard still ~94 % intact."""
+    insts = [
+        {"refdes": "J1", "x": 30.0, "y": 3.0},
+        {"refdes": "U1", "x": 19.5, "y": 12.0},
+        {"refdes": "U2", "x": 40.5, "y": 12.0},
+    ]
+    n_pins = {"J1": 140, "U1": 40, "U2": 40}
+    graph = {
+        "instances": insts,
+        "nets": [
+            {
+                "name": f"{refdes}_{i}",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": refdes, "pin": str(i + 1)}],
+            }
+            for refdes, count in n_pins.items()
+            for i in range(count)
+        ],
+    }
+    board = [(0.0, 0.0), (80.0, 0.0), (80.0, 50.0), (0.0, 50.0)]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    outline = silk.part_outlines(ir, capability=None, outline=board)[0]
+    assert len(outline.runs) == 3  # the designed gaps this test needs
+    # Two small foreign pads on the long top run clip it into 3 pieces:
+    # 5 surviving runs > _COURTYARD_MAX_PIECES, but only 3 are clipped.
+    pads = [
+        {
+            "shape": "rect",
+            "x": x,
+            "y": 15.4,
+            "w": 0.5,
+            "h": 0.5,
+            "net": "FOREIGN",
+            "layer": "top",
+        }
+        for x in (27.0, 33.0)
+    ]
+    result = build_silk(ir, pads=pads, outline=board)
+    j1 = next(c for c in result.census if c.refdes == "J1" and c.kind == "courtyard")
+    assert j1.outcome != "dropped", j1.reason

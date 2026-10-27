@@ -33,6 +33,7 @@ under the ratsnest pull.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -322,6 +323,51 @@ def _concat(wires: list[np.ndarray], nets: list[int]) -> tuple[np.ndarray, np.nd
     )
 
 
+#: Hard authored measures pull this much harder per violation-mm than a
+#: soft one — same "hard dominates" convention
+#: ``precis.pcb.optimize._measure_pair_usd`` encodes.
+_MEASURE_HARD_W = 10.0
+
+
+def _measure_violation(spec: Any, row_a: np.ndarray, row_b: np.ndarray | None) -> float:
+    """One :class:`TopoMeasure`'s weighted violation in mm — 0 when the
+    bound holds. Mirrors ``optimize._measure_pair_usd``'s shape (linear
+    in the violation, never a legality rejection) minus its USD scale:
+    the proxy normalises by the seed total instead."""
+    xa, ya = float(row_a[0]), float(row_a[1])
+    if spec.datum is not None:
+        xb, yb = spec.datum
+    elif row_b is not None:
+        xb, yb = float(row_b[0]), float(row_b[1])
+    else:
+        return 0.0
+    if not (
+        math.isfinite(xa)
+        and math.isfinite(ya)
+        and math.isfinite(xb)
+        and math.isfinite(yb)
+    ):
+        return 0.0
+    if spec.metric == "align":
+        from precis.pcb.eyes import align_residual
+
+        v = max(
+            0.0,
+            align_residual((xa, ya), (xb, yb), spec.offset, spec.axis) - spec.goal_mm,
+        )
+    else:
+        dist = math.hypot(xa - xb, ya - yb)
+        if spec.bound == "lower":
+            v = max(0.0, spec.goal_mm - dist)
+        elif spec.bound == "upper":
+            v = max(0.0, dist - spec.goal_mm)
+        else:
+            v = abs(dist - spec.goal_mm)
+    if v <= 0.0:
+        return 0.0
+    return spec.weight * (_MEASURE_HARD_W if spec.hard else 1.0) * v
+
+
 def evaluate(d: TopoDesign, pose: np.ndarray) -> tuple[int, float]:
     """Full recompute — the reference ``try_move`` parity-checks against.
     Returns (crossings, total airwire length mm)."""
@@ -408,6 +454,29 @@ class ProxyState:
         self._ref_len = max(self._len, 1.0)
         self._ref_ov = max(self._ov, 1.0)
         self._ref_sp = max(self._sp, 1.0)
+        #: authored-measure pull (gr520546): per-part spec index list for
+        #: the try_move delta, the committed violation total and its
+        #: reference magnitude. Built only when the design carries
+        #: measures AND the share is on — like ``_rings``.
+        self._meas_of: list[list[int]] = [[] for _ in d.parts]
+        if self.w.measures and d.measures:
+            for si, spec in enumerate(d.measures):
+                self._meas_of[spec.ia].append(si)
+                if spec.ib >= 0:
+                    self._meas_of[spec.ib].append(si)
+        self._meas = (
+            sum(
+                _measure_violation(
+                    spec,
+                    self.pose[spec.ia],
+                    self.pose[spec.ib] if spec.ib >= 0 else None,
+                )
+                for spec in d.measures
+            )
+            if self.w.measures and d.measures
+            else 0.0
+        )
+        self._ref_meas = max(self._meas, 1.0)
         self._stage: dict[int, np.ndarray] = {}
         self._stage_wires: dict[int, np.ndarray] = {}
         self._stage_rings: dict[int, Any] = {}
@@ -415,6 +484,7 @@ class ProxyState:
         self._d_len = 0.0
         self._d_ov = 0.0
         self._d_sp = 0.0
+        self._d_meas = 0.0
 
     @property
     def crossings(self) -> int:
@@ -435,6 +505,11 @@ class ProxyState:
         return self._sp + self._d_sp
 
     @property
+    def measures_mm(self) -> float:
+        """Authored-measure violation total, weighted mm."""
+        return self._meas + self._d_meas
+
+    @property
     def cost(self) -> float:
         """Share-weighted, reference-normalised J."""
         return (
@@ -442,6 +517,7 @@ class ProxyState:
             + self.w.ratsnest * self.length / self._ref_len
             + self.w.overlap * self.overlap / self._ref_ov
             + self.w.spread * self.spread / self._ref_sp
+            + self.w.measures * self.measures_mm / self._ref_meas
         )
 
     def _rest_view(self, affected: set[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -509,6 +585,20 @@ class ProxyState:
         mask = self._noshare[part] & ((sides == side) | self._th)
         return float(kern[mask].sum())
 
+    def _meas_eval(self, spec, part: int, row: np.ndarray) -> float:
+        """The spec's violation with ``part``'s row swapped for ``row`` —
+        every other end reads its staged-or-committed row, so staged
+        moves telescope (a swap's two ``try_move`` calls land the pair
+        delta exactly once)."""
+        ra = row if spec.ia == part else self._stage.get(spec.ia, self.pose[spec.ia])
+        if spec.ib == part:
+            rb = row
+        elif spec.ib >= 0:
+            rb = self._stage.get(spec.ib, self.pose[spec.ib])
+        else:
+            rb = None
+        return _measure_violation(spec, ra, rb)
+
     def try_move(self, part: int, pose_row: np.ndarray) -> float:
         """Stage ``pose_row`` for ``part``; return Δcost under the staged
         state (a second ``try_move`` before ``commit`` stacks, which is
@@ -555,6 +645,13 @@ class ProxyState:
             self._d_sp += self._pair_spread(
                 part, staged_row[:2], bool(staged_row[3] >= 0.5)
             ) - self._pair_spread(part, old_row[:2], bool(old_row[3] >= 0.5))
+        if self._meas_of[part]:
+            old_row = self._stage.get(part, self.pose[part])
+            for si in self._meas_of[part]:
+                spec = self.d.measures[si]
+                self._d_meas += self._meas_eval(
+                    spec, part, staged_row
+                ) - self._meas_eval(spec, part, old_row)
         self._stage[part] = staged_row.copy()
         self._stage_wires.update(new_wires)
         self._d_cross += d_cross
@@ -570,6 +667,7 @@ class ProxyState:
                 self._rings[p] = self._stage_rings.get(p, self._rings[p])
         self._ov += self._d_ov
         self._sp += self._d_sp
+        self._meas += self._d_meas
         self._wires = [self._stage_wires.get(k, w) for k, w in enumerate(self._wires)]
         self._flat, self._flat_net = _concat(
             self._wires, list(range(len(self.d.net_pins)))
@@ -598,3 +696,4 @@ class ProxyState:
         self._d_len = 0.0
         self._d_ov = 0.0
         self._d_sp = 0.0
+        self._d_meas = 0.0

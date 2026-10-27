@@ -275,6 +275,8 @@ def render_summary(
         f"{base_len:.0f} → {result.length:.0f} mm, "
         f"area {span[0]:.0f}×{span[1]:.0f} mm²"
     )
+    for w in d.warnings:
+        lines.append(f"warning: {w}")
     lines.append(
         "via bracket: n/a (slice 2); corridor overflow: n/a (slice 4); "
         "certificates: n/a (slice 2)"
@@ -292,6 +294,7 @@ def render_summary(
         f"{result.seed}, effort {effort}, objective crossings "
         f"{objective.crossings:.2f}/ratsnest {objective.ratsnest:.2f}"
         f"/overlap {objective.overlap:.2f}/spread {objective.spread:.2f}"
+        f"/measures {objective.measures:.2f}"
     )
     if result.elites:
         costs = np.asarray([e.cost for e in result.elites])

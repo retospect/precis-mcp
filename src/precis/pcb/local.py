@@ -854,8 +854,15 @@ def topo_place(
         placement_sides=(
             ((design.graph.get("board") or {}).get("meta") or {}).get("placement_sides")
         ),
+        measures=design.graph.get("measures"),
     )
     _tp.check_slots(td)
+    if td.measures and not obj.measures:
+        import dataclasses
+
+        # gr520546: authored measures steer the anneal — priced in only
+        # when the design carries resolvable specs.
+        obj = dataclasses.replace(obj, measures=0.2)
     result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed)
     assignment = _tp.assign_pins(td, result.best_pose)
     pm = _tp.pair_map(td)

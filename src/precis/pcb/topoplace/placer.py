@@ -39,6 +39,7 @@ from precis.pcb.topoplace.design import (
     FREEDOM_ROTATE,
     ObjectiveShares,
     TopoDesign,
+    qrot,
 )
 from precis.pcb.topoplace.proxy import ProxyState
 
@@ -149,6 +150,37 @@ def _scatter(
     if not unplaced.any():
         return out
     out[unplaced, :2] = rng.uniform(xy_lo[unplaced], xy_hi[unplaced])
+    # Rigid groups keep their authored shape when seeded: unplaced
+    # members of a group take their pose off the group's anchor — from a
+    # placed member's pose when one exists, else from a uniformly
+    # scattered anchor inside the members' shared legal box (gr520546).
+    for members in d.group_members:
+        unpl = [m for m in members if unplaced[m]]
+        if not unpl:
+            continue
+        placed = [m for m in members if not unplaced[m]]
+        if placed:
+            m0 = placed[0]
+            arot_q = round(out[m0, 2] - d.group_off[m0, 2]) % 4
+            anchor = out[m0, :2] - qrot(d.group_off[m0, :2], arot_q)
+        else:
+            arot_q = int(rng.integers(0, 4))
+            lo = np.maximum.reduce(
+                [xy_lo[m] - qrot(d.group_off[m, :2], arot_q) for m in members]
+            )
+            hi = np.minimum.reduce(
+                [xy_hi[m] - qrot(d.group_off[m, :2], arot_q) for m in members]
+            )
+            if (hi <= lo).any():
+                m0 = members[0]
+                anchor = (xy_lo[m0] + xy_hi[m0]) / 2.0 - qrot(
+                    d.group_off[m0, :2], arot_q
+                )
+            else:
+                anchor = rng.uniform(lo, hi)
+        for m in unpl:
+            out[m, :2] = anchor + qrot(d.group_off[m, :2], arot_q)
+            out[m, 2] = float((arot_q + int(d.group_off[m, 2])) % 4)
     return out
 
 
@@ -177,8 +209,28 @@ def topo_place(
     rng = np.random.default_rng(seed)
     n_parts = len(d.parts)
     movable = np.flatnonzero(~d.fixed)
-    can_rotate = np.flatnonzero((d.freedoms & FREEDOM_ROTATE).astype(bool) & ~d.fixed)
     can_flip = np.flatnonzero((d.freedoms & FREEDOM_BACK_SIDE).astype(bool) & ~d.fixed)
+    # Rigid units (gr520546): an authored group's members move as ONE
+    # body — a translate or rotate proposal stages every member, and
+    # groups with a fixed member are already all-fixed by
+    # ``design_from_ir`` so they never reach a mover. Flips and swaps
+    # stay solo: a side flip would need mirroring the authored offsets,
+    # and a rigid pair can't trade places member-for-member.
+    grouped = {m for members in d.group_members for m in members}
+    if len(d.group_of):
+        can_flip = can_flip[d.group_of[can_flip] < 0]
+    units: list[tuple[int, ...]] = []
+    seen: set[int] = set()
+    for p in movable.tolist():
+        if p in seen:
+            continue
+        gid = int(d.group_of[p]) if len(d.group_of) else -1
+        mates = d.group_members[gid] if gid >= 0 else ()
+        unit = tuple(m for m in mates if not d.fixed[m]) or (p,)
+        units.append(unit)
+        seen.update(unit)
+    # a unit may rotate only when every member may rotate
+    rot_units = [u for u in units if all(d.freedoms[m] & FREEDOM_ROTATE for m in u)]
     if d.sides in ("top", "bottom"):
         # placement_sides (gr520370): only a part already on the
         # disallowed side is offered the move (its flip comes OFF it) —
@@ -189,6 +241,8 @@ def topo_place(
     sigs = _signatures(d)
     by_sig: dict[tuple[Any, ...], list[int]] = {}
     for p in movable.tolist():
+        if p in grouped:
+            continue  # a group member can only trade with its own mates
         by_sig.setdefault(sigs[p], []).append(p)
     swap_pairs = [
         (g[i], g[j])
@@ -236,9 +290,29 @@ def topo_place(
             # an edge-sitting centre out)
             pose = anchor.copy()
             jit = rng.normal(0.0, span * 0.02, (n_parts, 2))
+            # one shared delta per rigid unit — member-wise jitter would
+            # tear the authored shape (gr520546)
+            for members in d.group_members:
+                if len(members) > 1:
+                    jit[np.asarray(members, dtype=np.int64)] = jit[int(members[0])]
             pose[:, 0] += jit[:, 0]
             pose[:, 1] += jit[:, 1]
             pose[:, :2] = np.clip(pose[:, :2], xy_lo, xy_hi)
+            # the generic clip is per-member and can re-tear a unit at
+            # an edge — re-clip the shared delta to the members' common
+            # box instead
+            for members in d.group_members:
+                live = [m for m in members if not d.fixed[m]]
+                if len(live) < 2:
+                    continue
+                mm = np.asarray(live, dtype=np.int64)
+                delta = jit[int(members[0])]
+                delta = np.clip(
+                    delta,
+                    (xy_lo[mm] - anchor[mm, :2]).max(axis=0),
+                    (xy_hi[mm] - anchor[mm, :2]).min(axis=0),
+                )
+                pose[mm, :2] = anchor[mm, :2] + delta
             pose[d.fixed] = anchor[d.fixed]
 
         proxy = ProxyState(d, pose, objective)
@@ -250,7 +324,7 @@ def topo_place(
         # move weights over the options this design actually has —
         # picking a valid move every eval keeps the effort honest.
         opts = [(0.70, "t")]
-        if len(can_rotate):
+        if len(rot_units):
             opts.append((0.10, "r"))
         if len(can_flip):
             opts.append((0.10, "f"))
@@ -263,17 +337,25 @@ def topo_place(
         # cost delta whatever the board's crossing scale is (the share
         # normalisation makes a raw constant meaningless).
         probes: list[float] = []
-        if len(movable):
+        if len(units):
             for _ in range(min(30, budget)):
-                p = int(movable[rng.integers(len(movable))])
-                row = proxy.pose[p].copy()
+                u = units[rng.integers(len(units))]
                 step = max(0.5, step0 * (step_cool**evals))
-                row[0] += rng.normal(0.0, step)
-                row[1] += rng.normal(0.0, step)
-                row[0] = np.clip(row[0], xy_lo[p, 0], xy_hi[p, 0])
-                row[1] = np.clip(row[1], xy_lo[p, 1], xy_hi[p, 1])
+                delta = np.asarray([rng.normal(0.0, step), rng.normal(0.0, step)])
+                if len(u) > 1:
+                    midx = np.asarray(u, dtype=np.int64)
+                    delta = np.clip(
+                        delta,
+                        (xy_lo[midx] - proxy.pose[midx, :2]).max(axis=0),
+                        (xy_hi[midx] - proxy.pose[midx, :2]).min(axis=0),
+                    )
+                dd = 0.0
+                for m in u:
+                    row = proxy.pose[m].copy()
+                    row[:2] = np.clip(row[:2] + delta, xy_lo[m], xy_hi[m])
+                    dd += proxy.try_move(m, row)
                 evals += 1
-                dd = abs(proxy.try_move(p, row))
+                dd = abs(dd)
                 if dd > 0:
                     probes.append(dd)
                 proxy.revert()
@@ -295,19 +377,57 @@ def topo_place(
                     break
             staged_rows: dict[int, np.ndarray] = {}
             if mv == "t":
-                p = int(movable[rng.integers(len(movable))])
-                row = proxy.pose[p].copy()
+                u = units[rng.integers(len(units))]
                 step = max(0.5, step0 * (step_cool**evals))
-                row[0] += rng.normal(0.0, step)
-                row[1] += rng.normal(0.0, step)
-                row[0] = np.clip(row[0], xy_lo[p, 0], xy_hi[p, 0])
-                row[1] = np.clip(row[1], xy_lo[p, 1], xy_hi[p, 1])
-                staged_rows = {p: row}
+                delta = np.asarray([rng.normal(0.0, step), rng.normal(0.0, step)])
+                # a multi-member unit's shared delta is clipped to the
+                # members' common box so EVERY member stays in its own
+                # legal box — a unit never tears. A solo unit skips it:
+                # the per-member clip below is clip(pose+delta),
+                # main's move semantics bytewise (gr520546 review).
+                if len(u) > 1:
+                    midx = np.asarray(u, dtype=np.int64)
+                    delta = np.clip(
+                        delta,
+                        (xy_lo[midx] - proxy.pose[midx, :2]).max(axis=0),
+                        (xy_hi[midx] - proxy.pose[midx, :2]).min(axis=0),
+                    )
+                staged_rows = {}
+                for m in u:
+                    row = proxy.pose[m].copy()
+                    row[:2] = np.clip(row[:2] + delta, xy_lo[m], xy_hi[m])
+                    staged_rows[m] = row
             elif mv == "r":
-                p = int(can_rotate[rng.integers(len(can_rotate))])
-                row = proxy.pose[p].copy()
-                row[2] = (row[2] + rng.choice([1.0, 3.0])) % 4
-                staged_rows = {p: row}
+                u = rot_units[rng.integers(len(rot_units))]
+                dq = float(rng.choice([1.0, 3.0]))
+                if len(u) == 1:
+                    p = u[0]
+                    row = proxy.pose[p].copy()
+                    row[2] = (row[2] + dq) % 4
+                    staged_rows = {p: row}
+                else:
+                    # group rotate: turn the whole rigid body about its
+                    # anchor — every member's offset swings by dq and its
+                    # own rot advances by the same quarter count.
+                    m0 = u[0]
+                    arot_q = round(proxy.pose[m0, 2] - d.group_off[m0, 2]) % 4
+                    anchor = proxy.pose[m0, :2] - qrot(d.group_off[m0, :2], arot_q)
+                    staged_rows = {}
+                    legal = True
+                    for m in u:
+                        new_xy = anchor + qrot(proxy.pose[m, :2] - anchor, int(dq))
+                        if not (
+                            xy_lo[m, 0] <= new_xy[0] <= xy_hi[m, 0]
+                            and xy_lo[m, 1] <= new_xy[1] <= xy_hi[m, 1]
+                        ):
+                            legal = False
+                            break
+                        row = proxy.pose[m].copy()
+                        row[:2] = new_xy
+                        row[2] = (row[2] + dq) % 4
+                        staged_rows[m] = row
+                    if not legal:
+                        continue
             elif mv == "f":
                 p = int(can_flip[rng.integers(len(can_flip))])
                 row = proxy.pose[p].copy()
