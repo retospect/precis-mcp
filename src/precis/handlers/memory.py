@@ -796,6 +796,7 @@ class MemoryHandler(NumericRefHandler):
 
         # Attribution gate: before any write, so ``reject`` mode leaves nothing.
         misses = self._attribution_misses(body, reject=set_by == "agent")
+        facts_deferred = 0
 
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
@@ -840,7 +841,7 @@ class MemoryHandler(NumericRefHandler):
             if misses:
                 self._apply_attribution_tag(ref.id, misses, conn=conn)
             if self.autolink_mentions:
-                self._sync_mention_links(ref.id, body, conn=conn)
+                facts_deferred = self._sync_mention_links(ref.id, body, conn=conn)
             self.store.chunks.sync_header_card(ref.id, conn=conn)
         # Attribute the new memory's body chunk to the current agent run
         # (Slice B provenance) — a no-op unless PRECIS_CURRENT_AGENTLOG is
@@ -851,6 +852,7 @@ class MemoryHandler(NumericRefHandler):
 
         agentlog.touch_from_env(self.store, chunk_ids=[b.id for b in body_blocks])
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
+        ack = self._facts_note(ack, facts_deferred)
         return self._with_attribution_advisory(ack, misses), int(ref.id)
 
     # ── attribution gate (precis.handlers._attribution) ──
@@ -1248,6 +1250,7 @@ class MemoryHandler(NumericRefHandler):
 
         assert text is not None
         misses = self._attribution_misses(text)
+        deferred: list[int] = []
         old_body = self._write_body(
             ref.id,
             text,
@@ -1255,6 +1258,7 @@ class MemoryHandler(NumericRefHandler):
             meta_patch=meta_patch,
             misses=misses,
             reason=reason,
+            deferred_out=deferred,
         )
         nudge = self._first_line_nudge(new_title) if new_title is not None else None
         old_words = len((old_body or "").split())
@@ -1272,7 +1276,10 @@ class MemoryHandler(NumericRefHandler):
         if lead:
             body += f"\n\nhint: {lead}"
         body += render_next_section(link_hints(self, ref.id))
-        return self._with_attribution_advisory(Response(body=body), misses)
+        return self._with_attribution_advisory(
+            self._facts_note(Response(body=body), deferred[0] if deferred else 0),
+            misses,
+        )
 
     def _thread_lead_hint(
         self, ref_id: int, old_body: str | None, new_body: str
@@ -1352,6 +1359,7 @@ class MemoryHandler(NumericRefHandler):
         misses: list[UngroundedNumber] | None = None,
         reason: str | None = None,
         op: str | None = None,
+        deferred_out: list[int] | None = None,
     ) -> str | None:
         """The one body-write path shared by every edit mode.
 
@@ -1414,7 +1422,13 @@ class MemoryHandler(NumericRefHandler):
                 # Re-sync auto-mention links to the rewritten body: drop the
                 # old auto links, add the current ones. Hand-added links
                 # survive.
-                self._sync_mention_links(ref_id, new_text, conn=conn, replace=True)
+                deferred = self._sync_mention_links(
+                    ref_id, new_text, conn=conn, replace=True
+                )
+                if deferred_out is not None:
+                    # ``retry_locked`` can re-invoke this closure — assign,
+                    # never append, so the sink stays single-valued.
+                    deferred_out[:] = [deferred]
                 if misses is not None:
                     self._apply_attribution_tag(ref_id, misses, conn=conn)
             return old_body
@@ -1570,6 +1584,7 @@ class MemoryHandler(NumericRefHandler):
                 body += f"\n(title would become {new_title!r})"
             return Response(body="\n".join([*header, "", body]))
         misses = self._attribution_misses(new_body)
+        deferred: list[int] = []
         self._write_body(
             ref.id,
             new_body,
@@ -1579,6 +1594,7 @@ class MemoryHandler(NumericRefHandler):
             misses=misses,
             reason=reason,
             op=op_kind if op_kind == "delete-span" else None,
+            deferred_out=deferred,
         )
         verb = (
             "edited"
@@ -1603,7 +1619,10 @@ class MemoryHandler(NumericRefHandler):
         if lead:
             ack += f"\n\nhint: {lead}"
         ack += render_next_section(link_hints(self, ref.id))
-        return self._with_attribution_advisory(Response(body=ack), misses)
+        return self._with_attribution_advisory(
+            self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
+            misses,
+        )
 
     def _edit_append(
         self,
@@ -1679,6 +1698,7 @@ class MemoryHandler(NumericRefHandler):
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
             return Response(body="\n".join([*header, "", body]))
         misses = self._attribution_misses(new_body)
+        deferred: list[int] = []
         self._write_body(
             ref.id,
             new_body,
@@ -1687,6 +1707,7 @@ class MemoryHandler(NumericRefHandler):
             expected_body=old_body,
             misses=misses,
             reason=reason,
+            deferred_out=deferred,
         )
         ack = (
             f"appended to body of {self._sense()} id={ref.id} "
@@ -1699,7 +1720,10 @@ class MemoryHandler(NumericRefHandler):
         if lead:
             ack += f"\n\nhint: {lead}"
         ack += render_next_section(link_hints(self, ref.id))
-        return self._with_attribution_advisory(Response(body=ack), misses)
+        return self._with_attribution_advisory(
+            self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
+            misses,
+        )
 
     def _edit_ops(
         self,
@@ -1791,6 +1815,7 @@ class MemoryHandler(NumericRefHandler):
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
             return Response(body="\n".join([*header, "", body]))
         misses = self._attribution_misses(new_body)
+        deferred: list[int] = []
         self._write_retried(
             ref.id,
             "body edit",
@@ -1802,6 +1827,7 @@ class MemoryHandler(NumericRefHandler):
                 expected_body=old_body,
                 misses=misses,
                 reason=reason,
+                deferred_out=deferred,
             ),
         )
         ack = (
@@ -1813,7 +1839,10 @@ class MemoryHandler(NumericRefHandler):
         if lead:
             ack += f"\n\nhint: {lead}"
         ack += render_next_section(link_hints(self, ref.id))
-        return self._with_attribution_advisory(Response(body=ack), misses)
+        return self._with_attribution_advisory(
+            self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
+            misses,
+        )
 
     @staticmethod
     def _op_append(

@@ -362,6 +362,12 @@ class TodoHandler(NumericRefHandler):
     edit_id_list: ClassVar[str] = "native"
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
+    # Mentions in the title/body (incl. bare C-numbers → part refs,
+    # gr520243) materialise as ``related-to`` links on write — same
+    # autolinker memory uses. ``_create``/``edit``/``_edit_anchored``
+    # below call ``_sync_mention_links`` over title + details body.
+    autolink_mentions: ClassVar[bool] = True
+
     # ── list view dispatch (id='/<view>') ─────────────────────────
     # ("open work" union: views.ACTIVE_STATUSES — the view='active' set.)
 
@@ -867,6 +873,7 @@ class TodoHandler(NumericRefHandler):
         if tags:
             all_tag_strs.extend(tags)
         state = _PUT_STATE.get()
+        facts_deferred = 0
 
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
@@ -924,6 +931,13 @@ class TodoHandler(NumericRefHandler):
                 )
             if self.emits_card:
                 self.store.chunks.upsert_card_combined(ref.id, text, conn=conn)
+            facts_deferred = self._sync_mention_links(
+                ref.id,
+                text + ("\n" + state.body if state.body else ""),
+                conn=conn,
+            )
+        if target is not None and target.kind == "part":
+            self._enqueue_part_datasheet(target.ref_id)
         # Soft reminder: a rotation_root todo with no auto-run signal
         # (meta.llm_tier / executor:* tag / meta.executor) will never be
         # picked up by the dispatch worker, so it spawns no children and
@@ -947,7 +961,7 @@ class TodoHandler(NumericRefHandler):
                         topic="todo.strategic.no_auto_run",
                     )
                 )
-        return self._render_create_ack(ref.id)
+        return self._facts_note(self._render_create_ack(ref.id), facts_deferred)
 
     # ── edit: in-place text rewrite (polish the wording) ──────────
 
@@ -1165,10 +1179,15 @@ class TodoHandler(NumericRefHandler):
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)
         ref = self._resolve_live_ref(ref_id)
-        body_present = any(
-            c.chunk_kind == _BODY_KIND
-            for c in self.store.chunks.list_chunks_for_ref(ref.id)
+        body_chunk = next(
+            (
+                c
+                for c in self.store.chunks.list_chunks_for_ref(ref.id)
+                if c.chunk_kind == _BODY_KIND
+            ),
+            None,
         )
+        body_present = body_chunk is not None
         if params_value is not None or clear_params:
             guards.check_recurring_params_edit(True, ref.meta)
         if dry_run:
@@ -1207,9 +1226,24 @@ class TodoHandler(NumericRefHandler):
                     f"of todo id={ref.id}."
                 )
             )
+        # The post-edit title+body, for the mention resync below. The
+        # body arm mirrors the write logic: explicit body= wins, an
+        # explicit '' clear leaves nothing, a detail-carrying old title
+        # survives as the new body, else the prior body stands.
+        post_title = (text or "") if has_text else (ref.title or "")
+        if has_body:
+            post_body = body or ""
+        elif clear_body:
+            post_body = ""
+        elif not body_present and _title_holds_details(ref.title or ""):
+            post_body = ref.title or ""
+        else:
+            post_body = body_chunk.text if body_chunk is not None else ""
+        prose_changed = bool(has_text or has_body or clear_body)
         old_text: str | None = None
         preserved_title = False
         cleared_body: str | None = None
+        facts_deferred = 0
         with self.store.tx() as conn:
             if has_text:
                 assert text is not None
@@ -1295,6 +1329,13 @@ class TodoHandler(NumericRefHandler):
                     },
                     conn=conn,
                 )
+            if prose_changed:
+                facts_deferred = self._sync_mention_links(
+                    ref.id,
+                    post_title + "\n" + post_body,
+                    conn=conn,
+                    replace=True,
+                )
         parts: list[str] = []
         if has_text:
             assert text is not None
@@ -1317,11 +1358,14 @@ class TodoHandler(NumericRefHandler):
             parts.append("meta.params (replaced)")
         if clear_params:
             parts.append("meta.params (cleared)")
-        return Response(
-            body=(
-                f"replaced {' + '.join(parts)} of todo id={ref.id}. "
-                "view='log' for the full diff."
-            )
+        return self._facts_note(
+            Response(
+                body=(
+                    f"replaced {' + '.join(parts)} of todo id={ref.id}. "
+                    "view='log' for the full diff."
+                )
+            ),
+            facts_deferred,
         )
 
     def _edit_anchored(
@@ -1422,6 +1466,12 @@ class TodoHandler(NumericRefHandler):
                 op=op_kind if op_kind == "delete-span" else None,
                 conn=conn,
             )
+            facts_deferred = self._sync_mention_links(
+                ref.id,
+                (ref.title or "") + "\n" + new_body,
+                conn=conn,
+                replace=True,
+            )
         verb = (
             "edited"
             if op_kind == "edit"
@@ -1430,13 +1480,16 @@ class TodoHandler(NumericRefHandler):
             else "inserted into"
         )
         n_spans = len(result.edited_spans)
-        return Response(
-            body=(
-                f"{verb} details body of todo id={ref.id} "
-                f"({len(old_body.split())} → {len(new_body.split())} words, "
-                f"{n_spans} span{'s' if n_spans != 1 else ''}). "
-                "view='log' for the full diff."
-            )
+        return self._facts_note(
+            Response(
+                body=(
+                    f"{verb} details body of todo id={ref.id} "
+                    f"({len(old_body.split())} → {len(new_body.split())} words, "
+                    f"{n_spans} span{'s' if n_spans != 1 else ''}). "
+                    "view='log' for the full diff."
+                )
+            ),
+            facts_deferred,
         )
 
     # ── comments: render + hide ───────────────────────────────────

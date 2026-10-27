@@ -315,6 +315,8 @@ class DatasheetHandler(PaperHandler):
             "in_flight": "facts extraction already queued",
             "extracted": "facts already extracted",
             "no_datasheet": "no datasheet to extract facts from",
+            "capped": "facts extraction skipped — daily cap reached; "
+            "get(kind='part', id=…) after the window clears",
         }.get(enqueue_facts_one(self.store, job, lcsc), "facts queue failed")
         return Response(
             body=f"{pull}; {facts}. Outcome: get(kind='part', id='{lcsc}') "

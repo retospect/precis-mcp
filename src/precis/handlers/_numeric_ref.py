@@ -3001,6 +3001,8 @@ class NumericRefHandler(Handler):
                     meta=meta,
                     merge_meta=meta is not None,
                 )
+            if link_target.kind == "part":
+                self._enqueue_part_datasheet(link_target.ref_id)
             return Response(body=f"linked {self._sense()} id={ref_id} → {target}")
         # mode == "remove"
         n_removed = self.store.remove_link(
@@ -3049,6 +3051,8 @@ class NumericRefHandler(Handler):
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:
             all_tag_strs.extend(tags)
+
+        facts_deferred = 0
 
         # All validation done — now do every DB write inside a single
         # transaction so the ref + tags + link land atomically. If
@@ -3117,8 +3121,13 @@ class NumericRefHandler(Handler):
                     ref.id, self._card_text_for(text, initial_meta), conn=conn
                 )
             if self.autolink_mentions:
-                self._sync_mention_links(ref.id, text, conn=conn)
-        return self._with_first_line_nudge(self._render_create_ack(ref.id), text)
+                facts_deferred = self._sync_mention_links(ref.id, text, conn=conn)
+        if target is not None and target.kind == "part":
+            self._enqueue_part_datasheet(target.ref_id)
+        return self._facts_note(
+            self._with_first_line_nudge(self._render_create_ack(ref.id), text),
+            facts_deferred,
+        )
 
     def _first_line_nudge(self, text: str | None) -> str | None:
         """A one-line nudge when the body's first line reads as filler.
@@ -3145,6 +3154,19 @@ class NumericRefHandler(Handler):
             return ack
         return Response(body=f"{ack.body}\n\nhint: {nudge}", cost=ack.cost)
 
+    @staticmethod
+    def _facts_note(resp: Response, deferred: int) -> Response:
+        """Append the ``…more parts linked; their briefs build when
+        opened`` line when explicit ``part:C…`` mentions outran this
+        write's facts-job cap (the cost policy, gr520243)."""
+        if not deferred:
+            return resp
+        from precis.pcb import datasheets
+
+        return dataclasses.replace(
+            resp, body=resp.body + "\n" + datasheets.facts_deferred_note(deferred)
+        )
+
     def _sync_mention_links(
         self,
         ref_id: int,
@@ -3164,8 +3186,9 @@ class NumericRefHandler(Handler):
         ``replace=True`` (the edit path) first drops the previous
         auto-mention links (those carrying ``meta={'auto': 'mention'}``)
         so a handle removed from the body loses its link; hand-added
-        ``related-to`` links are left untouched. Returns the number of
-        links added.
+        ``related-to`` links are left untouched. Returns how many
+        explicit part mentions deferred past this write's facts cap —
+        the caller folds it into its reply note.
         """
         from precis.utils import mentions
 
@@ -3182,7 +3205,21 @@ class NumericRefHandler(Handler):
                             relation="related-to",
                             conn=conn,
                         )
-            added = 0
+            # Mint the lazy part ref for every C-number the text names so
+            # the resolve pass below can see it (the resolver itself never
+            # mints — its read-side users stay pure). An uncatalogued
+            # C-number mints nothing and stays unlinked. Never on this
+            # tx's conn: an uncommitted mint's ``lcsc`` identifier row
+            # would block a second ``ensure_part_ref`` probing the same
+            # PK on another connection.
+            lcscs = mentions.extract_part_lcscs(text)
+            mint_part = getattr(self.store, "ensure_part_ref", None)
+            if mint_part is not None:
+                for lcsc in lcscs:
+                    try:
+                        mint_part(lcsc)
+                    except NotFound:
+                        continue
             for tgt in mentions.resolve_link_targets(
                 self.store, text, exclude_ref_id=ref_id
             ):
@@ -3195,8 +3232,22 @@ class NumericRefHandler(Handler):
                     meta={"auto": "mention"},
                     conn=conn,
                 )
-                added += 1
-            return added
+            # Linking a part queues its datasheet pull (gr520243); only
+            # an explicit ``part:C…`` mention may also queue the BIG-tier
+            # facts read, under the per-write and daily spend caps —
+            # ``queue_mentioned_parts`` owns both. Skip when the mint
+            # failed (no live part ref).
+            hub = getattr(self, "hub", None)
+            if lcscs and hub is not None and hasattr(self.store, "part_ref_id"):
+                from precis.pcb import datasheets
+
+                return datasheets.queue_mentioned_parts(
+                    self.store,
+                    hub.sibling("job"),
+                    lcscs,
+                    facts_for=set(mentions.extract_explicit_part_lcscs(text)),
+                )
+            return 0
         except Exception:
             log.warning(
                 "%s: autolink mentions failed for ref %s",
@@ -3205,6 +3256,20 @@ class NumericRefHandler(Handler):
                 exc_info=True,
             )
             return 0
+
+    def _enqueue_part_datasheet(self, part_ref_id: int) -> None:
+        """Queue the datasheet pull+facts pair for a just-linked part —
+        the same jobs ``get(kind='part')`` runs, idempotent (gr520243).
+        Best-effort: the helper never raises, and a handler without a
+        hub (rare — tests) skips the queue."""
+        hub = getattr(self, "hub", None)
+        if hub is None:
+            return
+        from precis.pcb import datasheets
+
+        datasheets.queue_pull_facts_for_part_ref(
+            self.store, hub.sibling("job"), part_ref_id
+        )
 
     def _resolve_ref_for_delete(self, ref_id: int) -> Ref:
         """The delete verb's live-ref guard, shared by every ``_delete``.

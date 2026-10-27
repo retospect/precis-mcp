@@ -200,6 +200,222 @@ def test_pn_handle_resolves_to_the_part_ref(seeded):
     )
 
 
+# ── write-time C-number mention autolink (gr520243) ──────────────────
+
+
+def _ref_id(store, kind: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = %s", (kind,)
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _auto_mentions(store, src: int) -> set[int]:
+    """dst ref_ids of the auto-mention ``related-to`` edges only —
+    hand-added links are not the autolinker's business."""
+    return {
+        lk.dst_ref_id
+        for lk in store.links_for(src, direction="out", relation="related-to")
+        if (lk.meta or {}).get("auto") == "mention"
+    }
+
+
+def _jobs(store, job_type: str) -> list[str]:
+    """lcsc param of each live ``job_type`` job ref, sorted."""
+    with store.pool.connection() as conn:
+        return sorted(
+            str(r[0])
+            for r in conn.execute(
+                "SELECT meta->'params'->>'lcsc' FROM refs "
+                "WHERE kind = 'job' AND meta->>'job_type' = %s "
+                "ORDER BY ref_id",
+                (job_type,),
+            ).fetchall()
+        )
+
+
+def test_todo_text_naming_c_numbers_autolinks_their_part_refs(seeded):
+    """Acceptance: a todo naming two C-numbers mints + links both, and
+    each linked part queues its datasheet pull — bare prose C-numbers
+    never queue the BIG-tier facts read (the cost policy, gr520243);
+    it waits for an explicit door. A second edit naming the same parts
+    queues nothing new."""
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=Hub(store=seeded))
+    resp = todo.put(text="swap R1 for C25804 and U1 for C1525")
+    assert "created todo" in resp.body
+    tid = _ref_id(seeded, "todo")
+    part_a, part_b = seeded.part_ref_id("C25804"), seeded.part_ref_id("C1525")
+    assert part_a is not None and part_b is not None
+    assert _auto_mentions(seeded, tid) == {part_a, part_b}
+    assert _jobs(seeded, "datasheet_pull") == ["C1525", "C25804"]
+    assert _jobs(seeded, "datasheet_facts") == []
+    # A re-write naming the same parts: idem dedupe reuses the jobs.
+    todo.edit(id=tid, mode="replace", text="swap R1 for C25804, U1 for C1525")
+    assert _auto_mentions(seeded, tid) == {part_a, part_b}
+    assert _jobs(seeded, "datasheet_pull") == ["C1525", "C25804"]
+    assert _jobs(seeded, "datasheet_facts") == []
+
+
+def test_todo_edit_resyncs_c_number_mentions(seeded):
+    """replace=True drops the removed mention's auto edge."""
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=Hub(store=seeded))
+    todo.put(text="buy C25804 for the BOM")
+    tid = _ref_id(seeded, "todo")
+    assert _auto_mentions(seeded, tid) == {seeded.part_ref_id("C25804")}
+    todo.edit(id=tid, mode="replace", text="buy C1525 instead")
+    assert _auto_mentions(seeded, tid) == {seeded.part_ref_id("C1525")}
+
+
+def test_link_door_to_a_part_queues_its_pull(seeded):
+    """The explicit ``link()`` door queues the pull+facts pair too."""
+    memory = MemoryHandler(hub=Hub(store=seeded))
+    memory.link(id=_memory(seeded), target="part:C25804", rel="related-to")
+    assert _jobs(seeded, "datasheet_pull") == ["C25804"]
+    assert _jobs(seeded, "datasheet_facts") == ["C25804"]
+    # Second link to the same part: nothing new queued.
+    memory.link(id=_memory(seeded), target="part:C25804", rel="related-to")
+    assert _jobs(seeded, "datasheet_pull") == ["C25804"]
+
+
+def test_an_uncatalogued_c_number_stays_unlinked(seeded):
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=Hub(store=seeded))
+    todo.put(text="maybe C99999999 works here")
+    tid = _ref_id(seeded, "todo")
+    assert _auto_mentions(seeded, tid) == set()
+    assert _part_ref_count(seeded, "C99999999") == 0
+
+
+def test_memory_mention_of_a_c_number_links_too(seeded):
+    memory = MemoryHandler(hub=Hub(store=seeded))
+    memory.put(text="note about C25804")
+    assert _auto_mentions(seeded, _ref_id(seeded, "memory")) == {
+        seeded.part_ref_id("C25804")
+    }
+
+
+def test_draft_chunk_naming_a_c_number_links_the_minted_part(seeded):
+    from precis.handlers.draft import DraftHandler
+
+    proj = seeded.insert_ref(kind="todo", slug=None, title="proj").id
+    ref, _t = seeded.drafts.create_draft(name="bom", title="BOM", project_ref_id=proj)
+    seeded.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="uses C25804",
+        at={"last": True},
+    )
+    DraftHandler(hub=Hub(store=seeded)).sync_draft_links(ref.id)
+    assert seeded.part_ref_id("C25804") in _auto_mentions(seeded, ref.id)
+
+
+# ── the facts-queue cost policy (gr520243) ───────────────────────────
+
+
+def test_bare_c_number_mentions_pull_but_never_queue_facts(seeded):
+    """A bare C-number links + queues the pull only — a prose dump of
+    200 of them mints 200 links and 200 pulls but ZERO facts jobs."""
+    from precis.handlers.todo import TodoHandler
+
+    nums = list(range(200000, 200200))
+    seeded.parts_import(_catalog_rows(*nums))
+    todo = TodoHandler(hub=Hub(store=seeded))
+    resp = todo.put(text="BOM: " + " ".join(f"C{n}" for n in nums))
+    assert "created todo" in resp.body
+    tid = _ref_id(seeded, "todo")
+    assert len(_auto_mentions(seeded, tid)) == 200
+    assert _jobs(seeded, "datasheet_pull") == sorted(f"C{n}" for n in nums)
+    assert _jobs(seeded, "datasheet_facts") == []
+
+
+def test_part_mentions_queue_facts_only_up_to_the_write_cap(seeded):
+    """8 explicit ``part:C…`` mentions in one write: at most 5 new
+    facts jobs queue; the rest link + pull and the reply notes it."""
+    from precis.handlers.todo import TodoHandler
+
+    nums = list(range(210000, 210008))
+    seeded.parts_import(_catalog_rows(*nums))
+    todo = TodoHandler(hub=Hub(store=seeded))
+    resp = todo.put(text="parts: " + " ".join(f"part:C{n}" for n in nums))
+    assert len(_jobs(seeded, "datasheet_facts")) == 5
+    assert _jobs(seeded, "datasheet_pull") == sorted(f"C{n}" for n in nums)
+    assert "3 more parts linked; their briefs build when opened" in resp.body
+
+
+def test_the_daily_facts_ceiling_skips_queueing(seeded):
+    """Once 100 facts jobs were minted in the last 24 h (the spend cap)
+    an explicit ``part:`` mention still links + pulls but queues no
+    facts job."""
+    from precis.handlers.todo import TodoHandler
+
+    for i in range(100):
+        seeded.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"facts {i}",
+            meta={
+                "job_type": "datasheet_facts",
+                "params": {"lcsc": f"C900{i:04d}"},
+            },
+        )
+    todo = TodoHandler(hub=Hub(store=seeded))
+    resp = todo.put(text="use part:C25804 here")
+    assert _jobs(seeded, "datasheet_pull") == ["C25804"]
+    facts = _jobs(seeded, "datasheet_facts")
+    assert "C25804" not in facts and len(facts) == 100
+    assert "1 more parts linked; their briefs build when opened" in resp.body
+
+
+def test_unscoped_draft_sync_links_without_queueing_jobs(seeded):
+    """A sync with no touched-chunk set (refresh / export / taproot /
+    chunk move+delete) re-materialises links only — it queues neither
+    a pull nor a facts job."""
+    from precis.handlers.draft import DraftHandler
+
+    proj = seeded.insert_ref(kind="todo", slug=None, title="proj").id
+    ref, _t = seeded.drafts.create_draft(name="bom2", title="BOM", project_ref_id=proj)
+    seeded.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="uses C25804 and part:C1525",
+        at={"last": True},
+    )
+    DraftHandler(hub=Hub(store=seeded)).sync_draft_links(ref.id)
+    assert _auto_mentions(seeded, ref.id) == {
+        seeded.part_ref_id("C25804"),
+        seeded.part_ref_id("C1525"),
+    }
+    assert _jobs(seeded, "datasheet_pull") == []
+    assert _jobs(seeded, "datasheet_facts") == []
+
+
+def test_scoped_draft_sync_queues_pull_and_facts(seeded):
+    """A scoped sync (a text write naming its chunks) does queue — pull
+    for every part, facts for the explicit ``part:`` spelling only."""
+    from precis.handlers.draft import DraftHandler
+
+    proj = seeded.insert_ref(kind="todo", slug=None, title="proj").id
+    ref, _t = seeded.drafts.create_draft(name="bom3", title="BOM", project_ref_id=proj)
+    c = seeded.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="uses C25804 and part:C1525",
+        at={"last": True},
+    )[0]
+    DraftHandler(hub=Hub(store=seeded)).sync_draft_links(
+        ref.id, restamp_chunk_ids={c.chunk_id}
+    )
+    assert _jobs(seeded, "datasheet_pull") == ["C1525", "C25804"]
+    assert _jobs(seeded, "datasheet_facts") == ["C1525"]
+
+
 # ── datasheet dual-write ─────────────────────────────────────────────
 
 

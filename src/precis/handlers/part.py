@@ -77,6 +77,7 @@ from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
 from precis.pcb.datasheet_facts import part_facts, render_brief, render_facts
 from precis.pcb.datasheets import datasheet_state, pull_in_flight
+from precis.pcb.datasheets import enqueue_facts_one as queue_facts
 from precis.pcb.datasheets import enqueue_one as queue_pull
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -369,8 +370,12 @@ class PartHandler(Handler):
                 gone = f"{lcsc} is no longer in the catalog (as of the last refresh); "
             body = f"# {lcsc} — {ref.title}\n{gone}its ref and links remain."
         if row is not None and catalog.lcsc_id(lcsc) is not None:
-            # datasheets come before a design uses the part (gr492689)
-            queue_pull(self.store, self.hub.sibling("job"), lcsc)
+            # datasheets come before a design uses the part (gr492689);
+            # the facts read queues next to the pull — opening a part is
+            # the lazy door prose mentions defer to (gr520243).
+            job = self.hub.sibling("job")
+            queue_pull(self.store, job, lcsc)
+            queue_facts(self.store, job, lcsc)
         body += "\n" + _datasheet_line(
             datasheet_state(self.store, lcsc),
             in_flight=pull_in_flight(self.store, lcsc),

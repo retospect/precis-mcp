@@ -82,6 +82,13 @@ BARE_PAPER_PATTERN = re.compile(
     r"(?![\w-])"
 )
 
+#: A bare LCSC C-number in prose: ``C`` + 3–8 digits, uppercase only —
+#: the catalog's own casing; a lowercase ``c123`` stays prose. The
+#: ``:`` in the lookbehind keeps any ``kind:C…`` prefixed handle out of
+#: the *bare* class — ``part:C…`` is picked up by the prefixed pass in
+#: :func:`extract_part_lcscs`, so either spelling resolves exactly once.
+BARE_PART_PATTERN = re.compile(r"(?<![A-Za-z0-9:])C\d{3,8}(?![A-Za-z0-9])")
+
 #: Kinds we resolve. The regex over-fires on ``noun:value`` prose
 #: (``user:asa``, ``tag:open``); emission/resolution is gated on this
 #: allowlist. Keep aligned with ``_REFS_BROWSABLE_KINDS`` in
@@ -303,6 +310,66 @@ def extract_handles(body: str) -> list[Handle]:
     return out
 
 
+def _norm_part_ident(ident: str) -> str | None:
+    """A ``C<number>`` / ``c<number>`` token → its canonical ``C…`` form,
+    or ``None`` when the id isn't C + 3–8 digits."""
+    m = re.fullmatch(r"[Cc](\d{3,8})", ident.strip())
+    return "C" + m.group(1) if m is not None else None
+
+
+def extract_explicit_part_lcscs(body: str) -> list[str]:
+    """Only the prefixed ``part:C…`` spellings, deduplicated — the
+    explicit door whose mentions may also queue the BIG-tier
+    ``datasheet_facts`` read; a bare ``C<number>`` token links + pulls
+    only (the cost policy, gr520243).
+    """
+    if not body:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in REF_PATTERN.finditer(body):
+        if m.group("kind") != "part":
+            continue
+        key = _norm_part_ident(m.group("id"))
+        if key is not None and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def extract_part_lcscs(body: str) -> list[str]:
+    """Every LCSC C-number ``body`` names, deduplicated.
+
+    Two spellings share the part grammar: the prefixed ``part:C…``
+    handle (either ``c`` case — the writer explicitly named a part) and
+    the bare uppercase token ``C<number>``. Extraction only — whether a
+    C-number mints or resolves is downstream's call. ``part:`` is
+    deliberately NOT on :data:`LINKIFY_KINDS`: keeping it out leaves
+    the web read surface (``precis_web.linkify`` /
+    ``_REFS_BROWSABLE_KINDS``) untouched while the write-time
+    autolinker still catches the handle form here.
+    """
+    if not body:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _push(ident: str) -> None:
+        key = _norm_part_ident(ident)
+        if key is None:
+            return
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+
+    for m in REF_PATTERN.finditer(body):
+        if m.group("kind") == "part":
+            _push(m.group("id"))
+    for m in BARE_PART_PATTERN.finditer(body):
+        _push(m.group(0))
+    return out
+
+
 def chunk_to_pos(chunk: str | None) -> int | None:
     """A ``~N`` chunk address → ``N`` (a single chunk ``pos``).
 
@@ -515,6 +582,22 @@ def resolve_link_targets(
         if exclude_ref_id is not None and tgt.dst_ref_id == exclude_ref_id:
             continue
         targets.setdefault((tgt.dst_ref_id, tgt.dst_pos), tgt)
+    # C-numbers → the live part ref. Resolution never mints — a write
+    # path that wants the link mints the lazy ref first so this pass
+    # can see it; read-side callers (fisheye, backfill) stay pure. A
+    # store without the pcb mixin (the hand-rolled test fakes) skips
+    # the pass.
+    part_ref_id = getattr(store, "part_ref_id", None)
+    if part_ref_id is not None:
+        for lcsc in extract_part_lcscs(body):
+            try:
+                rid = part_ref_id(lcsc)
+            except Exception:
+                log.debug("mentions: part_ref_id failed for %r", lcsc, exc_info=True)
+                continue
+            if rid is None or (exclude_ref_id is not None and rid == exclude_ref_id):
+                continue
+            targets.setdefault((rid, None), LinkTarget(rid, None))
     # A mention never auto-links another owner's profile (gr490266); a
     # fake store without the batch read skips the check.
     fetch = getattr(store, "fetch_refs_by_ids", None)

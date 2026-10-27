@@ -73,6 +73,37 @@ def test_extract_handles_pathway() -> None:
     assert ("pathway", "198000", None) in handles
 
 
+def test_extract_part_lcscs_bare_and_prefixed() -> None:
+    # Bare uppercase token, the ``part:`` handle form (either case),
+    # and repeats — deduped to one C-number each.
+    body = "swap C5358484 for part:C2655145, again C5358484 and part:c25804"
+    assert set(mentions.extract_part_lcscs(body)) == {
+        "C5358484",
+        "C2655145",
+        "C25804",
+    }
+
+
+def test_extract_part_lcscs_grammar_edges() -> None:
+    # A bare lowercase ``c`` is prose (the catalog's casing is the
+    # signal); <3 digits is not a C-number; an alphanumeric prefix is
+    # not a bare token; a *different* kind prefix does not name a part.
+    body = "c1234 C12 XC1234 comp:C9999"
+    assert mentions.extract_part_lcscs(body) == []
+    # …while ``part:`` does name one even lowercase, and bare uppercase
+    # works next to sentence punctuation.
+    assert mentions.extract_part_lcscs("part:c25804, plus C1525.") == [
+        "C25804",
+        "C1525",
+    ]
+
+
+def test_extract_part_lcscs_skips_handle_forms() -> None:
+    # ``kind:C…`` of another kind is neither a bare token nor a part
+    # handle — the ``:`` lookbehind keeps it out of both passes.
+    assert mentions.extract_part_lcscs("see memory:C25804") == []
+
+
 def test_chunk_to_pos() -> None:
     assert mentions.chunk_to_pos("~12") == 12
     assert mentions.chunk_to_pos("~1..5") is None  # range, not one chunk
@@ -104,12 +135,24 @@ class _FakeStore:
         refs: dict[int, _FakeRef],
         cite_keys: dict[str, int],
         patent_slugs: dict[str, int] | None = None,
+        parts: dict[str, int] | None = None,
     ) -> None:
         self._refs = refs
         self._cite = cite_keys
         # A patent is addressed by its lowercased DOCDB slug (its cite_key).
         self._patent = {k.lower(): v for k, v in (patent_slugs or {}).items()}
+        # An already-minted part ref: lcsc C-number -> ref_id. Resolution
+        # never mints, so this maps only what a write path already made.
+        self._parts = {k.upper(): v for k, v in (parts or {}).items()}
         self.pool = self  # resolve_handle_ref does `store.pool.connection()`
+
+    def part_ref_id(self, lcsc: str) -> int | None:
+        # Mirrors the real lookup: live part refs only.
+        rid = self._parts.get(str(lcsc).strip().upper())
+        ref = self._refs.get(rid) if rid is not None else None
+        if ref is None or getattr(ref, "retired_at", None) is not None:
+            return None
+        return rid
 
     # -- cite_key lookup path ------------------------------------------
     def connection(self):
@@ -203,6 +246,43 @@ def test_resolve_dedups_repeated_target() -> None:
     store = _FakeStore(refs={6134: _FakeRef(6134)}, cite_keys={})
     targets = mentions.resolve_link_targets(store, "memory:6134 memory:6134")
     assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(6134, None)]
+
+
+# ---------------------------------------------------------------------------
+# Part C-number autolinking (gr520243): bare ``C<n>`` / ``part:C<n>`` →
+# the already-minted part ref. Resolution never mints — a write path
+# mints first, so an unminted C-number stays literal.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_targets_c_number_to_minted_part_ref() -> None:
+    store = _FakeStore(
+        refs={88: _FakeRef(88, kind="part")},
+        cite_keys={},
+        parts={"C25804": 88},
+    )
+    targets = mentions.resolve_link_targets(store, "see C25804 and part:C25804")
+    assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(88, None)]
+
+
+def test_resolve_targets_unminted_c_number_stays_literal() -> None:
+    store = _FakeStore(refs={}, cite_keys={})
+    assert mentions.resolve_link_targets(store, "see C25804") == []
+
+
+def test_resolve_targets_c_number_honours_exclude_and_retired() -> None:
+    store = _FakeStore(
+        refs={
+            88: _FakeRef(88, kind="part"),
+            89: _FakeRef(89, kind="part", retired_at="2026-01-01"),
+        },
+        cite_keys={},
+        parts={"C25804": 88, "C1525": 89},
+    )
+    # exclude_ref_id drops the self-link; a retired part ref resolves
+    # to nothing — ``part_ref_id`` returns live refs only.
+    targets = mentions.resolve_link_targets(store, "C25804 C1525", exclude_ref_id=88)
+    assert targets == []
 
 
 # ---------------------------------------------------------------------------

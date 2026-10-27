@@ -255,6 +255,15 @@ def _summarize_job_counts(jobs: tuple[tuple[int, str], ...]) -> str:
     return " / ".join(ordered + extra)
 
 
+def _facts_deferred(body: str, deferred: int) -> str:
+    """Append the facts-cap note to a write reply's body (gr520243)."""
+    if not deferred:
+        return body
+    from precis.pcb import datasheets
+
+    return body + "\n" + datasheets.facts_deferred_note(deferred)
+
+
 #: A figure's origin class — drives the clearance gate. ``original``
 #: is ours; ``own_graph`` is generated from data (ships a data supplement);
 #: ``third_party`` is reused under a publisher permission (carries the paper-trail).
@@ -1309,6 +1318,10 @@ class DraftHandler(Handler):
         for _slug, c, new_text, _n in changes:
             self._raise_on_new_dangling_refs(new_text, c.text or "")
 
+        from precis.pcb import datasheets
+
+        facts_budget = datasheets.FactsBudget()
+        deferred = 0
         written = 0
         for _slug, c, new_text, _n in changes:
             # base_sha = the sha of the text this chunk was scoped against
@@ -1319,7 +1332,14 @@ class DraftHandler(Handler):
                 c.handle, new_text, base_sha=content_sha(c.text or "")
             )
             if res is not None:
-                self.sync_draft_links(res.ref_id, restamp_chunk_ids={res.chunk_id})
+                # One write, one facts budget — shared across chunks so
+                # the per-write cap holds over the whole substitute
+                # (gr520243).
+                deferred += self.sync_draft_links(
+                    res.ref_id,
+                    restamp_chunk_ids={res.chunk_id},
+                    budget=facts_budget,
+                )
                 self._attribute_touch([res.chunk_id])
                 written += 1
         body = (
@@ -1335,7 +1355,7 @@ class DraftHandler(Handler):
             "\n\nEach edited chunk re-embeds on the worker's next pass (not "
             "inline); the original text is kept in chunk history."
         )
-        return Response(body=body)
+        return Response(body=_facts_deferred(body, deferred))
 
     def _sub_dryrun(
         self,
@@ -1767,13 +1787,13 @@ class DraftHandler(Handler):
                 top = [c for c in chunks if c.parent_chunk_id not in made]
                 new_chunk_ids.extend(c.chunk_id for c in chunks)
                 lines.append(f"{' '.join(str(c.dc) for c in top)}  {label}")
-        self.sync_draft_links(ref.id, restamp_chunk_ids=set(new_chunk_ids))
+        deferred = self.sync_draft_links(ref.id, restamp_chunk_ids=set(new_chunk_ids))
         self._attribute_touch(new_chunk_ids)
         head = (
             f"added {len(entries)} term{'' if len(entries) == 1 else 's'} "
             f"to '{slug}' in one transaction"
         )
-        return Response(body=head + "\n" + "\n".join(lines))
+        return Response(body=_facts_deferred(head + "\n" + "\n".join(lines), deferred))
 
     @staticmethod
     def _coerce_terms(terms: list[Any]) -> list[dict[str, Any]]:
@@ -3414,8 +3434,12 @@ class DraftHandler(Handler):
     _CITABLE_KINDS: ClassVar[frozenset[str]] = frozenset({"paper", "patent", "finding"})
 
     def sync_draft_links(
-        self, ref_id: int, *, restamp_chunk_ids: set[int] | None = None
-    ) -> None:
+        self,
+        ref_id: int,
+        *,
+        restamp_chunk_ids: set[int] | None = None,
+        budget: Any = None,
+    ) -> int:
         """Materialise graph edges from this draft to every ref its chunks
         reference — the superset grammar (``kind:ref`` mentions, ``¶``
         cross-refs, ``§``/``[pc<id>]`` citations). A reference to a
@@ -3480,8 +3504,21 @@ class DraftHandler(Handler):
         ``cited_pub_id`` (an edge that isn't advancing) leaves the
         existing stamp untouched instead of wiping it via the
         ``ON CONFLICT DO UPDATE`` path.
+
+        Job queueing (gr520243): only a *scoped* sync — a caller that
+        names the chunk(s) it just wrote — queues datasheet jobs (pull
+        for every newly linked part; the BIG-tier facts read for
+        explicit ``part:C…`` spellings only, under the per-write and
+        daily caps). The unscoped re-resolve (refresh / export /
+        taproot / chunk move+delete) links only: it must not mint jobs
+        on prose nobody just wrote. Returns how many explicit part
+        mentions deferred past the write's facts cap — the caller folds
+        it into its reply note. ``budget`` lets one write spanning
+        several chunks (the substitute loop) share a single facts
+        allowance; ``None`` means a fresh
+        :data:`precis.pcb.datasheets.FactsBudget`.
         """
-        from precis.utils import draft_markup
+        from precis.utils import draft_markup, mentions
 
         try:
             chunks = self.store.drafts.reading_order(ref_id)
@@ -3503,12 +3540,27 @@ class DraftHandler(Handler):
             # preserved. (src_ord, dst_ref_id, dst_pos) → desired relation.
             resolved: list[tuple[int | None, Any]] = []
             dst_ids: set[int] = set()
+            part_lcscs: set[str] = set()
+            explicit_part_lcscs: set[str] = set()
             for c in chunks:
                 if (
                     restamp_chunk_ids is not None
                     and c.chunk_id not in restamp_chunk_ids
                 ):
                     continue
+                # Mint the lazy part ref for each C-number the re-resolved
+                # chunk names so the resolve pass can see it (resolution
+                # itself never mints). An uncatalogued C-number mints
+                # nothing and stays unlinked (gr520243).
+                for lcsc in mentions.extract_part_lcscs(c.text):
+                    if lcsc in part_lcscs:
+                        continue
+                    part_lcscs.add(lcsc)
+                    try:
+                        self.store.ensure_part_ref(lcsc)
+                    except NotFound:
+                        continue
+                explicit_part_lcscs.update(mentions.extract_explicit_part_lcscs(c.text))
                 targets = draft_markup.resolve_draft_link_targets(
                     self.store, c.text, exclude_ref_id=ref_id
                 )
@@ -3662,10 +3714,30 @@ class DraftHandler(Handler):
                     meta=meta,
                     merge_meta=True,
                 )
+            # Only a scoped sync — a text write naming its chunks —
+            # queues datasheet jobs. Every linked part pulls; the
+            # explicit ``part:C…`` spellings may also queue the BIG-tier
+            # facts read, under the per-write + daily spend caps
+            # (``queue_mentioned_parts`` owns both). The unscoped
+            # re-resolve path links only — a bulk refresh/export/
+            # taproot/chunk-move/delete must not mint jobs (gr520243).
+            if part_lcscs and restamp_chunk_ids is not None:
+                from precis.pcb import datasheets
+
+                hub = self.hub if self.hub is not None else Hub(store=self.store)
+                return datasheets.queue_mentioned_parts(
+                    self.store,
+                    hub.sibling("job"),
+                    sorted(part_lcscs),
+                    facts_for=explicit_part_lcscs,
+                    budget=budget,
+                )
+            return 0
         except Exception:
             log.warning(
                 "draft: autolink mentions failed for ref %s", ref_id, exc_info=True
             )
+            return 0
 
     def _attribute_touch(self, chunk_ids: list[int]) -> None:
         """Attribute the just-written chunks to the current agent run.

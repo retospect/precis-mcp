@@ -438,6 +438,14 @@ def apply_link_ops(
                 merge_meta=merge_meta,
             )
             n_added = 1
+        # A link to a part queues its datasheet pull + facts read —
+        # the same jobs ``get(kind='part')`` runs, idempotent (gr520243).
+        if n_added and target.kind == "part" and hub is not None:
+            from precis.pcb import datasheets
+
+            datasheets.queue_pull_facts_for_part_ref(
+                store, hub.sibling("job"), target.ref_id
+            )
 
     if unlink is not None:
         target = parse_link_target(unlink, store=store, include_retired=True)

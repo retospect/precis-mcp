@@ -128,7 +128,12 @@ link(kind="memory", id=42, target="part:C25804")  # any kind with a link verb
   the catalog".
 - `get` also shows the part's datasheet, or the recorded reason its
   automatic pull failed (`no_url`, `not_pdf`, `fetch_refused:…`,
-  `jlc_api_error:…`), or "not pulled yet".
+  `jlc_api_error:…`), or "not pulled yet". The get itself queues the
+  pull + facts pair — the same two jobs a `link` / `link=` / explicit
+  `part:C…` prose mention queues. A bare `C<n>` token in prose links
+  and pulls only (no facts read); facts queue at most 5 per write and
+  100 per 24 h — parts past a cap still link + pull and their briefs
+  build when opened.
 - `edit(kind='datasheet', id=…, part_lcsc='C25804')` links the datasheet
   `datasheet-of` the part ([[precis-datasheet-help]]).
 - A `pcb` design that places the part links it on its own: one `contains`

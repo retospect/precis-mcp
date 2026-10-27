@@ -650,6 +650,7 @@ class FindingHandler(NumericRefHandler):
         # status tag all inside one transaction. If anything fails
         # (including the pub_id collision case), the whole thing
         # rolls back — no half-created findings.
+        facts_deferred = 0
         try:
             with self.store.tx() as conn:
                 ref = self.store.insert_ref(
@@ -718,21 +719,32 @@ class FindingHandler(NumericRefHandler):
                         relation=extra_relation,
                         conn=conn,
                     )
+                # Mentions in the claim prose (handles, C-numbers → lazy
+                # part refs) become related-to edges — the same write-time
+                # autolinker the other note-like kinds run (gr520243).
+                facts_deferred = self._sync_mention_links(
+                    ref.id, title_clean + "\n" + body_clean, conn=conn
+                )
         except UniqueViolation:
             # Collision on pub_id: this finding already exists.
             # Look up the existing ref_id and return it so the
             # caller sees a deterministic "exists" result.
             return self._collision_response(pub_id)
+        if extra_target is not None and extra_target.kind == "part":
+            self._enqueue_part_datasheet(extra_target.ref_id)
 
-        return Response(
-            body=(
-                f"created finding id={ref.id} pub_id={pub_id}\n"
-                f"title: {title_clean}\n"
-                f"frontier: {target.raw}\n"
-                f"status: STATUS:{_STATUS_TRACING}\n"
-                f"placeholder: [{pub_id}] (use in text; precis resolve "
-                f"substitutes the primary cite_key once STATUS:established)"
-            )
+        return self._facts_note(
+            Response(
+                body=(
+                    f"created finding id={ref.id} pub_id={pub_id}\n"
+                    f"title: {title_clean}\n"
+                    f"frontier: {target.raw}\n"
+                    f"status: STATUS:{_STATUS_TRACING}\n"
+                    f"placeholder: [{pub_id}] (use in text; precis resolve "
+                    f"substitutes the primary cite_key once STATUS:established)"
+                )
+            ),
+            facts_deferred,
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -1945,7 +1957,7 @@ class FindingHandler(NumericRefHandler):
                     "# alone, no other kwargs",
                 )
             return self._refine_now(id, refine, dry_run)
-        return _finding_edit.edit(
+        resp = _finding_edit.edit(
             self.store,
             kind=self.kind,
             id=id,
@@ -1967,6 +1979,39 @@ class FindingHandler(NumericRefHandler):
             meta=meta,
             dry_run=dry_run,
         )
+        # A prose door (body rewrite ``text=`` or hub retitle ``title=``)
+        # re-resolves mention autolinks against the new text — removed
+        # mentions drop their auto edge, new C-numbers link their part
+        # ref (gr520243). ``_sync_mention_links`` is best-effort; the
+        # edit's own response stands either way.
+        from precis.utils.edit_resolve import normalize_dry_run
+
+        if (
+            id is not None
+            and (text is not None or title is not None)
+            and normalize_dry_run(dry_run) is None
+        ):
+            ref_id = _finding_edit._resolve_finding_ref_id(
+                self.store, kind=self.kind, raw_id=id
+            )
+            ref = self._resolve_live_ref(ref_id)
+            fbody = next(
+                (
+                    c.text
+                    for c in self.store.chunks.list_chunks_for_ref(ref_id)
+                    if c.chunk_kind == "finding_body"
+                ),
+                "",
+            )
+            with self.store.tx() as conn:
+                facts_deferred = self._sync_mention_links(
+                    ref_id,
+                    (ref.title or "") + "\n" + fbody,
+                    conn=conn,
+                    replace=True,
+                )
+            resp = self._facts_note(resp, facts_deferred)
+        return resp
 
     def _refine_now(
         self, id: int | str | None, refine: str, dry_run: bool | str | None

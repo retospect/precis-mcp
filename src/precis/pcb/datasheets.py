@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +37,14 @@ JOB_TYPE = "datasheet_pull"
 #: BIG-tier read per part, enqueued at put time next to the pull —
 #: ``precis.workers.job_types.datasheet_facts`` is the worker half.
 FACTS_JOB_TYPE = "datasheet_facts"
+
+#: Spend caps on the BIG-tier facts read (gr520243): a single write may
+#: burst-queue at most ``FACTS_PER_WRITE_LIMIT`` new facts jobs, and no
+#: door may mint more than ``FACTS_DAILY_LIMIT`` of them per rolling
+#: 24 h (UTC). Past a cap the part still links and pulls — its brief
+#: builds when it is opened (``get(kind='part')`` queues the pair).
+FACTS_PER_WRITE_LIMIT = 5
+FACTS_DAILY_LIMIT = 100
 
 
 def idem_key(lcsc: str) -> str:
@@ -84,6 +94,81 @@ def _facts_extracted(store: Store, part_ref_id: int | None) -> bool:
             (part_ref_id,),
         ).fetchone()
     return bool(row and row[0])
+
+
+def facts_jobs_last_24h(store: Store) -> int:
+    """``datasheet_facts`` job refs minted in the last 24 h (UTC) — the
+    spend-cap counter checked before a new facts job is queued."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'job' "
+            "AND meta->>'job_type' = %s "
+            "AND created_at >= now() - interval '24 hours'",
+            (FACTS_JOB_TYPE,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _facts_daily_blocked(store: Store) -> bool:
+    """True once the rolling-24h spend cap on new facts jobs is reached."""
+    return facts_jobs_last_24h(store) >= FACTS_DAILY_LIMIT
+
+
+def facts_deferred_note(deferred: int) -> str:
+    """The write reply's one line when explicit part mentions outran a
+    facts cap: the parts linked and pulled, only the BIG-tier read
+    waited (gr520243)."""
+    return f"{deferred} more parts linked; their briefs build when opened"
+
+
+@dataclass
+class FactsBudget:
+    """One write's ``datasheet_facts`` allowance under the per-write cap
+    (gr520243): ``remaining`` new jobs may still queue; ``daily_capped``
+    latches the rolling-24h ceiling's first trip so a caller's loop
+    stops probing it. A write that syncs several chunks shares one
+    instance across the calls (the draft substitute loop)."""
+
+    remaining: int = FACTS_PER_WRITE_LIMIT
+    daily_capped: bool = False
+
+
+def queue_mentioned_parts(
+    store: Store,
+    job: Any,
+    lcscs: Iterable[str],
+    *,
+    facts_for: Collection[str],
+    budget: FactsBudget | None = None,
+) -> int:
+    """The mention autolinker's job queue for one write (gr520243).
+
+    Every named C-number with a live part ref gets its ``datasheet_pull``
+    — cheap, and the pull is what later facts queue against. Only the
+    explicit-door spellings (``part:C…`` — ``facts_for``) may also queue
+    the BIG-tier ``datasheet_facts`` read, up to ``budget``: past the
+    per-write or daily cap the part still links + pulls and counts
+    toward the reply's deferred note. Returns how many explicit parts
+    deferred this call. Never raises beyond what the enqueue helpers
+    already swallow."""
+    b = budget if budget is not None else FactsBudget()
+    deferred = 0
+    for lcsc in lcscs:
+        if store.part_ref_id(lcsc) is None:
+            continue
+        enqueue_one(store, job, lcsc)
+        if lcsc not in facts_for:
+            continue
+        if b.daily_capped or b.remaining <= 0:
+            deferred += 1
+            continue
+        status = enqueue_facts_one(store, job, lcsc)
+        if status == "queued":
+            b.remaining -= 1
+        elif status == "capped":
+            b.daily_capped = True
+            deferred += 1
+    return deferred
 
 
 def live_lcscs(store: Store, pcb_ref_id: int) -> list[str]:
@@ -354,10 +439,30 @@ def enqueue_facts(store: Store, job: Any, pcb_ref_id: int) -> int:
         lcscs = live_lcscs(store, pcb_ref_id)
         if not lcscs:
             return 0
+        if _facts_daily_blocked(store):
+            log.warning(
+                "datasheet_facts: daily spend cap %s/24h reached; "
+                "skipped %s part(s) on pcb %s",
+                FACTS_DAILY_LIMIT,
+                len(lcscs),
+                pcb_ref_id,
+            )
+            return 0
         states = datasheet_states(store, lcscs)
+        capped = 0
         for lcsc in lcscs:
             status = _queue_facts(store, job, lcsc, states[lcsc], pcb_ref_id)
             queued += status == "queued"
+            capped += status == "capped"
+        if capped:
+            # Jobs minted mid-loop tripped the ceiling — one log, once.
+            log.warning(
+                "datasheet_facts: daily spend cap %s/24h reached; "
+                "skipped %s part(s) on pcb %s",
+                FACTS_DAILY_LIMIT,
+                capped,
+                pcb_ref_id,
+            )
     except Exception:
         log.warning(
             "datasheet_facts: enqueue for pcb %s failed", pcb_ref_id, exc_info=True
@@ -370,16 +475,55 @@ def enqueue_facts_one(store: Store, job: Any, lcsc: str) -> str:
     (``put(kind='datasheet')``), parented on the part's ref; same rules as
     :func:`enqueue_facts`. Call it after :func:`enqueue_one` so a just-queued
     pull counts. Returns a status string — ``queued`` | ``in_flight`` |
-    ``extracted`` | ``no_datasheet`` | ``error`` — never raises."""
+    ``extracted`` | ``no_datasheet`` | ``capped`` | ``error`` — never
+    raises (``capped`` is the rolling-24h spend cap refusing the mint;
+    it logs the skip once here)."""
     key = lcsc.strip().upper()
     try:
         state = datasheet_state(store, key)
         if state["part_ref_id"] is None:
             return "no_datasheet"
-        return _queue_facts(store, job, key, state, state["part_ref_id"])
+        status = _queue_facts(store, job, key, state, state["part_ref_id"])
+        if status == "capped":
+            log.warning(
+                "datasheet_facts: daily spend cap %s/24h reached; "
+                "skipped queueing for %s",
+                FACTS_DAILY_LIMIT,
+                key,
+            )
+        return status
     except Exception:
         log.warning("datasheet_facts: enqueue for %s failed", key, exc_info=True)
         return "error"
+
+
+def queue_pull_facts(store: Store, job: Any, lcsc: str) -> None:
+    """Queue the pull+facts pair for one C-number — the two jobs
+    ``get(kind='part')`` / ``put(kind='datasheet')`` run, shared by the
+    explicit doors that bring a part into the graph (``link=`` /
+    ``link()`` to a part, gr520243). Pull first so ``pull_in_flight``
+    counts for the facts check; both are idempotent (idem keys,
+    ``_needs_pull``, ``_facts_extracted``), so a repeat mention queues
+    nothing new. Facts queueing still honours the rolling-24h spend cap
+    (:data:`FACTS_DAILY_LIMIT`). Never raises."""
+    enqueue_one(store, job, lcsc)
+    enqueue_facts_one(store, job, lcsc)
+
+
+def queue_pull_facts_for_part_ref(store: Store, job: Any, part_ref_id: int) -> None:
+    """The pull+facts pair keyed on the part *ref* — the link doors
+    resolve a ``LinkTarget.ref_id``, not a C-number. The ref's slug IS
+    the C-number (``ensure_part_ref`` mints ``slug=<C#>``); a missing
+    ref or slug is a no-op. Never raises."""
+    try:
+        ref = store.get_ref(kind="part", id=part_ref_id)
+        lcsc = getattr(ref, "slug", None) if ref is not None else None
+        if lcsc:
+            queue_pull_facts(store, job, lcsc)
+    except Exception:
+        log.warning(
+            "datasheet enqueue for part ref %s failed", part_ref_id, exc_info=True
+        )
 
 
 def _queue_facts(
@@ -389,11 +533,16 @@ def _queue_facts(
     extracted block yet. ``queued`` | ``in_flight`` | ``extracted`` |
     ``no_datasheet`` — the caller renders the case, so a failed pull with
     no sheet no longer reads "facts already extracted or queued"
-    (gr519904)."""
+    (gr519904). ``capped`` is the rolling-24h spend cap
+    (:data:`FACTS_DAILY_LIMIT`) refusing one more mint (gr520243)."""
     if state["datasheet"] is None and not pull_in_flight(store, lcsc):
         return "no_datasheet"
     if _facts_extracted(store, state["part_ref_id"]):
         return "extracted"
+    if _facts_daily_blocked(store):
+        # The spend cap: no new facts job once the rolling-24h count hits
+        # FACTS_DAILY_LIMIT — callers log/render the skip once.
+        return "capped"
     resp = job.put(
         job_type=FACTS_JOB_TYPE,
         executor="claude_inproc",
@@ -405,21 +554,29 @@ def _queue_facts(
 
 
 __all__ = [
+    "FACTS_DAILY_LIMIT",
     "FACTS_JOB_TYPE",
+    "FACTS_PER_WRITE_LIMIT",
     "JOB_TYPE",
     "RETRY_AFTER",
+    "FactsBudget",
     "datasheet_state",
     "datasheet_states",
     "enqueue_facts",
     "enqueue_facts_one",
     "enqueue_one",
     "enqueue_pulls",
+    "facts_deferred_note",
     "facts_idem_key",
+    "facts_jobs_last_24h",
     "idem_key",
     "is_transient",
     "link_known",
     "live_lcscs",
     "pending_lcscs",
     "pull_in_flight",
+    "queue_mentioned_parts",
+    "queue_pull_facts",
+    "queue_pull_facts_for_part_ref",
     "status_line",
 ]
