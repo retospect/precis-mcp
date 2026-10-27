@@ -569,8 +569,11 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
 
 ## Canonical end-to-end
 
-1. **Pick parts** — `search(kind='part', q='…')` for each function; prefer
-   Basic + high-turnover ([[precis-part-select-help]]).
+1. **Pick parts** — the requirements → shortlist → selection-record work
+   upstream of the netlist is the design flow
+   ([[precis-pcb-design-flow-help]]); the catalog pick itself:
+   `search(kind='part', q='…')` for each function, prefer Basic +
+   high-turnover ([[precis-part-select-help]]).
 2. **Capture the netlist** — `put` components + nets + connections; name nets
    meaningfully + class them ([[precis-net-class-help]]).
 3. **State intent** — add `measures` (keep the regulator off the antenna, the

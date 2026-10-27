@@ -34,7 +34,7 @@ import logging
 import math
 import re
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from datetime import UTC, datetime
 from itertools import islice
@@ -6272,7 +6272,13 @@ class PcbMixin:
         return restocked
 
     def parts_search(
-        self, q: str, *, limit: int = 20, partial: bool = False
+        self,
+        q: str,
+        *,
+        limit: int = 20,
+        partial: bool = False,
+        required: Sequence[str] | None = None,
+        category: str | None = None,
     ) -> list[dict[str, Any]]:
         """The JLCPCB-native selector: hard-filter to assemblable
         parts; rank in-stock first, then Basic-first, then **turnover**
@@ -6298,10 +6304,20 @@ class PcbMixin:
         ``partial`` ORs the query terms instead of ANDing them (catalog
         descriptions say ``16P`` where a query says ``16pin``): in-stock
         first, then the number of terms matched, then the usual ranking.
+        ``required`` narrows it further (gr519680): each row must match
+        at least one of those terms on ``description_tsv``, so a partial
+        hit that only matched package/parametric noise (``smd``,
+        ``5.5v``) is dropped instead of surfacing as in-stock junk.
+        ``category`` literal-substring-matches the jlcparts category
+        carried in ``params._category``
+        (``'Optoelectronics / Photoresistors'``) — ``%``/``_`` in the
+        ask are escaped, never LIKE metachars.
         """
         volts: list[tuple[str, float]] = []
         diels: list[str] = []
         exact = ""
+        extra: list[str] = []
+        extra_params: list[Any] = []
         if partial:
             tsq = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
             rank = "round(ts_rank(p.description_tsv, q.tsq)::numeric, 3) DESC, "
@@ -6321,6 +6337,23 @@ class PcbMixin:
             fetch = max(limit * 5, 100) if (volts or diels) else limit
             if volts or diels:
                 exact = "(p.description_tsv @@ plainto_tsquery('english', %s)) DESC, "
+        req = [t for t in (required or []) if t and t.strip()]
+        if req:
+            extra.append(
+                "EXISTS (SELECT 1 FROM unnest(%s::text[]) AS t(term) "
+                "WHERE p.description_tsv @@ plainto_tsquery('english', t.term))"
+            )
+            extra_params.append(req)
+        if category and category.strip():
+            extra.append("p.params->>'_category' ILIKE %s ESCAPE '\\'")
+            esc = (
+                category.strip()
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            extra_params.append(f"%{esc}%")
+        extra_sql = f"AND {' AND '.join(extra)} " if extra else ""
         # The below-floor drop runs after SQL's LIMIT, so a page can come
         # back short while satisfying rows sit deeper in the hard set:
         # refetch with a growing window — 3 rounds bounded — until the
@@ -6334,13 +6367,15 @@ class PcbMixin:
                     "       a.ewma_stock, "
                     "       p.params->'_lifecycle'->>'no_buy' IS NOT NULL "
                     f"{frm}LEFT JOIN part_availability a ON a.lcsc = p.lcsc "
-                    f"WHERE p.jlcpcb_assemblable AND {cond} "
+                    f"WHERE p.jlcpcb_assemblable AND {cond} {extra_sql}"
                     f"ORDER BY coalesce(p.stock, 0) > 0 DESC, {rank}"
                     f"         p.basic DESC, {exact}"
                     "         coalesce(a.restock_count, 0) DESC, "
                     "         coalesce(a.ewma_stock, p.stock, 0) DESC "
                     "LIMIT %s",
-                    (sql_q, q, fetch) if exact else (sql_q, fetch),
+                    (sql_q, *extra_params, q, fetch)
+                    if exact
+                    else (sql_q, *extra_params, fetch),
                 ).fetchall()
             out = [
                 {

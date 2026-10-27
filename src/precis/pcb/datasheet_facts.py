@@ -29,6 +29,13 @@ datasheet, so the ``part:<C#>~<pin>`` selector can resolve a pin to its
 datasheet row (``precis.utils.link_target``) and the cite opens the right
 page (``chunks.page_first``).
 
+The same extraction also writes the block's ``brief`` (gr520243): the
+~200-word human-readable distillation — ``one_line`` (the part's fisheye
+link label), the ``envelope``, 5–8 ``key_numbers``, ``gotchas`` and the
+``typical_application`` pointer — every cited item carrying the same
+``chunk_id`` provenance as a fact. ``view='brief'`` renders it;
+``view='facts'`` stays the machine-shaped layer.
+
 The block keeps a ``rev`` bumped on every write — part-fact revisions are
 the staleness key a verdict records (pcb-datasheet-review slice 6). Facts
 are trusted by default; an unclear or contradictory read is a low
@@ -108,6 +115,17 @@ _TABLE_KEYS: frozenset[str] = frozenset(
     {"name", "inputs", "rows", "output_key", "confidence", "page", "chunk_id"}
 )
 
+#: The ``brief`` is LLM-written prose riding the part ref's meta — a
+#: rambling extraction could store a 50k blob. Over a cap the text
+#: truncates with an ellipsis / the extra items drop (never a refusal);
+#: the applied trims land in :func:`write_facts`' reply ``trims``.
+_BRIEF_ONE_LINE_MAX = 160
+_BRIEF_ITEM_TEXT_MAX = 300
+_BRIEF_ITEMS_MAX = 10
+_BRIEF_ENVELOPE_MAX = 8
+_BRIEF_ENVELOPE_KEY_MAX = 40
+_BRIEF_ENVELOPE_VALUE_MAX = 120
+
 
 @dataclass(frozen=True, slots=True)
 class FactSource:
@@ -183,6 +201,31 @@ class ConditionalTable:
 
 
 @dataclass(frozen=True, slots=True)
+class BriefItem:
+    """One sourced sentence of the part brief — a key number, a gotcha,
+    or the typical-application pointer (gr520243). ``source`` is the
+    datasheet chunk + page the claim is printed on."""
+
+    text: str
+    source: FactSource | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PartBrief:
+    """The human-readable distillation of the datasheet (gr520243):
+    ``one_line`` doubles as the part's fisheye link label; ``envelope``
+    carries the operating range as printed (``{"supply": "2.7–3.6 V",
+    "interface": "I2C"}``); ``key_numbers`` / ``gotchas`` /
+    ``typical_application`` each cite their chunk."""
+
+    one_line: str
+    envelope: dict[str, str] = field(default_factory=dict)
+    key_numbers: tuple[BriefItem, ...] = ()
+    gotchas: tuple[BriefItem, ...] = ()
+    typical_application: BriefItem | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PackageFacts:
     """One package variant's block (the spec's "structured block per
     package")."""
@@ -212,6 +255,7 @@ class PartFacts:
     datasheet_ref_id: int | None
     job_ref_id: int | None
     packages: dict[str, PackageFacts] = field(default_factory=dict)
+    brief: PartBrief | None = None
 
     def package(self, name: str | None = None) -> PackageFacts | None:
         """One package block: the named one, or the only one when the
@@ -357,6 +401,95 @@ def _validate_table(raw: Any, *, where: str) -> dict[str, Any]:
     return row
 
 
+def _clip(text: str, cap: int) -> tuple[str, int]:
+    """Truncate ``text`` to ``cap`` chars with an ellipsis; the second
+    element is 1 when a trim happened (:func:`_validate_brief` sums them
+    into the write reply's ``trims``)."""
+    if len(text) <= cap:
+        return text, 0
+    return text[: cap - 1].rstrip() + "…", 1
+
+
+def _validate_brief_item(raw: Any, *, where: str) -> tuple[dict[str, Any], int]:
+    if not isinstance(raw, dict):
+        raise BadInput(f"{where}: brief item must be an object, got {raw!r}")
+    text = _str(raw.get("text"), where=where)
+    if text is None:
+        raise BadInput(f"{where}: brief item needs 'text'")
+    text, trims = _clip(text, _BRIEF_ITEM_TEXT_MAX)
+    row: dict[str, Any] = {"text": text}
+    for key in ("page", "chunk_id"):
+        n = _pint(raw.get(key), where=f"{where} {key}")
+        if n is not None:
+            row[key] = n
+    return row, trims
+
+
+def _brief_items(value: Any, *, where: str) -> tuple[list[dict[str, Any]], int]:
+    """A ``key_numbers``/``gotchas`` list: only the first
+    ``_BRIEF_ITEMS_MAX`` items validate (the rest drop, each one a
+    trim); an item past the cap can't sink the write."""
+    if value is None:
+        return [], 0
+    if not isinstance(value, list):
+        raise BadInput(f"{where}: brief items must be a list")
+    trims = max(0, len(value) - _BRIEF_ITEMS_MAX)
+    out: list[dict[str, Any]] = []
+    for r in value[:_BRIEF_ITEMS_MAX]:
+        row, t = _validate_brief_item(r, where=where)
+        out.append(row)
+        trims += t
+    return out, trims
+
+
+def _validate_brief(raw: Any) -> tuple[dict[str, Any], int]:
+    """The ``brief`` sub-block (gr520243): ``one_line`` required, the
+    rest optional-but-typed; every item's ``chunk_id`` is provenance-
+    checked against the declared datasheet in :func:`_check_provenance`.
+    Returns ``(block, trims)`` — the caps keep an over-long extraction
+    from bloating the block: truncate with an ellipsis / drop extras,
+    never refuse."""
+    if not isinstance(raw, dict):
+        raise BadInput(f"brief block must be an object, got {raw!r}")
+    one = _str(raw.get("one_line"), where="brief")
+    if one is None:
+        raise BadInput("brief needs 'one_line' (the part's one-line identity)")
+    one, trims = _clip(one, _BRIEF_ONE_LINE_MAX)
+    env = raw.get("envelope") or {}
+    if not isinstance(env, dict):
+        raise BadInput("brief.envelope must be an object of label: value")
+    envelope: dict[str, str] = {}
+    for k, v in env.items():
+        key = str(k).strip()
+        val = _str(v, where="brief.envelope")
+        if not key or val is None:
+            continue
+        key, kt = _clip(key, _BRIEF_ENVELOPE_KEY_MAX)
+        val, vt = _clip(val, _BRIEF_ENVELOPE_VALUE_MAX)
+        if key in envelope or len(envelope) >= _BRIEF_ENVELOPE_MAX:
+            trims += 1  # truncated keys collided, or the cap is full
+            continue
+        trims += kt + vt
+        envelope[key] = val
+    key_numbers, t = _brief_items(raw.get("key_numbers"), where="brief key_number")
+    trims += t
+    gotchas, t = _brief_items(raw.get("gotchas"), where="brief gotcha")
+    trims += t
+    out: dict[str, Any] = {
+        "one_line": one,
+        "envelope": envelope,
+        "key_numbers": key_numbers,
+        "gotchas": gotchas,
+    }
+    ta = raw.get("typical_application")
+    if ta is not None:
+        out["typical_application"], t = _validate_brief_item(
+            ta, where="brief typical_application"
+        )
+        trims += t
+    return out, trims
+
+
 def _chunk_ids_of(store: Store, ref_id: int) -> set[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -375,26 +508,35 @@ def _check_provenance(
     live: set[int] = set()
     if datasheet_ref_id is not None:
         live = _chunk_ids_of(store, datasheet_ref_id)
+    rows_by_where: list[tuple[str, dict[str, Any]]] = []
     for pkg_name, pkg in (payload.get("packages") or {}).items():
-        rows = (
+        for row in (
             list(pkg.get("pins") or [])
             + list(pkg.get("required_externals") or [])
             + list(pkg.get("conditional_tables") or [])
-        )
-        for row in rows:
-            cid = row.get("chunk_id")
-            if cid is None:
-                continue
-            if datasheet_ref_id is None:
-                raise BadInput(
-                    f"package {pkg_name}: a chunk_id citation "
-                    f"({cid}) needs datasheet_ref_id — which datasheet is it on?"
-                )
-            if int(cid) not in live:
-                raise BadInput(
-                    f"package {pkg_name}: chunk_id {cid} is not a live chunk "
-                    f"of datasheet ref {datasheet_ref_id}"
-                )
+        ):
+            rows_by_where.append((f"package {pkg_name}", row))
+    brief = payload.get("brief") or {}
+    for row in (
+        list(brief.get("key_numbers") or [])
+        + list(brief.get("gotchas") or [])
+        + ([brief["typical_application"]] if brief.get("typical_application") else [])
+    ):
+        rows_by_where.append(("brief", row))
+    for where, row in rows_by_where:
+        cid = row.get("chunk_id")
+        if cid is None:
+            continue
+        if datasheet_ref_id is None:
+            raise BadInput(
+                f"{where}: a chunk_id citation "
+                f"({cid}) needs datasheet_ref_id — which datasheet is it on?"
+            )
+        if int(cid) not in live:
+            raise BadInput(
+                f"{where}: chunk_id {cid} is not a live chunk "
+                f"of datasheet ref {datasheet_ref_id}"
+            )
 
 
 def write_facts(
@@ -406,9 +548,14 @@ def write_facts(
     job_ref_id: int | None = None,
     allow_empty: bool = False,
     conn: Any = None,
-) -> int:
+) -> dict[str, Any]:
     """Validate ``payload`` and store it as the part ref's fact block;
-    bumps ``rev``. Returns the new revision.
+    bumps ``rev``. Returns the write reply ``{"rev", "brief", "trims",
+    "warnings"}`` — ``rev`` the new revision, ``brief`` whether a brief
+    block stored, ``trims`` how many brief caps the write applied
+    (over-cap text truncates with an ellipsis, extra items drop — never
+    a refusal), ``warnings`` one line per salvage: a malformed ``brief``
+    drops rather than losing the valid facts.
 
     ``payload`` shape::
 
@@ -467,10 +614,24 @@ def write_facts(
         },
         "packages": packages,
     }
+    trims = 0
+    warnings: list[str] = []
+    if payload.get("brief") is not None:
+        try:
+            block["brief"], trims = _validate_brief(payload["brief"])
+        except BadInput as exc:
+            # A malformed brief must not sink the pin facts it rode in
+            # with — drop it and say why in the reply.
+            warnings.append(f"malformed brief dropped, facts kept: {exc}")
     normalized = {FACTS_META_KEY: block}
     _check_provenance(store, datasheet_ref_id, normalized[FACTS_META_KEY])
     store.update_ref(part_ref_id, meta_patch=normalized, conn=conn)
-    return int(block["rev"])
+    return {
+        "rev": int(block["rev"]),
+        "brief": "brief" in block,
+        "trims": trims,
+        "warnings": warnings,
+    }
 
 
 def record_extraction(
@@ -560,6 +721,23 @@ def _to_part_facts(part_ref_id: int, block: dict[str, Any]) -> PartFacts:
             required_externals=externals,
             conditional_tables=tables,
         )
+    brief: PartBrief | None = None
+    raw_brief = block.get("brief")
+    if isinstance(raw_brief, dict):
+
+        def item(r: dict[str, Any]) -> BriefItem:
+            return BriefItem(text=str(r.get("text") or ""), source=_source(ds_id, r))
+
+        ta = raw_brief.get("typical_application")
+        brief = PartBrief(
+            one_line=str(raw_brief.get("one_line") or ""),
+            envelope={
+                str(k): str(v) for k, v in (raw_brief.get("envelope") or {}).items()
+            },
+            key_numbers=tuple(item(r) for r in raw_brief.get("key_numbers") or []),
+            gotchas=tuple(item(r) for r in raw_brief.get("gotchas") or []),
+            typical_application=item(ta) if isinstance(ta, dict) else None,
+        )
     return PartFacts(
         part_ref_id=part_ref_id,
         rev=int(block.get("rev") or 0),
@@ -567,6 +745,7 @@ def _to_part_facts(part_ref_id: int, block: dict[str, Any]) -> PartFacts:
         datasheet_ref_id=int(ds_id) if ds_id else None,
         job_ref_id=src.get("job_ref_id"),
         packages=packages,
+        brief=brief,
     )
 
 
@@ -706,12 +885,52 @@ def render_facts(facts: PartFacts | None, *, lcsc: str) -> str:
     return "\n".join(out)
 
 
+def render_brief(facts: PartFacts | None, *, lcsc: str) -> str:
+    """The ``view='brief'`` body (gr520243): the sourced distillation a
+    person reads — one line of identity, the operating envelope, the
+    key numbers and gotchas each citing their datasheet chunk."""
+    brief = facts.brief if facts is not None else None
+    if brief is None:
+        return (
+            f"no brief for {lcsc} yet — a brief rides the datasheet_facts "
+            "extraction, which runs after the datasheet pull; "
+            "get(kind='part', id=…) queues both, recheck shortly "
+            "(view='facts' shows the machine-shaped extraction)"
+        )
+    out = [f"# {lcsc} — {brief.one_line}"]
+    if brief.envelope:
+        out.append(
+            "envelope: " + " · ".join(f"{k} {v}" for k, v in brief.envelope.items())
+        )
+    for i in brief.key_numbers:
+        out.append(f"- {i.text}{_item_cite(i)}")
+    for i in brief.gotchas:
+        out.append(f"- gotcha: {i.text}{_item_cite(i)}")
+    if brief.typical_application is not None:
+        out.append(
+            f"typical application: {brief.typical_application.text}"
+            f"{_item_cite(brief.typical_application)}"
+        )
+    return "\n".join(out)
+
+
+def _item_cite(item: BriefItem) -> str:
+    """A brief item's tail: its chunk cite, or ``[uncited]`` when the
+    extraction left ``chunk_id`` off — accepted at write, but reads as
+    an unverifiable claim (the cite is what opens the datasheet page)."""
+    if item.source is None or item.source.chunk_id is None:
+        return " [uncited]"
+    return f" [{item.source.describe()}]"
+
+
 __all__ = [
     "ELECTRICAL_FIELDS",
     "FACTS_META_KEY",
+    "BriefItem",
     "ConditionalTable",
     "FactSource",
     "PackageFacts",
+    "PartBrief",
     "PartFacts",
     "PinFact",
     "RequiredExternal",
@@ -720,6 +939,7 @@ __all__ = [
     "part_facts_for_ref",
     "pin_fact",
     "record_extraction",
+    "render_brief",
     "render_facts",
     "write_facts",
 ]

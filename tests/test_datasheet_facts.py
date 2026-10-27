@@ -159,8 +159,8 @@ def test_write_read_round_trip(store):
     part_id = _catalog(store)
     ds_id, chunk_ids = _datasheet(store)
 
-    rev = df.write_facts(store, part_id, _payload(chunk_ids[0]), datasheet_ref_id=ds_id)
-    assert rev == 1
+    res = df.write_facts(store, part_id, _payload(chunk_ids[0]), datasheet_ref_id=ds_id)
+    assert res["rev"] == 1 and res["trims"] == 0
     assert df.facts_revision(store, part_id) == 1
 
     facts = df.part_facts(store, "C5446")
@@ -189,7 +189,7 @@ def test_rev_bumps_on_rewrite(store):
     ds_id, chunk_ids = _datasheet(store)
     df.write_facts(store, part_id, _payload(chunk_ids[0]), datasheet_ref_id=ds_id)
     rev = df.write_facts(store, part_id, _payload(chunk_ids[1]), datasheet_ref_id=ds_id)
-    assert rev == 2
+    assert rev["rev"] == 2
     facts = df.part_facts(store, "C5446")
     assert facts is not None
     pin1 = facts.pin("1")
@@ -332,6 +332,224 @@ def test_facts_view_without_id_carries_next(store):
     with pytest.raises(BadInput, match="requires id=") as ei:
         h.get(view="facts")
     assert ei.value.next and "get(kind='part', id='C" in str(ei.value.next)
+
+
+# ── the part brief (gr520243) ─────────────────────────────────────────
+
+
+def _brief(chunk_id: int) -> dict[str, Any]:
+    return {
+        "one_line": "3.3V 300mA LDO, SOT-23-5",
+        "envelope": {"supply": "1.5–5.5 V", "current": "300 mA max"},
+        "key_numbers": [
+            {"text": "IN abs max 6.0 V", "page": 5, "chunk_id": chunk_id},
+            {
+                "text": "needs 1uF X5R on IN within 5 mm",
+                "page": 5,
+                "chunk_id": chunk_id,
+            },
+        ],
+        "gotchas": [
+            {"text": "EN must not float", "page": 5, "chunk_id": chunk_id},
+        ],
+        "typical_application": {
+            "text": "2.2uF output capacitor for stability",
+            "page": 5,
+            "chunk_id": chunk_id,
+        },
+    }
+
+
+def _payload_with_brief(chunk_id: int) -> dict[str, Any]:
+    p = _payload(chunk_id)
+    p["brief"] = _brief(chunk_id)
+    return p
+
+
+def test_brief_write_read_round_trip(store):
+    """gr520243: the brief rides the same block; every cited item reads
+    back with its datasheet provenance."""
+    part_id = _catalog(store)
+    ds_id, chunk_ids = _datasheet(store)
+    df.write_facts(
+        store, part_id, _payload_with_brief(chunk_ids[0]), datasheet_ref_id=ds_id
+    )
+    facts = df.part_facts(store, "C5446")
+    assert facts is not None and facts.brief is not None
+    b = facts.brief
+    assert b.one_line == "3.3V 300mA LDO, SOT-23-5"
+    assert b.envelope["supply"] == "1.5–5.5 V"
+    assert len(b.key_numbers) == 2
+    kn = b.key_numbers[0]
+    assert kn.source is not None
+    assert kn.source.chunk_id == chunk_ids[0] and kn.source.page == 5
+    assert kn.source.datasheet_ref_id == ds_id
+    assert b.typical_application is not None and b.typical_application.source
+
+
+def test_brief_provenance_must_cite_the_declared_datasheet(store):
+    """A dangling brief citation is the same write error as a dangling
+    fact citation — the block never stores it."""
+    part_id = _catalog(store)
+    ds_id, chunk_ids = _datasheet(store)
+    other = store.insert_ref(kind="datasheet", slug="other-ds", title="other")
+    other_chunk = store.chunks.insert_chunks(
+        other.id, [ChunkInsert(ord=0, text="unrelated", meta={})]
+    )[0].id
+
+    p = _payload_with_brief(chunk_ids[0])
+    p["brief"]["key_numbers"][0]["chunk_id"] = other_chunk
+    with pytest.raises(BadInput, match="not a live chunk"):
+        df.write_facts(store, part_id, p, datasheet_ref_id=ds_id)
+
+    p = _payload_with_brief(chunk_ids[0])
+    with pytest.raises(BadInput, match="needs datasheet_ref_id"):
+        df.write_facts(store, part_id, p)
+
+
+def test_brief_view_and_default_get(store):
+    """view='brief' renders the distillation; the default get shows it
+    once it exists (gr520243 acceptance: opening the part shows a
+    sourced brief)."""
+    part_id = _catalog(store)
+    ds_id, chunk_ids = _datasheet(store)
+    df.write_facts(
+        store, part_id, _payload_with_brief(chunk_ids[0]), datasheet_ref_id=ds_id
+    )
+    h = PartHandler(hub=Hub(store=store), live_lookup=lambda *a, **k: None)
+    body = h.get(id="C5446", view="brief").body
+    assert "3.3V 300mA LDO" in body
+    assert "supply 1.5–5.5 V" in body
+    assert "IN abs max 6.0 V" in body and "p.5" in body
+    assert "gotcha: EN must not float" in body
+    assert "typical application:" in body
+    # the default get leads with the catalog table, then the brief
+    default = h.get(id="C5446").body
+    assert "# C5446 — 3.3V 300mA LDO" in default
+
+
+def test_brief_view_without_brief(store):
+    _catalog(store)
+    h = PartHandler(hub=Hub(store=store), live_lookup=lambda *a, **k: None)
+    assert "no brief" in h.get(id="C5446", view="brief").body
+
+
+def test_malformed_brief_drops_but_facts_land(store):
+    """A brief the schema can't take must not sink the pin facts it
+    rode in with — the write keeps the facts, drops the brief, and the
+    reply carries one warning naming why."""
+    part_id = _catalog(store)
+    ds_id, chunk_ids = _datasheet(store)
+    p = _payload_with_brief(chunk_ids[0])
+    p["brief"] = {"key_numbers": [{"text": "x"}]}  # no one_line
+    res = df.write_facts(store, part_id, p, datasheet_ref_id=ds_id)
+    assert res["brief"] is False
+    assert len(res["warnings"]) == 1 and "one_line" in res["warnings"][0]
+    facts = df.part_facts(store, "C5446")
+    assert facts is not None and facts.brief is None
+    pkg = facts.package()
+    assert pkg is not None and len(pkg.pins) == 3
+
+    # A brief that isn't even an object salvages the same way.
+    p = _payload_with_brief(chunk_ids[0])
+    p["brief"] = "garbage"
+    res = df.write_facts(store, part_id, p, datasheet_ref_id=ds_id)
+    assert res["brief"] is False and len(res["warnings"]) == 1
+    assert df.part_facts(store, "C5446") is not None
+
+
+def test_brief_item_without_chunk_id_renders_uncited(store):
+    """An extraction may leave ``chunk_id`` off an item — it stays
+    accepted, but renders ``[uncited]`` so a reader knows there is no
+    chunk to open."""
+    part_id = _catalog(store)
+    ds_id, chunk_ids = _datasheet(store)
+    p = _payload_with_brief(chunk_ids[0])
+    p["brief"]["key_numbers"][0].pop("chunk_id")  # page-only cite
+    p["brief"]["gotchas"][0] = {"text": "watch the dropout at low VIN"}
+    p["brief"]["typical_application"].pop("chunk_id")
+    df.write_facts(store, part_id, p, datasheet_ref_id=ds_id)
+    body = (
+        PartHandler(hub=Hub(store=store), live_lookup=lambda *a, **k: None)
+        .get(id="C5446", view="brief")
+        .body
+    )
+    assert "IN abs max 6.0 V [uncited]" in body
+    assert "gotcha: watch the dropout at low VIN [uncited]" in body
+    assert "typical application: 2.2uF output capacitor" in body
+    assert "capacitor for stability [uncited]" in body
+    # a fully-cited item still carries its chunk cite
+    assert "needs 1uF X5R on IN within 5 mm [p.5" in body
+
+
+def test_brief_text_is_capped_not_refused(store):
+    """A rambling extraction can't bloat the block: over-cap text
+    truncates with an ellipsis, extra items drop, and the write reply
+    counts the trims — a 50k one_line and 5k gotchas still store."""
+    part_id = _catalog(store)
+    ds_id, chunk_ids = _datasheet(store)
+    p = _payload_with_brief(chunk_ids[0])
+    p["brief"]["one_line"] = "x" * 50_000
+    p["brief"]["key_numbers"] = [
+        {"text": "n" * 400, "page": 5, "chunk_id": chunk_ids[0]}
+    ] * 12
+    p["brief"]["gotchas"] = [
+        {"text": f"gotcha {i}", "page": 5, "chunk_id": chunk_ids[0]}
+        for i in range(5_000)
+    ]
+    p["brief"]["envelope"] = {f"k{i}": "v" * 200 for i in range(20)} | {
+        "k" * 60: "long key"
+    }
+    res = df.write_facts(store, part_id, p, datasheet_ref_id=ds_id)
+    assert res["brief"] is True and res["trims"] > 0
+    facts = df.part_facts(store, "C5446")
+    assert facts is not None and facts.brief is not None
+    b = facts.brief
+    assert len(b.one_line) <= 160 and b.one_line.endswith("…")
+    assert len(b.key_numbers) == 10
+    assert all(len(i.text) <= 300 for i in b.key_numbers)
+    assert len(b.gotchas) == 10
+    assert len(b.envelope) <= 8
+    assert all(len(k) <= 40 for k in b.envelope)
+    assert all(len(v) <= 120 for v in b.envelope.values())
+
+
+def test_part_neighbor_label_prefers_brief_one_line(store):
+    """gr520243: the brief's one_line is the part's fisheye link label —
+    a ring naming C-numbers reads what each part is."""
+    from types import SimpleNamespace
+
+    from precis.utils.eye_render import _neighbor_label
+
+    ref = SimpleNamespace(
+        kind="part",
+        slug="C5446",
+        title="ACME-LDO33 — 3.3V 300mA LDO SOT-23-5",
+        meta={"datasheet_facts": {"brief": _brief(1)}},
+    )
+    assert "3.3V 300mA LDO, SOT-23-5" in _neighbor_label(ref, 42)
+    assert "ACME-LDO33" not in _neighbor_label(ref, 42)
+    # no brief -> catalog title unchanged
+    ref.meta = {}
+    assert "ACME-LDO33" in _neighbor_label(ref, 42)
+
+
+def test_extract_records_and_stores_brief(store):
+    _part_id, _ds_id, chunk_ids = _linked(store)
+    record = fj.extract(
+        store,
+        "C5446",
+        job_ref_id=1,
+        llm=lambda *a, **k: _reply(_payload_with_brief(chunk_ids[0])),
+    )
+    assert record["status"] == "ok" and record["brief"] is True
+    facts = df.part_facts(store, "C5446")
+    assert facts is not None and facts.brief is not None
+    assert facts.brief.one_line.startswith("3.3V")
+
+
+def test_prompt_asks_for_the_brief(store):
+    assert '"brief"' in fj._PROMPT and "one_line" in fj._PROMPT
 
 
 # ── the datasheet_facts extraction job ───────────────────────────────

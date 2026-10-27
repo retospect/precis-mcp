@@ -270,7 +270,9 @@ class OrcidHandler(Handler):
             "is LLM-gated — get(..., args={'enqueue': N}) (or 'all') mints "
             "that many stubs. search(kind='orcid', q=...) runs over the "
             "embedded author card; link attaches authored / authored-by "
-            "edges to papers. Durable link hub — never cache-evicted. See "
+            "edges to papers. view='links' lists the node's edge graph "
+            "(its authored papers; narrow with args={'rel'|'of_kind'}). "
+            "Durable link hub — never cache-evicted. See "
             "``precis-orcid-help``."
         ),
         supports_get=True,
@@ -281,6 +283,7 @@ class OrcidHandler(Handler):
         is_numeric=False,
         id_required=False,
         requires_secret=("ORCID_CLIENT_ID", "ORCID_CLIENT_SECRET"),
+        views=("links",),
     )
 
     provider: ClassVar[str] = "orcid"
@@ -322,6 +325,8 @@ class OrcidHandler(Handler):
         enqueue: int | str | None = None,
         tags: list[str] | None = None,
         untags: list[str] | None = None,
+        rel: str | None = None,
+        of_kind: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Bare get / q-only → search or listing, mirroring paper/oracle.
@@ -338,6 +343,25 @@ class OrcidHandler(Handler):
                         "resolve an author by iD",
                     )
                 ],
+            )
+        if view is not None:
+            # view='links': the node's edge graph — the authored-paper
+            # list the gripe asked for (gr519852). Local resolution only:
+            # a links read must not cost an upstream fetch on a never-
+            # resolved iD.
+            if view != "links":
+                raise BadInput(
+                    f"kind='orcid' has no view {view!r}",
+                    next="get(kind='orcid', id='0000-…', view='links')",
+                )
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(
+                self.store,
+                self._resolve_ref(id),
+                sense="orcid",
+                rel=rel,
+                of_kind=of_kind,
             )
 
         force_refresh = bool(refresh) or mode == "refresh"

@@ -134,6 +134,7 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Turn an `se` block into a printed part (STL/3MF) | `realize` (mint the cad implementation) → `view='print'` (build orientation, process DRC, export) → `view='fab'` (the whole design's fabrication plan) | `precis-se-print-help` |
 | Check a design's fit/interference | `get(kind='se', id=..., view='fit')` — mesh check on real cad; `args={'recompute': true}` forces live, else the stored import report + new/cleared diff | `precis-se-fit-help` |
 | PCB netlist + placement | `kind='pcb'` + `kind='part'` / `kind='datasheet'` | `precis-pcb-help` |
+| PCB requirements → fab (record why a part was chosen, budgets, BOM home) | `kind='memory'` selection records + `kind='pcb'` — the 11-step flow | `precis-pcb-design-flow-help` |
 
 ## Authoring artifacts — materials, components, reactions
 

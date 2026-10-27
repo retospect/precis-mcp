@@ -93,7 +93,10 @@ Use this to confirm a candidate before committing it to a design — especially
 `package` (must match your footprint) and `basic`. Two `view=`s matter at
 board-script time: `view='pinmap'` returns only the pad-number → pin-name
 map you write `part.pin(…)` / `net.tie` against; `view='footprint'` is the
-full pad geometry JSON.
+full pad geometry JSON. Once the datasheet_facts extraction has run,
+`view='brief'` is the sourced human-readable distillation (one-line
+identity, envelope, key numbers, gotchas — each citing its datasheet
+chunk) and `view='facts'` its machine-shaped pin table.
 
 When a keyword search can't see the category at all (some categories — e.g.
 Supercapacitors — answer `total=0` to every keyword), **browse the taxonomy
@@ -207,12 +210,30 @@ ladder — the top rungs cost nothing, the bottom ones cost board area.
    single-sourced critical part where the alternate is a different package.
 5. **Accept the thin-stock part** — deliberately, with the risk stated in
    the component's `note`, not by default.
+6. **Consign.** The part has no C-number and won't get one — you source it
+   outside JLC. Its home is a `component` ref (mpn/manufacturer, meta
+   `supply: 'consign'`, supplier links), which is also how its datasheet
+   gets pulled — `put(kind='datasheet', args={'mfr_part': …,
+   'manufacturer': …, 'url': …})` ([[precis-datasheet-help]]). Typed
+   consigned BOM lines are a later slice of the design-flow item;
+   [[precis-pcb-design-flow-help]] names the shape.
 
 **"Well stocked" is a ratio, not a number.** Compare stock against
 *this build*: qty × per-board count, with a healthy multiple. 5 000 units is
 enormous for ten prototypes and thin for a 10 k run. And remember rule 2
 above: **Basic parts sit on JLC's line permanently**, so for most passives
 "prefer Basic" already solves availability without any of this ladder.
+
+## Record the pick — the selection record
+
+A shortlist doesn't stay in chat or a todo comment: it becomes a
+**selection record** — one `memory` node per role (tagged `decision`,
+`selection`, `project:<slug>`) holding the ranked criteria, the
+candidates with one-line verdicts, the pick and the why, linked
+`derived-from` the facts it rests on and `serves` the requirement. The
+board script's part line cites it `# me<id> (why)`. Template and
+lifecycle (open → decided → superseded; rejects kept):
+[[precis-pcb-design-flow-help]].
 
 ## Policy in one line
 

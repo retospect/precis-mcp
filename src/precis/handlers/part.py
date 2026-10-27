@@ -62,6 +62,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -74,8 +75,8 @@ from precis.handlers._numeric_ref import BATCH_ID_CAP, BATCH_VIEW_PAGE_CHARS
 from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
-from precis.pcb.datasheet_facts import part_facts, render_facts
-from precis.pcb.datasheets import datasheet_state
+from precis.pcb.datasheet_facts import part_facts, render_brief, render_facts
+from precis.pcb.datasheets import datasheet_state, pull_in_flight
 from precis.pcb.datasheets import enqueue_one as queue_pull
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -84,9 +85,66 @@ from precis.utils import handle_registry
 log = logging.getLogger(__name__)
 
 
-def _datasheet_line(state: dict[str, Any]) -> str:
+#: Query tokens that don't name a part type — mount/package words a
+#: PARTIAL row may match without being the asked-for part (gr519680:
+#: 'solar cell SMD' surfaced tactile switches on 'smd' alone).
+_PART_GENERIC_TERMS = frozenset(
+    {
+        "smd",
+        "smt",
+        "dip",
+        "tht",
+        "axial",
+        "radial",
+        "surface",
+        "mount",
+        "through",
+        "hole",
+        "pcs",
+        "reel",
+    }
+)
+#: Parametric / package-code fragments ('5.5v', '0.47f', '10k', '0402',
+#: '16pin') — a value, never a part type.
+_PART_VALUE_TOKEN = re.compile(r"^[\d.]+[a-zµΩω]*$", re.I)
+
+#: Alternate spellings a part-type term may carry in a catalog
+#: description — the PARTIAL row's must-match-one set so a solar cell
+#: filed under 'photovoltaic' or 'SMD Modules' still counts (gr519680).
+_PART_TYPE_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "solar": ("photovoltaic", "solar cell", "solar panel"),
+    "photovoltaic": ("solar",),
+    "supercapacitor": ("supercap", "super capacitor", "ultracapacitor", "edlc"),
+    "supercap": ("supercapacitor", "super capacitor", "ultracapacitor"),
+}
+
+
+def _type_terms(q: str) -> list[str]:
+    """The q= tokens that name a part type — everything that isn't a
+    mount/package word or a parametric value — plus each one's catalog-
+    description alternates. Feeds ``parts_search``'s required= set."""
+    out: list[str] = []
+    for tok in q.split():
+        t = tok.strip(".,;:()[]").lower()
+        if not t or t in _PART_GENERIC_TERMS or _PART_VALUE_TOKEN.match(t):
+            continue
+        if t not in out:
+            out.append(t)
+        for alt in _PART_TYPE_SYNONYMS.get(t, ()):
+            if alt not in out:
+                out.append(alt)
+    return out
+
+
+def _datasheet_line(state: dict[str, Any], *, in_flight: bool = False) -> str:
     """The part's datasheet: the linked ref, the recorded pull failure with
-    its reason, or "not pulled yet" (``precis.pcb.datasheets``)."""
+    its reason, or "not pulled yet" (``precis.pcb.datasheets``).
+
+    ``in_flight`` names a queued/running ``datasheet_pull`` job: the job
+    only writes its ``meta.datasheet_pull`` record when it *ends*, so
+    without it a mid-pull part read as "not pulled yet" while the pull
+    was already running — and the linked sheet could appear between this
+    get and the agent's next call (gr519849)."""
     ds = state["datasheet"]
     if ds is not None:
         slug = ds[1] or ds[0]
@@ -99,6 +157,12 @@ def _datasheet_line(state: dict[str, Any]) -> str:
         return line
     pull = state["pull"]
     if pull is None:
+        if in_flight:
+            return (
+                "datasheet: pull queued or running now — the job writes "
+                "its outcome when it ends; recheck with "
+                "get(kind='part', id=…) shortly"
+            )
         return (
             "datasheet: not pulled yet (looking the part up queues the pull; "
             "or put(kind='datasheet', args={'url': …, 'part': …}))"
@@ -152,9 +216,13 @@ class PartHandler(Handler):
             "link(target='part:C25804') mints its ref on first use. "
             "search(kind='part', q='0.1uF 0402 X7R') filters "
             "to JLCPCB-assemblable parts and prefers Basic + high-turnover + "
-            "cheap. Used by a pcb design to pick manufacturable parts. "
+            "cheap; args={'category': 'Capacitors'} narrows to a "
+            "category substring. Used by a pcb design to pick "
+            "manufacturable parts. "
             "view='facts' reads the extracted datasheet pin table / "
-            "required externals (precis.pcb.datasheet_facts). "
+            "required externals (precis.pcb.datasheet_facts); "
+            "view='brief' is the same extraction's sourced, "
+            "human-readable distillation (gr520243). "
             "view='footprint' returns the cached footprint row "
             "(pads/pin_map/courtyard/centroid/holes + a content sha) as "
             "JSON — the sandbox read path pcb.catalog() resolves "
@@ -168,11 +236,11 @@ class PartHandler(Handler):
         supports_search=True,
         is_numeric=False,
         id_required=False,
-        views=("categories", "facts", "footprint", "pinmap"),
+        views=("brief", "categories", "facts", "footprint", "pinmap"),
     )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        return ["categories", "facts", "footprint", "pinmap"]
+        return ["brief", "categories", "facts", "footprint", "pinmap"]
 
     def __init__(
         self,
@@ -215,12 +283,14 @@ class PartHandler(Handler):
         if view is not None:
             if is_eye_view(view):
                 return self.eye(id=id, extent=view)
-            if view not in ("categories", "facts", "footprint", "pinmap"):
+            if view not in ("brief", "categories", "facts", "footprint", "pinmap"):
                 raise BadInput(
                     f"kind='part' has no view {view!r}",
                     next="get(kind='part', id='C…', view='facts') — the "
                     "datasheet-extracted pin table / required externals; "
-                    "view='footprint' is the cached footprint row as JSON; "
+                    "view='brief' is its sourced human-readable "
+                    "distillation; view='footprint' is the cached "
+                    "footprint row as JSON; "
                     "view='pinmap' is only its pad-number → pin-name map; "
                     "view='categories' walks JLCPCB's sort taxonomy "
                     "(id='Capacitors/Supercapacitors' lists its parts)",
@@ -236,6 +306,10 @@ class PartHandler(Handler):
             if view == "facts":
                 return Response(
                     body=render_facts(part_facts(self.store, lcsc), lcsc=lcsc)
+                )
+            if view == "brief":
+                return Response(
+                    body=render_brief(part_facts(self.store, lcsc), lcsc=lcsc)
                 )
             if view == "pinmap":
                 return self._pinmap_view(lcsc)
@@ -297,11 +371,18 @@ class PartHandler(Handler):
         if row is not None and catalog.lcsc_id(lcsc) is not None:
             # datasheets come before a design uses the part (gr492689)
             queue_pull(self.store, self.hub.sibling("job"), lcsc)
-        body += "\n" + _datasheet_line(datasheet_state(self.store, lcsc))
+        body += "\n" + _datasheet_line(
+            datasheet_state(self.store, lcsc),
+            in_flight=pull_in_flight(self.store, lcsc),
+        )
         if ref is not None:
             # the section arrives with its own leading blank line
             body += f"\nref: {handle_registry.format_handle('part', ref.id)}"
             body += render_links_section(self.store, ref, limit=12)
+        facts = part_facts(self.store, lcsc)
+        if facts is not None and facts.brief is not None:
+            # gr520243: the brief is the default view once it exists.
+            body += "\n\n" + render_brief(facts, lcsc=lcsc)
         return Response(body=body)
 
     def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
@@ -561,7 +642,12 @@ class PartHandler(Handler):
 
     # ── search ───────────────────────────────────────────────────────
     def search(
-        self, *, q: str | None = None, page_size: int = 20, **_kw: Any
+        self,
+        *,
+        q: str | None = None,
+        category: str | None = None,
+        page_size: int = 20,
+        **_kw: Any,
     ) -> Response:
         if q is None or not str(q).strip():
             raise BadInput(
@@ -569,9 +655,10 @@ class PartHandler(Handler):
                 next="search(kind='part', q='0.1uF 0402 X7R 16V')",
             )
         q = str(q).strip()
+        category = str(category).strip() if category is not None else None
         # JLCPCB-native selector: hard-filter to assemblable parts; rank
         # Basic-first then turnover (store.parts_search).
-        rows = self.store.parts_search(q, limit=page_size)
+        rows = self.store.parts_search(q, limit=page_size, category=category)
         # gr520325: soft-only rows are near-misses, not a hit — a query
         # with no row satisfying every soft term still reaches the live
         # lookup, as it did before the terms went soft. The store returns
@@ -583,7 +670,7 @@ class PartHandler(Handler):
             # A C-number query is a point lookup — the selector's
             # description-only tsv never matches one.
             direct = catalog.lcsc_id(q)
-            if direct is not None:
+            if direct is not None and category is None:
                 hit = self.store.part_row(direct)
                 if hit is not None:
                     rows = [hit]
@@ -592,8 +679,18 @@ class PartHandler(Handler):
             # No part matches every word: rank by terms matched, in-stock
             # first, so '16pin' vs a catalog '16P' still finds the part. A
             # single token (an MPN like TYPE-C-31-M-12 tokenizes into common
-            # fragments) goes to the live lookup instead.
-            rows = self.store.parts_search(q, limit=page_size, partial=True)
+            # fragments) goes to the live lookup instead. The required=
+            # set keeps a row only when it matched a part-type term
+            # (gr519680): 'solar cell SMD' no longer surfaces tactile
+            # switches that matched 'smd' alone — it falls through to the
+            # live search.
+            rows = self.store.parts_search(
+                q,
+                limit=page_size,
+                partial=True,
+                required=_type_terms(q),
+                category=category,
+            )
             partial = bool(rows)
         live_rows: list[dict[str, Any]] | None = None
         live_err: str | None = None

@@ -21,6 +21,12 @@ from a paper are declared, not duplicated:
   A local-path put is deliberately absent: the pull runs on a worker that
   cannot see an agent's sandbox, and ingesting inline would run Marker in
   the request.
+* ``put(args={'mfr_part', 'manufacturer'?, 'url'})`` is the non-LCSC door
+  (gr519849): a consigned part has no C-number, so it find-or-mints a
+  ``component`` ref (mpn+manufacturer, category ``electronic``), stamps the
+  URL as its supplier identity link and queues the pull's
+  ``component_ref_id`` leg — the sheet lands ``datasheet-of`` the
+  component.
 
 Everything else (``get`` overview + chunk rendering, ``search`` /
 ``search_hits``, ``edit`` metadata repair, ``tag`` / ``link``) is the paper
@@ -149,7 +155,9 @@ class DatasheetHandler(PaperHandler):
             "kind for the whole electronics-doc family (app-note / errata via a "
             "meta sub-type). Attach one with put(args={'part': 'C…', 'url': "
             "'https://…pdf'}) (url optional: the catalog's), which also queues "
-            "the part's fact extraction. Link it to a part with "
+            "the part's fact extraction. A part with no C-number (consigned) "
+            "uses args={'mfr_part', 'manufacturer'?, 'url'} — it lands on a "
+            "component ref. Link a datasheet to a part with "
             "link(rel='datasheet-of'). "
             "Use get(view='toc') to read the pinout / sections. "
             "See precis-datasheet-help."
@@ -169,11 +177,12 @@ class DatasheetHandler(PaperHandler):
 
     # put() is a datasheet pull, not a paper acquire: its own args keys
     # (``path`` is accepted only to refuse it with a hint; ``stub``
-    # mints a bodiless ref a human fills by named drop — gr520099), the
-    # rest inherited from PaperHandler.
+    # mints a bodiless ref a human fills by named drop — gr520099;
+    # ``mfr_part``/``manufacturer`` address a non-LCSC part through the
+    # component kind — gr519849), the rest inherited from PaperHandler.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         **PaperHandler.ARGS,
-        "put": ArgsSpec({"url", "part", "path", "stub"}),
+        "put": ArgsSpec({"url", "part", "path", "stub", "mfr_part", "manufacturer"}),
     }
 
     def __init__(self, *, hub: Hub) -> None:
@@ -204,11 +213,32 @@ class DatasheetHandler(PaperHandler):
         ``datasheet-of`` the part — for a PDF no pull can fetch, filled
         later by a named ``da<N>.pdf`` drop — and queues nothing.
         ``stub`` refuses to combine with ``url`` (one door per call).
+
+        ``args={'mfr_part': '…', 'manufacturer': '…', 'url': '…'}`` is the
+        non-LCSC door (gr519849) for a consigned part with no C-number:
+        it find-or-mints a ``component`` ref on (mpn, manufacturer) and
+        queues the pull's ``component_ref_id`` leg. ``url`` is required
+        there — no catalog row means no catalog URL to fall back to.
         """
         extras = args or {}
         url = str(extras.get("url") or kw.get("url") or "").strip()
         part = str(extras.get("part") or kw.get("part") or "").strip()
+        mfr_part = str(extras.get("mfr_part") or kw.get("mfr_part") or "").strip()
+        manufacturer = str(
+            extras.get("manufacturer") or kw.get("manufacturer") or ""
+        ).strip()
         want_stub = _args_truthy(extras.get("stub") or kw.get("stub"))
+        if part and mfr_part:
+            raise BadInput(
+                "part= and mfr_part= are two addressing doors — pass one",
+                next="part=<C-number> for a catalog part, mfr_part= (+ "
+                "manufacturer=) for a consigned/non-LCSC one",
+            )
+        if want_stub and mfr_part:
+            raise BadInput(
+                "stub= is the C-number door's manual-fill path",
+                next="put(kind='datasheet', args={'part': 'C…', 'stub': True})",
+            )
         if want_stub and url:
             raise BadInput(
                 "stub and url don't combine: a stub is the manual-fill "
@@ -224,12 +254,15 @@ class DatasheetHandler(PaperHandler):
                 next="host the PDF and pass args={'url': …, 'part': 'C…'}, or "
                 "ask an operator to drop it in <inbox>/datasheets/",
             )
-        if not part:
+        if not part and not mfr_part:
             raise BadInput(
-                "put(kind='datasheet') needs part= (url= is optional: without "
-                "it the catalog's datasheet URL is pulled)",
+                "put(kind='datasheet') needs part= or mfr_part= (url= is "
+                "optional on the part= door: without it the catalog's "
+                "datasheet URL is pulled)",
                 next="put(kind='datasheet', args={'url': 'https://…/x.pdf', "
-                "'part': 'C19191684'})",
+                "'part': 'C19191684'}), or args={'mfr_part': 'FC0V474ZFTBR24', "
+                "'manufacturer': 'KEMET', 'url': 'https://…/x.pdf'} for a "
+                "non-LCSC part",
             )
         if url:
             try:
@@ -248,6 +281,15 @@ class DatasheetHandler(PaperHandler):
                     "put(kind='datasheet', args={'url': 'https://…/x.pdf', "
                     "'part': 'C19191684'})",
                 ) from exc
+        if mfr_part:
+            if not url:
+                raise BadInput(
+                    "a non-LCSC part has no catalog datasheet URL — "
+                    "mfr_part= needs url= (the pull fetches exactly that)",
+                    next="put(kind='datasheet', args={'mfr_part': "
+                    f"{mfr_part!r}, 'url': 'https://…/x.pdf'" + "})",
+                )
+            return self._put_component_datasheet(mfr_part, manufacturer, url)
         lcsc = self._resolve_part(part)
         if want_stub:
             return self._put_stub(lcsc)
@@ -349,6 +391,107 @@ class DatasheetHandler(PaperHandler):
             body=f"datasheet stub {handle} minted for part:{lcsc} [{slug}] — "
             f"drop the PDF as <inbox>/datasheets/{handle}.pdf to fill it. "
             f"Backlog: search(kind='datasheet', view='stubs')."
+        )
+
+    def _put_component_datasheet(
+        self, mfr_part: str, manufacturer: str, url: str
+    ) -> Response:
+        """``args={'mfr_part', 'manufacturer'?, 'url'}`` — the non-LCSC door
+        (gr519849).
+
+        A consigned or Extended-catalog-absent part has no C-number, so the
+        ``parts`` table and its lcsc-keyed pull state can't hold it; its
+        home is a ``component`` ref (the kind that already carries
+        mpn/manufacturer and consigned BOM lines), find-or-minted on
+        ``(mpn, manufacturer)`` with category ``electronic``. The
+        agent-supplied ``url`` is stamped as the component's supplier
+        identity link first — ``datasheet_pull``'s ``component_ref_id``
+        leg (:func:`precis.workers.job_types.datasheet_pull.pull_component`)
+        refuses a URL the stored identity doesn't name, so the stamp is
+        what makes the queued job legal.
+        """
+        import hashlib
+
+        from precis.ingest.db_writer import resolve_slug
+        from precis.ingest.pres import kebab_slug
+        from precis.utils.timeutil import now_iso
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, "
+                "  (SELECT id_value FROM ref_identifiers ri "
+                "   WHERE ri.ref_id = refs.ref_id "
+                "     AND ri.id_kind = 'cite_key' LIMIT 1) AS slug, "
+                "  meta->>'manufacturer' FROM refs "
+                "WHERE kind = 'component' AND retired_at IS NULL "
+                "  AND lower(meta->>'mpn') = lower(%s) "
+                "ORDER BY ref_id LIMIT 5",
+                (mfr_part,),
+            ).fetchall()
+        if manufacturer:
+            rows = [
+                r for r in rows if (r[2] or "").strip().lower() == manufacturer.lower()
+            ]
+        if len(rows) > 1:
+            raise BadInput(
+                f"mfr_part {mfr_part!r} matches several components",
+                options=[str(r[1]) for r in rows],
+                next="disambiguate with manufacturer=, or point a pcb's "
+                "consigned line at one of these slugs",
+            )
+        if rows:
+            comp_id, comp_slug = int(rows[0][0]), str(rows[0][1])
+            created = False
+        else:
+            title = " ".join(p for p in (manufacturer, mfr_part) if p)
+            with self.store.pool.connection() as conn:
+                comp_slug = resolve_slug(
+                    kebab_slug(title) or "consigned-part", conn=conn
+                )
+            meta: dict[str, Any] = {
+                "category": "electronic",
+                "mpn": mfr_part,
+                "supply": "consign",
+            }
+            if manufacturer:
+                meta["manufacturer"] = manufacturer
+            ref, created = self.store.component_entity_upsert(
+                slug=comp_slug, title=title or mfr_part, meta_patch=meta
+            )
+            comp_id = ref.id
+        # The identity record the pull's provenance check reads. supplier
+        # 'manufacturer' is a label for an agent-supplied sheet URL, not a
+        # live adapter — ``live_lines`` marks it unreachable, harmlessly.
+        self.store.component_supplier_link(
+            comp_id,
+            {
+                "supplier": "manufacturer",
+                "supplier_part_number": mfr_part,
+                "manufacturer": manufacturer,
+                "mpn": mfr_part,
+                "product_url": "",
+                "datasheet_url": url,
+                "match_confidence": "agent_supplied_url",
+                "first_linked_at": now_iso(),
+            },
+        )
+        job = self.hub.sibling("job")
+        resp = job.put(
+            job_type="datasheet_pull",
+            executor="job_inproc",
+            parent_id=comp_id,
+            params={"component_ref_id": comp_id, "url": url},
+            idem_key=f"datasheet_pull:component:{comp_id}:"
+            + hashlib.sha256(url.encode()).hexdigest()[:16],
+        )
+        verb = "created" if created else "reused"
+        queued = "already queued" if getattr(resp, "reused", False) else "queued"
+        return Response(
+            body=f"{verb} component {comp_slug} (non-LCSC part {mfr_part}"
+            + (f", {manufacturer}" if manufacturer else "")
+            + f"); datasheet pull {queued}. Outcome: get(kind='component', "
+            f"id='{comp_slug}') — the pulled sheet lands as a "
+            "datasheet-of link."
         )
 
     def _resolve_part(self, part: str) -> str:

@@ -291,7 +291,7 @@ _JOB_RESULT_KIND = "job_result"
 # runs from a worker pass with a bare, unbooted ``Hub(store=store)`` that
 # never populates the plugin-lookup path.
 JOB_PARENT_KINDS: frozenset[str] = frozenset(
-    {"todo", "structure", "cad", "draft", "quest", "pcb", "part"}
+    {"todo", "structure", "cad", "draft", "quest", "pcb", "part", "component"}
 )
 
 #: The intent-vs-compute job lanes extension (good-search-coordinator §Substrate fixes #3): a

@@ -396,6 +396,158 @@ def test_search_no_buy_row_shows_no_price(store):
     assert "0.01" in body  # the priced sibling still shows
 
 
+def test_search_partial_drops_rows_matching_no_type_term(store):
+    """gr519680: 'solar cell SMD' — the OR fallback surfaced in-stock
+    rows that matched 'smd' alone (tactile switches, caps, buzzers).
+    A PARTIAL hit must now match a part-type term; a query whose type
+    the catalog doesn't hold falls through to the live listing instead
+    of answering with junk."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C720001",
+                "mfr_part": "TS-1101",
+                "description": "Tactile Switch SMD 6x6mm 50mA",
+                "jlcpcb_assemblable": True,
+                "stock": 50000,
+            },
+            {
+                "lcsc": "C720002",
+                "mfr_part": "KXOB25-05X3F",
+                "description": "SMD photovoltaic module 2.5V",
+                "jlcpcb_assemblable": True,
+                "stock": 10,
+            },
+            {
+                "lcsc": "C720003",
+                "mfr_part": "BZ-3V",
+                "description": "Buzzer SMD 3V passive 0.47g",
+                "jlcpcb_assemblable": True,
+                "stock": 9000,
+            },
+        ]
+    )
+    called = []
+
+    def live_search(*_a, **_k):
+        called.append(1)
+        return []
+
+    part = PartHandler(hub=Hub(store=store), live_search=live_search)
+    body = part.search(q="solar cell SMD").body
+    assert "PARTIAL" in body
+    # 'photovoltaic' in the description counts as 'solar' (synonym).
+    assert "C720002" in body
+    # The 'smd'-only matches are gone.
+    assert "C720001" not in body and "C720003" not in body
+    assert called == []
+
+    # The catalog holds no supercap: instead of the buzzer (which
+    # OR-matched 'smd' / '0.47' / 'v') the live listing is asked.
+    body = part.search(q="supercapacitor 5.5V 0.47F SMD").body
+    assert called == [1]
+    assert "no assemblable parts match" in body
+
+
+def test_search_partial_synonym_matches_super_capacitor(store):
+    """gr519680: a part filed as 'Super Capacitor' answers a
+    'supercapacitor' query — the two-word spelling is a required-set
+    alternate, not a miss."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C720010",
+                "mfr_part": "FC0V474ZFTBR24",
+                "description": "Super Capacitor 0.47F 5.5V SMD",
+                "jlcpcb_assemblable": True,
+                "stock": 100,
+            }
+        ]
+    )
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="supercapacitor 0.47F SMD").body
+    assert "PARTIAL" in body
+    assert "C720010" in body
+
+
+def test_search_category_filter(store):
+    """gr519680: ``category=`` substring-matches the jlcparts category
+    carried in ``params._category`` — connectors stop leaking into a
+    capacitor ask."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C730001",
+                "mfr_part": "CL21B106KAYQNNE",
+                "description": "10uF 25V X7R 0805 SMD",
+                "jlcpcb_assemblable": True,
+                "stock": 100,
+                "params": {"_category": "Capacitors / Multilayer Ceramic"},
+            },
+            {
+                "lcsc": "C730002",
+                "mfr_part": "USB-R-10",
+                "description": "10uF connector housing SMD",
+                "jlcpcb_assemblable": True,
+                "stock": 9999,
+                "params": {"_category": "Connectors / USB"},
+            },
+        ]
+    )
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="10uF SMD", category="Capacitors").body
+    assert "C730001" in body
+    assert "C730002" not in body
+
+
+def test_search_category_escapes_like_metachars(store):
+    """``category`` is a literal substring — ``%``/``_`` in the ask are
+    escaped, so they can't widen into a LIKE pattern."""
+    store.parts_import(
+        [
+            {
+                "lcsc": "C730010",
+                "mfr_part": "MLCC-PCT",
+                "description": "10uF 25V X7R 0805 SMD",
+                "jlcpcb_assemblable": True,
+                "stock": 100,
+                "params": {"_category": "Capacitors 10%0 derated"},
+            },
+            {
+                "lcsc": "C730011",
+                "mfr_part": "MLCC-WILD",
+                "description": "10uF 25V X7R 0805 SMD",
+                "jlcpcb_assemblable": True,
+                "stock": 100,
+                "params": {"_category": "Capacitors 10xyz0"},
+            },
+            {
+                "lcsc": "C730012",
+                "mfr_part": "RES-UND",
+                "description": "10uF 25V X7R 0805 SMD",
+                "jlcpcb_assemblable": True,
+                "stock": 100,
+                "params": {"_category": "Res_A"},
+            },
+            {
+                "lcsc": "C730013",
+                "mfr_part": "RES-ANY",
+                "description": "10uF 25V X7R 0805 SMD",
+                "jlcpcb_assemblable": True,
+                "stock": 100,
+                "params": {"_category": "ResxA"},
+            },
+        ]
+    )
+    part = PartHandler(hub=Hub(store=store), live_search=lambda *a, **k: [])
+    body = part.search(q="10uF SMD", category="10%0").body
+    assert "C730010" in body
+    assert "C730011" not in body
+    body = part.search(q="10uF SMD", category="Res_A").body
+    assert "C730012" in body
+    assert "C730013" not in body
+
+
 def test_search_live_rows_list_in_stock_first(store):
     out_of_stock = {**C2655145, "stockCount": 0, "componentCode": "C9900000001"}
     part = PartHandler(

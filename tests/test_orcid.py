@@ -329,6 +329,67 @@ def test_orcid_handler_resolve_then_gated_enqueue(
     assert any(l.dst_ref_id == paper_ref_id for l in links)
 
 
+# ── links view + slug/handle resolution (gr519852) ─────────────────────
+#
+# Three holes shared one root: the orcid ref's slug IS 'orcid:<iD>', so the
+# canonical 'kind:identifier' split strips the prefix and then misses.
+# (1) view='links' was silently swallowed by get; (2) the eye's id resolve
+# failed on the 'orcid:<iD>' spelling the dispatcher rewrites an 'oi<N>'
+# handle into; (3) link='orcid:<iD>' failed the same way.
+
+
+def test_orcid_links_view_eye_and_link_target(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCID_CLIENT_ID", "cid")
+    monkeypatch.setenv("ORCID_CLIENT_SECRET", "secret")
+
+    from precis.dispatch import Hub
+    from precis.handlers.orcid import OrcidHandler
+    from precis.utils.link_target import parse_link_target
+
+    record = {
+        "orcid_id": _VALID_ID,
+        "name": "Jane Doe",
+        "given": "Jane",
+        "family": "Doe",
+        "credit_name": "",
+        "biography": "Studies magnets.",
+        "keywords": ["spintronics"],
+        "researcher_urls": [],
+        "country": "GB",
+        "employments": [],
+        "works": [{"doi": "10.1021/orcidtest.1", "title": "New Paper", "year": 2024}],
+        "work_count": 1,
+    }
+    monkeypatch.setattr(orcid_handler.orcid_api, "fetch_record", lambda _id: record)
+    handler = OrcidHandler(hub=Hub(store=store, embedder=None))
+    handler.get(id=_VALID_ID, enqueue="all")  # mint + link the held-work stub
+
+    ref = store.get_ref(kind="orcid", id=f"orcid:{_VALID_ID}")
+    assert ref is not None
+
+    # (1) view='links' lists the authored edge, not just the profile card.
+    resp = handler.get(id=_VALID_ID, view="links")
+    assert "authored" in resp.body
+    assert "New Paper" in resp.body
+    resp_rel = handler.get(id=_VALID_ID, view="links", rel="authored")
+    assert "authored" in resp_rel.body
+    with pytest.raises(BadInput):
+        handler.get(id=_VALID_ID, view="bogus")
+
+    # (2) the eye resolves every public spelling: the oi<N> handle, the
+    # 'orcid:<iD>' slug the dispatcher rewrites the handle into, and a
+    # bare iD.
+    for ident in (f"oi{ref.id}", f"orcid:{_VALID_ID}", _VALID_ID):
+        eye = handler.eye(id=ident, extent="fisheye")
+        assert "Jane Doe" in eye.body
+
+    # (3) link='orcid:<iD>' resolves — put's link= door runs this parser.
+    target = parse_link_target(f"orcid:{_VALID_ID}", store=store)
+    assert target.ref_id == ref.id
+
+
 # ── lazy credential resolution (gr343391) ──────────────────────────────
 #
 # Construction never probes the vault at all — ``kind_gate``'s

@@ -1153,6 +1153,16 @@ def _render_first_hop(
 def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "") -> str:
     oh = _handle_with_file(getattr(ref, "kind", "?"), ref, ref_id)
     title = " ".join((getattr(ref, "title", None) or "").split())
+    if getattr(ref, "kind", None) == "part":
+        # gr520243: a part with a datasheet brief labels itself by its
+        # one-line distillation, not the raw catalog title — a ring that
+        # names parts (a todo citing C-numbers) then reads what each is.
+        brief = ((getattr(ref, "meta", None) or {}).get("datasheet_facts") or {}).get(
+            "brief"
+        ) or {}
+        one = " ".join(str(brief.get("one_line") or "").split())
+        if one:
+            title = one
     if len(title) > _NEIGHBOR_TITLE_CAP:
         title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
     label = f"{oh} — {title}" if title else oh

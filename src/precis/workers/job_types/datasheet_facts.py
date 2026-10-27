@@ -15,7 +15,9 @@ for one part, parented on the part ref
 
 The job gathers the datasheet's table-bearing body chunks (keyword-scored,
 char-capped), asks the model for the extraction payload
-``{"packages": {<pkg>: {pins, required_externals, conditional_tables}}}``
+``{"packages": {<pkg>: {pins, required_externals, conditional_tables}},
+"brief": {one_line, envelope, key_numbers, gotchas,
+typical_application}}`` (gr520243)
 with a ``chunk_id`` + ``page`` citation per fact, and hands it to
 :func:`precis.pcb.datasheet_facts.write_facts`, which validates the schema
 and every citation. The outcome — including ``no_datasheet``,
@@ -115,6 +117,21 @@ Return ONE JSON object (no prose, no code fence) of this shape:
           "confidence": <0..1>, "page": <int>, "chunk_id": <int>}}
       ]
     }}
+  }},
+  "brief": {{
+    "one_line": "<what the part is in one line: class + the spec a picker cares about, e.g. '3.3V 300mA LDO, SOT-23-5'>",
+    "envelope": {{"supply": "<e.g. 1.5–5.5 V>", "temperature": "<e.g. -40..85 °C>",
+                  "current": "<e.g. 300 mA max>", "interface": "<e.g. I2C, SPI>"}},
+    "key_numbers": [
+      {{"text": "<one clause carrying a figure, e.g. 'dropout 210 mV at 300 mA'>",
+        "page": <int>, "chunk_id": <int>}}
+    ],
+    "gotchas": [
+      {{"text": "<an erratum / design caution, e.g. 'EN must not float'>",
+        "page": <int>, "chunk_id": <int>}}
+    ],
+    "typical_application": {{"text": "<what the reference circuit shows, one line>",
+                            "page": <int>, "chunk_id": <int>}}
   }}
 }}
 
@@ -129,6 +146,11 @@ Rules:
 - If the sheet covers several packages, use one block per package; if it
   names none, use the key "default".
 - If the chunks contain no pin table at all, return {{"packages": {{}}}}.
+- "brief" is the human-readable distillation: one_line is required when a
+  brief is returned (it becomes the part's label); 5-8 key_numbers, each
+  one clause with its figure and its chunk citation; omit envelope keys,
+  gotchas and typical_application the sheet doesn't support. The whole
+  brief is ~200 words — distil, don't enumerate.
 
 Chunks:
 {chunks}
@@ -285,7 +307,7 @@ def extract(
         return record
 
     try:
-        rev = facts.write_facts(
+        wr = facts.write_facts(
             store,
             part_id,
             payload,
@@ -303,7 +325,11 @@ def extract(
     pins = sum(
         len(p.get("pins") or []) for p in (payload.get("packages") or {}).values()
     )
-    record.update(status="ok", pins=pins, rev=rev)
+    record.update(status="ok", pins=pins, rev=wr["rev"], brief=wr["brief"])
+    if wr["trims"]:
+        record["brief_trims"] = wr["trims"]
+    if wr["warnings"]:
+        record["warnings"] = wr["warnings"]
     facts.record_extraction(store, part_id, record)
     return record
 

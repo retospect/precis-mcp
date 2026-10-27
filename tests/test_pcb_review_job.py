@@ -564,7 +564,8 @@ def test_not_checkable_on_refless_part_goes_stale_once_pulled_and_extracted(
     assert next(s for s in q.statuses if s.name == item).status == "not checkable"
 
     # Facts extracted: facts_revision > 0 -> stale, queued again.
-    assert df.write_facts(store, part_id, {"packages": {}}, allow_empty=True) > 0
+    res = df.write_facts(store, part_id, {"packages": {}}, allow_empty=True)
+    assert res["rev"] > 0
     q = review.queue(store, board, item=item)
     st = next(s for s in q.statuses if s.name == item)
     assert st.status == f"stale (input changed: {key})"

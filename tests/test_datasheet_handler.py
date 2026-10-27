@@ -8,6 +8,8 @@ registration smoke test."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -568,3 +570,168 @@ def test_datasheet_states_stub_never_primary(store: Store) -> None:
     from precis.pcb.datasheets import datasheet_state
 
     assert datasheet_state(store, "C25804")["datasheet"] == (filled, "filledds")
+
+
+# ── put(args={'mfr_part', 'manufacturer', 'url'}) — non-LCSC door ───
+#
+# (gr519849) A consigned part has no C-number, so ``mfr_part`` find-or-
+# mints a ``component`` ref (category electronic, supply consign),
+# stamps the agent URL as its supplier identity link — the stamp is
+# what makes ``datasheet_pull``'s ``component_ref_id`` leg legal — and
+# queues that pull. ``url`` is required (no catalog row to fall back
+# to) and the door refuses to combine with ``part`` or ``stub``.
+
+
+@pytest.fixture
+def no_ssrf_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``assert_public_http_url`` does real DNS; the test URLs never
+    resolve, so the guard is stubbed to a pass."""
+    monkeypatch.setattr(
+        "precis.handlers.datasheet.assert_public_http_url", lambda url: None
+    )
+
+
+def _pull_jobs(store: Store) -> list[tuple[dict[str, Any], Any]]:
+    """``(meta, parent_id)`` per ``datasheet_pull`` job ref, in mint order."""
+    with store.pool.connection() as conn:
+        return [
+            (dict(r[0]), r[1])
+            for r in conn.execute(
+                "SELECT meta, parent_id FROM refs WHERE kind = 'job' "
+                "  AND meta->>'job_type' = 'datasheet_pull' ORDER BY ref_id"
+            ).fetchall()
+        ]
+
+
+def test_put_mfr_part_mints_component_and_queues_pull(
+    runtime_with_store: PrecisRuntime, store: Store, no_ssrf_gate: None
+) -> None:
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "datasheet",
+            "args": {
+                "mfr_part": "FC0V474ZFTBR24",
+                "manufacturer": "KEMET",
+                "url": "https://x.test/fc0v.pdf",
+            },
+        },
+    )
+    assert "created component kemet-fc0v474zftbr24" in out
+    assert "datasheet pull queued" in out
+
+    ref = store.get_ref(kind="component", id="kemet-fc0v474zftbr24")
+    assert ref is not None
+    meta = ref.meta or {}
+    assert meta["mpn"] == "FC0V474ZFTBR24"
+    assert meta["manufacturer"] == "KEMET"
+    assert meta["category"] == "electronic"
+    assert meta["supply"] == "consign"
+    links = meta["supplier_links"]
+    assert len(links) == 1
+    assert links[0]["supplier"] == "manufacturer"
+    assert links[0]["datasheet_url"] == "https://x.test/fc0v.pdf"
+    assert links[0]["match_confidence"] == "agent_supplied_url"
+
+    jobs = _pull_jobs(store)
+    assert len(jobs) == 1
+    job_meta, parent_id = jobs[0]
+    assert job_meta["params"] == {
+        "component_ref_id": ref.id,
+        "url": "https://x.test/fc0v.pdf",
+    }
+    assert parent_id == ref.id
+    assert str(job_meta["idem_key"]).startswith(f"datasheet_pull:component:{ref.id}:")
+
+
+def test_put_mfr_part_second_call_reuses_component_and_job(
+    runtime_with_store: PrecisRuntime, store: Store, no_ssrf_gate: None
+) -> None:
+    args = {
+        "kind": "datasheet",
+        "args": {
+            "mfr_part": "FC0V474ZFTBR24",
+            "manufacturer": "KEMET",
+            "url": "https://x.test/fc0v.pdf",
+        },
+    }
+    runtime_with_store.dispatch("put", args)
+    again = runtime_with_store.dispatch("put", args)
+    assert "reused component kemet-fc0v474zftbr24" in again
+    assert "already queued" in again
+    assert len(_pull_jobs(store)) == 1
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'component'"
+        ).fetchone()
+    assert n == (1,)
+
+
+def test_put_refuses_part_and_mfr_part_together(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "datasheet",
+            "args": {"part": "C25900", "mfr_part": "ACME25900"},
+        },
+    )
+    assert "two addressing doors" in out
+
+
+def test_put_mfr_part_requires_url(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    out = runtime_with_store.dispatch(
+        "put", {"kind": "datasheet", "args": {"mfr_part": "FC0V474ZFTBR24"}}
+    )
+    assert "mfr_part= needs url=" in out
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'component'"
+        ).fetchone()
+    assert n == (0,)
+
+
+def test_put_refuses_stub_and_mfr_part(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "datasheet",
+            "args": {"mfr_part": "FC0V474ZFTBR24", "stub": True},
+        },
+    )
+    assert "stub= is the C-number door" in out
+
+
+def test_part_get_reports_in_flight_pull(hub: Hub, store: Store) -> None:
+    """gr519849: while a ``datasheet_pull`` job is queued/running the part
+    card says so — ``meta.datasheet_pull`` is only written when the job
+    ends, so without the in-flight check a mid-pull part read as "not
+    pulled yet"."""
+    from precis.handlers.part import PartHandler
+
+    handler = PartHandler(hub=hub, live_lookup=lambda s, l: None)
+    store.parts_import([_catalog_row(25900)])
+    store.insert_ref(
+        kind="job",
+        slug=None,
+        title="pull",
+        meta={
+            "job_type": "datasheet_pull",
+            "params": {"lcsc": "C25900"},
+            "idem_key": "datasheet_pull:C25900",
+        },
+    )
+    out = handler.get(id="C25900").body
+    assert "pull queued or running" in out
+    assert "not pulled yet" not in out
+
+    # The contrast: an uncatalogued part queues nothing on read, so a
+    # never-pulled one still reports "not pulled yet".
+    store.ensure_part_ref("C25901", uncatalogued_ok=True)
+    out = handler.get(id="C25901").body
+    assert "not pulled yet" in out

@@ -197,6 +197,20 @@ def _parse_link_target(
 
         identifier = lcsc_id(identifier) or identifier
 
+    if kind == "orcid":
+        # An orcid ref's slug IS 'orcid:<iD>' — so the usual
+        # 'orcid:0000-…' link spelling, split on its first colon, leaves a
+        # bare iD that no slug matches. Normalise the iD back to the slug
+        # form the get door uses (gr519852); a non-iD identifier (an
+        # 'oi<N>' handle or a numeric ref id) passes through to the
+        # handle/numeric fallbacks below.
+        from precis.ingest.orcid import normalize_orcid_id, slug_for
+
+        try:
+            identifier = slug_for(normalize_orcid_id(identifier))
+        except BadInput:
+            pass
+
     # Resolve the ref. Numeric kinds take int(refs.id); slug kinds
     # take refs.slug. ``store.get_ref`` returns None on miss; we
     # convert that to NotFound with the original input echoed back.

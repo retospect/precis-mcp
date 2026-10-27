@@ -122,13 +122,19 @@ def _chunk_handle_for_ord(store: Store, kind: str, ref_id: int, ord_: int) -> st
 
 def _resolve_ref_id(store: Store, kind: str, ident: str) -> int:
     """``ident`` (a record handle, digits or a slug) → the live ref id."""
+    ref = None
     parsed = handle_registry.parse(ident)
     if parsed is not None and parsed[0] == kind and not parsed[1]:
         ref = store.get_ref(kind=kind, id=parsed[2])
     elif ident.isdigit():
         ref = store.get_ref(kind=kind, id=int(ident))
-    else:
+    if ref is None:
         ref = store.get_ref(kind=kind, id=ident)
+    if ref is None and ":" not in ident:
+        # A kind whose slug already carries its ``kind:`` prefix (orcid
+        # stores ``orcid:<iD>``): the canonical ``kind:identifier`` split
+        # above stripped it, so retry with the prefix restored (gr519852).
+        ref = store.get_ref(kind=kind, id=f"{kind}:{ident}")
     if ref is None:
         raise NotFound(
             f"no live {kind} {ident!r}",
