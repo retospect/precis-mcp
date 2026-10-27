@@ -19,6 +19,21 @@ payload (``self.__next_f.push`` chunks) embeds the component record as JSON;
 the same row the listing produces. ``/partdetail`` is not under ``/api``.
 The host is fixed, never agent-supplied. Live calls use the tight
 :data:`LIVE_POLICY` (an agent is waiting).
+
+The third gap: the Open API has no taxonomy at all. The parts nav's
+first/second-sort tree (``sortAndCountVoList``) rides the same listing
+envelope under ``searchType:"1"`` — :func:`category_tree` serves it,
+:func:`browse_categories` walks a ``'/'``-joined sort-name path and pulls
+the leaf's live listing (:func:`category_listing`) so ``view='categories'``
+on the part kind can browse where keyword search is blind (gr519793).
+
+Sort-name convention GOTCHA — the two surfaces disagree on which field
+is the parent. Listing rows say ``firstSortName`` = leaf,
+``secondSortName`` = parent ("Chip Resistor - Surface Mount" /
+"Resistors"); the partdetail RSC record says ``firstSortName`` = parent,
+``secondSortName`` = leaf ("Capacitors" / "Supercapacitors") — verified
+live 2026-10-26. ``normalize_library_row`` expects the listing
+convention; ``_parse_partdetail`` swaps at the boundary.
 """
 
 from __future__ import annotations
@@ -471,8 +486,17 @@ def _parse_partdetail(html: str, code: str) -> dict[str, Any] | None:
         "componentPrices": _rsc_list(merged.get("prices"), rows),
         "dataManualUrl": _clean(merged.get("dataManualUrl")),
         "attributes": _rsc_list(merged.get("attributes"), rows),
-        "firstSortName": _clean(merged.get("firstSortName")),
-        "secondSortName": _clean(merged.get("secondSortName")),
+        # The RSC record's sort names are parent-then-leaf
+        # (``firstSortName:"Capacitors", secondSortName:"Supercapacitors"``)
+        # — the listing endpoint's convention is the REVERSE (leaf first:
+        # ``firstSortName:"Chip Resistor - Surface Mount",
+        # secondSortName:"Resistors"``, verified live 2026-10-26). Feed
+        # them through in the LISTING convention so the ``_category``
+        # join in ``normalize_library_row`` yields the same
+        # "parent / leaf" path either way (gr519793: partdetail rows were
+        # catalogued with the leaf-parent path inverted).
+        "firstSortName": _clean(merged.get("secondSortName")),
+        "secondSortName": _clean(merged.get("firstSortName")),
         "lcscGoodsUrl": f"{HOST}{PARTDETAIL_PATH}{code}",
         # the lifecycle sources _LIFECYCLE_FIELDS reads, under their
         # listing names
@@ -502,6 +526,176 @@ def partdetail_lookup(
     return None if row is None else normalize_library_row(row)
 
 
+# ── Category browse (gr519793) ───────────────────────────────────────
+#: ``searchType:"1"`` is the tree trigger: the listing envelope then
+#: carries ``sortAndCountVoList`` — the full first/second-sort taxonomy
+#: the /parts nav walks (probed live 2026-10-26: 55 first-sort nodes,
+#: 860 second-sort leaves, ~330 KB response). A keyword query returns
+#: the same key ``null``; drilling is done client-side over this one
+#: payload.
+_TREE_REQUEST = {"currentPage": 1, "pageSize": 1, "searchType": "1"}
+
+
+def _sort_node(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(raw.get("sortName") or ""),
+        "sort_id": to_int(raw.get("componentSortKeyId")),
+        "count": to_int(raw.get("componentCount")) or 0,
+        "children": [
+            _sort_node(c) for c in raw.get("childSortList") or [] if isinstance(c, dict)
+        ],
+    }
+
+
+def category_tree(*, post: PostFn | None = None) -> list[dict[str, Any]]:
+    """JLCPCB's first/second-sort taxonomy — one listing call that
+    returns the nav tree, not rows. ``[{name, sort_id, count,
+    children: [...]}]``; the empty list when the endpoint dropped the
+    key (callers treat that as a shape break, not "no categories")."""
+    send, poster = _live_poster(post)
+    try:
+        data = send(dict(_TREE_REQUEST))
+        raw = (data.get("data") or {}).get("sortAndCountVoList") or []
+        return [_sort_node(n) for n in raw if isinstance(n, dict)]
+    finally:
+        if poster is not None:
+            poster.close()
+
+
+def _match_segment(
+    candidates: list[dict[str, Any]], remaining: str
+) -> tuple[dict[str, Any], str] | None:
+    """Prefix-match one path segment off ``remaining``, longest name
+    wins — sort names contain '/' themselves ("Audio Products /
+    Vibration Motors"), so a category path cannot just ``split('/')``.
+    Returns ``(node, rest)``; ``rest`` is '' when the segment ended
+    the path."""
+    low = remaining.lower()
+    best: tuple[dict[str, Any], str] | None = None
+    for c in candidates:
+        name = str(c["name"])
+        nlow = name.lower()
+        if low == nlow:
+            rest = ""
+        elif low.startswith(nlow + "/"):
+            rest = remaining[len(name) + 1 :]
+        else:
+            continue
+        if best is None or len(name) > len(best[0]["name"]):
+            best = (c, rest)
+    return best
+
+
+def resolve_category(
+    tree: list[dict[str, Any]], path: str
+) -> tuple[list[dict[str, Any]], str]:
+    """``'Capacitors/Supercapacitors'`` (any case, optional leading
+    ``/``) → ``(matched nodes top-down, unmatched tail)``. The tail is
+    ``""`` on a clean walk; whatever segment stopped the match
+    otherwise (the handler turns that into the keyword/options path)."""
+    matched: list[dict[str, Any]] = []
+    rest = path.strip().strip("/")
+    level = tree
+    while rest:
+        hit = _match_segment(level, rest)
+        if hit is None:
+            break
+        node, rest = hit
+        matched.append(node)
+        level = node["children"]
+    return matched, rest
+
+
+def category_listing(
+    store: Store,
+    first: str,
+    second: str | None = None,
+    *,
+    post: PostFn | None = None,
+    page_size: int = _LIVE_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], int]:
+    """Live-browse one sort category's parts — the listing filtered by
+    sort NAME (``searchSource:"sort"`` + ``firstSortName`` /
+    ``secondSortName``; sort IDs prune the tree but do NOT filter the
+    rows — probed live 2026-10-26). Rows normalize + upsert through
+    ``parts_import`` exactly like :func:`live_search`. ``(rows,
+    total)``, one page."""
+    body: dict[str, Any] = {
+        "currentPage": 1,
+        "pageSize": page_size,
+        "searchSource": "sort",
+        "firstSortName": first,
+    }
+    if second:
+        body["secondSortName"] = second
+    send, poster = _live_poster(post)
+    try:
+        data = send(body)
+        info = (data.get("data") or {}).get("componentPageInfo") or {}
+        rows = [
+            n
+            for raw in info.get("list") or []
+            if (n := normalize_library_row(raw)) is not None
+        ]
+        if rows:
+            store.parts_import(rows)
+        return rows, to_int(info.get("total")) or 0
+    finally:
+        if poster is not None:
+            poster.close()
+
+
+def browse_categories(
+    store: Store,
+    path: str | None,
+    *,
+    post: PostFn | None = None,
+    page_size: int = _LIVE_PAGE_SIZE,
+) -> dict[str, Any]:
+    """``view='categories'`` backend: the taxonomy tree plus, when
+    ``path`` resolves cleanly to a leaf, that category's live listing —
+    the parts keyword search cannot see (gr519923), catalogued on the
+    way out the same way ``live_search`` catalogues. Two requests at
+    most, both through the listing endpoint.
+
+    ``{tree, path, unmatched, parts, total}``: ``path`` the resolved
+    node chain, ``unmatched`` the tail segment that stopped resolution
+    (``""`` on a clean walk — the handler routes that to the keyword
+    path-match), ``parts``/``total`` the leaf's listing. An empty tree
+    means the endpoint's envelope changed shape — a :class:`VendorError`
+    like the bulk walk's empty-first-page guard (gr494906).
+    """
+    tree = category_tree(post=post)
+    if not tree:
+        raise VendorError(
+            _SERVICE,
+            "category browse returned an empty sortAndCountVoList — "
+            "the listing endpoint's tree shape changed",
+        )
+    matched: list[dict[str, Any]] = []
+    rest = ""
+    if path:
+        matched, rest = resolve_category(tree, path)
+    node = matched[-1] if matched else None
+    parts: list[dict[str, Any]] = []
+    total = 0
+    if node is not None and not rest and not node["children"]:
+        parts, total = category_listing(
+            store,
+            matched[0]["name"],
+            matched[1]["name"] if len(matched) > 1 else None,
+            post=post,
+            page_size=page_size,
+        )
+    return {
+        "tree": tree,
+        "path": matched,
+        "unmatched": rest,
+        "parts": parts,
+        "total": total,
+    }
+
+
 __all__ = [
     "HOST",
     "LIST_PATH",
@@ -510,8 +704,12 @@ __all__ = [
     "XSRF_PATH",
     "FetchFn",
     "PostFn",
+    "browse_categories",
+    "category_listing",
+    "category_tree",
     "iter_keyword_rows",
     "live_search",
     "normalize_library_row",
     "partdetail_lookup",
+    "resolve_category",
 ]

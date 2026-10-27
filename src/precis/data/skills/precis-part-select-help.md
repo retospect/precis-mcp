@@ -95,6 +95,15 @@ board-script time: `view='pinmap'` returns only the pad-number → pin-name
 map you write `part.pin(…)` / `net.tie` against; `view='footprint'` is the
 full pad geometry JSON.
 
+When a keyword search can't see the category at all (some categories — e.g.
+Supercapacitors — answer `total=0` to every keyword), **browse the taxonomy
+live**: `get(kind='part', view='categories')` lists JLCPCB's first-sort
+categories, `id='<first>'` drills to its second-sort leaves, and
+`id='<first>/<second>'` (e.g. `id='Capacitors/Supercapacitors'`) lists the
+leaf's live parts — catalogued on the way out, so a later `search` sees
+them. An unmatched `id` substring-matches every category name
+(`id='solar'` → the paths that hold it).
+
 ## Link a part — it becomes a ref on first use
 
 A part joins the graph lazily: the first add-mode link to `part:<C-no>` mints

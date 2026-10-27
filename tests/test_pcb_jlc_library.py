@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from precis.pcb import jlc_library
+from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
 
 #: Trimmed real row (C25804, Basic) from the public listing endpoint.
@@ -173,3 +174,154 @@ def test_removed_walk_surface_is_gone():
         "reset_live_cache",
     ):
         assert not hasattr(jlc_library, name), name
+
+
+# ── Category browse (gr519793) ───────────────────────────────────────
+
+#: Trimmed real ``sortAndCountVoList`` payload (probed live 2026-10-26):
+#: first-level ``sortName``/``componentSortKeyId``/``componentCount``
+#: with ``childSortList`` carrying the leaves.
+_TREE = [
+    {
+        "sortName": "Capacitors",
+        "componentSortKeyId": 2,
+        "componentCount": 1012692,
+        "childSortList": [
+            {
+                "sortName": "Supercapacitors",
+                "componentSortKeyId": 3232,
+                "componentCount": 5,
+                "parentId": 2,
+                "grade": 2,
+                "childSortList": None,
+            },
+            {
+                "sortName": "MLCC - SMD/SMT",
+                "componentSortKeyId": 2930,
+                "componentCount": 18586,
+                "parentId": 2,
+                "grade": 2,
+                "childSortList": None,
+            },
+        ],
+    },
+    {
+        "sortName": "Audio Products / Vibration Motors",
+        "componentSortKeyId": 10,
+        "componentCount": 10530,
+        "childSortList": [
+            {
+                "sortName": "Buzzer",
+                "componentSortKeyId": 999,
+                "componentCount": 40,
+                "parentId": 10,
+                "grade": 2,
+                "childSortList": None,
+            }
+        ],
+    },
+]
+
+
+def _browse_post(*, tree=_TREE, listing=None, total=0, calls=None):
+    """A fake ``PostFn``: ``searchType:"1"`` answers the sort tree,
+    ``searchSource:"sort"`` answers the category listing."""
+
+    def post(body):
+        if calls is not None:
+            calls.append(dict(body))
+        if body.get("searchType") == "1":
+            return {"data": {"sortAndCountVoList": tree}}
+        if body.get("searchSource") == "sort":
+            rows = listing or []
+            return {
+                "data": {
+                    "componentPageInfo": {
+                        "total": total or len(rows),
+                        "pages": 1,
+                        "hasNextPage": False,
+                        "list": rows,
+                    }
+                }
+            }
+        raise AssertionError(f"unexpected request body {body!r}")
+
+    return post
+
+
+def test_category_tree_normalizes():
+    tree = jlc_library.category_tree(post=_browse_post())
+    assert [(n["name"], n["sort_id"], n["count"]) for n in tree] == [
+        ("Capacitors", 2, 1012692),
+        ("Audio Products / Vibration Motors", 10, 10530),
+    ]
+    assert [(c["name"], c["sort_id"]) for c in tree[0]["children"]] == [
+        ("Supercapacitors", 3232),
+        ("MLCC - SMD/SMT", 2930),
+    ]
+
+
+def test_resolve_category_walks_and_tolerates_slashes():
+    tree = jlc_library.category_tree(post=_browse_post())
+    matched, rest = jlc_library.resolve_category(tree, "capacitors/Supercapacitors")
+    assert [n["name"] for n in matched] == ["Capacitors", "Supercapacitors"]
+    assert rest == ""
+    # a sort name containing '/' must resolve as one segment
+    matched, rest = jlc_library.resolve_category(
+        tree, "/Audio Products / Vibration Motors/Buzzer"
+    )
+    assert [n["name"] for n in matched] == [
+        "Audio Products / Vibration Motors",
+        "Buzzer",
+    ]
+    assert rest == ""
+    matched, rest = jlc_library.resolve_category(tree, "Capacitors/Bogus")
+    assert [n["name"] for n in matched] == ["Capacitors"]
+    assert rest == "Bogus"
+
+
+def test_browse_categories_leaf_lists_and_upserts(store):
+    calls: list[dict] = []
+    res = jlc_library.browse_categories(
+        store,
+        "Capacitors/Supercapacitors",
+        post=_browse_post(listing=[C25804], total=5, calls=calls),
+    )
+    assert [n["name"] for n in res["path"]] == [
+        "Capacitors",
+        "Supercapacitors",
+    ]
+    assert res["unmatched"] == "" and res["total"] == 5
+    assert [r["lcsc"] for r in res["parts"]] == ["C25804"]
+    # the listing call went out under the canonical RESOLVED names
+    assert calls[0].get("searchType") == "1"
+    assert calls[1]["firstSortName"] == "Capacitors"
+    assert calls[1]["secondSortName"] == "Supercapacitors"
+    # catalogued on the way out, like live_search
+    assert store.part_row("C25804") is not None
+
+
+def test_browse_categories_mid_node_is_one_call(store):
+    calls: list[dict] = []
+    res = jlc_library.browse_categories(
+        store, "Capacitors", post=_browse_post(calls=calls)
+    )
+    assert [c["name"] for c in res["path"][-1]["children"]] == [
+        "Supercapacitors",
+        "MLCC - SMD/SMT",
+    ]
+    assert res["parts"] == [] and len(calls) == 1
+
+
+def test_browse_categories_unmatched_tail_no_listing(store):
+    calls: list[dict] = []
+    res = jlc_library.browse_categories(
+        store, "Capacitors/Bogus", post=_browse_post(calls=calls)
+    )
+    assert res["unmatched"] == "Bogus" and res["parts"] == []
+    assert len(calls) == 1
+
+
+def test_browse_categories_empty_tree_is_a_shape_break(store):
+    with pytest.raises(VendorError):
+        jlc_library.browse_categories(store, None, post=_browse_post(tree=[]))

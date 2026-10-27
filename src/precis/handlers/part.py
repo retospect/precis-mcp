@@ -66,7 +66,7 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, Gone, NotFound
+from precis.errors import BadInput, Gone, NotFound, Upstream
 from precis.format import render_agent_table
 from precis.handlers._eye import is_eye_view
 from precis.handlers._links_render import render_links_section
@@ -113,6 +113,29 @@ def _datasheet_line(state: dict[str, Any]) -> str:
     return f"datasheet: pulled {pull.get('at')} but the datasheet ref is gone"
 
 
+def _category_keyword_paths(
+    tree: list[dict[str, Any]], kw: str
+) -> list[list[dict[str, Any]]]:
+    """Every root→node chain whose node name contains ``kw``
+    (case-insensitive) — the unmatched-id fallback for
+    ``view='categories'``: 'solar' resolves to the taxonomy paths that
+    hold it, which the walk can then drill."""
+    out: list[list[dict[str, Any]]] = []
+    needle = kw.strip().lower()
+    if not needle:
+        return out
+
+    def walk(nodes: list[dict[str, Any]], chain: list[dict[str, Any]]) -> None:
+        for n in nodes:
+            c = [*chain, n]
+            if needle in str(n["name"]).lower():
+                out.append(c)
+            walk(n["children"], c)
+
+    walk(tree, [])
+    return out
+
+
 class PartHandler(Handler):
     #: catalogue part numbers / vendor ids: the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
@@ -137,17 +160,19 @@ class PartHandler(Handler):
             "JSON — the sandbox read path pcb.catalog() resolves "
             "through (gr514460); view='pinmap' returns only the "
             "pad-number → pin-name map, for writing connections "
-            "(gr520331). See precis-part-select-help."
+            "(gr520331); view='categories' browses JLCPCB's live sort "
+            "taxonomy — id='<first>/<second>' lists the leaf's parts "
+            "(gr519793). See precis-part-select-help."
         ),
         supports_get=True,
         supports_search=True,
         is_numeric=False,
         id_required=False,
-        views=("facts", "footprint", "pinmap"),
+        views=("categories", "facts", "footprint", "pinmap"),
     )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        return ["facts", "footprint", "pinmap"]
+        return ["categories", "facts", "footprint", "pinmap"]
 
     def __init__(
         self,
@@ -155,16 +180,20 @@ class PartHandler(Handler):
         hub: Hub,
         live_lookup: Callable[..., Any] | None = None,
         live_search: Callable[..., Any] | None = None,
+        live_categories: Callable[..., Any] | None = None,
     ) -> None:
         if hub.store is None:
             raise InitError("part: store required")
         self.store = hub.store
         self.hub = hub
         #: Test seams — ``live_lookup``: ``(store, lcsc) -> normalized row |
-        #: None``; ``live_search``: ``(store, q, page_size=) -> rows``.
+        #: None``; ``live_search``: ``(store, q, page_size=) -> rows``;
+        #: ``live_categories``: ``(store, path) -> {tree, path,
+        #: unmatched, parts, total}``.
         #: Defaults: :mod:`precis.pcb.jlc_api` / :mod:`precis.pcb.jlc_library`.
         self._live_lookup = live_lookup
         self._live_search = live_search
+        self._live_categories = live_categories
 
     def _live(self, lcsc: str) -> dict[str, Any] | None:
         """The injectable live lookup; resolves to the real endpoint
@@ -186,14 +215,18 @@ class PartHandler(Handler):
         if view is not None:
             if is_eye_view(view):
                 return self.eye(id=id, extent=view)
-            if view not in ("facts", "footprint", "pinmap"):
+            if view not in ("categories", "facts", "footprint", "pinmap"):
                 raise BadInput(
                     f"kind='part' has no view {view!r}",
                     next="get(kind='part', id='C…', view='facts') — the "
                     "datasheet-extracted pin table / required externals; "
                     "view='footprint' is the cached footprint row as JSON; "
-                    "view='pinmap' is only its pad-number → pin-name map",
+                    "view='pinmap' is only its pad-number → pin-name map; "
+                    "view='categories' walks JLCPCB's sort taxonomy "
+                    "(id='Capacitors/Supercapacitors' lists its parts)",
                 )
+            if view == "categories":
+                return self._categories_view(id)
             if id is None or not str(id).strip():
                 raise BadInput(
                     f"get(kind='part', view={view!r}) requires id= (an LCSC C-number)",
@@ -330,6 +363,135 @@ class PartHandler(Handler):
                 f"id=[{', '.join(repr(c) for c in rest)}])"
             )
         return Response(body=body, result_count=len(shown))
+
+    def _categories_view(self, id: Any) -> Response:
+        """``view='categories'`` (gr519793) — JLCPCB's first/second-sort
+        taxonomy, browsed live through the parts listing's
+        ``sortAndCountVoList`` envelope (the Open API has no taxonomy).
+        ``id`` is a ``'/'``-joined sort-name path; a clean walk to a
+        leaf lists that category's live parts (catalogued on the way
+        out, like a ``live_search`` hit). An unmatched tail
+        substring-matches every category name — the "which category do
+        solar cells live in" discovery path. The whole call is live, so
+        a wedged endpoint is an :class:`Upstream` refusal, not a stale
+        answer."""
+        path = str(id).strip().strip("/") if id is not None else ""
+        fn = self._live_categories or jlc_library.browse_categories
+        try:
+            res = fn(self.store, path or None)
+        except VendorError as exc:
+            raise Upstream(
+                f"the live jlcpcb.com category browse failed ({exc})",
+                next="retry the same call — the tree is one bounded "
+                "request to the parts-listing endpoint",
+            ) from exc
+        tree: list[dict[str, Any]] = res["tree"]
+        if not path:
+            rows = [
+                {
+                    "first sort": n["name"],
+                    "id": n["sort_id"],
+                    "second sorts": len(n["children"]),
+                    "parts": n["count"],
+                }
+                for n in tree
+            ]
+            return Response(
+                body="# JLCPCB part categories — the live sort taxonomy "
+                "jlcpcb.com browses\n"
+                + render_agent_table(
+                    rows, schema=["first sort", "id", "second sorts", "parts"]
+                )
+                + "\nnext: get(kind='part', view='categories', id='<first "
+                "sort>') drills in; id='<first>/<second>' lists the leaf's "
+                "live parts; an unmatched name substring-matches every "
+                "category (id='solar')"
+            )
+        matched: list[dict[str, Any]] = res["path"]
+        unmatched: str = res["unmatched"]
+        if unmatched or not matched:
+            kw = unmatched or path
+            hits = _category_keyword_paths(tree, kw)
+            if hits:
+                lines = [f"# JLCPCB categories matching {kw!r}", ""]
+                for chain in hits[:20]:
+                    p = " / ".join(n["name"] for n in chain)
+                    lines.append(f"- {p} — {chain[-1]['count']} parts")
+                if len(hits) > 20:
+                    lines.append(f"_(+{len(hits) - 20} more)_")
+                lines.append(
+                    "\nnext: get(kind='part', view='categories', "
+                    "id='<path>') — a leaf path lists live parts"
+                )
+                return Response(body="\n".join(lines))
+            where = " / ".join(n["name"] for n in matched)
+            raise BadInput(
+                f"no JLCPCB category matches {kw!r}"
+                + (f" under {where}" if where else ""),
+                options=(
+                    [c["name"] for c in matched[-1]["children"]][:10]
+                    if matched
+                    else [n["name"] for n in tree][:10]
+                ),
+                next="get(kind='part', view='categories') — walk the "
+                "tree top-down instead",
+            )
+        node = matched[-1]
+        where = " / ".join(n["name"] for n in matched)
+        kids = node["children"]
+        if kids:
+            rows = [
+                {"second sort": c["name"], "id": c["sort_id"], "parts": c["count"]}
+                for c in kids
+            ]
+            return Response(
+                body=f"# {where} — {len(kids)} subcategories, "
+                f"{node['count']} parts\n"
+                + render_agent_table(rows, schema=["second sort", "id", "parts"])
+                + f"\nnext: get(kind='part', view='categories', "
+                f"id='{where}/<child>')"
+            )
+        rows = [
+            {
+                "lcsc": r["lcsc"],
+                "mfr_part": r["mfr_part"] or "—",
+                "description": (r["description"] or "")[:50],
+                "basic": "yes" if r["basic"] else "no",
+                "stock": r["stock"] if r["stock"] is not None else "—",
+                "package": r["package"] or "—",
+                "$ea": (
+                    f"{unit_price:.4g}"
+                    if (
+                        unit_price := (
+                            None
+                            if catalog.has_no_buy(r.get("params"))
+                            else min_unit_price(r.get("price"))
+                        )
+                    )
+                    is not None
+                    else "—"
+                ),
+            }
+            for r in res["parts"]
+        ]
+        return Response(
+            body=f"# {where} — {res['total']} part(s) live on jlcpcb.com, "
+            f"{len(rows)} shown (catalogued just now)\n"
+            + render_agent_table(
+                rows,
+                schema=[
+                    "lcsc",
+                    "mfr_part",
+                    "description",
+                    "basic",
+                    "stock",
+                    "package",
+                    "$ea",
+                ],
+            )
+            + "\nnext: get(kind='part', id='<C-no>') for one of these, or "
+            "search(kind='part', q='...')"
+        )
 
     def _footprint_view(self, lcsc: str) -> Response:
         """``view='footprint'`` — the cached ``part_footprints`` row as a

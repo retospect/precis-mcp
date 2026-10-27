@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers.part import PartHandler
 from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
@@ -1214,7 +1214,7 @@ def test_live_lookup_partdetail_fallback_hit(store, creds):
     assert row["params"]["_lifecycle"]["no_buy"] == (
         "This product is no longer manufactured."
     )
-    assert row["params"]["_category"] == "Supercapacitors / Capacitors"
+    assert row["params"]["_category"] == "Capacitors / Supercapacitors"
     assert row["params"]["Capacitance"] == "0.14F"
     assert row["params"]["_lcsc_url"].endswith("/partdetail/C1578291")
     assert row["datasheet_url"] is None  # "--" → absent, not the literal
@@ -1275,3 +1275,139 @@ def test_live_lookup_api_hit_never_fetches_partdetail(store, creds):
     )
     assert row is not None and row["lcsc"] == "C2655145"
     assert urls == []
+
+
+# ── view='categories' — the JLCPCB sort-taxonomy browse (gr519793) ────
+#
+# The handler never sees wire shapes: ``live_categories`` is the seam,
+# a ``(store, path) -> {tree, path, unmatched, parts, total}`` fake in
+# ``browse_categories``' shape (the wire-shape tests live in
+# tests/test_pcb_jlc_library.py).
+
+_CAT_TREE: list[dict[str, Any]] = [
+    {
+        "name": "Capacitors",
+        "sort_id": 2,
+        "count": 1012692,
+        "children": [
+            {
+                "name": "Supercapacitors",
+                "sort_id": 3232,
+                "count": 5,
+                "children": [],
+            },
+            {
+                "name": "MLCC - SMD/SMT",
+                "sort_id": 2930,
+                "count": 18586,
+                "children": [],
+            },
+        ],
+    },
+    {
+        "name": "Connectors",
+        "sort_id": 8,
+        "count": 1200580,
+        "children": [
+            {
+                "name": "Photovoltaic(Solar Panel)Connectors",
+                "sort_id": 2223,
+                "count": 31,
+                "children": [],
+            }
+        ],
+    },
+]
+
+
+def _browse_result(tree=_CAT_TREE, matched=(), unmatched="", parts=(), total=0):
+    return {
+        "tree": tree,
+        "path": list(matched),
+        "unmatched": unmatched,
+        "parts": list(parts),
+        "total": total,
+    }
+
+
+def test_categories_view_lists_first_sorts(store):
+    seen: list[str | None] = []
+
+    def _record(_store, path):
+        seen.append(path)
+        return _browse_result()
+
+    part = PartHandler(
+        hub=Hub(store=store),
+        live_categories=_record,
+    )
+    body = part.get(view="categories").body
+    assert seen == [None]
+    assert "Capacitors" in body and "Connectors" in body
+    assert "1012692" in body and "categories" in body.splitlines()[0]
+
+
+def test_categories_view_mid_node_lists_children(store):
+    part = PartHandler(
+        hub=Hub(store=store),
+        live_categories=lambda s, path: _browse_result(
+            matched=[_CAT_TREE[0]], unmatched=""
+        ),
+    )
+    body = part.get(view="categories", id="Capacitors").body
+    assert "Supercapacitors" in body and "MLCC - SMD/SMT" in body
+    assert "Capacitors" in body.splitlines()[0]
+
+
+def test_categories_view_leaf_lists_live_parts(store):
+    row = {
+        "lcsc": "C1578291",
+        "mfr_part": "BZ013A144ZSB",
+        "description": "0.14F 3.6V SMD Supercapacitors",
+        "basic": False,
+        "stock": 0,
+        "package": "SMD",
+        "price": None,
+        "params": {"_category": "Capacitors / Supercapacitors"},
+    }
+    part = PartHandler(
+        hub=Hub(store=store),
+        live_categories=lambda s, path: _browse_result(
+            matched=[_CAT_TREE[0], _CAT_TREE[0]["children"][0]],
+            unmatched="",
+            parts=[row],
+            total=5,
+        ),
+    )
+    body = part.get(view="categories", id="Capacitors/Supercapacitors").body
+    assert "C1578291" in body and "5 part(s)" in body
+    assert "Capacitors / Supercapacitors" in body.splitlines()[0]
+
+
+def test_categories_view_unmatched_falls_to_keyword_paths(store):
+    part = PartHandler(
+        hub=Hub(store=store),
+        live_categories=lambda s, path: _browse_result(matched=[], unmatched=path),
+    )
+    body = part.get(view="categories", id="solar").body
+    assert "matching 'solar'" in body
+    assert "Connectors / Photovoltaic(Solar Panel)Connectors" in body
+
+
+def test_categories_view_unknown_path_is_refused(store):
+    part = PartHandler(
+        hub=Hub(store=store),
+        live_categories=lambda s, path: _browse_result(matched=[], unmatched=path),
+    )
+    with pytest.raises(BadInput) as ei:
+        part.get(view="categories", id="zzzzz")
+    assert "Capacitors" in str(ei.value.options or "")
+
+
+def test_categories_view_live_failure_is_upstream(store):
+    def boom(_s, _p):
+        raise VendorError("jlcpcb-web", "HTTP 503 from the listing")
+
+    part = PartHandler(hub=Hub(store=store), live_categories=boom)
+    with pytest.raises(Upstream):
+        part.get(view="categories")
