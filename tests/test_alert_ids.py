@@ -382,8 +382,7 @@ def test_tabular_check_budgets_and_severities_match_the_registry() -> None:
             # Dual budget: the 6h batch-freshness floor plus the drain-ETA
             # days budget (_KW_ETA_BUDGET_DAYS, gr520236).
             expected = (
-                f"{budget_hours:g}h "
-                f"(+{health_digest._KW_ETA_BUDGET_DAYS:.0f}d ETA)"
+                f"{budget_hours:g}h (+{health_digest._KW_ETA_BUDGET_DAYS:.0f}d ETA)"
             )
         assert rule.budget == expected, (rule.id, rule.budget, budget_hours)
         assert rule.severity == severity, rule.id
