@@ -387,14 +387,20 @@ def test_minted_ids_avoid_column_names() -> None:
 
 
 def test_normalize_20k_rows_is_linear_enough() -> None:
-    """The used-id set is kept, not copied per mint — 20k rows normalize
-    well under 1 s (the old per-mint copy made this quadratic)."""
+    """The used-id set is kept, not copied per mint (the old per-mint copy
+    made this quadratic). Guarded by a 20k/2k time ratio, not wall clock:
+    linear is ~10, quadratic ~100, and load scales both sides alike."""
     import time
 
-    t0 = time.monotonic()
-    t = normalize_table({"header": ["a"], "rows": [[i] for i in range(20_000)]})
-    assert time.monotonic() - t0 < 1.0
+    def timed(n: int) -> tuple[float, dict]:
+        t0 = time.process_time()
+        out = normalize_table({"header": ["a"], "rows": [[i] for i in range(n)]})
+        return time.process_time() - t0, out
+
+    t_small, _ = timed(2_000)
+    t_big, t = timed(20_000)
     assert len(t["rowmeta"]) == 20_000
+    assert t_big / max(t_small, 1e-3) < 30
 
 
 def test_resolve_cell_id_address() -> None:

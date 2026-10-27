@@ -195,6 +195,11 @@ def test_main_network_transport_passes_an_inherited_fd_through(
     monkeypatch.setattr(
         server, "_run_network_transport", lambda **kw: captured.update(kw)
     )
+    # main() would install a real SIGHUP drain handler (-> os._exit) in the
+    # xdist worker and never restore it.
+    monkeypatch.setattr(
+        "precis.install_watchdog.install_drain_signal", lambda **kw: False
+    )
 
     server.main(transport="streamable-http", token="tok", fd=7)
 

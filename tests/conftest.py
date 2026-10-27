@@ -99,6 +99,7 @@ import faulthandler
 import json
 import logging
 import os
+import re
 import time
 import uuid
 import warnings
@@ -269,10 +270,12 @@ _SEED_WATCH_EXEMPT_FIXTURES = frozenset({"fresh_db", "drop_public_objects"})
 # on the controller names the files in the run's output — no re-running
 # ``-n0 --timeout=120`` to diagnose.
 _HANG_DUMP_DIR = Path(__file__).resolve().parent.parent / ".test-hang-stacks"
-#: Seconds past a test's effective timeout before the file dump fires. The
-#: thread-method fail usually wins at the timeout itself; the file is for
-#: the case it can't unstick the worker (C-level hangs, lock wedging).
-_HANG_DUMP_MARGIN_S = 30
+#: Seconds added to a test's effective timeout before the file dump fires;
+#: negative = BEFORE it. pytest-timeout's thread method os._exit(1)s the
+#: worker AT the timeout, so a dump armed after it never ran — a timeout
+#: kill left no stack. Firing early gets the stack on disk first (and still
+#: covers C-level hangs / lock wedging the injected fail cannot unstick).
+_HANG_DUMP_MARGIN_S = -5
 _hang_dump_fh: Any = None  # this process's open artifact handle
 _hang_dump_path: Path | None = None  # its path, for the clean-run unlink
 
@@ -347,8 +350,29 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     _hang_dump_fh.write(f"\n# ===== {item.nodeid} =====\n")
     _hang_dump_fh.flush()
     faulthandler.dump_traceback_later(
-        timeout_s + _HANG_DUMP_MARGIN_S, file=_hang_dump_fh, repeat=True
+        max(timeout_s + _HANG_DUMP_MARGIN_S, 1.0), file=_hang_dump_fh, repeat=True
     )
+
+
+_DSN_PASSWORD_RE = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s:/@]*:)[^\s@/]+(@)", re.I)
+
+
+def _redact_dsn_passwords(text: str) -> str:
+    """``scheme://user:secret@host`` -> ``scheme://user:***@host`` (gr523994:
+    a dump held the test DB URL with its inline password)."""
+    return _DSN_PASSWORD_RE.sub(r"\1***\2", text)
+
+
+def _hang_redact_file(path: Path) -> None:
+    """Rewrite ``path`` with DSN passwords masked. faulthandler writes
+    straight to the fd, so redaction can only happen after the fact."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        redacted = _redact_dsn_passwords(text)
+        if redacted != text:
+            path.write_text(redacted, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
@@ -358,6 +382,8 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
         _hang_dump_fh.close()
         _hang_dump_fh = None
     path, _hang_dump_path = _hang_dump_path, None
+    if path is not None:
+        _hang_redact_file(path)
     if path is not None and not _hang_dumped(path):
         # Clean run: only per-test headers, no stacks. Delete so logs do
         # not pile up and the summary never re-reports an old file.
@@ -381,6 +407,8 @@ def pytest_terminal_summary(
     this runs on the xdist controller too (workers share the worktree fs),
     so a ``node down`` failure output points at the evidence."""
     hits = [p for p in sorted(_HANG_DUMP_DIR.glob("hang-*.log")) if _hang_dumped(p)]
+    for p in hits:  # a killed worker never reached its own sessionfinish
+        _hang_redact_file(p)
     if not hits:
         return
     terminalreporter.write_sep("=", "worker hang stack dumps (gr514873)")

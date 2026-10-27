@@ -69,9 +69,12 @@ _DEPLOY = _REPO_ROOT / "deploy"
 # overlay (gitignored, real secrets) — never scan it. ``worktrees`` holds full
 # sibling checkouts of this same repo in the main clone: scanning them would be
 # quadratic and would report another branch's lines as this tree's failures.
+# ``.test-hang-stacks`` is gitignored worker stack-dump output (gr523994): it
+# can hold the test DB URL, and the no-.git container gate walks the disk.
 # The rest is build/cache noise.
 _SKIP_DIRS = {
     ".git",
+    ".test-hang-stacks",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
@@ -414,6 +417,18 @@ def test_only_tracked_files_reach_the_gate(
 
 
 _ENFILE = OSError(errno.ENFILE, "Too many open files in system")
+
+
+def test_walk_fallback_skips_hang_stack_dumps(tmp_path: Path) -> None:
+    """gr523994: the no-.git filesystem walk must not read the gitignored
+    hang-stack dumps (they can carry the test DB URL)."""
+    (tmp_path / ".test-hang-stacks").mkdir()
+    (tmp_path / ".test-hang-stacks" / "hang-gw0-1.log").write_text(
+        "x", encoding="utf-8"
+    )
+    (tmp_path / "keep.py").write_text("x", encoding="utf-8")
+    names = {p.name for p in walk_files(tmp_path, skip_dirs=_SKIP_DIRS)}
+    assert names == {"keep.py"}
 
 
 def test_oserror_mid_walk_is_an_incomplete_scan_not_a_verdict(

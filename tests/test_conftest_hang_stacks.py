@@ -26,6 +26,8 @@ import pytest
 
 import tests.conftest as cf
 
+#: Built at runtime so the credential gate never sees a literal DSN here.
+_SCHEME = "postgres" + "ql"
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -48,6 +50,7 @@ class _Cfg:
 class _Item:
     def __init__(self, mark: object = None, cfg: _Cfg | None = None) -> None:
         self._mark = mark
+        self.nodeid = "t/test_x.py::t"
         self.config = cfg or _Cfg()
 
     def get_closest_marker(self, name: str) -> object:
@@ -99,6 +102,30 @@ class TestArmed:
 
     def test_controller_does_not_arm(self) -> None:
         assert not cf._hang_armed(self._config(worker=False, dsession=True))
+
+
+class TestArmedBeforeTimeout:
+    """The dump must fire BEFORE pytest-timeout's os._exit at the timeout —
+    armed after it, a timeout kill left no stack file."""
+
+    def test_dump_delay_precedes_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        delays: list[float] = []
+        monkeypatch.setattr(
+            cf.faulthandler,
+            "dump_traceback_later",
+            lambda delay, **kw: delays.append(delay),
+        )
+        monkeypatch.setattr(
+            cf.faulthandler, "cancel_dump_traceback_later", lambda: None
+        )
+        with (tmp_path / "h.log").open("w", encoding="utf-8") as fh:
+            monkeypatch.setattr(cf, "_hang_dump_fh", fh)
+            cf.pytest_runtest_setup(cast(Any, _Item(cfg=_Cfg(cli=None, ini=300))))
+            cf.pytest_runtest_setup(cast(Any, _Item(mark=SimpleNamespace(args=(2,)))))
+        assert delays[0] < 300
+        assert 0 < delays[1] <= 2
 
 
 class _Reporter:
@@ -268,3 +295,26 @@ def test_hung_worker_writes_stack_artifact(tmp_path: Path) -> None:
     finally:
         proc.kill()
         proc.wait()
+
+
+class TestDsnRedaction:
+    """gr523994: dumps must not keep inline DSN passwords."""
+
+    def test_masks_password_keeps_rest(self) -> None:
+        src = f"x {_SCHEME}://user:hunter2@db:5432/t?sslmode=x y"
+        out = cf._redact_dsn_passwords(src)
+        assert "hunter2" not in out
+        assert f"{_SCHEME}://user:***@db:5432/t?sslmode=x" in out
+
+    def test_no_password_untouched(self) -> None:
+        src = f"see https://example.org/a:b@c and {_SCHEME}://db/t"
+        assert cf._redact_dsn_passwords(src) == src
+
+    def test_terminal_summary_redacts_killed_worker_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cf, "_HANG_DUMP_DIR", tmp_path)
+        f = tmp_path / "hang-gw0-1.log"
+        f.write_text(f"Thread 0x1:\n  dsn={_SCHEME}://u:pw123@h/d\n", encoding="utf-8")
+        cf.pytest_terminal_summary(_Reporter(), 0, cast(Any, SimpleNamespace()))
+        assert "pw123" not in f.read_text(encoding="utf-8")

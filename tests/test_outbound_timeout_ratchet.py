@@ -36,6 +36,7 @@ Regenerate only downwards: ``uv run python tests/test_outbound_timeout_ratchet.p
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import sys
 from collections import Counter
@@ -81,10 +82,17 @@ def _has_kw(call: ast.Call, name: str) -> bool:
     return any(k.arg == name for k in call.keywords)
 
 
-def _mod_names(tree: ast.AST, module: str) -> tuple[set[str], set[str]]:
+def _imports(tree: ast.AST) -> list[ast.Import | ast.ImportFrom]:
+    """Every import node in ``tree`` — one ``ast.walk`` pass per file."""
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Import | ast.ImportFrom)]
+
+
+def _mod_names(
+    imports: list[ast.Import | ast.ImportFrom], module: str
+) -> tuple[set[str], set[str]]:
     """``(module aliases, from-imported names)`` bound to ``module``."""
     mods, funcs = set(), set()
-    for n in ast.walk(tree):
+    for n in imports:
         if isinstance(n, ast.Import):
             mods |= {a.asname or a.name for a in n.names if a.name == module}
         elif (
@@ -121,15 +129,16 @@ class _Scan:
         self.bad: Counter[str] = Counter()
         self.poll_lines: list[int] = []
         tree = ast.parse(source)
-        self.subs, self.subfuncs = _mod_names(tree, "subprocess")
-        self.psyc, self.psycfuncs = _mod_names(tree, "psycopg")
-        self.qmods, self.qfuncs = _mod_names(tree, "queue")
-        self.thrmods, self.thrfuncs = _mod_names(tree, "threading")
-        self.aio, self.aiofuncs = _mod_names(tree, "asyncio")
-        self.cf, self.cfuncs = _mod_names(tree, "concurrent.futures")
-        self.hx = _mod_names(tree, "httpx")[0]
-        self.url_funcs = _mod_names(tree, "urllib.request")[1]
-        self.fcntl = _mod_names(tree, "fcntl")[0]
+        imports = _imports(tree)
+        self.subs, self.subfuncs = _mod_names(imports, "subprocess")
+        self.psyc, self.psycfuncs = _mod_names(imports, "psycopg")
+        self.qmods, self.qfuncs = _mod_names(imports, "queue")
+        self.thrmods, self.thrfuncs = _mod_names(imports, "threading")
+        self.aio, self.aiofuncs = _mod_names(imports, "asyncio")
+        self.cf, self.cfuncs = _mod_names(imports, "concurrent.futures")
+        self.hx = _mod_names(imports, "httpx")[0]
+        self.url_funcs = _mod_names(imports, "urllib.request")[1]
+        self.fcntl = _mod_names(imports, "fcntl")[0]
         self._binds: dict[int, dict[str, str]] = {}
         self._visit(tree, [], False)
 
@@ -388,7 +397,8 @@ def _files(tree: str) -> list[Path]:
     ]
 
 
-def scan_tree(tree: str) -> tuple[Counter[str], dict[str, list[int]]]:
+@functools.cache
+def _scan_tree_cached(tree: str) -> tuple[Counter[str], dict[str, list[int]]]:
     bad: Counter[str] = Counter()
     polls: dict[str, list[int]] = {}
     for p in _files(tree):
@@ -398,6 +408,12 @@ def scan_tree(tree: str) -> tuple[Counter[str], dict[str, list[int]]]:
         if scan.poll_lines:
             polls[rel] = scan.poll_lines
     return bad, polls
+
+
+def scan_tree(tree: str) -> tuple[Counter[str], dict[str, list[int]]]:
+    """Scan once per process; callers get copies they may mutate."""
+    bad, polls = _scan_tree_cached(tree)
+    return Counter(bad), {k: list(v) for k, v in polls.items()}
 
 
 def scan() -> dict[str, int]:
@@ -411,10 +427,12 @@ def scan() -> dict[str, int]:
 def report() -> dict[str, Any]:
     """Report-only findings: ``while True`` polls + the ``tests/`` tree."""
     polls: dict[str, list[int]] = {}
+    tests_bad: Counter[str] = Counter()
     for tree in _ENFORCED + _REPORT_ONLY:
-        _, p = scan_tree(tree)
+        bad, p = scan_tree(tree)
         polls.update(p)
-    tests_bad, _ = scan_tree("tests")
+        if tree in _REPORT_ONLY:
+            tests_bad.update(bad)
     return {
         "while_true_polls": polls,
         "tests_tree": dict(sorted(tests_bad.items())),
@@ -457,6 +475,24 @@ def test_checker_flags_synthetic_violations() -> None:
         "import fcntl\ndef l():\n    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
     )
     assert not scan_source("ok.py", ok).bad
+
+
+def test_scan_walks_each_file_once_for_imports(monkeypatch) -> None:
+    """Module-alias sets come from one import pass, not one walk per module
+    (the 9x walk made the report scan outlast pytest-timeout under load)."""
+    calls = 0
+    real = ast.walk
+
+    def counting(node: ast.AST):
+        nonlocal calls
+        calls += 1
+        return real(node)
+
+    monkeypatch.setattr(ast, "walk", counting)
+    src = "import subprocess\nimport queue\ndef f():\n    subprocess.run(c)\n"
+    scan = scan_source("x.py", src)
+    assert scan.bad
+    assert calls <= 2, f"{calls} ast.walk calls for one single-function file"
 
 
 def test_no_new_unbounded_waits() -> None:
