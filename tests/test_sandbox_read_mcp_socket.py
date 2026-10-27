@@ -11,6 +11,7 @@ reaches the runtime.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -138,7 +139,6 @@ def test_allowlist_excludes_every_fetch_and_paid_kind() -> None:
         "youtube",
         "wikipedia",
         "news",
-        "datasheet",
         "paper",
         "patent",
         "edgar",
@@ -152,7 +152,126 @@ def test_allowlist_excludes_every_fetch_and_paid_kind() -> None:
     }
     assert not fetch_or_paid & read_mcp.READ_KIND_ALLOWLIST
     assert read_mcp.kind_refusal("get", "skill") is None
+    assert read_mcp.kind_refusal("get", "datasheet") is None
+    assert read_mcp.kind_refusal("search", "datasheet") is None
     assert read_mcp.kind_refusal("more", None) is None
+
+
+@pytest.mark.parametrize("verb", ["get", "search"])
+def test_server_uses_the_shared_read_kind_allowlist(
+    verb: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import server
+
+    async def read(**kw: Any) -> str:
+        return "dispatched"
+
+    gated = server._kind_gated(verb, read)
+    for kind in read_mcp.READ_KIND_ALLOWLIST:
+        assert asyncio.run(gated(kind=kind)) == "dispatched"
+    # Changing the canonical policy must change the serving gate too;
+    # a copied allowlist in server.py would fail both assertions.
+    monkeypatch.setattr(read_mcp, "READ_KIND_ALLOWLIST", frozenset({"test-kind"}))
+    assert asyncio.run(gated(kind="test-kind")) == "dispatched"
+    assert asyncio.run(gated(kind="datasheet")).isError
+
+
+@pytest.mark.parametrize("claim", ["pin_functions", "tie"])
+@pytest.mark.parametrize(
+    ("handle", "expected"),
+    [
+        ("ds:da1~7", []),
+        ("ds:da1~999", ["source.unresolvable"]),
+        ("ds:da2~7", ["source.wrong_part"]),
+        ("ds:pa1~7", ["source.unresolvable"]),
+        ("ds:da3~7", ["source.unresolvable"]),
+    ],
+    ids=["valid", "missing-chunk", "wrong-part", "wrong-kind", "converted-ref"],
+)
+def test_pcb_sources_through_sandbox_read_gate(
+    claim: str,
+    handle: str,
+    expected: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Board → staged client → serving gate, with corpus reads faked."""
+    from mcp.server.fastmcp import FastMCP
+    from mcp.types import CallToolResult, TextContent
+
+    from precis import server
+    from precis.handlers.paper import _parse_paper_id
+    from precis_geom import pcb
+
+    def reply(text: str, *, error: bool = False) -> CallToolResult:
+        return CallToolResult(
+            content=[TextContent(type="text", text=text)], isError=error
+        )
+
+    # Stored corpus fixtures: no handler, DB, transport or live fetch.
+    parts = {"da1": "C111", "da2": "C222"}
+    reads: list[tuple[str, str]] = []
+
+    async def get(kind: str, id: str) -> CallToolResult:
+        assert kind == "datasheet"
+        reads.append(("get", id))
+        ref, chunk, view = _parse_paper_id(id, "datasheet")
+        assert view is None
+        # A retired datasheet handle can redirect to another kind: get
+        # succeeds, but the kind-scoped status below must reject it.
+        if (ref not in parts and ref != "da3") or chunk != (7, 7):
+            return reply(f"[error:NotFound] no such datasheet chunk {id}", error=True)
+        return reply("Pin 1: GPIO")
+
+    async def search(kind: str, view: str, ids: list[str]) -> CallToolResult:
+        assert (kind, view) == ("datasheet", "status")
+        ref = ids[0]
+        reads.append(("search", ref))
+        if ref == "da3":
+            return reply("datasheet status — 0 of 1 ids resolved:\n")
+        return reply(
+            "datasheet status — 1 of 1 ids resolved:\n\n"
+            f"  {ref}  [vendor-sheet]  full (1 body chunks)  pdf\n"
+            f"      part {parts[ref]}  pull: ok\n"
+        )
+
+    app = FastMCP("sandbox-pcb-source-test")
+    app.add_tool(get, name="get")
+    app.add_tool(search, name="search")
+    for verb in ("put", "edit", "delete", "tag", "link"):
+        app.add_tool(lambda: pytest.fail("write dispatched"), name=verb)
+    monkeypatch.setenv("PRECIS_MCP_PROFILE", "typed")
+    server._restrict_to_read_verbs(app)
+    assert {t.name for t in app._tool_manager.list_tools()} == {"get", "search"}
+
+    client = _load_client(tmp_path / "unused-mcp.json")
+
+    def rpc(method: str, params: dict[str, Any], timeout: int) -> tuple:
+        assert method == "tools/call"
+        tool = app._tool_manager.get_tool(params["name"])
+        assert tool is not None
+        result = asyncio.run(tool.fn(**params["arguments"]))
+        return "fake-session", {"result": result.model_dump()}
+
+    monkeypatch.setattr(client, "_session", "fake-session")
+    monkeypatch.setattr(client, "_rpc", rpc)
+    monkeypatch.setitem(sys.modules, "precis_client", client)
+
+    board = pcb.Board("sandbox-source")
+    part = board.part("U1", lcsc="C111")
+    net = board.net("N")
+    if claim == "pin_functions":
+        part.pin_functions({"1": ["GPIO"]}, source=handle)
+        net.tie(part["1"])
+    else:
+        net.tie(part["1"], source=handle)
+    result = board.check()
+    assert [finding.code for finding in result.findings] == expected
+    assert not result.not_checked
+    assert all(not finding.not_checked for finding in result.findings)
+    assert reads[0] == ("get", handle.removeprefix("ds:"))
+    if expected != ["source.unresolvable"] or handle == "ds:da3~7":
+        assert reads[1] == ("search", handle.removeprefix("ds:").split("~")[0])
 
 
 def test_wrong_token_is_401(served: dict[str, Any]) -> None:
