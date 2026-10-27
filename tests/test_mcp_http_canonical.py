@@ -269,7 +269,7 @@ def test_check_path_flags_a_container_mount_under_the_path(
     mounted = tmp_path / "root" / "checkout"
     mounted.mkdir(parents=True)
     (fakebin / "docker").write_text(
-        '#!/bin/sh\n'
+        "#!/bin/sh\n"
         'if [ "$1" = ps ]; then echo c1; '
         'elif [ "$1" = inspect ] && [ "$2" = "-f" ] && [ "$3" = "{{.Name}}" ]; '
         "then echo /c1; else printf '%s\\n' " + str(mounted) + "; fi\n",

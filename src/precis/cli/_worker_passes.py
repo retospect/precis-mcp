@@ -75,9 +75,7 @@ def build_ref_passes(
         # amortises better than the shared-loop default (32). The
         # pass's own floor/env knob governs; the loop's --batch-size
         # still wins when set higher.
-        _kw_batch_floor = int(
-            os.environ.get("PRECIS_CHUNK_KEYWORDS_BATCH") or 128
-        )
+        _kw_batch_floor = int(os.environ.get("PRECIS_CHUNK_KEYWORDS_BATCH") or 128)
 
         def _chunk_keywords_pass(batch_size: int) -> BatchResult:
             r = run_chunk_keywords_pass(

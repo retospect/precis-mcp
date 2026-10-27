@@ -255,8 +255,7 @@ def claim_chunks_without_keywords(
         _claim("r.kind NOT IN ('conv', 'draft') AND c.keywords IS NULL", ())
     if len(out) < limit:
         _claim(
-            "r.kind NOT IN ('conv', 'draft') "
-            f"AND c.keywords IS NOT NULL AND {pending}",
+            f"r.kind NOT IN ('conv', 'draft') AND c.keywords IS NOT NULL AND {pending}",
             (KEYWORDS_VERSION,),
         )
     return out
@@ -481,9 +480,7 @@ def extract_chunk_keywords(
     embed_texts, candidate_meta = _keyword_candidates(chunk_text, abbrevs)
     if not embed_texts:
         return []
-    return _topk_keywords(
-        chunk_embedding, candidate_meta, embedder.embed(embed_texts)
-    )
+    return _topk_keywords(chunk_embedding, candidate_meta, embedder.embed(embed_texts))
 
 
 def write_chunk_keywords(
@@ -684,8 +681,7 @@ def _run_chunk_keywords_batch(
         # not sink the batch: fall back to per-chunk calls below so the
         # fault stays scoped to its own chunk.
         log.exception(
-            "chunk_keywords: pooled embed failed — per-chunk fallback for "
-            "%d chunks",
+            "chunk_keywords: pooled embed failed — per-chunk fallback for %d chunks",
             len(prepared),
         )
 
