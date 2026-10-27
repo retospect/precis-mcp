@@ -1845,7 +1845,12 @@ class PcbHandler(Handler):
         # runs the in-job route stage that writes copper + pcb_routes;
         # absent means place only. Ignored on other placers.
         if op == "place" and opts.get("route") is not None:
-            params["route"] = bool(opts["route"])
+            if not isinstance(opts["route"], bool):
+                raise BadInput(
+                    "pcb: route must be a boolean (True or False)",
+                    next="put(args={'op':'place','placer':'topo','route':True})",
+                )
+            params["route"] = opts["route"]
         # Opt-in support-passive organisation (optimize.OptimizeConfig.
         # support_groups): pull-up banks, per-IC decoupling rows and
         # series pairs re-laid as organised rows post-anneal.

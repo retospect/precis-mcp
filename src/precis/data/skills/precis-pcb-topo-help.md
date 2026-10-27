@@ -28,9 +28,10 @@ layers → tracks/vias, power rails widened where the board's DRC allows)
 and writes the `pcb_copper` + `pcb_routes` rows in one transaction.
 Without `route` the job places only and leaves stored copper untouched.
 The route stage is best-effort and early: it is known to fail on some
-boards (a raised mesh conflict on nano, clearance errors on esp32c3),
-so check `view='drc'` and `view='route-status'` before trusting the
-copper it wrote. This skill covers the topo placer opt-in and its
+boards (a raised mesh conflict on nano, clearance errors on esp32c3).
+A raise fails the job — `meta.topo_run.route.error` carries the error,
+never "succeeded, 0 copper" — so check `view='drc'` and
+`view='route-status'` before trusting the copper it wrote. This skill covers the topo placer opt-in and its
 readback view; the placer stays opt-in until a bench shows it beats
 the default.
 

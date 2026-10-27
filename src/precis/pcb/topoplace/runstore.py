@@ -130,6 +130,8 @@ def manifest(
                     "moved_mm": round(float(result.shove.moved_mm), 4),
                     "remaining": len(result.shove.remaining),
                     "reason": str(result.shove.reason),
+                    "mesh_errors": int(result.shove.mesh_errors),
+                    "mesh_error": str(result.shove.mesh_error),
                 }
                 if result.shove is not None
                 else None

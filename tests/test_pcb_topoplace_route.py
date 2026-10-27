@@ -88,6 +88,98 @@ def test_every_courtyard_and_outline_edge_is_a_present_constraint() -> None:
         assert e in constrained
 
 
+def test_th_header_t_junction_recovery_keeps_every_constraint() -> None:
+    """The nano seed-3 failure (topo-s1): two 1x15 through-hole headers
+    at a near-touching offset raised ``recovered edge ... vanished`` —
+    an ear-clip sliver parked a pruned collinear vertex exactly ON an
+    edge, and a later constraint ending there found no proper crossing
+    to walk. The mesh must build, and every constraint edge —
+    courtyard, board outline AND each pad's rect ring — must be
+    present and constrained."""
+    from precis.pcb.topoplace.mesh import _place
+
+    pitch, pad, n_pin = 2.54, 1.7, 15
+    cy_hx = (n_pin - 1) * pitch / 2 + pad / 2 + 0.4
+    cy_hy = pad / 2 + 0.4
+    ring = np.asarray(
+        [
+            [-cy_hx, -cy_hy],
+            [cy_hx, -cy_hy],
+            [cy_hx, cy_hy],
+            [-cy_hx, cy_hy],
+            [-cy_hx, -cy_hy],
+        ]
+    )
+    # the failing offset the pose scan found (dx=2.54, dy=0.8)
+    pose = np.asarray(
+        [[20.0, 20.0, 1.0, 0.0], [22.54, 20.8, 1.0, 0.0]], dtype=np.float64
+    )
+    d = TopoDesign(
+        parts=("J1", "J2"),
+        pin_xy=np.asarray([[(i - 7) * pitch, 0.0] for i in range(n_pin)] * 2),
+        pin_part=np.asarray([0] * n_pin + [1] * n_pin),
+        pin_side=np.full(2 * n_pin, 2, dtype=np.int8),
+        pin_label=np.asarray([str(i + 1) for i in range(n_pin)] * 2, dtype=object),
+        pin_net=np.arange(2 * n_pin) % n_pin,
+        net_pins=tuple(
+            np.asarray([i, n_pin + i], dtype=np.int64) for i in range(n_pin)
+        ),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(2, dtype=bool),
+        freedoms=np.full(2, 3, dtype=np.uint8),
+        outline=np.asarray([[-2.0, -2.0], [42.0, -2.0], [42.0, 42.0], [-2.0, 42.0]]),
+        pose0=pose,
+        part_outline=(ring, ring),
+        net_layer_force=np.full(n_pin, -1, dtype=np.int8),
+        net_name=tuple(f"N{i + 1}" for i in range(n_pin)),
+        pin_wh=np.tile(np.asarray([[pad, pad]]), (2 * n_pin, 1)),
+    )
+    mesh = build_mesh(d, pose)
+
+    vid_of = {
+        (round(float(x), 9), round(float(y), 9)): i
+        for i, (x, y) in enumerate(mesh.verts)
+    }
+    edges = _edge_set(mesh)
+    constrained = {
+        tuple(int(x) for x in mesh.edges[i]) for i in np.flatnonzero(mesh.constrained)
+    }
+
+    def assert_edge(pa, pb) -> None:
+        e = tuple(
+            sorted((vid_of[tuple(np.round(pa, 9))], vid_of[tuple(np.round(pb, 9))]))
+        )
+        assert e in edges, (pa, pb)
+        assert e in constrained, (pa, pb)
+
+    # board outline
+    outline = np.asarray(d.outline)
+    for pa, pb in _ring_edges_xy(mesh, np.vstack([outline, outline[0]])):
+        assert_edge(pa, pb)
+    # courtyard rings at their world poses
+    for part in range(len(d.parts)):
+        world = _place(np.asarray(d.part_outline[part][:-1]), pose[part])
+        for pa, pb in _ring_edges_xy(mesh, np.vstack([world, world[0]])):
+            assert_edge(pa, pb)
+    # every pad's rect ring — the ear-clip's T-junction victims
+    for pin in range(len(d.pin_xy)):
+        part = int(d.pin_part[pin])
+        pw, ph = (float(v) for v in d.pin_wh[pin])
+        cx, cy = (float(v) for v in d.pin_xy[pin])
+        local = np.asarray(
+            [
+                [cx - pw / 2, cy - ph / 2],
+                [cx + pw / 2, cy - ph / 2],
+                [cx + pw / 2, cy + ph / 2],
+                [cx - pw / 2, cy + ph / 2],
+            ]
+        )
+        world = _place(local, pose[part])
+        for pa, pb in _ring_edges_xy(mesh, np.vstack([world, world[0]])):
+            assert_edge(pa, pb)
+
+
 def test_euler_no_holes_example_a_and_100p_synth() -> None:
     """V − E + T = 1 over referenced vertices — footprint interiors are
     triangulated, so the courtyards punch no holes."""

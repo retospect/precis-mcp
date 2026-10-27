@@ -329,16 +329,53 @@ class _Soup:
             self._link(tid, tri)
         return True
 
+    def t_junction(
+        self, verts: _Verts, a: int, b: int
+    ) -> tuple[tuple[int, int], int] | None:
+        """An endpoint of (a, b) lying strictly on an existing edge —
+        the T-junction the proper-crossing walk cannot see (an ear-clip
+        sliver leaves its pruned collinear vertex exactly ON an edge,
+        so a later constraint ending there finds a fan with no proper
+        exit). Returns ``((p, q), w)`` or ``None``."""
+        for p, q in self.edge_tris:
+            if a not in (p, q) and _on_segment(verts, p, a, q):
+                return (p, q), a
+            if b not in (p, q) and _on_segment(verts, p, b, q):
+                return (p, q), b
+        return None
+
+    def split_at_vertex(self, e: tuple[int, int], w: int) -> None:
+        """Split edge ``e = (p, q)`` at vertex ``w`` strictly on it —
+        each triangle on ``e`` becomes two, ending the T-junction. A
+        zero-area sliver whose apex IS ``w`` (``w`` rode the edge, the
+        ear-clip's way of keeping a pruned vertex covered) collapses
+        away: its two leg edges are re-emitted by the other side's
+        halves."""
+        p, q = e
+        for tid in tuple(self.edge_tris.get(e, ())):
+            tri = self.tris[tid]
+            x = next(v for v in tri if v not in e)
+            if x == w:
+                self.drop(tid)
+                continue
+            self._unlink(tid, tri)
+            self.tris[tid] = (p, w, x)
+            self._link(tid, self.tris[tid])
+            self.add((w, q, x))
+
     def cavity(
-        self, verts: _Verts, a: int, b: int, crossed: list[tuple[int, int]]
+        self,
+        verts: _Verts,
+        a: int,
+        b: int,
+        crossed: list[tuple[int, int]],
+        protected: Any = (),
     ) -> None:
         """Ear-clip fallback when no crossed edge is flippable: the strip
         of triangles the segment passes through is removed and each of
         the two simple polygons it leaves — the chains above and below
         the segment — is retriangulated, giving (a, b) as an edge."""
         strip = {t for e in crossed for t in self.edge_tris.get(e, ())}
-        # An interior strip edge that is CONSTRAINED would be silently
-        # lost by the removal — refuse instead.
         interior: dict[tuple[int, int], int] = {}
         boundary: dict[tuple[int, int], int] = {}
         for tid in strip:
@@ -351,6 +388,14 @@ class _Soup:
                 (interior if both else boundary)[key] = (
                     interior.get(key, 0) + 1 if both else 1
                 )
+        # An interior strip edge that is CONSTRAINED would be silently
+        # lost by the removal — refuse instead.
+        lost = [e for e in interior if e in protected]
+        if lost:
+            raise MeshConflictError(
+                f"constraint strip for ({a},{b}) holds already-constrained "
+                f"edge(s) {lost[:4]} — degenerate geometry"
+            )
         # The boundary is one cycle through a and b; walk both arcs.
         adj: dict[int, list[int]] = {}
         for u, v in boundary:
@@ -860,7 +905,33 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
             if crossed is None:
                 crossed = soup.crossed(vlist, a, b)
             if not crossed:
-                break
+                if soup._ekey(a, b) in soup.edge_tris:
+                    break
+                # No proper crossing yet (a, b) is absent: a T-junction —
+                # an endpoint sits strictly on a soup edge the crossing
+                # predicates cannot see (an ear-clip sliver parks a pruned
+                # collinear vertex exactly ON an edge; collinear pad rows
+                # make this routine). Split the blocker at the endpoint,
+                # carrying a constrained edge's owners onto both halves,
+                # and resume the walk.
+                tj = soup.t_junction(vlist, a, b)
+                if tj is None:
+                    raise MeshConflictError(
+                        f"recovered edge ({a},{b}) of {_owner_label(owner)} "
+                        "vanished — bug"
+                    )
+                (p, q), w = tj
+                pk = soup._ekey(p, q)
+                own = constrained_pairs.pop(pk, None)
+                own2 = second_owner.pop(pk, None)
+                soup.split_at_vertex(pk, w)
+                if own is not None:
+                    constrained_pairs[soup._ekey(p, w)] = own
+                    constrained_pairs[soup._ekey(w, q)] = own
+                    if own2 is not None:
+                        second_owner[soup._ekey(p, w)] = own2
+                        second_owner[soup._ekey(w, q)] = own2
+                continue
             wall = next((e for e in crossed if e in constrained_pairs), None)
             if wall is not None:
                 raise MeshConflictError(
@@ -875,14 +946,14 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
             # edge a later flip undoes); once rounds outpace what honest
             # progress could need, ear-clip the whole strip instead.
             if stall > 4 * len(crossed) + 16:
-                soup.cavity(vlist, a, b, crossed)
+                soup.cavity(vlist, a, b, crossed, protected=constrained_pairs)
                 stall = 0
                 continue
             for e in crossed:
                 if soup.flip(vlist, e):
                     break
             else:
-                soup.cavity(vlist, a, b, crossed)
+                soup.cavity(vlist, a, b, crossed, protected=constrained_pairs)
                 stall = 0
         else:
             raise MeshConflictError(

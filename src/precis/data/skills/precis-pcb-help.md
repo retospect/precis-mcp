@@ -36,8 +36,9 @@ one instance / one net / an analysis / an export), `search` (by intent),
 board; `view='links'` reads them back).
 
 Related skills: [[precis-pcb-topo-help]] (`placer='topo'` and
-`view='topo'` — topological routing is the only router; its realiser is
-unshipped, so no routed copper yet), [[precis-pcb-check-help]] (the
+`view='topo'` — topological routing is the only router; opt-in
+`route=True` on the place job writes routed copper, best-effort),
+[[precis-pcb-check-help]] (the
 check surface — view='check', phases, finding delta, ERC, missing
 footprints and pin repair),
 [[precis-pcb-fab-help]] (export views, the JLCPCB fab package/order, the
@@ -370,7 +371,7 @@ get(
 get(
     kind="pcb", id="s", view="route-status"
 )  # per-net route status over stored runs: unrouted|sketched|realized|failed
-   # (routing retired — a fresh board reads all-unrouted)
+   # (a board placed without route=True reads all-unrouted)
 get(
     kind="pcb", id="s", view="congestion"
 )  # the last stored route run's warnings (if any) + the topo
@@ -470,11 +471,14 @@ explicit `paste` always wins.
 
 ## Place it — `put(args={'op':'place', …})`
 
-**Routing is retired.** `op='route'` refuses with `next=`: the vector
-router was deleted 2026-10-25 (tag `vroute-final`) and the topological
-router's realiser has not landed, so a newly placed board reports every
-fanout `unrouted` — routed copper is not available yet. Stored routes on
-boards routed before the cut still render, and `view='route-status'` /
+**`op='route'` refuses with `next=`** — the vector router was deleted
+2026-10-25 (tag `vroute-final`) and the topological router is the only
+router. Routed copper now comes from the place job: `route=True` on
+`placer='topo'` commits the pose, routes it in-process and writes the
+`pcb_copper` + `pcb_routes` rows — opt-in and best-effort, so check
+`view='drc'`/`view='route-status'` before trusting it. A board placed
+without `route` reports every fanout `unrouted`. Stored routes on boards
+routed before the cut still render, and `view='route-status'` /
 `view='congestion'` still read them.
 
 ### The judged-mutation gate
@@ -492,7 +496,7 @@ a synthesized (guessed) footprint are not.
   routed copper rips that net (it becomes unrouted), at any severity,
   including a class requirement tighter than the fab minimum. The design's
   own rules outrank stored routes. The reply lists `<net> ripped: <rule>`;
-  there is no re-route until the topo realiser lands.
+  re-routing is a fresh `placer='topo'` place job with `route=True`.
 - **`op='class_rules'`** never refuses over pads: a shortfall between pads
   against the new requirement is listed as `now visible (class requirement,
   not refused)`.
@@ -575,10 +579,11 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
 5. **Place** — `op='place'` (enqueued), then `view='crossings'`; pin fixed
    parts; repeat. `placer='topo'` opts into the topological placer
    ([[precis-pcb-topo-help]]).
-6. **Route** — not available: routing is retired (the vector router was
-   deleted 2026-10-25; the topo realiser is unshipped), so `op='route'`
-   refuses with `next=`. `view='route-status'`/`view='congestion'` still
-   read stored runs.
+6. **Route** — `op='route'` refuses with `next=` (the vector router was
+   deleted 2026-10-25); route is opt-in on the place job: `placer='topo'`
+   + `route=True` writes routed copper best-effort
+   ([[precis-pcb-topo-help]]). `view='route-status'`/`view='congestion'`
+   read stored runs either way.
 7. **Export & order** — `view='fab'` writes the JLC package (gerber+drill
    zip + BOM + CPL) in one dir; `op='order'` dry-runs/places the JLCPCB
    order; `view='mechanical'` for the enclosure; `view='dsn'` feeds an

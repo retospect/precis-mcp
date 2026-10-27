@@ -420,8 +420,9 @@ def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]
     pass does not get to keep the board). ``moved_mm``/``rounds`` sum
     over every pass, ``lp_optimum_mm`` is the FIRST pass's objective
     (the spec's displacement-bound reference), ``reason`` the first
-    non-empty stop reason any shove pass reported,
-    ``min_tri_area_mm2`` the worst audit any pass saw, and
+    non-empty stop reason any shove pass reported, ``mesh_errors`` the
+    summed mesh-build failure count and ``mesh_error`` the first text
+    any pass kept, ``min_tri_area_mm2`` the worst audit any pass saw, and
     ``resolved``/``remaining`` read off the pass that produced the
     returned pose — the state the pose is actually in."""
     import dataclasses
@@ -434,6 +435,8 @@ def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]
     min_tri = math.inf
     lp_optimum = 0.0
     reason = ""
+    mesh_errors = 0
+    mesh_error = ""
     seen: set[bytes] = set()
     prev_conflicts: int | None = None
     best_conflicts: int | None = None
@@ -447,6 +450,8 @@ def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]
         if _pass == 0:
             lp_optimum = s.lp_optimum_mm
         reason = reason or s.reason
+        mesh_errors += s.mesh_errors
+        mesh_error = mesh_error or s.mesh_error
         if s.moved_mm > 0:
             pose = s.pose
         l = legalize_pose(d, pose)
@@ -473,6 +478,8 @@ def _settle_pose(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, Any, Any]
         lp_optimum_mm=lp_optimum,
         min_tri_area_mm2=min_tri,
         reason=reason,
+        mesh_errors=mesh_errors,
+        mesh_error=mesh_error,
     )
     legal = dataclasses.replace(legal, rounds=legalize_rounds, moved_mm=legalize_mm)
     return pose, shoved, legal

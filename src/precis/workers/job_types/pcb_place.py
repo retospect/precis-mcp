@@ -421,16 +421,19 @@ def _topo_route(
         )
     # ONE transaction: a raise between the copper replace and the route
     # rows must never strand copper without route status. And an empty
-    # route result never wipes stored copper — the replace is skipped
-    # while the per-net status rows still write.
+    # route result never wipes stored copper — both writes are skipped
+    # together, so view='route-status' still matches the copper that
+    # stays on the board.
     with ctx.store.tx() as conn:
         n_copper = (
             ctx.store.pcb_copper_replace(int(board_id), copper_rows, conn=conn)
             if copper_rows
             else 0
         )
-        n_routes = ctx.store.pcb_routes_write(
-            pcb_ref_id, int(board_id), rows, conn=conn
+        n_routes = (
+            ctx.store.pcb_routes_write(pcb_ref_id, int(board_id), rows, conn=conn)
+            if copper_rows
+            else 0
         )
 
     n_realized = sum(1 for r in rows.values() if r["status"] == "realized")
@@ -818,11 +821,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     if placer == "topo":
         # Slice-5 ruling: place and route are ONE job — but routing is
         # opt-in (route=True, GRIPE_FIX ruling). The pose is committed
-        # above; when requested, route it now — best-effort, a raise is a
-        # note, never a failed place (a placed-but-unrouted board is
-        # strictly better than a job that wrote nothing).
+        # above; when requested, route it now. Best-effort in the sense
+        # that the committed pose stands either way, but a raise fails
+        # the job LOUDLY (S1 ruling) — never "succeeded, 0 copper".
         route_text = ""
         route_meta: dict[str, Any] = {}
+        route_error = ""
         if route:
             try:
                 route_text, route_meta = _topo_route(
@@ -838,10 +842,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 )
             except Exception as exc:
                 log.exception("pcb_place: topo route stage raised; placement kept")
+                route_error = f"{type(exc).__name__}: {exc}"
                 route_text = (
-                    f"topo-route: raised {type(exc).__name__}: {exc} — the "
+                    f"topo-route: raised {route_error} — the "
                     "placement above stands, no copper written\n"
                 )
+                route_meta = {"error": route_error}
         # Decision 20: the whole run payload rides the job ref's meta for
         # ``view='topo'`` drill-down; the summary text is the same file.
         # ``route`` stays absent when the stage never ran.
@@ -877,6 +883,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             + "\n"
             + topo_text,
         )
+        if route_error:
+            # AFTER the summary chunk: the failure event sits on top of
+            # the placement report, so the job fails with the placement
+            # described first — never "succeeded, 0 copper".
+            ctx.record_failure(
+                f"pcb_place: topo route stage raised {route_error}",
+                failure_class="non-convergence",
+            )
         return
 
     # A hard align the optimizer's snap pass closed is flagged on its row

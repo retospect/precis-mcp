@@ -359,8 +359,9 @@ def test_topo_route_is_opt_in_default_off(store: Store) -> None:
 def test_topo_route_empty_result_keeps_stored_copper(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An empty route result never wipes stored copper: the replace is
-    skipped while the per-net ``pcb_routes`` rows still write, and the
+    """An empty route result never wipes stored copper: the copper
+    replace AND the ``pcb_routes`` rewrite are skipped together, so
+    ``view='route-status'`` still matches the kept copper, and the
     summary reports ``route produced nothing; stored copper kept``."""
     import types
 
@@ -377,6 +378,7 @@ def test_topo_route_empty_result_keeps_stored_copper(
     board_id = store.pcb_ensure_board(ref.id)
     seeded = store.pcb_copper_list(board_id)
     assert any(r["ctype"] == "track" for r in seeded), side.note
+    seeded_routes = store.pcb_routes_get(ref.id)
 
     empty_plan = types.SimpleNamespace(
         pieces=(), vias=(), layers=(), crossings=(), unreachable=(), stranded=()
@@ -391,9 +393,12 @@ def test_topo_route_empty_result_keeps_stored_copper(
     tb._topo_side(store, pcb, "tiny-topo-empty", seed=2, effort=200, force=True)
     copper = store.pcb_copper_list(board_id)
     assert sorted(map(_copper_key, copper)) == sorted(map(_copper_key, seeded))
-    # the per-net status rows still wrote
+    # the per-net status rows are kept verbatim — they describe the
+    # stored copper, which the empty route left in place
     routes = store.pcb_routes_get(ref.id)
-    assert {r["status"] for r in routes.values()} == {"sketched"}
+    assert {k: _copper_key(v) for k, v in routes.items()} == {
+        k: _copper_key(v) for k, v in seeded_routes.items()
+    }
     job_id = _latest_job(store, ref.id)
     route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
     assert route_meta is not None and route_meta.get("nets") == 2
@@ -457,6 +462,34 @@ def test_topo_route_copper_and_route_rows_write_atomically(
     assert "topo-route: raised RuntimeError: boom mid-write" in tb.job_summary_text(
         store, job_id
     )
+
+
+def test_topo_route_raise_fails_the_job_loudly(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S1: a raised route-stage error fails the job — never 'succeeded,
+    0 copper'. ``meta.topo_run.route.error`` carries the raise text and
+    the bench row's note names a route failure, not a place-gate
+    refusal."""
+    from precis.pcb.topoplace import realise as _tprealise
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-raise", args=_TINY).body
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("mesh exploded")
+
+    monkeypatch.setattr(_tprealise, "route_design", _boom)
+    side, _stage = tb._topo_side(
+        store, pcb, "tiny-topo-raise", seed=1, effort=200, force=True
+    )
+    assert side.routed is None
+    assert side.note == "topo route stage raised: RuntimeError: mesh exploded"
+    ref = store.get_ref(kind="pcb", id="tiny-topo-raise")
+    assert ref is not None
+    job_id = _latest_job(store, ref.id)
+    route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
+    assert route_meta == {"error": "RuntimeError: mesh exploded"}
 
 
 # Opt-in only (scripts/pcb-topo-bench): the whole set runs two real

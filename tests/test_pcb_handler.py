@@ -1274,6 +1274,15 @@ def test_op_place_force_must_be_boolean(pcb):
         pcb.put(id="op-force-bad", args={"op": "place", "force": "yes"})
 
 
+def test_op_place_route_must_be_boolean(pcb):
+    pcb.put(id="op-route-bad", args=_CROSSED_OUTLINED)
+    with pytest.raises(BadInput, match="route"):
+        pcb.put(
+            id="op-route-bad",
+            args={"op": "place", "placer": "topo", "route": "yes"},
+        )
+
+
 def test_op_place_force_true_lands_in_job_params(pcb, store):
     pcb.put(id="op-force-ok", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="op-force-ok")

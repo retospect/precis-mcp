@@ -77,7 +77,11 @@ class ShoveResult:
     linearisation could not). ``reason`` is ""/"infeasible"/"mesh"/
     "inverted" (a step the backtracker could not save); ``min_tri_area_mm2``
     the no-inversion audit — the smallest ACTUAL signed area a
-    constrained triangle reached under an applied step."""
+    constrained triangle reached under an applied step. ``mesh_errors``
+    counts the ``MeshConflictError`` catches the pass swallowed (a
+    "mesh" reason means at least one) and ``mesh_error`` keeps the
+    first one's text — the silent-failure count the job summary and
+    bench report."""
 
     pose: np.ndarray
     resolved: bool
@@ -87,6 +91,8 @@ class ShoveResult:
     min_tri_area_mm2: float = math.inf
     reason: str = ""
     remaining: tuple[tuple[int, int, float], ...] = field(default_factory=tuple)
+    mesh_errors: int = 0
+    mesh_error: str = ""
 
 
 def _vert_owner(d: TopoDesign, mesh: TopoMesh) -> np.ndarray:
@@ -164,6 +170,8 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
     min_tri_area = math.inf
     reason = ""
     spent = 0
+    mesh_errors = 0
+    mesh_error = ""
 
     for _ in range(rounds):
         sides = pose[:, 3] >= 0.5
@@ -181,7 +189,9 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         ]
         try:
             ref = build_mesh(d, pose)
-        except MeshConflictError:
+        except MeshConflictError as exc:
+            mesh_errors += 1
+            mesh_error = mesh_error or str(exc)
             reason = reason or "mesh"
             break
         owner = _vert_owner(d, ref)
@@ -385,7 +395,9 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
                 remaining.append((int(part), n + int(z_i), float(area)))
         for part, area in end.outline_conflicts:
             remaining.append((int(part), -1, float(area)))
-    except MeshConflictError:
+    except MeshConflictError as exc:
+        mesh_errors += 1
+        mesh_error = mesh_error or str(exc)
         reason = reason or "mesh"
     return ShoveResult(
         pose=pose,
@@ -396,6 +408,8 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         min_tri_area_mm2=min_tri_area,
         reason=reason,
         remaining=tuple(sorted(remaining)),
+        mesh_errors=mesh_errors,
+        mesh_error=mesh_error,
     )
 
 

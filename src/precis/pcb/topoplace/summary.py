@@ -276,6 +276,14 @@ def render_summary(
         "via bracket: n/a (slice 2); corridor overflow: n/a (slice 4); "
         "certificates: n/a (slice 2)"
     )
+    if result.shove is not None and (
+        result.shove.reason == "mesh" or result.shove.mesh_errors
+    ):
+        lines.append(
+            f"shove: {result.shove.mesh_errors} swallowed mesh "
+            f"conflict(s) (reason={result.shove.reason or 'ok'})"
+            + (f" — {result.shove.mesh_error}" if result.shove.mesh_error else "")
+        )
     lines.append(
         f"run: {result.evals} evals, {result.restarts} restart(s), seed "
         f"{result.seed}, effort {effort}, objective crossings "

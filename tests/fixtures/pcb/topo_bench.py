@@ -173,6 +173,10 @@ class TopoStage:
     shove_rounds: int | None = None
     legalize_mm: float | None = None
     legalize_left: int | None = None
+    #: Swallowed mesh conflicts the shove pass counted (S1 loud-failure
+    #: reporting — a 0/absent run prints no note).
+    shove_reason: str = ""
+    mesh_errors: int | None = None
 
 
 @dataclass(frozen=True)
@@ -319,13 +323,18 @@ def render_stage_table(rows: list[TopoBenchRow]) -> str:
             if s.crossings_start is not None
             else ("n/a" if s.crossings is None else str(s.crossings))
         )
+        shove_note = ""
+        if s.shove_reason == "mesh" or s.mesh_errors:
+            shove_note = (
+                f" — shove:{s.shove_reason or 'ok'} ({s.mesh_errors or 0} mesh)"
+            )
         lines.append(
             f"| {_board_cell(r)} | {xings} "
             f"| {'n/a' if s.evals is None else s.evals} "
             f"| {'n/a' if s.evals_per_s is None else f'{s.evals_per_s:.0f}'} "
             f"| {'n/a' if s.airwire_mm is None else f'{s.airwire_mm:.0f}'} "
             f"| {'n/a' if s.place_s is None else f'{s.place_s:.1f}'} "
-            f"| {s.odd_cycles} | {s.via_bracket} |"
+            f"| {s.odd_cycles} | {s.via_bracket} |{shove_note}"
         )
     return "\n".join(lines)
 
@@ -516,6 +525,8 @@ def _topo_stage(store: Store, job_id: int, place_wall: float) -> TopoStage:
             else None
         ),
         shove_rounds=(result.get("shove") or {}).get("rounds"),
+        shove_reason=str((result.get("shove") or {}).get("reason") or ""),
+        mesh_errors=(result.get("shove") or {}).get("mesh_errors"),
         legalize_mm=(
             float((result.get("legalize") or {})["moved_mm"])
             if (result.get("legalize") or {}).get("moved_mm") is not None
@@ -656,7 +667,17 @@ def _topo_side(
     place_job, status, place_wall = _drain(store, ref.id)
     if status != SUCCEEDED:
         # The job stamps meta.topo_run before recording the refusal —
-        # the refused run's crossings/evals still land in the table.
+        # the refused run's crossings/evals still land in the table. A
+        # route-stage raise fails the job too (S1): name it from
+        # meta.topo_run.route.error so it reads as a route failure, not
+        # a place-gate refusal.
+        route_meta = (_job_meta(store, place_job).get("topo_run") or {}).get(
+            "route"
+        ) or {}
+        if route_meta.get("error"):
+            return PipeSide(
+                note=f"topo route stage raised: {route_meta['error']}"
+            ), _topo_stage(store, place_job, place_wall)
         return _fail_side(store, place_job, "topo place refused"), _topo_stage(
             store, place_job, place_wall
         )
