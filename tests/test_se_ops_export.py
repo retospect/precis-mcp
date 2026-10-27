@@ -333,6 +333,24 @@ def test_the_rendered_body_states_every_gap_and_fences_a_put_payload() -> None:
     )
 
 
+def test_an_explicit_material_round_trips_through_the_export() -> None:
+    """gr514245: ``SeBlock.material`` is emitted as ``set_material``."""
+    tree = _tree(
+        [
+            {"op": "add_block", "name": "plate"},
+            {"op": "set_material", "block": "plate", "material": "al-6061"},
+        ]
+    )
+    body = render_ops(tree, "plated", slug="plated")
+    payload = json.loads(body.split("```json")[1].split("```")[0])
+    assert {
+        "op": "set_material",
+        "block": "plate",
+        "material": "al-6061",
+    } in payload["ops"]
+    assert _tree(payload["ops"]).blocks["plate"].material == "al-6061"
+
+
 def test_the_header_names_every_ref_the_copy_will_need_to_resolve() -> None:
     """The silent-divergence guard, found by dogfooding `unicycle-c1`: a
     bound block derives envelope and ports from its catalog ref at load
@@ -655,6 +673,7 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "envelope": "op",
         "local_pose": "op",
         "local_rot": "op",
+        "material": "op",
         "mode": "op",
         "name": "op",
         "objectives": "op",

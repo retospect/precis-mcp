@@ -977,6 +977,7 @@ extend-exclude = [
     "scripts/guide-web",
     "scripts/hook-sync",
     "scripts/inflight",
+    "scripts/kimi-tree",
     "scripts/mcp-entry-preflight",
     "scripts/mcp-http-install",
     "scripts/mcp-loadtest",
