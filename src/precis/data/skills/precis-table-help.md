@@ -77,7 +77,10 @@ persist. Dropped ids retire — they never reappear.
 `add_column={'name':'note','type':'text'}` · `drop_column=<id|name>` ·
 `rename_column={'from':<ref>,'to':'memo'}` · `move_column=<ref>` ·
 `move_row=<id>` · `rows=[[…]]` (cell lists in column order) ·
-`drop_rows=[<id>, 'a..b']` · `sort='qty desc'`.
+`drop_rows=[<id>, 'a..b']` · `sort='qty desc'`. (`add_column` also takes
+`'formula'`/`'from'` keys — that is how a formula column is added to an
+existing table; `drop_column` takes the column's footer aggregate with
+it.)
 
 `at=` positions inserts/moves: `'end'` (default) | `'start'` |
 `{'after': '<id>'}` | `{'before': '<id>'}`. One op per edit — passing

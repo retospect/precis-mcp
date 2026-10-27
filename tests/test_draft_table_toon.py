@@ -15,11 +15,13 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
 from precis.utils.table_data import normalize_table
+from precis.utils.table_formula import compile_formula
 from precis.utils.table_toon import (
     apply_patch,
     check_table_base,
     compile_where,
     journal_append,
+    op_drop_column,
     parse_header_cell,
     table_content_hash,
     table_diff,
@@ -205,6 +207,17 @@ def test_table_from_toon_roundtrip_and_retire() -> None:
     assert t["rowmeta"][2]["id"] in norm2.get("retired_ids", [])
 
 
+def test_toon_formula_refusal_names_real_kwargs(draft: DraftHandler, hub: Hub) -> None:
+    """A toon= header can't write a formula — and the refusal's next=
+    must name kwargs edit actually has (add_column= / table=), not a
+    phantom columns=."""
+    tc = _seed(draft, hub)
+    with pytest.raises(BadInput, match="can't write a column formula") as e:
+        draft.edit(id=tc.dc, toon="{#\tqty =el*2}\nr\t1\n")
+    nxt = str(e.value.next)
+    assert "add_column" in nxt and "table=" in nxt
+
+
 # ── handler: view='toon'/'table' ──────────────────────────────────────
 
 
@@ -341,6 +354,44 @@ def test_edit_rows_insert_move_drop_sort(draft: DraftHandler, hub: Hub) -> None:
     assert len(t["rows"]) == 2 and new_id in t["retired_ids"]
     with pytest.raises(BadInput, match="no row id"):
         draft.edit(id=tc.dc, drop_rows=[new_id])  # retired stays gone
+
+
+def test_op_drop_column_prunes_its_footer() -> None:
+    """op_drop_column drops the gone column's footer spec — an aggregate
+    over a dead column can't recompute (normalize used to refuse the
+    drop outright), while footers on surviving columns stay."""
+    t = normalize_table(
+        {
+            "columns": [{"name": "a"}, {"name": "b"}, {"name": "c"}],
+            "rows": [[1, 2, 3]],
+            "footer": {"b": "sum", "c": "mean"},
+        }
+    )
+    t = op_drop_column(t, "b")
+    assert t["footer"] == {t["columns"][1]["id"]: "mean"}
+    t = op_drop_column(t, "c")
+    assert "footer" not in t
+
+
+def test_edit_drop_column_reports_dropped_footer(draft: DraftHandler, hub: Hub) -> None:
+    """Handler level: the drop lands and the ack says the column's
+    footer aggregate went with it (not silently lost)."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        columns=[{"name": "a"}, {"name": "b"}],
+        rows=[[1, 2]],
+        footer={"b": "sum"},
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    r = draft.edit(id=tc.dc, drop_column="b")
+    t = _meta(hub, tc)
+    assert [c["name"] for c in t["columns"]] == ["a"]
+    assert "footer" not in t and "footer_values" not in t
+    assert "footer sum() went with it" in r.body
 
 
 def test_edit_table_selector_conflicts_and_non_table(
@@ -589,11 +640,17 @@ def test_toon_header_formula_refused() -> None:
     )
     cid_a, cid_total = (c["id"] for c in t["columns"])
     rid = t["rowmeta"][0]["id"]
-    # a byte-identical echo of the stored formula is a no-op — kept,
-    # so read-then-replace works on a formula table
+    # a real write stores the id form (evaluate_table compiles the
+    # caller's name form); the toon view renders the name form back
+    stored = compile_formula("a*2", t["columns"])
+    t["columns"][1]["formula"] = stored
+    # re-declaring the emitted ``=a * 2`` compiles to the stored id
+    # form — a semantic echo, kept, so read-then-replace works on a
+    # formula table
     norm = table_from_toon(t, table_toon(t))
-    assert norm["columns"][1].get("formula") == "a*2"
-    # a changed or new formula refuses
+    assert norm["columns"][1].get("formula") == stored
+    # a changed formula (``=a*3`` ≠ stored) or a new formula on a
+    # non-formula column refuses — toon= is not the formula channel
     with pytest.raises(BadInput, match="formula"):
         table_from_toon(
             t, "{#\ta\t" + f"{cid_total}:total =a*3" + "}\n" + f"{rid}\t1\t6\n"
@@ -639,6 +696,39 @@ def test_edit_refuses_control_chars_on_json_paths(
     # tab/newline/CR are legit cell content and still land
     draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="a\tb\nc\rd")
     assert _meta(hub, tc)["rows"][0][0] == "a\tb\nc\rd"
+
+
+def test_edit_stored_ctrl_cell_names_the_cell_fix(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A control char that predates the write gate isn't in the incoming
+    write to strip — the refusal must say the stored value predates the
+    gate and name the exact ``cell=`` repair in ``next=``; running it
+    then lets the refused op land."""
+    tc = _seed(draft, hub)
+    rows, cols = _ids(hub, tc)
+    # slip a pre-gate ESC into one stored cell, behind the gate's back
+    meta = _meta(hub, tc)
+    meta["rows"][0][0] = "a\x1bb"
+    with hub.live_store.pool.connection() as aconn:
+        aconn.execute(
+            "UPDATE chunks SET meta = meta || %s::jsonb WHERE handle = %s",
+            (Jsonb({"table": meta}), tc.handle),
+        )
+        aconn.commit()
+    # a clean append still refuses — the stored cell trips the gate —
+    # and next= names the exact repair call
+    with pytest.raises(BadInput, match="predates the write gate") as e:
+        draft.edit(id=tc.dc, rows=[["GaN", 3.4, 800]])
+    assert e.value.next == (
+        f"edit(kind='draft', id={tc.dc!r}, cell={f'{rows[0]}.{cols[0]}'!r}, text='ab')"
+    )
+    # the named repair lands; the append it unblocked then lands too
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="ab")
+    assert _meta(hub, tc)["rows"][0][0] == "ab"
+    r = draft.edit(id=tc.dc, rows=[["GaN", 3.4, 800]])
+    assert "inserted 1 row(s)" in r.body
+    assert _meta(hub, tc)["rows"][-1] == ["GaN", 3.4, 800]
 
 
 # ── should-fix batch ─────────────────────────────────────────────────

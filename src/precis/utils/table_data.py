@@ -19,6 +19,7 @@ recipe (§2) and its sandbox (§3) are a later build step.
 from __future__ import annotations
 
 import json
+import keyword
 import math
 import re
 import secrets
@@ -77,6 +78,11 @@ _COLUMN_ALIGNS = frozenset({"l", "c", "r"})
 #: (:data:`precis.utils.table_toon._CTRL_RE`).
 TABLE_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+#: ``footer`` aggregate functions (spreadsheet-tables slice 2) — the spec
+#: ``{<col id-or-name>: <func>}`` is normalised to ``{col_id: func}``;
+#: evaluation lives in :mod:`precis.utils.table_formula`.
+FOOTER_FUNCS = frozenset({"sum", "mean", "median", "std", "min", "max", "count"})
+
 
 def mint_table_id() -> str:
     """A fresh 4-char table id: first char a letter other than ``p``, the
@@ -93,8 +99,10 @@ def is_table_id(s: Any) -> bool:
 
 def fresh_table_id(used: Iterable[str]) -> str:
     """Mint an id absent from ``used`` (live ids plus ``retired_ids``, so a
-    deleted id never reappears). Redraws on collision."""
-    pool = set(used)
+    deleted id never reappears). Redraws on collision. A ``set`` argument
+    is used directly, not copied — ``normalize_table`` mints once per
+    row/column, and a copy per mint is quadratic on large tables."""
+    pool = used if isinstance(used, set) else set(used)
     for _ in range(100):
         cand = mint_table_id()
         if cand not in pool:
@@ -150,6 +158,12 @@ def _normalize_column(col: Any, i: int) -> dict[str, Any]:
             f"table.columns[{i}].id {col['id']!r} is not a valid table id "
             f"(shape {TABLE_ID_PATTERN})",
             next=nxt,
+        )
+    if isinstance(col.get("id"), str) and keyword.iskeyword(col["id"]):
+        raise BadInput(
+            f"table.columns[{i}].id {col['id']!r} is a Python keyword — "
+            "formulas are stored id-side, so the id must parse as a name",
+            next="drop the id and one is minted, or pick a non-keyword id",
         )
     return {k: v for k, v in col.items() if v is not None or k == "key"}
 
@@ -308,6 +322,7 @@ def normalize_table(obj: Any) -> dict[str, Any]:
                 "character — only tab, newline and CR are allowed",
                 next="strip the control character from the id",
             )
+    retired_set = set(retired)
     used = set(retired)
     # Columns: supplied spec wins for the optional keys; names always come
     # from it when present and must match the header positionally (the
@@ -355,12 +370,58 @@ def normalize_table(obj: Any) -> dict[str, Any]:
                     next="drop the duplicate id and it re-mints",
                 )
             used.add(entry_id)
+    # Minted ids must avoid column *names* too: names and ids share the
+    # formula-resolver namespace, so a minted id that equals another
+    # column's name would bind formulas to the wrong column.
+    used.update(c["name"] for c in columns)
     for entry in [*columns, *rowmeta]:
         if "id" not in entry:
             entry["id"] = fresh_table_id(used)
             used.add(entry["id"])
     _fill_pos(columns)
     _fill_pos(rowmeta)
+
+    # Footer aggregates (spreadsheet-tables slice 2): caller writes
+    # ``footer={'line_cost': 'sum'}`` keyed by column name OR id; the
+    # stored form is keyed by column id (same discipline as formulas) so a
+    # rename rewrites nothing. ``{}`` clears the spec. Runs after id
+    # minting so a fresh column resolves too. Any caller-supplied
+    # ``footer_values`` is dropped — they're recomputed on write.
+    footer_raw = obj.get("footer")
+    footer: dict[str, str] = {}
+    if footer_raw is not None:
+        if not isinstance(footer_raw, dict):
+            raise BadInput(
+                "table.footer must be an object mapping a column to an "
+                f"aggregate, got {type(footer_raw).__name__}",
+                next="footer={'line_cost': 'sum'} — funcs "
+                + "|".join(sorted(FOOTER_FUNCS)),
+            )
+        for key, func in footer_raw.items():
+            if not isinstance(func, str) or func not in FOOTER_FUNCS:
+                raise BadInput(
+                    f"table.footer[{key!r}] {func!r} — must be one of "
+                    f"{sorted(FOOTER_FUNCS)}",
+                    next=f"footer={{'{key}': 'sum'}}",
+                )
+            col = next((c for c in columns if c.get("id") == key), None) or next(
+                (c for c in columns if c.get("name") == key), None
+            )
+            if col is None:
+                # A footer key naming a dropped (retired) column is
+                # pruned, not refused — a stored table re-normalised on
+                # a later edit can't let one stale key sink the write.
+                # An id/name that was never a column still refuses.
+                if str(key) in retired_set:
+                    continue
+                raise BadInput(
+                    f"table.footer[{key!r}]: no column id/name {key!r} in this table",
+                    options=[str(c.get("name") or c.get("id")) for c in columns[:20]],
+                    next="footer={'<column>': 'sum'} — funcs "
+                    + "|".join(sorted(FOOTER_FUNCS)),
+                )
+            footer[col["id"]] = func
+
     out: dict[str, Any] = {
         "header": header,
         "rows": rows,
@@ -369,6 +430,8 @@ def normalize_table(obj: Any) -> dict[str, Any]:
     }
     if retired:
         out["retired_ids"] = retired
+    if footer:
+        out["footer"] = footer
     return out
 
 
@@ -475,6 +538,28 @@ def set_cell(table: dict[str, Any], cell: str, value_str: str) -> dict[str, Any]
     row_i, col_i = resolve_cell(table, cell)
     rows[row_i][col_i] = infer_scalar(value_str)
     return normalize_table({**table, "rows": rows})
+
+
+def first_ctrl_cell(table: dict[str, Any]) -> tuple[str, str, str] | None:
+    """The first body cell carrying a control character, as
+    ``(row_id, col_id, raw)`` — the ids a ``cell=`` repair needs. Rows
+    are scanned in order, cells left to right (the same order
+    :func:`normalize_table` reports). ``None`` when no cell matches or
+    the table lacks rowmeta/column ids — a pre-schema table can't be
+    cell-addressed, so there's nothing actionable to name."""
+    rowmeta = table.get("rowmeta") or []
+    columns = table.get("columns") or []
+    for i, row in enumerate(table.get("rows") or []):
+        rid = rowmeta[i].get("id") if i < len(rowmeta) else None
+        if not rid:
+            continue
+        for j, c in enumerate(row):
+            if not isinstance(c, str) or not TABLE_CTRL_RE.search(c):
+                continue
+            cid = columns[j].get("id") if j < len(columns) else None
+            if cid:
+                return str(rid), str(cid), c
+    return None
 
 
 def find_replace_cells(

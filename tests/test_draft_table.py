@@ -319,6 +319,84 @@ def test_fresh_table_id_never_reuses() -> None:
         td.mint_table_id = old
 
 
+def test_keyword_column_id_refused() -> None:
+    """A caller-supplied column id that is a Python keyword would land in
+    stored formulas verbatim and blow up ast.parse — refused at
+    normalize."""
+    for kid in ("break", "assert"):
+        with pytest.raises(BadInput, match="keyword"):
+            normalize_table(
+                {
+                    "columns": [{"name": "x", "id": kid}],
+                    "rows": [[1]],
+                }
+            )
+
+
+def test_footer_non_string_func_refused() -> None:
+    """footer={'a': ['sum']} must be a BadInput with next=, not a bare
+    TypeError on the unhashable list."""
+    with pytest.raises(BadInput, match="must be one of") as e:
+        normalize_table({"header": ["a"], "rows": [[1]], "footer": {"a": ["sum"]}})
+    assert e.value.next
+
+
+def test_footer_key_of_retired_column_is_pruned() -> None:
+    """A stored footer spec keyed by a dropped (retired) column id is
+    pruned on re-normalise — the aggregate can't compute, and one stale
+    key must not sink an unrelated later write. A key that was never a
+    column still refuses."""
+    t = normalize_table(
+        {
+            "columns": [{"name": "a"}, {"name": "b"}],
+            "rows": [[1, 2]],
+            "footer": {"b": "sum"},
+        }
+    )
+    b_id = t["columns"][1]["id"]
+    again = normalize_table(
+        {
+            "columns": t["columns"][:1],
+            "rows": [[1]],
+            "retired_ids": [b_id],
+            "footer": t["footer"],
+        }
+    )
+    assert "footer" not in again
+    with pytest.raises(BadInput, match="no column id/name"):
+        normalize_table({"header": ["a"], "rows": [[1]], "footer": {"nope": "sum"}})
+
+
+def test_minted_ids_avoid_column_names() -> None:
+    """A minted id equal to another column's *name* would bind formulas to
+    the wrong column (shared resolver namespace) — the mint pool includes
+    names."""
+    import precis.utils.table_data as td
+
+    cols = [{"name": "zzzz"}, {"name": "b"}]
+    draws = iter(["zzzz", "yyyy", "wwww", "xxxx"])
+    old = td.mint_table_id
+    td.mint_table_id = lambda: next(draws)
+    try:
+        t = normalize_table({"columns": cols, "rows": [[1, 2]]})
+    finally:
+        td.mint_table_id = old
+    # zzzz is taken as a NAME — the mint skips it for the first column
+    assert t["columns"][0]["id"] == "yyyy"
+    assert t["columns"][1]["id"] == "wwww"
+
+
+def test_normalize_20k_rows_is_linear_enough() -> None:
+    """The used-id set is kept, not copied per mint — 20k rows normalize
+    well under 1 s (the old per-mint copy made this quadratic)."""
+    import time
+
+    t0 = time.monotonic()
+    t = normalize_table({"header": ["a"], "rows": [[i] for i in range(20_000)]})
+    assert time.monotonic() - t0 < 1.0
+    assert len(t["rowmeta"]) == 20_000
+
+
 def test_resolve_cell_id_address() -> None:
     table = normalize_table({"header": ["a", "b"], "rows": [[1, 2], [3, 4], [5, 6]]})
     rid = table["rowmeta"][1]["id"]

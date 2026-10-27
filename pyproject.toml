@@ -246,6 +246,7 @@ dependencies = [
     "python-epo-ops-client>=4.0",  # patent kind — EPO OPS (OAuth2 fair-use)
     "packaging>=24",
     "docstring-parser>=0.18.0",
+    "simpleeval>=1.0.8",
 ]
 
 [project.urls]
@@ -1224,6 +1225,7 @@ module = [
     "sentence_transformers.*",
     "shapely",
     "shapely.*",
+    "simpleeval",  # core dep (utils/table_formula.py); no py.typed marker
     "sklearn.*",
     "slack_bolt",
     "slack_bolt.*",

@@ -66,6 +66,7 @@ from precis.utils.table_data import (
     is_table_id,
     normalize_table,
 )
+from precis.utils.table_formula import compile_formula, formula_name_form
 
 #: hex chars of the table content hash shown on reads/writes.
 _HASH_LEN = 12
@@ -143,6 +144,15 @@ def _unesc(s: str) -> str:
 _ID_PREFIX_RE = re.compile(r"^([a-hjkmnq-tv-z][0-9a-hjkmnp-tv-z]{3,7}):(.*)$", re.S)
 _FROM_TAIL_RE = re.compile(r" <([^<>]*)>$")
 _UNIT_TAIL_RE = re.compile(r" \[([^\[\]]*)\]$")
+
+
+def _header_col(col: dict[str, Any], columns: list[dict[str, Any]]) -> dict[str, Any]:
+    """Display form of a column for a TOON header: a stored formula is
+    id-form — the view shows the name form the caller wrote
+    (``=unit_price*qty``, not ``=h2r8*q0wc``)."""
+    if not col.get("formula"):
+        return col
+    return {**col, "formula": formula_name_form(str(col["formula"]), columns)}
 
 
 def header_cell(col: dict[str, Any]) -> str:
@@ -457,7 +467,7 @@ def table_toon(
     if where is not None:
         pred = compile_where(str(where), columns)
         row_idx = [i for i in row_idx if i < len(data) and pred(data[i])]
-    head = ["#"] + [header_cell(columns[i]) for i in col_idx]
+    head = ["#"] + [header_cell(_header_col(columns[i], columns)) for i in col_idx]
     lines = ["{" + "\t".join(head) + "}"]
     for ri in row_idx:
         rid = str(rowmeta[ri].get("id") or "")
@@ -703,10 +713,27 @@ def _resolve_patch_col(
                 next=nxt,
             )
     for k in ("unit", "from", "formula"):
-        if spec.get(k) is not None and (spec[k] or None) != (col.get(k) or None):
+        spec_v = spec.get(k)
+        if spec_v is None:
+            continue
+        stored_v = col.get(k)
+        if k == "formula":
+            # The header renders the name form — compare semantically:
+            # the declared text compiles to the stored id form (or is it).
+            try:
+                same = compile_formula(str(spec_v), columns) == stored_v
+            except BadInput:
+                same = False
+            stored_show = (
+                formula_name_form(str(stored_v), columns) if stored_v else stored_v
+            )
+        else:
+            same = (spec_v or None) == (stored_v or None)
+            stored_show = stored_v
+        if not same:
             raise BadInput(
-                f"patch declares {k}={spec[k]!r} on column "
-                f"{col.get('name')!r} — stored is {col.get(k)!r}",
+                f"patch declares {k}={spec_v!r} on column "
+                f"{col.get('name')!r} — stored is {stored_show!r}",
                 next=nxt,
             )
     if col.get("formula") or col.get("from"):
@@ -909,18 +936,28 @@ def table_from_toon(cur: dict[str, Any], text: str) -> dict[str, Any]:
             stored = by_id.get(spec["id"])
         if stored is None and spec.get("name"):
             stored = by_name.get(spec["name"].strip())
-        if spec.get("formula") is not None and spec["formula"] != (stored or {}).get(
-            "formula"
-        ):
-            # A header formula byte-identical to the stored one is a
-            # no-op echo (read-then-replace on a formula table) — kept.
-            # A changed or new formula can't go through this channel:
-            # the formula evaluator isn't part of this slice.
-            raise BadInput(
-                "toon= headers can't write a column formula — the "
-                "formula evaluator isn't part of this slice",
-                next="set formulas via columns= until slice 2 lands",
-            )
+        if spec.get("formula") is not None:
+            # A formula column re-declared with its stored formula — the
+            # ``=…`` header the toon view emits, in name form — is a
+            # verbatim round-trip, not a write: keep the column. Any
+            # OTHER formula refuses; toon= is not the formula channel.
+            keeps = False
+            if stored is not None and stored.get("formula"):
+                try:
+                    keeps = (
+                        compile_formula(str(spec["formula"]), old_cols)
+                        == (stored["formula"])
+                    )
+                except BadInput:
+                    keeps = False
+            if not keeps:
+                raise BadInput(
+                    "toon= headers can't write a column formula",
+                    next="edit(kind='draft', id='dc<id>', add_column="
+                    "{'name': 'total', 'formula': 'a*2'}) for a new "
+                    "column, or table={'columns': [...]} to change an "
+                    "existing one (edit has no columns= kwarg)",
+                )
         col: dict[str, Any] = dict(stored or {})
         if spec.get("id") is not None:
             col["id"] = spec["id"]
@@ -933,7 +970,10 @@ def table_from_toon(cur: dict[str, Any], text: str) -> dict[str, Any]:
             )
         col["name"] = name
         for k in ("unit", "from", "formula"):
-            if spec.get(k) is not None:
+            # ``formula`` is skipped: a declared one only survives the
+            # match check above, and the stored id-form (already copied
+            # from ``stored``) is the canonical text.
+            if spec.get(k) is not None and k != "formula":
                 col[k] = spec[k]
         new_cols.append(col)
         if col.get("id"):
@@ -1178,15 +1218,19 @@ def op_drop_column(table: dict[str, Any], ref: Any) -> dict[str, Any]:
     rows = [[c for j, c in enumerate(row) if j != i] for row in table.get("rows") or []]
     _strip_pos(columns)
     retired = sorted({str(x) for x in table.get("retired_ids") or []} | {col["id"]})
-    return normalize_table(
-        {
-            **table,
-            "header": [c.get("name") for c in columns],
-            "columns": columns,
-            "rows": rows,
-            "retired_ids": retired,
-        }
-    )
+    out = {
+        **table,
+        "header": [c.get("name") for c in columns],
+        "columns": columns,
+        "rows": rows,
+        "retired_ids": retired,
+    }
+    if table.get("footer"):
+        # The dropped column's footer spec goes with it — an aggregate
+        # over a gone column can't recompute (and would refuse in
+        # normalise below anyway).
+        out["footer"] = {k: v for k, v in table["footer"].items() if k != col["id"]}
+    return normalize_table(out)
 
 
 def op_rename_column(table: dict[str, Any], spec: Any) -> dict[str, Any]:

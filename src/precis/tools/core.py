@@ -1275,6 +1275,15 @@ def put(
     table: str | dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
+    # draft table, split-arg form of table={…} (spreadsheet-tables 2):
+    # columns=[{'name': 'qty', 'type'?, 'unit'?}, {'name': 'cost',
+    # 'formula': 'qty*price'}] carries the column schema (formula= is a
+    # per-row expression over column names); rows= is the grid; footer=
+    # {'cost': 'sum'|'mean'|'median'|'std'|'min'|'max'|'count'} declares
+    # footer aggregates. A given arg overrides the same-named table= key.
+    columns: list[dict[str, Any]] | None = None,
+    rows: list[list[Any]] | None = None,
+    footer: dict[str, Any] | None = None,
     # draft figure (chunk_kind='figure'): image=<base64> for an uploaded image,
     # or render=<python> + plots=[dc<id>] for a graph computed from
     # data chunks — caption= is the legend either way.
@@ -1533,6 +1542,9 @@ def put(
                 "table": table,
                 "caption": caption,
                 "regen": regen,
+                "columns": columns,
+                "rows": rows,
+                "footer": footer,
                 "render": render,
                 "plots": plots,
                 "author": author,
@@ -1744,6 +1756,11 @@ def edit(
     # handler and is refused there with the id-form next= — a str-only
     # schema would fail pydantic at the boundary with a bare type error.
     cell: str | dict[str, Any] | None = None,
+    # draft table footer aggregates (spreadsheet-tables 2):
+    # footer={'cost': 'sum'|'mean'|'median'|'std'|'min'|'max'|'count'}
+    # sets/replaces the aggregate spec ({} clears); recomputed on every
+    # write into meta.table.footer_values. Table chunks only.
+    footer: dict[str, Any] | None = None,
     # draft review ledger (paper-writing pipeline rung 3, see
     # precis-draft-help): review='human'|'cites'|'flow'|… records that
     # checker's approval of this chunk at its current content_sha;
@@ -1910,6 +1927,7 @@ def edit(
         "caption": caption,
         "regen": regen,
         "cell": cell,
+        "footer": footer,
         "review": review,
         "verdict": verdict,
         "dedup": dedup,

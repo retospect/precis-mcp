@@ -72,8 +72,10 @@ from precis.utils.link_tag_ops import (
 )
 from precis.utils.record_cite import record_cite_handles, record_type_of
 from precis.utils.table_data import (
+    TABLE_CTRL_RE,
     cell_next_hint,
     find_replace_cells,
+    first_ctrl_cell,
     normalize_table,
     parse_markdown_table,
     patch_latex_table_text,
@@ -81,6 +83,11 @@ from precis.utils.table_data import (
     table_ids_line,
     table_payload,
     table_to_markdown,
+)
+from precis.utils.table_formula import (
+    evaluate_table,
+    table_footer_line,
+    table_stats,
 )
 from precis.utils.table_toon import (
     REPLY_ROW_CAP,
@@ -154,10 +161,12 @@ def _chunk_display_text(chunk: Any) -> str:
     lines = text.rstrip("\n").split("\n")
     if lines[-1].startswith("ids: "):
         text = "\n".join(lines[:-1])
-    ids = table_ids_line(tbl)
-    if ids is None:
+    tail = "\n".join(
+        line for line in (table_ids_line(tbl), table_footer_line(tbl)) if line
+    )
+    if not tail:
         return text
-    return f"{text}\n{ids}" if text else ids
+    return f"{text}\n{tail}" if text else tail
 
 
 def _landed_sha_line(text: str | None) -> str:
@@ -403,6 +412,30 @@ def _coerce_word_target(
             next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
         )
     return (lo, hi)
+
+
+def _stored_ctrl_hint(exc: BadInput, cur_table: Any, dc: str) -> BadInput:
+    """Re-aim a control-character refusal at its stored cause. Every
+    structure op re-normalises the stored grid together with the
+    incoming write, so a cell that landed before the gate existed
+    refuses the whole edit — but "strip the control character" is no
+    answer when the offender isn't in the caller's input. When the
+    stored table holds such a cell, return a refusal that says the
+    stored value predates the gate and whose ``next=`` spells out the
+    exact ``cell=`` repair; otherwise return ``exc`` unchanged."""
+    if "control character" not in str(exc.cause) or not isinstance(cur_table, dict):
+        return exc
+    hit = first_ctrl_cell(cur_table)
+    if hit is None:
+        return exc
+    row_id, col_id, raw = hit
+    cleaned = TABLE_CTRL_RE.sub("", raw)
+    return BadInput(
+        f"stored cell {row_id}.{col_id} {raw!r} contains a control "
+        "character — the stored value predates the write gate",
+        next=f"edit(kind='draft', id={dc!r}, "
+        f"cell={f'{row_id}.{col_id}'!r}, text={cleaned!r})",
+    )
 
 
 class DraftHandler(Handler):
@@ -858,13 +891,15 @@ class DraftHandler(Handler):
                 # (``args={'cols','rows','where'}`` filter it); 'table' is
                 # the same selection as the plain GFM render.
                 return self._render_table_toon(s, view, args)
+            if view == "stats":  # per-column aggregates, computed on read
+                return self._render_table_stats(s)
             if view is not None:
                 # No silent degrade to the lone-chunk render (was the bug —
                 # an unrecognized view fell through here unnoticed).
                 raise BadInput(
                     f"unknown draft chunk view {view!r}",
                     next="view ∈ backfill|toc|wordcount|review-diff|history|"
-                    "proposals|toon|table, or a "
+                    "proposals|stats|toon|table, or a "
                     f"focus-ladder label {'|'.join(EYE_LADDER)}",
                 )
             return self._render_chunk(s)
@@ -930,7 +965,7 @@ class DraftHandler(Handler):
             # outline footer (below) shows the same data truncated to 8
             # entries per list.
             return self._render_hygiene(s, ref)
-        if view in ("review-diff", "history", "proposals"):
+        if view in ("review-diff", "history", "proposals", "stats"):
             raise BadInput(
                 f"{view} targets a chunk (dc<id>), not a whole draft",
                 next="point it at a chunk handle: "
@@ -1423,6 +1458,9 @@ class DraftHandler(Handler):
         table: str | dict[str, Any] | None = None,
         caption: str | None = None,
         regen: dict[str, Any] | None = None,
+        columns: list[dict[str, Any]] | None = None,
+        rows: list[list[Any]] | None = None,
+        footer: dict[str, Any] | None = None,
         render: str | None = None,
         plots: list[str] | None = None,
         voice: str | None = None,
@@ -1523,6 +1561,9 @@ class DraftHandler(Handler):
                     "table": table,
                     "caption": caption,
                     "regen": regen,
+                    "columns": columns,
+                    "rows": rows,
+                    "footer": footer,
                     "image": image,
                     "mime": mime,
                     "origin": origin,
@@ -1575,10 +1616,33 @@ class DraftHandler(Handler):
                 at=at,
             )
 
-        if chunk_kind is not None or at is not None:
+        # columns=/rows=/footer= (spreadsheet-tables 2) are the split-arg
+        # alternative to table={…} for a table chunk — refuse them pointed
+        # at any other chunk_kind rather than dropping them.
+        if chunk_kind not in (None, "table") and (
+            columns is not None or rows is not None or footer is not None
+        ):
+            raise BadInput(
+                f"columns=/rows=/footer= are table-chunk args, got "
+                f"chunk_kind={chunk_kind!r}",
+                next="put(kind='draft', id='<slug>', chunk_kind='table', "
+                "columns=[{'name': 'qty'}, {'name': 'cost', "
+                "'formula': 'qty*price'}], rows=[[2, 0.5]])",
+            )
+        if (
+            chunk_kind is not None
+            or at is not None
+            or (columns is not None or rows is not None or footer is not None)
+        ):
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
             self._refuse_if_machine_owned(ref.id)
-            if (chunk_kind or "paragraph") == "table" or table is not None:
+            if (
+                (chunk_kind or "paragraph") == "table"
+                or table is not None
+                or columns is not None
+                or rows is not None
+                or footer is not None
+            ):
                 return self._put_table(
                     slug,
                     ref,
@@ -1587,6 +1651,9 @@ class DraftHandler(Handler):
                     regen=regen,
                     at=at,
                     meta=meta,
+                    columns=columns,
+                    rows=rows,
+                    footer=footer,
                 )
             if text is None or not str(text).strip():
                 raise BadInput(
@@ -2327,6 +2394,7 @@ class DraftHandler(Handler):
         caption: str | None = None,
         regen: dict[str, Any] | None = None,
         cell: str | dict[str, Any] | None = None,
+        footer: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
         voice: str | None = None,
         lang: str | None = None,
@@ -2450,6 +2518,7 @@ class DraftHandler(Handler):
                     "at": at,
                     "drop_rows": drop_rows,
                     "sort": sort,
+                    "footer": footer,
                     "meta": meta,
                     "voice": voice,
                     "lang": lang,
@@ -2763,6 +2832,7 @@ class DraftHandler(Handler):
             is_table
             or table is not None
             or regen is not None
+            or footer is not None
             or patch is not None
             or toon is not None
             or base is not None
@@ -2785,6 +2855,7 @@ class DraftHandler(Handler):
                 find=find,
                 text=text,
                 sub=sub,
+                footer=footer,
                 base_sha=base_sha,
                 dry_mode=dry_mode,
                 mode=mode,
@@ -3762,21 +3833,53 @@ class DraftHandler(Handler):
         regen: dict[str, Any] | None,
         at: dict[str, Any] | None,
         meta: dict[str, Any] | None,
+        columns: list[dict[str, Any]] | None = None,
+        rows: list[list[Any]] | None = None,
+        footer: dict[str, Any] | None = None,
     ) -> Response:
         """Add a ``chunk_kind='table'`` data chunk: canonical ``meta.table``
         + derived markdown ``text``. ``meta.regen`` (provenance/how-to-rebuild)
         and ``meta.caption`` (legend) are stamped verbatim — both inert, no
-        execution."""
-        if table is None:
+        execution.
+
+        ``columns=``/``rows=``/``footer=`` (spreadsheet-tables 2) are the
+        split-arg form of ``table={…}`` — a column carries ``formula=``
+        (per-row expression over column names, stored id-side) and
+        ``footer={'col': 'sum'|…}`` declares aggregates; both are evaluated
+        into the stored grid by :func:`evaluate_table` on this write."""
+        tobj: Any = table
+        if tobj is None and columns is None and rows is None and footer is None:
             raise BadInput(
-                "a table chunk requires table={header, rows}",
+                "a table chunk requires table={header, rows} or columns=+rows=",
                 next=(
                     f"put(kind='draft', id={slug!r}, chunk_kind='table', "
                     "table={'header': ['x','y'], 'rows': [[1,2],[3,4]]}, "
                     "caption='…', at={'last': True})"
                 ),
             )
-        norm = normalize_table(table)
+        if isinstance(tobj, str):
+            try:
+                tobj = json.loads(tobj)
+            except json.JSONDecodeError:
+                pass  # normalise raises the honest error
+        if tobj is None:
+            tobj = {}
+        if isinstance(tobj, dict):
+            # Split args compose with a table= dict — a given arg
+            # overrides the same-named dict key.
+            if columns is not None:
+                tobj = {**tobj, "columns": columns}
+            if rows is not None:
+                tobj = {**tobj, "rows": rows}
+            if footer is not None:
+                tobj = {**tobj, "footer": footer}
+        norm = normalize_table(tobj)
+        norm, eval_notes = evaluate_table(
+            norm,
+            # Every formula here is caller-supplied THIS write — a name
+            # that resolves to no column refuses (a typo must not land).
+            declared={c["id"] for c in norm.get("columns") or [] if c.get("formula")},
+        )
         cap = caption.strip() if caption and caption.strip() else None
         md = table_to_markdown(norm, caption=cap)
         chunk_meta = dict(meta or {})
@@ -3796,13 +3899,20 @@ class DraftHandler(Handler):
         self.sync_draft_links(ref.id)
         self._attribute_touch([c.chunk_id for c in chunks])
         c = chunks[0]
-        rows, cols = len(norm["rows"]), len(norm["header"])
+        n_rows, n_cols = len(norm["rows"]), len(norm["header"])
+        eval_tail = (
+            "; "
+            + "; ".join(eval_notes[:8])
+            + (f" (+{len(eval_notes) - 8} more)" if len(eval_notes) > 8 else "")
+            if eval_notes
+            else ""
+        )
         return Response(
             body=(
-                f"added table {c.dc} to {slug} ({rows} row"
-                f"{'' if rows == 1 else 's'} × {cols} col"
-                f"{'' if cols == 1 else 's'}); text is the derived markdown — "
-                f"edit table=/caption=/regen=, not text="
+                f"added table {c.dc} to {slug} ({n_rows} row"
+                f"{'' if n_rows == 1 else 's'} × {n_cols} col"
+                f"{'' if n_cols == 1 else 's'}); text is the derived markdown — "
+                f"edit table=/caption=/regen=, not text={eval_tail}"
             )
         )
 
@@ -3818,6 +3928,7 @@ class DraftHandler(Handler):
         find: str | None = None,
         text: str | None = None,
         sub: dict[str, Any] | str | None = None,
+        footer: dict[str, Any] | None = None,
         base_sha: str | None,
         dry_mode: str | None = None,
         mode: str | None = None,
@@ -3869,8 +3980,8 @@ class DraftHandler(Handler):
         unconditionally)."""
         if chunk is None or chunk.chunk_kind != "table":
             raise BadInput(
-                "table=/cell=/find=/sub=/caption=/regen= apply only to a "
-                "chunk_kind='table' chunk",
+                "table=/cell=/find=/sub=/caption=/regen=/footer= apply only "
+                "to a chunk_kind='table' chunk",
                 next="edit(kind='draft', id='dc<chunk_id>', table={…})",
             )
         # Exactly one *mutation selector* per edit — table=/cell=/find=/sub=
@@ -3880,7 +3991,9 @@ class DraftHandler(Handler):
         # caller who passes two believes both applied. caption=/regen= are
         # NOT selectors — they're metadata that may legitimately ride along
         # with table= (set data + legend together); text= is the operand for
-        # cell=/find=, not a selector itself.
+        # cell=/find=, not a selector itself. footer= (spreadsheet-tables 2,
+        # aggregate spec {col: func}) IS a selector — it rewrites the
+        # table's schema + recomputed footer_values on its own.
         _selectors = [
             name
             for name, val in (
@@ -3888,6 +4001,7 @@ class DraftHandler(Handler):
                 ("cell", cell),
                 ("find", find),
                 ("sub", sub),
+                ("footer", footer),
                 ("patch", patch),
                 ("toon", toon),
                 ("add_column", add_column),
@@ -3904,7 +4018,7 @@ class DraftHandler(Handler):
         if len(_selectors) > 1:
             raise BadInput(
                 f"conflicting table edit selectors: {', '.join(s + '=' for s in _selectors)} "
-                "— pass only one of table=/cell=/find=/sub=/patch=/toon= "
+                "— pass only one of table=/cell=/find=/sub=/footer=/patch=/toon= "
                 "or a structure op per edit",
                 next=f"edit(kind='draft', id={chunk.dc!r}, {_selectors[0]}=…)  "
                 "# one selector at a time",
@@ -4231,6 +4345,11 @@ class DraftHandler(Handler):
         op_reply: str | None = None
         reply_rows: list[str] | None = None
         reply_cols: list[str] | None = None
+        # Column ids whose formula the caller supplied THIS write —
+        # compiled strict by evaluate_table (a new/changed formula
+        # naming no column refuses; only a stored formula may decay to
+        # #REF when its column is dropped by a later edit).
+        declared: set[str] = set()
         if table is not None:
             tobj: Any = table
             if isinstance(tobj, str):
@@ -4279,6 +4398,9 @@ class DraftHandler(Handler):
                     ),
                 }
             norm = normalize_table(tobj)
+            declared.update(
+                c["id"] for c in norm.get("columns") or [] if c.get("formula")
+            )
         elif cell is not None:
             if text is None:
                 raise BadInput(
@@ -4309,7 +4431,7 @@ class DraftHandler(Handler):
                         next=exc.next,
                         options=exc.options,
                     ) from None
-                raise
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
         elif find is not None or sub is not None:
             if not cur_table:
                 raise no_data_err
@@ -4337,9 +4459,12 @@ class DraftHandler(Handler):
                 # inline group; 'm' (multiline) is a no-op on a single cell.
                 prefix = "".join(f"(?{c})" for c in flags if c in "is")
                 pattern, replacement, is_regex = prefix + f, r, True
-            norm, replace_count = find_replace_cells(
-                cur_table, pattern, replacement, regex=is_regex
-            )
+            try:
+                norm, replace_count = find_replace_cells(
+                    cur_table, pattern, replacement, regex=is_regex
+                )
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             if replace_count == 0:
                 mint_note = " — the table was left unchanged."
                 if minted_legacy and dry_mode is None:
@@ -4360,11 +4485,14 @@ class DraftHandler(Handler):
             # patch on any unmatched row, 'upsert' appends them.
             if not cur_table or not cur_table.get("columns"):
                 raise no_data_err
-            norm, patch_report = apply_patch(
-                cur_table,
-                str(patch),
-                mode="upsert" if mode == "upsert" else "update",
-            )
+            try:
+                norm, patch_report = apply_patch(
+                    cur_table,
+                    str(patch),
+                    mode="upsert" if mode == "upsert" else "update",
+                )
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = (
                 f"patched table {chunk.dc}: {patch_report['changed_cells']} "
                 f"cell(s) in {len(patch_report['changed_row_ids'])} row(s)"
@@ -4380,27 +4508,56 @@ class DraftHandler(Handler):
         elif toon is not None:
             # §9: full replace — calculated/pulled columns may be omitted
             # (they persist); '#' cells carry the row ids to keep.
-            norm = table_from_toon(
-                cur_table if isinstance(cur_table, dict) else {}, str(toon)
-            )
+            try:
+                norm = table_from_toon(
+                    cur_table if isinstance(cur_table, dict) else {}, str(toon)
+                )
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = f"replaced table {chunk.dc}"
         elif add_column is not None:
             if not cur_table:
                 raise no_data_err
             old_ids = {c.get("id") for c in cur_table.get("columns") or []}
-            norm = op_add_column(cur_table, add_column, at)
+            try:
+                norm = op_add_column(cur_table, add_column, at)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             newc = next(c for c in norm["columns"] if c["id"] not in old_ids)
             op_reply = f"added column {newc['name']} ({newc['id']})"
             reply_cols = [newc["id"]]
+            if newc.get("formula"):
+                declared.add(newc["id"])
         elif drop_column is not None:
             if not cur_table:
                 raise no_data_err
-            norm = op_drop_column(cur_table, drop_column)
+            dropped_col = next(
+                (
+                    c
+                    for c in cur_table.get("columns") or []
+                    if c.get("id") == drop_column or c.get("name") == drop_column
+                ),
+                None,
+            )
+            try:
+                norm = op_drop_column(cur_table, drop_column)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = f"dropped column {drop_column}"
+            dropped_footer = (cur_table.get("footer") or {}).get(
+                (dropped_col or {}).get("id")
+            )
+            if dropped_footer:
+                # The column's footer aggregate went with it — say so
+                # rather than silently losing the spec.
+                op_reply += f"; its footer {dropped_footer}() went with it"
         elif rename_column is not None:
             if not cur_table:
                 raise no_data_err
-            norm = op_rename_column(cur_table, rename_column)
+            try:
+                norm = op_rename_column(cur_table, rename_column)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             renamed = next(
                 (
                     c
@@ -4421,7 +4578,10 @@ class DraftHandler(Handler):
         elif move_column is not None:
             if not cur_table:
                 raise no_data_err
-            norm = op_move_column(cur_table, move_column, at)
+            try:
+                norm = op_move_column(cur_table, move_column, at)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = f"moved column {move_column}"
             cid = next(
                 c["id"]
@@ -4432,13 +4592,19 @@ class DraftHandler(Handler):
         elif move_row is not None:
             if not cur_table:
                 raise no_data_err
-            norm = op_move_row(cur_table, move_row, at)
+            try:
+                norm = op_move_row(cur_table, move_row, at)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = f"moved row {move_row}"
             reply_rows = [str(move_row)]
         elif rows is not None:
             if not cur_table:
                 raise no_data_err
-            norm = op_insert_rows(cur_table, rows, at)
+            try:
+                norm = op_insert_rows(cur_table, rows, at)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             added = [
                 r[1:] for r in table_diff(cur_table, norm)["rows"] if r.startswith("+")
             ]
@@ -4447,7 +4613,10 @@ class DraftHandler(Handler):
         elif drop_rows is not None:
             if not cur_table:
                 raise no_data_err
-            norm = op_drop_rows(cur_table, drop_rows)
+            try:
+                norm = op_drop_rows(cur_table, drop_rows)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             n_dropped = sum(
                 1 for r in table_diff(cur_table, norm)["rows"] if r.startswith("-")
             )
@@ -4455,19 +4624,47 @@ class DraftHandler(Handler):
         elif sort is not None:
             if not cur_table:
                 raise no_data_err
-            norm = op_sort_rows(cur_table, sort)
+            try:
+                norm = op_sort_rows(cur_table, sort)
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = f"sorted rows by {sort!r}"
+        elif footer is not None:
+            # footer= (spreadsheet-tables 2): set/replace/clear the
+            # aggregate spec on the live grid — ``footer={}`` clears.
+            if not cur_table:
+                raise no_data_err
+            try:
+                norm = normalize_table({**cur_table, "footer": footer})
+            except BadInput as exc:
+                raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
         elif caption is not None or regen is not None:
             norm = cur_table or {}
         else:
             raise BadInput(
                 "a table chunk's text is derived from its data — pass "
-                "find=, cell=, table=, patch=, toon=, a structure op, or "
-                "caption= (not text=)",
+                "find=, cell=, table=, footer=, patch=, toon=, a structure "
+                "op, or caption= (not text=)",
                 next=f"edit(kind='draft', id={chunk.dc!r}, find='old', text='new')",
             )
         if not norm:
             raise no_data_err
+        # Spreadsheet-tables 2 — every write re-evaluates formula columns
+        # (dependency order; stored in id form) and recomputes the footer
+        # aggregates into footer_values. A declaration-time fault (bad
+        # formula syntax, over-budget) refuses; a per-row runtime fault —
+        # including a dependency cycle (#CYCLE) or a deleted-column
+        # reference (#REF) — is stored as an error marker and named in
+        # the reply. Runs BEFORE the base/diff/hash block so the journal
+        # and content hash cover the computed cells.
+        norm, eval_notes = evaluate_table(norm, declared=declared)
+        eval_tail = (
+            "; eval: "
+            + "; ".join(eval_notes[:8])
+            + (f" (+{len(eval_notes) - 8} more)" if len(eval_notes) > 8 else "")
+            if eval_notes
+            else ""
+        )
         # Spreadsheet-tables 1b: ``base=<hash>`` optimistic guard over the
         # table content (not the chunk-text ``base_sha``) + the bounded
         # ``recent`` journal the guard diffs against. ``touched`` is this
@@ -4533,6 +4730,7 @@ class DraftHandler(Handler):
                         rows=reply_rows,
                         cols=reply_cols,
                         new_hash=new_hash,
+                        eval_tail=eval_tail,
                     )
                 )
             # Same diff/full rendering as the plain text-edit paths — write
@@ -4568,6 +4766,7 @@ class DraftHandler(Handler):
                     rows=reply_rows,
                     cols=reply_cols,
                     new_hash=new_hash,
+                    eval_tail=eval_tail,
                 )
                 + label_loss_hint
             )
@@ -4575,7 +4774,7 @@ class DraftHandler(Handler):
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
             body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
-            f"markdown re-derived{label_loss_hint}"
+            f"markdown re-derived{eval_tail}{label_loss_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
         )
 
@@ -4588,12 +4787,16 @@ class DraftHandler(Handler):
         rows: list[str] | None,
         cols: list[str] | None,
         new_hash: str,
+        eval_tail: str = "",
     ) -> str:
         """The spec-§9 write reply for the 1b ops: the one-line verb
         summary + ``hash:`` (the ``base=`` token for a chained edit) +
         the new TOON — filtered to the touched part once the table is
-        past the large-table threshold."""
-        body = f"{op_reply}; hash: {new_hash}"
+        past the large-table threshold. ``eval_tail`` carries the
+        spreadsheet-tables 2 formula warnings (#REF/#CYCLE) so a
+        structure op's reply can't drop them (a drop_column that
+        orphans a formula must still say so)."""
+        body = f"{op_reply}; hash: {new_hash}{eval_tail}"
         n = len(norm.get("rows") or [])
         if rows is None and cols is None and n > REPLY_ROW_CAP:
             sel = [rm["id"] for rm in (norm.get("rowmeta") or [])[:20]]
@@ -5681,6 +5884,42 @@ class DraftHandler(Handler):
             + f"\nhash: {h}"
         )
         return Response(body=body)
+
+    def _render_table_stats(self, handle: str) -> Response:
+        """``get(id='dc<id>', view='stats')`` (spreadsheet-tables 2) —
+        per-column n / mean / std / range / empties over the table's stored
+        (already evaluated) values, computed on read, never stored."""
+        chunk = self.store.drafts.get_draft_chunk(handle)
+        if chunk is None or chunk.retired:
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists "
+                "live chunk handles",
+            )
+        if chunk.chunk_kind != "table":
+            raise BadInput(
+                f"view='stats' applies to a chunk_kind='table' chunk — "
+                f"{chunk.dc} is {chunk.chunk_kind!r}",
+                next=f"get(kind='draft', id={chunk.dc!r})",
+            )
+        tbl = (chunk.meta or {}).get("table")
+        if not isinstance(tbl, dict):
+            # A pre-schema / recovered-LaTeX table still stats — read-time
+            # normalisation mints nothing here (in-memory only).
+            recovered = table_payload(chunk.meta or {}, chunk.text)
+            if not recovered or not recovered.get("header"):
+                raise BadInput(
+                    f"{chunk.dc} has no recoverable table grid",
+                    next=f"get(kind='draft', id={chunk.dc!r})",
+                )
+            tbl = normalize_table(
+                {"header": recovered["header"], "rows": recovered["rows"]}
+            )
+        head = f"{chunk.dc}  stats ({len(tbl.get('rows') or [])} rows)\n"
+        foot = table_footer_line(tbl)
+        return Response(
+            body=head + "\n".join(table_stats(tbl)) + (f"\n{foot}" if foot else "")
+        )
 
     def _render_chunk(self, handle: str) -> Response:
         # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``

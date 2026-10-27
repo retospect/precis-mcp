@@ -58,20 +58,27 @@ def key_between(a: str | None, b: str | None) -> str:
 
 def even_keys(n: int) -> list[str]:
     """``n`` evenly-spaced keys in ascending order — for an initial run or
-    a per-sibling-group rebalance. Single base-62 digits when ``n`` fits.
+    a per-sibling-group rebalance. Single base-62 digits when ``n`` fits;
+    otherwise fixed-width base-62 numerals (same width throughout, so
+    lexicographic order IS numeric order) spread over ``[0, 62**w)``. The
+    old sequential ``key_between`` fallback was quadratic — each new key
+    re-walked a string that kept lengthening (20k rows = minutes).
     """
     if n <= 0:
         return []
     if n <= BASE - 1:
         step = BASE // (n + 1)
         return [DIGITS[step * (k + 1)] for k in range(n)]
-    # fall back to sequential between() for large groups
-    keys: list[str] = []
-    prev: str | None = None
-    for _ in range(n):
-        prev = key_between(prev, None)
-        keys.append(prev)
-    return keys
+    width = 1
+    capacity = BASE
+    while capacity - 1 < n:
+        width += 1
+        capacity *= BASE
+    step = capacity // (n + 1)
+    return [
+        "".join(DIGITS[(step * k // BASE**p) % BASE] for p in range(width - 1, -1, -1))
+        for k in range(1, n + 1)
+    ]
 
 
 def n_keys_between(a: str | None, b: str | None, n: int) -> list[str]:

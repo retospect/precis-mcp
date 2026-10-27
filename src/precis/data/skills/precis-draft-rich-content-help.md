@@ -9,6 +9,7 @@ answers:
   - how do I turn a data table into a rendered graph in a draft?
   - how do I render a structure or se block as a figure in a draft?
   - how do I edit one cell of a table chunk without rewriting the whole grid?
+  - how do I add a calculated column, footer total, or column stats to a draft table?
 applies-to: put/edit (kind='draft')
 status: active
 tags: [drafting]
@@ -204,6 +205,67 @@ a `table=` dict doubles its backslashes on the wire, while
 pass `table=` as a JSON **string**, not a dict:
 `table='{"header": [...], "rows": [["$\\sim$3 aJ"]]}'` — decoded once
 server-side, the same reliable channel `caption=` uses.
+
+## Formulas, footer aggregates & stats
+
+A column can carry a **formula** — declare it in `columns=` (the split-arg
+form of `table=`):
+
+```python
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="table",
+    columns=[
+        {"name": "qty"},
+        {"name": "unit_price"},
+        {"name": "line_cost", "formula": "qty*unit_price"},
+    ],
+    rows=[[2, 0.5], [4, 1.25]],
+    footer={"line_cost": "sum"},
+)
+```
+
+Formulas reference **column names** (`qty*unit_price`), evaluate per row,
+and are stored internally by column id — renames rewrite nothing.
+Operators: `+ - * / // % **`, comparisons, `and/or/not`, and
+`x if cond else y`. Functions:
+`abs round min max sum avg sqrt log exp if_(cond, a, b)`. Names are the
+only references — attribute access, subscripts, f-strings, comprehensions
+and imports are refused at write time. So is a formula that names a
+column the table doesn't have: a new/changed formula must resolve every
+name, and refuses with the valid column names/ids — a typo can't land.
+A column a *stored* formula uses being dropped LATER is the `#REF`
+case: the edit lands, the reply warns, and the dependent cells store
+`#REF`. Any other per-row fault stores an error
+marker cell and the write still lands — `#DIV/0`, `#REF`, `#VALUE` (a
+type error — `*`/`+` on a text cell, or `%` with text as the LEFT
+operand), `#NUM` (over-cap number), `#CYCLE` (a formula-dependency
+loop, whose columns are never evaluated), `#ERROR`. An error-marker
+operand propagates to dependents — the first error operand wins, so
+`#REF` stays `#REF`. The reply's warning names the faulting cells, and
+for a cycle names the loop's columns with the way out.
+
+On an **existing** table, `edit` has no `columns=` kwarg:
+`add_column={'name': 'total', 'formula': 'a*2'}` adds a formula column;
+`table={'columns': [...], 'rows': [...]}` (the whole schema) changes or
+removes one. `toon=` can't write a formula either — a header
+re-declaring the stored formula round-trips, any other refuses.
+
+**Footer aggregates** pin a summary function to a column:
+`footer={'line_cost': 'sum'}` — functions
+`sum mean median std min max count` (`std` is the SAMPLE std, like
+spreadsheet STDEV; `count` counts non-empty cells). Every write recomputes
+them; the
+reply notes how many rows a footer skipped as empty/non-numeric. `edit`
+accepts `footer=` by itself to set or replace the spec (`footer={}`
+clears it) — it still counts as the edit's one selector, so it can't ride
+with `table=`/`cell=`/`find=`/`sub=`. Read the results on the `footer:`
+line under the grid, next to `ids:`.
+
+**`view='stats'`**: `get(kind='draft', id='dc<id>', view='stats')` reports
+per-column `n` (numeric cells), `nonempty`, `empty`, mean, sample std and
+range — computed on read, never stored.
 
 ## See also
 
