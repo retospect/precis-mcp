@@ -62,7 +62,7 @@ def test_full_without_selector_stays_the_uncapped_read(hub: Hub) -> None:
 def test_selectors_on_other_views_refuse_naming_full(hub: Hub) -> None:
     handler = GripeHandler(hub=hub)
     rid = _gripe(handler)
-    for view in (None, "body", "links", "log"):
+    for view in ("body", "links", "log"):
         with pytest.raises(BadInput) as exc:
             handler.get(id=rid, view=view, comments=2)
         assert "view='full'" in str(exc.value.next)

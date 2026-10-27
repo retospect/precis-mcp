@@ -241,7 +241,9 @@ def test_over_current_wired_pin() -> None:
     n = b.net("LED")
     n.tie(u1["PA1"], current=pcb.Max("20mA"), source="ds:9~c4")
     n.tie(r1["1"])
-    (f,) = b.check().findings
+    # source.unchecked is the separate "no client staged" note for the
+    # source= handle (gr521599), not part of the electrical verdict.
+    (f,) = [x for x in b.check().findings if x.code != "source.unchecked"]
     assert f.code == "over_current"
     assert f.refdes == "U1" and f.net == "LED"
 
