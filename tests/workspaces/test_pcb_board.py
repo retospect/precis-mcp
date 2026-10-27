@@ -511,7 +511,14 @@ def test_check_findings() -> None:
     result = b.check()
     assert result.not_checked == ["R1"]
     assert [(f_.code, f_.net) for f_ in result.findings] == [
-        ("net.unconnected", "FLOAT")
+        ("net.unconnected", "FLOAT"),
+        ("pin.unwired", None),
+        ("pin.unwired", None),
+    ]
+    # R1's declared pair is wired to nothing and carries no marker.
+    assert [(f_.refdes, f_.pin) for f_ in result.findings[1:]] == [
+        ("R1", "1"),
+        ("R1", "2"),
     ]
 
 

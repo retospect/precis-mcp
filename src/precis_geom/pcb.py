@@ -67,7 +67,32 @@ _ELECTRICAL_DOMAINS = frozenset({None, "electrical"})
 #: The pin intent markers the store reads as bool keys (§1j).
 _PIN_MARKERS = ("unused", "nc", "must_terminate")
 
+#: The checkable provenance handle ``source=`` takes (gr521603):
+#: ``ds:<datasheet ref>~<chunk selector>`` — ``ref`` is a ``da<N>``
+#: handle or cite-key slug, the ``~`` suffix the same selector syntax
+#: the paper/datasheet handlers resolve.
+_SOURCE_HANDLE_RE = re.compile(r"^ds:([^\s~]+)~([^\s~]+)$")
+
 MANIFEST_SCHEMA = 1
+
+
+def _source_failure_reason(exc: BaseException) -> str | None:
+    """Classify a failed ``precis_client`` read of a ``ds:`` handle:
+    ``None`` for a clear not-found reply (the ``[error:NotFound]`` /
+    ``[error:Gone]`` envelope — a ``source.unresolvable`` finding),
+    else the one-line reason the read failed with, which a
+    ``source.unchecked`` row names. The staged client raises
+    ``RuntimeError`` carrying the tool's ``[error:<Kind>]`` text for
+    tool errors (a kind refusal reads ``[error:BadInput] … is not
+    served by the sandbox read-only MCP``) and ``precis MCP …`` for
+    HTTP/transport ones; a bare ``TimeoutError``/``OSError`` keeps its
+    own message."""
+    text = str(exc)
+    if "[error:NotFound]" in text or "[error:Gone]" in text:
+        return None
+    first = text.strip().splitlines()[0].strip() if text.strip() else ""
+    return first[:200] if first else type(exc).__name__
+
 
 #: The one not-checked cause ``check()`` can see offline (gr513667): the part
 #: has neither a catalog part nor an authored footprint, so the store binds a
@@ -230,12 +255,29 @@ def _script_dir() -> Path:
         return Path(".")
 
 
+def _frame_site(f: Any) -> str:
+    """``file:line`` for one frame — relative to the calling script's
+    directory or the cwd (``basename:line`` when the frame lives outside
+    both), so a site never carries an absolute path (gr520324)."""
+    raw = Path(f.f_code.co_filename)
+    try:
+        path = raw.resolve()
+        anchors = (_script_dir(), Path.cwd())
+    except (OSError, ValueError):
+        # resolve()/cwd() can fail (NUL in the name, a deleted cwd) —
+        # the site contract is "never absolute", so basename it is.
+        return f"{raw.name}:{f.f_lineno}"
+    for anchor in anchors:
+        try:
+            return f"{path.relative_to(anchor)}:{f.f_lineno}"
+        except ValueError:
+            continue
+    return f"{path.name}:{f.f_lineno}"
+
+
 def _caller_site(depth: int = 2) -> str:
     """``file:line`` of the board-script line that called the API —
-    recorded on pin claims so a PinConflict can name both sites. The
-    file is reported relative to the calling script's directory
-    (``basename:line`` when the frame lives outside it), so a
-    ``pin_decls`` ``site`` never carries an absolute path (gr520324)."""
+    recorded on pin claims so a PinConflict can name both sites."""
     import inspect
 
     f = inspect.currentframe()
@@ -246,20 +288,30 @@ def _caller_site(depth: int = 2) -> str:
             f = f.f_back
         if f is None:
             return "?:0"
-        raw = Path(f.f_code.co_filename)
-        try:
-            path = raw.resolve()
-            anchors = (_script_dir(), Path.cwd())
-        except (OSError, ValueError):
-            # resolve()/cwd() can fail (NUL in the name, a deleted cwd) —
-            # the site contract is "never absolute", so basename it is.
-            return f"{raw.name}:{f.f_lineno}"
-        for anchor in anchors:
-            try:
-                return f"{path.relative_to(anchor)}:{f.f_lineno}"
-            except ValueError:
-                continue
-        return f"{path.name}:{f.f_lineno}"
+        return _frame_site(f)
+    finally:
+        del f
+
+
+def _script_site() -> str:
+    """``file:line`` of the first non-``precis_geom`` frame above this
+    call — the board-script line behind the API call no matter how many
+    builder internals sit between (``Net.tie`` reached through
+    ``Board.wire`` still names the ``b.wire`` line, and the ``@traced``
+    wrapper is a ``precis_geom`` frame too). This is the stamp
+    :class:`CheckFinding` ``site`` carries (gr521599)."""
+    import inspect
+
+    f = inspect.currentframe()
+    try:
+        while f is not None:
+            f = f.f_back
+            if f is None:
+                return "?:0"
+            mod = f.f_globals.get("__name__") or ""
+            if mod != "precis_geom" and not mod.startswith("precis_geom."):
+                return _frame_site(f)
+        return "?:0"
     finally:
         del f
 
@@ -286,6 +338,10 @@ class FlexPin:
         self.net: str | None = None
         self.requirement: Bound | None = None
         self.source: str | None = None
+        #: ``file:line`` of the :meth:`Net.tie` that bound the slot.
+        self.tie_site: str | None = None
+        #: ``file:line`` of the :meth:`Net.tie` that set ``source``.
+        self.source_site: str | None = None
 
     @property
     def handle(self) -> str:
@@ -351,15 +407,19 @@ class Pin:
     annotated (a marker, a tag, a fact) — pins the connections merely
     reference stay implicit, as in an authored batch."""
 
-    def __init__(self, *, part: Part, name: str) -> None:
+    def __init__(self, *, part: Part, name: str, site: str | None = None) -> None:
         """Create the pin — normally via ``part[name]``, not directly.
 
         Args:
             part (Part): The owning part.
             name (str): Pin name/number as the footprint knows it.
+            site (str | None): ``file:line`` the pin was first named on
+                — computed from the calling script frame when omitted.
         """
         self.part = part
         self.name = name
+        #: ``file:line`` of the script line that first named this pin.
+        self.site = site if site is not None else _script_site()
         self.tags: list[str] = []
         self.meta: dict[str, Any] = {}
         self.markers: dict[str, bool] = {}
@@ -468,6 +528,7 @@ class Part:
         part_meta: dict[str, Any] | None = None,
         supplies: Any = None,
         pin_swap_groups: Any = None,
+        site: str | None = None,
     ) -> None:
         """Create the part — normally via :meth:`Board.part`, not directly.
 
@@ -486,10 +547,14 @@ class Part:
             supplies (Any): Authored ``supplies`` declaration list,
                 carried verbatim.
             pin_swap_groups (Any): Authored swap groups, carried verbatim.
+            site (str | None): ``file:line`` the part was declared on —
+                computed from the calling script frame when omitted.
         """
         self.board = board
         self.refdes = refdes
         self.maker = _trace.leaf_id()
+        #: ``file:line`` of the ``Board.part`` script line.
+        self.site = site if site is not None else _script_site()
         self.lcsc = lcsc
         self.label = label
         self.footprint = footprint
@@ -518,6 +583,17 @@ class Part:
         self._swap_groups: list[dict[str, Any]] = []
         self._pin_functions: dict[str, dict[str, Any]] = {}
         self._pin_functions_source: str | None = None
+        #: The :class:`CatalogPart` this part was built from
+        #: (``part=``/``part="lcsc"``), else ``None`` — ``check`` reads
+        #: its resolved ``pins`` as the pin universe.
+        self._catalog: CatalogPart | None = None
+        #: ``file:line`` each ``_pin_functions`` key was first written on
+        #: (first-wins per key) — the site a ``pin.unknown`` finding on a
+        #: typo'd table key points at.
+        self._pin_function_sites: dict[str, str] = {}
+        #: ``file:line`` of the ``pin_functions`` call that set
+        #: ``_pin_functions_source``.
+        self._pin_functions_source_site: str | None = None
         self.x: float | None = None
         self.y: float | None = None
         self.rot: float = 0.0
@@ -637,7 +713,9 @@ class Part:
             source (str | None): Datasheet chunk id
                 (``"ds:<id>~<chunk>"``).
         """
+        site = _script_site()
         for pin, entry in table.items():
+            self._pin_function_sites.setdefault(str(pin), site)
             if isinstance(entry, Mapping):
                 funcs = [str(f) for f in (entry.get("functions") or ())]
                 extra = {k: v for k, v in entry.items() if k != "functions"}
@@ -651,6 +729,7 @@ class Part:
             rec.update(extra)
         if source is not None:
             self._pin_functions_source = source
+            self._pin_functions_source_site = site
         return self
 
     def pins_with(self, func: str) -> list[str]:
@@ -878,6 +957,7 @@ class Net:
         domain: str | None = None,
         width_mm: float | None = None,
         meta: dict[str, Any] | None = None,
+        site: str | None = None,
     ) -> None:
         """Create the net — normally via :meth:`Board.net`, not directly.
 
@@ -900,10 +980,14 @@ class Net:
             width_mm (float | None): Trace width hint, millimetres.
             meta (dict | None): Extra keys merged verbatim into the
                 net's ``meta`` batch key.
+            site (str | None): ``file:line`` the net was declared on —
+                computed from the calling script frame when omitted.
         """
         self.board = board
         self.name = name
         self.maker = _trace.leaf_id()
+        #: ``file:line`` of the ``Board.net`` script line.
+        self.site = site if site is not None else _script_site()
         self.cls = cls
         self.current = current
         self.voltage = voltage
@@ -943,6 +1027,7 @@ class Net:
                 "current",
                 f"net {self.name!r}: current= takes pcb.Max/pcb.Min, got {current!r}",
             )
+        site = _script_site()
         for p in pins:
             if isinstance(p, FlexPin):
                 if p.net is not None and p.net != self.name:
@@ -953,8 +1038,13 @@ class Net:
                 p.net = self.name
                 p.requirement = current or p.requirement
                 p.source = source or p.source
+                p.tie_site = site
+                if source is not None:
+                    p.source_site = site
                 continue
-            self.board._connect(self, p, note, current=current, source=source)
+            self.board._connect(
+                self, p, note, current=current, source=source, site=site
+            )
         return self
 
     def pins(self) -> list[tuple[str, str]]:
@@ -1120,6 +1210,17 @@ class CheckFinding:
     message: str
     refdes: str | None = None
     net: str | None = None
+    #: Pin name when the finding names one pin — pin-level feedback is
+    #: the load-bearing granularity (gr521599).
+    pin: str | None = None
+    #: ``file:line`` of the board-script line the finding's subject was
+    #: declared on — the ``b.net``/``b.part``/``net.tie`` line, not the
+    #: check's own.
+    site: str | None = None
+    #: True when the row reports a rule that could not be evaluated
+    #: (e.g. a bound pin on a voltage-less net) — a cannot-check row,
+    #: not a defect.
+    not_checked: bool = False
 
 
 @dataclass
@@ -1137,8 +1238,14 @@ class CheckResult:
             f"{len(self.not_checked)} NOT-CHECKED (no catalog part, no footprint)"
         ]
         for f_ in self.findings:
-            where = f_.refdes or f_.net or ""
-            lines.append(f"  {f_.code} {where}: {f_.message}")
+            where = ".".join(p for p in (f_.refdes, f_.pin) if p) or f_.net or ""
+            line = f"  {f_.code}"
+            if f_.not_checked:
+                line += " [not-checked]"
+            line += f" {where}: {f_.message}"
+            if f_.site:
+                line += f" ({f_.site})"
+            lines.append(line)
         reasons: list[str] = []
         for key, refdes in self.not_checked_groups.items():
             reason, _, label = key.partition(": ")
@@ -1399,6 +1506,11 @@ class Board:
         self._nets: dict[str, Net] = {}
         self._net_order: list[str] = []
         self._connections: list[dict[str, Any]] = []
+        #: ``file:line`` of each ``_connections`` row's ``tie`` — a
+        #: parallel list so the site never lands in ``to_batch`` (the
+        #: goldens hash those bytes); index-aligned with
+        #: ``_connections``.
+        self._conn_sites: list[str] = []
         self._features: list[dict[str, Any]] = []
         self._footprints: dict[str, Footprint] = {}
         self._footprint_order: list[str] = []
@@ -1407,6 +1519,9 @@ class Board:
         self._generators: list[dict[str, Any]] = []
         self._measures: list[dict[str, Any]] = []
         self._catalog_reads: dict[str, dict[str, Any]] = {}
+        #: ``source=`` resolution per distinct ``ref~chunk`` — a check()
+        #: runs repeatedly and each resolution is a client round-trip.
+        self._source_cache: dict[str, tuple[str, str | None]] = {}
         self._used_prefixes: set[str] = set()
         self._frame_stack: list[_ModuleFrame] = []
         self._board_ctx_tokens: list[Any] = []
@@ -1606,6 +1721,7 @@ class Board:
             supplies=supplies,
             pin_swap_groups=pin_swap_groups,
         )
+        p._catalog = part if isinstance(part, CatalogPart) else None
         for entry in pins:
             if isinstance(entry, dict):
                 pin = p[entry["name"]]
@@ -1712,6 +1828,7 @@ class Board:
         note: str | None = None,
         current: Bound | None = None,
         source: str | None = None,
+        site: str | None = None,
     ) -> None:
         frame = self._frame
         if frame is not None and net.name not in frame.allowed_net_names:
@@ -1733,6 +1850,7 @@ class Board:
         if source is not None:
             entry["source"] = source
         self._connections.append(entry)
+        self._conn_sites.append(site or _script_site())
 
     @traced
     def wire(self, pin_a: Pin, pin_b: Pin, name: str | None = None) -> Net:
@@ -2480,9 +2598,10 @@ class Board:
         """Pure, offline L0 checks (§Q1): parts with no catalog part and no
         authored footprint are NOT-CHECKED (a synthesized landpattern
         bound); a declared net with zero connections, a connection to a
-        part the board never made, and a part naming an unregistered
-        footprint are findings. No geometry, no DRC — that stays
-        server-side (§DRC)."""
+        part the board never made, a part naming an unregistered
+        footprint, a pin name no known pad answers to, and a declared
+        pin left unwired without an intent marker are findings. No
+        geometry, no DRC — that stays server-side (§DRC)."""
         not_checked = [
             r
             for r in self._part_order
@@ -2505,6 +2624,7 @@ class Board:
                     CheckFinding(
                         code="footprint.unknown",
                         refdes=r,
+                        site=self._parts[r].site,
                         message=f"footprint {fp!r} is not registered on this board",
                     )
                 )
@@ -2518,7 +2638,10 @@ class Board:
         }
         findings += [
             CheckFinding(
-                code="net.unconnected", net=n, message=f"net {n!r} has no connections"
+                code="net.unconnected",
+                net=n,
+                site=self._nets[n].site,
+                message=f"net {n!r} has no connections",
             )
             for n in self._net_order
             if n not in connected
@@ -2527,17 +2650,460 @@ class Board:
             CheckFinding(
                 code="net.undeclared",
                 net=c["net"],
+                refdes=c["refdes"],
+                pin=c["pin"],
+                site=site,
                 message=f"connection {c['refdes']}.{c['pin']} names an undeclared net",
             )
-            for c in self._connections
+            for c, site in zip(self._connections, self._conn_sites)
             if c["net"] not in self._nets
         ]
+        findings += [
+            CheckFinding(
+                code="part.unknown",
+                refdes=c["refdes"],
+                net=c["net"],
+                pin=c["pin"],
+                site=site,
+                message=(
+                    f"connection {c['refdes']}.{c['pin']} names a part this "
+                    "board never made"
+                ),
+            )
+            for c, site in zip(self._connections, self._conn_sites)
+            if c["refdes"] not in self._parts
+        ]
+        findings += self._pin_name_findings()
+        findings += self._unwired_pin_findings()
         findings += self._pin_requirement_findings()
+        findings += self._over_voltage_findings()
+        findings += self._source_findings()
         return CheckResult(
             findings=findings,
             not_checked=not_checked,
             not_checked_groups=groups,
         )
+
+    def _pin_universe(self, part: Part) -> tuple[set[str], str] | None:
+        """``(pin names, provenance label)`` a part's pads declare —
+        the offline pin universe ``pin.unknown`` checks against
+        (gr521597). A registered authored :class:`Footprint` answers
+        with ``pin_map``-resolved pad labels — the ``pad_label`` rule:
+        the map entry's ``name`` wins, else the pad number
+        (``"number"`` key on store-normalized pads, ``"pin"`` on
+        builder-authored ones). A resolved :class:`CatalogPart` answers
+        with its ``pins``. ``None`` when nothing offline names the
+        pins — an lcsc-less/footprint-less part is already
+        ``not_checked``, and an un-read catalog ref names nothing."""
+        fp = self._footprints.get(str(part.footprint or ""))
+        if fp is not None:
+            pin_map = fp.pin_map or {}
+            names: set[str] = set()
+            for pad_ in fp.pads:
+                num = pad_.get("number", pad_.get("pin"))
+                if num is None:
+                    continue
+                entry = pin_map.get(str(num))
+                if isinstance(entry, dict):
+                    names.add(str(entry.get("name") or num))
+                elif entry is not None:
+                    names.add(str(entry))
+                else:
+                    names.add(str(num))
+            if names:
+                return names, f"footprint {fp.name!r} ({len(fp.pads)} pads)"
+        cp = part._catalog
+        if cp is not None and cp.resolved and cp.pins:
+            return {str(p) for p in cp.pins}, f"catalog part {cp.lcsc}"
+        return None
+
+    def _pin_name_findings(self) -> list[CheckFinding]:
+        """``pin.unknown`` (gr521597): every name the script minted on a
+        part — wired, declared, claimed or function-tabled — must
+        resolve to a pad while the part's pin universe is known. The
+        server catches the same defect as ``pin_name_mismatch`` — only
+        late, and only when the footprint is cached; a typo'd
+        ``u1['VBD']`` is a build-time finding here."""
+        out: list[CheckFinding] = []
+        for r in self._part_order:
+            part = self._parts[r]
+            universe = self._pin_universe(part)
+            if universe is None:
+                continue
+            names, source = universe
+            shown = ", ".join(sorted(names)[:8])
+            if len(names) > 8:
+                shown += f", … (+{len(names) - 8})"
+            for name in sorted(set(part._pins) | set(part._pin_functions)):
+                if name in names:
+                    continue
+                pin = part._pins.get(name)
+                site = (pin.site if pin is not None else None) or (
+                    part._pin_function_sites.get(name)
+                )
+                out.append(
+                    CheckFinding(
+                        code="pin.unknown",
+                        refdes=r,
+                        pin=name,
+                        site=site,
+                        message=(
+                            f"pin {name!r} matches no pad on {source} (known: {shown})"
+                        ),
+                    )
+                )
+        return out
+
+    @staticmethod
+    def _pin_intent(pin: Pin) -> str | None:
+        """The §1j marker a pin carries — ``"nc"``/``"must_terminate"``/
+        ``"unused"``/``None``, the same resolution order
+        ``precis.pcb.drc._pin_marker`` uses on the store side: the
+        builder's ``markers`` bools OR ``meta`` bools OR the word in
+        ``tags``; ``nc`` outranks ``must_terminate`` (a no-internal-
+        connection pad cannot be terminated), which outranks
+        ``unused``."""
+        for marker in ("nc", "must_terminate", "unused"):
+            if pin.markers.get(marker) or pin.meta.get(marker) or marker in pin.tags:
+                return marker
+        return None
+
+    def _unwired_pin_findings(self) -> list[CheckFinding]:
+        """``pin.unwired`` (gr521598): a pin that will exist in the
+        batch — declared (``pins=``/``pin()``/``declare()``/swap group/
+        flex candidate) or annotated — but tied to no net needs a stated
+        reason. Mirrors the server's ``unconnected_pin`` rule
+        (:func:`precis.pcb.drc.check_unconnected_pins`): ``nc`` and
+        ``unused`` silence, ``must_terminate`` always complains, and a
+        candidate of a *bound* flex slot waits on the solver so it does
+        not complain. A slot that was never tied flags once by name —
+        its candidates float regardless of which the solver would pick."""
+        wired = {(c["refdes"], c["pin"]) for c in self._connections}
+        out: list[CheckFinding] = []
+        for r in self._part_order:
+            part = self._parts[r]
+            # Slot candidates never flag individually: a bound slot's
+            # candidate waits on the solver, an unbound one's float is
+            # the slot finding below — one row per root cause.
+            slot_candidates = {cand for fp in part._flex_slots for cand in fp.pins}
+            for fp in part._flex_slots:
+                if fp.net is not None:
+                    continue
+                out.append(
+                    CheckFinding(
+                        code="pin.unwired",
+                        refdes=r,
+                        pin=fp.name,
+                        site=fp.site,
+                        message=(
+                            f"flex slot {fp.handle} was never tied to a "
+                            f"net — its candidate pins {list(fp.pins)} float"
+                        ),
+                    )
+                )
+            for name in part._pin_order:
+                if name not in part._declared_pins and not part._pins[name].annotated:
+                    continue
+                if (r, name) in wired or name in slot_candidates:
+                    continue
+                marker = self._pin_intent(part._pins[name])
+                if marker == "must_terminate":
+                    message = (
+                        f"{r}.{name} is marked must_terminate and has no "
+                        "net — a pin that must not float is floating "
+                        "(the unused marker does not exempt it)"
+                    )
+                elif marker is None:
+                    message = (
+                        f"{r}.{name} is declared but wired to no net — "
+                        "wire it, or mark it nc (no internal connection) / "
+                        "unused (this board does not use it) / "
+                        "must_terminate (it must not float)"
+                    )
+                else:
+                    continue
+                out.append(
+                    CheckFinding(
+                        code="pin.unwired",
+                        refdes=r,
+                        pin=name,
+                        site=part._pins[name].site,
+                        message=message,
+                    )
+                )
+        return out
+
+    def _resolve_source(
+        self, ref: str, chunk: str, client: Any
+    ) -> tuple[str, str | None]:
+        """``("ok", part_lcsc | None)`` when ``ds:ref~chunk`` resolves,
+        ``("unresolvable", None)`` on a clear not-found reply, and
+        ``("unchecked", reason)`` on every other read failure — cached
+        in ``_source_cache`` per distinct handle. The part link comes
+        from the ``status`` view's ``      part <lcsc>`` row; an
+        unlinked datasheet or a failed status read is ``("ok", None)``
+        — the handle exists, its ownership just can't be told."""
+        key = f"{ref}~{chunk}"
+        if key in self._source_cache:
+            return self._source_cache[key]
+        try:
+            client.call("get", kind="datasheet", id=key)
+        except Exception as exc:
+            reason = _source_failure_reason(exc)
+            out: tuple[str, str | None] = (
+                ("unresolvable", None) if reason is None else ("unchecked", reason)
+            )
+            self._source_cache[key] = out
+            return out
+        lcsc = None
+        try:
+            status = client.call("search", kind="datasheet", view="status", ids=[ref])
+            m = re.search(r"^\s+part\s+(C\d+)", str(status), re.M)
+            lcsc = m.group(1) if m else None
+        except Exception:
+            pass
+        out = ("ok", lcsc)
+        self._source_cache[key] = out
+        return out
+
+    def _source_findings(self) -> list[CheckFinding]:
+        """``source=`` provenance (gr521603): every recorded handle —
+        a part's ``pin_functions_source``, a connection's ``source``,
+        a flex slot's — must parse as ``ds:<ref>~<chunk>`` and resolve
+        through the staged ``precis_client``; when the chunk's
+        datasheet is linked to a different catalog part than the one
+        making the claim it is ``source.wrong_part``. Existence and
+        kind are checked; whether the chunk supports the claim stays
+        manual. A clear not-found reply is ``source.unresolvable``;
+        every other read failure (a kind refusal — the sandbox
+        read-only MCP never serves ``datasheet`` — a transport or
+        import failure, an empty reply) is ``source.unchecked``
+        cannot-check, never a false unresolvable. With no client
+        staged (a laptop run) the well-formed handles report ONE
+        ``not_checked`` row — cannot-check, not clean."""
+        handles: list[tuple[str, str | None, Part | None]] = []
+        for r in self._part_order:
+            part = self._parts[r]
+            if part._pin_functions_source is not None:
+                handles.append(
+                    (
+                        part._pin_functions_source,
+                        part._pin_functions_source_site,
+                        part,
+                    )
+                )
+            for fp in part._flex_slots:
+                if fp.source is not None:
+                    handles.append((fp.source, fp.source_site or fp.site, part))
+        for c, c_site in zip(self._connections, self._conn_sites):
+            if c.get("source") is not None:
+                handles.append((str(c["source"]), c_site, self._parts.get(c["refdes"])))
+        if not handles:
+            return []
+        out: list[CheckFinding] = []
+        todo: list[tuple[str, str, str | None, Part | None]] = []
+        for handle, site, owner in handles:
+            m = _SOURCE_HANDLE_RE.match(str(handle))
+            if m is None:
+                out.append(
+                    CheckFinding(
+                        code="source.unresolvable",
+                        refdes=owner.refdes if owner is not None else None,
+                        site=site,
+                        message=(
+                            f"source {handle!r} does not parse as ds:<ref>~<chunk>"
+                        ),
+                    )
+                )
+            else:
+                todo.append((m.group(1), m.group(2), site, owner))
+        if not todo:
+            return out
+        try:
+            client = importlib.import_module("precis_client")
+        except Exception as exc:
+            why = (
+                "no precis_client is staged on a laptop run"
+                if isinstance(exc, ImportError)
+                else f"precis_client failed to import — {type(exc).__name__}: {exc}"
+            )
+            out.append(
+                CheckFinding(
+                    code="source.unchecked",
+                    site=todo[0][2],
+                    not_checked=True,
+                    message=(
+                        f"{len(todo)} source= handle(s) CANNOT be checked — "
+                        f"{why}; provenance stays unverified until the "
+                        "sandbox resolves it"
+                    ),
+                )
+            )
+            return out
+        for ref, chunk, site, owner in todo:
+            status, info = self._resolve_source(ref, chunk, client)
+            if status == "unresolvable":
+                out.append(
+                    CheckFinding(
+                        code="source.unresolvable",
+                        refdes=owner.refdes if owner is not None else None,
+                        site=site,
+                        message=(
+                            f"source 'ds:{ref}~{chunk}' does not resolve — "
+                            "no such datasheet chunk"
+                        ),
+                    )
+                )
+            elif status == "unchecked":
+                out.append(
+                    CheckFinding(
+                        code="source.unchecked",
+                        refdes=owner.refdes if owner is not None else None,
+                        site=site,
+                        not_checked=True,
+                        message=(
+                            f"source 'ds:{ref}~{chunk}' CANNOT be checked — {info}"
+                        ),
+                    )
+                )
+            elif (
+                info is not None
+                and owner is not None
+                and owner.lcsc is not None
+                and info != owner.lcsc
+            ):
+                out.append(
+                    CheckFinding(
+                        code="source.wrong_part",
+                        refdes=owner.refdes,
+                        site=site,
+                        message=(
+                            f"source 'ds:{ref}~{chunk}' is {info}'s "
+                            f"datasheet but {owner.refdes} is {owner.lcsc}"
+                        ),
+                    )
+                )
+        return out
+
+    def _pin_bound(self, part: Part | None, pin: str, key: str) -> float | None:
+        """A pin's declared ``key`` bound — the part's ``pin_functions``
+        entry first, then the pin's ``meta`` (the same precedence the
+        current-axis ``pin_rating`` keeps). ``None`` when neither names
+        it — a bound is never guessed."""
+        if part is None:
+            return None
+        bound = (part._pin_functions.get(pin) or {}).get(key)
+        p = part._pins.get(pin)
+        if bound is None and p is not None:
+            bound = p.meta.get(key)
+        return float(bound) if bound is not None else None
+
+    def _over_voltage_findings(self) -> list[CheckFinding]:
+        """``over_voltage`` (gr521607) — the voltage-axis mirror the
+        server ERC keeps (:func:`precis.pcb.drc.check_over_voltage`),
+        same rule name: a pin on a net whose working voltage exceeds
+        the pin's declared ``max_voltage_v``. The net's voltage is
+        ``b.net(voltage=)`` else its class's ``working_voltage_v``;
+        absolute values compare (a −12 V rail is just as over). A bound
+        pin on a net nobody declared a voltage for is the per-net
+        never-guess ``not_checked`` row — ask the user, never estimate.
+        A board with no ``max_voltage_v`` anywhere gets silence, not
+        the server rule's vocabulary-coverage row: that row would sit
+        permanently on every board that never opted into voltage
+        bounds, and an un-actionable line trains the reader to ignore
+        the report."""
+        out: list[CheckFinding] = []
+
+        def net_voltage(name: str) -> float | None:
+            n = self._nets.get(name)
+            if n is None:
+                return None
+            if n.voltage is not None:
+                return float(n.voltage)
+            rules = self._net_classes.get(n.cls or "")
+            v = (
+                (rules or {}).get("working_voltage_v")
+                if isinstance(rules, dict)
+                else None
+            )
+            return None if v is None else float(v)
+
+        conn_site = {
+            (c["refdes"], c["pin"], c["net"]): s
+            for c, s in zip(self._connections, self._conn_sites)
+        }
+        members: dict[str, list[str]] = {}
+        nets = {c["net"] for c in self._connections}
+        for n in sorted(nets):
+            v = net_voltage(n)
+            unbounded: list[str] = []
+            for r, p in self.pins_on(n):
+                bound = self._pin_bound(self._parts.get(r), p, "max_voltage_v")
+                if bound is None:
+                    continue
+                if v is None:
+                    unbounded.append(f"{r}/{p}")
+                elif abs(bound) < abs(v):
+                    out.append(
+                        CheckFinding(
+                            code="over_voltage",
+                            refdes=r,
+                            net=n,
+                            pin=p,
+                            site=conn_site.get((r, p, n)),
+                            message=(
+                                f"net {n} works at {v:g} V but {r}.{p} is "
+                                f"rated {bound:g} V max"
+                            ),
+                        )
+                    )
+            members[n] = unbounded
+        for r in self._part_order:
+            part = self._parts[r]
+            for fp in part._flex_slots:
+                if fp.net is None:
+                    continue
+                v = net_voltage(fp.net)
+                rated = [
+                    (p, b_)
+                    for p in fp.pins
+                    if (b_ := self._pin_bound(part, p, "max_voltage_v")) is not None
+                ]
+                if not rated:
+                    continue
+                if v is None:
+                    members.setdefault(fp.net, []).append(f"{r}/{fp.name or fp.handle}")
+                elif all(abs(b_) < abs(v) for _, b_ in rated):
+                    out.append(
+                        CheckFinding(
+                            code="over_voltage",
+                            refdes=r,
+                            net=fp.net,
+                            pin=fp.name,
+                            site=fp.tie_site or fp.site,
+                            message=(
+                                f"slot {fp.name or fp.handle}: every rated "
+                                f"candidate pin sits under {abs(v):g} V"
+                            ),
+                        )
+                    )
+        for n, unbounded in members.items():
+            if unbounded:
+                net = self._nets.get(n)
+                out.append(
+                    CheckFinding(
+                        code="over_voltage",
+                        net=n,
+                        site=net.site if net is not None else None,
+                        not_checked=True,
+                        message=(
+                            f"voltage unknown for net {n}: ask the user — "
+                            f"pin(s) {', '.join(unbounded)} declare a bound "
+                            "nothing on the net answers"
+                        ),
+                    )
+                )
+        return out
 
     def _pin_requirement_findings(self) -> list[CheckFinding]:
         """The topo-place electrical check (Decision 15): a ``current=``
@@ -2569,14 +3135,16 @@ class Board:
         out: list[CheckFinding] = []
 
         def pin_rating(refdes: str, pin: str) -> float | None:
-            part = self._parts.get(refdes)
-            if part is None:
-                return None
-            rating = (part._pin_functions.get(pin) or {}).get("max_current_a")
-            p = part._pins.get(pin)
-            if rating is None and p is not None:
-                rating = p.meta.get("max_current_a")
-            return float(rating) if rating is not None else None
+            return self._pin_bound(self._parts.get(refdes), pin, "max_current_a")
+
+        # The site an over_current points at is the tie that declared the
+        # bound — the line to fix — not the under-rated pin's own tie.
+        req_site: dict[str, str] = {}
+        for c, s in zip(self._connections, self._conn_sites):
+            if (
+                c.get("current_max_a") is not None or c.get("current_min_a") is not None
+            ) and c["net"] not in req_site:
+                req_site[c["net"]] = s
 
         # Requirements are per connection but the finding is per pin per
         # net: N ties carrying current= on one net name the same
@@ -2597,6 +3165,8 @@ class Board:
                             code="over_current",
                             refdes=r,
                             net=net,
+                            pin=p,
+                            site=req_site.get(net),
                             message=(
                                 f"net {net} requires ≤ {bound:g} A "
                                 f"but {r}.{p} is rated {rating:g} A"
@@ -2617,6 +3187,7 @@ class Board:
                         code="over_current",
                         refdes=fp.part.refdes,
                         net=fp.net,
+                        site=fp.tie_site or fp.site,
                         message=(
                             f"slot {fp.name or fp.handle}: every candidate pin "
                             f"is rated under {bound:g} A"
@@ -2666,11 +3237,17 @@ class Board:
                             frontier.append(n2)
             for r, p, net in led_pins:
                 if net in reached:
+                    pin = self._parts[r]._pins.get(p)
                     out.append(
                         CheckFinding(
                             code="led_without_limit",
                             refdes=r,
                             net=net,
+                            pin=p,
+                            site=(
+                                (pin.site if pin is not None else None)
+                                or self._parts[r]._pin_function_sites.get(p)
+                            ),
                             message=(
                                 f"{r}.{p} (LED) sits on a current path with "
                                 "no series current-limit part"
@@ -2792,22 +3369,50 @@ class Board:
             out["profile"] = self.profile
         return out
 
-    def manifest(self, requests: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
+    def manifest(
+        self,
+        requests: Iterable[dict[str, Any]] = (),
+        *,
+        check: CheckResult | None = None,
+    ) -> dict[str, Any]:
         """The workspace run's ``out/manifest.json`` document (§Import
         boundary): ``{schema, kind: 'pcb', board, requests}`` plus the
         run's provenance — ``parts`` records every catalog footprint
         :func:`catalog` resolved (R-e: the ids read + a sha + when — and
         ``{provenance: 'unresolved', error}`` when the read failed) and
-        ``precis_geom`` the wheel's own version.
+        ``precis_geom`` the wheel's own version. ``check`` records the
+        :meth:`check` outcome — ``{findings, codes, not_checked,
+        unverifiable}``, where ``findings``/``codes`` count real rows
+        only and ``not_checked`` the cannot-check rows (unresolved
+        parts plus ``not_checked`` findings; ``unverifiable`` is the
+        finding-level subset) — so a failing board's manifest differs
+        from a clean one's and a cannot-check one reads as neither
+        (gr521604).
 
         Args:
             requests (Iterable[dict]): The run's request rows, carried
                 into ``requests[]``.
+            check (CheckResult | None): A pre-run :meth:`check` result —
+                ``None`` records ``check: "not run"`` (``run()`` hands
+                its own over so the manifest and ``check.txt`` quote
+                the same pass); ``manifest`` never runs :meth:`check`
+                itself — a ``source=`` resolution would be a hidden
+                client round-trip.
         """
         # Unattached reads bind to this board now — claimed once, so they
         # cannot leak into a second board's manifest.
         for lcsc in sorted(_CATALOG_READS):
             self._catalog_reads.setdefault(lcsc, _CATALOG_READS.pop(lcsc))
+        check_block: str | dict[str, Any] = "not run"
+        if check is not None:
+            real = [f for f in check.findings if not f.not_checked]
+            unverifiable = len(check.findings) - len(real)
+            check_block = {
+                "findings": len(real),
+                "codes": list(dict.fromkeys(f.code for f in real)),
+                "not_checked": len(check.not_checked) + unverifiable,
+                "unverifiable": unverifiable,
+            }
         return {
             "schema": MANIFEST_SCHEMA,
             "kind": "pcb",
@@ -2815,6 +3420,7 @@ class Board:
             "requests": [dict(r) for r in requests],
             "parts": [self._catalog_reads[k] for k in sorted(self._catalog_reads)],
             "precis_geom": {"version": _wheel_version()},
+            "check": check_block,
         }
 
 
@@ -2859,14 +3465,18 @@ def write_manifest(
     out_dir: str | Path,
     *,
     requests: Iterable[dict[str, Any]] = (),
+    check: CheckResult | None = None,
 ) -> Path:
     """Write ``manifest.json`` (and ``trace.json`` when a tracer is live)
-    under ``out_dir``; returns the manifest path."""
+    under ``out_dir``; returns the manifest path. ``check`` is a pre-run
+    :meth:`Board.check` result carried into the manifest's ``check``
+    block — ``None`` records ``"not run"``."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / "manifest.json"
     path.write_text(
-        json.dumps(board.manifest(requests), sort_keys=True, indent=1) + "\n",
+        json.dumps(board.manifest(requests, check=check), sort_keys=True, indent=1)
+        + "\n",
         encoding="utf-8",
     )
     doc = _trace.dump()
@@ -2931,14 +3541,26 @@ def run(
     ``board.svg``/``bom.csv``/``cpl.csv``) via :func:`local`. ``--route``
     no longer routes — routing is retired, so the run places and reports
     "no router yet". A missing kernel refuses the flagged run and writes
-    the base set for a plain one."""
+    the base set for a plain one. The check outcome is recorded in the
+    manifest's ``check`` block and echoed on stdout — a failing board
+    never lands silently (gr521604)."""
     import sys
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    write_manifest(board, str(out))
     check = board.check()
-    (out / "check.txt").write_text(check.summary() + "\n", encoding="utf-8")
+    write_manifest(board, str(out), check=check)
+    check_path = out / "check.txt"
+    check_path.write_text(check.summary() + "\n", encoding="utf-8")
+    real = [f for f in check.findings if not f.not_checked]
+    echo = f"check: {len(real)} finding(s)"
+    codes = ", ".join(dict.fromkeys(f.code for f in real))
+    if codes:
+        echo += f" ({codes})"
+    cannot_check = len(check.not_checked) + (len(check.findings) - len(real))
+    if cannot_check:
+        echo += f", {cannot_check} not-checked"
+    print(f"{echo} — {check_path}")
     args = list(sys.argv[1:] if argv is None else argv)
     want_place = "--place" in args or "--route" in args
     want_route = "--route" in args
