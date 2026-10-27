@@ -1,0 +1,7 @@
+#!/usr/bin/env -S uv run python
+"""Write an offline workspace script from a board batch JSON file."""
+
+from precis.pcb.board_script import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

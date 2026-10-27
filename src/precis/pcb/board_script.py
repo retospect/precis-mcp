@@ -5,7 +5,11 @@ The ``put(kind='pcb')`` batch (``components``/``nets``/``connections``/
 ``measures``/``meta``/``profile`` — :meth:`PcbMixin.pcb_apply`'s contract)
 becomes a ``main.py`` whose ``build().to_batch()`` is byte-equal to the
 source (gr514048). ``scripts/pcb-batch-to-board`` is a thin CLI over
-:func:`emit`; :func:`board_batch` reconstructs the batch of a stored
+:func:`emit`; ``scripts/pcb-batch-to-script`` is its offline JSON-to-file
+CLI, with ``--placement keep|omit`` (default keep). Explicit placement
+modes lock supplied poses or remove them; omitting the argument to
+:func:`emit` preserves the original placement flags for exact readback.
+:func:`board_batch` reconstructs the batch of a stored
 board from the store's existing readers (``pcb_graph``/``pcb_load``/
 ``pcb_features_list``/``pcb_local_footprints_for`` — no new DB code), so
 an ``.epro2`` imported into the dev DB can be written out as code.
@@ -13,7 +17,9 @@ an ``.epro2`` imported into the dev DB can be written out as code.
 Readability within byte-equality:
 
 * Pads shared verbatim by several footprints become one ``_pads_*``
-  binding per distinct pad set, referenced by name.
+  binding per distinct pad set, referenced by name and marked as a
+  synthesized footprint fallback. Supplied local geometry is retained:
+  a library name alone cannot prove equivalent pads without a lookup.
 * A catalog reference spells ``lcsc=`` — never ``part=``, which would
   fire a catalog read at rebuild time and break byte-equality on a
   client-less run; a catalog *footprint* name is a plain
@@ -42,6 +48,7 @@ from __future__ import annotations
 
 import keyword
 import pprint
+from pathlib import Path
 from typing import Any
 
 #: Columns a line may not exceed (slice 2's contract).
@@ -440,6 +447,39 @@ def _modules(
     return members
 
 
+def _with_placement(batch: dict[str, Any], placement: str | None) -> dict[str, Any]:
+    """Copy only changed rows; placement policy never mutates the source."""
+    if placement is None:
+        return batch
+    if placement not in {"keep", "omit"}:
+        raise BoardScriptError("placement must be 'keep' or 'omit'")
+    components = []
+    for component in batch["components"]:
+        c = dict(component)
+        if placement == "keep":
+            if "x" in c or "y" in c:
+                if c.get("x") is None or c.get("y") is None:
+                    raise BoardScriptError(
+                        f"part {c['refdes']!r}: placement needs both x and y"
+                    )
+                c["fixed"] = "both"
+        else:
+            for key in (
+                "x",
+                "y",
+                "rot",
+                "layer",
+                "fixed",
+                "max_travel_mm",
+                "group_offset",
+            ):
+                c.pop(key, None)
+            if c.get("edge_mate") is not None:
+                c["edge_mate"] = {k: v for k, v in c["edge_mate"].items() if k != "at"}
+        components.append(c)
+    return {**batch, "components": components}
+
+
 def emit(
     batch: dict[str, Any],
     slug: str,
@@ -447,11 +487,24 @@ def emit(
     *,
     annotations: dict[str, Any] | None = None,
     allow_loss: bool = False,
+    placement: str | None = None,
 ) -> str:
-    """The ``main.py`` text for ``batch``; ``build().to_batch()`` equals
-    ``batch``. Raises :class:`BoardScriptError` on keys
+    """The ``main.py`` text for ``batch``; with default placement,
+    ``build().to_batch()`` equals ``batch``. Raises :class:`BoardScriptError` on keys
     ``precis_geom.pcb`` cannot express unless ``allow_loss`` (then they
-    are listed in the header comment)."""
+    are listed in the header comment).
+
+    Args:
+        batch: Board batch, including components, nets and connections.
+        slug: Workspace board name.
+        source: Provenance label or source filename, recorded in the header.
+        annotations: Optional part and footprint handle comments.
+        allow_loss: Report unsupported fields in comments instead of refusing.
+        placement: ``keep`` locks supplied poses; ``omit`` removes poses,
+            leashes, group offsets and edge positions. ``None`` preserves
+            authored placement flags for the original exact round trip.
+    """
+    batch = _with_placement(batch, placement)
     annotations = annotations or {}
     unknown = set(batch) - {
         "components",
@@ -528,6 +581,7 @@ def emit(
         for name in names_in_group:
             pad_var[name] = var
         lits = [_pad_literal(p) for p in (fp_by_name[first].get("pads") or [])]
+        pad_defs.append(f"# synthesized footprint: {first!r} (source pads)")
         pad_defs.append(f"{var} = [")
         pad_defs += [f"    {l}," for l in lits]
         pad_defs.append("]")
@@ -649,11 +703,21 @@ def emit(
     indented = "\n".join(
         ("    " + ln.replace("\n", "\n    ")) if ln else "" for ln in body
     )
+    writer = "pcb-batch-to-script" if placement is not None else "pcb-batch-to-board"
+    fidelity = (
+        "``build().to_batch()`` preserves source parts, nets and pads;\n"
+        + (
+            "supplied positions are locked (fixed='both').\n"
+            if placement == "keep"
+            else "placement and pose-dependent constraints are omitted.\n"
+        )
+        if placement is not None
+        else "``build().to_batch()`` is byte-equal to that source\n"
+    )
     header = f'''"""{slug} — the batch of ``{source}`` as a workspace script.
 
-Generated by ``scripts/pcb-batch-to-board`` (``precis.pcb.board_script``);
-``build().to_batch()`` is byte-equal to that source
-(``tests/test_pcb_board_script.py``). The source stays the board's
+Generated by ``scripts/{writer}`` (``precis.pcb.board_script``);
+{fidelity}(``tests/test_pcb_board_script.py``). The source stays the board's
 documentation; this file is the construction.
 '''
     if loss:
@@ -906,3 +970,47 @@ def board_batch(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any]]:
                 if c.get("part") == lcsc:
                     annotations["parts"][c["refdes"]] = f"pn{pid}"
     return batch, annotations
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write a batch JSON file as offline workspace Python.
+
+    Args:
+        argv: CLI arguments, or ``None`` to read process arguments.
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Write a local PCB workspace script from a board batch JSON file."
+    )
+    parser.add_argument("batch", type=Path, help="input board batch JSON")
+    parser.add_argument("out", type=Path, help="output workspace Python file")
+    parser.add_argument("--placement", choices=("keep", "omit"), default="keep")
+    args = parser.parse_args(argv)
+    try:
+        if args.batch.resolve() == args.out.resolve():
+            raise BoardScriptError(
+                "input batch and output script must be different files"
+            )
+        if args.out.suffix != ".py":
+            raise BoardScriptError("output workspace script must have a .py suffix")
+        batch = json.loads(args.batch.read_text(encoding="utf-8"))
+        if not isinstance(batch, dict) or any(
+            not isinstance(batch.get(key), list)
+            for key in ("components", "nets", "connections")
+        ):
+            raise BoardScriptError("batch needs components, nets and connections lists")
+        text = emit(batch, args.batch.stem, str(args.batch), placement=args.placement)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(text, encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f"{parser.prog}: {exc}\n")
+    print(
+        f"wrote {args.out} ({len(batch['components'])} parts, placement={args.placement})"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

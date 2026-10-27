@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -17,6 +19,7 @@ import pytest
 
 from precis.ingest import pcb_epro
 from precis.pcb.board_script import BoardScriptError, board_batch, emit
+from tests.workspaces._script import load_module
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
 
@@ -321,3 +324,203 @@ def test_readback_epro_fixture(store) -> None:
     pcb_epro.import_epro(store, buf.getvalue(), slug="epro-bs", title="Tiny")
     batch, _annotations = board_batch(store, "epro-bs")
     assert _exec(emit(batch, "epro-bs", "epro")).build().to_batch() == batch
+
+
+def _row_set(rows: list[dict[str, Any]]) -> set[str]:
+    """Compare unordered batch rows with sub-micrometre float noise removed."""
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, float):
+            return round(value, 6)
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return value
+
+    return {json.dumps(normalize(row), sort_keys=True) for row in rows}
+
+
+def _assert_board_rows_equal(actual: dict[str, Any], expected: dict[str, Any]) -> None:
+    for key in ("components", "nets", "connections"):
+        assert _row_set(actual[key]) == _row_set(expected[key]), key
+    actual_footprints = {fp["name"]: fp for fp in actual.get("footprints", [])}
+    expected_footprints = {fp["name"]: fp for fp in expected.get("footprints", [])}
+    assert actual_footprints.keys() == expected_footprints.keys()
+    for name, footprint in expected_footprints.items():
+        assert _row_set(actual_footprints[name]["pads"]) == _row_set(footprint["pads"])
+
+
+@pytest.mark.parametrize(
+    "fixture", ["esp32c3_reference.json", "nano_usb_pd_testboard.py"]
+)
+def test_reference_batch_to_workspace(tmp_path: Path, fixture: str) -> None:
+    source = Path(__file__).parent / "fixtures" / "pcb" / fixture
+    batch = (
+        load_module(source, name="board_fixture").build_design()
+        if source.suffix == ".py"
+        else json.loads(source.read_text(encoding="utf-8"))
+    )
+    assert "planes" not in batch
+    script = tmp_path / "main.py"
+    script.write_text(emit(batch, source.stem, str(source)), encoding="utf-8")
+    rebuilt = load_module(script).build().to_batch()
+    _assert_board_rows_equal(rebuilt, batch)
+    assert str(source) in script.read_text(encoding="utf-8")
+
+
+def test_synthesized_pad_geometry_roundtrip(tmp_path: Path) -> None:
+    # Exercise raw slot-pad geometry as well as the reference fixtures' pads.
+    batch = _tiny_batch()
+    batch["footprints"][0]["pads"][0].update(
+        x=-1.2700000002, rot=45.0, layer="F.Cu", slot={"w": 1.2, "h": 0.5}
+    )
+    text = emit(batch, "tiny", "test fixture")
+    assert "# synthesized footprint" in text
+    script = tmp_path / "main.py"
+    script.write_text(text, encoding="utf-8")
+    rebuilt = load_module(script).build().to_batch()
+    assert sum(len(fp["pads"]) for fp in rebuilt["footprints"]) == 4
+    _assert_board_rows_equal(rebuilt, batch)
+
+
+def test_library_reference_needs_no_inline_pads_or_catalog_read(monkeypatch) -> None:
+    import precis_geom.pcb as pcb
+
+    def refuse_catalog_read(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("rebuilding a footprint reference must not query the catalog")
+
+    monkeypatch.setattr(pcb, "_catalog_read", refuse_catalog_read)
+    batch = _tiny_batch()
+    batch.pop("footprints")
+    batch["components"][0]["footprint"] = "Connector:HDR-2.54-1x2"
+    text = _roundtrip(batch)
+    assert "footprint='Connector:HDR-2.54-1x2'" in text
+    assert "pcb.Footprint(" not in text
+    assert "# synthesized footprint" not in text
+
+
+@pytest.mark.parametrize("placement", ["keep", "omit"])
+@pytest.mark.parametrize("prefix", ["", "Power."])
+def test_placement_modes_preserve_design_and_input(placement: str, prefix: str) -> None:
+    batch = _tiny_batch()
+    for index, component in enumerate(batch["components"]):
+        component.update(
+            refdes=prefix + component["refdes"],
+            x=float(index + 1),
+            y=float(index + 2),
+            rot=90.0,
+            layer="bottom",
+            fixed="rot",
+            max_travel_mm=2.5,
+            group="supply",
+            group_offset={"x": float(index), "y": 0.0, "rot": 90.0},
+        )
+    for connection in batch["connections"]:
+        connection["refdes"] = prefix + connection["refdes"]
+    original = deepcopy(batch)
+    text = emit(batch, "tiny", "test fixture", placement=placement)
+    rebuilt = _exec(text).build().to_batch()
+    expected = deepcopy(original)
+    for component in expected["components"]:
+        if placement == "keep":
+            component["fixed"] = "both"
+        else:
+            for key in (
+                "x",
+                "y",
+                "rot",
+                "layer",
+                "fixed",
+                "max_travel_mm",
+                "group_offset",
+            ):
+                component.pop(key)
+    _assert_board_rows_equal(rebuilt, expected)
+    assert batch == original
+    assert rebuilt["features"] == original["features"]
+    assert all(component["group"] == "supply" for component in rebuilt["components"])
+    if placement == "omit":
+        assert ".at(" not in text
+        assert ".leash(" not in text
+
+
+def test_invalid_placement_refused() -> None:
+    with pytest.raises(BoardScriptError, match="placement"):
+        emit(_tiny_batch(), "tiny", "test fixture", placement="discard")
+
+
+@pytest.mark.parametrize("missing", ["x", "y"])
+def test_keep_placement_refuses_partial_pose(missing: str) -> None:
+    batch = _tiny_batch()
+    batch["components"][0].pop(missing)
+    with pytest.raises(BoardScriptError, match="placement needs both x and y"):
+        emit(batch, "tiny", "test fixture", placement="keep")
+
+
+def test_omit_placement_preserves_edge_intent_without_position() -> None:
+    batch = _tiny_batch()
+    batch["components"][0]["edge_mate"] = {
+        "face": "S",
+        "require": "required",
+        "at": 5.0,
+    }
+    original = deepcopy(batch)
+    rebuilt = (
+        _exec(emit(batch, "tiny", "test fixture", placement="omit")).build().to_batch()
+    )
+    assert rebuilt["components"][0]["edge_mate"] == {"face": "S", "require": "required"}
+    assert batch == original
+
+
+@pytest.mark.parametrize("placement", [None, "keep", "omit"])
+def test_batch_to_script_cli(tmp_path: Path, placement: str | None) -> None:
+    from precis.pcb.board_script import main
+
+    batch = _tiny_batch()
+    batch["components"][0]["fixed"] = "rot"
+    source = tmp_path / "batch.json"
+    original = json.dumps(batch)
+    source.write_text(original, encoding="utf-8")
+    output = tmp_path / "workspace.py"
+    argv = [str(source), str(output)]
+    if placement is not None:
+        argv += ["--placement", placement]
+    assert main(argv) == 0
+    rebuilt = load_module(output).build().to_batch()
+    connector = next(part for part in rebuilt["components"] if part["refdes"] == "J1")
+    if placement == "omit":
+        assert "x" not in connector
+        assert "fixed" not in connector
+    else:
+        assert connector["x"] == 1.0
+        assert connector["y"] == 2.0
+        assert connector["fixed"] == "both"
+    assert _row_set(rebuilt["nets"]) == _row_set(batch["nets"])
+    assert _row_set(rebuilt["connections"]) == _row_set(batch["connections"])
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_batch_to_script_cli_refuses_overwriting_input(tmp_path: Path) -> None:
+    from precis.pcb.board_script import main
+
+    source = tmp_path / "batch.json"
+    original = json.dumps(_tiny_batch())
+    source.write_text(original, encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        main([str(source), str(source)])
+    assert exc.value.code == 1
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_batch_to_script_cli_malformed_json_preserves_output(tmp_path: Path) -> None:
+    from precis.pcb.board_script import main
+
+    source = tmp_path / "batch.json"
+    source.write_text("{", encoding="utf-8")
+    output = tmp_path / "workspace.py"
+    output.write_text("# authored workspace\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        main([str(source), str(output)])
+    assert exc.value.code == 1
+    assert output.read_text(encoding="utf-8") == "# authored workspace\n"

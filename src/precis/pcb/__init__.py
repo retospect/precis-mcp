@@ -74,6 +74,13 @@ Map, in pipeline order (design doc:
   (the text/dict exporters, Specctra ``.dsn`` included),
   :mod:`~precis.pcb.jlc_order` (JLCPCB upload → quote →
   create — the guarded unpaid-order step; docs/backlog/pcb-jlc-order.md).
+  :mod:`~precis.pcb.board_script` also emits local workspace Python from
+  a batch without DB or catalog access (``scripts/pcb-batch-to-script``).
+  It retains library footprint names and deduplicates supplied local pad
+  sets as marked synthesized fallbacks: a name cannot establish equivalent
+  geometry offline. The CLI locks supplied positions by default; ``omit``
+  removes poses and their constraints for local placement. The emitter's
+  original default still preserves authored placement flags for readback.
 * **Argue** — :mod:`~precis.pcb.argue`: the handle grammar (``U1``,
   ``U1.3``, ``net:GND``, ``feature:outline``) the fab render stamps as
   ``data-handle`` and the board page's text box submits; resolution

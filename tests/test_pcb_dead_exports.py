@@ -121,9 +121,6 @@ coderef = load_script("coderef", _coderef_copy)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
-    "src/precis/pcb/board_script.py::emit": (
-        "CLI scripts/pcb-batch-to-board; MCP wiring follows slice 5 (gr514048)"
-    ),
     "src/precis/pcb/board_script.py::board_batch": (
         "CLI scripts/pcb-batch-to-board; MCP wiring follows slice 5 (gr514048)"
     ),
