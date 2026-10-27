@@ -250,6 +250,25 @@ class TopoDesign:
     #: frame — an edge's wire capacity is its length minus the pad
     #: extents it touches. ``ir.pin_w``/``pin_h`` verbatim.
     pin_wh: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), np.float64))
+    #: Slice 5: each pin's authored pad ``role`` ("electrode"/"tape_land"
+    #: mark copper fields — the fixed-via exemption's ``via_in_pad``
+    #: mirror reads them, gr520903); ``""`` where the footprint pad
+    #: authors none — the same "no key" default the gate's
+    #: ``pads_for_ir`` path produces for a bare or synthesized pad.
+    pin_role: np.ndarray = field(default_factory=lambda: np.zeros(0, object))
+    #: Slice 5 anchors (placer design only): each authored fixed via on a
+    #: routable net joins the proxy's pin model as an IMMOVABLE world
+    #: point — ``net_anchors[k]`` indexes ``anchor_xy`` for net slot
+    #: ``k``, ``anchor_net``/``anchor_dia`` its name and diameter. They
+    #: are deliberately NOT rows of ``pin_xy``: ``build_mesh`` iterates
+    #: that array and places every row under its owner's pose — a
+    #: partless row would mint a vertex at the LAST part's pose.
+    #: ``route_planes=True`` designs carry none (the route stage sees the
+    #: same vias as ``fixed_via`` zones only).
+    anchor_xy: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), np.float64))
+    anchor_dia: np.ndarray = field(default_factory=lambda: np.zeros(0, np.float64))
+    anchor_net: tuple[str, ...] = ()
+    net_anchors: tuple[np.ndarray, ...] = ()
 
 
 def _pin_sides(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.ndarray:
@@ -271,6 +290,30 @@ def _pin_sides(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.nda
         refdes = str(ir.instance_refdes[int(ir.pin_instance[pin_id])])
         if str(ir.pin_label[pin_id]) in drilled.get(refdes, ()):
             out[pin_id] = 2
+    return out
+
+
+def _pin_roles(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.ndarray:
+    """The authored pad ``role`` per pin — ``electrode``/``tape_land``
+    mark copper fields the fixed-via anchor predicate treats as legal
+    annulus covers (the gate's ``via_in_pad`` mirror, gr520903). Same
+    source the gate reads: the footprint row's ``pads`` by pad
+    ``number``; no row or no authored role → ``""``."""
+    roles: dict[str, dict[str, str]] = {}
+    for refdes, fp in footprints.items():
+        by_num = {
+            str(p.get("number") or "").strip(): str(p["role"])
+            for p in (fp.get("pads") or [])
+            if p.get("role") is not None and str(p.get("number") or "").strip()
+        }
+        if by_num:
+            roles[refdes] = by_num
+    out = np.full(ir.n_pins, "", dtype=object)
+    for pin_id in range(ir.n_pins):
+        refdes = str(ir.instance_refdes[int(ir.pin_instance[pin_id])])
+        role = roles.get(refdes, {}).get(str(ir.pin_label[pin_id]))
+        if role:
+            out[pin_id] = role
     return out
 
 
@@ -593,6 +636,29 @@ def design_from_ir(
             net_pins.append(pins)
             net_names.append(str(ir.net_name[net_id]))
 
+    # Slice-5 anchors (gr520903): each authored fixed via on a routable
+    # net joins the proxy model as an immovable world point — the
+    # airwire runs pad→via→pad, so the authored pose where a pad sits on
+    # its via scores 0 crossings and the anneal stops "improving" it
+    # away. Placer design only: the route stage's mesh places every pin
+    # row under an owner's pose and cannot take a partless pin — those
+    # vias stay ``fixed_via`` zones there.
+    anchor_xy_l: list[list[float]] = []
+    anchor_dia_l: list[float] = []
+    anchor_net_l: list[str] = []
+    net_anchor_lists: list[list[int]] = [[] for _ in net_pins]
+    if not route_planes:
+        ir_net_of = {str(nm): i for i, nm in enumerate(ir.net_name)}
+        for v in ir.fixed_vias:
+            ir_net = ir_net_of.get(str(v.net))
+            k = route_of.get(ir_net) if ir_net is not None else None
+            if k is None:
+                continue
+            net_anchor_lists[k].append(len(anchor_xy_l))
+            anchor_xy_l.append([float(v.x), float(v.y)])
+            anchor_dia_l.append(float(v.dia_mm))
+            anchor_net_l.append(str(v.net))
+
     rot_q = np.nan_to_num(ir.inst_rot, nan=0.0)
     rot_q = np.round(rot_q / 90.0).astype(np.int64) % 4
     pose0 = np.column_stack(
@@ -620,14 +686,18 @@ def design_from_ir(
 
     # The courtyard ring every placer/DRC consumer uses, in the part's
     # own frame — the mesh's "footprint outline corners" (slice 2).
-    # ``fallback_half_extent_mm`` 1.0 is ``COURTYARD_MIN_SEPARATION_MM/2``
-    # (cost.py — not imported: it pulls the optimizer objective stack).
+    # ``fallback_half_extent_mm`` is ``COURTYARD_MIN_SEPARATION_MM/2``
+    # == ``DEFAULT_COURTYARD_RADIUS_MM`` — the ONE constant the gate
+    # uses too, imported lazily so drc.py's module graph never becomes a
+    # placer-input dependency.
+    from precis.pcb.drc import DEFAULT_COURTYARD_RADIUS_MM
+
     part_outline = tuple(
         np.asarray(poly, dtype=np.float64) if poly else np.zeros((0, 2))
         for poly in instance_courtyard_polygons(
             ir,
             clearance_mm=COURTYARD_CLEARANCE_MM,
-            fallback_half_extent_mm=1.0,
+            fallback_half_extent_mm=DEFAULT_COURTYARD_RADIUS_MM,
         )
     )
 
@@ -676,6 +746,11 @@ def design_from_ir(
                 np.asarray(ir.pin_h, dtype=np.float64),
             ]
         ),
+        pin_role=_pin_roles(ir, footprints),
+        anchor_xy=np.asarray(anchor_xy_l, dtype=np.float64).reshape(-1, 2),
+        anchor_dia=np.asarray(anchor_dia_l, dtype=np.float64),
+        anchor_net=tuple(anchor_net_l),
+        net_anchors=tuple(np.asarray(a, dtype=np.int64) for a in net_anchor_lists),
     )
 
 

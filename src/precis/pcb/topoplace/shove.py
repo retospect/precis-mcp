@@ -50,7 +50,14 @@ from scipy.sparse import csr_matrix, lil_matrix
 from shapely.geometry import Point, Polygon
 
 from precis.pcb.topoplace.design import TopoDesign
-from precis.pcb.topoplace.legalize import _mtv, _part_nets, _zone_blocks_part
+from precis.pcb.topoplace.legalize import (
+    _mtv,
+    _pad_polys,
+    _part_nets,
+    _pin_net_names,
+    _via_zone_exempt,
+    _zone_blocks_part,
+)
 from precis.pcb.topoplace.mesh import MeshConflictError, TopoMesh, build_mesh
 from precis.pcb.topoplace.proxy import (
     _EPS,
@@ -163,6 +170,7 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
 
     n_zones = sum(1 for z in d.zones if len(z.ring) >= 4)
     part_nets = [_part_nets(d, i) for i in range(n)] if n_zones else []
+    pin_names: dict[int, str] | None = None
     n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
 
     moved_mm = 0.0
@@ -195,6 +203,9 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
             reason = reason or "mesh"
             break
         owner = _vert_owner(d, ref)
+        # per-part pad-polys cache for the round's fixed-via exemption —
+        # rebuilt each round: last round's step may have moved the pose
+        pads_of: dict[int, list[tuple[int, Any]]] = {}
 
         # ── constraint rows as [(part, coeff), …] + rhs, the ≤ form.
         # Pair (a,b): n̂ the MTV axis pushing b off a — separation is
@@ -230,7 +241,7 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
             if zone_geoms:
                 for z_i, zg in zone_geoms:
                     z = d.zones[z_i]
-                    if z.part == i or (z.net and z.net in part_nets[i]):
+                    if z.part == i:
                         continue
                     if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                         continue
@@ -238,6 +249,17 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
                     if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                         continue
                     if float(gi.intersection(zg).area) <= _EPS:
+                        continue
+                    if z.kind == "fixed_via":
+                        if pin_names is None:
+                            pin_names = _pin_net_names(d)
+                        if i not in pads_of:
+                            pads_of[i] = _pad_polys(d, pose[i], i)
+                        if _via_zone_exempt(
+                            d, pose[i], i, z, zg, pin_names, pads_of[i]
+                        ):
+                            continue
+                    elif z.net and z.net in part_nets[i]:
                         continue
                     if var_of[i] < 0:
                         continue
@@ -387,12 +409,28 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
                 remaining.append((int(cf.a), int(cf.b), float(cf.area_mm2)))
         sides = pose[:, 3] >= 0.5
         th = through_hole_parts(d)
+        pads_fin: dict[int, list[tuple[int, Any]]] = {}
         for part, z_i, area in end.zone_conflicts:
             z = d.zones[z_i]
-            if z.part == part or (z.net and part_nets and z.net in part_nets[part]):
+            if z.part == part:
                 continue
-            if _zone_blocks_part(z, bool(sides[part]), bool(th[part]), n_layers):
-                remaining.append((int(part), n + int(z_i), float(area)))
+            if not _zone_blocks_part(z, bool(sides[part]), bool(th[part]), n_layers):
+                continue
+            if z.kind == "fixed_via":
+                if pin_names is None:
+                    pin_names = _pin_net_names(d)
+                zg = Polygon(
+                    np.asarray(zone_world_ring(d, z, pose), dtype=np.float64)[:-1]
+                )
+                if part not in pads_fin:
+                    pads_fin[part] = _pad_polys(d, pose[part], part)
+                if _via_zone_exempt(
+                    d, pose[part], part, z, zg, pin_names, pads_fin[part]
+                ):
+                    continue
+            elif z.net and part_nets and z.net in part_nets[part]:
+                continue
+            remaining.append((int(part), n + int(z_i), float(area)))
         for part, area in end.outline_conflicts:
             remaining.append((int(part), -1, float(area)))
     except MeshConflictError as exc:

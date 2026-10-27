@@ -15,16 +15,19 @@ a global minimum-displacement solve when slice 4 lands.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from shapely import box as shapely_box
 from shapely.geometry import Polygon
 
 from precis.pcb.topoplace.design import TopoDesign, TopoZone
 from precis.pcb.topoplace.proxy import (
     _EPS,
     _ring_geom,
+    local_to_world,
     through_hole_parts,
     zone_world_ring,
 )
@@ -94,38 +97,125 @@ def _zone_blocks_part(z: TopoZone, side: bool, th: bool, n_layers: int) -> bool:
     return outer in z.layers
 
 
-def _part_nets(d: TopoDesign, part: int) -> set[str]:
-    """The net names under a part's pins — the same-net fixed-copper
-    exemption the DRC gives an authored via/copper the part belongs to.
+def _pin_net_names(d: TopoDesign) -> dict[int, str]:
+    """pin id → net name — the shared resolver ``_part_nets`` and the
+    per-pad fixed-via exemption read.
 
-    ``net_of_pin`` maps pin id → net name. Routed nets come from the
-    compacted ``net_pins`` slots: ``net_name[k]`` names slot ``k``'s
-    pins. Plane and singleton nets are dropped from ``net_pins``, so
-    their pins fall back to the 1b decl tables — the pin's ir net id
-    (``pin_net``) resolves through ``decl_net_ir`` to ``decl_net_name``.
-    That keeps the same-net exemption for a part on a plane net's own
-    authored copper/via (GND and power are normal nets — there are no
-    pours). A pin on a net no declaration names gets no name and cannot
-    match a zone's ``net``."""
-    # ``d.pin_net`` carries IR net ids; ``net_name`` is indexed by the
-    # compacted ``net_pins`` slot (plane and singleton nets are dropped).
-    # A part whose pins' ir ids exceed the routed set crashed the lookup
-    # — and on id-aligned boards it silently read the WRONG net's name.
+    Routed nets come from the compacted ``net_pins`` slots:
+    ``net_name[k]`` names slot ``k``'s pins. Plane and singleton nets
+    are dropped from ``net_pins``, so their pins fall back to the 1b
+    decl tables — the pin's ir net id (``pin_net``) resolves through
+    ``decl_net_ir`` to ``decl_net_name``. A pin on a net no declaration
+    names gets no name and cannot match a zone's ``net``."""
     name_of_ir = {
         int(ir_id): str(d.decl_net_name[j])
         for j, ir_id in enumerate(d.decl_net_ir)
         if int(ir_id) >= 0
     }
+    # ``d.pin_net`` carries IR net ids; ``net_name`` is indexed by the
+    # compacted ``net_pins`` slot (plane and singleton nets are dropped).
+    # A part whose pins' ir ids exceed the routed set crashed the lookup
+    # — and on id-aligned boards it silently read the WRONG net's name.
     net_of_pin: dict[int, str] = {}
     for k, pins in enumerate(d.net_pins):
         for p in pins:
             net_of_pin[int(p)] = str(d.net_name[k])
+    for p in range(len(d.pin_part)):
+        if int(d.pin_part[p]) < 0 or int(p) in net_of_pin:
+            continue
+        name = name_of_ir.get(int(d.pin_net[p]))
+        if name:
+            net_of_pin[int(p)] = name
+    return net_of_pin
+
+
+def _part_nets(d: TopoDesign, part: int) -> set[str]:
+    """The net names under a part's pins — the same-net fixed-copper
+    exemption the DRC gives an authored via/copper the part belongs to.
+    For ``fixed_via`` zones this per-PART set is NOT enough — the
+    per-pad rule lives in :func:`_via_zone_exempt`."""
+    net_of_pin = _pin_net_names(d)
     out: set[str] = set()
     for p in np.flatnonzero(d.pin_part == part):
-        name = net_of_pin.get(int(p)) or name_of_ir.get(int(d.pin_net[p]))
+        name = net_of_pin.get(int(p))
         if name:
             out.add(name)
     return out
+
+
+def _pad_polys(d: TopoDesign, pose_row: np.ndarray, part: int) -> list[tuple[int, Any]]:
+    """(pin id, world-frame rect) for the part's REAL pads under
+    ``pose_row`` — the per-pad geometry the fixed-via exemption
+    judges. ``pin_wh`` supplies (w, h); a missing/zero size degrades
+    to a 0.1 mm point rather than vanishing. Quarter-turn poses keep
+    the rects axis-aligned, so the transformed-corner bbox is exact."""
+    out: list[tuple[int, Any]] = []
+    for p in np.flatnonzero(d.pin_part == part):
+        w = float(d.pin_wh[p, 0]) if p < len(d.pin_wh) else 0.0
+        h = float(d.pin_wh[p, 1]) if p < len(d.pin_wh) else 0.0
+        hw, hh = max(w, 0.1) / 2.0, max(h, 0.1) / 2.0
+        px, py = float(d.pin_xy[p, 0]), float(d.pin_xy[p, 1])
+        corners = np.asarray(
+            [
+                [px - hw, py - hh],
+                [px + hw, py - hh],
+                [px + hw, py + hh],
+                [px - hw, py + hh],
+            ],
+            dtype=np.float64,
+        )
+        world = local_to_world(corners, pose_row)
+        lo = world.min(axis=0)
+        hi = world.max(axis=0)
+        out.append(
+            (
+                int(p),
+                shapely_box(float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])),
+            )
+        )
+    return out
+
+
+def _via_zone_exempt(
+    d: TopoDesign,
+    pose_row: np.ndarray,
+    part: int,
+    z: TopoZone,
+    zg: Any,
+    net_of_pin: Mapping[int, str],
+    pads: list[tuple[int, Any]] | None = None,
+) -> bool:
+    """Per-PAD fixed-via exemption — the mirror of the placement gate's
+    per-pad rule (``check_via_pad_keepout``), replacing the old per-part
+    one (gr520903): covering an authored via is legal only where an
+    ON-NET pad lands on it. Both sides evaluate the SAME predicate —
+    ``drc._via_anchor_ok``: an on-net pad on the ring (edge within
+    ``_VIA_ANCHOR_TOL_MM``) and every pad that close on the via's net —
+    so legalize never accepts a cover the gate then reports
+    ``via_in_pad`` (an ordinary pad overlapping the annulus; only a
+    copper-field pad — ``d.pin_role`` — may swallow it, gr496850)."""
+    from precis.pcb.drc import (
+        _COPPER_FIELD_PAD_ROLES,
+        _VIA_ANCHOR_TOL_MM,
+        _via_anchor_ok,
+    )
+
+    pads = _pad_polys(d, pose_row, part) if pads is None else pads
+    hits = []
+    for p, g in pads:
+        dist = float(g.distance(zg))
+        if dist > _VIA_ANCHOR_TOL_MM:
+            continue
+        hits.append(
+            (
+                net_of_pin.get(int(p)),
+                dist,
+                g.intersection(zg).area > _EPS,
+                int(p) < len(d.pin_role)
+                and str(d.pin_role[int(p)]) in _COPPER_FIELD_PAD_ROLES,
+            )
+        )
+    return _via_anchor_ok(str(z.net), hits)
 
 
 def _legalize_zones(
@@ -140,8 +230,12 @@ def _legalize_zones(
     """One zone sweep: the worst part-on-zone overlap (mounting hole,
     keepout, foreign fixed copper) gets the full MTV on the part — the
     zone cannot move. A part on its OWN net's copper is legal (the
-    same-net authored-via exemption) and skipped."""
+    same-net authored-via exemption) and skipped; for ``fixed_via``
+    zones the exemption is per PAD — only an on-net pad on the ring is
+    a legal cover."""
     n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
+    pin_names: dict[int, str] | None = None
+    pads_of: dict[int, list[tuple[int, Any]]] = {}
     worst: tuple[int, int, float] | None = None
     worst_area = _EPS
     for i, gi in enumerate(geoms):
@@ -150,12 +244,21 @@ def _legalize_zones(
         x0, y0, x1, y1 = gi.bounds
         for z_i, zg in zone_geoms.items():
             z = d.zones[z_i]
-            if z.part == i or (z.net and z.net in part_nets[i]):
+            if z.part == i:
                 continue
             if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                 continue
             bx0, by0, bx1, by1 = zg.bounds
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+                continue
+            if z.kind == "fixed_via":
+                if pin_names is None:
+                    pin_names = _pin_net_names(d)
+                if i not in pads_of:
+                    pads_of[i] = _pad_polys(d, pose[i], i)
+                if _via_zone_exempt(d, pose[i], i, z, zg, pin_names, pads_of[i]):
+                    continue
+            elif z.net and z.net in part_nets[i]:
                 continue
             area = float(gi.intersection(zg).area)
             if area > worst_area:
@@ -281,18 +384,29 @@ def legalize_pose(
     part_nets = [_part_nets(d, i) for i in range(n)] if zone_geoms else []
     n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
 
-    def _zone_hit(geom, part: int, zgs: dict[int, Any]) -> bool:
+    pin_names_hit: dict[int, str] | None = None
+
+    def _zone_hit(geom, part: int, zgs: dict[int, Any], test_row: np.ndarray) -> bool:
         """Whether ``geom`` intrudes on any blocking zone — the pull-back
         must not land a part on a hole/keepout while fixing its outline
         escape (the loop-8 residual: R11 on the mounting hole)."""
+        nonlocal pin_names_hit
         for z_i, zg in zgs.items():
             z = d.zones[z_i]
-            if z.part == part or (z.net and z.net in part_nets[part]):
+            if z.part == part:
                 continue
             if not _zone_blocks_part(z, bool(sides[part]), bool(th[part]), n_layers):
                 continue
-            if geom.intersects(zg):
-                return True
+            if not geom.intersects(zg):
+                continue
+            if z.kind == "fixed_via":
+                if pin_names_hit is None:
+                    pin_names_hit = _pin_net_names(d)
+                if _via_zone_exempt(d, test_row, part, z, zg, pin_names_hit):
+                    continue
+            elif z.net and z.net in part_nets[part]:
+                continue
+            return True
         return False
 
     outline_geom = (
@@ -345,7 +459,7 @@ def legalize_pose(
                         if (
                             tg is not None
                             and outline_geom.covers(tg)
-                            and not _zone_hit(tg, i, zgs)
+                            and not _zone_hit(tg, i, zgs, test_row)
                         ):
                             hit = float(t)
                             break
@@ -378,18 +492,29 @@ def legalize_pose(
             if area > 1e-6:
                 remaining.append((i, j, area))
     n_layers = max((max(z.layers) for z in d.zones if z.layers), default=0) + 1
+    pin_names_fin: dict[int, str] | None = None
+    pads_fin: dict[int, list[tuple[int, Any]]] = {}
     for i, gi in enumerate(geoms):
         if gi is None:
             continue
         x0, y0, x1, y1 = gi.bounds
         for z_i, zg in _zone_geoms(d, pose).items():
             z = d.zones[z_i]
-            if z.part == i or (z.net and z.net in part_nets[i]):
+            if z.part == i:
                 continue
             if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                 continue
             bx0, by0, bx1, by1 = zg.bounds
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+                continue
+            if z.kind == "fixed_via":
+                if pin_names_fin is None:
+                    pin_names_fin = _pin_net_names(d)
+                if i not in pads_fin:
+                    pads_fin[i] = _pad_polys(d, pose[i], i)
+                if _via_zone_exempt(d, pose[i], i, z, zg, pin_names_fin, pads_fin[i]):
+                    continue
+            elif z.net and z.net in part_nets[i]:
                 continue
             area = float(gi.intersection(zg).area)
             if area > 1e-6:

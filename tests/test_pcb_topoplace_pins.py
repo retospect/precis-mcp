@@ -39,6 +39,9 @@ def _design(
     decl_net_route: list[int] | None = None,
     decl_net_plane: list[bool] | None = None,
     decl_net_name: tuple[str, ...] = (),
+    anchor_xy: list[list[float]] | None = None,
+    anchor_net: tuple[str, ...] = (),
+    net_anchors: list[list[int]] | None = None,
     pose0: list[list[float]],
 ) -> TopoDesign:
     n_d = len(decl_nets)
@@ -62,6 +65,9 @@ def _design(
         decl_net_route=np.asarray(decl_net_route or [-1] * n_d, dtype=np.int64),
         decl_net_plane=np.asarray(decl_net_plane or [False] * n_d, dtype=bool),
         decl_net_name=decl_net_name,
+        anchor_xy=np.asarray(anchor_xy or [], dtype=np.float64).reshape(-1, 2),
+        anchor_net=anchor_net,
+        net_anchors=tuple(np.asarray(a, dtype=np.int64) for a in (net_anchors or [])),
     )
 
 
@@ -261,6 +267,44 @@ def test_2opt_never_raises_and_helps() -> None:
     a = assign_pins(d, d.pose0)
     assert _crosses(_added_wires(d, a, _world(d))) == 0
     assert a.cost_vs_fixed < 0
+
+
+def test_anchor_survives_an_accepted_move() -> None:
+    """gr520903 review: ``_delta``/``_apply`` rebuilt affected nets'
+    wires without the ``net_pins`` slot arg, so a fixed-via anchor was
+    dropped the first time a move touched its net — the wire model
+    silently lost the anchor it was built with. After the member
+    exchange is accepted, net 0's wires still end at the anchor."""
+    from precis.pcb.topoplace import pins as _pins
+    from precis.pcb.topoplace.proxy import all_pin_world
+
+    d = _design(
+        parts=("RN1", "J1"),
+        pin_xy=[[0, 1], [0, -1], [10, 1], [10, -1]],
+        pin_part=[0, 0, 1, 1],
+        pin_label=["1", "2", "1", "2"],
+        pin_net=[0, 1, 0, 1],
+        net_pins=[[0, 3], [1, 2]],
+        swap_groups=(SwapGroup(part=0, members=((0,), (1,))),),
+        decl_nets=([0, 3], [1, 2]),
+        decl_net_ir=[0, 1],
+        decl_net_route=[0, 1],
+        decl_net_name=("A", "B"),
+        anchor_xy=[[5.0, -1.0]],
+        anchor_net=("A",),
+        net_anchors=[[0], []],
+        pose0=[[0, 0, 0, 0], [10, 0, 0, 0]],
+    )
+    pw = all_pin_world(d, d.pose0)
+    effs = _pins._effective(d)  # no flex slots — the swap group moves
+    m = _pins._model(d, pw, effs, [], None)
+    swaps: list[tuple[str, int | str, int | str]] = []
+    _pins._two_opt(d, m, effs, [], swaps)
+    assert swaps == [("RN1", 1, 2)]
+    assert any(
+        np.allclose(w[:2], [5.0, -1.0]) or np.allclose(w[2:], [5.0, -1.0])
+        for w in m.wires[0]
+    )
 
 
 def test_swap_group_plain_member() -> None:

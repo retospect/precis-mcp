@@ -258,17 +258,26 @@ class _Assign:
             w = (
                 proxy._wires[k]
                 if proxy is not None
-                else _proxy._net_wires(self.d, self.d.net_pins[k], self.pw)
+                else _proxy._net_wires(self.d, self.d.net_pins[k], self.pw, k)
             )
             blocks.append((w, np.full(len(w), k, dtype=np.int64)))
         self.static = _join(blocks)
 
+    def _eff_wires(self, e: int, pins: Iterable[int]) -> np.ndarray:
+        """``_net_wires`` for eff net ``e`` over ``pins``: a routed eff
+        id IS its ``net_pins`` slot — passing it lets the net's
+        fixed-via anchors join the MST vertex set (``_net_points``);
+        a pseudo id owns no anchors and passes ``None``."""
+        return _proxy._net_wires(
+            self.d,
+            np.asarray(sorted(pins)),
+            self.pw,
+            e if e < len(self.d.net_pins) else None,
+        )
+
     def rebuild(self) -> None:
         """Refresh ``wires`` from ``eff_pins`` and take the count."""
-        self.wires = {
-            e: _proxy._net_wires(self.d, np.asarray(sorted(p)), self.pw)
-            for e, p in self.eff_pins.items()
-        }
+        self.wires = {e: self._eff_wires(e, p) for e, p in self.eff_pins.items()}
         self.crossings = _proxy._within(*self.flat())
 
     def flat(self) -> tuple[np.ndarray, np.ndarray]:
@@ -471,10 +480,7 @@ def _delta(m: _Assign, changes: list[tuple[int, int | None, int | None]]) -> flo
             new_sets[old].discard(p)
         if new in new_sets:
             new_sets[new].add(p)
-    new_wires = {
-        e: _proxy._net_wires(m.d, np.asarray(sorted(new_sets[e])), m.pw)
-        for e in affected
-    }
+    new_wires = {e: m._eff_wires(e, new_sets[e]) for e in affected}
     rest = [m.static] + [
         (m.wires[e], np.full(len(m.wires[e]), e, dtype=np.int64))
         for e in m.wires
@@ -509,7 +515,7 @@ def _apply(m: _Assign, changes: list[tuple[int, int | None, int | None]]) -> set
             affected.add(new)
         m.bound[p] = new
     for e in affected:
-        m.wires[e] = _proxy._net_wires(m.d, np.asarray(sorted(m.eff_pins[e])), m.pw)
+        m.wires[e] = m._eff_wires(e, m.eff_pins[e])
     return affected
 
 

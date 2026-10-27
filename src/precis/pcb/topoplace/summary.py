@@ -58,11 +58,13 @@ def _wire_model(
     pw = all_pin_world(d, pose)
     blocks = []
     ends: list[tuple[int, int]] = []
-    for np_net in d.net_pins:
-        pts = pw[np_net]
+    for k, np_net in enumerate(d.net_pins):
+        pts = _proxy._net_points(d, np_net, pw, k)
         for i, j in _proxy._mst_edges(pts):
-            ends.append((int(d.pin_part[np_net[i]]), int(d.pin_part[np_net[j]])))
-        blocks.append(_proxy._net_wires(d, np_net, pw))
+            pa = int(d.pin_part[np_net[i]]) if i < len(np_net) else -1
+            pb = int(d.pin_part[np_net[j]]) if j < len(np_net) else -1
+            ends.append((pa, pb))
+        blocks.append(_proxy._net_wires(d, np_net, pw, k))
     wires, nets = _proxy._concat(blocks, list(range(len(d.net_pins))))
     return wires, ends, nets
 
@@ -91,7 +93,8 @@ def crossing_info(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, np.ndarr
     for i, j in hit:
         pts.append(_intersect(wires[i], wires[j]))
         for part in (*ends[int(i)], *ends[int(j)]):
-            counts[part] += 1
+            if part >= 0:
+                counts[part] += 1
     return (
         np.asarray(pts).reshape(-1, 2) if pts else np.empty((0, 2)),
         counts,

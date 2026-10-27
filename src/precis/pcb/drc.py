@@ -1986,6 +1986,33 @@ def check_npth_clearance(
 #: ``via_in_pad`` (gr496850).
 _COPPER_FIELD_PAD_ROLES = frozenset({"electrode", "tape_land"})
 
+#: How close a pad's edge must come to a fixed via's copper to count as
+#: landing "on" it — pad-edge landings and the fab's via-pad spacing both
+#: live inside this tolerance. ONE value for the gate and the legalizer
+#: (gr520903) so the two can never drift.
+_VIA_ANCHOR_TOL_MM = 0.25
+
+
+def _via_anchor_ok(via_net: str, hits: Iterable[tuple[Any, float, bool, bool]]) -> bool:
+    """The ONE fixed-via anchor test the place gate and the legalizer
+    share (gr520903): covering an authored via is legal only where an
+    ON-NET pad lands on its ring — at least one pad within
+    ``_VIA_ANCHOR_TOL_MM`` — and every pad that close is a legal
+    landing: on the via's net, and overlapping the annulus only as a
+    copper field (the ``via_in_pad`` mirror, gr496850 — an ordinary pad
+    under the annulus is a drilled land, not an anchor). ``hits`` are
+    ``(pad net, pad-edge→via-edge mm, overlaps the annulus,
+    copper-field)`` per pad in the via's neighbourhood; pads past the
+    tolerance never count."""
+    near = [
+        (net, overlap, cf)
+        for net, dist, overlap, cf in hits
+        if dist <= _VIA_ANCHOR_TOL_MM
+    ]
+    return bool(near) and all(
+        net == via_net and (cf or not overlap) for net, overlap, cf in near
+    )
+
 
 def check_via_pad_keepout(
     model: dict[str, Any], capability: CapabilityRow
@@ -2129,26 +2156,31 @@ def check_via_pad_keepout(
         via_fixed = bool(item.get("fixed"))
         via_layers = set(_via_layer_names(item, all_layers))
         vx_y = Point(vx, vy)
-        reach = required + vr
+        # A fixed via's anchor predicate judges its neighbourhood at
+        # ``_VIA_ANCHOR_TOL_MM`` — wider than the keepout reach — so a
+        # fixed via probes at the anchor radius; pads past ``required``
+        # only feed the predicate, the emit pass still skips them.
+        probe = (
+            max(required + vr, _VIA_ANCHOR_TOL_MM + vr) if via_fixed else required + vr
+        )
         cand: set[int] = set(degenerate)
         for layer in via_layers:
             entry = layer_trees.get(layer)
             if entry is None:
                 continue
             layer_idxs, layer_tree = entry
-            for c in layer_tree.query(vx_y, predicate="dwithin", distance=reach):
+            for c in layer_tree.query(vx_y, predicate="dwithin", distance=probe):
                 cand.add(layer_idxs[int(c)])
         if drilled_tree is not None:
-            for c in drilled_tree.query(vx_y, predicate="dwithin", distance=reach):
+            for c in drilled_tree.query(vx_y, predicate="dwithin", distance=probe):
                 cand.add(drilled[int(c)])
+        # Two passes: the anchor predicate needs every near pad's gap
+        # before the per-pair emit decisions read it.
+        rows: list[tuple[int, dict[str, Any], float]] = []
         for pad_idx in sorted(cand):
             pad = pads[pad_idx]
             if pad.get("layer") not in via_layers and not pad.get("drill"):
                 continue
-            pad_net_raw = pad.get("net")
-            exempt = bool(
-                via_fixed and via_net and pad_net_raw and via_net == pad_net_raw
-            )
             pad_body = pad_bodies[pad_idx]
             if pad_body is not None:
                 # The pad's REAL outline (:func:`_copper_item_polygon` — the
@@ -2179,16 +2211,38 @@ def check_via_pad_keepout(
                 # still gets SOME check rather than none.
                 pr = max(w, h) / 2.0
                 gap = _dist((vx, vy), (px, py)) - vr - pr
+            rows.append((pad_idx, pad, gap))
+        # A fixed via's same-net pass holds only where the via is a
+        # genuine anchor landing — the same predicate the legalizer's
+        # ``_via_zone_exempt`` runs, so gate and legalizer cannot
+        # disagree about what covering this via means (gr520903).
+        anchored = via_fixed and _via_anchor_ok(
+            str(via_net or ""),
+            [
+                (
+                    pad.get("net"),
+                    max(gap, 0.0),
+                    gap < -_EPS,
+                    pad.get("role") in _COPPER_FIELD_PAD_ROLES,
+                )
+                for _pi, pad, gap in rows
+            ],
+        )
+        for pad_idx, pad, gap in rows:
+            pad_net_raw = pad.get("net")
+            same_net = bool(via_net and pad_net_raw and via_net == pad_net_raw)
             # The same-net fixed carve-out above never hides a via sitting
             # IN a pad (annulus on the pad's copper): that is `via_in_pad`,
             # an error whatever the net or provenance (gr496850).
             # An EWOD electrode or tape land is a copper field, not a solder
             # land: the plaza via legitimately drops into it.
             in_pad = (
-                exempt
+                via_fixed
+                and same_net
                 and gap < -_EPS
                 and pad.get("role") not in _COPPER_FIELD_PAD_ROLES
             )
+            exempt = via_fixed and same_net and anchored
             if exempt and not in_pad:
                 continue
             if gap >= required - _EPS and not in_pad:

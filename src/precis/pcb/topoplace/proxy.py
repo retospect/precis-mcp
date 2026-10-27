@@ -230,9 +230,25 @@ def _mst_edges(pts: np.ndarray) -> list[tuple[int, int]]:
     return edges
 
 
-def _net_wires(d: TopoDesign, net_pins: np.ndarray, pw: np.ndarray) -> np.ndarray:
-    """One net's MST airwires as (E, 4) ``[x1, y1, x2, y2]`` rows."""
+def _net_points(
+    d: TopoDesign, net_pins: np.ndarray, pw: np.ndarray, k: int | None
+) -> np.ndarray:
+    """A net's MST vertices: real pin positions plus slot ``k``'s
+    fixed-via anchors — world-fixed points the airwire must pass
+    through (S5; ``net_anchors`` is parallel to ``net_pins``)."""
     pts = pw[net_pins]
+    if k is not None and k < len(d.net_anchors) and len(d.net_anchors[k]):
+        pts = np.vstack([pts, d.anchor_xy[d.net_anchors[k]]])
+    return pts
+
+
+def _net_wires(
+    d: TopoDesign, net_pins: np.ndarray, pw: np.ndarray, k: int | None = None
+) -> np.ndarray:
+    """One net's MST airwires as (E, 4) ``[x1, y1, x2, y2]`` rows.
+    ``k`` is the ``net_pins`` slot index — needed so the net's
+    fixed-via anchors join the vertex set."""
+    pts = _net_points(d, net_pins, pw, k)
     return np.asarray(
         [(pts[i, 0], pts[i, 1], pts[j, 0], pts[j, 1]) for i, j in _mst_edges(pts)],
         dtype=np.float64,
@@ -311,7 +327,7 @@ def evaluate(d: TopoDesign, pose: np.ndarray) -> tuple[int, float]:
     Returns (crossings, total airwire length mm)."""
     pw = all_pin_world(d, pose)
     wires, nets = _concat(
-        [_net_wires(d, np_net, pw) for np_net in d.net_pins],
+        [_net_wires(d, np_net, pw, k) for k, np_net in enumerate(d.net_pins)],
         list(range(len(d.net_pins))),
     )
     length = float(np.hypot(wires[:, 0] - wires[:, 2], wires[:, 1] - wires[:, 3]).sum())
@@ -333,7 +349,7 @@ class ProxyState:
         self._pw = all_pin_world(d, self.pose)
         #: committed wires per net: (E, 4) rows
         self._wires: list[np.ndarray] = [
-            _net_wires(d, np_net, self._pw) for np_net in d.net_pins
+            _net_wires(d, np_net, self._pw, k) for k, np_net in enumerate(d.net_pins)
         ]
         self._flat, self._flat_net = _concat(self._wires, list(range(len(d.net_pins))))
         self._cross = _within(self._flat, self._flat_net)
@@ -507,7 +523,7 @@ class ProxyState:
         rest_w, rest_n = self._rest_view(affected)
         old_w, old_n = self._aff_view(affected)
         new_wires = {
-            k: _net_wires(self.d, self.d.net_pins[k], staged_pw) for k in affected
+            k: _net_wires(self.d, self.d.net_pins[k], staged_pw, k) for k in affected
         }
         new_w, new_n = _concat(list(new_wires.values()), list(new_wires))
 
