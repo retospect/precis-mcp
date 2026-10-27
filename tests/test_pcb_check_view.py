@@ -597,6 +597,95 @@ def test_check_netlist_unrouted_only_board_reads_clean(
     assert "no findings match" not in body
 
 
+def _stub_run(
+    pcb: PcbHandler, monkeypatch: pytest.MonkeyPatch, findings: list[Any]
+) -> None:
+    """Serve ``findings`` as the check run — the same seam
+    ``test_pcb_handler._stub_drc_run`` uses on ``view='drc'``."""
+    from precis.handlers import pcb as pcb_handler
+    from precis.pcb import drc as pcb_drc
+
+    run = pcb_handler._DrcRun(
+        "abcdef0123", findings, False, pcb_drc.FindingDelta(previous_run_id=None)
+    )
+    monkeypatch.setattr(pcb, "_drc_run", lambda ref_id, design, **kw: run)
+
+
+def test_check_by_net_rollup_names_the_nets_driving_the_count(
+    pcb: PcbHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr521606: past ``_DRC_SUMMARY_MIN`` findings the head carries
+    ``by rule:`` AND ``by net:`` — each distinct net a finding names
+    counted once, so a two-net pair counts toward each of its nets and an
+    ERC row (whose objects name pins, not the net) lands on its
+    ``net <name>`` where."""
+    from precis.pcb import drc as pcb_drc
+
+    pcb.put(id="chk-bynet", args=_mini_design())
+    F = pcb_drc.DrcFinding
+    findings = [
+        *[
+            F(
+                "clearance",
+                "error",
+                "a <-> b on F.Cu",
+                "x",
+                objects=({"net": "SIG"}, {"net": "GND"}),
+            )
+            for _ in range(8)
+        ],
+        F(
+            "pin_conflict",
+            "error",
+            "net SIG",
+            "two drivers",
+            objects=({"refdes": "U1", "pin": "1"}, {"refdes": "U2", "pin": "3"}),
+        ),
+        F("unrouted", "error", "net VBUS", "net VBUS has no route"),
+        F("unrouted", "error", "net VBUS2", "net VBUS2 has no route"),
+    ]
+    _stub_run(pcb, monkeypatch, findings)
+    body = pcb.get(id="chk-bynet", view="check", args={"phase": "placed"}).body
+    # check tallies the DISPLAYED severity — unrouted is todo below routed.
+    assert "by rule: clearance 8 error, pin_conflict 1 error, unrouted 2 todo" in body
+    assert "by net: SIG 9, GND 8, VBUS 1, VBUS2 1" in body
+    # view='drc' is the same surface's preset — same net tally there.
+    drc = pcb.get(id="chk-bynet", view="drc").body
+    assert "by net: SIG 9, GND 8, VBUS 1, VBUS2 1" in drc
+
+
+def test_check_by_net_rollup_needs_ten_findings_and_caps_the_list(
+    pcb: PcbHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Below the summary minimum no tally lines appear; past the net cap
+    the rollup shows the top offenders and a ``+N more`` tail."""
+    from precis.pcb import drc as pcb_drc
+
+    pcb.put(id="chk-bynet-small", args=_mini_design())
+    F = pcb_drc.DrcFinding
+    _stub_run(
+        pcb,
+        monkeypatch,
+        [F("unrouted", "error", f"net N{i}", f"net N{i} unrouted") for i in range(3)],
+    )
+    body = pcb.get(id="chk-bynet-small", view="check", args={"phase": "placed"}).body
+    assert "by rule:" not in body and "by net:" not in body
+
+    _stub_run(
+        pcb,
+        monkeypatch,
+        [
+            F("unrouted", "error", f"net N{i:02d}", f"net N{i} unrouted")
+            for i in range(10)
+        ],
+    )
+    body = pcb.get(id="chk-bynet-small", view="check", args={"phase": "placed"}).body
+    assert (
+        "by net: N00 1, N01 1, N02 1, N03 1, N04 1, N05 1, N06 1, N07 1, +2 more"
+        in body
+    )
+
+
 def _two_tracks_too_close(store: Any, slug: str) -> None:
     """SIG and GND tracks 0.02 mm apart — a clearance error only a pass
     that reads the copper can see. No route rows, so the derived phase

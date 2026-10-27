@@ -1062,6 +1062,11 @@ def _evidence_summary(st: ItemStatus) -> str:
         return f"rationale: {str(rationale)[:60]}"
     if st.verdict is not None and st.verdict.get("verdict") == NOT_CHECKABLE:
         return f"missing: {str(ev.get('reason') or '?')[:80]}"
+    correction = ev.get("correction")
+    if correction:
+        # gr521605: a fail verdict's stated fix is the column's actionable
+        # content — the fixing agent reads it here, not the reason keys.
+        return f"fix: {str(correction)[:80]}"
     return keys[:60]
 
 

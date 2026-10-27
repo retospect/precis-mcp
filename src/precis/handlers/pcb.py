@@ -479,8 +479,63 @@ _DrcRun = check_run.DrcRun
 _DRC_GONE_SHOWN = 40
 
 
-#: ``view='drc'`` adds a severity x rule tally line from this many findings.
+#: ``view='check'``/``'drc'`` add the ``by rule:`` and ``by net:`` tally
+#: lines from this many findings (gr521606: past it, per-row reading stops
+#: working — the net half says which nets drive the count, the usual
+#: congestion failure, without the agent re-aggregating 40 rows itself).
 _DRC_SUMMARY_MIN = 10
+
+#: ``by net:`` names at most this many top offenders before a ``+N more``
+#: tail (same cap the findings themselves use for named nets).
+_DRC_SUMMARY_NETS = 8
+
+
+def _finding_nets(f: pcb_drc.DrcFinding) -> set[str]:
+    """The nets a finding is ABOUT: the ``net``/``*_net`` values its
+    objects carry (``unrouted``'s row, a clearance pair's two nets, a
+    per-net not-checked row) plus the ``net <name>`` an ERC row writes as
+    its whole ``where`` — its objects name pins, not the net."""
+    nets: set[str] = set()
+    if f.where.startswith("net "):
+        name = f.where[4:].strip()
+        if name and name != "?":
+            nets.add(name)
+    for o in f.objects:
+        for key, value in o.items():
+            if key != "net" and not key.endswith("_net"):
+                continue
+            if isinstance(value, str) and value and value != "?":
+                nets.add(value)
+    return nets
+
+
+def _drc_summary_lines(tiered: Sequence[tuple[pcb_drc.DrcFinding, str]]) -> str:
+    """The ``by rule:``/``by net:`` head lines for a finding set at or past
+    ``_DRC_SUMMARY_MIN``. ``by rule:`` is the severity x rule count
+    (gr477797). ``by net:`` counts each DISTINCT net a finding names once
+    per finding (:func:`_finding_nets`), so a two-net clearance pair counts
+    toward each of its nets — the nets driving the violation count."""
+    by_rule: dict[tuple[str, str], int] = {}
+    by_net: dict[str, int] = {}
+    for f, sev in tiered:
+        by_rule[(f.rule, sev)] = by_rule.get((f.rule, sev), 0) + 1
+        for net in _finding_nets(f):
+            by_net[net] = by_net.get(net, 0) + 1
+    sev_rank = {"error": 0, "warn": 1, "todo": 2, "info": 3}
+    out = "\nby rule: " + ", ".join(
+        f"{rule} {n} {sev}"
+        for (rule, sev), n in sorted(
+            by_rule.items(), key=lambda kv: (sev_rank.get(kv[0][1], 4), -kv[1], kv[0])
+        )
+    )
+    if by_net:
+        top = sorted(by_net.items(), key=lambda kv: (-kv[1], kv[0]))
+        out += "\nby net: " + ", ".join(
+            f"{net} {n}" for net, n in top[:_DRC_SUMMARY_NETS]
+        )
+        if len(top) > _DRC_SUMMARY_NETS:
+            out += f", +{len(top) - _DRC_SUMMARY_NETS} more"
+    return out
 
 
 def _drc_run_label(run_id: str | None) -> str:
@@ -6210,8 +6265,9 @@ class PcbHandler(Handler):
         the TABLE only (gr477797); the header counts stay board-wide so a
         filtered page is never read as a clean board. Rows sort errors
         first (stable within a severity, so run order is kept). Past
-        ``_DRC_SUMMARY_MIN`` findings a ``by rule:`` line gives the
-        severity x rule counts.
+        ``_DRC_SUMMARY_MIN`` findings ``by rule:``/``by net:`` lines give
+        the severity x rule counts and the nets driving them
+        (:func:`_drc_summary_lines`, gr521606).
 
         An unchanged board is answered from its last recorded run
         (gr496242 — the run's design-revision stamp still matches); the
@@ -6264,15 +6320,7 @@ class PcbHandler(Handler):
         if not findings:
             return Response(body=head + "\n— no findings ✓" + gone)
         if len(findings) >= _DRC_SUMMARY_MIN:
-            tally: dict[tuple[str, str], int] = {}
-            for f in findings:
-                tally[(f.rule, f.severity)] = tally.get((f.rule, f.severity), 0) + 1
-            head += "\nby rule: " + ", ".join(
-                f"{rule} {n} {sev}"
-                for (rule, sev), n in sorted(
-                    tally.items(), key=lambda kv: (kv[0][1] != "error", -kv[1], kv[0])
-                )
-            )
+            head += _drc_summary_lines([(f, f.severity) for f in findings])
         all_rules = {f.rule for f in findings}
         if rules - all_rules:
             raise BadInput(
@@ -6466,6 +6514,11 @@ class PcbHandler(Handler):
                 f"\n{n_unrouted} net(s) unrouted — expected before routing "
                 "(args={'rule':'unrouted'} lists them)"
             )
+        # The same tallies ``view='drc'`` carries (gr521606): over the
+        # reported set — the netlist-collapsed unrouted rows already got
+        # their head line, so they do not double-count here.
+        if len(tiered) >= _DRC_SUMMARY_MIN:
+            head += _drc_summary_lines(tiered)
         # An unknown rule is refused BEFORE the zero-findings answer — a
         # filter that names nothing that ran is an input error, never a
         # quiet "no findings".

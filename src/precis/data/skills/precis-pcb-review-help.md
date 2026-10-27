@@ -53,7 +53,10 @@ anchored to the refdes/nets it is about.
 
 - **pass / fail / n/a** — a `machine`-origin verdict, `checked_by=
   'pcb_review'`, anchors narrowed to the named refdes/nets, `evidence`
-  `{reason, quote, job}`. `inputs` records `part:<C#>` (datasheet-facts
+  `{reason, quote, job}`. A `fail` also records `correction` — the
+  smallest change that would make the item pass, which the checklist row
+  shows as `fix: …` and the job summary echoes after the verdict; a fail
+  answer without one is refused and retried. `inputs` records `part:<C#>` (datasheet-facts
   rev) for each anchored part — every part for a whole-board verdict —
   and `margin:fixed-derating` when the reviewer used the margin policy.
 - **not checkable** — a `machine`-origin verdict `not checkable` with

@@ -100,7 +100,10 @@ between, so "broken again" reads `new` while keeping its original
 first-seen).
 
 Rows list errors before warnings before todos. With 10 or more findings
-the head adds a `by rule:` tally (rule, count, severity). Narrow the
+the head adds a `by rule:` tally (rule, count, severity) and a `by net:`
+rollup — the top nets by finding count (each net counted once per finding
+that names it, both nets of a pair finding), so the nets driving the
+violation count are visible without re-aggregating the rows. Narrow the
 table with `args={'severity': 'error'|'warn'|'todo', 'rule': 'via_pad_keepout'}`
 (`rule` takes a comma list; an unknown rule or severity is refused with
 the valid options). The head counts stay board-wide and a

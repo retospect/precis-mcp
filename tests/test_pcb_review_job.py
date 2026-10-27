@@ -155,6 +155,59 @@ def test_parse_refuses_garbage(text: str) -> None:
         review.parse(text)
 
 
+# ── gr521605: a fail verdict carries a stated correction ──────────────
+
+
+def test_parse_fail_without_correction_is_invalid() -> None:
+    """A bare fail tells the fixing agent nothing — the answer is not a
+    verdict, the item stays queued and the next run retries."""
+    with pytest.raises(ValueError, match="correction"):
+        review.parse('{"verdict": "fail", "reason": "x", "quote": "q"}')
+    a = review.parse(
+        '{"verdict": "fail", "reason": "x", "correction": "swap R1 to 4k7"}'
+    )
+    assert a.correction == "swap R1 to 4k7"
+    # Every other verdict tolerates the key absent.
+    assert review.parse('{"verdict": "pass"}').correction == ""
+
+
+def test_fail_verdict_records_correction_and_surfaces_it(
+    store: Store, board: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stated fix lands on the verdict beside ``quote``, echoes in
+    the job summary line and shows as ``fix:`` on the checklist row."""
+    from precis.handlers.checklist import ChecklistHandler
+
+    item = "current-budget-per-rail"
+    _install(
+        monkeypatch,
+        {
+            "verdict": "fail",
+            "reason": "no decoupling cap near U1",
+            "quote": "VCC: U1.1 R1.1",
+            "correction": "place a 100nF cap on VCC within 5mm of U1/1",
+            "anchors": ["U1"],
+            "inputs": [],
+        },
+    )
+    summary, failures = _run(store, board, item=item)
+    assert not failures
+    assert "fail — fix: place a 100nF cap" in summary[0]
+    st = next(s for s in review.queue(store, board).statuses if s.name == item)
+    assert st.status == "fail"
+    v = st.verdict
+    assert v is not None
+    assert v["evidence"]["correction"] == (
+        "place a 100nF cap on VCC within 5mm of U1/1"
+    )
+    body = (
+        ChecklistHandler(hub=Hub(store=store))
+        .get(id="pcb-tapeout", target="pcb:rv-board")
+        .body
+    )
+    assert "fix: place a 100nF cap" in body
+
+
 # ── the pass ──────────────────────────────────────────────────────────
 
 

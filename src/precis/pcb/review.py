@@ -16,7 +16,10 @@ none), and the nets. The model answers strict JSON:
 
 * ``pass`` / ``fail`` / ``n/a`` → a ``machine``-origin verdict, anchored
   to the refdes/nets it names (fingerprint narrowed to them), the
-  decisive line quoted in ``evidence.quote``, and ``inputs`` recording
+  decisive line quoted in ``evidence.quote``, a ``fail`` also carrying
+  the smallest change that would make the item pass in
+  ``evidence.correction`` (gr521605 — an answer with no correction is
+  invalid and never lands), and ``inputs`` recording
   the revisions it consumed: every anchored part's datasheet-facts rev
   (``part:<C#>``) plus whatever the model declares it read from the
   offered input list (``margin:fixed-derating``). A later bump of any of
@@ -229,8 +232,10 @@ Fails when: {prevents}
 Rules:
 - "pass" only when the evidence shows the item is met; quote the decisive
   datasheet line, fact row or finding in "quote".
-- "fail" when the evidence shows it is not met; say what is wrong and
-  quote the line that shows it.
+- "fail" when the evidence shows it is not met; say what is wrong, quote
+  the line that shows it, and state in "correction" the smallest change
+  that would make this item pass — a concrete part, value or net edit,
+  not a restatement of what failed.
 - "n/a" only when the item cannot apply to this board (say why).
 - "not_checkable" when the evidence needed is missing — e.g. a part the
   item depends on has "no datasheet facts" — name what is missing. Never
@@ -240,10 +245,12 @@ Rules:
 - "anchors": the refdes and net names the verdict is about (exactly as
   written below); [] for the whole board.
 - "inputs": which of {offered} you relied on ([] if none).
+- "correction": required — on "fail" the smallest change that would make
+  this item pass; "" on every other verdict.
 
 Answer with ONE JSON object and nothing else:
 {{"verdict": "pass|fail|n/a|not_checkable", "reason": "...",
-  "quote": "...", "anchors": [...], "inputs": [...]}}
+  "quote": "...", "correction": "...", "anchors": [...], "inputs": [...]}}
 
 # Evidence
 {evidence}
@@ -272,6 +279,10 @@ class Answer:
     quote: str
     anchors: tuple[str, ...]
     inputs: tuple[str, ...]
+    #: The smallest change that would make the item pass (gr521605 —
+    #: actionable, not a restatement of what failed). Required on
+    #: ``fail``; "" everywhere else.
+    correction: str = ""
 
 
 def parse(text: str) -> Answer:
@@ -287,6 +298,14 @@ def parse(text: str) -> Answer:
     verdict = str(raw.get("verdict") or "").strip().lower().replace(" ", "_")
     if verdict not in ANSWERS:
         raise ValueError(f"verdict {verdict!r} is not one of {list(ANSWERS)}")
+    correction = str(raw.get("correction") or "").strip()
+    if verdict == "fail" and not correction:
+        # A bare fail tells the fixing agent nothing new (gr521605): the
+        # answer is invalid, the item stays queued, the next run retries.
+        raise ValueError(
+            "a 'fail' verdict needs a 'correction' — the smallest change "
+            "that would make the item pass"
+        )
 
     def _strs(v: Any) -> tuple[str, ...]:
         if not isinstance(v, list):
@@ -299,6 +318,7 @@ def parse(text: str) -> Answer:
         quote=str(raw.get("quote") or "").strip(),
         anchors=_strs(raw.get("anchors")),
         inputs=_strs(raw.get("inputs")),
+        correction=correction,
     )
 
 
@@ -357,6 +377,10 @@ def record(
     evidence_out: dict[str, Any] = {"reason": reason}
     if not not_checkable:
         evidence_out["quote"] = answer.quote
+    if answer.correction:
+        # gr521605: a fail carries the smallest change that would make
+        # the item pass — the fixing agent consumes it, never re-derives.
+        evidence_out["correction"] = answer.correction
     if job_ref_id is not None:
         evidence_out["job"] = job_ref_id
     store.checklist_verdict_insert(
@@ -374,7 +398,10 @@ def record(
     )
     if not_checkable:
         return f"{st.name}: not checkable — {reason}"
-    return f"{st.name}: {answer.verdict}"
+    line = f"{st.name}: {answer.verdict}"
+    if answer.correction:
+        line += f" — fix: {answer.correction}"
+    return line
 
 
 def _consumed(
