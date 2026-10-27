@@ -148,6 +148,17 @@ applies them.
 
 **Seams.**
 
+- Trace diffs across a schema-1 migration match qualified ancestry and
+  per-qual occurrences: schema-1 keys include line numbers, so direct key
+  matches would falsely replace the entire trace. Other diffs retain keys.
+- ``traceview.reanchor`` resolves a supplied qualified definition against
+  current source text, then seeks the stored offset or nearest similar source
+  line. Its separate immutable anchor reports line, definition or unresolved
+  granularity so a removed call never inherits an unverified line citation.
+  Historical rendering stays unchanged; caller inference is not part of this
+  pure helper.
+- Port ray hits resolve annotation frame ids through the bound block's trace,
+  matching feature provenance; absent traces retain geometric hits.
 - Geometry is rented from ``precis.cad`` (``clearance``, ``probe``,
   ``printability``, ``fieldops``); numbers that are core data live in core
   (:mod:`precis.fit_classes`, :mod:`precis.component_series`,

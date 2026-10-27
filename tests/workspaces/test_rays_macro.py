@@ -120,7 +120,53 @@ def test_pick_screw_is_the_shortest_that_fits() -> None:
 def test_port_cylinder_closed_form(store: Store) -> None:
     ls = _lines(_ray(_mount(store), "mount", name="bolt-a1"))
     assert any(ln.startswith("1.2 mm  port.enter base.h1 M5x0.8") for ln in ls)
-    assert "17.2 mm  port.leave base.h1" in ls
+    assert any(ln.startswith("17.2 mm  port.leave base.h1") for ln in ls)
+
+
+def test_port_hits_name_the_declaring_frame(store: Store) -> None:
+    ls = _lines(_ray(_mount(store), "mount", name="bolt-a1"))
+    for event in ("port.enter", "port.leave"):
+        hit = next(ln for ln in ls if f"{event} base.h1" in ln)
+        assert hit.endswith("build.py:22 cut#3 · frame:62b098077272e0ab")
+
+
+@pytest.mark.parametrize("frame", ["3", None], ids=["numeric-string", "missing"])
+def test_port_hits_handle_optional_frame_ids(store: Store, frame: str | None) -> None:
+    from precis_se import rays
+
+    _mount(store)
+    tree = _tree(store, "mount")
+    annotations = tree.blocks["base"].ports["h1"].annotations
+    if frame is None:
+        annotations.pop("frame")
+    else:
+        annotations["frame"] = frame
+    spec = tree.blocks["bracket"].rays["bolt-a1"]
+    obs = rays.observe(tree, "bracket", spec)
+    hits = [
+        h for h in obs.hits if h.subject == "base.h1" and h.event.startswith("port.")
+    ]
+    assert [h.event for h in hits] == ["port.enter", "port.leave"]
+    for hit in hits:
+        if frame is None:
+            assert "frame:" not in hit.text
+        else:
+            assert hit.text.endswith("build.py:22 cut#3 · frame:62b098077272e0ab")
+
+
+def test_port_hits_without_trace_keep_geometry(store: Store) -> None:
+    from precis_se import rays
+
+    _mount(store)
+    tree = _tree(store, "mount")
+    tree.traces = lambda _ref: None
+    spec = tree.blocks["bracket"].rays["bolt-a1"]
+    obs = rays.observe(tree, "bracket", spec)
+    hits = [
+        h for h in obs.hits if h.subject == "base.h1" and h.event.startswith("port.")
+    ]
+    assert [h.event for h in hits] == ["port.enter", "port.leave"]
+    assert all("frame:" not in h.text for h in hits)
 
 
 def test_cad_bound_vs_envelope(store: Store) -> None:

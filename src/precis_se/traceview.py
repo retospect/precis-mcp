@@ -20,12 +20,98 @@ frame — user frames as ``main.py:30 bundle(R=4)``, core frames as
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
-from typing import Any
+from difflib import SequenceMatcher
+from pathlib import PurePath
+from typing import Any, Literal
 
 #: Frame fields a run-vs-run diff compares — identity (key/parent/qual/
 #: file/line/occ) is never a "change"; a rerun differs only here.
 _DIFF_FIELDS = ("args", "made", "touched")
+
+
+@dataclass(frozen=True)
+class Anchor:
+    """A current source location, distinct from the historical frame stamp.
+
+    ``line`` is one-based, or ``None`` when the definition cannot be resolved.
+    ``granularity='def'`` never claims the old call still exists.
+    """
+
+    file: str
+    line: int | None
+    granularity: Literal["line", "def", "unresolved"]
+    note: str = ""
+
+
+def reanchor(frame: dict[str, Any], script: str) -> Anchor:
+    """Resolve ``qual`` → definition-relative line → nearest fuzzy source.
+
+    ``script`` is current Python source text for ``frame['file']``; no file
+    reads, execution or frame mutation occur. Qualified names use the file
+    stem plus ``co_qualname`` (including ``<locals>`` for nested functions).
+    Offsets start at the first decorator, matching ``co_firstlineno``.
+    Source comparisons use the tracer's stripped, 120-character line cap.
+
+    Only lines inside the resolved definition qualify; the nearest line
+    whose similarity is at least 0.8 wins (ties go to the earlier line).
+    Without a match, report the definition and explicitly mark the call as
+    moved or removed. A missing/ambiguous definition or invalid script is
+    unresolved. This pure helper resolves the supplied qual; it does not
+    infer a caller from a callee's frame or change historical renderers.
+    """
+    file = str(frame.get("file") or "")
+    qual = str(frame.get("qual") or "")
+    stem = PurePath(file).stem
+    try:
+        tree = ast.parse(script)
+    except (SyntaxError, ValueError):
+        return Anchor(file, None, "unresolved", "script has invalid Python syntax")
+    lines = script.splitlines()
+    # (definition line, co_firstlineno, last line)
+    spans: list[tuple[int, int, int]] = []
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = f"{prefix}.{node.name}"
+            if name == qual:
+                start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+                spans.append((node.lineno, start, node.end_lineno or node.lineno))
+            prefix = name
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                prefix += ".<locals>"
+        for child in ast.iter_child_nodes(node):
+            visit(child, prefix)
+
+    if stem and qual in (stem, f"{stem}.<module>"):
+        spans.append((1, 1, max(1, len(lines))))
+    else:
+        visit(tree, stem)
+    if len(spans) != 1:
+        note = (
+            "qualified definition is ambiguous"
+            if spans
+            else "qualified definition not found"
+        )
+        return Anchor(file, None, "unresolved", note)
+    definition, start, end = spans[0]
+    src = str(frame.get("src") or "").strip()[:120]
+    offset = frame.get("line_in_def")
+    target = start + offset if isinstance(offset, int) else definition
+
+    def source(lineno: int) -> str:
+        return lines[lineno - 1].strip()[:120]
+
+    if src:
+        if start <= target <= end and target <= len(lines) and source(target) == src:
+            return Anchor(file, target, "line")
+        for lineno in sorted(
+            range(start, min(end, len(lines)) + 1), key=lambda n: (abs(n - target), n)
+        ):
+            if SequenceMatcher(None, src, source(lineno)).ratio() >= 0.8:
+                return Anchor(file, lineno, "line")
+    return Anchor(file, definition, "def", "call moved or was removed")
 
 
 def _counts(m: dict[str, Any] | None) -> int:
@@ -312,30 +398,71 @@ class DiffRow:
     note: str = ""
 
 
+def _structural_paths(trace: Trace) -> dict[str, tuple[tuple[str, int], ...]]:
+    """Cross-schema identity, including every ancestor's occurrence.
+
+    Schema 1 counted occurrences per call site; reconstruct the per-qual
+    sibling order schema 2 uses, including collapsed occurrence spans.
+    """
+    paths: dict[str, tuple[tuple[str, int], ...]] = {}
+
+    def walk(parent: str | None, path: tuple[tuple[str, int], ...]) -> None:
+        counts: dict[str, int] = {}
+        children = trace.children.get(parent, [])
+        legacy = trace.doc.get("schema", 1) == 1
+        # Legacy emit grouped siblings by call site, not execution order.
+        # Run-local ids retain that order across interleaved call sites.
+        if legacy:
+            children = sorted(children, key=lambda frame: int(frame["id"]))
+        for frame in children:
+            qual = str(frame["qual"])
+            occ = int(frame.get("occ") or 0)
+            ordinal = counts.get(qual, 0) if legacy else occ
+            counts[qual] = ordinal + int(frame.get("occ_end", occ)) - occ + 1
+            key = frame["key"]
+            paths[key] = (*path, (qual, ordinal))
+            walk(key, paths[key])
+
+    walk(None, ())
+    return paths
+
+
 def diff(old: Trace, new: Trace) -> list[DiffRow]:
     """``{'against': run}`` — frames added/removed/changed by ``key``;
-    a subtree unchanged end-to-end folds to one line at its root."""
+    schema-1 migrations match qualified paths and occurrences instead. A
+    subtree unchanged end-to-end folds to one line at its root."""
     rows: list[DiffRow] = []
+    old_schema, new_schema = old.doc.get("schema", 1), new.doc.get("schema", 1)
+    if old_schema != new_schema and 1 in (old_schema, new_schema):
+        old_paths = _structural_paths(old)
+        old_by_path = {path: old.by_key[key] for key, path in old_paths.items()}
+        matches = {
+            key: old_by_path[path]
+            for key, path in _structural_paths(new).items()
+            if path in old_by_path
+        }
+    else:
+        matches = {key: old.by_key[key] for key in new.by_key if key in old.by_key}
 
     def same(f: dict[str, Any]) -> bool:
-        o = old.by_key.get(f["key"])
+        o = matches.get(f["key"])
         return o is not None and all(o.get(k) == f.get(k) for k in _DIFF_FIELDS)
 
     def subtree_same(f: dict[str, Any]) -> bool:
         if not same(f):
             return False
-        okids = {c["key"]: c for c in old.children.get(f["key"], [])}
+        o = matches[f["key"]]
+        okids = {c["key"] for c in old.children.get(o["key"], [])}
         kids = new.children.get(f["key"], [])
-        return set(okids) == {c["key"] for c in kids} and all(
-            subtree_same(c) for c in kids
-        )
+        matched = {matches[c["key"]]["key"] for c in kids if c["key"] in matches}
+        return okids == matched and all(subtree_same(c) for c in kids)
 
     def walk(f: dict[str, Any], depth: int) -> None:
         if subtree_same(f):
             n = len(new.subtree(f["key"]))
             rows.append(DiffRow("unchanged", f, depth, f"{n} frames"))
             return
-        o = old.by_key.get(f["key"])
+        o = matches.get(f["key"])
         if o is None:
             rows.append(DiffRow("added", f, depth))
         elif not same(f):
@@ -344,15 +471,22 @@ def diff(old: Trace, new: Trace) -> list[DiffRow]:
         for c in new.children.get(f["key"], []):
             walk(c, depth + 1)
         # Old children missing in new are removals — named once each.
-        new_keys = {c["key"] for c in new.children.get(f["key"], [])}
-        for oc in old.children.get(f["key"], []):
-            if oc["key"] not in new_keys:
-                rows.append(DiffRow("removed", oc, depth + 1))
+        if o is not None:
+            removals(o["key"], f["key"], depth + 1)
+
+    def removals(old_parent: str | None, new_parent: str | None, depth: int) -> None:
+        matched = {
+            matches[c["key"]]["key"]
+            for c in new.children.get(new_parent, [])
+            if c["key"] in matches
+        }
+        for oc in old.children.get(old_parent, []):
+            if oc["key"] not in matched:
+                rows.append(DiffRow("removed", oc, depth))
 
     for f in new.children.get(None, []):
         walk(f, 1)
-    # Subtrees present only in old hang off an old root child the new doc
-    # lacks — the walk names them already via removed rows.
+    removals(None, None, 1)
     return rows
 
 

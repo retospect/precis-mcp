@@ -324,8 +324,14 @@ def port_events(
     ``depth`` (m) — else two diameters — each way from the port's pose.
     Ports without pose, direction or a size are not regions."""
     from precis.cad.vec import as_vec3, pose
+    from precis_se.handler import _trace_context
     from precis_se.ops import effective_ports
 
+    # Port frame ids belong to the bound block's run, including inherited
+    # template ports and structure-bound blocks that have no macro solid.
+    frame_texts = {
+        name: _frame_texts_by_id(bt.doc) for name, bt in _trace_context(tree).items()
+    }
     out: list[MacroEvent] = []
     for name in sorted(tree.blocks):
         node = tree.blocks[name]
@@ -352,6 +358,9 @@ def port_events(
             roles = ",".join(port.roles or []) or "—"
             label = f"{name}.{pname}"
             desc = label + (f" {ann['thread']}" if ann.get("thread") else "")
+            fid = ann.get("frame")
+            where = frame_texts.get(name, {}).get(int(fid)) if fid is not None else None
+            provenance = f" · {where}" if where else ""
             data = {"port": pname, "thread": ann.get("thread"), "dia": dia}
             out.append(
                 MacroEvent(
@@ -359,7 +368,8 @@ def port_events(
                     name,
                     "port.enter",
                     label,
-                    f"port.enter {desc} (role {roles}) · axis offset {_fmt(off, unit)}",
+                    f"port.enter {desc} (role {roles}) · axis offset {_fmt(off, unit)}"
+                    + provenance,
                     {"off": off},
                     data,
                 )
@@ -371,7 +381,7 @@ def port_events(
                         name,
                         "port.leave",
                         label,
-                        f"port.leave {label}",
+                        f"port.leave {label}{provenance}",
                         {},
                         data,
                     )
