@@ -106,6 +106,7 @@ hole, fiducial or logo) from its labelled outlines.
 from __future__ import annotations
 
 import io
+import math
 import zipfile
 from typing import Any
 
@@ -638,10 +639,189 @@ def outline_gerber(model: dict[str, Any]) -> str:
     return _assemble("Profile,NP", apertures, body)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# non-copper fab layers (gr520329): coverlay, stiffener, adhesive,
+# tape-mask, doc notes, bend zones
+# ─────────────────────────────────────────────────────────────────────
+#
+# The model keys :func:`precis.pcb.session.fab_layers_from_features`
+# fills from the board's ``features[]`` — each is a list of flat dicts::
+#
+#   coverlay_openings: [{"side": "top"|"bottom", "polygon": [[x,y],…]}]
+#   stiffeners:        [{"side", "material", "thickness_mm", "polygon"}]
+#   adhesives:         [{"side", "polygon"}]
+#   tape_masks:        [{"kind", "polygon"}]      (Dwgs.User regions)
+#   doc_notes:         [{"text", "x", "y", "layer"}]  (stroked text)
+#   bend_zones:        [{"line": [[x,y],[x,y]], "radius_mm", "angle_deg"}]
+#
+# Filename convention is KiCad/JLC-style (``-F_Coverlay.gbr`` …); the X2
+# ``FileFunction`` is the spec's own vocabulary where it has one
+# (``Glue`` for the adhesive film), ``Other,<layer>`` on the files a
+# spec value does not name — coverlay and stiffener included, the
+# vocabulary has neither.
+
+
+def coverlay_gerber(model: dict[str, Any], side: str) -> str:
+    """One coverlay file: each authored opening drawn as a ``G36``/``G37``
+    region — the film cut the fab makes, imaged directly."""
+    apertures = _ApertureTable()
+    body: list[str] = []
+    for opening in model.get("coverlay_openings") or []:
+        if opening.get("side") != side:
+            continue
+        poly = [(float(p[0]), float(p[1])) for p in opening.get("polygon") or []]
+        if len(poly) >= 3:
+            _emit_region_ring(poly, body)
+    return _assemble(
+        f"Other,Coverlay_{'Top' if side == 'top' else 'Bot'}", apertures, body
+    )
+
+
+def stiffener_gerber(model: dict[str, Any], side: str) -> str:
+    """One stiffener file: the bonded stiffener's footprint as a region,
+    its material/thickness carried as a ``G04`` line (the attribute
+    vocabulary has no material field — a human-readable comment is the
+    honest carrier)."""
+    apertures = _ApertureTable()
+    body: list[str] = []
+    for st in model.get("stiffeners") or []:
+        if st.get("side") != side:
+            continue
+        poly = [(float(p[0]), float(p[1])) for p in st.get("polygon") or []]
+        if len(poly) < 3:
+            continue
+        body.append(
+            f"G04 stiffener {st.get('material') or '?'} "
+            f"{float(st.get('thickness_mm') or 0.0):g}mm*"
+        )
+        _emit_region_ring(poly, body)
+    return _assemble(
+        f"Other,Stiffener_{'Top' if side == 'top' else 'Bot'}", apertures, body
+    )
+
+
+def adhesive_gerber(model: dict[str, Any], side: str) -> str:
+    """One adhesive-film file — the bondply/PSA sheet's outline as a
+    region. ``Glue`` is the X2 file function for an adhesive layer."""
+    apertures = _ApertureTable()
+    body: list[str] = []
+    for ad in model.get("adhesives") or []:
+        if ad.get("side") != side:
+            continue
+        poly = [(float(p[0]), float(p[1])) for p in ad.get("polygon") or []]
+        if len(poly) >= 3:
+            _emit_region_ring(poly, body)
+    return _assemble(f"Glue,{'Top' if side == 'top' else 'Bot'}", apertures, body)
+
+
+#: Cap height of drawings-layer text — a doc note or the bend-zone label.
+DWGS_TEXT_HEIGHT_MM = 1.5
+
+
+def _text_draw(text: str, x: float, y: float) -> dict[str, Any] | None:
+    """``text`` stroked at ``(x, y)`` (baseline-left, 0°) as one
+    ``{"width_mm", "segments"}`` draw — :mod:`precis.pcb.stroke_font`
+    glyph strokes, the same writer silk labels use."""
+    from precis.pcb import stroke_font
+
+    strokes = stroke_font.layout_text(
+        text, anchor=(x, y), height_mm=DWGS_TEXT_HEIGHT_MM
+    )
+    segments: list[dict[str, Any]] = []
+    for pts in strokes:
+        segments += [
+            {"shape": "line", "start": list(pts[i]), "end": list(pts[i + 1])}
+            for i in range(len(pts) - 1)
+        ]
+    if not segments:
+        return None
+    return {"width_mm": 0.15, "segments": segments}
+
+
+def _bend_zone_draws(zone: dict[str, Any]) -> list[dict[str, Any]]:
+    """A bend zone's Dwgs.User drawing: the fold line stroked, plus a
+    ``R=<r> A=<deg>`` note sat just past the zone's top edge at the
+    fold's midpoint."""
+    try:
+        (x1, y1), (x2, y2) = [
+            (float(p[0]), float(p[1])) for p in (zone.get("line") or ())
+        ]
+        radius = float(zone["radius_mm"])
+        angle = float(zone["angle_deg"])
+    except (TypeError, ValueError, KeyError):
+        return []
+    if math.hypot(x2 - x1, y2 - y1) <= 0:
+        return []
+    draws = [
+        {
+            "width_mm": 0.15,
+            "segments": [{"shape": "line", "start": [x1, y1], "end": [x2, y2]}],
+        }
+    ]
+    half = radius * math.radians(abs(angle)) / 2.0
+    mx, my = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    nx, ny = -(y2 - y1), (x2 - x1)  # the fold's normal
+    n = math.hypot(nx, ny)
+    note = _text_draw(
+        f"BEND R={radius:g}MM A={angle:g}DEG",
+        mx + nx / n * (half + 0.5),
+        my + ny / n * (half + 0.5),
+    )
+    if note is not None:
+        draws.append(note)
+    return draws
+
+
+def drawings_gerber(model: dict[str, Any], layer: str) -> str:
+    """One user-drawings file (``Dwgs.User`` or another ``layer`` name):
+    ``doc_note`` text stroked at its anchor, plus — on ``Dwgs.User``
+    itself — tape-mask regions and bend-zone fold lines with their
+    radius/angle note."""
+    apertures = _ApertureTable()
+    body: list[str] = []
+    for note in model.get("doc_notes") or []:
+        if str(note.get("layer") or "Dwgs.User") != layer:
+            continue
+        draw = _text_draw(
+            str(note.get("text") or ""),
+            float(note.get("x") or 0.0),
+            float(note.get("y") or 0.0),
+        )
+        if draw is not None:
+            _emit_stroke(draw, apertures, body)
+    if layer == "Dwgs.User":
+        for mask in model.get("tape_masks") or []:
+            poly = [(float(p[0]), float(p[1])) for p in mask.get("polygon") or []]
+            if len(poly) < 3:
+                continue
+            body.append(f"G04 tape mask ({mask.get('kind') or 'parylene'})*")
+            _emit_region_ring(poly, body)
+        for zone in model.get("bend_zones") or []:
+            for draw in _bend_zone_draws(zone):
+                _emit_stroke(draw, apertures, body)
+    return _assemble(f"Other,{layer}", apertures, body)
+
+
+def _drawings_layer_names(model: dict[str, Any]) -> list[str]:
+    """The drawing layers that carry content — ``Dwgs.User`` plus any
+    layer a ``doc_note`` names, in first-use order."""
+    names: list[str] = []
+    for note in model.get("doc_notes") or []:
+        layer = str(note.get("layer") or "Dwgs.User")
+        if layer not in names:
+            names.append(layer)
+    if (model.get("tape_masks") or model.get("bend_zones")) and (
+        "Dwgs.User" not in names
+    ):
+        names.insert(0, "Dwgs.User")
+    return names
+
+
 def export_gerbers(model: dict[str, Any], *, name: str = "design") -> dict[str, str]:
     """One file per copper layer + top/bottom soldermask + top/bottom solder
-    paste + top/bottom silkscreen + the board outline. See the module
-    docstring for the model shape."""
+    paste + top/bottom silkscreen + the board outline + each authored
+    non-copper fab layer (coverlay openings, stiffeners, adhesives, the
+    user drawings). See the module docstring for the model shape."""
     layers: list[str] = model["layers"]
     files = {
         f"{name}-{_layer_token(layer)}.gbr": copper_gerber(model, layer)
@@ -654,6 +834,18 @@ def export_gerbers(model: dict[str, Any], *, name: str = "design") -> dict[str, 
     files[f"{name}-F_Silkscreen.gbr"] = silkscreen_gerber(model, "top")
     files[f"{name}-B_Silkscreen.gbr"] = silkscreen_gerber(model, "bottom")
     files[f"{name}-Edge_Cuts.gbr"] = outline_gerber(model)
+    # Each fab-layer file exists only when the model authors content for
+    # it — a rigid board's bundle gains no stray files.
+    for side in ("top", "bottom"):
+        tok = "F" if side == "top" else "B"
+        if any(e.get("side") == side for e in model.get("coverlay_openings") or []):
+            files[f"{name}-{tok}_Coverlay.gbr"] = coverlay_gerber(model, side)
+        if any(e.get("side") == side for e in model.get("stiffeners") or []):
+            files[f"{name}-{tok}_Stiffener.gbr"] = stiffener_gerber(model, side)
+        if any(e.get("side") == side for e in model.get("adhesives") or []):
+            files[f"{name}-{tok}_Adhesive.gbr"] = adhesive_gerber(model, side)
+    for layer in _drawings_layer_names(model):
+        files[f"{name}-{_layer_token(layer)}.gbr"] = drawings_gerber(model, layer)
     return files
 
 
@@ -769,10 +961,14 @@ def zip_fab(files: dict[str, str]) -> bytes:
 
 __all__ = [
     "DEFAULT_SILK_WIDTH_MM",
+    "DWGS_TEXT_HEIGHT_MM",
     "EDGE_CUT_WIDTH_MM",
     "SOLDERMASK_EXPANSION_MM",
     "SynthesizedPadError",
+    "adhesive_gerber",
     "copper_gerber",
+    "coverlay_gerber",
+    "drawings_gerber",
     "excellon_files",
     "export_fab",
     "export_gerbers",
@@ -781,5 +977,6 @@ __all__ = [
     "silkscreen_gerber",
     "soldermask_gerber",
     "solderpaste_gerber",
+    "stiffener_gerber",
     "zip_fab",
 ]

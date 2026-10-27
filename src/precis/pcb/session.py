@@ -221,6 +221,111 @@ def keepouts_from_features(
     return tuple(out)
 
 
+def fab_layers_from_features(features: list[dict[str, Any]]) -> dict[str, Any]:
+    """The non-copper fab-layer ``features[]`` rows (gr520329) as the
+    model keys :mod:`precis.pcb.gerber` and
+    :func:`precis.pcb.drc.check_bend_zones` read — the same extraction
+    contract :func:`outline_from_features` holds: every consumer parses
+    the feature list here, once, so the handler's ``_fab_model`` and the
+    laptop kernel's ``_model`` cannot drift on where a stiffener's
+    thickness lives.
+
+    Keys are present only with entries (a rigid board's features produce
+    an empty dict — ``model.get(...)`` is the reader's shape)::
+
+        coverlay_openings: [{"side", "polygon"}]
+        stiffeners:        [{"side", "material", "thickness_mm", "polygon"}]
+        adhesives:         [{"side", "polygon"}]
+        tape_masks:        [{"kind", "polygon"}]
+        doc_notes:         [{"text", "x", "y", "layer"}]
+        bend_zones:        [{"line": [[x,y],[x,y]], "radius_mm",
+                             "angle_deg"}]
+
+    A malformed row is skipped, not fatal — the same reading
+    :func:`mounting_holes_from_features` gives a hole with no drill:
+    one bad region should not blank the whole export.
+    """
+    out: dict[str, Any] = {}
+
+    def _poly(geom: Any) -> list[list[float]] | None:
+        poly = (geom or {}).get("polygon")
+        if not isinstance(poly, list) or len(poly) < 3:
+            return None
+        try:
+            return [[float(p[0]), float(p[1])] for p in poly]
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _side(f: dict[str, Any]) -> str | None:
+        side = str(f.get("layer") or "").strip().lower()
+        return side if side in ("top", "bottom") else None
+
+    for f in features:
+        ftype = str(f.get("ftype") or "")
+        geom = f.get("geom") or {}
+        if ftype == "coverlay_opening":
+            side, poly = _side(f), _poly(geom)
+            if side and poly:
+                out.setdefault("coverlay_openings", []).append(
+                    {"side": side, "polygon": poly}
+                )
+        elif ftype == "stiffener":
+            side, poly = _side(f), _poly(geom)
+            try:
+                t = float(geom.get("thickness_mm") or 0.0)
+            except (TypeError, ValueError):
+                t = 0.0
+            if side and poly and t > 0:
+                out.setdefault("stiffeners", []).append(
+                    {
+                        "side": side,
+                        "material": str(geom.get("material") or ""),
+                        "thickness_mm": t,
+                        "polygon": poly,
+                    }
+                )
+        elif ftype == "adhesive":
+            side, poly = _side(f), _poly(geom)
+            if side and poly:
+                out.setdefault("adhesives", []).append({"side": side, "polygon": poly})
+        elif ftype == "tape_mask":
+            poly = _poly(geom)
+            if poly:
+                out.setdefault("tape_masks", []).append(
+                    {"kind": str(geom.get("kind") or "parylene"), "polygon": poly}
+                )
+        elif ftype == "doc_note":
+            text = str(f.get("note") or "").strip()
+            try:
+                x, y = float(f["x"]), float(f["y"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if text:
+                out.setdefault("doc_notes", []).append(
+                    {
+                        "text": text,
+                        "x": x,
+                        "y": y,
+                        "layer": str(f.get("layer") or "Dwgs.User"),
+                    }
+                )
+        elif ftype == "bend_zone":
+            line = geom.get("line")
+            try:
+                pts = [[float(p[0]), float(p[1])] for p in line or []]
+                radius, angle = (
+                    float(geom["radius_mm"]),
+                    float(geom["angle_deg"]),
+                )
+            except (TypeError, ValueError, KeyError, IndexError):
+                continue
+            if len(pts) == 2 and radius > 0 and angle != 0:
+                out.setdefault("bend_zones", []).append(
+                    {"line": pts, "radius_mm": radius, "angle_deg": angle}
+                )
+    return out
+
+
 def fixed_vias_from_copper(
     fixed_copper: list[dict[str, Any]] | None,
 ) -> tuple[pcb_ir.FixedVia, ...]:

@@ -4694,6 +4694,12 @@ class PcbHandler(Handler):
             # numbers for one physical edge (`soldermask_gerber`).
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
             "mask_open_regions": self._mask_open_regions(ref_id),
+            # Non-copper fab layers (gr520329): coverlay openings,
+            # stiffeners, adhesives, tape masks, doc notes, bend zones —
+            # the gerber writer emits each to its conventional file.
+            **pcb_session.fab_layers_from_features(
+                self.store.pcb_features_list(ref_id)
+            ),
             # Placed instance rows — the pose/refdes/footprint half a
             # component-oriented writer needs to group these flat pads back
             # into parts. :mod:`precis.pcb.gerber` ignores keys it does not
@@ -7150,6 +7156,12 @@ class PcbHandler(Handler):
             "silkscreen": silk_draws,
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
             "mask_open_regions": self._mask_open_regions(ref_id),
+            # Same fab-layer keys `_fab_model` carries (gr520329) — this
+            # preview exports through the same `export_fab`, so it shows
+            # the coverlay/stiffener/drawings files the order bundle has.
+            **pcb_session.fab_layers_from_features(
+                self.store.pcb_features_list(ref_id)
+            ),
         }
         return model, furniture_warnings
 

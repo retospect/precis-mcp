@@ -11,6 +11,7 @@ answers:
   - how do I check BOM stock and lifecycle before ordering (view='availability')?
   - how do I hand board outline + heights to a cad enclosure?
   - where does a part's refdes label go, and why is a silk outline open at the board edge?
+  - which gerber file does a coverlay/stiffener/adhesive/bend-zone feature land in?
 applies-to: get/put (kind='pcb'); see also kind='cad', kind='part'
 status: active
 tags: [design]
@@ -101,6 +102,39 @@ member with a one-sentence LLM verdict and its cited inputs; a
 pair and prints the reason (pcb component types aren't refs, so the
 link-door `rel='kept-distinct'` is the component kind's form). See
 [[precis-component-help]] for the attribute-role model.
+
+## Non-copper fab layers — coverlay, stiffener, adhesive, bend zone
+
+Flex/rigid-flex boards carry the non-copper layers as typed `features[]`
+rows — the same array `mounting_hole`/`outline` use in the `features`
+example below. Board-script DSL: `board.coverlay_opening(poly, side)`,
+`board.stiffener(poly, material, thickness_mm, side)`,
+`board.adhesive(poly, side)`, `board.tape_mask(poly, kind='parylene')`,
+`board.doc_note(text, at, layer='Dwgs.User')`,
+`board.bend_zone(line, radius_mm, angle_deg)`. Via `put`, the matching
+`features[]` row — e.g.
+`{"ftype":"stiffener","layer":"bottom","geom":{"polygon":[[…]],"material":"fr4","thickness_mm":0.5}}`
+(`side` is `top`/`bottom`; a `doc_note` carries `x`,`y`,`note`,`layer` flat,
+the rest keep geometry under `geom`). Each exports to its conventional
+file in the `view='gerber'`/`view='fab'` bundle; a file exists only when
+the board authors content for it, so a rigid board's bundle gains none.
+
+| `ftype` | file | `FileFunction` |
+| --- | --- | --- |
+| `coverlay_opening` | `…-F_Coverlay.gbr` / `…-B_Coverlay.gbr` | `Other,Coverlay_Top` / `Other,Coverlay_Bot` |
+| `stiffener` | `…-F_Stiffener.gbr` / `…-B_Stiffener.gbr` | `Other,Stiffener_Top` / `Other,Stiffener_Bot` (material+thickness as `G04`) |
+| `adhesive` | `…-F_Adhesive.gbr` / `…-B_Adhesive.gbr` | `Glue,Top` / `Glue,Bot` |
+| `tape_mask` | `…-Dwgs_User.gbr` | `Other,Dwgs.User` (kind as `G04`) |
+| `doc_note` | `…-<layer>.gbr` | `Other,<layer>` (stroked text; one file per used layer name) |
+| `bend_zone` | `…-Dwgs_User.gbr` | fold line + stroked `BEND R=…MM A=…DEG` note |
+
+Regions image as `G36`/`G37` fills. `bend_zone` is also a DRC input
+(the `view='gerber'` verdict): the checked strip is the fold line widened
+by half the bend allowance (`radius_mm · |angle_deg|` radians) either
+side. A via or part inside is `bend_zone_via`/`bend_zone_part` (error);
+a track crossing more than 15° off perpendicular is `bend_zone_trace`
+(warn) — route copper across a fold at a right angle. Hatched pours in
+the zone are not checked yet.
 
 ## Hand the board to EasyEDA Pro — `view='epro'`
 

@@ -4298,6 +4298,213 @@ def check_starved_thermal(model: dict[str, Any]) -> list[DrcFinding]:
     return findings
 
 
+#: How far off perpendicular a trace may run through a bend zone before
+#: ``bend_zone_trace`` warns (gr520329): copper survives a fold crossing it
+#: at a right angle; a diagonal trace concentrates the bend strain.
+BEND_ZONE_TRACE_TOLERANCE_DEG = 15.0
+
+
+def _bend_zone_geom(
+    zone: dict[str, Any], index: int
+) -> tuple[str, Coord, Polygon] | None:
+    """One ``bend_zones`` entry's checked geometry: the fold line widened
+    by the bend allowance — the arc length of board surface the fold
+    consumes, ``radius_mm * |angle_deg|`` radians, split evenly either
+    side of the fold (docs/backlog/pcb-flexboard.md's "fold line widened
+    by the bend allowance"). Returns ``(label, fold_unit_dir, area)`` —
+    ``area`` the flat-capped strip, ``fold_unit_dir`` the direction
+    perpendicularity is measured against. ``None`` on a malformed row: a
+    bad feature must not kill the whole DRC pass (the same reading
+    ``mounting_holes_from_features`` gives a hole with no drill)."""
+    try:
+        (x1, y1), (x2, y2) = [
+            (float(p[0]), float(p[1])) for p in (zone.get("line") or ())
+        ]
+        radius = float(zone["radius_mm"])
+        angle = float(zone["angle_deg"])
+    except (TypeError, ValueError, KeyError):
+        return None
+    dx, dy = x2 - x1, y2 - y1
+    span = math.hypot(dx, dy)
+    if span <= _EPS or radius <= 0 or angle == 0:
+        return None
+    half = radius * math.radians(abs(angle)) / 2.0
+    area = LineString([(x1, y1), (x2, y2)]).buffer(half, cap_style=2)
+    if area.is_empty or not isinstance(area, Polygon):
+        return None
+    return f"bend_zone[{index}]", (dx / span, dy / span), area
+
+
+def _seg_fold_deviation_deg(seg: dict[str, Any], fold_dir: Coord) -> float | None:
+    """A track segment's deviation from perpendicular to the fold —
+    ``0`` is a right-angle crossing. Arcs measure by their chord, the
+    crossing direction that matters; a degenerate (zero-length) segment
+    gives ``None``."""
+    try:
+        sx, sy = float(seg["start"][0]), float(seg["start"][1])
+        ex, ey = float(seg["end"][0]), float(seg["end"][1])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    dx, dy = ex - sx, ey - sy
+    seg_len = math.hypot(dx, dy)
+    if seg_len <= _EPS:
+        return None
+    cos = abs(dx * fold_dir[0] + dy * fold_dir[1]) / seg_len
+    # |dot| folds the angle into [0, 90]: perpendicular is 90, deviation
+    # is the distance off it.
+    angle = math.degrees(math.acos(min(cos, 1.0)))
+    return 90.0 - angle
+
+
+def check_bend_zones(
+    model: dict[str, Any],
+    courtyards: Sequence[Courtyard] | None = None,
+) -> list[DrcFinding]:
+    """Flex bend-zone rules (gr520329; docs/backlog/pcb-flexboard.md's
+    fold-zone DRC), off ``model["bend_zones"]`` — the builder's
+    ``bend_zone`` features as extracted by
+    :func:`precis.pcb.session.fab_layers_from_features`:
+
+    - a via whose barrel lands inside the zone is an ``bend_zone_via``
+      ERROR (a barrel cannot survive the fold);
+    - a part whose origin — or, when ``courtyards`` are supplied, whose
+      courtyard — sits in the zone is a ``bend_zone_part`` ERROR;
+    - a track segment crossing the zone more than
+      :data:`BEND_ZONE_TRACE_TOLERANCE_DEG` off perpendicular to the
+      fold is a ``bend_zone_trace`` WARN (the gripe's "flag", not a hard
+      error: off-angle copper is a yield risk, not a guaranteed break).
+
+    NOT checked (stated, not silent): hatched-plane behaviour in the
+    zone — the slice-1 scope note in the gripe. A pour region inside the
+    strip earns no finding.
+    """
+    checked = [
+        g
+        for i, z in enumerate(model.get("bend_zones") or [])
+        if (g := _bend_zone_geom(z, i)) is not None
+    ]
+    if not checked:
+        return []
+    findings: list[DrcFinding] = []
+    flagged_parts: set[tuple[str, str]] = set()
+    for label, fold_dir, area in checked:
+        for item in model.get("copper") or []:
+            ctype = item.get("ctype")
+            if ctype == "via":
+                try:
+                    pt = Point(float(item["x"]), float(item["y"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not area.covers(pt):
+                    continue
+                obj: dict[str, Any] = {"ctype": "via", "net": item.get("net")}
+                if item.get("fixed_id") is not None:
+                    obj["fixed_id"] = item["fixed_id"]
+                findings.append(
+                    DrcFinding(
+                        rule="bend_zone_via",
+                        severity="error",
+                        where=f"{label} via {item.get('net') or '?'}",
+                        detail=(
+                            f"{label}: a via (net {item.get('net') or '?'}) "
+                            "barrel sits inside the bend zone — a via cannot "
+                            "survive the fold; move it out"
+                        ),
+                        objects=(obj,),
+                        margin_mm=-float(area.exterior.distance(pt)),
+                    )
+                )
+            elif ctype == "track":
+                worst: float | None = None
+                for seg in item.get("segments") or []:
+                    dev = _seg_fold_deviation_deg(seg, fold_dir)
+                    if dev is None:
+                        continue
+                    try:
+                        line = LineString(
+                            [
+                                (float(seg["start"][0]), float(seg["start"][1])),
+                                (float(seg["end"][0]), float(seg["end"][1])),
+                            ]
+                        )
+                    except (KeyError, TypeError, ValueError, IndexError):
+                        continue
+                    if area.intersects(line) and (worst is None or dev > worst):
+                        worst = dev
+                if worst is not None and worst > BEND_ZONE_TRACE_TOLERANCE_DEG:
+                    net = str(item.get("net") or "?")
+                    layer = str(item.get("layer") or "?")
+                    findings.append(
+                        DrcFinding(
+                            rule="bend_zone_trace",
+                            severity="warn",
+                            where=f"{label} track {net} on {layer}",
+                            detail=(
+                                f"{label}: net {net} on {layer} crosses the "
+                                f"bend zone {worst:.1f}° off perpendicular "
+                                f"(>{BEND_ZONE_TRACE_TOLERANCE_DEG:g}°) — "
+                                "route traces across a fold at a right angle"
+                            ),
+                            objects=({"ctype": "track", "net": net, "layer": layer},),
+                        )
+                    )
+        for inst in model.get("instances") or []:
+            try:
+                x, y = float(inst["x"]), float(inst["y"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            refdes = str(inst.get("refdes") or "?")
+            pt = Point(x, y)
+            if not area.covers(pt):
+                continue
+            flagged_parts.add((label, refdes))
+            findings.append(
+                DrcFinding(
+                    rule="bend_zone_part",
+                    severity="error",
+                    where=f"{label} {refdes}",
+                    detail=(
+                        f"{label}: {refdes} sits inside the bend zone — a "
+                        "part cannot ride the fold; move it onto a stiffened "
+                        "region"
+                    ),
+                    objects=({"refdes": refdes},),
+                    margin_mm=-float(area.exterior.distance(pt)),
+                )
+            )
+    if courtyards:
+        for label, _fold_dir, area in checked:
+            for refdes, poly in courtyards:
+                if (label, str(refdes)) in flagged_parts:
+                    continue
+                if len(poly) < 3:
+                    continue
+                yard = Polygon(poly)
+                if yard.is_empty or not yard.is_valid:
+                    continue
+                inter = yard.intersection(area)
+                if inter.is_empty or inter.area <= _EPS:
+                    continue
+                findings.append(
+                    DrcFinding(
+                        rule="bend_zone_part",
+                        severity="error",
+                        where=f"{label} {refdes}",
+                        detail=(
+                            f"{label}: {refdes}'s courtyard reaches "
+                            f"{inter.area:.3f}mm^2 into the bend zone — a "
+                            "part cannot ride the fold; move it onto a "
+                            "stiffened region"
+                        ),
+                        objects=({"refdes": str(refdes)},),
+                        margin_mm=-float(
+                            area.exterior.distance(yard.representative_point())
+                        ),
+                    )
+                )
+    return findings
+
+
 def run_geometric_drc(
     model: dict[str, Any],
     *,
@@ -4407,6 +4614,7 @@ def run_geometric_drc(
     findings += check_connectivity(model)
     findings += check_pour_fragmented(model)
     findings += check_pour_reaches_pad(model)
+    findings += check_bend_zones(model, courtyards=courtyards)
     findings += check_unrouted(unrouted)
     findings += check_unconnected_pins(unconnected, phase=phase)
     findings += check_undeclared_pads(model, unchecked=undeclared_unchecked)
@@ -5368,6 +5576,7 @@ def run_placement_drc(
 
 
 __all__ = [
+    "BEND_ZONE_TRACE_TOLERANCE_DEG",
     "DEFAULT_COURTYARD_RADIUS_MM",
     "DEFAULT_DECOUPLING_DISTANCE_MM",
     "PHASES",
@@ -5379,6 +5588,7 @@ __all__ = [
     "DrcFinding",
     "FindingDelta",
     "check_annular_ring",
+    "check_bend_zones",
     "check_board_edge_clearance",
     "check_clearance",
     "check_connectivity",

@@ -37,6 +37,7 @@ import functools
 import hashlib
 import importlib.metadata
 import json
+import math
 import re
 import warnings
 from collections.abc import Callable, Iterable, Mapping
@@ -1960,6 +1961,284 @@ class Board:
             fields: Feature keys carried verbatim into the row.
         """
         f_: dict[str, Any] = {"ftype": ftype, **fields}
+        self._features.append(f_)
+        return f_
+
+    # -- non-copper fab layers (gr520329) ----------------------------------
+    #
+    # Flex/rigid-flex fabrication layers and the bend zone, as typed
+    # ``features[]`` rows — the same path ``keepout``/``outline`` take, so
+    # ``_pcb_insert_feature`` stores them unchanged and the gerber writer
+    # (``precis.pcb.gerber``) emits each to its conventional layer file.
+    # Hatched copper pours inside a bend zone are deliberately out of scope
+    # for this slice (noted in ``check_bend_zones``).
+
+    @staticmethod
+    def _fab_poly(fn: Callable[..., Any], polygon: Any) -> list[list[float]]:
+        """A fab-layer region polygon: ≥3 finite ``[x, y]`` mm points."""
+        if not isinstance(polygon, list | tuple) or len(polygon) < 3:
+            raise _bad_kwarg(
+                fn,
+                "polygon",
+                f"{fn.__name__}() needs a polygon of at least 3 [x, y] points",
+            )
+        pts: list[list[float]] = []
+        for p in polygon:
+            try:
+                x, y = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError) as exc:
+                raise _bad_kwarg(
+                    fn,
+                    "polygon",
+                    f"{fn.__name__}(): polygon point {p!r} is not an [x, y] pair",
+                ) from exc
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise _bad_kwarg(
+                    fn,
+                    "polygon",
+                    f"{fn.__name__}(): polygon point {p!r} is not finite",
+                )
+            pts.append([x, y])
+        return pts
+
+    @staticmethod
+    def _fab_side(fn: Callable[..., Any], side: Any) -> str:
+        s = str(side).strip().lower()
+        if s not in ("top", "bottom"):
+            raise _bad_kwarg(
+                fn,
+                "side",
+                f"{fn.__name__}(): side must be 'top' or 'bottom', got {side!r}",
+            )
+        return s
+
+    @traced
+    def coverlay_opening(self, polygon: list[list[float]], side: str) -> dict[str, Any]:
+        """A cut-out in the ``side`` coverlay film (flex boards) — where
+        the film is opened for pads/connector lands. Exports to
+        ``-F_Coverlay.gbr``/``-B_Coverlay.gbr``.
+
+        Args:
+            polygon (list[list[float]]): The opening's outline — ≥3
+                ``[x, y]`` mm points.
+            side (str): ``'top'`` or ``'bottom'``.
+        """
+        f_ = {
+            "ftype": "coverlay_opening",
+            "layer": self._fab_side(Board.coverlay_opening, side),
+            "geom": {"polygon": self._fab_poly(Board.coverlay_opening, polygon)},
+        }
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def stiffener(
+        self,
+        polygon: list[list[float]],
+        material: str,
+        thickness_mm: float,
+        side: str,
+    ) -> dict[str, Any]:
+        """A stiffener (FR4/polyimide/metal) bonded over ``polygon`` on
+        ``side`` — where parts may sit on an otherwise bendable area.
+        Exports to ``-F_Stiffener.gbr``/``-B_Stiffener.gbr``.
+
+        Args:
+            polygon (list[list[float]]): The stiffener's footprint — ≥3
+                ``[x, y]`` mm points.
+            material (str): Material name (``'fr4'``, ``'polyimide'``,
+                …) — exported as a ``G04`` note on the file.
+            thickness_mm (float): Bonded thickness — finite and > 0.
+            side (str): ``'top'`` or ``'bottom'``.
+        """
+        material = str(material).strip()
+        if not material:
+            raise _bad_kwarg(
+                Board.stiffener, "material", "stiffener() needs a material name"
+            )
+        try:
+            t = float(thickness_mm)
+        except (TypeError, ValueError) as exc:
+            raise _bad_kwarg(
+                Board.stiffener,
+                "thickness_mm",
+                f"stiffener(): thickness_mm {thickness_mm!r} is not a number",
+            ) from exc
+        if not math.isfinite(t) or t <= 0:
+            raise _bad_kwarg(
+                Board.stiffener,
+                "thickness_mm",
+                f"stiffener(): thickness_mm {t!r} must be > 0",
+            )
+        f_ = {
+            "ftype": "stiffener",
+            "layer": self._fab_side(Board.stiffener, side),
+            "geom": {
+                "polygon": self._fab_poly(Board.stiffener, polygon),
+                "material": material,
+                "thickness_mm": t,
+            },
+        }
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def adhesive(self, polygon: list[list[float]], side: str) -> dict[str, Any]:
+        """An adhesive (bondply/PSA) sheet over ``polygon`` on ``side``.
+        Exports to ``-F_Adhesive.gbr``/``-B_Adhesive.gbr``.
+
+        Args:
+            polygon (list[list[float]]): The sheet's outline — ≥3
+                ``[x, y]`` mm points.
+            side (str): ``'top'`` or ``'bottom'``.
+        """
+        f_ = {
+            "ftype": "adhesive",
+            "layer": self._fab_side(Board.adhesive, side),
+            "geom": {"polygon": self._fab_poly(Board.adhesive, polygon)},
+        }
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def tape_mask(
+        self, polygon: list[list[float]], kind: str = "parylene"
+    ) -> dict[str, Any]:
+        """A region taped off during a conformal-coat step (``kind``
+        names the coat — ``'parylene'`` is the common one). Drawn on the
+        ``Dwgs.User`` fab drawing.
+
+        Args:
+            polygon (list[list[float]]): The masked region — ≥3
+                ``[x, y]`` mm points.
+            kind (str): Coat name — ``'parylene'`` by default.
+        """
+        kind = str(kind).strip()
+        if not kind:
+            raise _bad_kwarg(Board.tape_mask, "kind", "tape_mask() needs a coat kind")
+        f_ = {
+            "ftype": "tape_mask",
+            "geom": {"polygon": self._fab_poly(Board.tape_mask, polygon), "kind": kind},
+        }
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def doc_note(
+        self, text: str, at: list[float], layer: str = "Dwgs.User"
+    ) -> dict[str, Any]:
+        """A text note stroked onto a drawings layer — ``at`` is the
+        ``[x, y]`` baseline-left anchor, ``layer`` the target user layer
+        (``Dwgs.User`` by default).
+
+        Args:
+            text (str): Note text — non-empty.
+            at (list[float]): ``[x, y]`` baseline-left anchor, finite mm.
+            layer (str): Target drawings layer — ``'Dwgs.User'`` by
+                default.
+        """
+        text = str(text).strip()
+        if not text:
+            raise _bad_kwarg(Board.doc_note, "text", "doc_note() needs note text")
+        layer = str(layer).strip()
+        if not layer:
+            raise _bad_kwarg(
+                Board.doc_note, "layer", "doc_note() needs a drawings-layer name"
+            )
+        try:
+            x, y = float(at[0]), float(at[1])
+        except (TypeError, ValueError, IndexError) as exc:
+            raise _bad_kwarg(
+                Board.doc_note,
+                "at",
+                f"doc_note(): at {at!r} is not an [x, y] pair",
+            ) from exc
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise _bad_kwarg(
+                Board.doc_note, "at", f"doc_note(): at {at!r} is not finite"
+            )
+        f_ = {"ftype": "doc_note", "x": x, "y": y, "layer": layer, "note": text}
+        self._features.append(f_)
+        return f_
+
+    @traced
+    def bend_zone(
+        self, line: list[list[float]], radius_mm: float, angle_deg: float
+    ) -> dict[str, Any]:
+        """A flex bend zone: ``line`` is the fold line ``[[x1, y1],
+        [x2, y2]]`` across the board, bent by ``angle_deg`` around a
+        ``radius_mm`` neutral radius. The zone DRC checks is the fold
+        line widened by the bend allowance (``radius_mm * |angle_deg|``
+        in radians of arc); vias and parts inside it, and traces
+        crossing it far off perpendicular, are findings
+        (:func:`precis.pcb.drc.check_bend_zones`). Exports as a
+        ``Dwgs.User`` line plus a stroked radius/angle note.
+
+        Args:
+            line (list[list[float]]): The two fold-line endpoints
+                ``[[x1, y1], [x2, y2]]`` — distinct, finite mm.
+            radius_mm (float): Neutral bend radius — finite and > 0.
+            angle_deg (float): Bend angle — non-zero, within ±360°.
+        """
+        if not isinstance(line, list | tuple) or len(line) != 2:
+            raise _bad_kwarg(
+                Board.bend_zone,
+                "line",
+                "bend_zone(): line is the two fold-line endpoints [[x1, y1], [x2, y2]]",
+            )
+        pts: list[list[float]] = []
+        for p in line:
+            try:
+                x, y = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError) as exc:
+                raise _bad_kwarg(
+                    Board.bend_zone,
+                    "line",
+                    f"bend_zone(): line endpoint {p!r} is not an [x, y] pair",
+                ) from exc
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise _bad_kwarg(
+                    Board.bend_zone,
+                    "line",
+                    f"bend_zone(): line endpoint {p!r} is not finite",
+                )
+            pts.append([x, y])
+        if pts[0] == pts[1]:
+            raise _bad_kwarg(
+                Board.bend_zone, "line", "bend_zone(): the fold line has zero length"
+            )
+        try:
+            r = float(radius_mm)
+        except (TypeError, ValueError) as exc:
+            raise _bad_kwarg(
+                Board.bend_zone,
+                "radius_mm",
+                f"bend_zone(): radius_mm {radius_mm!r} is not a number",
+            ) from exc
+        if not math.isfinite(r) or r <= 0:
+            raise _bad_kwarg(
+                Board.bend_zone,
+                "radius_mm",
+                f"bend_zone(): radius_mm {r!r} must be > 0",
+            )
+        try:
+            a = float(angle_deg)
+        except (TypeError, ValueError) as exc:
+            raise _bad_kwarg(
+                Board.bend_zone,
+                "angle_deg",
+                f"bend_zone(): angle_deg {angle_deg!r} is not a number",
+            ) from exc
+        if not math.isfinite(a) or a == 0 or abs(a) > 360:
+            raise _bad_kwarg(
+                Board.bend_zone,
+                "angle_deg",
+                f"bend_zone(): angle_deg {a!r} — expected a non-zero bend up to ±360°",
+            )
+        f_ = {
+            "ftype": "bend_zone",
+            "geom": {"line": pts, "radius_mm": r, "angle_deg": a},
+        }
         self._features.append(f_)
         return f_
 

@@ -831,6 +831,12 @@ def run(
         "drills": drills(ir),
         "silkscreen": silk_draws,
         "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
+        # Bend zones the builder authored (gr520329) — `check_bend_zones`
+        # reads them plus the placed `instances` for the part-in-zone rule.
+        "bend_zones": pcb_session.fab_layers_from_features(
+            store.pcb_features_list(ref_id)
+        ).get("bend_zones", []),
+        "instances": design["instances"],
         # Pours the router will make but has not (fixed source copper
         # imported without them): connectivity counts them (gr492989).
         "pending_pours": [

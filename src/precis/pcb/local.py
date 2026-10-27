@@ -1064,6 +1064,11 @@ def _model(placement: LocalPlacement) -> dict[str, Any]:
             if silk_res is not None
             else None,
             "mask_open_regions": mask_opens,
+            # Non-copper fab layers (gr520329): coverlay openings,
+            # stiffeners, adhesives, tape masks, doc notes, bend zones —
+            # the gerber writer's extra files and `check_bend_zones`'s
+            # input, both off the same extraction.
+            **pcb_session.fab_layers_from_features(design.features),
             "instances": instances,
             "nets": [str(n["name"]) for n in design.graph.get("nets") or []],
             "planes": {
