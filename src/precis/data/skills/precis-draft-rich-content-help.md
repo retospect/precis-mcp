@@ -159,7 +159,7 @@ find-replace is refused too (chunk untouched); only one selector per
 edit. Column renames go through the column schema (`rename_column=`),
 not `cell=` — the header row carries no id.
 
-For anything beyond single-cell edits use the **TOON surface**
+For anything beyond single-cell edits use the **toon surface**
 (precis-table-help): `get(id='dc<id>', view='toon')` renders the grid
 with `#` row ids and `<id>:<name>` header cells plus a `hash:` line;
 `patch=` edits a subset (`''`=unchanged, `null`=clear,

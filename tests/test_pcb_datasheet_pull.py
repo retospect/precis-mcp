@@ -548,7 +548,7 @@ def test_get_part_shows_the_failure_reason_then_the_datasheet(
 ):
     part = PartHandler(hub=Hub(store=store))
     store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
-    assert "not pulled yet" in part.get(id="C25900").body
+    assert "pull queued or running" in part.get(id="C25900").body
     serve["body"] = b"not a pdf at all"
     dp.pull(store, "C25900")
     assert "pull failed, reason not_pdf" in part.get(id="C25900").body

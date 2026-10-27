@@ -13,11 +13,11 @@ tags: [drafting, verbs, addressing]
 status: active
 ---
 
-# precis-table-help — tables as id-addressed TOON grids
+# precis-table-help — tables as id-addressed grids
 
 A `chunk_kind='table'` draft chunk holds `meta.table` =
 `{header, rows, columns, rowmeta}` — every row and column carries a
-stable 4-char id (never reused after delete). The TOON view is the
+stable 4-char id (never reused after delete). The toon view is the
 read/edit surface for agents; ids come from meta, never the stored text.
 
 ## view='toon' — the agent-facing grid
@@ -62,7 +62,7 @@ edit(kind='draft', id='dc<id>',
 - `mode='update'` (default) refuses the whole patch on any unmatched
   row; `mode='upsert'` appends them (needs a `key` column — the `#`
   cell supplies its value).
-- Reply: changed-cell count, the changed/appended rows as TOON, new
+- Reply: changed-cell count, the changed/appended rows in toon form, new
   `hash:`.
 
 ## toon= — full replace
@@ -81,7 +81,7 @@ persist. Dropped ids retire — they never reappear.
 
 `at=` positions inserts/moves: `'end'` (default) | `'start'` |
 `{'after': '<id>'}` | `{'before': '<id>'}`. One op per edit — passing
-two selectors refuses. Each reply carries the new TOON (filtered to
+two selectors refuses. Each reply carries the new grid (filtered to
 the touched part past 200 rows) and the new `hash:`.
 
 ## base= — don't clobber a concurrent write
@@ -95,5 +95,5 @@ conservatively.
 ## See also
 
 - [[precis-draft-rich-content-help]] — table= whole-grid replace, cell=, find=/sub=, LaTeX-sourced tables.
-- [[precis-toon]] — the TOON wire format itself.
+- [[precis-toon]] — the toon wire format itself.
 - [[precis-draft-help]] — the draft kind and verb surface.

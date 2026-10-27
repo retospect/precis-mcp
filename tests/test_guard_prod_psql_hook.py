@@ -197,17 +197,30 @@ def test_allow_prod_write_env_silences_ask(monkeypatch, capsys) -> None:
 
 
 def _wrap_ro(sql: str) -> str:
-    """Run scripts/prod-psql's wrap_ro() in bash — the script's only seam."""
+    """Run scripts/prod-psql's remote_cmd() in bash — the script's only seam.
+
+    The --ro wrapper is three separate ``-c`` items (BEGIN READ ONLY; the
+    caller's text as ``$(cat)``; COMMIT;), so the caller's text needs no
+    terminator of its own — psql runs each ``-c`` as its own statement
+    batch and a trailing ``--`` comment cannot reach the next one.
+    """
     import re
     import subprocess
 
     script = Path(__file__).resolve().parents[1] / "scripts" / "prod-psql"
     fn = re.search(
-        r"^wrap_ro\(\) \{\n.*?^\}\n", script.read_text(encoding="utf-8"), re.S | re.M
+        r"^remote_cmd\(\) \{\n.*?^\}\n", script.read_text(encoding="utf-8"), re.S | re.M
     )
     assert fn is not None
     out = subprocess.run(
-        ["bash", "-c", f'RO=1\n{fn.group(0)}\nwrap_ro "$1"', "bash", sql],
+        [
+            "bash",
+            "-c",
+            f"REMOTE_SCRIPTED=psql\n{fn.group(0)}\n"
+            "remote_cmd 'BEGIN READ ONLY;' \"$1\" 'COMMIT;'",
+            "bash",
+            sql,
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -217,13 +230,10 @@ def _wrap_ro(sql: str) -> str:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: runs bash")
-def test_ro_wrapper_terminates_the_user_statement() -> None:
-    assert _wrap_ro("SELECT 1") == "BEGIN READ ONLY;\nSELECT 1\n;\nCOMMIT;\n"
-    # already terminated, trailing whitespace included: left alone
-    assert _wrap_ro("SELECT 1;") == "BEGIN READ ONLY;\nSELECT 1;\nCOMMIT;\n"
-    assert _wrap_ro("SELECT 1;  ") == "BEGIN READ ONLY;\nSELECT 1;  \nCOMMIT;\n"
-    # a trailing line comment must not swallow the terminator
-    assert _wrap_ro("SELECT 1 -- c") == "BEGIN READ ONLY;\nSELECT 1 -- c\n;\nCOMMIT;\n"
+def test_ro_wrapper_isolates_the_user_statement() -> None:
+    # Each fragment is its own -c: the user text sits between the fixed
+    # BEGIN/COMMIT items, never concatenated with them.
+    assert _wrap_ro("$(cat)") == 'psql -c "BEGIN READ ONLY;" -c "$(cat)" -c "COMMIT;"'
 
 
 # --- gr462727 security review: bypass regressions ---------------------------
