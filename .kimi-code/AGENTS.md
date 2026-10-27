@@ -10,8 +10,9 @@ gives the Kimi equivalent.
 
 `scripts/kimi-setup` writes `~/.kimi-code/mcp.json` (the `precis` server,
 same URL and token as Claude's user-scope entry) and a managed block in
-`~/.kimi-code/config.toml`: hooks, `.claude/skills` as a skill dir, and
-allow rules for `mcp__precis__get|search|more`. `kimi doctor` validates it;
+`~/.kimi-code/config.toml`: hooks, `.claude/skills` as a skill dir,
+`default_permission_mode = "yolo"` (Claude runs `auto`) and Claude's
+allow list as permission rules. `kimi doctor` validates it;
 `/mcp` in the TUI shows the connection.
 
 ## Mapping from CLAUDE.md

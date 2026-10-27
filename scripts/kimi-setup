@@ -14,8 +14,9 @@ precis token reaches Kimi the next time a tree starts.
   top-level `extra_skill_dirs` (Kimi loads `.claude/skills/` from the
   project root, so /land, /qland, /go, /bug ... resolve), and at the end
   one `[[hooks]]` entry per event calling scripts/hooks/kimi-adapt.py
-  (which dispatches to `.claude/settings.json`'s hooks) plus allow rules
-  for the read-only precis verbs. Hooks are user-level in Kimi, so each
+  (which dispatches to `.claude/settings.json`'s hooks), plus
+  `default_permission_mode = "yolo"` and Claude's Bash/MCP allow list as
+  `[[permission.rules]]`. Hooks are user-level in Kimi, so each
   command no-ops outside a precis-mcp tree.
 
 Project instructions need no install: Kimi reads AGENTS.md and
@@ -44,17 +45,47 @@ HOOK_CMD = (
     'exec "$f" {event}'
 )
 EVENTS = (("PreToolUse", 60), ("PostToolUse", 60), ("SessionStart", 300))
-READ_VERBS = ("get", "search", "more")
+ROOT = Path(__file__).resolve().parent.parent
+CLAUDE_SETTINGS = Path(
+    os.environ.get("CLAUDE_SETTINGS", Path.home() / ".claude" / "settings.json")
+)
 
 
-def top_block() -> str:
-    return "\n".join(
-        [
-            TOP_BEGIN,
-            'extra_skill_dirs = [".claude/skills"]',
-            TOP_END,
-        ]
-    )
+def top_block(rest: str) -> str:
+    lines = [TOP_BEGIN, 'extra_skill_dirs = [".claude/skills"]']
+    # Claude runs `defaultMode: auto`; Kimi's analogue is yolo ("Ask When
+    # Needed": routine edits and commands run, risky ones still ask). A mode
+    # the user set by hand outside the block wins.
+    if not re.search(r"^default_permission_mode\s*=", rest, re.M):
+        lines.append('default_permission_mode = "yolo"')
+    lines.append(TOP_END)
+    return "\n".join(lines)
+
+
+def claude_allow_patterns() -> list[str]:
+    """Claude's allow list (project + user settings) in Kimi pattern syntax.
+
+    `Bash(git:*)` → `Bash(git*)`; bare tool names (`mcp__precis__get`) pass
+    through. Kimi matches MCP tools by name only, so an MCP entry with an
+    argument pattern is dropped.
+    """
+    out: list[str] = []
+    for path in (ROOT / ".claude" / "settings.json", CLAUDE_SETTINGS):
+        try:
+            allow = json.loads(path.read_text(encoding="utf-8"))["permissions"]["allow"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        for rule in allow:
+            m = re.fullmatch(r"Bash\((.*?)(?::\*)?\)", rule)
+            if m:
+                pat = f"Bash({m.group(1)}*)" if rule.endswith(":*)") else rule
+            elif re.fullmatch(r"mcp__[\w-]+__[\w-]+", rule):
+                pat = rule
+            else:
+                continue
+            if pat not in out:
+                out.append(pat)
+    return out
 
 
 def tables_block() -> str:
@@ -68,12 +99,12 @@ def tables_block() -> str:
             f"timeout = {timeout}",
             "",
         ]
-    for verb in READ_VERBS:
+    for pat in claude_allow_patterns():
         lines += [
             "[[permission.rules]]",
             'decision = "allow"',
-            f'pattern = "mcp__precis__{verb}"',
-            'reason = "precis read verb (Claude allows the same)"',
+            f"pattern = {json.dumps(pat)}",
+            'reason = "mirrors the Claude Code allow list"',
             "",
         ]
     lines.append(TAB_END)
@@ -92,7 +123,7 @@ def render_config(text: str) -> str:
     at = m.start() if m else len(text)
     head, tail = text[:at], text[at:]
     head = head.rstrip("\n") + ("\n\n" if head.strip() else "")
-    out = head + top_block() + "\n\n" + tail.rstrip("\n") + "\n\n" + tables_block()
+    out = head + top_block(text) + "\n\n" + tail.rstrip("\n") + "\n\n" + tables_block()
     return out + "\n"
 
 
