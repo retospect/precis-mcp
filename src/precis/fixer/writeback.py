@@ -115,6 +115,14 @@ def gripe_writeback(
                         set_by="agent",
                         replace_prefix=True,
                     )
+                    # gr520237: the write-back path bypasses the handler's
+                    # tag verb, so run the close cascade here too — a
+                    # terminal STATUS must reach referrers either way.
+                    if status in ("done", "wontfix"):
+                        from precis.handlers.gripe import gripe_close_cascade
+
+                        with store.tx() as conn:
+                            gripe_close_cascade(store, ref_id, status, conn=conn)
         finally:
             store.close()
         return True

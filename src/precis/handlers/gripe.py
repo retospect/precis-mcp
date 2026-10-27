@@ -102,7 +102,7 @@ from precis.handlers._status_tag import alias_status_tags
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Store, Tag
-from precis.store.types import Ref
+from precis.store.types import ChunkInsert, Ref
 from precis.utils.secret_scan import mask_secrets
 
 # Chunk-kind slugs we own. Match the seed in 0005.
@@ -1145,6 +1145,25 @@ class GripeHandler(NumericRefHandler):
             ),
         )
 
+    def _after_tag_mutation(
+        self,
+        ref_id: int,
+        added: list[Tag],
+        removed: list[Tag],
+        *,
+        conn: Any,
+    ) -> None:
+        """gr520237: a terminal STATUS cascades to everything that
+        referenced or waited on this gripe — before this hook nothing
+        heard about the close, and ``wontfix`` gripes kept blocking
+        todos forever."""
+        terminal = next(
+            (str(t).split(":", 1)[1] for t in added if str(t) in _TERMINAL_STATUS_TAGS),
+            None,
+        )
+        if terminal is not None:
+            gripe_close_cascade(self.store, ref_id, terminal, conn=conn)
+
     def _render_tombstone(self, ref_id: int) -> Response:
         """Read-only view of a soft-deleted gripe: title, last STATUS, last comment."""
         ref = self.store.get_ref(kind=self.kind, id=ref_id, include_deleted=True)
@@ -1363,12 +1382,18 @@ class GripeHandler(NumericRefHandler):
         rewrite runs in a savepoint: an ``agent_ro`` connection cannot
         UPDATE refs, and its gripe must still file, so a refused rewrite
         rolls back alone and the full-text title stays. Returns the stored
-        short title, or ``None``."""
+        short title, or ``None``.
+
+        Uses :func:`._gripe_title.short_title_checked` (gr520270): a
+        first clause that fits no boundary inside ``TITLE_MAX`` would
+        store a mid-phrase fragment, so the whole filing is refused —
+        the ``BadInput`` propagates out of ``_insert_gripe``'s
+        transaction and nothing lands."""
         import psycopg
 
-        from precis.handlers._gripe_title import short_title
+        from precis.handlers._gripe_title import short_title_checked
 
-        title = short_title(text)
+        title = short_title_checked(text)
         if title is None:
             return None
         try:
@@ -2139,3 +2164,120 @@ class GripeHandler(NumericRefHandler):
             ]
         )
         return Response(body=body)
+
+
+#: Comment chunk_kind per referrer kind — only kinds with a comment
+#: timeline get the close notice; others are evaluated (unblock)
+#: without a comment write.
+_CLOSE_COMMENT_KIND: dict[str, str] = {
+    "todo": "todo_comment",
+    "gripe": "gripe_comment",
+}
+
+#: Inbound relations the close cascades to (gr520237 ask 2).
+_CLOSE_CASCADE_RELS = ("blocked-by", "related-to", "supersedes", "fixes")
+
+
+def gripe_close_cascade(
+    store: Store, gripe_id: int, status_value: str, *, conn: Any
+) -> None:
+    """Notify everything that referenced or waited on a gripe that just
+    closed (gr520237).
+
+    Runs inside the closing ``tag`` transaction so the notes land
+    atomically with the close. For each referrer — an inbound
+    ``blocked-by``/``related-to``/``supersedes``/``fixes`` link, or an
+    OPEN ``waiting-for:gr<id>`` tag — append a comment naming the close
+    and the next step; a todo whose last live blocked-by edge cleared
+    flips ``STATUS:blocked`` → ``STATUS:open`` (doable picks it up).
+    Quest need-gripes need nothing here: ``open_tool_gripes`` filters
+    live statuses, so they drop out on the next tick automatically.
+    Idempotent per referrer: a referrer whose newest comment already
+    carries this close note is skipped, so a ``done`` → ``wontfix``
+    re-close doesn't double-post.
+    """
+    row = conn.execute(
+        "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
+        "AND c.chunk_kind = 'gripe_comment' ORDER BY c.ord DESC LIMIT 1",
+        (gripe_id,),
+    ).fetchone()
+    gist = " ".join((row[0] if row else "").split())[:120]
+    close_note = f"gr{gripe_id} closed ({gist or status_value})"
+
+    referrers = conn.execute(
+        "SELECT l.src_ref_id, l.relation, r.kind FROM links l "
+        "JOIN refs r ON r.ref_id = l.src_ref_id "
+        "WHERE l.dst_ref_id = %s AND l.relation = ANY(%s) "
+        "AND r.retired_at IS NULL",
+        (gripe_id, list(_CLOSE_CASCADE_RELS)),
+    ).fetchall()
+    waiters = conn.execute(
+        "SELECT rt.ref_id, 'waiting-for', r.kind FROM ref_tags rt "
+        "JOIN tags t ON t.tag_id = rt.tag_id "
+        "JOIN refs r ON r.ref_id = rt.ref_id "
+        "WHERE t.namespace = 'OPEN' AND t.value = %s "
+        "AND r.retired_at IS NULL",
+        (f"waiting-for:gr{gripe_id}",),
+    ).fetchall()
+
+    from precis.todo import blocker_terminal_sql
+
+    for src_id, relation, kind in {tuple(r) for r in referrers + waiters}:
+        # Next step: a blocked-by referrer with no live blockers left is
+        # unblocked; everything else is a re-evaluation note.
+        unblocked = False
+        if relation == "blocked-by":
+            live = conn.execute(
+                "SELECT count(*) FROM links l JOIN refs b "
+                " ON b.ref_id = l.dst_ref_id "
+                "WHERE l.src_ref_id = %s AND l.relation = 'blocked-by' "
+                " AND b.retired_at IS NULL "
+                " AND COALESCE((SELECT t.value FROM ref_tags rt "
+                "   JOIN tags t ON t.tag_id = rt.tag_id "
+                "   WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' "
+                "   LIMIT 1), 'open') NOT IN " + blocker_terminal_sql(),
+                (src_id,),
+            ).fetchone()
+            unblocked = live is not None and int(live[0]) == 0
+        comment_kind = _CLOSE_COMMENT_KIND.get(kind)
+        if comment_kind is not None:
+            already = conn.execute(
+                "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
+                "AND c.chunk_kind = %s ORDER BY c.ord DESC LIMIT 1",
+                (src_id, comment_kind),
+            ).fetchone()
+            if not (
+                already is not None
+                and str(already[0]).startswith(f"gr{gripe_id} closed")
+            ):
+                nxt = "unblocked" if unblocked else "re-evaluate"
+                (ord_,) = conn.execute(
+                    "SELECT coalesce(max(ord), 0) + 1 FROM chunks WHERE ref_id = %s",
+                    (src_id,),
+                ).fetchone()
+                store.chunks.insert_chunks(
+                    src_id,
+                    [
+                        ChunkInsert(
+                            ord=int(ord_),
+                            text=f"{close_note} — next: {nxt}",
+                            meta={"chunk_kind": comment_kind},
+                        )
+                    ],
+                    conn=conn,
+                )
+        if unblocked and kind == "todo":
+            cur = conn.execute(
+                "SELECT t.value FROM ref_tags rt JOIN tags t "
+                "ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s "
+                "AND t.namespace = 'STATUS' LIMIT 1",
+                (src_id,),
+            ).fetchone()
+            if cur is not None and cur[0] == "blocked":
+                store.add_tag(
+                    src_id,
+                    Tag.parse_strict("STATUS:open"),
+                    set_by="system",
+                    replace_prefix=True,
+                    conn=conn,
+                )

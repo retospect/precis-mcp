@@ -63,6 +63,70 @@ def test_other_status_changes_unguarded(hub: Hub) -> None:
     assert "STATUS:triaged" in _tags(h, gid)
 
 
+def test_close_cascades_to_blocked_todo(hub: Hub) -> None:
+    """gr520237: closing a gripe notifies referrers and unblocks todos
+    whose last live blocker cleared — including a ``wontfix`` close,
+    which the old ``('done','won''t-do')`` blocker check never saw."""
+    from precis.handlers.todo import TodoHandler
+
+    h, gid = _gripe(hub)
+    todo = TodoHandler(hub=hub)
+    todo.put(text="cascade target leaf")
+    tid = next(r.id for r in todo.store.list_refs(kind="todo"))
+    todo.store.add_link(src_ref_id=tid, dst_ref_id=gid, relation="blocked-by")
+    todo.tag(id=tid, add=["STATUS:blocked"])
+
+    h.put(id=gid, text="resolved: wontfix — by design")
+    h.tag(id=gid, add=["STATUS:wontfix"])
+
+    comments = [
+        c.text
+        for c in todo.store.chunks.list_chunks_for_ref(tid)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert comments == [
+        f"gr{gid} closed (resolved: wontfix — by design) — next: unblocked"
+    ]
+    assert "STATUS:open" in {str(t) for t in todo.store.tags_for(tid)}
+
+    # Idempotent: a re-close (done after wontfix) does not double-post.
+    h.put(id=gid, text="resolved: abc (r1) — verified")
+    h.tag(id=gid, add=["STATUS:done"])
+    comments = [
+        c.text
+        for c in todo.store.chunks.list_chunks_for_ref(tid)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert len(comments) == 1
+
+
+def test_close_keeps_live_blocker_blocking(hub: Hub) -> None:
+    """A todo blocked-by the closed gripe AND another live blocker stays
+    blocked — the cascade comments re-evaluate, not unblocked."""
+    from precis.handlers.todo import TodoHandler
+
+    h, gid = _gripe(hub)
+    other = TodoHandler(hub=hub)
+    other.put(text="second cascade leaf")
+    tid = next(r.id for r in other.store.list_refs(kind="todo"))
+    other.store.add_link(src_ref_id=tid, dst_ref_id=gid, relation="blocked-by")
+    # Second blocker stays open, so the close clears only one edge.
+    _h2, gid2 = _gripe(hub)
+    other.store.add_link(src_ref_id=tid, dst_ref_id=gid2, relation="blocked-by")
+    other.tag(id=tid, add=["STATUS:blocked"])
+
+    h.put(id=gid, text="resolved: wontfix — nope")
+    h.tag(id=gid, add=["STATUS:wontfix"])
+
+    comments = [
+        c.text
+        for c in other.store.chunks.list_chunks_for_ref(tid)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert comments[-1].endswith("next: re-evaluate")
+    assert "STATUS:blocked" in {str(t) for t in other.store.tags_for(tid)}
+
+
 def test_soft_deleted_get_shows_title_status_and_last_comment(hub: Hub) -> None:
     h, gid = _gripe(hub)
     h.put(id=gid, text="resolved: abc (r1) — verified", tags=["STATUS:done"])

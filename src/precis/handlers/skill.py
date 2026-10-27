@@ -2631,7 +2631,27 @@ class SkillHandler(Handler):
 
         rows: list[tuple[str, str, str, str]] = []  # (label, status, kind, hint)
         worst = "OK"
+        # gr519660: ``sentence_transformers`` backs ONLY the in-process
+        # ``bge-m3`` embedder — every kind's semantic search runs on
+        # whatever backend is live, and a ``remote`` backend (prod)
+        # embeds via the service, so the local module is unneeded.
+        # Probing it unconditionally flagged prod DEGRADED for a dep
+        # nothing here imports. Probe it only when the live backend is
+        # the local bge-m3 one; otherwise report it n/a.
+        _inner = getattr(embedder, "inner", embedder)
+        needs_local_st = getattr(_inner, "backend", None) == "bge-m3"
         for module, label, backs, hint in _OPTIONAL_DEP_PROBES:
+            if module == "sentence_transformers" and not needs_local_st:
+                backend = getattr(_inner, "backend", "none")
+                rows.append(
+                    (
+                        label,
+                        f"n/a (embedder backend is {backend}, not local bge-m3)",
+                        backs,
+                        "",
+                    )
+                )
+                continue
             try:
                 mod = importlib.import_module(module)
             except ImportError:
@@ -3771,7 +3791,7 @@ _OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
     (
         "sentence_transformers",
         "sentence-transformers",
-        "paper / markdown / patent semantic search",
+        "local bge-m3 embedder (probed only when that backend is live)",
         "pip install 'precis-mcp[embed]'",
     ),
     (

@@ -172,6 +172,25 @@ class _PerplexityBase(CacheBackedHandler):
     def cost_per_call_usd(self) -> float:  # type: ignore[override]
         return self.TIER.cost_per_call_usd
 
+    def _expected_cost_usd(self) -> float:
+        """Pre-fetch estimate from *observed* billing, not the constant.
+
+        gr521139: the hand-typed TIER figure ran >5x under a real
+        sonar-deep-research call ($0.50 documented vs $2.71 billed —
+        long prompts blow the flat estimate out). When the cache holds
+        billed rows for this tier's model, the estimate is the p90 of
+        the most recent observed ``cost_usd`` values — the pre-call
+        figure the budget gate shows then tracks reality instead of a
+        stale constant. The TIER constant is the no-data fallback only.
+        """
+        stats = self.store.observed_cost_stats(
+            provider=self.provider, model=self.TIER.model
+        )
+        if stats is not None:
+            _n, _median, p90 = stats
+            return p90
+        return self.TIER.cost_per_call_usd
+
     # ── canonicalize: trim + include model so kinds don't collide ────
 
     def _canonical_key(self, query: str, *, literal: bool = False) -> str:
@@ -491,7 +510,13 @@ class _PerplexityBase(CacheBackedHandler):
                 )
             )
         body = resp.body + render_next_section(nav)
-        return Response(body=body, cost=resp.cost)
+        # gr521140: a paid Sonar answer is the whole deliverable — folding
+        # it at ~4 KB forced 4–9 sequential more() drains (a 13 KB answer
+        # used to arrive as "10.3 KB elided", then 7.4, 4.8, 2.3).
+        # ``unfolded`` skips the write-time context fold for this body and
+        # its whole cursor chain; the ``PRECIS_MAX_BODY_BYTES`` frame cap
+        # still pages an oversized report — at ~24 KB a page, not ~4 KB.
+        return Response(body=body, cost=resp.cost, unfolded=True)
 
     # ── /recent listing — Perplexity-specific; surfaces imported vs
     #    fetched provenance and points at the import path so Pro users

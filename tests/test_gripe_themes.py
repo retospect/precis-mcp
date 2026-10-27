@@ -25,7 +25,7 @@ from precis.tools import core as tools_core
 
 #: A create text that hits exactly the ``test-speed`` theme.
 TEST_SPEED_TEXT = (
-    "scripts/test tests/test_no_db.py still queues and starts Postgres — "
+    "scripts/test tests/test_no_db.py still queues — and starts Postgres, "
     "named-file runs wait ~25s on container bring-up"
 )
 
@@ -177,7 +177,7 @@ def test_multi_line_merge_keeps_first_line_gist(gripe: GripeHandler) -> None:
 
 
 def test_multi_match_files_separately_and_names_themes(gripe: GripeHandler) -> None:
-    text = "scripts/test --typecheck is slow: host mypy reports import-untyped"
+    text = "scripts/test --typecheck is slow; host mypy reports import-untyped"
     assert sorted(match_themes(text)) == ["host-mypy", "test-speed"]
     out = gripe.put(text=text)
     gid = next(iter(_ids(gripe)))

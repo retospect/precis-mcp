@@ -24,7 +24,7 @@ from precis.store._todo_sql import (  # noqa: F401  (re-export)
     _doable_exclusion_clause,
     direction_todo_sql,
 )
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.todo.guards import todo_root_sql
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
@@ -1082,7 +1082,7 @@ def _fetch_doable(
                         (SELECT t.value FROM ref_tags rt2 JOIN tags t ON t.tag_id = rt2.tag_id
                           WHERE rt2.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                         'open'
-                      ) NOT IN ('done', 'won''t-do')
+                      ) NOT IN {blocker_terminal_sql()}
            )
            AND NOT EXISTS (
                -- ``_DOABLE_EXCLUSION_TAGS`` registry: every "robot
@@ -1361,7 +1361,7 @@ def render_blocked(store: Store) -> Response:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    array_agg(l.dst_ref_id ORDER BY l.dst_ref_id)
                        FILTER (WHERE l.dst_ref_id IS NOT NULL) AS blockers
@@ -1378,7 +1378,7 @@ def render_blocked(store: Store) -> Response:
                                    WHERE rt.ref_id = b.ref_id
                                      AND t.namespace = 'STATUS' LIMIT 1),
                                  'open'
-                               ) NOT IN ('done', 'won''t-do')
+                               ) NOT IN {blocker_terminal_sql()}
                     )
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                -- Defensive parity with render_ask_user: a terminal leaf

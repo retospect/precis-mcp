@@ -32,6 +32,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -395,6 +396,31 @@ def test_precis_status_renders_optional_dep_table(
     # overall status is OK.  If the test runner ever drops
     # sentence-transformers, this assertion shows where.
     assert "Overall: OK" in body, f"precis-status reports a degraded venv:\n{body}"
+
+
+def test_precis_status_skips_sentence_transformers_probe_on_nonlocal_backend(
+    runtime_with_store: PrecisRuntime, monkeypatch
+) -> None:
+    """gr519660: ``sentence_transformers`` backs only the in-process
+    ``bge-m3`` embedder — semantic search for every kind runs on the
+    live backend, and prod serves ``remote``. A missing module under a
+    non-local backend (the fixture wires ``mock``) must report n/a, not
+    DEGRADED — the dep was never load-bearing here."""
+    import importlib
+
+    real_import = importlib.import_module
+
+    def fake_import(name: str, *a: Any, **kw: Any) -> Any:
+        if name == "sentence_transformers":
+            raise ImportError("not installed")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    body = runtime_with_store.dispatch("get", {"kind": "skill", "id": "precis-status"})
+    assert "sentence-transformers" in body
+    assert "n/a" in body
+    assert "MISSING" not in body
+    assert "Overall: DEGRADED" not in body
 
 
 def test_precis_status_reports_active_embedder_and_warns_on_mock(

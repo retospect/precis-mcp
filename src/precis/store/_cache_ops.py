@@ -555,6 +555,46 @@ class CacheMixin:
         assert row is not None
         return int(row[0])
 
+    def observed_cost_stats(
+        self, *, provider: str, model: str, limit: int = 50
+    ) -> tuple[int, float, float] | None:
+        """``(n, median, p90)`` of observed USD costs for ``(provider, model)``.
+
+        Over the ``limit`` most recent *billed* rows — ``cost_usd > 0``
+        and ``meta.cost_estimated`` not ``true`` (a row marked estimated
+        recorded the flat fallback constant, not billing data; a row
+        without the key at all is treated as observed, matching rows
+        written before the flag existed — gr521139). ``None`` when there
+        is no billing data, so the caller can fall back to its static
+        estimate instead of reporting a fake ``0``.
+        """
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT count(*),
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY cost_usd),
+                       percentile_cont(0.9) WITHIN GROUP (ORDER BY cost_usd)
+                  FROM (
+                        SELECT cs.cost_usd
+                          FROM cache_state cs
+                          JOIN refs r ON r.ref_id = cs.ref_id
+                         WHERE cs.provider = %s
+                           AND cs.model = %s
+                           AND cs.cost_usd IS NOT NULL
+                           AND cs.cost_usd > 0
+                           AND (cs.meta->>'cost_estimated')
+                               IS DISTINCT FROM 'true'
+                           AND r.retired_at IS NULL
+                         ORDER BY cs.fetched_at DESC
+                         LIMIT %s
+                       ) recent
+                """,
+                (provider, model, limit),
+            ).fetchone()
+        if row is None or int(row[0] or 0) == 0:
+            return None
+        return int(row[0]), float(row[1]), float(row[2])
+
     def search_cache_entry_titles(
         self,
         *,

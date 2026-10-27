@@ -24,12 +24,10 @@ Kind-specific options go inside args={...}; an unknown key returns the kind's ac
 
 Hybrid lexical + semantic search. Returns ranked handles (`pc<chunk_id>`,
 e.g. `pc40`) you paste straight into `get(id=…)` to drill in — the handle's
-prefix infers the kind. Order is the relevance signal — for a fused
-hybrid or cross-kind result there is no honest numeric score to sort
-by. `kind='conv'` is the one exception: it's lexical-only (no
+prefix infers the kind. Order is the relevance signal — a fused
+result has no honest numeric score to sort by. `kind='conv'` is the one exception: it's lexical-only (no
 semantic leg yet), so its hits carry a real `(score=0.1234)` — a raw
-lexical rank, comparable within that one response, not a probability
-or a cross-kind-comparable number, and not a general search contract.
+lexical rank, comparable within that one response only.
 
 ## What knobs does search have?
 ## Quick reference for search arguments
@@ -115,7 +113,11 @@ gold to the top instead of reading the tail. Page when you want the
 
 By default `search` is **hybrid**: a lexical pass fused with a semantic
 pass into one ranked list — the right default for "find me things about
-X". Pin the ranking with `mode=` when you know better:
+X". Hybrid isn't uniform: `skill`, `citation`, `finding`, `tag`,
+`calc`, `python`, `perplexity-*`/`websearch` don't join the merge;
+`patent`/`edgar` are lexical-only whatever `mode=` says; `tags=` is
+honoured per-handler (a runtime backstop covers the common cases).
+Pin it with `mode=` when you know better:
 
 | `mode` | What it does | Reach for it when |
 |---|---|---|

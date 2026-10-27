@@ -22,11 +22,19 @@ Three paid, cache-backed kinds wrap Perplexity Sonar at different
 price/latency points. All three accept `put(mode='import')` so Pro
 subscribers can paste a free web-UI answer at $0.
 
-| kind                   | use for                              | latency  | cost/call |
-|------------------------|--------------------------------------|----------|-----------|
-| `websearch`            | fast factual lookup, single question | 2–5s     | ~$0.001   |
-| `perplexity-reasoning` | comparison, reasoning, trade-offs    | 5–30s    | ~$0.005   |
-| `perplexity-research`  | long report, landscape survey        | 2–10 min | ~$0.50    |
+| kind                   | use for                              | latency  | cost/call (no-data fallback) |
+|------------------------|--------------------------------------|----------|------------------------------|
+| `websearch`            | fast factual lookup, single question | 2–5s     | ~$0.001                      |
+| `perplexity-reasoning` | comparison, reasoning, trade-offs    | 5–30s    | ~$0.005                      |
+| `perplexity-research`  | long report, landscape survey        | 2–10 min | ~$0.50                       |
+
+The cost/call column is the **no-data fallback** only. The estimate
+precis shows at call time (cost trailer, budget gate) is computed from
+observed billing — the p90 of the most recent billed `cost_usd` rows
+for that tier's model — whenever the cache holds them, so it tracks
+real spend instead of this table. Deep-research calls on long prompts
+have run past $2.50; treat the research tier as up-to-$3 territory,
+not "~$0.50".
 
 ## Ask Perplexity a question
 ## Run a websearch / perplexity-reasoning / perplexity-research call

@@ -136,6 +136,26 @@ def research(hub_no_embedder: Hub) -> ResearchHandler:
 # ── basic flow ────────────────────────────────────────────────────────
 
 
+def test_paid_answer_is_served_unfolded(websearch: WebsearchHandler) -> None:
+    """gr521140: a paid Sonar answer is the whole deliverable — the
+    write-time context fold must not cut it to ~4 KB and force a string
+    of re-folding more() drains. The response carries ``unfolded`` so
+    dispatch serves it whole; the ``PRECIS_MAX_BODY_BYTES`` frame cap
+    still pages an oversized body at ~24 KB a page, not ~4 KB."""
+    _StubClient.response = _StubResp(
+        json_data={
+            "choices": [{"message": {"content": "x" * 9000}}],
+            "citations": [],
+        }
+    )
+    resp = websearch.get(id="a long answer please")
+    assert resp.unfolded is True  # fresh fetch
+    assert _StubClient.call_count == 1
+    resp = websearch.get(id="a long answer please")
+    assert resp.unfolded is True  # cache hit
+    assert _StubClient.call_count == 1
+
+
 def test_websearch_fetches_and_caches(websearch: WebsearchHandler) -> None:
     resp = websearch.get(id="who is the CEO of Anthropic")
     # Body has answer + citations.
@@ -660,6 +680,45 @@ def test_cost_per_tier() -> None:
     assert WebsearchHandler.TIER.cost_per_call_usd == pytest.approx(0.001)
     assert ThinkHandler.TIER.cost_per_call_usd == pytest.approx(0.005)
     assert ResearchHandler.TIER.cost_per_call_usd == pytest.approx(0.50)
+
+
+def test_expected_cost_uses_observed_billing(research: ResearchHandler) -> None:
+    """gr521139: the pre-call estimate is the p90 of the tier's recent
+    *billed* rows — the $0.50 constant ran >5x under a real
+    deep-research call ($2.71). Rows marked ``cost_estimated`` recorded
+    the fallback, not billing data, so they are excluded; with no billed
+    rows the TIER constant is the fallback."""
+    store = research.store
+    assert research._expected_cost_usd() == pytest.approx(0.50)
+
+    def seed(i: int, cost: float, *, estimated: bool = False) -> None:
+        meta = (
+            {"cost_estimated": True}
+            if estimated
+            else {"usage": {"cost": {"total_cost": cost}}, "cost_estimated": False}
+        )
+        store.put_cache_entry(
+            kind="perplexity-research",
+            slug=f"seeded-q{i}",
+            title=f"seeded q{i}",
+            body_blocks=[],
+            provider="perplexity",
+            request_hash=f"hash-{i}",
+            ttl_seconds=None,
+            model="sonar-deep-research",
+            cost_usd=cost,
+            cache_meta=meta,
+        )
+
+    seed(1, 0.50)
+    seed(2, 2.71)
+    seed(3, 0.50, estimated=True)  # excluded — the flat fallback, not billing
+    stats = store.observed_cost_stats(
+        provider="perplexity", model="sonar-deep-research"
+    )
+    assert stats is not None and stats[0] == 2
+    # percentile_cont(0.9) over [0.50, 2.71] interpolates.
+    assert research._expected_cost_usd() == pytest.approx(0.50 + 0.9 * (2.71 - 0.50))
 
 
 def test_cost_appears_on_fresh_fetch(websearch: WebsearchHandler) -> None:

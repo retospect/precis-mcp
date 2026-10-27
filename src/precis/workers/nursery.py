@@ -105,7 +105,7 @@ from precis.store._todo_sql import (
     todo_root_sql,
 )
 from precis.store.types import TODO_BODY_KIND
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.utils import handle_registry
 from precis.workers.runner import BatchResult
 
@@ -785,7 +785,9 @@ def _detect_stuck_doable(store: Store) -> list[Symptom]:
                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                               WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                             'open'
-                          ) NOT IN ('done', 'won''t-do')
+                          ) NOT IN """
+            + blocker_terminal_sql()
+            + """
                )
                -- Rotation fence (retire-dossier): direction todos are a
                -- quest's attempt tree — never dispatch candidates.

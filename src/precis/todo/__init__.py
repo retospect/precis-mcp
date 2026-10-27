@@ -15,3 +15,30 @@ Neutral home for what used to be ``todo/views`` and
 #: (``open`` / ``doing`` / ``blocked`` / ``paused`` + these terminals)
 #: lives in ``store.types._KIND_STATUS_VALUES["todo"]`` — keep in sync.
 TERMINAL_TODO_STATUSES: frozenset[str] = frozenset({"done", "won't-do", "auto-timeout"})
+
+#: STATUS values that close a *blocked-by target* — the union every
+#: "is the blocker still live" predicate must share. A blocked-by edge
+#: can point at any kind, and terminal vocabularies differ per kind
+#: (todo ``won't-do`` / ``auto-timeout``, gripe ``wontfix``, quest
+#: ``abandoned``) — gr520237: the blocked-by checks hardcoded
+#: ``('done', 'won''t-do')``, so a todo blocked-by a gripe closed
+#: ``wontfix`` stayed blocked forever. Self-side todo predicates keep
+#: :data:`TERMINAL_TODO_STATUSES`; this set is for the *target* of a
+#: blocked-by edge only.
+BLOCKER_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"done", "won't-do", "auto-timeout", "wontfix", "abandoned", "resolved"}
+)
+
+
+def blocker_terminal_sql() -> str:
+    """The ``IN (…)`` literal-list fragment for
+    :data:`BLOCKER_TERMINAL_STATUSES` — constant strings, no caller
+    input, so interpolation is safe and matches the SQL-concat style
+    of the views/workers that use it."""
+    return (
+        "("
+        + ", ".join(
+            "'" + v.replace("'", "''") + "'" for v in sorted(BLOCKER_TERMINAL_STATUSES)
+        )
+        + ")"
+    )

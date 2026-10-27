@@ -1,0 +1,108 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""List docs/backlog and memory-node citations of CLOSED gripes (gr520237 ask 3).
+
+A gripe that is done/wontfix but still cited in docs/backlog/**/*.md or the
+memory-node cache is stale signposting: the close-cascade hook comments on
+inbound refs, but hand-written ``grNNNN`` mentions in files and memory nodes
+keep implying the gripe is live work. This lists them so pillar-review /
+memory reconsolidation can prune.
+
+Usage: scripts/gripe-closed-citations --statuses statuses.jsonl [--root PATH] [--memory-nodes PATH]
+
+``statuses.jsonl`` comes from session-MCP reads — one JSON object per line:
+``{"id": "gr123", "status": "done"}`` (id also accepts a bare integer).
+Gripe statuses come from ``search(kind='gripe', ...)``/``get`` output; the
+script never touches prod itself. Terminal statuses: done, wontfix.
+``--memory-nodes`` defaults to $PRECIS_MEMORY_NODES or
+~/.cache/precis/memory-nodes (the SessionStart export). Advisory: exit 0.
+
+Companion of scripts/gripe-dangling-backlog, which checks the reverse
+direction (gripe comments citing backlog files that do not exist).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+GRIPE_REF = re.compile(r"\bgr([1-9][0-9]*)\b")
+TERMINAL = frozenset({"done", "wontfix"})
+
+
+def load_statuses(path: Path) -> dict[int, str]:
+    out: dict[int, str] = {}
+    with path.open(encoding="utf-8") as source:
+        for number, line in enumerate(source, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            ident = str(row.get("id", "")).removeprefix("gr")
+            status = str(row.get("status", ""))
+            if ident.isdigit() and status:
+                out[int(ident)] = status
+            else:
+                raise ValueError(f"line {number}: expected {{id, status}}")
+    return out
+
+
+def find_citations(
+    statuses: dict[int, str], root: Path, memory_nodes: Path | None
+) -> list[str]:
+    hits: list[str] = []
+    files = sorted((root / "docs" / "backlog").rglob("*.md"))
+    if memory_nodes is not None and memory_nodes.is_dir():
+        files += sorted(memory_nodes.glob("*.md"))
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        cited = {int(m.group(1)) for m in GRIPE_REF.finditer(text)}
+        for gid in sorted(cited):
+            status = statuses.get(gid)
+            if status in TERMINAL:
+                hits.append(f"{f} gr{gid} ({status})")
+    return hits
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--statuses",
+        type=Path,
+        required=True,
+        help="JSONL of {id, status} from session-MCP gripe reads",
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+        help="checkout root holding docs/backlog (default: this script's)",
+    )
+    parser.add_argument(
+        "--memory-nodes",
+        type=Path,
+        default=None,
+        help="memory-node export dir (default: $PRECIS_MEMORY_NODES or ~/.cache/precis/memory-nodes)",
+    )
+    args = parser.parse_args()
+    memory_nodes = args.memory_nodes
+    if memory_nodes is None:
+        memory_nodes = Path(
+            os.environ.get(
+                "PRECIS_MEMORY_NODES",
+                str(Path.home() / ".cache" / "precis" / "memory-nodes"),
+            )
+        )
+    statuses = load_statuses(args.statuses)
+    for hit in find_citations(statuses, args.root, memory_nodes):
+        print(hit)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
