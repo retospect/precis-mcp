@@ -7,6 +7,10 @@ and the emitted copper passes DRC with 0 errors."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import numpy as np
+
 import precis_geom.pcb as pcb
 from precis.pcb import drc
 from precis.pcb import local as kernel
@@ -14,14 +18,16 @@ from precis.pcb import realize as pcb_realize
 from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import PcbIR
 from precis.pcb.topoplace import design_from_ir
-from precis.pcb.topoplace.mesh import build_mesh
+from precis.pcb.topoplace.design import TopoDesign
+from precis.pcb.topoplace.mesh import TopoMesh, build_mesh
 from precis.pcb.topoplace.realise import (
     plan_route,
     realize_result,
     route_design,
+    sketch_rows,
     widen_power,
 )
-from precis.pcb.topoplace.wires import build_wires
+from precis.pcb.topoplace.wires import WirePath, Wires, build_wires
 
 
 def _sanity_board() -> pcb.Board:
@@ -208,3 +214,152 @@ def test_widen_power_keeps_the_rule_width_when_the_oracle_refuses() -> None:
     res2, widths = widen_power(res, {0, 1, 2}, drc_errors=errs)
     assert widths == {0: 1.0, 1: 0.5, 2: 0.15}
     assert {t.net_id: t.width_mm for t in res2.tracks} == widths
+
+
+def _via_fixture(
+    *, pin_side: tuple[int, ...] = (0, 1, 0, 0), constrained: tuple[bool, ...]
+) -> tuple[TopoDesign, TopoMesh, Wires]:
+    """gr520901 — a two-branch synthetic: b0 (net 0) crosses e0→e2, b1
+    (net 1) crosses e1→e3, and the two shared edges carry opposite order
+    so the branches cross. ``constrained`` marks which edges are ring
+    edges a via may never sit on; e0 plays the pad's own ring edge the
+    esp32c3 bench minted end vias onto."""
+    verts = np.asarray(
+        [
+            [0.0, 0.0],  # pad vertex — no edge endpoint
+            [0.6, 0.0],
+            [0.6, 0.6],  # e0: the pad's ring edge (0.6 mm)
+            [2.0, 0.0],
+            [2.0, 3.0],  # e1: free channel (3.0 mm)
+            [5.0, 0.5],
+            [5.0, 3.0],  # e2: free channel (2.5 mm)
+            [7.0, 0.0],
+            [7.0, 4.0],  # e3: free (4.0 mm)
+        ]
+    )
+    edges = np.asarray([[1, 2], [3, 4], [5, 6], [7, 8]], np.int32)
+    n_e = len(edges)
+    mesh = TopoMesh(
+        verts=verts,
+        tris=np.zeros((0, 3), np.int32),
+        edges=edges,
+        tri_edges=np.zeros((0, 3), np.int32),
+        edge_tris=np.zeros((n_e, 2), np.int32),
+        constrained=np.asarray(constrained, dtype=bool),
+        pad_vertex={},
+    )
+    b0 = WirePath(
+        net=0,
+        pin_a=0,
+        pin_b=1,
+        tris=(),
+        edges=(0, 1, 2),
+        t=(0.5, 0.5, 0.5),
+        points=((0.0, 0.0), (0.6, 0.3), (2.0, 1.5), (5.0, 1.75), (8.0, 2.0)),
+    )
+    b1 = WirePath(
+        net=1,
+        pin_a=2,
+        pin_b=3,
+        tris=(),
+        edges=(1, 2, 3),
+        t=(0.4, 0.4, 0.5),
+        points=((1.0, -1.0), (2.0, 1.2), (5.0, 1.5), (7.0, 2.0), (9.0, 1.0)),
+    )
+    order: list[tuple[int, ...]] = [() for _ in range(n_e)]
+    order[1] = (0, 1)
+    order[2] = (1, 0)  # order flips between the shared edges → a crossing
+    n_layers = 4
+    outers = frozenset({0, n_layers - 1})
+    wires = Wires(
+        branches=(b0, b1),
+        order=tuple(order),
+        capacity_mm=np.zeros(n_e),
+        net_layers=(outers, outers),
+        unreachable=(),
+        gap_free_mm=np.full((n_e, n_layers), -1.0),
+        gap_cap=np.full((n_e, n_layers), -1),
+    )
+    d = TopoDesign(
+        parts=("P1", "P2", "P3", "P4"),
+        pin_xy=np.zeros((4, 2)),
+        pin_part=np.asarray([0, 1, 2, 3]),
+        pin_side=np.asarray(pin_side, dtype=np.int8),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        pin_net=np.asarray([0, 0, 1, 1], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]), np.asarray([2, 3])),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(4, dtype=bool),
+        freedoms=np.full(4, 3, dtype=np.uint8),
+        outline=np.asarray([[-1.0, -1.0], [10.0, -1.0], [10.0, 5.0], [-1.0, 5.0]]),
+        pose0=np.zeros((4, 4)),
+        net_name=("N0", "N1"),
+    )
+    return d, mesh, wires
+
+
+def test_end_via_never_sites_on_a_pad_ring_edge() -> None:
+    """gr520901's acceptance unit: a yielded F↔B branch whose FIRST
+    crossed edge is its own pad's ring edge mints its end via on the
+    first keepout-clean edge, not on the ring."""
+    d, mesh, wires = _via_fixture(constrained=(True, False, False, False))
+    plan = plan_route(d, mesh, wires, 4)
+
+    # b0 (rank-1 F↔B) yields the shared-edge crossing to b1 and flips to
+    # B.Cu; its top-SMD pin_a forces an end via at the branch start —
+    # where the wire's first crossed edge is the pad's own ring edge.
+    assert len(plan.vias) == 1
+    (via,) = plan.vias
+    assert via.branch == 0
+    assert not mesh.constrained[via.edge]
+    assert via.edge == 1  # walked to the first clean edge
+    assert plan.no_via == ()
+
+
+def test_via_site_rejects_a_spot_crowding_another_via() -> None:
+    """The same siting walk refuses a site within via_dia + clearance of
+    an already placed via: b1's mid via skips the edge b0's via took."""
+    d, mesh, wires = _via_fixture(
+        pin_side=(0, 1, 0, 1), constrained=(True, False, False, False)
+    )
+    plan = plan_route(d, mesh, wires, 4)
+
+    assert len(plan.vias) == 2
+    via0 = next(v for v in plan.vias if v.branch == 0)
+    via1 = next(v for v in plan.vias if v.branch == 1)
+    assert not mesh.constrained[via0.edge]
+    # b0's end via takes e1 (2.0, 1.5); b1's mid via wants e1 too —
+    # (2.0, 1.2) at t=0.4 sits 0.3 mm away, inside the 0.75 mm keep-out,
+    # so it walks on to e2.
+    assert via1.edge == 2
+
+
+def test_no_clean_edge_reports_no_via_site_instead_of_emitting() -> None:
+    """Every edge on the branch is a ring edge: no via is minted and the
+    net lands on ``pcb_routes`` as ``failed: no via site`` — a report,
+    never keepout-breaking copper."""
+    d, mesh, wires = _via_fixture(constrained=(True, True, True, False))
+    plan = plan_route(d, mesh, wires, 4)
+
+    assert plan.vias == ()
+    assert plan.no_via == (0,)
+    # the branch still emits its two run pieces — the failed net's
+    # honest geometry — it is the VIA that is not minted.
+    assert {p.branch for p in plan.pieces} == {0, 1}
+
+    ir = SimpleNamespace(
+        n_pins=4,
+        n_nets=2,
+        pin_net=np.asarray([0, 0, 1, 1]),
+        pin_instance=np.asarray([0, 1, 2, 3]),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        instance_refdes=np.asarray(list(d.parts), dtype=object),
+        net_name=np.asarray(list(d.net_name), dtype=object),
+        net_plane_layers=np.zeros(2, dtype=np.uint16),
+    )
+    rows = sketch_rows(plan, d, ir, ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"])
+    assert rows["N0"]["status"] == "failed"
+    assert rows["N0"]["fail"]["problems"][0]["reason"] == "no via site"
+    assert "no via site" in rows["N0"]["note"]
+    assert rows["N1"]["status"] == "realized"

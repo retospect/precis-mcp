@@ -381,7 +381,13 @@ def test_topo_route_empty_result_keeps_stored_copper(
     seeded_routes = store.pcb_routes_get(ref.id)
 
     empty_plan = types.SimpleNamespace(
-        pieces=(), vias=(), layers=(), crossings=(), unreachable=(), stranded=()
+        pieces=(),
+        vias=(),
+        layers=(),
+        crossings=(),
+        unreachable=(),
+        stranded=(),
+        no_via=(),
     )
     monkeypatch.setattr(
         _tprealise,
@@ -442,7 +448,13 @@ def test_topo_route_copper_and_route_rows_write_atomically(
         width_mm=0.99,
     )
     plan = types.SimpleNamespace(
-        pieces=(), vias=(), layers=(), crossings=(), unreachable=(), stranded=()
+        pieces=(),
+        vias=(),
+        layers=(),
+        crossings=(),
+        unreachable=(),
+        stranded=(),
+        no_via=(),
     )
     monkeypatch.setattr(
         _tprealise,

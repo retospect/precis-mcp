@@ -20,6 +20,18 @@ two via sites — one at each end's ``(edge_id, t)`` crossing parameter —
 bracket it. A crossing that survives the flip bound is reported on
 :attr:`RoutePlan.crossings` for the caller to count as DRC, not hidden.
 
+Via SITING is keepout-aware (topo S3, gr520901): a site is never minted
+on a constrained ring edge or within a barrel's keep-out of an endpoint
+vertex — the walk moves along the branch's crossed edges to the first
+whose pad-channel record (:attr:`Wires.gap_free_mm`) leaves the via plus
+its clearance on both outer layers, clears every pad polygon on those
+layers by the barrel's keep-out (the channel record is trace-buffered —
+a site "free" for a 0.15 mm wire can still drill a solder land), and
+does not crowd an already placed via. A branch with no qualifying edge
+mints no via; the plan records it on :attr:`RoutePlan.no_via` so the
+caller reports the net ``failed: no via site`` instead of committing
+keepout-breaking copper.
+
 ``net_rules`` keys net NAME → resolved :class:`~precis.pcb.rules.NetRules`
 (the caller resolves per-net width/clearance the same way
 ``build_region_graph``'s consumers do); ``None`` takes the 2b default
@@ -41,10 +53,12 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from precis.pcb.rules import NetRules
-from precis.pcb.topoplace.design import TopoDesign
+from precis.pcb.topoplace.design import TopoDesign, _world_to_local
 from precis.pcb.topoplace.mesh import TopoMesh
-from precis.pcb.topoplace.wires import Unreachable, Wires
+from precis.pcb.topoplace.wires import Unreachable, WirePath, Wires
 
 _DEFAULT = NetRules(track_width_mm=0.15, clearance_mm=0.15)
 
@@ -82,9 +96,10 @@ class RoutePiece:
 
 @dataclass(frozen=True, slots=True)
 class ViaSite:
-    """A via at ``(edge, t)`` on the mesh — world ``(x, y)`` is the
-    taut wire's own crossing point of that edge, so the via sits exactly
-    on the wire it joins."""
+    """A via at ``(edge, t)`` on the mesh — world ``(x, y)`` sits on an
+    edge the wire crosses, at or near the taut wire's own crossing point
+    (the siting walk may move it to a keepout-clean neighbour edge and
+    clamps ``t`` off the endpoint vertices — gr520901)."""
 
     net: int
     branch: int
@@ -109,6 +124,11 @@ class RoutePlan:
     #: name WHAT is cut off, not just the net. ``unreachable`` stays the
     #: net-level digest of this same list.
     stranded: tuple[Unreachable, ...] = ()
+    #: Branches whose layer join found no keepout-clean via site —
+    #: minted no via, emitted their pieces anyway (the failed net's
+    #: honest geometry), and land on the caller's ``pcb_routes`` row as
+    #: ``failed: no via site`` (gr520901).
+    no_via: tuple[int, ...] = ()
 
     @property
     def n_routed_nets(self) -> int:
@@ -229,11 +249,96 @@ def _edge_xy(mesh: TopoMesh, edge: int, t: float) -> tuple[float, float]:
     return (float(a[0] + t * (b_[0] - a[0])), float(a[1] + t * (b_[1] - a[1])))
 
 
+#: A candidate via site's per-outer-layer pad roster: ``(part index,
+#: pin-local centre x/y, half w, half h)`` rows, read back into the part
+#: frame per candidate (:func:`design._world_to_local` — the inverse of
+#: the pose transform, so the rect distance is exact, mirror included).
+_Pads = tuple[tuple[int, float, float, float, float], ...]
+
+
+def _pad_clear(
+    x: float, y: float, pads: _Pads, pose: np.ndarray, margin: float
+) -> bool:
+    """Whether the point keeps ``margin`` off every pad rect in ``pads``
+    — the via barrel's keep-out against pad polygons, which
+    ``gap_free_mm`` cannot see: its reach is buffered for a trace, not
+    a barrel, and −1 ("no pad reaches the edge for a trace") still
+    admits a site inside a pad's via keep-out (gr520901's esp32c3
+    residual)."""
+    for part, px, py, hw, hh in pads:
+        lx, ly = _world_to_local(x, y, pose[part])
+        dx = max(abs(lx - px) - hw, 0.0)
+        dy = max(abs(ly - py) - hh, 0.0)
+        if math.hypot(dx, dy) < margin:
+            return False
+    return True
+
+
+def _site_via(
+    mesh: TopoMesh,
+    wires: Wires,
+    b: WirePath,
+    ei: int,
+    n_layers: int,
+    via_dia: float,
+    clearance: float,
+    placed: list[tuple[float, float, float]],
+    pad_sets: tuple[_Pads, _Pads],
+    pose: np.ndarray,
+) -> tuple[int, float, float, float] | None:
+    """One keepout-clean via site on the branch (topo S3, gr520901), or
+    ``None`` when no crossed edge qualifies.
+
+    Candidate edges are the branch's crossed edges nearest the intended
+    join index ``ei`` first — an end via walks inward off its pad, a mid
+    via off its mid edge, either way the smallest move that clears the
+    keepout. An edge qualifies when it is not a constrained ring edge,
+    its pad-channel record leaves ``via_dia + 2·clearance`` free on BOTH
+    outer layers (``gap_free_mm`` −1 = no pad reaches the edge — open),
+    and it is long enough to hold the barrel ``via_dia/2 + clearance``
+    off both endpoint vertices (the wire's own ``t`` is clamped into
+    that window — the graze-at-a-vertex case that minted vias at
+    ``t <= eps``). The chosen point must then clear every pad rect on
+    the two outer layers by ``via_dia/2 + clearance`` and sit
+    ``(dia+dia)/2 + clearance`` off every already placed via; failing
+    either, the walk continues."""
+    outers = (0, n_layers - 1)
+    need = via_dia + 2.0 * clearance
+    margin = via_dia / 2.0 + clearance
+    n = len(b.edges)
+    for j in sorted(range(n), key=lambda k: (abs(k - ei), ei - k)):
+        e = int(b.edges[j])
+        if mesh.constrained[e]:
+            continue
+        free = wires.gap_free_mm[e]
+        if any(0.0 <= float(free[l]) < need for l in outers):
+            continue
+        a, b_ = (mesh.verts[int(v)] for v in mesh.edges[e])
+        edge_mm = math.dist((float(a[0]), float(a[1])), (float(b_[0]), float(b_[1])))
+        if edge_mm <= 2.0 * margin:
+            continue
+        t = float(b.t[j]) if j < len(b.t) else 0.5
+        t = min(max(t, margin / edge_mm), 1.0 - margin / edge_mm)
+        xy = _edge_xy(mesh, e, t)
+        if any(
+            math.dist(xy, (px, py)) < (via_dia + pd) / 2.0 + clearance
+            for px, py, pd in placed
+        ):
+            continue
+        if not all(_pad_clear(xy[0], xy[1], s, pose, margin) for s in pad_sets):
+            continue
+        return e, t, xy[0], xy[1]
+    return None
+
+
 def plan_route(
     d: TopoDesign,
     mesh: TopoMesh,
     wires: Wires,
     n_layers: int,
+    *,
+    net_rules: Mapping[str, NetRules] | None = None,
+    pose: Any = None,
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
 
@@ -241,10 +346,43 @@ def plan_route(
     forced layers (the free via, Decision 6); a forced end that disagrees
     with the assigned layer (a crossing yielded the branch to the other
     side) gets an end via at that end's first/last edge so the pad's
-    mount side stays the terminal layer."""
+    mount side stays the terminal layer. Each join's site comes from
+    :func:`_site_via`'s keepout walk — ``net_rules`` (net NAME →
+    :class:`NetRules`, as :func:`realize_result` resolves them) sizes
+    the barrel; a join with no qualifying edge mints no via and lands on
+    :attr:`RoutePlan.no_via`."""
     layers, crossings = assign_layers(d, wires, n_layers)
+    rules = net_rules or {}
+    pose_a = np.asarray(d.pose0 if pose is None else pose)
+    # pad rosters per outer layer: top-SMD pads live on layer 0, bottom
+    # on n−1, TH (and anything unclassed) on both — the via barrel spans
+    # the board, so both lists gate every site.
+    pad_sets: list[list[tuple[int, float, float, float, float]]] = [[], []]
+    if len(d.pin_wh):
+        for p in range(len(d.pin_xy)):
+            part = int(d.pin_part[p])
+            if part >= len(pose_a) or not np.isfinite(pose_a[part, :2]).all():
+                continue
+            w, h = (float(v) for v in d.pin_wh[p])
+            row = (
+                part,
+                float(d.pin_xy[p][0]),
+                float(d.pin_xy[p][1]),
+                w / 2.0,
+                h / 2.0,
+            )
+            side = int(d.pin_side[p])
+            if side == 0:
+                pad_sets[0].append(row)
+            elif side == 1:
+                pad_sets[1].append(row)
+            else:
+                pad_sets[0].append(row)
+                pad_sets[1].append(row)
     pieces: list[RoutePiece] = []
     vias: list[ViaSite] = []
+    placed: list[tuple[float, float, float]] = []
+    no_via: list[int] = []
     for bi, b in enumerate(wires.branches):
         L = layers[bi]
         la = _pin_forced(d, b.pin_a, n_layers)
@@ -266,14 +404,41 @@ def plan_route(
                 RoutePiece(b.net, bi, run_layers[0], b.points, b.pin_a, b.pin_b)
             )
             continue
+        name = str(d.net_name[b.net]) if b.net < len(d.net_name) else str(b.net)
+        nr = rules.get(name, _DEFAULT)
+        via_dia = float(nr.via_dia_mm or _VIA_DIA_MM)
+        clearance = float(nr.clearance_mm)
         pts = list(b.points)
         cut_xy: list[tuple[float, float]] = []
+        sited = True
         for ei in joins:
-            e = int(b.edges[min(ei, len(b.edges) - 1)])
-            t = float(b.t[ei]) if ei < len(b.t) else 0.5
-            xy = _edge_xy(mesh, e, t)
-            vias.append(ViaSite(b.net, bi, e, t, xy[0], xy[1]))
-            cut_xy.append(xy)
+            site = _site_via(
+                mesh,
+                wires,
+                b,
+                ei,
+                n_layers,
+                via_dia,
+                clearance,
+                placed,
+                (tuple(pad_sets[0]), tuple(pad_sets[1])),
+                pose_a,
+            )
+            if site is None:
+                sited = False
+                # keep the split at the intended crossing: the pieces
+                # still describe where the join was wanted — it is the
+                # via that is not minted.
+                e = int(b.edges[min(ei, len(b.edges) - 1)])
+                t = float(b.t[ei]) if ei < len(b.t) else 0.5
+                cut_xy.append(_edge_xy(mesh, e, t))
+                continue
+            e, t, x, y = site
+            vias.append(ViaSite(b.net, bi, e, t, x, y))
+            placed.append((x, y, via_dia))
+            cut_xy.append((x, y))
+        if not sited:
+            no_via.append(bi)
         # split the polyline at the vertex nearest each via site — the
         # taut path crosses that edge at exactly the via point
         split = sorted(
@@ -299,6 +464,7 @@ def plan_route(
         crossings=crossings,
         unreachable=unrouted,
         stranded=wires.unreachable,
+        no_via=tuple(no_via),
     )
 
 
@@ -415,7 +581,8 @@ def route_design(
     from precis.pcb.topoplace.mesh import build_mesh
     from precis.pcb.topoplace.wires import build_wires
 
-    mesh = build_mesh(d, d.pose0 if pose is None else pose)
+    mesh_pose = d.pose0 if pose is None else pose
+    mesh = build_mesh(d, mesh_pose)
     rules = net_rules or {}
     rules_t = tuple(
         (
@@ -427,7 +594,7 @@ def route_design(
         for k in range(len(d.net_pins))
     )
     wires = build_wires(mesh, d, ir.n_layers, rules_t)
-    plan = plan_route(d, mesh, wires, ir.n_layers)
+    plan = plan_route(d, mesh, wires, ir.n_layers, net_rules=net_rules, pose=mesh_pose)
     emit = plan
     if plan.crossings:
         bad = {b for pair in plan.crossings for b in pair}
@@ -525,6 +692,17 @@ def sketch_rows(
                     "with": other,
                     "layer": layer,
                     "message": f"crosses {other} on {lname}",
+                }
+            )
+        for b in plan.no_via:
+            if net_by_branch.get(b) != k or b not in branch_pair:
+                continue
+            pa, pb = branch_pair[b]
+            problems.append(
+                {
+                    "reason": "no via site",
+                    "message": "no keepout-clean edge for a via between "
+                    f"{pin_key(pa)} and {pin_key(pb)}",
                 }
             )
         if problems:
