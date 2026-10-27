@@ -122,6 +122,97 @@ def test_parse_non_passive_is_none() -> None:
     assert catalog.parse_passive_description("") is None
 
 
+def test_passive_rating_skips_an_ic_whose_description_mentions_a_passive() -> None:
+    """gr520796 — taz-leaf-b's U2 (BQ25504, LCSC C2876746) is a battery
+    management IC whose catalog text says 'Supercapacitor ... 3V'
+    (the load it charges, an input spec) — it parsed to a 3V-rated
+    capacitor and failed the passive 2× rule on its own 3.3 V rail.
+    The rule applies to passives only: an IC refdes is skipped, a
+    kind-matching role still admits a mis-designated passive."""
+    nets = [
+        _net("VSTOR", _m("U2", "VSTOR"), working_voltage_v=3.3),
+        _net("GND", _m("U2", "VSS"), working_voltage_v=0.0),
+    ]
+    ic_description = (
+        "-40℃~+105℃ 130mV~3V、2.5V~5.25V 300mA 330nA Supercapacitor、"
+        "Lithium Battery 可编程充电电流、过放保护 VQFN-16-EP(3x3) "
+        "Battery Management ROHS"
+    )
+    # The IC is skipped entirely: nothing is left to check, so the
+    # answer is the rule-level not-checked row — not a 3V "rating".
+    findings = drc.check_passive_rating(nets, [_inst("U2", ic_description)])
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert "CANNOT be checked" in findings[0].detail
+    # Same description on a passive-designated part is still checked:
+    # a C-refdes is the convention, a kind role admits any other refdes.
+    nets_c = [
+        _net("VSTOR", _m("C1", "1"), working_voltage_v=3.3),
+        _net("GND", _m("C1", "2"), working_voltage_v=0.0),
+    ]
+    assert any(
+        f.rule == "passive_rating" and f.where == "part C1"
+        for f in drc.check_passive_rating(nets_c, [_inst("C1", ic_description)])
+    )
+    inst = {"refdes": "U2", "part_description": ic_description, "roles": ["capacitor"]}
+    assert any(
+        f.rule == "passive_rating" and f.where == "part U2"
+        for f in drc.check_passive_rating(nets, [inst])
+    )
+
+
+def test_passive_rating_named_passive_refdes() -> None:
+    """The ``C_``/``R_`` spellings count as the convention — a cap
+    named ``C_AREF`` or a resistor named ``R_PULL`` is still rated."""
+    nets = [
+        _net("VCC", _m("C_AREF", "1"), working_voltage_v=5.0),
+        _net("GND", _m("C_AREF", "2"), working_voltage_v=0.0),
+    ]
+    findings = drc.check_passive_rating(
+        nets, [_inst("C_AREF", "100nF ±10% 6.3V Y5V 0402 Capacitors")]
+    )
+    assert [(f.rule, f.severity, f.where) for f in findings] == [
+        ("passive_rating", "error", "part C_AREF")
+    ]
+    nets = [
+        _net("VCC", _m("R_PULL", "1"), working_voltage_v=5.0),
+        _net("GND", _m("R_PULL", "2"), working_voltage_v=0.0),
+    ]
+    findings = drc.check_passive_rating(
+        nets, [_inst("R_PULL", "10Ω ±1% 100mW 0402 Chip Resistor")]
+    )
+    assert [(f.rule, f.severity, f.where) for f in findings] == [
+        ("passive_rating", "error", "part R_PULL")
+    ]
+
+
+def test_passive_rating_class_vetoes_lookalike_refdes() -> None:
+    """An IC numbered ``R5``: the refdes matches the convention but a
+    declared class says the part is not a passive — a ``roles`` entry
+    and the catalog ``part_class`` veto alike, and the rule does not
+    apply."""
+    nets = [
+        _net("VCC", _m("R5", "1"), working_voltage_v=5.0),
+        _net("GND", _m("R5", "2"), working_voltage_v=0.0),
+    ]
+    desc = "10Ω ±1% 100mW sense resistor — power management IC"
+    for inst in (
+        {"refdes": "R5", "part_description": desc, "roles": ["ic"]},
+        {
+            "refdes": "R5",
+            "part_description": desc,
+            "part": {"part_class": "ic"},
+        },
+    ):
+        findings = drc.check_passive_rating(nets, [inst])
+        assert [(f.rule, f.severity) for f in findings] == [("passive_rating", "warn")]
+        assert "CANNOT be checked" in findings[0].detail
+    # A free tag naming no class leaves the convention alone — R5
+    # stays a resistor to rate.
+    inst = {"refdes": "R5", "part_description": desc, "roles": ["noisy"]}
+    assert any(f.severity == "error" for f in drc.check_passive_rating(nets, [inst]))
+
+
 # ── the rule: capacitor voltage margin ───────────────────────────────
 
 

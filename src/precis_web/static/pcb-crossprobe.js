@@ -106,7 +106,17 @@
       const layer = n.closest && n.closest('.layer');
       if (layer && layer.classList.contains('off')) continue;
       const hit = n.closest && n.closest('[data-handle]');
-      if (hit) return {handle: hit.getAttribute('data-handle'), el: hit};
+      if (hit) {
+        // An off-sheet connector's destination tspan names the sheet to
+        // open (gr520804) — carried through so selectSchematic can jump
+        // straight to it instead of staying on the current sheet.
+        const sh = n.closest && n.closest('[data-sheet]');
+        return {
+          handle: hit.getAttribute('data-handle'),
+          el: hit,
+          sheet: sh ? sh.getAttribute('data-sheet') : undefined,
+        };
+      }
       if (n.dataset.pcbObject) {
         const o = objects.get(n.dataset.pcbObject);
         if (o) return {object: o, el: n};
@@ -344,7 +354,14 @@
   function selectSchematic(t) {
     if (!t || !t.handle) return;
     lastSel = t;
-    maybeSwitchSheet(t);
+    // A clicked off-sheet destination opens THAT sheet directly — the
+    // generic pickSheet would stay on the current sheet because the net
+    // lives on both.
+    if (t.sheet !== undefined && window.PcbSchem) {
+      window.PcbSchem.setSheet(t.sheet);
+    } else {
+      maybeSwitchSheet(t);
+    }
     clearCls('pcb-xs');
     const exp = expansion(t);
     selecting = new Set(mark(exp, 'pcb-xs'));

@@ -2094,6 +2094,143 @@ def test_check_silk_edge_clearance_wired_into_run_geometric_drc():
     assert any(f.rule == "silk_edge_clearance" for f in findings)
 
 
+# ── courtyard (part body) vs the board edge — gr520793 ──────────────────
+
+
+def _rounded_edge_outline() -> list[list[float]]:
+    """A 40x20 board whose top-right corner is a radius-8 arc, as
+    ``geom.rounded_polygon`` already flattens a ``corner_radius_mm``
+    outline feature for every consumer — the curved edge the taz-leaf-b
+    case hinged on."""
+    from precis.pcb import geom as pcb_geom
+
+    return [
+        [x, y]
+        for x, y in pcb_geom.rounded_polygon(
+            [(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0), (0.0, 0.0)],
+            8.0,
+        )
+    ]
+
+
+def test_check_courtyard_edge_clearance_flags_a_part_crowding_a_curved_edge():
+    """gr520793 — taz-leaf-b's C12: the courtyard stays a hair INSIDE the
+    outline (containment clean) and its pads clear the copper margin, so
+    nothing reported it while the part body sat ~0.13mm off the leaf's
+    curved edge. This is the C12 geometry verbatim: an 0402's pad-hull
+    courtyard (+0.40mm) at (26.45,16.94) rot 90 reads ~0.13mm from the
+    outline — error tier, the distance measured to the real arc, never a
+    chord or the outline's bounding box."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    outline = _rounded_edge_outline()
+    # The rounded corner's arc runs from (32,20) to (40,12) about centre
+    # (32,12). A square courtyard at (36.1,18.6) sits ~0.2mm off the arc —
+    # inside the jlc_min tier, and on the ARC side of the corner where a
+    # bounding-box approximation would report it millimetres deep.
+    half = 0.35
+    cx, cy = 36.1, 18.6
+    poly = [
+        (cx - half, cy - half),
+        (cx + half, cy - half),
+        (cx + half, cy + half),
+        (cx - half, cy + half),
+    ]
+    findings = drc.check_courtyard_edge_clearance(
+        [("C12", poly)], _CAP4, outline=outline
+    )
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "courtyard_edge_clearance" and f.severity == "error"
+    assert f.where == "part C12" and f.objects[0]["refdes"] == "C12"
+    assert f.margin_mm is not None and f.margin_mm < 0
+    # Same courtyard, bbox approximation: the outline's bbox corner is
+    # (40,20), over 1mm away in both axes — a bbox check reports it clear.
+    # The finding exists precisely because the distance is to the arc.
+
+
+def test_check_courtyard_edge_clearance_quiet_for_a_part_comfortably_inside():
+    house = _CAP4.house_default["board_edge_clearance_vcut_mm"]
+    assert house is not None
+    half = 0.35
+    cx, cy = 10.0, 10.0  # house+ from every edge of the 40x20 board
+    poly = [
+        (cx - half, cy - half),
+        (cx + half, cy - half),
+        (cx + half, cy + half),
+        (cx - half, cy + half),
+    ]
+    assert (
+        drc.check_courtyard_edge_clearance([("C1", poly)], _CAP4, outline=_EDGE_OUTLINE)
+        == []
+    )
+
+
+def test_check_courtyard_edge_clearance_exempts_a_declared_edge_mate():
+    """A side-insertion connector's courtyard touches the edge BY DESIGN
+    (edge_mate.py's snap lands the mating face 1e-4 inside the outline);
+    ``check_edge_mating`` owns its verdict, this rule must not pile on."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    from precis.pcb import edge_mate as em
+
+    half = 0.5
+    # Courtyard flush against the left edge (x=0): gap 0, deep inside
+    # jlc_min — an error for any ordinary part.
+    poly = [
+        (-0.0, 8.0),
+        (2.0 * half, 8.0),
+        (2.0 * half, 12.0),
+        (-0.0, 12.0),
+    ]
+    rec = em.EdgeMateRecord(
+        refdes="J1", require="required", polygon=poly, outward=(-1.0, 0.0)
+    )
+    assert (
+        drc.check_courtyard_edge_clearance(
+            [("J1", poly)], _CAP4, outline=_EDGE_OUTLINE, edge_mates=[rec]
+        )
+        == []
+    )
+    # ...and the SAME courtyard un-declared still fires, so the exemption
+    # is the edge_mate record, not the geometry.
+    findings = drc.check_courtyard_edge_clearance(
+        [("J1", poly)], _CAP4, outline=_EDGE_OUTLINE
+    )
+    assert len(findings) == 1 and findings[0].severity == "error"
+
+
+def test_check_courtyard_edge_clearance_no_outline_or_no_courtyards_is_a_noop():
+    poly = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
+    assert drc.check_courtyard_edge_clearance([("C1", poly)], _CAP4, outline=None) == []
+    assert drc.check_courtyard_edge_clearance(None, _CAP4, outline=_EDGE_OUTLINE) == []
+
+
+def test_check_courtyard_edge_clearance_wired_into_both_run_levels():
+    """The placement-time and the full geometric DRC both carry the rule —
+    the pads-only placement run is exactly the pass that would have caught
+    the taz-leaf-b case before routing."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min is not None
+    half = 0.5
+    poly = [
+        (0.0, 8.0),
+        (2.0 * half, 8.0),
+        (2.0 * half, 12.0),
+        (0.0, 12.0),
+    ]
+    courtyards = [("C1", poly)]
+    model = {"layers": ["F.Cu"], "copper": [], "pads": []}
+    geo = drc.run_geometric_drc(
+        model, capability=_CAP4, outline=_EDGE_OUTLINE, courtyards=courtyards
+    )
+    assert any(f.rule == "courtyard_edge_clearance" for f in geo)
+    place = drc.run_placement_drc(
+        model, capability=_CAP4, outline=_EDGE_OUTLINE, courtyards=courtyards
+    )
+    assert any(f.rule == "courtyard_edge_clearance" for f in place)
+
+
 # ── process_for_stackup ───────────────────────────────────────────────
 
 

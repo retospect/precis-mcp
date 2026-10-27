@@ -3695,6 +3695,90 @@ def check_silk_edge_clearance(
     return findings
 
 
+def check_courtyard_edge_clearance(
+    courtyards: Sequence[Courtyard] | None,
+    capability: CapabilityRow,
+    *,
+    outline: list[list[float]] | None,
+    edge_mates: Sequence[Any] | None = None,
+    panel_type: str | None = None,
+) -> list[DrcFinding]:
+    """Part-body-to-board-edge clearance — the two-tier bar
+    :func:`check_board_edge_clearance` applies to copper and
+    :func:`check_silk_edge_clearance` to ink, applied here to a part's
+    COURTYARD (gr520793).
+
+    Neither neighbour can answer this question. Copper edge clearance
+    iterates ``_clearance_items`` — a pad whose own geometry clears the
+    margin passes even when the part body it belongs to crowds the cut
+    line (taz-leaf-b's C12: a 0402 rotated 90 whose pads sat
+    comfortably inside while its courtyard came within ~0.13mm of the
+    leaf's curved edge — a third of the V-cut minimum, invisible to
+    every rule). :func:`check_outline_containment` is the same
+    courtyard but a BINARY inside/outside question — it fired nothing
+    there either because the courtyard stays a hair inside the outline.
+    A non-edge-mount part body that crowds the routed/scored edge is a
+    part the assembler cannot place and the fab cannot cut around — an
+    error at ``jlc_min``, margin-eating at ``house_default``.
+
+    ``edge_mates`` (:func:`precis.pcb.edge_mate.records`) exempts the
+    declared side-insertion connectors whose courtyards are SUPPOSED to
+    touch the edge — :func:`check_edge_mating` owns their verdict.
+
+    Curved edges need no special casing here and that is the point of
+    measuring against ``outline`` itself: the outline reaches this
+    check already polygonized (``check_run.outline_from_features`` —
+    ``corner_radius_mm`` fillets and any imported arcs are facet points
+    by then), so the distance is to the real curve, never to a chord
+    between coarse outline vertices or to its bounding box (the
+    approximation ``cost.board_edge_clearance_term`` still makes at
+    placement time — the residual this rule exists to catch)."""
+    field = (
+        "board_edge_clearance_routed_mm"
+        if panel_type == "routed"
+        else "board_edge_clearance_vcut_mm"
+    )
+    jlc_min = capability.jlc_min[field]
+    house = capability.house_default.get(field)
+    if jlc_min is None or not outline or len(outline) < 3 or not courtyards:
+        return []
+    ring_pts = [(float(p[0]), float(p[1])) for p in outline]
+    if ring_pts[0] != ring_pts[-1]:
+        ring_pts.append(ring_pts[0])
+    boundary = LineString(ring_pts)
+    exempt = {str(r.refdes) for r in edge_mates or []}
+    findings: list[DrcFinding] = []
+    for refdes, poly in courtyards:
+        if str(refdes) in exempt or len(poly) < 3:
+            continue
+        geom = Polygon(poly)
+        if geom.is_empty:
+            continue
+        gap = boundary.distance(geom)
+        result = _two_tier(gap, jlc_min, house)
+        if result is None:
+            continue
+        severity, margin = result
+        findings.append(
+            DrcFinding(
+                rule="courtyard_edge_clearance",
+                severity=severity,
+                where=f"part {refdes}",
+                detail=_margin_detail(
+                    "courtyard-to-board-edge clearance",
+                    gap,
+                    capability,
+                    field,
+                    severity,
+                    margin,
+                ),
+                objects=({"refdes": str(refdes)},),
+                margin_mm=margin,
+            )
+        )
+    return findings
+
+
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
@@ -4771,6 +4855,13 @@ def run_geometric_drc(
         model, capability, outline=outline, panel_type=panel_type
     )
     findings += check_silk_edge_clearance(model, capability, outline=outline)
+    findings += check_courtyard_edge_clearance(
+        courtyards,
+        capability,
+        outline=outline,
+        edge_mates=edge_mates,
+        panel_type=panel_type,
+    )
     findings += check_octilinear(model)
     findings += check_outline_missing(outline)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
@@ -4970,22 +5061,150 @@ def check_pin_conflicts(
     return out
 
 
+def _series_member_pin(pin: dict[str, Any]) -> bool:
+    """One end of a certified series pass-through: etype ``passive``
+    or ``meta.current_role == 'series'`` (gr521600 — the union
+    ``no_driver`` walks; a pin with neither says nothing about DC and
+    joins nothing)."""
+    if _pin_etype(pin) == "passive":
+        return True
+    meta = pin.get("meta") or {}
+    return str(meta.get("current_role") or "").strip() == "series"
+
+
+#: Refdes convention certifying a 2-pin part as a DC series link
+#: (gr521600 r2): resistor ``R5``/``R_PULL``, inductor ``L3``/``L_IN``,
+#: ferrite bead ``FB1``/``FB_12``, a 0-ohm jumper — the kinds that
+#: pass DC both ways. A diode, LED, TVS, crystal, connector or
+#: transistor never matches: those conduct directionally,
+#: frequency-selectively or only when plugged in, so a pull-down LED
+#: to a driven GND cannot make an input net read as driven.
+_SERIES_HOP_REFDES = re.compile(r"(?:[RrLl](?:\d+|_\w+)|[Ff][Bb]\w*)")
+
+#: The declared role/catalog class spelling of the same certification
+#: — ``roles: ['jumper']`` on a part whose refdes left the convention
+#: (a 0-ohm link named ``M1``), or a catalog ``part_class`` naming the
+#: link kind. Word-anchored (plurals count): ``LinkSwitch`` (a real PI
+#: IC) and ``diffuser`` contain a link word but never certify one.
+_SERIES_HOP_CLASS_RE = re.compile(
+    r"\b(?:resistors?|inductors?|ferrites?|jumpers?|links?|fuses?|"
+    r"(?:zero|0)[\s_-]*ohms?)\b",
+    re.IGNORECASE,
+)
+
+
+def _series_hop_part(refdes: str, inst: dict[str, Any] | None, roles: Any) -> bool:
+    """A 2-pin part certified as a DC series link. An explicit
+    hop-class word in a declared role or catalog class wins;
+    otherwise a declared class naming a non-passive kind (``ic``,
+    ``diode``…) vetoes, and only then does the refdes convention
+    decide — an IC numbered ``R5`` never hops."""
+    words = _part_class_words(inst, roles)
+    if any(_SERIES_HOP_CLASS_RE.search(w) for w in words):
+        return True
+    if _declares_non_passive(words):
+        return False
+    return bool(_SERIES_HOP_REFDES.fullmatch(refdes))
+
+
 def check_no_driver(
     nets: Iterable[dict[str, Any]],
+    instances: Iterable[dict[str, Any]] | None = None,
+    roles_by_refdes: dict[str, Any] | None = None,
 ) -> list[DrcFinding]:
     """A net with a declared consumer (``input``/``power_in``) but no
     pin that can drive it — the net floats by construction. Advisory
     (``warn``): a connector pin awaiting a second board is the same
-    shape."""
+    shape.
+
+    The driver judgement runs over REACHABILITY, not the flat net
+    (gr521600): a consumer fed through a series passive — the nano
+    board's VBUS → ``R_EN15`` → ``U_B15/EN`` pull-up — is powered, and
+    read 'nothing that drives them' anyway. ``instances`` supply each
+    part's declared ``n_pins`` and ``roles_by_refdes`` its ``roles``;
+    both are what the check-surface run already has at hand.
+
+    The closure is union-find over net names — bounded by the member
+    count, cycle-safe by construction (a ring of resistors is three
+    unions, not a walk). Two nets join through a component only when
+    EVERYTHING certifies it as a DC pass-through:
+
+    - it is 2-pin — the instance's declared ``n_pins`` when the graph
+      carries one, else the member count in the netlist (a 20-pin
+      connector's two ``series`` contacts join nothing); AND
+    - it is a certified DC series link — refdes ``R``/``L``/``FB``
+      (incl. the ``R_``/``L_`` spellings) or a declared role/catalog
+      class naming the link (resistor, inductor, ferrite, jumper,
+      0-ohm, fuse): :data:`_SERIES_HOP_REFDES` /
+      :data:`_SERIES_HOP_CLASS_RE`, word-anchored so ``LinkSwitch``
+      and ``diffuser`` never certify. Any other 2-pin part — a
+      diode, LED, TVS, crystal, connector, transistor, a series
+      capacitor — never joins nets: etype ``passive`` alone proved
+      nothing about DC, and a pull-down LED to a driven GND must not
+      make an input read as driven. A declared non-passive class
+      vetoes the convention too (an IC numbered ``R5``) unless a hop
+      class is also declared; AND
+    - every member pin declares etype ``passive`` or
+      ``current_role`` ``series`` — an unannotated part is not a
+      series element even when the refdes looks the part.
+    """
+    nets = list(nets)
     if not any(_pin_etype(m) for n in nets for m in n.get("members") or []):
         return [_erc_not_checked("no_driver", "no pin in the design declares an etype")]
+    roles = roles_by_refdes or {}
+    n_pins: dict[str, int] = {}
+    inst_by_refdes: dict[str, dict[str, Any]] = {}
+    for inst in instances or []:
+        refdes = str(inst.get("refdes") or "")
+        if not refdes:
+            continue
+        inst_by_refdes[refdes] = inst
+        try:
+            n_pins[refdes] = int(inst.get("n_pins") or 0)
+        except (TypeError, ValueError):
+            continue
+    members_of: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for net in nets:
+        for m in net.get("members") or []:
+            members_of.setdefault(str(m.get("refdes") or ""), []).append(
+                (str(net["name"]), m)
+            )
+    parent = {str(n["name"]): str(n["name"]) for n in nets}
+
+    def _find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for refdes, entries in members_of.items():
+        pins = {str(m.get("pin")) for _n, m in entries}
+        declared = n_pins.get(refdes) or 0
+        if len(pins) != 2 or declared not in (0, 2):
+            continue
+        if not _series_hop_part(refdes, inst_by_refdes.get(refdes), roles.get(refdes)):
+            continue
+        if not all(_series_member_pin(m) for _n, m in entries):
+            continue
+        joined = sorted({n for n, _m in entries})
+        if len(joined) < 2:
+            continue
+        root = _find(joined[0])
+        for other in joined[1:]:
+            parent[_find(other)] = root
+    driven: dict[str, bool] = {}
+    for net in nets:
+        root = _find(str(net["name"]))
+        driven[root] = driven.get(root, False) or any(
+            _pin_etype(m) in _DRIVERS for m in net.get("members") or []
+        )
     out: list[DrcFinding] = []
     for net in nets:
         members = net.get("members") or []
         consumers = [m for m in members if _pin_etype(m) in _CONSUMERS]
         if not consumers:
             continue
-        if any(_pin_etype(m) in _DRIVERS for m in members):
+        if driven.get(_find(str(net["name"]))):
             continue
         out.append(
             DrcFinding(
@@ -5141,10 +5360,17 @@ def check_over_voltage(
         if unbounded:
             out.append(_erc_unknown_for_net("over_voltage", net, unbounded, "voltage"))
     if not out and not (any_voltage and any_bound):
+        missing = [
+            *([] if any_voltage else ["no net carries working_voltage_v"]),
+            *([] if any_bound else ["no pin carries max_voltage_v"]),
+        ]
         return [
             _erc_not_checked(
                 "over_voltage",
-                "no net carries working_voltage_v or no pin carries max_voltage_v",
+                " and ".join(missing)
+                + " — declare a net's working_voltage_v (the nets[] "
+                "'voltage' key) or a pin's bound via op='pins' "
+                "max_voltage_v to enable it",
             )
         ]
     return out
@@ -5208,10 +5434,17 @@ def check_over_current(
         if unknown:
             out.append(_erc_unknown_for_net("over_current", net, unknown, "current"))
     if not out and not (any_current and any_bound):
+        missing = [
+            *([] if any_current else ["no net carries est_current_a"]),
+            *([] if any_bound else ["no pin carries max_current_a"]),
+        ]
         return [
             _erc_not_checked(
                 "over_current",
-                "no net carries est_current_a or no pin carries max_current_a",
+                " and ".join(missing)
+                + " — declare a net's est_current_a (the nets[] 'current' "
+                "key) or a pin's bound via op='pins' max_current_a to "
+                "enable it",
             )
         ]
     return out
@@ -5234,6 +5467,118 @@ def _passive_not_checked(refdes: str, why: str, *objects: dict[str, Any]) -> Drc
     )
 
 
+#: Which refdes designator a parsed passive kind must match for
+#: :func:`check_passive_rating` to apply to the part (gr520796 — the
+#: same ``C\d+`` convention :func:`check_no_decoupling` already uses,
+#: plus the ``C_``/``R_`` spellings a named part carries —
+#: ``C_AREF``, ``R_PULL``; a kind named in the instance's declared
+#: class/roles overrides either way).
+_PASSIVE_REFDES = {
+    "capacitor": re.compile(r"[Cc](?:\d+|_\w+)"),
+    "resistor": re.compile(r"[Rr](?:\d+|_\w+)"),
+}
+
+
+def _part_class_words(inst: dict[str, Any] | None, roles: Any = None) -> list[str]:
+    """The class words a part declares: ``roles`` entries (the caller's
+    roles_by_refdes list and the instance's own) plus the
+    catalog-identity blob's ``part_class`` — ``inst['part']`` is the
+    ``part_meta`` an import recovered."""
+    words = [str(r) for r in roles or []]
+    if inst:
+        words += [str(r) for r in inst.get("roles") or []]
+        part = inst.get("part")
+        if isinstance(part, dict):
+            words.append(str(part.get("part_class") or ""))
+        if inst.get("part_class") is not None:
+            words.append(str(inst["part_class"]))
+    return [w for w in words if w]
+
+
+#: Component-class tokens that veto the refdes convention on the
+#: passive gate — a part whose declared role or catalog ``part_class``
+#: carries one is not the parsed passive, whatever its refdes says (an
+#: IC numbered ``R5`` is not a resistor to derate). Only tokens that
+#: NAME a non-passive kind veto: ``Basic Part``, ``noisy`` and
+#: ``sensitive``-style words say nothing and leave the regex to decide.
+_NON_PASSIVE_CLASS_TOKENS = frozenset(
+    {
+        "ic",
+        "ics",
+        "integrated",
+        "circuit",
+        "mcu",
+        "microcontroller",
+        "soc",
+        "cpu",
+        "module",
+        "diode",
+        "diodes",
+        "tvs",
+        "led",
+        "leds",
+        "transistor",
+        "transistors",
+        "fet",
+        "fets",
+        "mosfet",
+        "bjt",
+        "jfet",
+        "igbt",
+        "triac",
+        "crystal",
+        "crystals",
+        "xtal",
+        "oscillator",
+        "oscillators",
+        "resonator",
+        "resonators",
+        "connector",
+        "connectors",
+        "header",
+        "socket",
+        "switch",
+        "switches",
+        "relay",
+        "relays",
+        "fuse",
+        "fuses",
+        "transformer",
+        "transformers",
+        "sensor",
+        "sensors",
+        "antenna",
+        "inductor",
+        "inductors",
+        "ferrite",
+        "bead",
+        "beads",
+        "choke",
+        "chokes",
+        "driver",
+        "regulator",
+        "ldo",
+        "amplifier",
+        "opamp",
+        "display",
+        "buzzer",
+        "speaker",
+        "motor",
+        "battery",
+        "optocoupler",
+        "isolator",
+        "rectifier",
+        "bridge",
+    }
+)
+
+
+def _declares_non_passive(words: Iterable[str]) -> bool:
+    """Any declared class word naming a non-passive component kind."""
+    tokens = {t for w in words for t in re.split(r"[^a-z0-9]+", str(w).lower()) if t}
+    return not tokens.isdisjoint(_NON_PASSIVE_CLASS_TOKENS)
+
+
 def check_passive_rating(
     nets: Iterable[dict[str, Any]],
     instances: Iterable[dict[str, Any]],
@@ -5248,9 +5593,10 @@ def check_passive_rating(
     across it, dielectric rank ≥ any ``min_dielectric`` a member pin
     declares, and a resistor's dissipation ≤ 50 % of its rated power.
 
-    ``instances`` are the graph's instance dicts — the check needs only
+    ``instances`` are the graph's instance dicts — the check needs
     ``refdes`` + ``part_description`` (the ``parts`` catalog join
-    ``pcb_graph`` hoists). A capacitor's working voltage is the spread
+    ``pcb_graph`` hoists) and reads ``roles`` for the passive gate. A
+    capacitor's working voltage is the spread
     between the nets it joins (``_net_voltage`` — authored or class
     ``working_voltage_v``); an unannotated one produces the ask-the-user
     row, never a guess. ``min_dielectric`` is the design-layer stand-in
@@ -5260,6 +5606,25 @@ def check_passive_rating(
     no rail means the pin's own net) — the same join
     ``check_no_decoupling`` uses to find the caps serving a rail.
 
+    **Passives only** (gr520796). The margin policy is a passive
+    derating rule, but the description parse fires on any catalog text
+    containing a passive word — taz-leaf-b's U2 is a BQ25504 battery
+    management IC whose jlcparts description mentions "Supercapacitor"
+    (the load it CHARGES) and "3V" (an input spec, not a rating), which
+    parsed to a 3V-rated capacitor and failed the 2× rule against the
+    3.3V rail it sits on. A parsed spec counts only when the part is
+    itself a passive: refdes matching the kind's designator (``C\\d+`` /
+    ``R\\d+`` — the same convention ``check_no_decoupling`` uses — or
+    the ``C_``/``R_`` spellings, ``C_AREF``/``R_PULL``) or the
+    instance's declared class naming the kind — a mis-designated
+    passive can still be checked by declaring the role. The declared
+    class decides when it speaks: a ``roles`` entry or catalog
+    ``part_class`` naming a non-passive kind (``ic``, ``diode``,
+    ``connector``…) vetoes the refdes convention, so an IC numbered
+    ``R5`` is never rated as a resistor. An IC/module refdes with
+    passive words in its catalog text is skipped silently: the rule
+    does not APPLY to it, which is different from cannot-check.
+
     Cannot fire — and says so — when no placed part parses to a rated
     passive; a parse that lacks the field a check needs, or a net whose
     voltage is unknown, is a per-part not-checked info row, not a pass.
@@ -5268,13 +5633,24 @@ def check_passive_rating(
     class_rules = net_class_rules or {}
     specs: dict[str, dict[str, Any]] = {}
     for inst in instances:
+        refdes = str(inst.get("refdes") or "")
         spec = parse_passive_description(
             inst.get("part_description")
             if isinstance(inst.get("part_description"), str)
             else None
         )
-        if spec is not None:
-            specs[str(inst.get("refdes") or "")] = spec
+        if spec is None:
+            continue
+        declared = {w.lower() for w in _part_class_words(inst)}
+        if not (
+            spec["kind"] in declared
+            or (
+                _PASSIVE_REFDES[spec["kind"]].fullmatch(refdes)
+                and not _declares_non_passive(declared)
+            )
+        ):
+            continue
+        specs[refdes] = spec
 
     member_nets: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     net_rails: dict[str, Any] = {}
@@ -5732,6 +6108,9 @@ def run_placement_drc(
     findings += check_via_via_keepout(model, capability)
     findings += check_outline_missing(outline)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
+    findings += check_courtyard_edge_clearance(
+        courtyards, capability, outline=outline, edge_mates=edge_mates
+    )
     findings += check_edge_mating(edge_mates, outline=outline)
     if courtyards:
         findings += check_courtyard_overlap(
@@ -5761,6 +6140,7 @@ __all__ = [
     "check_board_origin",
     "check_clearance",
     "check_connectivity",
+    "check_courtyard_edge_clearance",
     "check_courtyard_hole",
     "check_courtyard_overlap",
     "check_edge_mating",

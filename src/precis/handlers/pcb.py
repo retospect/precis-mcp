@@ -6756,6 +6756,7 @@ class PcbHandler(Handler):
             "drills": self._drc_drills(ir),
         }
         outline = self._outline_from_features(ref_id)
+        edge_records = [r for r in pcb_edge_mate.records(ir) if r.refdes not in guessed]
         findings: list[pcb_drc.DrcFinding] = [
             *pcb_drc.check_clearance(
                 model, capability, net_rules=net_rules, net_voltages=net_voltages
@@ -6769,8 +6770,14 @@ class PcbHandler(Handler):
             *pcb_drc.check_outline_containment(
                 model, outline=outline, courtyards=courtyards
             ),
+            *pcb_drc.check_courtyard_edge_clearance(
+                courtyards,
+                capability,
+                outline=outline,
+                edge_mates=edge_records,
+            ),
             *pcb_drc.check_edge_mating(
-                [r for r in pcb_edge_mate.records(ir) if r.refdes not in guessed],
+                edge_records,
                 outline=outline,
             ),
         ]

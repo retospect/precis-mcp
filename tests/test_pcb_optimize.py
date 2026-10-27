@@ -2708,6 +2708,70 @@ def test_settle_leaves_a_board_with_no_overhang_untouched():
     assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (20.0, 20.0)
 
 
+def test_settle_pulls_a_courtyard_out_of_the_edge_margin_too():
+    """gr520793 follow-on: the same bbox-vs-curve gap that lets a
+    courtyard overhang a cut corner also lets one sit INSIDE the outline
+    but within the fab's edge floor of it — nano seed 1 parked C_AREF
+    0.354mm off a 3mm fillet, an error under
+    ``drc.check_courtyard_edge_clearance`` while every legality check
+    called the pose fine. The settle treats the shortfall like the
+    overhang it already owned, and lands the part at or past the house
+    margin when one exists in radius, so the finding does not survive at
+    any tier."""
+    from precis.pcb.optimize import _courtyard_edge_gap_mm, _courtyard_in_outline
+
+    ir = _chamfered_corner_ir()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    region = engine._outline_region
+    # Walk U0 along the cut corner's bisector until its courtyard is
+    # inside but within the JLC floor (0.4mm) of the chamfer — the pose
+    # the bbox bounds call legal and the real edge does not.
+    placed = False
+    for t in (i * 0.05 for i in range(1, 80)):
+        ir.inst_x[0] = ir.inst_y[0] = t
+        poly = engine._world_courtyard(0)
+        if _courtyard_in_outline(region, poly) and (
+            _courtyard_edge_gap_mm(region, poly) < 0.4
+        ):
+            placed = True
+            break
+    assert placed, "no inside-but-marginal pose found on the bisector"
+    u1 = (float(ir.inst_x[1]), float(ir.inst_y[1]))
+
+    assert engine.settle_into_outline() == ("U0",)
+    poly = engine._world_courtyard(0)
+    assert _courtyard_in_outline(region, poly)
+    assert _courtyard_edge_gap_mm(region, poly) >= 0.6
+    assert engine._placement_is_legal([(0, float(ir.inst_x[0]), float(ir.inst_y[0]))])
+    assert (float(ir.inst_x[1]), float(ir.inst_y[1])) == u1
+    assert engine.settle_into_outline() == ()  # idempotent
+
+
+def test_settle_leaves_a_courtyard_in_the_warn_band_untouched():
+    """Negative control for the margin arm: the trigger is the JLC floor,
+    not the house figure — a part inside at 0.45mm off the edge owes a
+    warn to DRC, not a move. Only an ERROR-class shortfall earns the
+    nudge."""
+    from precis.pcb.optimize import _courtyard_edge_gap_mm, _courtyard_in_outline
+
+    ir = _chamfered_corner_ir()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    region = engine._outline_region
+    placed = False
+    for t in (i * 0.05 for i in range(1, 80)):
+        ir.inst_x[0] = ir.inst_y[0] = t
+        poly = engine._world_courtyard(0)
+        if _courtyard_in_outline(region, poly):
+            gap = _courtyard_edge_gap_mm(region, poly)
+            if 0.4 <= gap < 0.6:
+                placed = True
+                break
+    assert placed, "no warn-band pose found on the bisector"
+    pose = (float(ir.inst_x[0]), float(ir.inst_y[0]))
+    assert engine.settle_into_outline() == ()
+    assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == pose
+
+
 def test_a_part_wider_than_the_nominal_canvas_is_not_pinned_to_its_centre():
     """With no authored outline the domain is a nominal ``board_side``
     canvas. A part whose keep-out diameter exceeds it had its centre pinned

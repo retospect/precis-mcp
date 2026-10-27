@@ -84,6 +84,257 @@ def test_no_driver_warns_input_only_net() -> None:
     assert drc.check_no_driver(nets) == []
 
 
+def test_no_driver_reaches_through_series_passives() -> None:
+    """gr521600 — the nano EN wiring: VBUS feeds U_B15's EN input
+    through R_EN15. The flat per-net test warned 'nothing that drives
+    them' on a correctly-powered net; the driver judgement now runs
+    over the union of nets joined by certified 2-pin series
+    pass-throughs (R / L / ferrite / 0-ohm — etype ``passive`` or
+    ``current_role`` ``series``)."""
+    nets = [
+        _net(
+            "VBUS",
+            _m("J1", "VBUS", tags=["power_out"]),
+            _m("R_EN15", "1", tags=["passive"]),
+        ),
+        _net(
+            "EN15",
+            _m("R_EN15", "2", tags=["passive"]),
+            _m("U_B15", "EN", tags=["input"]),
+        ),
+    ]
+    inst = [{"refdes": "R_EN15", "n_pins": 2}]
+    assert drc.check_no_driver(nets, inst) == []
+    # The instances-less path counts member pins: same verdict.
+    assert drc.check_no_driver(nets) == []
+    # ``current_role='series'`` certifies the pin without the etype,
+    # and a declared ``fuse`` class certifies a part whose refdes left
+    # the R/L/FB convention (F* is no hop designator).
+    nets2 = [
+        _net(
+            "VBUS",
+            _m("J1", "VBUS", tags=["power_out"]),
+            _m("F1", "1", meta={"current_role": "series"}),
+        ),
+        _net(
+            "EN15",
+            _m("F1", "2", meta={"current_role": "series"}),
+            _m("U_B15", "EN", tags=["input"]),
+        ),
+    ]
+    assert (
+        drc.check_no_driver(nets2, [{"refdes": "F1", "n_pins": 2}], {"F1": ["fuse"]})
+        == []
+    )
+
+
+def test_no_driver_hop_class_is_links_only() -> None:
+    """gr521600 r2 — the hop class is DC links only. The old gate (any
+    2-pin part with passive pins) let a pull-down LED to a driven GND
+    pass an input off as driven; LED, diode, TVS, crystal, connector
+    and transistor refdeses now never join nets. R/L/FB refdeses
+    (incl. the ``R_``/``L_`` spellings) and a declared link-class role
+    still hop."""
+    for refdes in ("LED1", "D1", "TVS1", "Y1", "X1", "J1", "Q1"):
+        nets = [
+            _net(
+                "GND",
+                _m("J_PWR", "GND", tags=["power_out"]),
+                _m(refdes, "2", tags=["passive"]),
+            ),
+            _net(
+                "SIG",
+                _m(refdes, "1", tags=["passive"]),
+                _m("U1", "IN", tags=["input"]),
+            ),
+        ]
+        findings = drc.check_no_driver(nets, [{"refdes": refdes, "n_pins": 2}])
+        assert [(f.rule, f.where) for f in findings] == [("no_driver", "net SIG")], (
+            refdes
+        )
+    # Certified links still join their nets: the L and FB
+    # conventions, and a declared link-class role off-convention.
+    for refdes, roles in (("L1", None), ("FB1", None), ("M1", ["jumper"])):
+        nets = [
+            _net(
+                "VBUS",
+                _m("J_PWR", "V", tags=["power_out"]),
+                _m(refdes, "1", tags=["passive"]),
+            ),
+            _net(
+                "SIG",
+                _m(refdes, "2", tags=["passive"]),
+                _m("U1", "IN", tags=["input"]),
+            ),
+        ]
+        assert (
+            drc.check_no_driver(
+                nets,
+                [{"refdes": refdes, "n_pins": 2}],
+                {refdes: roles} if roles else None,
+            )
+            == []
+        ), refdes
+
+
+def _hop_nets(refdes: str) -> list[dict[str, Any]]:
+    """A driver, one 2-pin part between it and an input — the
+    minimal hop-or-warn fixture."""
+    return [
+        _net(
+            "VBUS",
+            _m("J_PWR", "V", tags=["power_out"]),
+            _m(refdes, "1", tags=["passive"]),
+        ),
+        _net(
+            "SIG",
+            _m(refdes, "2", tags=["passive"]),
+            _m("U1", "IN", tags=["input"]),
+        ),
+    ]
+
+
+def test_no_driver_hop_class_word_is_anchored() -> None:
+    """An unanchored match would certify ``LinkSwitch`` (a real PI
+    IC) or ``diffuser`` as links — the class regex only counts whole
+    words."""
+    for word in ("LinkSwitch", "diffuser", "linker", "unfused"):
+        findings = drc.check_no_driver(
+            _hop_nets("M1"), [{"refdes": "M1", "n_pins": 2}], {"M1": [word]}
+        )
+        assert [f.rule for f in findings] == ["no_driver"], word
+    # Whole-word declarations still certify — plurals included.
+    for word in ("0-ohm link", "ferrite bead", "inductors (coils)"):
+        findings = drc.check_no_driver(
+            _hop_nets("M1"), [{"refdes": "M1", "n_pins": 2}], {"M1": [word]}
+        )
+        assert findings == [], word
+
+
+def test_no_driver_ic_class_vetoes_refdes_hop() -> None:
+    """A declared class saying non-passive vetoes even a
+    convention-shaped refdes — an IC numbered ``R5`` never hops —
+    unless a hop class is also declared."""
+    inst = [{"refdes": "R5", "n_pins": 2}]
+    findings = drc.check_no_driver(_hop_nets("R5"), inst, {"R5": ["ic"]})
+    assert [(f.rule, f.where) for f in findings] == [("no_driver", "net SIG")]
+    # The catalog-identity part_class vetoes the same way.
+    inst_ic = [{"refdes": "R5", "n_pins": 2, "part": {"part_class": "ic"}}]
+    findings = drc.check_no_driver(_hop_nets("R5"), inst_ic)
+    assert [f.rule for f in findings] == ["no_driver"]
+    # An explicit hop-class declaration wins over the veto.
+    findings = drc.check_no_driver(_hop_nets("R5"), inst, {"R5": ["ic", "resistor"]})
+    assert findings == []
+    # A free tag naming no class leaves the convention alone.
+    findings = drc.check_no_driver(_hop_nets("R5"), inst, {"R5": ["noisy"]})
+    assert findings == []
+
+
+def test_no_driver_capacitor_blocks_the_hop() -> None:
+    """A capacitor between driver and consumer passes no DC — the
+    net behind it still floats and still warns, on the C-refdes
+    convention or a ``capacitor`` role."""
+    nets = [
+        _net(
+            "VBUS",
+            _m("J1", "VBUS", tags=["power_out"]),
+            _m("C15", "1", tags=["passive"]),
+        ),
+        _net(
+            "EN15",
+            _m("C15", "2", tags=["passive"]),
+            _m("U_B15", "EN", tags=["input"]),
+        ),
+    ]
+    findings = drc.check_no_driver(nets, [{"refdes": "C15", "n_pins": 2}])
+    assert [(f.rule, f.severity, f.where) for f in findings] == [
+        ("no_driver", "warn", "net EN15")
+    ]
+    # A mis-designated capacitor declares the role instead — same block.
+    nets[0]["members"][1]["refdes"] = "X1"
+    nets[1]["members"][0]["refdes"] = "X1"
+    findings = drc.check_no_driver(
+        nets, [{"refdes": "X1", "n_pins": 2}], {"X1": ["capacitor"]}
+    )
+    assert [(f.rule, f.where) for f in findings] == [("no_driver", "net EN15")]
+
+
+def test_no_driver_passive_must_be_certified() -> None:
+    """The hop needs the declaration — an unannotated 2-pin part does
+    not reach (it may be a diode, an isolator, anything), and a
+    multi-pin part carrying ``series`` pins is not a series passive
+    (a connector's 2 of 20 contacts join nothing)."""
+    nets = [
+        _net(
+            "VBUS",
+            _m("J1", "VBUS", tags=["power_out"]),
+            _m("R1", "1"),
+        ),
+        _net(
+            "EN15",
+            _m("R1", "2"),
+            _m("U_B15", "EN", tags=["input"]),
+        ),
+    ]
+    assert [f.rule for f in drc.check_no_driver(nets)] == ["no_driver"]
+    # Connector: series-carrying pins, but 4 pins declared — no hop.
+    nets2 = [
+        _net(
+            "VBUS",
+            _m("J1", "VBUS", tags=["power_out"]),
+            _m("CN1", "1", meta={"current_role": "series"}),
+        ),
+        _net(
+            "EN15",
+            _m("CN1", "2", meta={"current_role": "series"}),
+            _m("U_B15", "EN", tags=["input"]),
+        ),
+    ]
+    assert [
+        f.rule for f in drc.check_no_driver(nets2, [{"refdes": "CN1", "n_pins": 4}])
+    ] == ["no_driver"]
+
+
+def test_no_driver_resistor_chain_and_cycle_bound() -> None:
+    """The closure is union-find over net names — a long R+R chain
+    resolves, and a passive ring with no driver anywhere terminates
+    and warns rather than walking forever."""
+    chain = [
+        _net("VBUS", _m("J1", "V", tags=["power_out"]), _m("R1", "1", tags=["passive"]))
+    ]
+    for i in range(1, 12):
+        chain.append(
+            _net(
+                f"N{i}",
+                _m(f"R{i}", "2", tags=["passive"]),
+                _m(f"R{i + 1}", "1", tags=["passive"]),
+            )
+        )
+    chain.append(
+        _net(
+            "EN",
+            _m("R12", "2", tags=["passive"]),
+            _m("U1", "EN", tags=["input"]),
+        )
+    )
+    inst = [{"refdes": f"R{i}", "n_pins": 2} for i in range(1, 13)]
+    assert drc.check_no_driver(chain, inst) == []
+    # Ring of passives, a consumer, no driver: bounded walk, still warns.
+    ring = [
+        _net(
+            "A",
+            _m("R1", "1", tags=["passive"]),
+            _m("R3", "2", tags=["passive"]),
+            _m("U1", "EN", tags=["input"]),
+        ),
+        _net("B", _m("R1", "2", tags=["passive"]), _m("R2", "1", tags=["passive"])),
+        _net("C", _m("R2", "2", tags=["passive"]), _m("R3", "1", tags=["passive"])),
+    ]
+    inst3 = [{"refdes": f"R{i}", "n_pins": 2} for i in range(1, 4)]
+    findings = drc.check_no_driver(ring, inst3)
+    assert [(f.rule, f.where) for f in findings] == [("no_driver", "net A")]
+
+
 def test_over_voltage_from_net_and_class_voltage() -> None:
     nets = [
         _net(
@@ -114,6 +365,32 @@ def test_over_voltage_from_net_and_class_voltage() -> None:
     findings = drc.check_over_voltage(nets, {"hv": {"working_voltage_v": 20}})
     assert [(f.rule, f.severity) for f in findings] == [("over_voltage", "warn")]
     assert "CANNOT be checked" in findings[0].detail
+
+
+def test_erc_not_checked_names_the_missing_side_and_the_enable_path() -> None:
+    """gr520795 — 'no net carries est_current_a or no pin carries
+    max_current_a' told the reader a side was missing but never WHICH
+    one or how to enable the check. taz-leaf-b: every net carried
+    est_current_a, so the gap was pins — the row must say exactly that."""
+    # Nets annotated, no pin bound anywhere → the PIN side is the gap.
+    nets = [_net("VCC", _m("U1", "VDD"), est_current_a=0.5)]
+    findings = drc.check_over_current(nets)
+    assert [(f.rule, f.severity) for f in findings] == [("over_current", "warn")]
+    assert "no pin carries max_current_a" in findings[0].detail
+    assert "no net carries est_current_a" not in findings[0].detail
+    assert "op='pins'" in findings[0].detail
+
+    nets = [_net("VCC", _m("U1", "VDD"), working_voltage_v=3.3)]
+    findings = drc.check_over_voltage(nets)
+    assert [(f.rule, f.severity) for f in findings] == [("over_voltage", "warn")]
+    assert "no pin carries max_voltage_v" in findings[0].detail
+    assert "no net carries working_voltage_v" not in findings[0].detail
+    assert "op='pins'" in findings[0].detail
+
+    # Nothing declared at all → both sides named.
+    findings = drc.check_over_current([_net("SIG", _m("U1", "A"), _m("U2", "B"))])
+    assert "no net carries est_current_a" in findings[0].detail
+    assert "no pin carries max_current_a" in findings[0].detail
 
 
 def test_rail_crossing_and_level_shifter() -> None:

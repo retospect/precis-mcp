@@ -420,7 +420,15 @@ def _offsheet_glyph(
     """The off-sheet connector (slice 2): a flag at the stub tip naming
     the net and the sheet(s) it continues on — ``SIG → MCU`` — in the
     net's colour. ``x`` is the stub tip; the flag grows away from the
-    box, pointing outward the way a KiCad sheet pin does."""
+    box, pointing outward the way a KiCad sheet pin does.
+
+    Each destination is its own ``<tspan data-sheet="…">`` so the
+    workbench's click wiring can switch straight to the named sheet
+    (gr520804 — previously one flat ``NET → a, b`` run that neither
+    explained itself nor went anywhere when clicked); ``overview``
+    carries ``data-sheet=""``, the key pcb-sheets.js uses for the
+    catch-all tab. The flag's own ``<title>` says what a flag means at
+    all."""
     text = f"{name} → {', '.join(dests)}"
     w = len(text) * _CHAR_W + 14.0
     d = 1.0 if rightward else -1.0
@@ -431,11 +439,22 @@ def _offsheet_glyph(
     colour = f"hsl({_net_hue(name)},55%,38%)"
     anchor = "start" if rightward else "end"
     tx = x + d * 6.0
+    runs = ", ".join(
+        f'<tspan data-sheet="{esc("" if dest == "overview" else dest, quote=True)}"'
+        f' class="offsheet-dest">'
+        f"<title>net {escape(name)} continues on sheet {escape(dest)}"
+        " — click to open it</title>"
+        f"{escape(dest)}</tspan>"
+        for dest in dests
+    )
     return (
         f'<polygon points="{pts}" class="offsheet" fill="#fdfdf6" '
-        f'stroke="{colour}" stroke-width="1.2"/>'
+        f'stroke="{colour}" stroke-width="1.2">'
+        f"<title>off-sheet net {escape(name)} — continues on sheet(s): "
+        f"{escape(', '.join(dests))}; click a destination to open that "
+        "sheet</title></polygon>"
         f'<text x="{tx:.1f}" y="{y + 3.5:.1f}" text-anchor="{anchor}" '
-        f'class="netlabel" fill="{colour}">{escape(text)}</text>'
+        f'class="netlabel" fill="{colour}">{escape(name + " → ")}{runs}</text>'
     )
 
 
@@ -798,6 +817,9 @@ def render_schematic_svg(
      gets its own fill rule (the paths are all stroke, no fill) */
   .pindir {{ stroke: #666; stroke-width: 1.1; fill: none; }}
   .pindirt {{ font-size: 9px; fill: #666; }}
+  /* off-sheet connector destinations are clickable (pcb-crossprobe.js
+     reads data-sheet) — underline marks them as links. */
+  .offsheet-dest {{ text-decoration: underline; cursor: pointer; }}
   /* focus mode: the one-hop neighbourhood stays bright, the rest dims in
      place (static/pcb-focus.js reloads the schematic with a focus query). */
   .sch-part.dimmed {{ opacity: 0.16; }}

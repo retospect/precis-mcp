@@ -499,7 +499,11 @@ def erc_findings(
     nets = graph.get("nets") or []
     return (
         pcb_drc.check_pin_conflicts(nets)
-        + pcb_drc.check_no_driver(nets)
+        + pcb_drc.check_no_driver(
+            nets,
+            instances=graph.get("instances") or [],
+            roles_by_refdes=roles_by_refdes,
+        )
         + pcb_drc.check_over_voltage(nets, design.get("net_classes"))
         + pcb_drc.check_rail_crossing(nets, roles_by_refdes)
         + pcb_drc.check_no_decoupling(nets, positions, roles_by_refdes=roles_by_refdes)

@@ -282,8 +282,8 @@ def test_cross_sheet_net_gets_connectors_on_both_sheets() -> None:
     mcu = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
     power = render_schematic_svg(_grouped_graph(), title="t", sheet="power")
     assert 'class="offsheet"' in mcu and 'class="offsheet"' in power
-    assert ">SIG → power</text>" in mcu
-    assert ">SIG → MCU</text>" in power
+    assert ">SIG → " in mcu and 'data-sheet="power"' in mcu
+    assert ">SIG → " in power and 'data-sheet="MCU"' in power
     # ...while the overview shows the whole net as plain labels, no flags
     overview = render_schematic_svg(_grouped_graph(), title="t")
     assert 'class="offsheet"' not in overview
@@ -292,7 +292,25 @@ def test_cross_sheet_net_gets_connectors_on_both_sheets() -> None:
 
 def test_net_to_an_ungrouped_part_points_at_the_overview() -> None:
     svg = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
-    assert ">TAIL → overview</text>" in svg
+    assert ">TAIL → " in svg and 'data-sheet=""' in svg and ">overview<" in svg
+
+
+def test_offsheet_flag_explains_itself_and_each_dest_is_clickable() -> None:
+    """gr520804 — the flag was one flat ``NET → a, b`` run: unreadable
+    (no explanation anywhere), unclickable (a click selected the net and
+    the sheet logic stayed put), and multi-destination sheets were just
+    comma text. Now the flag carries a <title> saying what it is and
+    every destination is its own data-sheet tspan the workbench's click
+    wiring reads to switch sheets; 'overview' maps to '' (pcb-sheets.js's
+    own key for the catch-all tab)."""
+    svg = render_schematic_svg(_grouped_graph(), title="t", sheet="MCU")
+    assert "off-sheet net SIG" in svg
+    assert "click a destination to open that sheet" in svg
+    assert '<tspan data-sheet="power" class="offsheet-dest">' in svg
+    assert "continues on sheet power" in svg
+    # The dest tspan for the overview carries pcb-sheets.js's '' key.
+    assert '<tspan data-sheet="" class="offsheet-dest">' in svg
+    assert "continues on sheet overview" in svg
 
 
 def test_power_and_ground_never_get_connectors() -> None:

@@ -186,6 +186,7 @@ from precis.format import toon
 from precis.pcb import pose
 from precis.pcb import support_groups as pcb_support_groups
 from precis.pcb.cost import (
+    _BOARD_EDGE_FIELD,
     _BY_NAME,
     _CRITICALITY_WEIGHT,
     COURTYARD_MIN_SEPARATION_MM,
@@ -4047,23 +4048,44 @@ class OptimizeEngine:
 
     def settle_into_outline(self) -> tuple[str, ...]:
         """Move every movable rigid body whose courtyard overhangs the
-        board outline to the nearest pose that is legal AND inside it;
-        returns the refdes it moved. Runs after every anneal, so in both
-        the place and the route job (gr496151; Reto 2026-10-18).
+        board outline — or sits inside it but closer to the real edge
+        than the fab's edge-clearance floor — to the nearest pose that is
+        legal AND inside AND clear; returns the refdes it moved. Runs
+        after every anneal, so in both the place and the route job
+        (gr496151; Reto 2026-10-18).
 
         Legality bounds a part's CENTRE by the outline's bounding box
         (:meth:`bounds_for`), so a part may sit over a rounded corner:
         nano seeds 2 and 4 settled C_B5 / C_AREF 0.041 mm past a 3 mm
         fillet, and the route job refused the placement on
-        ``outline_containment``. The outline is not a move-legality term
-        because that changes the anneal's trajectory on every seed:
-        measured on nano, routed 35 -> 33 at seed 1, and 4-6 nets lower
-        on seeds 3/5/7/8. Here a board with no overhang is untouched,
-        and the search uses no RNG. A body with no legal inside pose
-        stays where it is, and the placement-DRC gate still reports it."""
+        ``outline_containment``. The same bbox-vs-curve gap leaves a
+        courtyard INSIDE the outline yet within the edge margin —
+        nano seed 1 parks C_AREF 0.354 mm off a fillet, which
+        ``drc.check_courtyard_edge_clearance`` (gr520793) reports as an
+        error while every bbox-side legality check calls the pose fine.
+        Both residuals are the same disagreement and get the same repair
+        here rather than inside move legality, which changes the anneal's
+        trajectory on every seed: measured on nano, routed 35 -> 33 at
+        seed 1, and 4-6 nets lower on seeds 3/5/7/8. Here a board that
+        clears the JLC floor is untouched, and the search uses no RNG.
+
+        The margin tiers are the SAME field and precedence
+        :func:`~precis.pcb.cost.board_edge_clearance_term` prices and
+        :func:`precis.pcb.drc.check_courtyard_edge_clearance` enforces
+        (V-cut while the panelization is unknown): the ring search tries
+        the house figure first — a nudge that lands there leaves no
+        finding at all — then the JLC floor, then plain inside, so an
+        overhang still gets in when the margin is unreachable in radius.
+        A body with no legal inside pose stays where it is, and the
+        placement-DRC gate still reports it."""
         if self._outline_region is None:
             return ()
         ir = self.ir
+        # A fab row that publishes no edge-clearance figure (aluminum)
+        # carries no margin to satisfy — the pass settles overhang only.
+        caps = self.config.cost.fab_caps
+        floor_mm = caps.jlc_min.get(_BOARD_EDGE_FIELD)
+        margin_mm = caps.house_default.get(_BOARD_EDGE_FIELD)
         moved: list[str] = []
         seen: set[int] = set()
         # A local nudge, not a re-place: a body with no inside pose this
@@ -4079,12 +4101,26 @@ class OptimizeEngine:
             old = [(m, float(ir.inst_x[m]), float(ir.inst_y[m])) for m in members]
             if any(math.isnan(x) or math.isnan(y) for _m, x, y in old):
                 continue
+            polys = [(m, self._world_courtyard(m)) for m, _x, _y in old]
             if all(
-                _courtyard_in_outline(self._outline_region, self._world_courtyard(m))
-                for m in members
+                _courtyard_in_outline(self._outline_region, poly) for _m, poly in polys
+            ) and (
+                floor_mm is None
+                or all(
+                    _courtyard_edge_gap_mm(self._outline_region, poly) >= floor_mm
+                    for _m, poly in polys
+                )
             ):
                 continue
-            target = self._nearest_legal_offset(old, max_rings, in_outline=True)
+            target = None
+            for req in dict.fromkeys(r for r in (margin_mm, floor_mm) if r is not None):
+                target = self._nearest_legal_offset(
+                    old, max_rings, in_outline=True, edge_clearance_mm=req
+                )
+                if target is not None:
+                    break
+            if target is None:
+                target = self._nearest_legal_offset(old, max_rings, in_outline=True)
             if target is None:
                 continue
             dx, dy = target
@@ -4103,11 +4139,16 @@ class OptimizeEngine:
         max_rings: int,
         *,
         in_outline: bool = False,
+        edge_clearance_mm: float | None = None,
     ) -> tuple[float, float] | None:
         """The smallest ``(dx, dy)`` on the :data:`_LEGALIZE_STEP_MM`
         lattice that makes every member of ``old`` legal (and inside the
         outline when ``in_outline``), searched ring by ring outward;
-        ``None`` when no lattice point is."""
+        ``None`` when no lattice point is. ``edge_clearance_mm``
+        additionally requires every member's courtyard at the proposed
+        pose to sit at least that far off the real outline boundary —
+        :meth:`settle_into_outline`'s margin-aware bar; the plain
+        ``in_outline`` test asks only that it is inside."""
         step = _LEGALIZE_STEP_MM
         for ring in range(1, max_rings + 1):
             offsets = [
@@ -4119,10 +4160,18 @@ class OptimizeEngine:
             offsets.sort(key=lambda ij: ij[0] * ij[0] + ij[1] * ij[1])
             for i, j in offsets:
                 dx, dy = i * step, j * step
-                if self._placement_is_legal(
-                    [(m, x + dx, y + dy) for m, x, y in old], in_outline=in_outline
+                moved = [(m, x + dx, y + dy) for m, x, y in old]
+                if not self._placement_is_legal(moved, in_outline=in_outline):
+                    continue
+                if edge_clearance_mm is not None and not all(
+                    _courtyard_edge_gap_mm(
+                        self._outline_region, self._world_courtyard(m, x2, y2)
+                    )
+                    >= edge_clearance_mm
+                    for m, x2, y2 in moved
                 ):
-                    return (dx, dy)
+                    continue
+                return (dx, dy)
         return None
 
     def _world_courtyard(
@@ -4648,6 +4697,23 @@ def _courtyard_in_outline(
     if not bool(shapely.intersects_xy(board, xs, ys).all()):
         return False
     return convex or bool(board.covers(Polygon(poly)))
+
+
+def _courtyard_edge_gap_mm(
+    region: tuple[Any, bool] | None, poly: list[tuple[float, float]]
+) -> float:
+    """``poly``'s clearance to the outline's boundary — the SAME quantity
+    ``drc.check_courtyard_edge_clearance`` measures against the same
+    polygonized ring (0 once the polygon touches or crosses the edge, so
+    it separates nothing by itself: pair it with
+    :func:`_courtyard_in_outline` when inside-vs-outside matters). A
+    courtyard of fewer than three points reserves no area — ``inf``."""
+    if region is None or len(poly) < 3:
+        return math.inf
+    from shapely.geometry import Polygon
+
+    board, _convex = region
+    return float(board.boundary.distance(Polygon(poly)))
 
 
 #: How many draws a placement generator makes before conceding that this
