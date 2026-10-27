@@ -3216,6 +3216,53 @@ def check_keepout_copper(
     return findings
 
 
+def check_board_origin(
+    model: dict[str, Any], outline: list[list[float]] | None = None
+) -> list[DrcFinding]:
+    """Positive-quadrant nudge (gr520794): nothing requires board
+    geometry to sit at ``x,y >= 0`` with its bbox minimum near the
+    origin — but a board that does reads the same in the fab outputs as
+    it does to a human, one shared frame for gerbers, the SVG views and
+    whoever holds the callipers. When an outline vertex or a pad centre
+    carries a negative coordinate ONE aggregated ``warn`` names the
+    extreme — a convention note, never a ``deny``: asymmetric outline
+    shapes legitimately centre on the origin."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for p in outline or []:
+        if len(p) >= 2:
+            xs.append(float(p[0]))
+            ys.append(float(p[1]))
+    for pad in model.get("pads") or []:
+        if pad.get("x") is None or pad.get("y") is None:
+            continue
+        xs.append(float(pad["x"]))
+        ys.append(float(pad["y"]))
+    if not xs:
+        return []
+    mx, my = min(xs), min(ys)
+    if mx >= 0 and my >= 0:
+        return []
+    axis = "x" if my >= 0 else "y" if mx >= 0 else "x and y"
+    return [
+        DrcFinding(
+            rule="board_origin",
+            severity="warn",
+            where="board",
+            detail=(
+                f"board geometry sits partly in negative coordinates — "
+                f"{axis} below 0 (minimum at x={mx:g}mm, y={my:g}mm); "
+                "the positive-quadrant convention keeps the fab outputs "
+                "and the human read of the board on one frame — shift "
+                "the outline and placement so the bbox minimum lands "
+                "at the origin"
+            ),
+            objects=({"min_x_mm": mx, "min_y_mm": my},),
+            margin_mm=min(mx, my),
+        )
+    ]
+
+
 def check_edge_mating(
     edge_mates: Sequence[Any] | None,
     *,
@@ -3950,7 +3997,10 @@ def _pin_marker(pin: dict[str, Any]) -> str | None:
 
 
 def check_unconnected_pins(
-    unconnected: Iterable[dict[str, Any]] | None, *, phase: str = "netlist"
+    unconnected: Iterable[dict[str, Any]] | None,
+    *,
+    phase: str = "netlist",
+    topo_assign: Mapping[tuple[str, str], str] | None = None,
 ) -> list[DrcFinding]:
     """A declared pin with no net and no stated reason is a complaint —
     phase-aware (§1j): ``warn`` while the board is still being worked
@@ -3979,9 +4029,20 @@ def check_unconnected_pins(
 
     ``unconnected`` entries are ``pcb_graph``'s ``unconnected`` rows:
     ``{refdes, pin, tags, meta}``. A pin with a net never reaches this
-    rule — it is about absence of a net, nothing else."""
+    rule — it is about absence of a net, nothing else.
+
+    ``topo_assign`` is the stored topo-place run's pin assignment,
+    ``(refdes, pin) -> slot name`` (gr520797): a flex pin the solver
+    committed to an ``any_of`` slot is not an unmarked spare — it is a
+    netless pin with a declared destination, so it reports separately.
+    Below ``fab`` the assigned pins aggregate per instance naming
+    slot→pin (wiring them is the work item); at ``fab`` each is its own
+    error, same as any unwired pin — the assignment names intent, it
+    does not wire the pin. ``None`` (no stored run, or a caller that
+    does not read them) keeps every pin on the spare path."""
     findings: list[DrcFinding] = []
     spare_by_refdes: dict[str, list[str]] = {}
+    assigned_by_refdes: dict[str, list[tuple[str, str]]] = {}
     for pin in unconnected or []:
         marker = _pin_marker(pin)
         if marker in ("nc", "unused"):
@@ -4001,6 +4062,26 @@ def check_unconnected_pins(
                     objects=({"refdes": refdes, "pin": name, "marker": marker},),
                 )
             )
+            continue
+        slot = (topo_assign or {}).get((refdes, name))
+        if slot is not None and phase == "fab":
+            findings.append(
+                DrcFinding(
+                    rule="unconnected_pin",
+                    severity="error",
+                    where=f"pin {refdes}/{name}",
+                    detail=(
+                        f"pin {refdes}/{name} is assigned to topo flex slot "
+                        f"'{slot}' and has no net — wire it to the slot's "
+                        "net (or re-run the assignment if the stored "
+                        "placement is stale)"
+                    ),
+                    objects=({"refdes": refdes, "pin": name, "topo_slot": slot},),
+                )
+            )
+            continue
+        if slot is not None:
+            assigned_by_refdes.setdefault(refdes, []).append((slot, name))
             continue
         if phase == "fab":
             findings.append(
@@ -4037,6 +4118,33 @@ def check_unconnected_pins(
                     "(part has no internal connection), or wire them"
                 ),
                 objects=({"refdes": refdes, "pins": tuple(names)},),
+            )
+        )
+    for refdes in sorted(assigned_by_refdes):
+        pairs = sorted(assigned_by_refdes[refdes])
+        shown = ", ".join(f"{slot}→{pin}" for slot, pin in pairs[:12]) + (
+            f" … +{len(pairs) - 12}" if len(pairs) > 12 else ""
+        )
+        findings.append(
+            DrcFinding(
+                rule="unconnected_pin",
+                severity="warn",
+                where=f"part {refdes}",
+                detail=(
+                    f"{len(pairs)} pad(s) on {refdes} netless but assigned "
+                    f"to topo flex slots ({shown}) — wire them to their "
+                    "slot nets; a slot the stored placement should not "
+                    "have claimed is an `unused`/`nc` candidate like any "
+                    "other spare"
+                ),
+                objects=(
+                    {
+                        "refdes": refdes,
+                        "slots": tuple(
+                            {"slot": slot, "pin": pin} for slot, pin in pairs
+                        ),
+                    },
+                ),
             )
         )
     return findings
@@ -4522,6 +4630,7 @@ def run_geometric_drc(
     unconnected: Iterable[dict[str, Any]] | None = None,
     keepouts: Sequence[Keepout] = (),
     phase: str = "netlist",
+    topo_assign: Mapping[tuple[str, str], str] | None = None,
     undeclared_unchecked: Sequence[str] = (),
     courtyard_clearance_mm: float | None = None,
     profile_rules: ProfileRules | None = None,
@@ -4573,7 +4682,9 @@ def run_geometric_drc(
     ``unconnected`` + ``phase`` + ``undeclared_unchecked`` feed the
     netlist-level rules (§1g's one check surface):
     :func:`check_unconnected_pins` (the ``pcb_graph`` ``unconnected`` rows,
-    markers read off their ``tags``/``meta``, severity set by ``phase``)
+    markers read off their ``tags``/``meta``, severity set by ``phase``,
+    ``topo_assign`` — a stored topo-place run's ``(refdes, pin) -> slot``
+    map — routing assigned pads off the spare path, gr520797)
     and :func:`check_undeclared_pads` (``undeclared`` pad flags already on
     ``model["pads"]``, plus a not-checked note for the refdes
     ``undeclared_unchecked`` names). ``None``/empty keeps a caller that
@@ -4610,13 +4721,16 @@ def run_geometric_drc(
     findings += check_outline_missing(outline)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_keepout_copper(model, keepouts)
+    findings += check_board_origin(model, outline)
     findings += check_edge_mating(edge_mates, outline=outline)
     findings += check_connectivity(model)
     findings += check_pour_fragmented(model)
     findings += check_pour_reaches_pad(model)
     findings += check_bend_zones(model, courtyards=courtyards)
     findings += check_unrouted(unrouted)
-    findings += check_unconnected_pins(unconnected, phase=phase)
+    findings += check_unconnected_pins(
+        unconnected, phase=phase, topo_assign=topo_assign
+    )
     findings += check_undeclared_pads(model, unchecked=undeclared_unchecked)
     if courtyards:
         findings += check_courtyard_overlap(
@@ -5590,6 +5704,7 @@ __all__ = [
     "check_annular_ring",
     "check_bend_zones",
     "check_board_edge_clearance",
+    "check_board_origin",
     "check_clearance",
     "check_connectivity",
     "check_courtyard_hole",

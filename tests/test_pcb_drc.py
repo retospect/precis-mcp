@@ -3764,3 +3764,39 @@ def test_run_geometric_drc_threads_keepouts_into_the_rule():
     # the default keepouts=() stays silent on the same board
     findings = drc.run_geometric_drc(model, capability=_CAP4, outline=None)
     assert "keepout_copper" not in {f.rule for f in findings}
+
+
+# ── board_origin: the positive-quadrant nudge (gr520794) ────────────────
+
+
+def test_check_board_origin_warns_once_naming_the_extreme() -> None:
+    """A centred-on-origin board gets ONE aggregated warn naming the
+    extreme -- never an error (a convention note, not a deny)."""
+    outline = [[-15.0, -15.0], [15.0, -15.0], [15.0, 15.0], [-15.0, 15.0]]
+    model = {"layers": ["F.Cu"], "pads": [_pad("SIG", "F.Cu", -20.0, 3.0, w=0.5)]}
+    findings = drc.check_board_origin(model, outline)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "board_origin" and f.severity == "warn"
+    assert "x=-20" in f.detail and "y=-15" in f.detail
+    assert f.margin_mm == pytest.approx(-20.0)
+
+
+def test_check_board_origin_quiet_in_the_positive_quadrant() -> None:
+    model = {"layers": ["F.Cu"], "pads": [_pad("SIG", "F.Cu", 10.0, 10.0, w=0.5)]}
+    assert drc.check_board_origin(model, _EDGE_OUTLINE) == []
+    assert drc.check_board_origin({"layers": ["F.Cu"]}, None) == []
+
+
+def test_check_board_origin_counts_a_pad_centre_past_the_origin() -> None:
+    model = {"layers": ["F.Cu"], "pads": [_pad("SIG", "F.Cu", -0.5, 10.0, w=0.5)]}
+    findings = drc.check_board_origin(model, _EDGE_OUTLINE)
+    assert len(findings) == 1 and findings[0].severity == "warn"
+
+
+def test_board_origin_is_part_of_run_geometric_drc() -> None:
+    outline = [[-15.0, -15.0], [15.0, -15.0], [15.0, 15.0], [-15.0, 15.0]]
+    findings = drc.run_geometric_drc(
+        {"layers": ["F.Cu"], "pads": []}, capability=_CAP4, outline=outline
+    )
+    assert "board_origin" in {f.rule for f in findings}

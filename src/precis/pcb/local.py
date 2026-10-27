@@ -562,7 +562,9 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
     meta = (graph.get("board") or {}).get("meta") or {}
     profile = pcb_profiles.board_profile(meta)
     try:
-        fab_caps = pcb_session.board_capability(graph["board"]["stackup"], profile)
+        fab_caps = pcb_session.board_capability(
+            graph["board"]["stackup"], profile, meta=meta
+        )
     except ValueError as exc:
         raise LocalError(f"{exc}") from exc
     notes: list[str] = []

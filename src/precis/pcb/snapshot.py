@@ -141,14 +141,14 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
     Only a first capture reaches this: a replay's params carry the recorded
     config and normalize echoes it, so post-capture config fields are inert.
     """
-    from precis.pcb.capabilities import capability_for
-    from precis.pcb.drc import process_for_stackup
     from precis.pcb.optimize import OptimizeConfig
     from precis.pcb.realize import RealizeConfig
+    from precis.pcb.session import board_capability
 
-    stackup = tables["pcb_boards"][0]["stackup"]
+    board_row = tables["pcb_boards"][0]
+    stackup = board_row["stackup"]
     realize = RealizeConfig(
-        fab_caps=capability_for(process_for_stackup(stackup)),
+        fab_caps=board_capability(stackup, meta=board_row.get("meta")),
         class_rules={
             r["name"]: r["rules"]
             for r in tables["pcb_net_classes"]

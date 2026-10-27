@@ -38,7 +38,6 @@ from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
 from precis.pcb import session_store as pcb_session_store
-from precis.pcb.capabilities import capability_for
 from precis.pcb.optimize import (
     PLACE_ITERS,
     PLACE_ONLY_SCHEDULE,
@@ -91,23 +90,6 @@ DESCRIPTION = (
 )
 
 _DEFAULT_ITERS = PLACE_ITERS
-
-
-def _process_for_stackup(stackup: list[dict[str, Any]]) -> str:
-    """The capability-table process row for a board's layer COUNT —
-    duplicated from :func:`precis.pcb.drc.process_for_stackup` for the same
-    reason :mod:`precis.workers.job_types.pcb_route` duplicates it: a 4-line
-    lookup should not force this worker to import shapely at module load.
-    v1 checks 2- or 4-layer boards only, same limit as the DRC engine."""
-    n = len(stackup)
-    if n == 2:
-        return "2layer"
-    if n == 4:
-        return "4layer"
-    raise ValueError(
-        f"no fab capability row for a {n}-layer stackup — v1 checks 2- or "
-        "4-layer boards only"
-    )
 
 
 #: Single-stage, placement-only schedule — canonical in
@@ -583,7 +565,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     try:
         if gate_board_id is not None:
             try:
-                capability = capability_for(_process_for_stackup(ir.stackup))
+                capability = pcb_session.stackup_capability(
+                    ir.stackup, meta=(graph.get("board") or {}).get("meta")
+                )
             except ValueError:
                 capability = None
         if gate_board_id is not None:
@@ -609,7 +593,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # Resolved on its own, not via the gate's `capability`: a footprint
     # hydration failure that skips the gate must not drop the floors too.
     try:
-        floor_capability = capability_for(_process_for_stackup(ir.stackup))
+        floor_capability = pcb_session.stackup_capability(
+            ir.stackup, meta=(graph.get("board") or {}).get("meta")
+        )
     except ValueError:
         floor_capability = None
     if floor_capability is not None:

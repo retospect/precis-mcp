@@ -258,3 +258,81 @@ def test_no_low_confidence_field_carries_a_bare_unexplained_number():
                 # Must be more than the bare tag — a real explanation.
                 assert len(confidence) > len("low"), (row.process, field)
                 assert "—" in confidence or "-" in confidence, (row.process, field)
+
+
+# ── the board-level process selector + JLC flex rows (gr520549) ────────
+
+#: ``meta.process`` name -> (stackup layer count, published trace/space
+#: in mm) for every flex row — one row per (layers, outer copper weight)
+#: pair, JLC's three flex copper options (12um ~ 1/3oz, 18um ~ 0.5oz,
+#: 35um ~ 1oz).
+_FLEX_ROWS = {
+    "flex-2layer-12um": (2, 0.0762),
+    "flex-2layer-18um": (2, 0.0889),
+    "flex-2layer-35um": (2, 0.1016),
+    "flex-4layer-12um": (4, 0.0762),
+    "flex-4layer-18um": (4, 0.0889),
+    "flex-4layer-35um": (4, 0.1016),
+}
+
+
+def _stackup(n_layers: int) -> list[dict]:
+    """A bare stackup — only the layer COUNT is read for process checks."""
+    return [{"name": f"L{i}"} for i in range(n_layers)]
+
+
+@pytest.mark.parametrize("process", sorted(_FLEX_ROWS))
+def test_flex_rows_carry_only_published_figures(process):
+    """gr520549: the flex rows exist per (layers, copper weight) with the
+    cited trace/space figures, and every field JLC does not publish for
+    flex stays null rather than borrowing an FR-4 number."""
+    n_layers, spacing = _FLEX_ROWS[process]
+    row = caps.capability_for(process)
+    assert caps.process_layer_counts()[process] == n_layers
+    assert row.jlc_min["trace_width_mm"] == pytest.approx(spacing)
+    assert row.jlc_min["trace_spacing_mm"] == pytest.approx(spacing)
+    unpublished = [
+        f for f in caps.FIELDS if f not in ("trace_width_mm", "trace_spacing_mm")
+    ]
+    assert all(row.jlc_min[f] is None for f in unpublished), process
+    assert all(row.house_default[f] is None for f in unpublished), process
+
+
+def test_meta_process_selects_the_declared_row():
+    from precis.pcb import session as pcb_session
+
+    row = pcb_session.board_capability(
+        _stackup(2), meta={"process": "flex-2layer-18um"}
+    )
+    assert row.process == "flex-2layer-18um"
+
+
+def test_meta_process_rejects_a_layer_count_mismatch():
+    """A declared process contradicting the stackup is refused, not
+    quietly checked against a process nobody picked."""
+    from precis.pcb import session as pcb_session
+
+    with pytest.raises(ValueError, match="flex-2layer-18um.*2-layer"):
+        pcb_session.board_capability(_stackup(4), meta={"process": "flex-2layer-18um"})
+    # Same refusal through the soft path — an authored error is not the
+    # derived path's "no row for this count" None.
+    with pytest.raises(ValueError, match="flex-2layer-18um"):
+        pcb_session.stackup_capability(
+            _stackup(4), meta={"process": "flex-2layer-18um"}
+        )
+
+
+def test_meta_process_unknown_names_the_known_set():
+    from precis.pcb import session as pcb_session
+
+    with pytest.raises(ValueError, match="flex-9layer"):
+        pcb_session.board_capability(_stackup(2), meta={"process": "flex-9layer"})
+
+
+def test_no_declared_process_keeps_the_layer_count_derivation():
+    from precis.pcb import session as pcb_session
+
+    assert pcb_session.board_capability(_stackup(4), meta={}).process == "4layer"
+    assert pcb_session.board_capability(_stackup(2)).process == "2layer"
+    # …and the soft path's unsupported-count None is unchanged.
+    assert pcb_session.stackup_capability(_stackup(6)) is None

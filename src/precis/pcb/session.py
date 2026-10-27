@@ -1704,23 +1704,57 @@ def content_hash(
     return hashlib.blake2b(payload_json.encode("utf-8"), digest_size=12).hexdigest()
 
 
+def _declared_capability(process: str, stackup: list[dict[str, Any]]) -> CapabilityRow:
+    """The capability row an authored ``meta.process`` names — checked
+    against the stackup's layer count (the row's ``layers`` figure), so a
+    ``flex-2layer-*`` board on four layers refuses as contradictory
+    authoring rather than checking against the wrong process
+    (:mod:`precis.pcb.capabilities`' module docstring). Raises
+    ``ValueError`` for an unknown name too — a typo'd selector that
+    silently fell back to the derived row would check the board against a
+    process nobody picked."""
+    from precis.pcb.capabilities import capability_for, process_layer_counts
+
+    counts = process_layer_counts()
+    if process not in counts:
+        raise ValueError(
+            f"board meta.process {process!r} is not a capability-table "
+            f"process — known: {sorted(counts)}"
+        )
+    want = counts[process]
+    if want != len(stackup):
+        raise ValueError(
+            f"board meta.process {process!r} is a {want}-layer process; "
+            f"the stackup has {len(stackup)} layer(s)"
+        )
+    return capability_for(process)
+
+
 def board_capability(
-    stackup: list[dict[str, Any]], profile: str | None = None
+    stackup: list[dict[str, Any]], profile: str | None = None, *, meta: Any = None
 ) -> CapabilityRow:
     """:func:`stackup_capability` that raises ``ValueError`` (from
     :func:`precis.pcb.drc.process_for_stackup`) for an unsupported layer
     count — for the DRC and route paths, which refuse rather than judge by
-    a missing row."""
+    a missing row.
+
+    ``meta`` is the board's meta dict: an authored ``process`` key
+    overrides the layer-count derivation entirely (gr520549's board-level
+    process selector — the gate, DRC and fab export all read this)."""
     from precis.pcb import drc as pcb_drc
     from precis.pcb.capabilities import apply_profile, capability_for
     from precis.pcb.profiles import profile_rules
 
-    row = capability_for(pcb_drc.process_for_stackup(stackup))
+    process = (meta or {}).get("process")
+    if process:
+        row = _declared_capability(str(process), stackup)
+    else:
+        row = capability_for(pcb_drc.process_for_stackup(stackup))
     return apply_profile(row, profile_rules(profile))
 
 
 def stackup_capability(
-    stackup: list[dict[str, Any]], profile: str | None = None
+    stackup: list[dict[str, Any]], profile: str | None = None, *, meta: Any = None
 ) -> CapabilityRow | None:
     """This board's fab-capability row, or ``None`` for a layer count
     :func:`precis.pcb.drc.process_for_stackup` has no row for.
@@ -1728,13 +1762,19 @@ def stackup_capability(
     ``profile`` is the board's authored profile name (``None``/``'prod'``
     return the fab row unchanged); a non-prod profile is laid over the row
     by :func:`precis.pcb.capabilities.apply_profile`, so every consumer of
-    this lookup sees the raised house tier and strict set.
+    this lookup sees the raised house tier and strict set. ``meta`` is the
+    board's meta dict (``process`` selector) — an authored selection's
+    own errors (unknown name, layer-count contradiction) PROPAGATE, unlike
+    the derived path's unsupported-count ``None``: a declared-but-wrong
+    process is authored fact to fix, not an absent figure.
 
     Was ``PcbHandler._stackup_capability`` until ``pcb_argue`` needed the
     same lookup and the workers->handlers layering contract refused the
     import. ``None`` rather than raising, for exactly the reason
     :func:`furniture_clearance_mm` documents — a board on an unsupported
     layer count still has to export and preview."""
+    if meta and meta.get("process"):
+        return board_capability(stackup, profile, meta=meta)
     try:
         return board_capability(stackup, profile)
     except ValueError:

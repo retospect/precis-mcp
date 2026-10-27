@@ -375,6 +375,26 @@ def design_phase(design: dict[str, Any]) -> str:
     )
 
 
+def _topo_pin_assign(store: Store, ref_id: int) -> dict[tuple[str, str], str]:
+    """The newest topo-place run's pin assignment, ``(refdes, pin) ->
+    slot name`` — for :func:`precis.pcb.drc.check_unconnected_pins`'
+    ``topo_assign`` (gr520797). Read off the newest ``placer='topo'``
+    job's ``meta.topo_run.files['pins.json']['pins']`` (``{name:
+    {refdes, pin}}``; a numeric pin lands back as a str). ``{}`` when no
+    stored run assigns anything."""
+    for job in store.recent_refs(["job"], parent_id=ref_id, limit=50):
+        topo_run = (job.meta or {}).get("topo_run") or {}
+        if not topo_run:
+            continue
+        pins = ((topo_run.get("files") or {}).get("pins.json") or {}).get("pins") or {}
+        return {
+            (str(row.get("refdes")), str(row.get("pin"))): str(name)
+            for name, row in pins.items()
+            if isinstance(row, dict)
+        }
+    return {}
+
+
 def _baseline_freshness(
     store: Store, board_id: int, run_id: str | None
 ) -> dict[str, Any] | None:
@@ -613,7 +633,9 @@ def run(
     board_profile_name = pcb_profiles.board_profile(board.get("meta"))
     board_profile_rules = pcb_profiles.profile_rules(board_profile_name)
     try:
-        capability = pcb_session.board_capability(stackup, board_profile_name)
+        capability = pcb_session.board_capability(
+            stackup, board_profile_name, meta=board.get("meta")
+        )
     except ValueError as exc:
         raise BadInput(f"pcb: {exc}") from exc
     layer_names = [str(layer.get("name")) for layer in stackup]
@@ -635,6 +657,7 @@ def run(
     ]
 
     graph = effective_graph(store, ref_id)
+    topo_assign = _topo_pin_assign(store, ref_id)
     board_id = int(board["board_id"])
     authored_phase = str((board.get("meta") or {}).get("phase") or "")
     if authored_phase not in pcb_drc.PHASES:
@@ -656,7 +679,9 @@ def run(
         # branch — it may still carry seeded copper to check.
         bail_model = {"layers": layer_names, "pads": pads}
         findings = (
-            pcb_drc.check_unconnected_pins(graph.get("unconnected"), phase=phase)
+            pcb_drc.check_unconnected_pins(
+                graph.get("unconnected"), phase=phase, topo_assign=topo_assign
+            )
             + pcb_drc.check_undeclared_pads(bail_model, unchecked=undeclared_unchecked)
             + pcb_drc.check_synthesized_footprint(bail_model)
             + pcb_drc.check_unrouted(
@@ -721,7 +746,9 @@ def run(
         # complaint this bail used to hide.
         bail_model = {"layers": layer_names, "pads": pads}
         findings = (
-            pcb_drc.check_unconnected_pins(graph.get("unconnected"), phase=phase)
+            pcb_drc.check_unconnected_pins(
+                graph.get("unconnected"), phase=phase, topo_assign=topo_assign
+            )
             + pcb_drc.check_undeclared_pads(bail_model, unchecked=undeclared_unchecked)
             + pcb_drc.check_synthesized_footprint(bail_model)
         )
@@ -887,6 +914,7 @@ def run(
         unconnected=graph.get("unconnected"),
         keepouts=pcb_session.keepouts_from_features(store.pcb_features_list(ref_id)),
         phase=phase,
+        topo_assign=topo_assign,
         courtyard_clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
         undeclared_unchecked=undeclared_unchecked,
         profile_rules=board_profile_rules,

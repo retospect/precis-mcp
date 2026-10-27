@@ -512,15 +512,15 @@ def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
             {
                 "refdes": "U1",
                 "label": "mcu",
-                "x": 0.0,
-                "y": 0.0,
+                "x": 10.0,
+                "y": 10.0,
                 "pins": [{"name": "1"}],
             },
             {
                 "refdes": "R1",
                 "label": "r",
-                "x": 20.0,
-                "y": 0.0,
+                "x": 30.0,
+                "y": 10.0,
                 "pins": [{"name": "1"}],
             },
         ],
@@ -530,7 +530,9 @@ def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
             {"net": "N1", "refdes": "R1", "pin": "1"},
         ],
     }
-    clean_design["features"] = [closed_outline()]
+    # Positive-quadrant outline: a "clean board" is clean of board_origin's
+    # negative-coordinates warn too.
+    clean_design["features"] = [closed_outline(0.0, 0.0)]
     pcb.put(id="drc-clean", args=clean_design)
     ref = pcb.store.get_ref(kind="pcb", id="drc-clean")
     board_id = pcb.store.pcb_ensure_board(ref.id)
@@ -551,7 +553,7 @@ def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):
                     # none asked whether a net's copper is one piece. A
                     # board this test calls clean has to actually be clean.
                     "segments": [
-                        {"shape": "line", "start": [0.0, 0.0], "end": [20.0, 0.0]}
+                        {"shape": "line", "start": [10.0, 10.0], "end": [30.0, 10.0]}
                     ],
                     "width_mm": 0.5,
                 },
@@ -2550,6 +2552,53 @@ def test_gerber_bundle_b_mask_gains_the_fiducial_opening(pcb, tmp_path):
     assert "D03*" in b_mask  # new: the bottom opening this task adds
 
 
+# ── authored meta.process errors reach the caller as BadInput ────────────
+# ``pcb_session.stackup_capability`` deliberately propagates the ValueError
+# for a declared-but-wrong process (an authored fact to fix, not an absent
+# figure); the handler boundary owes the caller BadInput with the valid
+# process names — not a raw ValueError out of the export/preview paths.
+
+_BAD_PROCESS = ["flex-9layer", "flex-2layer-18um"]  # typo'd / 2L-on-4L-board
+
+
+def _put_board_with_process(pcb, store, slug: str, process: str) -> None:
+    pcb.put(
+        id=slug,
+        args={
+            "components": [],
+            "nets": [],
+            "connections": [],
+            "features": [
+                {
+                    "ftype": "outline",
+                    "geom": {"path": [[0, 0], [60, 0], [60, 40], [0, 40]]},
+                },
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id=slug)
+    store.pcb_merge_board_meta(ref.id, {"process": process})
+
+
+@pytest.mark.parametrize("process", _BAD_PROCESS)
+def test_gerber_export_bad_meta_process_is_bad_input(pcb, store, tmp_path, process):
+    """``view='gerber'``'s ``_fab_model`` reads the declared process — a
+    mistyped or layer-count-contradicting ``meta.process`` must refuse
+    with BadInput naming the valid processes (gr520549 follow-up)."""
+    _put_board_with_process(pcb, store, f"badproc-ger-{process}", process)
+    with pytest.raises(BadInput, match="process"):
+        pcb.get(id=f"badproc-ger-{process}", view="gerber", args={"dir": str(tmp_path)})
+
+
+@pytest.mark.parametrize("process", _BAD_PROCESS)
+def test_fab_svg_preview_bad_meta_process_is_bad_input(pcb, store, process):
+    """``view='svg' level='fab'``'s ``_fab_svg_model`` is the same read on
+    the preview path — same BadInput contract (gr520549 follow-up)."""
+    _put_board_with_process(pcb, store, f"badproc-svg-{process}", process)
+    with pytest.raises(BadInput, match="process"):
+        pcb.get(id=f"badproc-svg-{process}", view="svg", args={"level": "fab"})
+
+
 # ── `_polarized_refdes` -- the polarity determination behind the R/C/L/FB
 # pin-1 policy (precis.pcb.silk's own "Not every part needs one"). The IR
 # `build_silk` works from has refdes but no labels, so this has to happen
@@ -3650,7 +3699,10 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
     # 1.2mm apart: the two 1x1 lands clear by 0.2mm inside each other's
     # 0.4mm routing margin, so the courtyard finding is a WARNING
     # (gr489912) — identity, not severity, is what this test pins.
-    _put_standing(pcb, store, slug, _two_real_pads(0.0, 0.0, 1.2, 0.0))
+    # A starts at x=0.1 so the -0.1 nudge below lands ON the x=0 boundary:
+    # board_origin fires only below 0, so the run stays free of the
+    # positive-quadrant convention warn.
+    _put_standing(pcb, store, slug, _two_real_pads(0.1, 0.0, 1.3, 0.0))
 
     first = _drc_view_recorded(pcb, store, slug).body
     assert "error(s)" in first and "none to compare against" in first
@@ -3680,7 +3732,9 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
     assert {r["finding_key"]: r["first_seen_at"] for r in rows2} == first_seen
 
     # Nudge A away from B: same participants, better margin -> still.
-    _move_a(pcb, slug, -0.1, 0.0)
+    # (Lands at x=0, the most negative a pad may go before board_origin's
+    # convention warn joins the run's findings and breaks these counts.)
+    _move_a(pcb, slug, 0.0, 0.0)
     third = _drc_view_recorded(pcb, store, slug).body
     assert "{id\tseverity\trule\twhere\tmargin_mm\tdelta\tdetail}" in third
     assert f"vs run {run2[:8]}: 0 new, {len(rows1)} still, 0 gone" in third

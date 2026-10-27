@@ -162,7 +162,9 @@ def _board_inputs(
         "copper": store.pcb_copper_list(int(board_id)),
         "profile": pcb_profiles.board_profile(board.get("meta")),
         "capability": pcb_session.stackup_capability(
-            stackup, pcb_profiles.board_profile(board.get("meta"))
+            stackup,
+            pcb_profiles.board_profile(board.get("meta")),
+            meta=board.get("meta"),
         ),
     }
 

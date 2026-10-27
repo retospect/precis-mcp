@@ -156,7 +156,11 @@ from precis.pcb import session_store as pcb_session_store
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
 from precis.pcb import topo as pcb_topo
-from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.capabilities import (
+    CapabilityRow,
+    capability_for,
+    process_layer_counts,
+)
 from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import rotate_offset
 from precis.pcb.rows import (
@@ -1770,7 +1774,9 @@ class PcbHandler(Handler):
         if board is not None:
             try:
                 capability = pcb_session.board_capability(
-                    board["stackup"], pcb_profiles.board_profile(board.get("meta"))
+                    board["stackup"],
+                    pcb_profiles.board_profile(board.get("meta")),
+                    meta=board.get("meta"),
                 )
             except ValueError as exc:
                 raise BadInput(
@@ -2533,7 +2539,9 @@ class PcbHandler(Handler):
             try:
                 gboard = graph.get("board") or {}
                 return pcb_session.board_capability(
-                    gboard["stackup"], pcb_profiles.board_profile(gboard.get("meta"))
+                    gboard["stackup"],
+                    pcb_profiles.board_profile(gboard.get("meta")),
+                    meta=gboard.get("meta"),
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 raise BadInput(
@@ -4268,12 +4276,31 @@ class PcbHandler(Handler):
         return pcb_session.furniture_clearance_mm(stackup)
 
     def _stackup_capability(
-        self, stackup: list[dict[str, Any]], profile: str | None = None
+        self,
+        stackup: list[dict[str, Any]],
+        profile: str | None = None,
+        *,
+        meta: Any = None,
     ) -> CapabilityRow | None:
         """Delegates to :func:`precis.pcb.session.stackup_capability` —
         the lookup lives in the session layer so the ``pcb_argue`` worker
-        shares it."""
-        return pcb_session.stackup_capability(stackup, profile)
+        shares it.
+
+        The one error it propagates — an authored ``meta.process`` that
+        names no row or contradicts the stackup's layer count — crosses
+        the handler boundary here as :class:`BadInput` naming the valid
+        processes (``BadInput`` is a ``ValueError``, so internal callers
+        catching ``ValueError`` see no change). The derived path's
+        unsupported-count ``None`` is untouched."""
+        try:
+            return pcb_session.stackup_capability(stackup, profile, meta=meta)
+        except ValueError as exc:
+            raise BadInput(
+                f"pcb: {exc}",
+                next="fix meta.process to name a process matching the "
+                "stackup's layer count",
+                options=sorted(process_layer_counts()),
+            ) from exc
 
     def _polarized_refdes(self, design: dict[str, Any]) -> frozenset[str]:
         """Delegates to :func:`precis.pcb.session.polarized_refdes` —
@@ -4720,7 +4747,9 @@ class PcbHandler(Handler):
         }
         vias = [c for c in copper if c.get("ctype") == "via"]
         board_profile_name = pcb_profiles.board_profile(board.get("meta"))
-        capability = self._stackup_capability(board["stackup"], board_profile_name)
+        capability = self._stackup_capability(
+            board["stackup"], board_profile_name, meta=board.get("meta")
+        )
         pads, silk_draws, furniture_warnings, silk_census, copper = (
             self._board_furniture(
                 ir,
@@ -5525,6 +5554,7 @@ class PcbHandler(Handler):
             capability = self._stackup_capability(
                 ir.stackup,
                 pcb_profiles.board_profile((graph.get("board") or {}).get("meta")),
+                meta=(graph.get("board") or {}).get("meta"),
             ) or capability_for("4layer")
             config = pcb_realize.RealizeConfig(
                 fab_caps=capability, class_rules=graph.get("net_classes")
@@ -6686,13 +6716,20 @@ class PcbHandler(Handler):
             return []
         try:
             capability = pcb_session.board_capability(
-                board["stackup"], pcb_profiles.board_profile(board.get("meta"))
+                board["stackup"],
+                pcb_profiles.board_profile(board.get("meta")),
+                meta=board.get("meta"),
             )
         except ValueError as exc:
             raise BadInput(
                 f"pcb: {exc}",
-                next="args={'op':'stackup','preset':'4l-two-sided'} — v1 "
-                "supports 2- or 4-layer boards",
+                next=(
+                    "fix meta.process to name a process matching the "
+                    "stackup's layer count"
+                    if (board.get("meta") or {}).get("process")
+                    else "args={'op':'stackup','preset':'4l-two-sided'} — v1 "
+                    "supports 2- or 4-layer boards"
+                ),
             ) from exc
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
         pads, courtyard_local, _footprints = self._drc_geometry(ref_id, layer_names)
@@ -7215,7 +7252,9 @@ class PcbHandler(Handler):
         vias = [c for c in copper if c.get("ctype") == "via"]
         outline = self._outline_from_features(ref_id) or []
         board_profile_name = pcb_profiles.board_profile(board.get("meta"))
-        capability = self._stackup_capability(board["stackup"], board_profile_name)
+        capability = self._stackup_capability(
+            board["stackup"], board_profile_name, meta=board.get("meta")
+        )
         pads, silk_draws, furniture_warnings, _silk_census, copper = (
             self._board_furniture(
                 ir,

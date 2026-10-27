@@ -57,6 +57,19 @@ diameter, drill_mm + 2 x annular_ring_mm)`` at THAT tier — the JSON's stored
 constraint), never the final number. :func:`_derive_via_diameter_mm` is the
 one place this happens; no other consumer re-derives it.
 
+**Process selection is authored, not only derived.** ``meta.process`` on
+the board names a row directly (``'aluminum'``, ``'flex-2layer-35um'`` …)
+and overrides the layer-count derivation in
+:func:`precis.pcb.drc.process_for_stackup` — the only way a board says it
+is not FR-4 (gr520549: the rigid 4-layer gate had no way to hear "this is
+a flex board"). The ``flex-*`` rows carry JLC's flex process per outer
+copper weight (12um≈1/3oz, 18um≈0.5oz, 35um≈1oz) — only the figures the
+cited page publishes; unpublishable fields stay ``None`` per the same
+never-invent rule as the aluminum row. ``layers`` pins each row's layer
+count so a declared process contradicting the stackup refuses rather
+than checks against the wrong process.
+:func:`process_layer_counts` is that check's accessor.
+
 **``ipc2221b_conductor_spacing_mm``** (docs/backlog/pcb-ewod-multitile.md
 "Rulings 2026-09-19" item 10) is a SEPARATE top-level key, not a
 per-process row — IPC-2221B Table 6-1's minimum electrical conductor
@@ -227,8 +240,9 @@ def apply_profile(row: CapabilityRow, rules: ProfileRules) -> CapabilityRow:
 
 def capability_for(process: str) -> CapabilityRow:
     """The row for ``process`` (e.g. ``'2layer'``, ``'4layer'``,
-    ``'aluminum'``). Raises rather than silently defaulting — a wrong-process
-    design would otherwise get checked against the wrong fab's rules."""
+    ``'aluminum'``, ``'flex-2layer-35um'``). Raises rather than silently
+    defaulting — a wrong-process design would otherwise get checked
+    against the wrong fab's rules."""
     rows = {r.process: r for r in load_capabilities()}
     row = rows.get(process)
     if row is None:
@@ -236,6 +250,19 @@ def capability_for(process: str) -> CapabilityRow:
             f"unknown pcb capability process {process!r}; known: {sorted(rows)}"
         )
     return row
+
+
+def process_layer_counts() -> dict[str, int]:
+    """Each row's published layer count (the JSON's ``layers`` key), by
+    process name — the consistency check an authored ``meta.process``
+    selection is validated against (a ``flex-2layer-*`` board on a
+    four-layer stackup is contradictory authoring, not a flex board).
+    Rows without the key are absent: no constraint."""
+    return {
+        str(r["process"]): int(r["layers"])
+        for r in _load_raw()["rows"]
+        if r.get("layers") is not None
+    }
 
 
 def design_value(row: CapabilityRow | None, field: str, *, fallback: float) -> float:
@@ -362,4 +389,5 @@ __all__ = [
     "design_value",
     "headroom",
     "load_capabilities",
+    "process_layer_counts",
 ]

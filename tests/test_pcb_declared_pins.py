@@ -701,3 +701,114 @@ def test_retired_pin_is_not_resurrected_by_completion(pcb, store) -> None:
         ).fetchall()
     # Still exactly ONE row, still retired — completion did not re-add it.
     assert len(rows) == 1 and rows[0][0]
+
+
+# ── gr520797: a topo-assigned netless pin is not a spare ───────────────
+
+
+def test_topo_assigned_pins_report_separately_from_spares() -> None:
+    """``topo_assign`` moves a claimed pad off the spare aggregate into
+    its own per-instance warn naming slot→pin; unclaimed pins stay on
+    the spare path."""
+    pins = [
+        {"refdes": "U1", "pin": "P1", "tags": [], "meta": {}},
+        {"refdes": "U1", "pin": "P2", "tags": [], "meta": {}},
+        {"refdes": "U2", "pin": "Q1", "tags": [], "meta": {}},
+    ]
+    assign = {("U1", "P1"): "S1_M", ("U2", "Q1"): "P0.02_AIN0"}
+    for phase in ("netlist", "placed", "routed"):
+        findings = drc.check_unconnected_pins(pins, phase=phase, topo_assign=assign)
+        assert [(f.where, f.severity) for f in findings] == [
+            ("part U1", "warn"),  # spare aggregate — P2 only
+            ("part U1", "warn"),  # assigned aggregate
+            ("part U2", "warn"),  # U2 has NO spare warn, only the assigned one
+        ], phase
+        u1_spare, u2_assigned = findings[0], findings[2]
+        assert u1_spare.objects[0]["pins"] == ("P2",)
+        assert "P1" not in u1_spare.detail
+        assert u2_assigned.objects[0]["slots"] == ({"slot": "P0.02_AIN0", "pin": "Q1"},)
+        assert "P0.02_AIN0→Q1" in u2_assigned.detail
+        assert "S1_M→P1" in findings[1].detail
+
+
+def test_topo_assigned_pin_is_still_an_error_at_fab() -> None:
+    """The assignment names intent, it does not wire the pin: at fab a
+    claimed-but-netless pad is its own error row carrying the slot."""
+    pins = [{"refdes": "U1", "pin": "P1", "tags": [], "meta": {}}]
+    findings = drc.check_unconnected_pins(
+        pins, phase="fab", topo_assign={("U1", "P1"): "S1_M"}
+    )
+    assert [(f.where, f.severity) for f in findings] == [("pin U1/P1", "error")]
+    assert findings[0].objects[0]["topo_slot"] == "S1_M"
+    assert "S1_M" in findings[0].detail
+
+
+def test_must_terminate_still_outranks_a_topo_assignment() -> None:
+    pins = [{"refdes": "U1", "pin": "MT", "tags": [], "meta": {"must_terminate": True}}]
+    findings = drc.check_unconnected_pins(
+        pins, phase="netlist", topo_assign={("U1", "MT"): "S1_M"}
+    )
+    assert [(f.where, f.severity) for f in findings] == [("pin U1/MT", "error")]
+
+
+def test_topo_run_pin_assignment_reaches_view_drc(pcb, store) -> None:
+    """End to end (gr520797): a ``placer='topo'`` job's stored
+    ``meta.topo_run.files['pins.json']`` re-routes its claimed pads off
+    the spare-pad warn — the drc run names the slot the solver gave
+    them instead of calling them unmarked spares."""
+    from precis.pcb import check_run
+
+    pcb.put(id="d-mini-topo", args=_mini_design())
+    ref = store.get_ref(kind="pcb", id="d-mini-topo")
+    assert ref is not None
+    store.insert_ref(
+        kind="job",
+        slug=None,
+        title="pcb_place topo test",
+        parent_id=int(ref.id),
+        meta={
+            "executor": "job_inproc",
+            "job_type": "pcb_place",
+            "topo_run": {
+                "files": {
+                    "pins.json": {
+                        "schema": "precis.pins-lock/1",
+                        "pins": {
+                            "S1_M": {"refdes": "U1", "pin": "SPARE"},
+                            "P0.02_AIN0": {"refdes": "U2", "pin": "SPARE"},
+                        },
+                        "swaps": [],
+                    }
+                }
+            },
+        },
+    )
+
+    # The reader itself: newest job's pins.json, str()-normalised.
+    assert check_run._topo_pin_assign(store, int(ref.id)) == {
+        ("U1", "SPARE"): "S1_M",
+        ("U2", "SPARE"): "P0.02_AIN0",
+    }
+
+    ran = pcb._drc_run(int(ref.id), store.pcb_load(ref.id))
+    assert ran is not None
+    un = [f for f in ran.findings if f.rule == "unconnected_pin"]
+    # MT still errors; each part's SPARE reports under its slot, and no
+    # spare aggregate (an objects row carrying 'pins') survives.
+    assert {f.where for f in un} == {"pin U1/MT", "pin U2/MT", "part U1", "part U2"}
+    assert not any("pins" in f.objects[0] for f in un)
+    assigned = {f.where: f.objects[0]["slots"] for f in un if "slots" in f.objects[0]}
+    assert assigned == {
+        "part U1": ({"slot": "S1_M", "pin": "SPARE"},),
+        "part U2": ({"slot": "P0.02_AIN0", "pin": "SPARE"},),
+    }
+    assert "S1_M" in pcb.get(id="d-mini-topo", view="drc").body
+
+
+def test_no_topo_run_means_no_assignment(pcb, store) -> None:
+    from precis.pcb import check_run
+
+    pcb.put(id="d-mini-notopo", args=_mini_design())
+    ref = store.get_ref(kind="pcb", id="d-mini-notopo")
+    assert ref is not None
+    assert check_run._topo_pin_assign(store, int(ref.id)) == {}
