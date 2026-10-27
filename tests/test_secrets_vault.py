@@ -315,9 +315,10 @@ def test_set_secret_if_absent_refuses_empty(vault_store: Store) -> None:
 
 
 def test_set_secret_if_absent_grant_matches_set_secret(vault_store: Store) -> None:
-    """Same lock-down as set_secret: SECURITY DEFINER, EXECUTE to PUBLIC
-    only — and RETURNS boolean, never plaintext (reveal stays the sole
-    decrypt path)."""
+    """Same lock-down as set_secret: SECURITY DEFINER, no PUBLIC EXECUTE
+    (0257 narrowed the verbs to agent_rw; the PUBLIC shape died with
+    gr523021) — and RETURNS boolean, never plaintext (reveal stays the
+    sole decrypt path)."""
     with vault_store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT p.proname, p.prosecdef, p.prorettype::regtype::text, "
@@ -327,7 +328,7 @@ def test_set_secret_if_absent_grant_matches_set_secret(vault_store: Store) -> No
             "AND p.proname IN ('set_secret', 'set_secret_if_absent')"
         ).fetchall()
     by_name = {r[0]: (r[1], r[2], r[3]) for r in rows}
-    assert by_name["set_secret_if_absent"] == (True, "boolean", True)
+    assert by_name["set_secret_if_absent"] == (True, "boolean", False)
     assert by_name["set_secret_if_absent"][0] == by_name["set_secret"][0]
     assert by_name["set_secret_if_absent"][2] == by_name["set_secret"][2]
 
