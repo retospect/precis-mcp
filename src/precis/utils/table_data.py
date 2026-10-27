@@ -67,6 +67,16 @@ _COLUMN_TYPES = frozenset({"number", "text", "bool", "ref"})
 #: ``columns[].align`` (the structured-enrichment vocabulary).
 _COLUMN_ALIGNS = frozenset({"l", "c", "r"})
 
+#: control characters that can never land in a Postgres text field —
+#: tab/newline/CR are legit cell content, the rest of C0 plus DEL refuse
+#: (a NUL crashes the jsonb write as a raw ``DataError`` otherwise). One
+#: gate in :func:`normalize_table` — every string that reaches
+#: ``meta.table`` (cells, header, column spec fields, rowmeta, retired
+#: ids) is scanned — covers ``table=``/``rows=``/``cell=``/find-sub/
+#: ``add_column=``; the TOON reader shares it
+#: (:data:`precis.utils.table_toon._CTRL_RE`).
+TABLE_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 
 def mint_table_id() -> str:
     """A fresh 4-char table id: first char a letter other than ``p``, the
@@ -125,6 +135,14 @@ def _normalize_column(col: Any, i: int) -> dict[str, Any]:
         v = col.get(k)
         if v is not None and not isinstance(v, str):
             raise BadInput(f"table.columns[{i}].{k} must be a string", next=nxt)
+    for k in ("name", "id", "pos", "unit", "formula", "from", "role"):
+        v = col.get(k)
+        if isinstance(v, str) and TABLE_CTRL_RE.search(v):
+            raise BadInput(
+                f"table.columns[{i}].{k} contains a control character — "
+                "only tab, newline and CR are allowed",
+                next="strip the control character from the value",
+            )
     if col.get("key") is not None and not isinstance(col["key"], bool):
         raise BadInput(f"table.columns[{i}].key must be a bool", next=nxt)
     if col.get("id") is not None and not is_table_id(col["id"]):
@@ -154,6 +172,14 @@ def _normalize_rowmeta(rm: Any, i: int) -> dict[str, Any]:
         )
     if rm.get("pos") is not None and not isinstance(rm["pos"], str):
         raise BadInput(f"table.rowmeta[{i}].pos must be a string", next=nxt)
+    for k in ("id", "pos"):
+        v = rm.get(k)
+        if isinstance(v, str) and TABLE_CTRL_RE.search(v):
+            raise BadInput(
+                f"table.rowmeta[{i}].{k} contains a control character — "
+                "only tab, newline and CR are allowed",
+                next="strip the control character from the value",
+            )
     return {k: rm[k] for k in ("id", "pos") if k in rm}
 
 
@@ -242,6 +268,13 @@ def normalize_table(obj: Any) -> dict[str, Any]:
             "table.header must be a non-empty list of column names", next=nxt
         )
     header = [str(h) for h in header_raw]
+    for h in header:
+        if TABLE_CTRL_RE.search(h):
+            raise BadInput(
+                f"table.header cell {h!r} contains a control character — "
+                "only tab, newline and CR are allowed",
+                next="strip the control character from the header cell",
+            )
     width = len(header)
     rows: list[list[Scalar]] = []
     for i, row in enumerate(rows_raw):
@@ -259,9 +292,22 @@ def normalize_table(obj: Any) -> dict[str, Any]:
                     "(string/number/bool/null)",
                     next=nxt,
                 )
+            if isinstance(cell, str) and TABLE_CTRL_RE.search(cell):
+                raise BadInput(
+                    f"table.rows[{i}] cell {cell!r} contains a control "
+                    "character — only tab, newline and CR are allowed",
+                    next="strip the control character from the cell",
+                )
         rows.append(list(row))
 
     retired = [str(i) for i in retired_raw]
+    for rid in retired:
+        if TABLE_CTRL_RE.search(rid):
+            raise BadInput(
+                f"table.retired_ids entry {rid!r} contains a control "
+                "character — only tab, newline and CR are allowed",
+                next="strip the control character from the id",
+            )
     used = set(retired)
     # Columns: supplied spec wins for the optional keys; names always come
     # from it when present and must match the header positionally (the

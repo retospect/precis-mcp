@@ -59,6 +59,7 @@ from precis.errors import BadInput
 from precis.format import toon as _toon
 from precis.utils.fractional import even_keys, key_between
 from precis.utils.table_data import (
+    TABLE_CTRL_RE,
     cell_text,
     fresh_table_id,
     infer_scalar,
@@ -119,8 +120,9 @@ _UNESC_RE = re.compile(r"%([0-9A-Fa-f]{2})")
 #: control characters that can never land in a Postgres text field —
 #: tab/newline/CR are legit cell content (quoted round-trip), the rest
 #: of C0 plus DEL refuse (a ``%00``-decoded NUL crashes the write as a
-#: raw ``DataError`` otherwise).
-_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+#: raw ``DataError`` otherwise). Shared with the JSON write paths' gate
+#: in ``normalize_table`` (:data:`precis.utils.table_data.TABLE_CTRL_RE`).
+_CTRL_RE = TABLE_CTRL_RE
 
 
 def _esc(s: Any) -> str:
@@ -907,7 +909,13 @@ def table_from_toon(cur: dict[str, Any], text: str) -> dict[str, Any]:
             stored = by_id.get(spec["id"])
         if stored is None and spec.get("name"):
             stored = by_name.get(spec["name"].strip())
-        if spec.get("formula") is not None:
+        if spec.get("formula") is not None and spec["formula"] != (stored or {}).get(
+            "formula"
+        ):
+            # A header formula byte-identical to the stored one is a
+            # no-op echo (read-then-replace on a formula table) — kept.
+            # A changed or new formula can't go through this channel:
+            # the formula evaluator isn't part of this slice.
             raise BadInput(
                 "toon= headers can't write a column formula — the "
                 "formula evaluator isn't part of this slice",

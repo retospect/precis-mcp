@@ -3,9 +3,13 @@ id-addressed draft tables (spreadsheet-tables slice 1b, spec §9)."""
 
 from __future__ import annotations
 
+import copy
+import threading
+import time
 from typing import Any
 
 import pytest
+from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
@@ -468,6 +472,58 @@ def test_edit_table_cas_refuses_stale_snapshot(
     assert t["rows"][0][2] == 10  # the losing write did NOT land
 
 
+def test_edit_table_cas_blocks_on_row_lock(draft: DraftHandler, hub: Hub) -> None:
+    """A real two-connection interleaving — the sequential monkeypatch
+    above passes even without the ``FOR UPDATE``. Connection A holds the
+    chunk row lock; a second thread's edit blocks inside the CAS read;
+    A changes ``meta.table`` and commits; the unblocked write sees the
+    new baseline and must refuse rather than overwrite."""
+    tc = _seed(draft, hub)
+    rows, _cols = _ids(hub, tc)
+    errors: list[BaseException] = []
+
+    def loser() -> None:
+        try:
+            draft.edit(id=tc.dc, patch="{#\tqty}\n" + f"{rows[0]}\t1\n")
+        except Exception as e:
+            errors.append(e)
+
+    with hub.live_store.pool.connection() as aconn:
+        aconn.execute(
+            "SELECT meta FROM chunks WHERE handle = %s FOR UPDATE",
+            (tc.handle,),
+        ).fetchone()
+        t = threading.Thread(target=loser)
+        t.start()
+        # wait until the writer is actually blocked on the row lock —
+        # an ungranted pg_locks entry, not a guess at timing
+        n = 0
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            lock_row = aconn.execute(
+                "SELECT count(*) FROM pg_locks WHERE NOT granted"
+            ).fetchone()
+            assert lock_row is not None
+            n = lock_row[0]
+            if n:
+                break
+            time.sleep(0.05)
+        assert n, "writer never reached the FOR UPDATE"
+        concurrent = copy.deepcopy(_meta(hub, tc))
+        concurrent["rows"][0][0] = "SiX"
+        aconn.execute(
+            "UPDATE chunks SET meta = meta || %s::jsonb WHERE handle = %s",
+            (Jsonb({"table": concurrent}), tc.handle),
+        )
+        aconn.commit()
+        t.join(timeout=15)
+    assert not t.is_alive(), "writer stayed blocked after the lock released"
+    assert len(errors) == 1 and isinstance(errors[0], BadInput)
+    t2 = _meta(hub, tc)
+    assert t2["rows"][0][0] == "SiX"  # the winning write survived
+    assert t2["rows"][0][2] == 10  # the losing write did NOT land
+
+
 # ── where= caps ──────────────────────────────────────────────────────
 
 
@@ -531,13 +587,58 @@ def test_toon_header_formula_refused() -> None:
             "rows": [[1, 2]],
         }
     )
-    with pytest.raises(BadInput, match="formula"):
-        table_from_toon(t, table_toon(t))
-    # omitting the formula column keeps it (preserved, not refused)
+    cid_a, cid_total = (c["id"] for c in t["columns"])
     rid = t["rowmeta"][0]["id"]
+    # a byte-identical echo of the stored formula is a no-op — kept,
+    # so read-then-replace works on a formula table
+    norm = table_from_toon(t, table_toon(t))
+    assert norm["columns"][1].get("formula") == "a*2"
+    # a changed or new formula refuses
+    with pytest.raises(BadInput, match="formula"):
+        table_from_toon(
+            t, "{#\ta\t" + f"{cid_total}:total =a*3" + "}\n" + f"{rid}\t1\t6\n"
+        )
+    with pytest.raises(BadInput, match="formula"):
+        table_from_toon(t, "{#\ta\t" + f"{cid_a}:a =a*2" + "}\n" + f"{rid}\t1\t6\n")
+    # omitting the formula column keeps it (preserved, not refused)
     norm = table_from_toon(t, "{#\ta}\n" + f"{rid}\t5\n")
     assert [c["name"] for c in norm["columns"]] == ["a", "total"]
     assert norm["rows"][0] == [5, 2]
+
+
+def test_edit_refuses_control_chars_on_json_paths(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The same refusal as the TOON gate, on every JSON write path —
+    ``rows=``/``table=``/``cell=``/``add_column=``/find all funnel
+    through ``normalize_table``, which scans cells, the header and the
+    column spec's string fields (an unscanned NUL hits Postgres as a
+    raw DataError)."""
+    tc = _seed(draft, hub)
+    rows, cols = _ids(hub, tc)
+    with pytest.raises(BadInput, match="control character"):
+        draft.edit(id=tc.dc, rows=[["a\x00b", 1, 2]])
+    with pytest.raises(BadInput, match="control character"):
+        draft.edit(id=tc.dc, table={"header": ["x"], "rows": [["a\x00b"]]})
+    with pytest.raises(BadInput, match="control character"):
+        draft.edit(id=tc.dc, table={"header": ["a\x00b"], "rows": [["x"]]})
+    with pytest.raises(BadInput, match="control character"):
+        draft.edit(
+            id=tc.dc,
+            table={
+                "columns": [{"name": "x", "unit": "a\x02b"}],
+                "rows": [["v"]],
+            },
+        )
+    with pytest.raises(BadInput, match="control character"):
+        draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="a\x00b")
+    with pytest.raises(BadInput, match="control character"):
+        draft.edit(id=tc.dc, add_column={"name": "a\x01b"})
+    with pytest.raises(BadInput, match="control character"):
+        draft.edit(id=tc.dc, find="Si", text="a\x00b")
+    # tab/newline/CR are legit cell content and still land
+    draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="a\tb\nc\rd")
+    assert _meta(hub, tc)["rows"][0][0] == "a\tb\nc\rd"
 
 
 # ── should-fix batch ─────────────────────────────────────────────────
