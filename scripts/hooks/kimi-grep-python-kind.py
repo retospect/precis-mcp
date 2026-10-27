@@ -143,9 +143,7 @@ def _search_python_kind(pattern: str) -> list[str]:
     return lines
 
 
-_RG_BASH = re.compile(
-    r"^\s*(?:rtk\s+)?(?:rg|grep)\s+(.+)$"
-)
+_RG_BASH = re.compile(r"^\s*(?:rtk\s+)?(?:rg|grep)\s+(.+)$")
 
 
 def _bash_pattern(command: str) -> str:
