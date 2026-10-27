@@ -41,13 +41,29 @@ Lazy upgrade: bump :data:`KEYWORDS_VERSION` to invalidate every
 existing row's ``keywords_meta.version`` mismatch; the claim query
 re-claims those chunks for re-extraction.
 
+**Claim shape (gr520236).** Three tiered ``FOR UPDATE OF c SKIP
+LOCKED`` queries, newest-first within each: (1) ``conv``/``draft``
+chunks — they jump the whole queue regardless of freshness; (2) the
+fresh ``keywords IS NULL`` backlog, ``chunk_id DESC`` so the newest
+ingests get labels first and the ``chunks_keywords_pending_idx``
+partial index (migration 0260) yields only pending rows — the old
+single ascending scan re-walked every already-done row between the
+index's id-1 end and the live backlog on every claim; (3) stale
+re-derives (version / ``content_sha`` mismatch with keywords already
+set), also newest-first.
+
+**Pooled candidate embeds.** The batch pools every claimed chunk's
+RAKE candidates into shared ``embedder.embed`` calls
+(:data:`_EMBED_TEXTS_PER_CALL` texts each) instead of one call per
+chunk — on the remote embedder most of a call's cost is transport and
+admission, so per-chunk calls were the bulk of pass wall-clock.
+
 **Single-runner advisory lock.** ``chunk_keywords`` runs on every
-system-profile host on the same ~2s worker tick, and its claim
-(``FOR UPDATE OF c SKIP LOCKED``) always orders candidates by
-``chunk_id`` — without a fleet-wide lock, every host would re-claim
-and re-derive the *same* batch every cycle (fleet-normal, not a rare
-edge case: the claim's row lock vanishes at commit, well before the
-slow per-chunk embedder work runs). Guarded by a **transaction**-scoped
+system-profile host on the same ~2s worker tick, and every host's
+claim scans the same queue — without a fleet-wide lock, every host
+would re-claim and re-derive the *same* batch every cycle
+(fleet-normal, not a rare edge case: the claim's row lock vanishes at
+commit, well before the slow per-chunk embedder work runs). Guarded by a **transaction**-scoped
 ``pg_try_advisory_xact_lock`` (:func:`precis.store.advisory.try_xact_advisory_lock`)
 held on one dedicated, non-pooled connection spanning claim + every
 chunk's processing (gr463966). The earlier session-scoped
@@ -162,6 +178,24 @@ def claim_chunks_without_keywords(
     skip-kinds and too-short chunks at the SQL boundary so the
     worker doesn't pay for rows it would immediately discard.
 
+    Three tiered claims, each ``ORDER BY c.chunk_id DESC`` (gr520236):
+
+    1. ``conv``/``draft`` chunks, fresh or stale. They jump the whole
+       queue: asa_bot's mid-range digest tier renders
+       ``chunks.keywords`` for each turn, and the draft reader's
+       view-slider (keywords / summary) needs them promptly on the
+       actively-edited write-up; without priority both wait behind the
+       paper backlog and render the text fallback for hours.
+    2. Fresh backlog (``keywords IS NULL``) — newest-first so fresh
+       ingests get labels promptly, and cheap at any backlog depth:
+       ``chunks_keywords_pending_idx`` (partial on ``keywords IS
+       NULL``) lets the DESC walk skip every already-done row, where
+       the previous single ascending claim re-scanned the done prefix
+       from id 1 on every batch.
+    3. Stale re-derives — keywords exist but the version or
+       ``content_sha`` drifted (edited ``draft`` chunks; papers leave
+       ``content_sha`` NULL so NULL-vs-NULL never fires).
+
     Returns rows of ``(chunk_id, ref_id, text, embedding)`` — the
     embedding is pulled from ``chunk_embeddings`` via JOIN so the
     worker can score candidates without re-embedding the chunk.
@@ -171,13 +205,6 @@ def claim_chunks_without_keywords(
     if limit <= 0:
         raise ValueError("limit must be positive")
     skip_list = list(SKIP_KINDS)
-    # Conv + draft blocks jump the queue. asa_bot's mid-range digest
-    # tier renders ``chunks.keywords`` for each turn, and the draft
-    # reader's view-slider (keywords / summary) needs them promptly on
-    # the actively-edited write-up; without priority both wait behind
-    # the ~1M-chunk paper backlog and render the text fallback for hours.
-    # JOIN-ing refs adds one planner hop but the ref_id index makes it
-    # nearly free.
     # ``meta->>'no_index' IS DISTINCT FROM 'true'`` filters out
     # ephemeral chunks (e.g. ``structure_draft`` annotation views
     # written by precis-dft's view_worker). NULL-safe: the vast
@@ -185,7 +212,7 @@ def claim_chunks_without_keywords(
     # Documented in ``docs/decisions/`` alongside PR 2 of the
     # plugin-substrate work; see the design doc at
     # ``dft-phase-0-pr-2-substrate-hardening`` (git-only) §2.3.
-    sql = """
+    select = """
         SELECT c.chunk_id, c.ref_id, c.text, ce.vector::text
           FROM chunks c
           JOIN refs r ON r.ref_id = c.ref_id
@@ -196,31 +223,42 @@ def claim_chunks_without_keywords(
          WHERE c.chunk_kind <> ALL(%s)
            AND length(c.text) >= %s
            AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
-           AND (
-                c.keywords IS NULL
-             OR (c.keywords_meta->>'version') IS DISTINCT FROM %s
-             -- re-derive when the chunk's text changed since the keywords
-             -- were built (edited `draft` chunks). Papers leave
-             -- content_sha NULL → NULL-vs-NULL never fires.
-             OR (c.keywords_meta->>'content_sha') IS DISTINCT FROM c.content_sha
-           )
            AND ce.vector IS NOT NULL
            -- only once the embedding is current for this text — KeyBERT
            -- uses ce.vector, so wait for embed to refresh after an edit
            -- (else keywords from new text rank against a stale vector).
            AND ce.content_sha IS NOT DISTINCT FROM c.content_sha
-         ORDER BY (CASE WHEN r.kind IN ('conv', 'draft') THEN 0 ELSE 1 END),
-                  c.chunk_id
+           AND {where}
+         ORDER BY c.chunk_id DESC
          LIMIT %s
            FOR UPDATE OF c SKIP LOCKED
     """
-    rows = conn.execute(
-        sql,
-        ("bge-m3", skip_list, MIN_CHUNK_CHARS, KEYWORDS_VERSION, limit),
-    ).fetchall()
+    # re-derive when the chunk's text changed since the keywords were
+    # built (edited `draft` chunks), or the algorithm version moved.
+    pending = """(
+                c.keywords IS NULL
+             OR (c.keywords_meta->>'version') IS DISTINCT FROM %s
+             OR (c.keywords_meta->>'content_sha') IS DISTINCT FROM c.content_sha
+           )"""
     out: list[tuple[int, int, str, str | None]] = []
-    for r in rows:
-        out.append((int(r[0]), int(r[1]), str(r[2]), r[3]))
+
+    def _claim(where: str, params: tuple[Any, ...]) -> None:
+        rows = conn.execute(
+            select.format(where=where),
+            ("bge-m3", skip_list, MIN_CHUNK_CHARS, *params, limit - len(out)),
+        ).fetchall()
+        for r in rows:
+            out.append((int(r[0]), int(r[1]), str(r[2]), r[3]))
+
+    _claim(f"r.kind IN ('conv', 'draft') AND {pending}", (KEYWORDS_VERSION,))
+    if len(out) < limit:
+        _claim("r.kind NOT IN ('conv', 'draft') AND c.keywords IS NULL", ())
+    if len(out) < limit:
+        _claim(
+            "r.kind NOT IN ('conv', 'draft') "
+            f"AND c.keywords IS NOT NULL AND {pending}",
+            (KEYWORDS_VERSION,),
+        )
     return out
 
 
@@ -344,30 +382,19 @@ def ensure_paper_abbrevs(conn: Connection, ref_id: int) -> dict[str, str]:
     return detected
 
 
-def extract_chunk_keywords(
-    *,
-    chunk_text: str,
-    chunk_embedding: list[float],
-    abbrevs: dict[str, str],
-    embedder: Embedder,
-) -> list[dict[str, Any]]:
-    """Return the top-K KeyBERT keywords for one chunk.
+def _keyword_candidates(
+    chunk_text: str, abbrevs: dict[str, str]
+) -> tuple[list[str], list[tuple[str, str | None]]]:
+    """RAKE candidates for one chunk → ``(embed_texts, candidate_meta)``.
 
-    Pure compute (modulo embedder calls). Returns the rich form
-    ``[{"short": str|None, "long": str, "score": float}, ...]``,
-    descending by score.
-
-    Algorithm:
-      1. RAKE candidate generation (up to ``_RAKE_POOL`` phrases).
-      2. For each candidate: if it matches a known short, embed its
-         long form (richer context for bge-m3). Otherwise embed as-is.
-      3. Cosine vs. chunk embedding; descending sort.
-      4. Take top-K; merge abbrev pairs (``MOF`` + ``metal-organic
-         framework`` collapse to one entry).
+    ``embed_texts`` is what the embedder scores (the candidate's long
+    form when it names a known abbreviation — richer context for
+    bge-m3); ``candidate_meta[i]`` is the matching
+    ``(long_form, short-or-None)``. Split from the scoring half so the
+    batch path can pool every chunk's texts into shared embed calls
+    (gr520236).
     """
     candidates = _rake_phrases(chunk_text, max_keywords=_RAKE_POOL)
-    if not candidates:
-        return []
 
     # Build the candidate→embedding_text mapping (long-form if known
     # short). We preserve the candidate-as-it-appeared for short-
@@ -394,11 +421,20 @@ def extract_chunk_keywords(
             cand_short = None
         embed_texts.append(long_form)
         candidate_meta.append((long_form, cand_short))
+    return embed_texts, candidate_meta
 
-    # One batched embed call.
-    cand_vecs = embedder.embed(embed_texts)
 
-    # Score each candidate by cosine against the chunk embedding.
+def _topk_keywords(
+    chunk_embedding: list[float],
+    candidate_meta: list[tuple[str, str | None]],
+    cand_vecs: list[list[float]],
+) -> list[dict[str, Any]]:
+    """Score embedded candidates against the chunk vector → top-K.
+
+    Cosine per candidate, descending sort, top-K with abbrev-pair
+    dedupe (``MOF`` + ``metal-organic framework`` collapse to one
+    entry — the higher-scoring wins).
+    """
     chunk_norm = _l2_norm(chunk_embedding)
     scored: list[tuple[float, str, str | None]] = []
     for (long_form, cand_short), vec in zip(candidate_meta, cand_vecs, strict=True):
@@ -413,10 +449,7 @@ def extract_chunk_keywords(
 
     scored.sort(key=lambda t: t[0], reverse=True)
 
-    # Dedupe by abbrev pair: if the top-K contains both the short
-    # ("MOF") and the long ("metal-organic framework") of the same
-    # abbrev, keep just one entry (the higher-scoring). Walk top-down,
-    # track seen abbrev-keys.
+    # Dedupe by abbrev pair: walk top-down, track seen abbrev-keys.
     seen_keys: set[str] = set()
     kept: list[dict[str, Any]] = []
     for score, long_form, cand_short in scored:
@@ -428,6 +461,29 @@ def extract_chunk_keywords(
         if len(kept) >= _TOP_K:
             break
     return kept
+
+
+def extract_chunk_keywords(
+    *,
+    chunk_text: str,
+    chunk_embedding: list[float],
+    abbrevs: dict[str, str],
+    embedder: Embedder,
+) -> list[dict[str, Any]]:
+    """Return the top-K KeyBERT keywords for one chunk.
+
+    Pure compute (modulo embedder calls). Returns the rich form
+    ``[{"short": str|None, "long": str, "score": float}, ...]``,
+    descending by score. Single-chunk convenience wrapper over
+    :func:`_keyword_candidates` + :func:`_topk_keywords` — the batch
+    path pools candidates across chunks into shared embed calls.
+    """
+    embed_texts, candidate_meta = _keyword_candidates(chunk_text, abbrevs)
+    if not embed_texts:
+        return []
+    return _topk_keywords(
+        chunk_embedding, candidate_meta, embedder.embed(embed_texts)
+    )
 
 
 def write_chunk_keywords(
@@ -506,6 +562,15 @@ def _ensure_paper_abbrevs_retrying(store: Store, ref_id: int) -> dict[str, str]:
     return retry_locked(_do, label=f"chunk_keywords abbrevs ref_id={ref_id}")
 
 
+#: Texts per pooled ``embedder.embed`` call. The batch gathers every
+#: claimed chunk's RAKE candidates (~``_RAKE_POOL`` each) into shared
+#: calls of at most this size — one HTTP round-trip per ~512 texts
+#: instead of one per chunk (gr520236: on the remote embedder,
+#: transport + admission was most of a per-chunk call's cost). The
+#: service batches internally; this only bounds request size.
+_EMBED_TEXTS_PER_CALL = 512
+
+
 def _run_chunk_keywords_batch(
     store: Store, embedder: Embedder, *, batch_size: int
 ) -> dict[str, int]:
@@ -515,7 +580,7 @@ def _run_chunk_keywords_batch(
     ``store``'s own pool (short, independent transactions), never the
     caller's lock-holding connection.
 
-    Three phases (mirrors ``runner.run_handler_once``'s claim-commit-
+    Four phases (mirrors ``runner.run_handler_once``'s claim-commit-
     first discipline, and gripe: prod's ``lock_timeout=5s`` — see
     ``precis.utils.db_retry``'s module docstring):
 
@@ -524,17 +589,22 @@ def _run_chunk_keywords_batch(
        commits immediately — releasing the lock well before the slow
        per-chunk work below runs, not held for the whole batch as the
        pre-fix single-transaction version did.
-    2. **Abbrevs + extract** (no DB connection held across the embedder
-       call): :func:`_ensure_paper_abbrevs_retrying` (per ref, cached —
-       its own short retried transaction) then
-       :func:`extract_chunk_keywords`, which itself makes one batched
-       embedder HTTP round-trip per chunk, with nothing checked out.
-    3. **Write** (short txn per chunk, wrapped in :func:`retry_locked`):
+    2. **Prepare** (per chunk, no embedder): parse the stored vector,
+       :func:`_ensure_paper_abbrevs_retrying` (per ref, cached — its
+       own short retried transaction), then RAKE candidates via
+       :func:`_keyword_candidates`.
+    3. **Pooled embed** (no DB connection held): every prepared chunk's
+       candidate texts in shared ``embedder.embed`` calls of
+       :data:`_EMBED_TEXTS_PER_CALL` texts (gr520236). A non-retryable
+       failure drops to per-chunk calls so one bad text cannot fail the
+       batch.
+    4. **Score + write** (short txn per chunk, wrapped in
+       :func:`retry_locked`): :func:`_topk_keywords` then
        :func:`write_chunk_keywords`, guarded (see its docstring) so a
        double-claim landing in the post-commit window — genuinely rare
        now that the whole pass is single-runner, see
-       :func:`run_chunk_keywords_pass` — is a cheap no-op instead of two
-       workers racing the same row.
+       :func:`run_chunk_keywords_pass` — is a cheap no-op instead of
+       two workers racing the same row.
 
     Returns ``{"claimed": N, "ok": K, "failed": F}``. ``claimed`` is the
     number of chunks the claim query returned; ``ok``/``failed`` do NOT
@@ -550,6 +620,11 @@ def _run_chunk_keywords_batch(
 
     ok = failed = 0
     abbrev_cache: dict[int, dict[str, str]] = {}
+    # (chunk_id, chunk_vec, candidate_meta) aligned with `spans`, whose
+    # entries mark each chunk's [start, end) slice of `embed_texts`.
+    prepared: list[tuple[int, list[float], list[tuple[str, str | None]]]] = []
+    spans: list[tuple[int, int]] = []
+    embed_texts: list[str] = []
     for chunk_id, ref_id, text, vec_text in rows:
         try:
             if vec_text is None:
@@ -562,44 +637,11 @@ def _run_chunk_keywords_batch(
 
             if ref_id not in abbrev_cache:
                 abbrev_cache[ref_id] = _ensure_paper_abbrevs_retrying(store, ref_id)
-            abbrevs = abbrev_cache[ref_id]
 
-            keywords = extract_chunk_keywords(
-                chunk_text=text,
-                chunk_embedding=chunk_vec,
-                abbrevs=abbrevs,
-                embedder=embedder,
-            )
-
-            def _write(
-                chunk_id: int = chunk_id, keywords: list[dict[str, Any]] = keywords
-            ) -> None:
-                with store.pool.connection() as wconn:
-                    write_chunk_keywords(
-                        wconn,
-                        chunk_id,
-                        keywords=keywords,
-                        embedder_name=embedder.model,
-                    )
-                    wconn.commit()
-
-            retry_locked(_write, label=f"chunk_keywords chunk_id={chunk_id}")
-            ok += 1
-        except EmbedderUnavailable as exc:
-            # The embedder is transiently down/busy — and it embeds a
-            # candidate set per chunk, so the *next* chunk would just
-            # hit the same wall. Stop the pass and defer the rest: the
-            # unwritten chunks stay unclaimed (keywords still NULL) and
-            # re-claim next pass. Don't count them ``failed`` (the
-            # chunks are fine) and report ``claimed=0`` so the run-loop
-            # backs off the down embedder instead of hot-looping it.
-            log.warning(
-                "chunk_keywords: embedder unavailable (%s); "
-                "deferring %d remaining chunks this pass",
-                exc,
-                claimed - ok,
-            )
-            return {"claimed": 0, "ok": 0, "failed": 0}
+            texts, cand_meta = _keyword_candidates(text, abbrev_cache[ref_id])
+            spans.append((len(embed_texts), len(embed_texts) + len(texts)))
+            embed_texts.extend(texts)
+            prepared.append((chunk_id, chunk_vec, cand_meta))
         except (LockNotAvailable, DeadlockDetected) as exc:
             # Residual lock contention that outlasted retry_locked's own
             # budget. Expected fleet contention under prod's
@@ -616,11 +658,85 @@ def _run_chunk_keywords_batch(
         except Exception:
             log.exception("chunk_keywords: chunk_id=%s failed", chunk_id)
             failed += 1
+
+    cand_vecs: list[list[float]] | None = None
+    try:
+        pooled: list[list[float]] = []
+        for i in range(0, len(embed_texts), _EMBED_TEXTS_PER_CALL):
+            pooled.extend(embedder.embed(embed_texts[i : i + _EMBED_TEXTS_PER_CALL]))
+        cand_vecs = pooled
+    except EmbedderUnavailable as exc:
+        # The embedder is transiently down/busy — the next call would
+        # just hit the same wall. Defer the batch: the unwritten chunks
+        # stay unclaimed (keywords still NULL) and re-claim next pass.
+        # Don't count them ``failed`` (the chunks are fine) and report
+        # ``claimed=0`` so the run-loop backs off the down embedder
+        # instead of hot-looping it.
+        log.warning(
+            "chunk_keywords: embedder unavailable (%s); "
+            "deferring %d remaining chunks this pass",
+            exc,
+            claimed - ok,
+        )
+        return {"claimed": 0, "ok": 0, "failed": 0}
+    except Exception:
+        # A non-retryable pooled failure (wire skew, one bad text) must
+        # not sink the batch: fall back to per-chunk calls below so the
+        # fault stays scoped to its own chunk.
+        log.exception(
+            "chunk_keywords: pooled embed failed — per-chunk fallback for "
+            "%d chunks",
+            len(prepared),
+        )
+
+    for (chunk_id, chunk_vec, cand_meta), (lo, hi) in zip(prepared, spans, strict=True):
+        try:
+            vecs = (
+                cand_vecs[lo:hi]
+                if cand_vecs is not None
+                else embedder.embed(embed_texts[lo:hi])
+            )
+            keywords = _topk_keywords(chunk_vec, cand_meta, vecs)
+
+            def _write(
+                chunk_id: int = chunk_id, keywords: list[dict[str, Any]] = keywords
+            ) -> None:
+                with store.pool.connection() as wconn:
+                    write_chunk_keywords(
+                        wconn,
+                        chunk_id,
+                        keywords=keywords,
+                        embedder_name=embedder.model,
+                    )
+                    wconn.commit()
+
+            retry_locked(_write, label=f"chunk_keywords chunk_id={chunk_id}")
+            ok += 1
+        except EmbedderUnavailable as exc:
+            # Per-chunk fallback hit the same transient wall — defer
+            # the rest, same convention as the pooled branch above.
+            log.warning(
+                "chunk_keywords: embedder unavailable (%s); "
+                "deferring %d remaining chunks this pass",
+                exc,
+                claimed - ok,
+            )
+            return {"claimed": 0, "ok": 0, "failed": 0}
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            log.warning(
+                "chunk_keywords: chunk_id=%s deferred after residual lock "
+                "contention: %s",
+                chunk_id,
+                exc,
+            )
+        except Exception:
+            log.exception("chunk_keywords: chunk_id=%s failed", chunk_id)
+            failed += 1
     return {"claimed": claimed, "ok": ok, "failed": failed}
 
 
 def run_chunk_keywords_pass(
-    store: Store, embedder: Embedder, *, batch_size: int = 50
+    store: Store, embedder: Embedder, *, batch_size: int = 128
 ) -> dict[str, int]:
     """One pass over the chunk_keywords queue, single-runner across the
     fleet.

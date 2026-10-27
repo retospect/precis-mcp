@@ -304,6 +304,54 @@ def _embed_skip_kinds() -> tuple[str, ...]:
     return EmbedHandler.skip_chunk_kinds
 
 
+def keywords_backlog_rates(conn: Any, *, window_hours: float) -> dict[str, int] | None:
+    """Keyword-queue drain vs inflow over the last ``window_hours``.
+
+    ``{"drained": N, "inflow": M}`` — chunks written by ``chunk_keywords``
+    passes (``worker_logs`` ``ok`` sums, the fleet-wide count) vs
+    keyword-eligible chunks created, each in the window. Unlike
+    :func:`embed_backlog_rates` there is no artifact table timestamp to
+    count, so the drain side reads the pass's own batch accounting —
+    the same numbers ``/status`` reports. Inflow mirrors the claim
+    predicate's structural half (skip-kinds, the length floor,
+    ``meta.no_index``) so a burst of ineligible chunks never reads as
+    keyword debt.
+
+    Returns ``None`` on any error (degrade to the caller's prior
+    verdict — a broken probe must not become a false alert), after a
+    rollback so later sections on the shared connection still run.
+    """
+    from precis.workers.chunk_keywords import MIN_CHUNK_CHARS, SKIP_KINDS
+
+    try:
+        window = f"{window_hours} hours"
+        drained = conn.execute(
+            "SELECT COALESCE(sum((payload->>'ok')::int), 0) FROM worker_logs "
+            "WHERE pass = 'runner' AND ts > now() - %s::interval "
+            "AND split_part(payload->>'handler', ':', 1) = 'chunk_keywords'",
+            (window,),
+        ).fetchone()
+        inflow = conn.execute(
+            "SELECT count(*) FROM chunks c "
+            "WHERE c.created_at > now() - %s::interval "
+            "AND c.chunk_kind <> ALL(%s) "
+            "AND length(c.text) >= %s "
+            "AND (c.meta->>'no_index') IS DISTINCT FROM 'true'",
+            (window, list(SKIP_KINDS), MIN_CHUNK_CHARS),
+        ).fetchone()
+        return {
+            "drained": int(drained[0]) if drained else 0,
+            "inflow": int(inflow[0]) if inflow else 0,
+        }
+    except Exception:
+        log.exception("health_checks: keywords backlog rate probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_checks: rollback after rate probe failed")
+        return None
+
+
 #: How many drifted ref_ids :func:`paper_authors_drift` surfaces as
 #: examples — enough to spot-check without a second query.
 _PAPER_AUTHORS_DRIFT_EXAMPLES = 5

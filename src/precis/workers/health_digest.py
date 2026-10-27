@@ -421,11 +421,20 @@ def _freshness_layer1(conn: Any) -> list[CheckResult]:
 #: check with a §F culprit diagnosis (:func:`_diagnose_embed_pipeline`)
 #: behind it; ``chunk_keywords`` has no analogous stage chain.
 _EMBED_BACKLOG_KEY = "embed"
+_KW_BACKLOG_KEY = "chunk_keywords"
+
+#: ``chunk_keywords``' drain-ETA budget in days (gr520236). The keyword
+#: queue legitimately carries days of backlog, so its "draining" verdict
+#: can't key off the 6h batch-freshness budget alone: ~7k chunks/day of
+#: steady drain against a 1.55M-row backlog read "ok" for weeks while the
+#: queue sat ~220 days deep and no alert fired. Past this ETA the check
+#: goes stale even while batches stay fresh.
+_KW_ETA_BUDGET_DAYS = 30.0
 
 #: ``(backlog_key, group, budget_hours, severity, what)``
 _BACKLOG_CHECKS: tuple[tuple[str, str, float, str, str], ...] = (
     (_EMBED_BACKLOG_KEY, "discovery", 2.0, _WARN, "chunks embedded"),
-    ("chunk_keywords", "discovery", 6.0, _WARN, "chunks keyworded"),
+    (_KW_BACKLOG_KEY, "discovery", 6.0, _WARN, "chunks keyworded"),
 )
 
 
@@ -478,6 +487,26 @@ def _idle_aware_backlog_checks(conn: Any) -> list[CheckResult]:
                     )
                     if detail is not None:
                         detail += " — " + _diagnose_embed_pipeline(conn)
+                        out.append(
+                            CheckResult(group, key, "stale", detail, severity, age)
+                        )
+                        continue
+            # Same "fresh writes ≠ shrinking backlog" hole for the
+            # keyword queue (gr520236): ~7k/day of steady drain against
+            # a 1.55M backlog kept this check "ok" while the ETA sat at
+            # ~220 days. Gate the ok verdict on the net rate: a growing
+            # queue, or one whose ETA runs past _KW_ETA_BUDGET_DAYS, is
+            # stale. A probe failure degrades to the recency verdict,
+            # never a false alert.
+            if key == _KW_BACKLOG_KEY and conn is not None:
+                rates = health_checks.keywords_backlog_rates(
+                    conn, window_hours=budget_hours
+                )
+                if rates is not None:
+                    detail = _keywords_net_verdict(
+                        pending, rates, age, budget_hours, what
+                    )
+                    if detail is not None:
                         out.append(
                             CheckResult(group, key, "stale", detail, severity, age)
                         )
@@ -538,6 +567,42 @@ def _embed_net_verdict(
             f"{what}: {pending} pending, draining too slowly — "
             f"net -{net_per_h:.0f}/h puts the queue ~{eta:.0f}h out "
             f"(budget {budget_hours:.0f}h; last batch {age:.1f}h ago)"
+        )
+    return None
+
+
+def _keywords_net_verdict(
+    pending: int,
+    rates: dict[str, int],
+    age: float,
+    budget_hours: float,
+    what: str,
+) -> str | None:
+    """The keyword backlog's net-rate/ETA verdict — a stale ``detail``
+    string, or ``None`` when the queue is on track inside
+    :data:`_KW_ETA_BUDGET_DAYS`.
+
+    Same shape as :func:`_embed_net_verdict` with a days-scale ETA
+    budget: ``drained`` is the fleet's ``chunk_keywords`` ``ok`` sum in
+    the window, ``inflow`` the eligible-chunk creation rate. A
+    non-positive net means the queue grows; a positive net whose ETA
+    exceeds the day budget is the same failure in slow motion.
+    """
+    drained_h = rates["drained"] / budget_hours
+    inflow_h = rates["inflow"] / budget_hours
+    net = drained_h - inflow_h
+    if net <= 0:
+        return (
+            f"{what}: {pending} pending and still growing "
+            f"(+{inflow_h:.0f}/h inflow vs {drained_h:.0f}/h keyworded over "
+            f"{budget_hours:.0f}h; last batch {age:.1f}h ago)"
+        )
+    eta_days = pending / net / 24
+    if eta_days > _KW_ETA_BUDGET_DAYS:
+        return (
+            f"{what}: {pending} pending, draining too slowly — "
+            f"net -{net:.0f}/h puts the queue ~{eta_days:.0f}d out "
+            f"(budget {_KW_ETA_BUDGET_DAYS:.0f}d; last batch {age:.1f}h ago)"
         )
     return None
 

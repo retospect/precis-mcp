@@ -158,8 +158,9 @@ ALERT_RULES: tuple[AlertRule, ...] = (
     _watchdog(
         "discovery",
         "chunk_keywords",
-        "chunk_keywords backlog non-empty and not draining past budget (idle-aware).",
-        budget="6h",
+        "chunk_keywords backlog non-empty and not draining past budget, or "
+        "drain ETA past the days budget (idle-aware).",
+        budget="6h (+30d ETA)",
         service="chunk_keywords",
     ),
     _watchdog(

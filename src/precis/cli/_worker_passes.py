@@ -70,8 +70,19 @@ def build_ref_passes(
             else _resolve_embedder(args, store)
         )
 
+        # gr520236: keyword extraction pools each chunk's ~40 RAKE
+        # candidates into shared embed calls now, so a bigger claim
+        # amortises better than the shared-loop default (32). The
+        # pass's own floor/env knob governs; the loop's --batch-size
+        # still wins when set higher.
+        _kw_batch_floor = int(
+            os.environ.get("PRECIS_CHUNK_KEYWORDS_BATCH") or 128
+        )
+
         def _chunk_keywords_pass(batch_size: int) -> BatchResult:
-            r = run_chunk_keywords_pass(store, kw_embedder, batch_size=batch_size)
+            r = run_chunk_keywords_pass(
+                store, kw_embedder, batch_size=max(batch_size, _kw_batch_floor)
+            )
             return BatchResult.from_dict("chunk_keywords", r)
 
         ref_passes.append(_chunk_keywords_pass)

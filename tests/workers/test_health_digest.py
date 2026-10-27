@@ -553,6 +553,83 @@ def test_embed_backlog_draining_within_budget_is_ok(store) -> None:
     assert "draining" in embed.detail
 
 
+# ── (c) same net-rate hole for the chunk_keywords backlog (gr520236) ─────
+
+
+def _seed_keywords_backlog(
+    store, *, pending: int, drained_ok: int, fresh_inflow: int = 0
+) -> None:
+    """A real keyword backlog: ``pending`` eligible, embedded,
+    unkeyworded chunks backdated out of the rate window, plus one
+    ``worker_logs`` runner row claiming ``drained_ok`` (a just-written
+    drain event, which also supplies the check's fresh ``last_ts``).
+    ``fresh_inflow`` adds eligible chunks created now — inflow."""
+    _r, ids = seed_chunks(store, ["kw " + "x" * 160] * pending)
+    embedder = make_mock_bge_m3()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - interval '30 hours' "
+            "WHERE chunk_id = ANY(%s)",
+            (ids,),
+        )
+        for cid in ids:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, "
+                "status) VALUES (%s, 'bge-m3', %s, 'ok')",
+                (cid, embedder.embed_one("x")),
+            )
+        conn.execute(
+            "INSERT INTO worker_logs (host, pass, level, message, payload) "
+            "VALUES ('t', 'runner', 'INFO', 'batch', %s::jsonb)",
+            (
+                json.dumps(
+                    {
+                        "handler": "chunk_keywords",
+                        "claimed": drained_ok,
+                        "ok": drained_ok,
+                        "failed": 0,
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+    if fresh_inflow:
+        seed_chunks(store, ["in " + "y" * 160] * fresh_inflow)
+
+
+def test_keywords_growing_backlog_with_fresh_writes_is_stale(store) -> None:
+    """gr520236: ~7k/day of steady drain against a 1.55M backlog read
+    'ok' for weeks because batches stayed fresh — a growing queue must
+    go stale even while the last batch is minutes old."""
+    _seed_keywords_backlog(store, pending=10, drained_ok=1, fresh_inflow=30)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "stale"
+    assert "growing" in kw.detail
+
+
+def test_keywords_slow_drain_eta_past_budget_is_stale(store) -> None:
+    """Positive net rate whose ETA runs past the days budget is the same
+    failure in slow motion."""
+    _seed_keywords_backlog(store, pending=200, drained_ok=1)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "stale"
+    assert "too slowly" in kw.detail
+
+
+def test_keywords_backlog_draining_within_eta_is_ok(store) -> None:
+    """Positive control: a queue on pace inside the ETA budget stays ok."""
+    _seed_keywords_backlog(store, pending=10, drained_ok=600)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "ok"
+    assert "draining" in kw.detail
+
+
 # ── (d) push policy ──────────────────────────────────────────────────────
 
 

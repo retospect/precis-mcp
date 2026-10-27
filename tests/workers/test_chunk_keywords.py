@@ -231,6 +231,57 @@ class TestClaimQuery:
             conn.commit()
         assert chunk_id not in [r[0] for r in rows]
 
+    def test_fresh_backlog_claims_newest_first(self, store: Store) -> None:
+        """gr520236: fresh (keywords NULL) claims walk ``chunk_id DESC``
+        so a fresh ingest is labelled ahead of the older backlog — and the
+        pending partial index makes the walk cheap."""
+        ref_id = seed_ref(store)
+        old_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        new_id = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=1)
+            conn.rollback()
+        assert [r[0] for r in rows] == [new_id]
+        assert new_id > old_id
+
+    def test_fresh_tier_beats_stale_rederive(self, store: Store) -> None:
+        """The stale re-derive tier only fills what the fresh tiers left:
+        a version-stale chunk waits behind unkeyworded ones."""
+        ref_id = seed_ref(store)
+        stale_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        fresh_id = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        stale_meta = {
+            "version": "0.0-stale",
+            "embedder": "bge-m3",
+            "keywords": [{"short": None, "long": "stale", "score": 1.0}],
+        }
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET keywords = %s, keywords_meta = %s "
+                "WHERE chunk_id = %s",
+                (["stale"], Jsonb(stale_meta), stale_id),
+            )
+            conn.commit()
+            rows = claim_chunks_without_keywords(conn, limit=1)
+            conn.rollback()
+        assert [r[0] for r in rows] == [fresh_id]
+        # limit 2 picks up the stale row too.
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=2)
+            conn.rollback()
+        assert {r[0] for r in rows} == {fresh_id, stale_id}
+
+    def test_pending_partial_index_exists(self, store: Store) -> None:
+        """The DESC fresh claim's cheapness depends on migration 0260's
+        partial index existing and being valid."""
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT i.indisvalid FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE c.relname = 'chunks_keywords_pending_idx'"
+            ).fetchone()
+        assert row == (True,)
+
 
 # ---------------------------------------------------------------------------
 # ensure_paper_abbrevs — Schwartz-Hearst caching
@@ -471,6 +522,44 @@ class TestRunChunkKeywordsPass:
         # No chunks seeded at all.
         result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
         assert result == {"claimed": 0, "ok": 0, "failed": 0}
+
+    def test_pooled_candidate_embeds(self, store: Store) -> None:
+        """gr520236: the batch pools all chunks' RAKE candidates into
+        shared ``embed`` calls instead of one call per chunk."""
+        ref_id = seed_ref(store)
+        for i in range(3):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+        emb = make_mock_bge_m3()
+        calls: list[int] = []
+        real_embed = emb.embed
+
+        def counting(texts: list[str]) -> list[list[float]]:
+            calls.append(len(texts))
+            return real_embed(texts)
+
+        emb.embed = counting  # type: ignore[method-assign]
+        result = run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert result == {"claimed": 3, "ok": 3, "failed": 0}
+        assert sum(calls) > 0
+        assert len(calls) <= 1, f"expected one pooled call, got {calls}"
+
+    def test_pooled_failure_falls_back_per_chunk(self, store: Store) -> None:
+        """A non-retryable pooled-embed failure must not sink the batch:
+        the pass drops to per-chunk calls so the fault stays scoped."""
+        ref_id = seed_ref(store)
+        for i in range(2):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+        emb = make_mock_bge_m3()
+        real_embed = emb.embed
+
+        def picky(texts: list[str]) -> list[list[float]]:
+            if len(texts) > 45:
+                raise RuntimeError("too many texts")
+            return real_embed(texts)
+
+        emb.embed = picky  # type: ignore[method-assign]
+        result = run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert result == {"claimed": 2, "ok": 2, "failed": 0}
 
     def test_db_level_failure_on_one_chunk_does_not_cascade(
         self, store: Store, monkeypatch: Any
