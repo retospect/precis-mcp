@@ -40,6 +40,7 @@ VAULT_FUNCS = (
     "vault.set_secret(text, text)",
     "vault.set_secret_if_absent(text, text)",
     "vault.delete_secret(text)",
+    "vault.gc_events(integer)",  # 0258: audit-trail prune, agent_rw only
 )
 SECONDARY_FUNCS = (
     "public.refs_retire_event_trail()",
@@ -53,7 +54,6 @@ KEPT_FUNCS = (
     "public.file_gripe_readonly(text, text)",
     "vault.list()",
     "vault.mask(text)",
-    "vault.gc_events(integer)",
 )
 
 #: The whole PUBLIC-EXECUTE allowlist for SECURITY DEFINER functions in the
@@ -174,3 +174,22 @@ def test_no_security_definer_function_grants_public_execute(store: Store) -> Non
         "SECURITY DEFINER function(s) with PUBLIC EXECUTE outside the "
         f"allowlist — an agent_ro-open hole (gr523021): {sorted(offenders)}"
     )
+
+
+def test_gc_events_keeps_a_30_day_floor(store: Store) -> None:
+    """0258: gc_events(0) must not erase recent audit rows (gr523021 c4).
+    Rows inside the 30-day floor survive any p_keep_days; older rows go."""
+    marker = "gc-floor-test-" + uuid.uuid4().hex
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO vault.events(at, who, verb, name) VALUES "
+            "(now() - interval '2 days', 'test', 'reveal', %s), "
+            "(now() - interval '40 days', 'test', 'reveal', %s)",
+            (marker, marker),
+        )
+        conn.execute("SELECT vault.gc_events(0)")
+        left = conn.execute(
+            "SELECT count(*) FROM vault.events WHERE name = %s", (marker,)
+        ).fetchone()
+        conn.rollback()
+    assert left == (1,), "gc_events(0) deleted a row inside the 30-day floor"
