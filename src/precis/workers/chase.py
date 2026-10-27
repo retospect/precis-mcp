@@ -1562,10 +1562,10 @@ def _resolve_or_create_stub(
 
     # No hit — mint a stub. The chase actor pins set_by='chase' so
     # the audit trail surfaces every chase-created ref.
-    from precis.identity import make_cite_key
+    from precis.identity import _title_key_word, make_cite_key
 
     cite_key = make_cite_key(
-        [{"family": _first_word(target.title) or "anon"}],
+        [{"family": _title_key_word(target.title) or "anon"}],
         target.year,
         taken=set(),  # collision resolution deferred to a follow-up
     )
@@ -1586,16 +1586,6 @@ def _resolve_or_create_stub(
             (id_kind, id_value, new_ref.id, "chase"),
         )
     return int(new_ref.id)
-
-
-def _first_word(s: str) -> str | None:
-    """Cheap title → surname fallback. Used as a last-ditch cite_key
-    seed when S2 doesn't return author info.
-    """
-    if not s:
-        return None
-    m = re.search(r"[A-Za-z]+", s)
-    return m.group(0).lower() if m else None
 
 
 def _record_candidates(

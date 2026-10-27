@@ -821,6 +821,7 @@ class RefsMixin:
         identifiers: list[tuple[str, str]],
         title: str | None = None,
         year: int | None = None,
+        authors: Any = None,
         set_by: ActorSlug = "dream",
         s2_meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
@@ -846,12 +847,24 @@ class RefsMixin:
         carries ``meta.s2_enriched_at``, so ``stub_rank`` skips
         re-enriching it and it's immediately embedding-eligible.
 
+        ``authors`` (same shapes ``make_cite_key`` accepts: strings or
+        ``{"family"}/{"name"}/{"last"}`` dicts) seeds the cite_key with
+        the real byline — a caller that already paid for an author list
+        (S2/registry enrich, a .bib entry) gets ``wenckstern<yy>``
+        rather than a title-word key. With no usable byline the mint
+        falls back to the first *significant* title word
+        (:func:`_title_key_word`), never a bare article — the
+        first-word mint produced ``the<yy>`` keys that
+        ``is_junk_cite_key`` flags as born-junk (gr523730).
+
         Mirrors ``workers/chase._resolve_or_create_stub`` but takes
         explicit identifier pairs so the gated dream ``acquire`` tool can
         reuse it (docs/backlog/dreaming.md, §Acquire).
         """
         from precis.identity import (
             PLACEHOLDER_TITLE,
+            _byline_key_word,
+            _title_key_word,
             make_cite_key,
             normalize_doi,
         )
@@ -932,12 +945,17 @@ class RefsMixin:
                     ):
                         return int(cid), False
 
-            # No collapse hit — mint a stub. Derive a non-colliding
-            # cite_key from the title's first word + year. Alias rows
-            # count as taken (gr521515): a displaced key is reserved.
-            first_word = (title or "").split()
-            authors = [{"family": first_word[0] if first_word else "anon"}]
-            base = make_cite_key(authors, year)
+            # No collapse hit — mint a stub. The cite_key seeds on the
+            # real byline when one is known (``make_cite_key``'s own
+            # person/org walk); with no usable byline the first
+            # *significant* title word seeds instead — never a bare
+            # article, so the mint can't be born junk-shaped
+            # (``the<yy>``, gr523730). Alias rows count as taken
+            # (gr521515): a displaced key is reserved.
+            key_authors = authors
+            if not _byline_key_word(key_authors):
+                key_authors = [{"family": _title_key_word(title) or "anon"}]
+            base = make_cite_key(key_authors, year)
             taken_rows = c.execute(
                 "SELECT id_value FROM ref_identifiers "
                 "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
@@ -945,7 +963,7 @@ class RefsMixin:
                 (base + "%",),
             ).fetchall()
             taken = {str(r[0]) for r in taken_rows}
-            cite_key = make_cite_key(authors, year, taken=taken)
+            cite_key = make_cite_key(key_authors, year, taken=taken)
 
             initial_meta: dict[str, Any] = {**(s2_meta or {}), "set_by": set_by}
             new_ref = self.insert_ref(

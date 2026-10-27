@@ -997,6 +997,30 @@ class TestSplitBody:
         assert _events(store, a, "body_split") == []
         assert n_ev is not None and n_ev[0] == 0
 
+    def test_mint_uses_significant_title_word_not_first(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr523730: the no-byline fallback seeded the key on the title's
+        first whitespace word — born-junk ``the<yy>``. It now shares the
+        significant-title-word helper the other stub mints use."""
+        from precis.identity import is_junk_cite_key
+
+        a = _seed(store, "splittw2020", year=2020)
+        _body(store, a, 1)
+        _edit(
+            handler,
+            a,
+            {
+                "split_body": {"title": "The Split Horizon", "year": 2026},
+                "reason": "x",
+            },
+        )
+        b = int(_events(store, a, "body_split")[0].payload["new_ref_id"])
+        minted = store.get_ref(kind="paper", id=b)
+        assert minted is not None
+        assert minted.slug == "split26"
+        assert not is_junk_cite_key(minted.slug)
+
 
 class TestLinkStampDoor:
     """gr514995 option A: a chunk re-anchor keeps a link's own trust

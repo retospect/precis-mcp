@@ -553,6 +553,40 @@ def test_remint_door_refuses_a_yearless_record(store: Store) -> None:
     assert store.events_for(ref_id, event="cite_key_changed") == []
 
 
+def test_remint_keys_a_future_year_as_is(store: Store) -> None:
+    """gr523888's ``du27`` (pa523676): a record whose year reads 2027 —
+    an online-first issue date ahead of today — keys ``<surname>27``.
+    Deliberate: the mint uses the record's year verbatim, it is never
+    clamped to the current year, so the key matches the citation year."""
+    from precis.store.paper_rekey import remint_junk_cite_key
+
+    ref_id = _seed(store, "anon27", authors=[{"family": "Du"}], year=2027)
+
+    assert remint_junk_cite_key(store, ref_id, source="test") is not None
+
+    assert store.find_ref_by_identifier("cite_key", "du27") == ref_id
+    assert store.find_ref_by_identifier("cite_key_alias", "anon27") == ref_id
+
+
+def test_cli_skip_reason_for_authorless_stub_is_not_corporate(
+    store: Store, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """gr523888 side note (pa515005/pa521655/pa519665): stubs whose
+    byline was never fetched (``refs.authors`` NULL, year present) were
+    labelled "corporate/collective only" — the reason must name the
+    actual missing field."""
+    ref_id = _seed(store, "the26tp", year=2026)
+    _patch_cli_runtime(store, monkeypatch)
+
+    remint_cli.run(argparse.Namespace(apply=False, limit=None, database_url=None))
+
+    out = capsys.readouterr()
+    lines = [l for l in out.out.splitlines() if l.startswith(f"pa{ref_id} ")]
+    assert len(lines) == 1
+    assert "no authors on the record" in lines[0]
+    assert "corporate" not in lines[0]
+
+
 def test_cli_dry_run_reports_skips_with_reasons(
     store: Store, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:

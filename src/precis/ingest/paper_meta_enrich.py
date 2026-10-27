@@ -57,6 +57,13 @@ What lands where:
   :mod:`precis.ingest.provenance` for the full notice-ref-minting
   pipeline this deliberately doesn't replicate; this pass only sets the
   three columns).
+* **``cite_key``** — when the author/year write above first makes a
+  junk-mint key's record mintable (``anon*``/``user*``/``the*``, born
+  before the byline arrived), it is re-keyed through
+  ``paper_rekey.remint_junk_cite_key``; the displaced key stays
+  resolvable as a ``cite_key_alias`` redirect (gr523888 — the
+  ``paper-remint-junk`` sweep used to refill daily because nothing
+  re-minted at this point).
 * **per-author ORCID** — kept on the author dict, and a minimal
   ``kind='orcid'`` stub ref is minted (if missing) + linked to the paper
   via the ``authored`` relation (ADR 0039). Deliberately does **not**
@@ -143,6 +150,7 @@ class EnrichOutcome:
     year_filled: int | None = None
     skipped_authors: bool = False
     cards_rebuilt: bool = False
+    cite_key_reminted: str | None = None
 
 
 #: Shortest all-caps title the recase repair considers (gr353794); below
@@ -609,6 +617,33 @@ def enrich_paper(
             # has no knowledge of. A DOI-less ref, or one whose fetch raised,
             # is deliberately left unstamped: we did not check it.
             store.touch_retraction_checked(ref_id, conn=conn)
+
+    if new_authors or new_year is not None:
+        # The write above just made the byline/year real — a junk-mint
+        # cite_key (anon*/user*/the*) goes with it (gr523888: the sweep
+        # kept re-keying papers enrichment had already repaired because
+        # nothing re-minted here). Post-commit, so the rekey's own
+        # transaction and PDF move see the write; the displaced key
+        # stays resolvable as a cite_key_alias redirect. Same
+        # REKEY_DEADLINE_S bound as apply_resolution — a wedged corpus
+        # mount must not stall the pass.
+        from precis.store.paper_rekey import REKEY_DEADLINE_S, remint_junk_cite_key
+        from precis.utils.deadline import DeadlineExceeded, call_with_deadline
+
+        try:
+            outcome.cite_key_reminted = call_with_deadline(
+                lambda: remint_junk_cite_key(store, ref_id, source="paper-meta-enrich"),
+                deadline_s=REKEY_DEADLINE_S,
+                label="remint_junk_cite_key",
+            )
+        except DeadlineExceeded:
+            # The abandoned thread may still finish the rekey; the
+            # junk-key sweep catches whatever it leaves behind.
+            log.warning(
+                "enrich_paper: auto-remint of ref %d exceeded %.0fs",
+                ref_id,
+                REKEY_DEADLINE_S,
+            )
 
     if link_orcid and orcid_authors:
         outcome.orcid_links = _mint_and_link_orcid_authors(store, ref_id, orcid_authors)

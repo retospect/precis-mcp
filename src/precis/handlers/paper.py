@@ -1571,6 +1571,7 @@ class PaperHandler(Handler):
         resolver_err: Exception | None = None
         s2_meta: dict[str, Any] | None = None
         registry_meta: dict[str, Any] | None = None
+        meta: dict[str, Any] | None = None
         s2_down = False
         if id_pair is not None:
             try:
@@ -1700,6 +1701,10 @@ class PaperHandler(Handler):
                 identifiers=identifiers,
                 title=stub_title,
                 year=year,
+                # S2/registry authors seed the cite_key (gr523730) —
+                # a real surname beats a title word.
+                authors=(meta or {}).get("authors")
+                or (registry_meta or {}).get("authors"),
                 set_by="dream",
                 s2_meta=s2_meta,
                 conn=conn,
@@ -5297,7 +5302,7 @@ class PaperHandler(Handler):
         stub. A ``doi`` already held by a live ref refuses naming that
         ref — that is the ``move_body_to`` case, not a mint.
         """
-        from precis.identity import make_cite_key
+        from precis.identity import _byline_key_word, _title_key_word
         from precis.ingest import body_ops, paper_dump
 
         kind = self.spec.kind
@@ -5401,12 +5406,10 @@ class PaperHandler(Handler):
                     f"{donor_h} lost its body since the check — nothing to split off",
                     next="re-resolve the donor and retry",
                 )
-            slug = self.store.suggest_cite_key(new_authors or [], new_year, conn=conn)
-            if not slug:
-                first = new_title.split()
-                slug = make_cite_key(
-                    [{"family": first[0] if first else "anon"}], new_year
-                )
+            key_authors = new_authors
+            if not _byline_key_word(key_authors):
+                key_authors = [{"family": _title_key_word(new_title) or "anon"}]
+            slug = self.store.suggest_cite_key(key_authors, new_year, conn=conn)
             meta: dict[str, Any] = {"set_by": "edit"}
             if new_journal:
                 meta["journal"] = str(new_journal).strip()

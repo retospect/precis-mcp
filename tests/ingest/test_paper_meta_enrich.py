@@ -896,3 +896,75 @@ class TestSharedLimiterRefusal:
             )
         assert exc.value.provider == "crossref"
         assert RESOLVED_AT_KEY not in (_ref(store, rid).meta or {})
+
+
+class TestJunkCiteKeyRemint:
+    """gr523888: this pass is where a junk-mint key's real byline/year
+    first lands — re-mint at that point, through the same
+    ``remint_junk_cite_key`` door every other repair path uses (the
+    displaced key stays resolvable as a ``cite_key_alias``)."""
+
+    def test_junk_key_remints_when_byline_and_year_land(self, store: Store) -> None:
+        """pa523699's shape: ingested ``the26tx`` off a title word, then
+        Crossref supplies author Bragina + year 2026."""
+        rid = _paper(store, slug="the26tx", doi="10.1234/bragina")
+        msg = _crossref_msg(doi="10.1234/bragina", family="Bragina", given="T. A.")
+        msg["published-print"] = {"date-parts": [[2026, 1, 1]]}
+
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/bragina",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+
+        assert outcome is not None and outcome.cite_key_reminted is not None
+        assert store.find_ref_by_identifier("cite_key", "bragina26") == rid
+        assert store.find_ref_by_identifier("cite_key_alias", "the26tx") == rid
+        got = store.get_ref(kind="paper", id="the26tx")
+        assert got is not None and got.id == rid
+        events = store.events_for(rid, event="cite_key_changed")
+        assert len(events) == 1
+        assert events[0].payload["old"] == "the26tx"
+        assert events[0].payload["new"] == "bragina26"
+
+    def test_second_pass_does_not_re_remint(self, store: Store) -> None:
+        """The reminted key is not junk-shaped — a repeat visit leaves
+        it alone (no second cite_key_changed event)."""
+        rid = _paper(store, slug="the26tx", doi="10.1234/bragina2")
+        msg = _crossref_msg(doi="10.1234/bragina2", family="Bragina", given="T. A.")
+        msg["published-print"] = {"date-parts": [[2026, 1, 1]]}
+
+        for _ in range(2):
+            outcome = enrich_paper(
+                store,
+                rid,
+                doi="10.1234/bragina2",
+                crossref_fn=lambda doi, mailto: msg,
+                openalex_fn=lambda doi, **k: None,
+            )
+        assert outcome is not None and outcome.cite_key_reminted is None
+        assert store.find_ref_by_identifier("cite_key", "bragina26") == rid
+        assert len(store.events_for(rid, event="cite_key_changed")) == 1
+
+    def test_a_real_key_is_never_reminted(self, store: Store) -> None:
+        """Enrichment still rewrites authors/meta on a well-keyed
+        paper — but never touches the key."""
+        rid = _paper(store, slug="goldsmith20", doi="10.1234/realkey")
+        msg = _crossref_msg(doi="10.1234/realkey")
+
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/realkey",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+
+        assert outcome is not None and outcome.cite_key_reminted is None
+        assert _ref(store, rid).authors == [
+            {"given": "Bryan R.", "family": "Goldsmith"}
+        ]
+        assert store.find_ref_by_identifier("cite_key", "goldsmith20") == rid
+        assert store.events_for(rid, event="cite_key_changed") == []

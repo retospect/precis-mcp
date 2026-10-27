@@ -220,6 +220,7 @@ def _mint_stub(store: Store, citing: dict[str, Any], *, seed_slug: str) -> bool:
         identifiers=identifiers,
         title=title,
         year=year_int,
+        authors=citing.get("authors"),
         set_by="system",
     )
     if created:

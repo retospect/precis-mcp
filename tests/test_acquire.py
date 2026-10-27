@@ -331,6 +331,37 @@ def test_acquire_title_only_mints_backlog_stub(
     assert _identifiers(store, rid) == {("cite_key", minted_ref.slug)}
 
 
+def test_stub_mint_keys_on_authors_then_significant_title_word(
+    store: Store,
+) -> None:
+    """gr523730: the stub mint keyed on the title's first word —
+    ``the<yy>`` keys that ``is_junk_cite_key`` flags as born-junk. A
+    known byline keys on the surname instead; with no authors the
+    first *significant* title word seeds the key."""
+    rid, created = store.upsert_stub_paper(
+        identifiers=[("doi", "10.1/bindome-byline")],
+        title="The Human Bindome",
+        year=2026,
+        authors=[{"name": "Adam Wenckstern"}],
+        set_by="dream",
+    )
+    assert created is True
+    minted = store.get_ref(kind="paper", id=rid)
+    assert minted is not None
+    assert minted.slug == "wenckstern26"
+
+    rid2, created2 = store.upsert_stub_paper(
+        identifiers=[("doi", "10.1/bindome-anon")],
+        title="The Human Bindome",
+        year=2026,
+        set_by="dream",
+    )
+    assert created2 is True
+    minted2 = store.get_ref(kind="paper", id=rid2)
+    assert minted2 is not None
+    assert minted2.slug == "human26"
+
+
 def test_acquire_links_from_context(handler: PaperHandler, store: Store) -> None:
     ctx = store.insert_ref(kind="memory", slug=None, title="where it came up")
     r = handler.acquire(

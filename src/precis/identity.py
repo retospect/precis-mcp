@@ -92,7 +92,8 @@ class CiteKeyOverflow(ValueError):
 
 # Letters that are NOT NFKD-decomposable but have well-established ASCII
 # replacements in citation keys / slugs. NFKD alone would silently drop
-# these, producing folds like ``nrskov`` (Nørskov) rather than ``norskov``.
+# these, producing folds like ``nrskov`` (Nørskov) rather than ``norskov``
+# or ``koozynkrajewska`` (Kołożyn-Krajewska — pa212196, gr523730).
 # Canonical home for this table — was duplicated in
 # ``precis.ingest.literature`` before consolidation.
 _ASCII_FALLBACKS = str.maketrans(
@@ -110,6 +111,9 @@ _ASCII_FALLBACKS = str.maketrans(
         "Ð": "D",
         "þ": "th",
         "Þ": "Th",
+        "đ": "d",
+        "Đ": "D",
+        "ı": "i",
     }
 )
 
@@ -117,16 +121,18 @@ _ASCII_FALLBACKS = str.maketrans(
 def _ascii_fold(text: str, *, fallbacks: bool = False) -> str:
     """NFKD-decompose, drop combining marks, drop non-ASCII bytes.
 
-    ``fallbacks=True`` first maps the Scandinavian / Eastern-European
-    letters NFKD does not decompose (``ø``, ``æ``, ``ß``, ``ł`` etc.) via
+    ``fallbacks=True`` first maps the letters NFKD does not decompose
+    (``ø``, ``æ``, ``ß``, ``ł``, ``đ``, ``ı`` etc.) via
     :data:`_ASCII_FALLBACKS`, so e.g. "Nørskov" folds to ``norskov``
     instead of ``nrskov``. Default is ``False`` and MUST stay that way
-    for :func:`_surname_from_string` (feeds :func:`make_cite_key`, a
-    pinned persistent identifier — see module stability promise) and for
-    ``precis.utils.slug``'s callers (persistent slugs): changing their
-    fold would make future mints diverge from already-stored identifiers
-    for the same input. Only new callers should opt into
-    ``fallbacks=True``.
+    for ``precis.utils.slug``'s callers (persistent slugs with no
+    remint/alias path): changing their fold would make future mints
+    diverge from already-stored identifiers for the same input.
+    cite_key minting is different — it transliterates these letters
+    mint-side in :func:`_transliterate` (gr523730) and repairs stored
+    keys via ``paper-remint-junk`` + ``cite_key_alias`` redirects, so
+    the pinned default protects only the slug family. Only new callers
+    should opt into ``fallbacks=True``.
     """
     if fallbacks:
         text = text.translate(_ASCII_FALLBACKS)
@@ -216,15 +222,28 @@ _CYRILLIC_TO_LATIN = str.maketrans(
 
 
 def _transliterate(text: str) -> str:
-    """Romanise letters ``_ascii_fold`` would erase — Cyrillic, today.
+    """Romanise letters ``_ascii_fold`` would erase — for the cite-key
+    mint only.
 
-    Runs before the surname parse so the ASCII-shaped heuristics
-    (trailing-initial peels, particle joins) work on the romanised
-    text: ``"Иванов И.В."`` → ``"Ivanov I.V."`` peels to ``ivanov``.
+    Two tables: Cyrillic (gr523665) and the Latin letters NFKD does
+    not decompose (``ł``, ``ø``, ``đ``, ``ß``, ``æ``, ``œ``, ``þ``,
+    ``ı`` — :data:`_ASCII_FALLBACKS`, gr523730). Runs before the
+    surname parse so the ASCII-shaped heuristics (trailing-initial
+    peels, particle joins) work on the romanised text:
+    ``"Иванов И.В."`` → ``"Ivanov I.V."`` peels to ``ivanov``;
+    ``"Łukasiewicz"`` keys ``lukasiewicz``, not ``ukasiewicz``.
     Scripts without a table entry (CJK, Arabic, …) pass through and
     still fold to nothing downstream.
+
+    The table lives here rather than in ``_ascii_fold``'s default:
+    this function feeds only the ``make_cite_key`` mint family, and
+    stored keys minted under the old fold are repaired by the
+    ``paper-remint-junk`` sweep (a displaced key stays resolvable as
+    a ``cite_key_alias`` redirect — the gr521515 machinery). The
+    pinned ``fallbacks=False`` fold keeps ``precis.utils.slug``'s
+    persistent slugs reproducible.
     """
-    return text.translate(_CYRILLIC_TO_LATIN)
+    return text.translate(_CYRILLIC_TO_LATIN).translate(_ASCII_FALLBACKS)
 
 
 def _key_letters(text: str) -> str:
@@ -697,6 +716,35 @@ def _byline_key_word(authors: Any) -> str:
     reports the paper as skipped rather than minting.
     """
     return _first_person_surname(authors) or _first_org_key_word(authors)
+
+
+#: Title words that never seed a stub cite_key — articles and the
+#: connectives that carry no identity ("The Human Bindome" keys on
+#: ``human``, gr523730), plus the junk-mint stems themselves
+#: (:data:`_JUNK_CITE_KEY_RE`): "User studies …" minting ``user<yy>``
+#: would be born junk-shaped. A word under 3 letters skips too
+#: ("A", "In", "On"), so the seed is always a content word.
+_TITLE_STOP_WORDS = frozenset(
+    {"a", "an", "the", "of", "on", "in", "and", "for", "anon", "user"}
+)
+
+
+def _title_key_word(title: str | None) -> str:
+    """First significant title word for a stub cite_key seed.
+
+    The no-byline fallback for every stub mint
+    (:meth:`Store.upsert_stub_paper`, ``workers/chase``'s
+    ``_resolve_or_create_stub``, the ``split_body`` door): skips
+    :data:`_TITLE_STOP_WORDS` and words under 3 letters, so a title
+    mint never keys on a bare article — the first-word mint it
+    replaced produced ``the<yy>`` born-junk keys (gr523730). ``""``
+    leaves the caller its ``anon`` placeholder.
+    """
+    folded = _ascii_fold(_transliterate(title or "").lower(), fallbacks=True)
+    for word in re.findall(r"[a-z]+", folded):
+        if len(word) >= 3 and word not in _TITLE_STOP_WORDS:
+            return word
+    return ""
 
 
 # ---------------------------------------------------------------------------

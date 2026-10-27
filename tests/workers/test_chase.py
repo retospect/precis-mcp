@@ -1453,3 +1453,52 @@ def test_stance_partial_verdict_establishes(store) -> None:
 
     assert outcome == "terminated"
     assert _status_tag(store, fid) == "established"
+
+
+# ── stub mint: significant title word, never a bare article ─────────
+
+
+def test_stub_mint_keys_on_significant_title_word(store) -> None:
+    """gr523730: the chase stub mint seeded the cite_key on the title's
+    FIRST word — born-junk ``the<yy>`` keys (pa523684 ``the24co``,
+    pa523699 ``the26tx``). It shares the significant-word helper the
+    other stub mints use."""
+    from precis.identity import is_junk_cite_key
+    from precis.workers.chase import _NextHopTarget, _resolve_or_create_stub
+
+    target = _NextHopTarget(
+        doi="10.1234/bindome",
+        arxiv=None,
+        s2_id=None,
+        title="The Human Bindome",
+        year=2026,
+    )
+    with store.tx() as conn:
+        ref_id = _resolve_or_create_stub(conn, store, target)
+
+    assert ref_id is not None
+    minted = store.get_ref(kind="paper", id=ref_id)
+    assert minted is not None
+    assert minted.slug == "human26"
+    assert not is_junk_cite_key(minted.slug)
+
+
+def test_stub_mint_title_with_no_content_word_stays_anon(store) -> None:
+    """A title of only stop/short words still falls back to ``anon`` —
+    junk-shaped on purpose, so the sweep sees it."""
+    from precis.workers.chase import _NextHopTarget, _resolve_or_create_stub
+
+    target = _NextHopTarget(
+        doi="10.1234/ofthe",
+        arxiv=None,
+        s2_id=None,
+        title="Of on in",
+        year=2026,
+    )
+    with store.tx() as conn:
+        ref_id = _resolve_or_create_stub(conn, store, target)
+
+    assert ref_id is not None
+    minted = store.get_ref(kind="paper", id=ref_id)
+    assert minted is not None
+    assert minted.slug == "anon26"

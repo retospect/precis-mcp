@@ -198,8 +198,19 @@ def resolve_key(
         if entry.arxiv:
             ids.append(("arxiv", entry.arxiv))
         year = int(entry.year) if entry.year and entry.year.isdigit() else None
+        # The bib byline seeds the stub's cite_key (gr523730) — a real
+        # surname beats a title word.
+        authors = [
+            a.strip()
+            for a in re.split(r"\s+and\s+", _latex_plain(entry.author or ""))
+            if a.strip()
+        ]
         ref_id, _ = store.upsert_stub_paper(
-            identifiers=ids, title=entry.title, year=year, set_by=set_by
+            identifiers=ids,
+            title=entry.title,
+            year=year,
+            authors=authors or None,
+            set_by=set_by,
         )
         via = "stub"
     if ref_id is None:

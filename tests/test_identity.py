@@ -594,6 +594,30 @@ def test_cite_key_cyrillic_author_transliterates() -> None:
     assert make_cite_key(["李"], 2023) == "anon23"
 
 
+def test_cite_key_latin_special_author_transliterates() -> None:
+    """gr523730: letters NFKD does not decompose (ł, ø, đ, ß, æ, œ,
+    þ, ı) dropped under the bare fold — pa212196 (Kołożyn-Krajewska)
+    minted ``koozynkrajewska26``. They romanise mint-side via
+    ``_transliterate``, the same seat as Cyrillic."""
+    assert make_cite_key(["Kołożyn-Krajewska"], 2026) == "kolozynkrajewska26"
+    assert make_cite_key(["Łukasiewicz"], 2026) == "lukasiewicz26"
+    assert make_cite_key([{"family": "Łukasiewicz", "given": "Jan"}], 2026) == (
+        "lukasiewicz26"
+    )
+    assert make_cite_key(["Søren"], 2026) == "soren26"
+    # The rest of the table.
+    assert make_cite_key(["Đoković"], 2026) == "dokovic26"
+    assert make_cite_key(["Weiß"], 2026) == "weiss26"
+    assert make_cite_key(["Ævarsdóttir"], 2026) == "aevarsdottir26"
+    assert make_cite_key(["Œuvre"], 2026) == "oeuvre26"
+    assert make_cite_key(["Þórsson"], 2026) == "thorsson26"
+    assert make_cite_key(["Yılmaz"], 2026) == "yilmaz26"
+    # Regression: ordinary Latin authors key unchanged.
+    assert make_cite_key(["Miller"], 2023) == "miller23"
+    assert make_cite_key(["Müller"], 2023) == "muller23"
+    assert make_cite_key(["Crocco-Galéas"], 2024) == "croccogaleas24"
+
+
 def test_cite_key_surname_then_initials_form() -> None:
     """gr521515 dry-run: ``{"name": "Mula A"}`` (surname first, initials
     trailing) minted ``a26avk`` — a trailing single-letter / dotted-

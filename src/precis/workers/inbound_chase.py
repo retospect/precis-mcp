@@ -591,6 +591,7 @@ def _resolve_or_ingest_citer(
         identifiers=identifiers,
         title=title,
         year=year_int,
+        authors=citing.get("authors"),
         set_by="system",
         s2_meta=s2_meta,
         conn=conn,
