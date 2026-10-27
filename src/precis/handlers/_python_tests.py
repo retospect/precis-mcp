@@ -309,13 +309,32 @@ def nodeid_for(sym: Symbol, mod: ModuleIndex) -> str:
     return mod.file if not tail else f"{mod.file}::{tail.replace('.', '::')}"
 
 
+def _dotted_prefixes(qualname: str) -> list[str]:
+    """Proper dotted prefixes of ``qualname`` (``a.b.c`` -> ``a``, ``a.b``)."""
+    parts = qualname.split(".")
+    return [".".join(parts[:i]) for i in range(1, len(parts))]
+
+
+# One-entry memo: a RepoIndex is built once and never mutated, and callers
+# (discover_tests, the impacted-tests selector) ask for the same index's
+# reverse map repeatedly. Holds the index itself, so identity can't alias.
+_EDGES_TO_MEMO: tuple[RepoIndex, dict[str, list[CallEdge]]] | None = None
+
+
 def _edges_to(idx: RepoIndex) -> dict[str, list[CallEdge]]:
-    """callee -> inbound call edges (reverse of callgraph's index)."""
+    """callee -> inbound call edges (reverse of callgraph's index).
+
+    Read-only for callers: the dict is shared across calls on one index."""
+    global _EDGES_TO_MEMO
+    if _EDGES_TO_MEMO is not None and _EDGES_TO_MEMO[0] is idx:
+        return _EDGES_TO_MEMO[1]
     to: dict[str, list[CallEdge]] = defaultdict(list)
     for mod in idx.modules.values():
         for edge in mod.calls:
             to[edge.callee].append(edge)
-    return dict(to)
+    out = dict(to)
+    _EDGES_TO_MEMO = (idx, out)
+    return out
 
 
 def _target_qns(sym: Symbol, idx: RepoIndex) -> set[str]:
@@ -372,7 +391,7 @@ def discover_tests(
     # toward a Cls target): one pass keeps this O(edges).
     inbound: dict[str, list[CallEdge]] = defaultdict(list)
     for callee, edges in edges_to.items():
-        if callee in targets or any(callee.startswith(t + ".") for t in targets):
+        if callee in targets or any(q in targets for q in _dotted_prefixes(callee)):
             for edge in edges:
                 inbound[callee].append(edge)
 
@@ -466,11 +485,15 @@ def discover_tests(
     # File-level evidence (imports, then naming below) is suppressed for
     # a file that already earned a node-level hit — the stronger row says
     # everything the weaker one would.
+    # A tmod's own offers only ever add its own file, so a set taken before
+    # the loop answers "already earned a hit" exactly (and is O(1), not a
+    # scan of every hit per test module).
+    hit_files = {hit.file for hit in best.values()}
     sym_mod = mod.qualname
     for tmod in idx.modules.values():
         if not is_test_path(tmod.file):
             continue
-        if any(hit.file == tmod.file for hit in best.values()):
+        if tmod.file in hit_files:
             continue
         bound_sym: list[str] = []
         bound_mod: list[str] = []
@@ -500,10 +523,11 @@ def discover_tests(
 
     # ── naming fallback (weakest) ────────────────────────────────────
     name = sym.name
+    hit_files = {hit.file for hit in best.values()}
     for tmod in idx.modules.values():
         if not is_test_path(tmod.file):
             continue
-        if any(hit.file == tmod.file for hit in best.values()):
+        if tmod.file in hit_files:
             continue
         if name in Path(tmod.file).stem:
             offer(

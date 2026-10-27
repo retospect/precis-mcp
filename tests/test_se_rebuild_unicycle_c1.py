@@ -21,6 +21,7 @@ import functools
 import json
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -43,8 +44,16 @@ def handler(hub: Hub, store: Store) -> SeHandler:
 
 
 def _build(handler: SeHandler, store: Store, *, broken: bool) -> Any:
-    """put() the script's ops into the test DB; return the loaded tree."""
-    handler.put(id=_SLUG, text=json.dumps(_MOD.payload(broken=broken)))
+    """put() the script's ops into the test DB; return the loaded tree.
+
+    put's reply digest runs the full validate pass (an ~18 s envelope-
+    overlap SDF sweep on this design, 30 s wall-clock budget) that no test
+    reads — those that care call ``view="validate"`` themselves. Stubbing
+    it for the put halves every test's runtime and keeps the budget from
+    expiring under -n load.
+    """
+    with mock.patch.object(se_validate, "validate", return_value=[]):
+        handler.put(id=_SLUG, text=json.dumps(_MOD.payload(broken=broken)))
     ref = store.get_ref(kind="se", id=_SLUG)
     assert ref is not None
     return persist.load_tree(store, ref.id)

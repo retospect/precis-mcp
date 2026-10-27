@@ -931,6 +931,14 @@ def _covers(ref: str, changed: str) -> bool:
     return changed == ref or changed.startswith(ref + "/")
 
 
+def _cover_keys(changed: str) -> frozenset[str]:
+    """Every ref that ``_covers`` would match for ``changed``: the path
+    itself plus each parent dir. Lets a caller test a whole ref set with
+    one ``isdisjoint`` instead of a ``_covers`` call per ref."""
+    parts = changed.split("/")
+    return frozenset(["/".join(parts[:i]) for i in range(1, len(parts) + 1)])
+
+
 def _pattern_covers(pattern: str, path: str) -> bool:
     if fnmatch.fnmatch(path, pattern):
         return True
@@ -1159,9 +1167,10 @@ def _select(
                     "changed test file",
                 )
 
+        keys = _cover_keys(path)
         # Corpus: every test whose resolved refs cover the changed path.
         for tp, refs in maps.test_refs.items():
-            if any(_covers(r, path) for r in refs):
+            if not keys.isdisjoint(refs):
                 offer_p(str(tp.relative_to(root)), f"reads corpus path <- {path}")
         # A src module's corpus reads only matter for data changes: for .py
         # changes the import scan already covers the changed module itself —
@@ -1170,7 +1179,7 @@ def _select(
         # as data).
         if m not in maps.mod2file:
             for mod_name, refs in maps.src_refs.items():
-                if any(_covers(r, path) for r in refs):
+                if not keys.isdisjoint(refs):
                     affected.add(mod_name)
 
         if _DOC_PATH.match(path):

@@ -106,6 +106,9 @@ def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
     selector.build_corpus()
     misses: list[str] = []
     contract_files = {_resolve(t)[0] for t in sel.CONTRACT}
+    # One select per distinct ref (~1500 reads, ~560 distinct): selection
+    # depends only on the ref, not on which test reads it.
+    selected: dict[str, set[str]] = {}
     for tpath, refs in selector.test_refs.items():
         trel = str(tpath.relative_to(REPO))
         for ref in refs:
@@ -115,8 +118,10 @@ def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
                 # harness/schema paths select everything (FULL) — coverage
                 # is total by construction, no subset to prove here
                 continue
-            targets, _ = selector.select([ref])
-            if trel not in {str(_resolve(t)[0].relative_to(REPO)) for t in targets}:
+            if ref not in selected:
+                targets, _ = selector.select([ref])
+                selected[ref] = {str(_resolve(t)[0].relative_to(REPO)) for t in targets}
+            if trel not in selected[ref]:
                 misses.append(f"{trel} reads {ref}")
     assert not misses, "corpus-coupled tests not reachable:\n" + "\n".join(
         sorted(misses)
