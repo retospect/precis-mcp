@@ -371,6 +371,125 @@ def test_gc_leaves_fresh_rows(store: Any) -> None:
     assert n_rows == 1
 
 
+class TestCallsRead:
+    """gr520238 ask 3 — the ledger's agent-facing readers (previously
+    write-only; "which views did that run call" needed a transcript
+    regex)."""
+
+    def test_calls_for_agentlog_round_trip(self, store: Any) -> None:
+        tag = uuid4().hex[:8]
+        alog = int(tag, 16)  # agentlog_id has no FK — a uuid tag is a run
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                kind="paper",
+                input_keys=["id", "kind", "view"],
+                agentlog_id=alog,
+                latency_ms=137,
+                arg_sample='{"kind":"paper","id":"pa1","view":"toc"}',
+            ),
+        )
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb=f"search-{tag}",
+                agentlog_id=alog,
+                outcome="error",
+                error_type="BadInput",
+                error_head="[error:BadInput] q empty",
+            ),
+        )
+        tool_ledger.record_call(  # a different run — must not leak in
+            store, _rec(verb=f"other-{tag}", agentlog_id=alog + 1)
+        )
+        total, rows = tool_ledger.calls_for_agentlog(store, alog)
+        assert total == 2 and len(rows) == 2
+        assert [r["verb"] for r in rows] == ["get", f"search-{tag}"]
+        line = tool_ledger.call_line(rows[0])
+        assert f"agentlog {alog}" in line
+        assert "kind='paper'" in line
+        assert "id='pa1'" in line and "view='toc'" in line
+        assert line.endswith("→ ok 137ms")
+        err_line = tool_ledger.call_line(rows[1])
+        assert "→ ERROR BadInput" in err_line and "q empty" in err_line
+
+    def test_calls_for_agentlog_caps_to_newest(self, store: Any) -> None:
+        tag = uuid4().hex[:8]
+        alog = int(tag, 16)
+        for i in range(5):
+            tool_ledger.record_call(
+                store, _rec(verb=f"cap-{tag}-{i}", agentlog_id=alog)
+            )
+        total, rows = tool_ledger.calls_for_agentlog(store, alog, limit=2)
+        assert total == 5 and len(rows) == 2
+        assert [r["verb"] for r in rows] == [f"cap-{tag}-3", f"cap-{tag}-4"]
+
+    def test_calls_mining_groups_filters_and_limits(self, store: Any) -> None:
+        tag = uuid4().hex[:8]
+        kind = f"tk-{tag}"
+        sample = json.dumps({"kind": kind, "view": "toc"})
+        tool_ledger.record_call(
+            store, _rec(verb="get", kind=kind, arg_sample=sample, latency_ms=9)
+        )
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                kind=kind,
+                arg_sample=sample,
+                outcome="error",
+                error_type="NotFound",
+            ),
+        )
+        tool_ledger.record_call(store, _rec(verb="get", kind=f"other-{tag}"))
+        out = tool_ledger.calls_mining(store, kind=kind, since_hours=1)
+        assert out["total"] == 2
+        grp = next(g for g in out["groups"] if g["kind"] == kind)
+        assert grp["verb"] == "get" and grp["view"] == "toc"
+        assert grp["n"] == 2 and grp["errors"] == 1
+        assert len(out["rows"]) == 2
+        # The view filter digs into arg_sample, errors= narrows to fails.
+        assert (
+            tool_ledger.calls_mining(store, kind=kind, view="toc", since_hours=1)[
+                "total"
+            ]
+            == 2
+        )
+        assert (
+            tool_ledger.calls_mining(store, kind=kind, view="abstract", since_hours=1)[
+                "total"
+            ]
+            == 0
+        )
+        errs = tool_ledger.calls_mining(store, kind=kind, errors=True, since_hours=1)
+        assert errs["total"] == 1
+        assert errs["rows"][0]["error_type"] == "NotFound"
+        # A kind filter another kind's rows never match.
+        assert (
+            tool_ledger.calls_mining(store, kind=f"other-{tag}", since_hours=1)["total"]
+            == 1
+        )
+
+    def test_call_line_minimal_row(self) -> None:
+        """A row with no agentlog / sample / latency still renders."""
+        line = tool_ledger.call_line({"verb": "put", "kind": "memory", "outcome": "ok"})
+        assert line == "? put kind='memory' → ok"
+
+    def test_call_line_kind_column_fills_missing_sample(self) -> None:
+        line = tool_ledger.call_line(
+            {
+                "verb": "search",
+                "kind": "job",
+                "outcome": "error",
+                "error_type": "BadInput",
+                "arg_sample": {"q": "x"},
+            }
+        )
+        assert "kind='job'" in line and "q='x'" in line
+        assert "→ ERROR BadInput" in line
+
+
 def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:
     tag = uuid4().hex[:8]
     verb = f"gclock-{tag}"

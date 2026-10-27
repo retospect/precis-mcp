@@ -116,11 +116,13 @@
 
   /* target: {kind:'pad', refdes, pad, net?} | {kind:'part', refdes}
              | {kind:'net'|'ratsnest', net}
-     returns {text, lcsc, url, datasheet}: text is the tooltip line,
+     returns {text, lcsc, url, datasheet, script}: text is the tooltip line,
      lcsc/url the part's stored C-number and its LCSC page (both null
-     without one), datasheet its catalog datasheet URL (gr520537). */
+     without one), datasheet its catalog datasheet URL (gr520537), script
+     the traced placement's board-script site {file, line, ws} — null when
+     no construction trace names a maker (gr520540). */
   function describe(facts, target) {
-    const out = {text: '', lcsc: null, url: null, datasheet: null};
+    const out = {text: '', lcsc: null, url: null, datasheet: null, script: null};
     let text = '';
     if (target.kind === 'pad' || target.kind === 'part') {
       text = partText(facts, target.refdes);
@@ -129,6 +131,7 @@
       out.url = lcscUrl(part.lcsc);
       out.lcsc = out.url ? part.lcsc : null;
       out.datasheet = webUrl(part.datasheet);
+      out.script = part.script || null;
       const bad = target.net ? failure(facts, target.net) : null;
       if (bad) text += '/' + target.net + ' ' + bad;
     } else if (target.net) {

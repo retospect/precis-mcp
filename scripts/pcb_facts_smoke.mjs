@@ -15,7 +15,8 @@ const F = createRequire(import.meta.url)(
 const facts = {
   parts: {
     C2: { value: '10uF', package: '0603', rating: '6.3V', lcsc: 'C19702',
-          datasheet: 'https://datasheet.lcsc.com/lcsc/C19702.pdf' },
+          datasheet: 'https://datasheet.lcsc.com/lcsc/C19702.pdf',
+          script: { file: 'main.py', line: 4, ws: 'leaf-a' } },
     C3: { value: 'C 1.0pF', package: null, rating: null, lcsc: null },
     R9: { value: '<img src=x onerror=alert(1)>', package: null, rating: null, lcsc: 'javascript:alert(1)',
           datasheet: 'javascript:alert(1)' },
@@ -105,6 +106,13 @@ assert.equal(F.describe(facts, { kind: 'pad', refdes: 'C2', pad: '1' }).datashee
 assert.equal(F.describe(facts, { kind: 'part', refdes: 'R9' }).datasheet, null,
   'a non-web datasheet URL is dropped');
 assert.equal(F.describe(facts, { kind: 'part', refdes: 'J1' }).datasheet, null);
+// gr520540: a traced placement's board-script site rides describe as
+// {file, line, ws} — null when the trace names no maker
+assert.deepEqual(F.describe(facts, { kind: 'part', refdes: 'C2' }).script,
+  { file: 'main.py', line: 4, ws: 'leaf-a' });
+assert.deepEqual(F.describe(facts, { kind: 'pad', refdes: 'C2', pad: '1' }).script,
+  { file: 'main.py', line: 4, ws: 'leaf-a' }, 'pad and part agree');
+assert.equal(F.describe(facts, { kind: 'part', refdes: 'J1' }).script, null);
 // user text is returned as text, never altered into markup
 assert.ok(F.describe(facts, { kind: 'part', refdes: 'R9' }).text.includes('<img src=x onerror=alert(1)>'));
 

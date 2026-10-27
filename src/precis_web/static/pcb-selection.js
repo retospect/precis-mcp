@@ -124,6 +124,19 @@
       a.target = '_blank'; a.rel = 'noopener noreferrer';
       factsBox.append(' ', a);
     }
+    // gr520540: when the construction trace names the placement's maker,
+    // the script link opens the code viewer at the call's own line.
+    const s = d.script;
+    if (s && typeof s.file === 'string' && Number.isInteger(s.line) && s.line > 0) {
+      const a = document.createElement('a');
+      a.href = '/pcb/' + encodeURIComponent(SLUG) + '/code?file=' +
+        encodeURIComponent(s.file) +
+        (typeof s.ws === 'string' && s.ws ? '&ws=' + encodeURIComponent(s.ws) : '') +
+        '#L' + s.line;
+      a.textContent = s.file + ':' + s.line;
+      a.target = '_blank'; a.rel = 'noopener noreferrer';
+      factsBox.append(' · script ', a);
+    }
   };
   // gr520538: the preview box shows the part's cached JLCPCB image (same
   // /part/<refdes>/thumb route the hover card uses — always our own

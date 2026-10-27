@@ -6,6 +6,21 @@
    server-side, scoped to .cv-code, with a github-dark variant under
    prefers-color-scheme: dark. #}
 <style>{{ cv_css | safe }}</style>
+<style>
+  /* gr520540: a #L<n> fragment names one line inside a panel — the
+     targeted empty anchor paints a full-width band at its own line
+     (top: auto keeps the static position). */
+  .cv-file { position: relative; }
+  .cv-l:target::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    height: 1.5em;
+    margin-top: -0.1em;
+    background: rgb(var(--bg-info-solid-soft) / .15);
+    pointer-events: none;
+  }
+</style>
 
 <div class="flex items-center gap-3 mb-4">
   <h1 class="text-lg font-semibold">{{ title }}</h1>
@@ -72,5 +87,19 @@
     {% endfor %}
   {% endfor %}
 </div>
+{# gr520540: a #L<n> fragment (the Selection box's board-script link)
+   names a line inside one tab panel; the browser's native anchor jump
+   fires while that panel is still display:none (x-show applies only
+   once Alpine starts), so re-scroll after load. #}
+<script>
+  window.addEventListener('load', function () {
+    var m = /^#L(\d+)$/.exec(location.hash);
+    if (!m) return;
+    setTimeout(function () {
+      var el = document.getElementById('L' + m[1]);
+      if (el) el.scrollIntoView({ block: 'center' });
+    }, 0);
+  });
+</script>
 {% endif %}
 {% endblock %}

@@ -350,6 +350,26 @@ def _per_token(markup: str, fn: Callable[[str], str]) -> str:
     return "".join(parts)
 
 
+def _line_anchors(markup: str) -> str:
+    """One empty ``<a id="L<n>" class="cv-l"></a>`` marker per line start,
+    so a ``#L<n>`` fragment (the Selection box's board-script link,
+    gr520540) names the exact line. Only text nodes are walked — a
+    newline inside a tag or link anchor is not a line boundary."""
+    parts = _HL_TAG.split(markup)
+    n = 1
+    out = ['<a id="L1" class="cv-l"></a>']
+    for i, part in enumerate(parts):
+        if i % 2:
+            out.append(part)
+            continue
+        for j, seg in enumerate(part.split("\n")):
+            if j:
+                n += 1
+                out.append(f'\n<a id="L{n}" class="cv-l"></a>')
+            out.append(seg)
+    return "".join(out)
+
+
 class _ScopedLinks(_EyeLinks):
     """``_EyeLinks`` fenced to ``main`` plus this page's own ``ws-*``
     aliases.
@@ -383,10 +403,12 @@ def _render_plain(
     out = html.escape(body, quote=False)
     out = _per_segment(out, _import_linker(files, path, ws_slug))
     out = _per_segment(out, _path_linker(files, ws_slug))
-    return _linkify_escaped(
-        out,
-        links=links,
-        focus_alias=f"ws-{ws_slug}" if ws_slug else None,
+    return _line_anchors(
+        _linkify_escaped(
+            out,
+            links=links,
+            focus_alias=f"ws-{ws_slug}" if ws_slug else None,
+        )
     )
 
 
@@ -436,7 +458,7 @@ def _render_file(
             focus_alias=f"ws-{ws_slug}" if ws_slug else None,
         ),
     )
-    return out, False
+    return _line_anchors(out), False
 
 
 def _ws_slug_of(meta: dict[str, Any], folder_id: int) -> str:
@@ -573,11 +595,18 @@ async def _code_page(
     workspaces = await asyncio.to_thread(
         _workspaces, store, ref, kind, _python_handler(request)
     )
+    # First file is the default; a ?file= match (scoped by ?ws= when given)
+    # replaces it, and the first such match wins so a path present in
+    # several workspaces resolves deterministically.
     selected = ""
+    matched = False
     for w in workspaces:
         for f in w["files"]:
-            if not selected or (ws == w["slug"] and file == f["path"]):
+            if not selected:
                 selected = f["key"]
+            if not matched and file == f["path"] and (ws is None or ws == w["slug"]):
+                selected = f["key"]
+                matched = True
     return timed_response(
         request,
         templates.TemplateResponse(

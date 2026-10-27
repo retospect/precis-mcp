@@ -6,6 +6,8 @@ dispatch, and the sweeper GC (links drop, chunks stay)."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis import agentlog
@@ -335,6 +337,116 @@ def test_search_link_finds_runs_that_touched_a_ref(
     # A chunk handle resolves to its owning ref the same way.
     dc = handle_registry.format_handle("draft", chunk.chunk_id, chunk=True)
     assert "run-on-nt" in handler.search(link=dc).body
+
+
+# ── tool-call ledger surface (gr520238 ask 3) ───────────────────────
+
+
+def _ledger_row(hub: Hub, *, agentlog_id: int | None = None, **kw: Any) -> None:
+    from precis import tool_ledger
+    from precis.tool_ledger import ToolCallRecord
+
+    base: dict[str, Any] = {
+        "verb": "get",
+        "kind": "paper",
+        "input_keys": ["kind", "id"],
+        "outcome": "ok",
+        "agentlog_id": agentlog_id,
+    }
+    base.update(kw)
+    tool_ledger.record_call(hub.live_store, ToolCallRecord(**base))
+
+
+def test_get_calls_view_renders_the_runs_ledger_rows(hub: Hub) -> None:
+    """``get(kind='agentlog', id=N, view='calls')`` — the run's own
+    ``tool_calls`` rows, the "which views did this run call" answer that
+    used to need a transcript-mining pass."""
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="calls run")
+    _ledger_row(
+        hub,
+        agentlog_id=log_id,
+        input_keys=["id", "kind", "view"],
+        latency_ms=137,
+        arg_sample='{"kind":"paper","id":"pa1","view":"toc"}',
+    )
+    _ledger_row(
+        hub,
+        agentlog_id=log_id,
+        verb="search",
+        outcome="error",
+        error_type="BadInput",
+        error_head="[error:BadInput] q empty",
+    )
+    _ledger_row(hub, agentlog_id=None)  # another run — must not show
+    body = AgentLogHandler(hub=hub).get(id=log_id, view="calls").body
+    assert f"# agentlog {log_id}" in body
+    assert "get kind='paper' id='pa1' view='toc' → ok 137ms" in body
+    assert "→ ERROR BadInput" in body
+    assert "2 call(s)" in body
+
+
+def test_get_calls_view_empty_run_says_why(hub: Hub) -> None:
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(hub.live_store, source="chat", title="quiet")
+    body = AgentLogHandler(hub=hub).get(id=log_id, view="calls").body
+    assert "no tool_calls rows" in body
+
+
+def test_get_calls_view_limit_param_and_refusal(hub: Hub) -> None:
+    """``limit=`` is accepted on view='calls' and refused everywhere
+    else — the job /logs rule."""
+    from precis.errors import BadInput
+    from precis.handlers.agentlog import AgentLogHandler
+
+    log_id = agentlog.open_log(hub.live_store, source="plan_tick", title="t")
+    for _ in range(3):
+        _ledger_row(hub, agentlog_id=log_id)
+    handler = AgentLogHandler(hub=hub)
+    body = handler.get(id=log_id, view="calls", limit=2).body
+    assert "newest 2 of 3 calls" in body
+    with pytest.raises(BadInput):
+        handler.get(id=log_id, limit=10)
+
+
+def test_calls_mining_list_view_groups_and_filters(hub: Hub) -> None:
+    """``id='/calls?<filters>'`` — the cross-run read: GROUP BY summary
+    plus the newest matching rows."""
+    from uuid import uuid4
+
+    from precis.handlers.agentlog import AgentLogHandler
+
+    tag = uuid4().hex[:8]
+    kind = f"tk-{tag}"
+    sample = f'{{"kind":"{kind}","view":"toc"}}'
+    _ledger_row(hub, kind=kind, arg_sample=sample, latency_ms=9)
+    _ledger_row(
+        hub, kind=kind, arg_sample=sample, outcome="error", error_type="NotFound"
+    )
+    _ledger_row(hub, kind=f"other-{tag}")
+    handler = AgentLogHandler(hub=hub)
+    body = handler.get(id=f"/calls?kind={kind}&since=1").body
+    assert "# tool_calls" in body
+    assert f"get {kind} view=toc: 2 calls (1 errors)" in body
+    assert "2 rows shown of 2 matching" in body
+    # errors= narrows to the failing calls only.
+    err = handler.get(id=f"/calls?kind={kind}&errors=1&since=1").body
+    assert "errors only" in err
+    assert "1 rows shown of 1 matching" in err
+    # view= digs into arg_sample->>'view'.
+    toc = handler.get(id=f"/calls?kind={kind}&view=toc&since=1").body
+    assert "2 rows shown of 2 matching" in toc
+
+
+def test_calls_mining_unknown_filter_refuses(hub: Hub) -> None:
+    from precis.errors import BadInput
+    from precis.handlers.agentlog import AgentLogHandler
+
+    with pytest.raises(BadInput) as exc:
+        AgentLogHandler(hub=hub).get(id="/calls?bogus=1")
+    assert "bogus" in str(exc.value)
 
 
 # ── web routes (real store, injected runtime) ───────────────────────

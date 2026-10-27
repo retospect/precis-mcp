@@ -504,11 +504,172 @@ def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
     return deleted
 
 
+# ── agent-facing reads (gr520238 ask 3) ────────────────────────────────
+#
+# Until these the ledger was write-only: "which views did that run call"
+# needed a prod-psql regex over job transcripts. The agentlog surface
+# exposes two shapes — ``get(kind='agentlog', id=N, view='calls')`` reads
+# one run's own calls, and ``get(kind='agentlog', id='/calls?…')`` is the
+# cross-run mining view (GROUP BY + the newest matching rows). arg_sample
+# / error_head are already masked + bounded at write time, so rendering
+# them here carries no payload.
+
+#: Default / cap rows a calls read returns — same posture as job /logs.
+CALLS_DEFAULT_LIMIT = 100
+CALLS_MAX_LIMIT = 200
+#: Default look-back window for the mining view (hours); the cap matches
+#: the ledger's retention so a wider ask can't seq-scan dead history.
+CALLS_DEFAULT_SINCE_HOURS = 168
+CALLS_MAX_SINCE_HOURS = DEFAULT_RETENTION_DAYS * 24
+
+_CALL_COLS = (
+    "call_id, ts, agentlog_id, source, profile, verb, kind, input_keys, "
+    "outcome, error_type, result_count, latency_ms, session_id, seq, "
+    "result_bytes, error_head, arg_sample, client"
+)
+
+
+def calls_for_agentlog(
+    store: Store, agentlog_id: int, *, limit: int = CALLS_DEFAULT_LIMIT
+) -> tuple[int, list[dict[str, Any]]]:
+    """``(total, rows)`` — one run's own calls, oldest-first, capped to
+    the newest ``limit``. The ``view='calls'`` read on a concrete
+    agentlog."""
+    from psycopg.rows import dict_row
+
+    with store.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        total_row = cur.execute(
+            "SELECT count(*) FROM tool_calls WHERE agentlog_id = %s",
+            (int(agentlog_id),),
+        ).fetchone()
+        rows = cur.execute(
+            f"SELECT {_CALL_COLS} FROM tool_calls WHERE agentlog_id = %s "
+            "ORDER BY ts DESC, call_id DESC LIMIT %s",
+            (int(agentlog_id), int(limit)),
+        ).fetchall()
+    rows.reverse()
+    return (int(total_row["count"]) if total_row else 0), rows
+
+
+def calls_mining(
+    store: Store,
+    *,
+    verb: str | None = None,
+    kind: str | None = None,
+    view: str | None = None,
+    source: str | None = None,
+    agentlog: int | None = None,
+    errors: bool = False,
+    since_hours: int = CALLS_DEFAULT_SINCE_HOURS,
+    limit: int = CALLS_DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    """The cross-run ``/calls`` read: matching-row count, the
+    ``GROUP BY (verb, kind, arg_sample->>'view')`` confusion-mining
+    summary, and the newest ``limit`` matching rows (oldest-first for
+    reading). Every filter binds as a parameter — never formatted."""
+    from datetime import UTC, datetime, timedelta
+
+    from psycopg.rows import dict_row
+
+    cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
+    where = ["ts >= %(cutoff)s"]
+    sql_params: dict[str, Any] = {"cutoff": cutoff}
+    if verb:
+        where.append("verb = %(verb)s")
+        sql_params["verb"] = verb
+    if kind:
+        where.append("kind = %(kind)s")
+        sql_params["kind"] = kind
+    if view:
+        where.append("arg_sample->>'view' = %(view)s")
+        sql_params["view"] = view
+    if source:
+        where.append("source = %(source)s")
+        sql_params["source"] = source
+    if agentlog is not None:
+        where.append("agentlog_id = %(agentlog)s")
+        sql_params["agentlog"] = int(agentlog)
+    if errors:
+        where.append("outcome = 'error'")
+    where_sql = " AND ".join(where)
+    with store.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        total_row = cur.execute(
+            f"SELECT count(*) AS n FROM tool_calls WHERE {where_sql}",
+            sql_params,
+        ).fetchone()
+        groups = cur.execute(
+            "SELECT verb, kind, arg_sample->>'view' AS view, count(*) AS n, "
+            "count(*) FILTER (WHERE outcome = 'error') AS errors "
+            f"FROM tool_calls WHERE {where_sql} "
+            "GROUP BY verb, kind, arg_sample->>'view' "
+            "ORDER BY n DESC, verb, kind LIMIT 25",
+            sql_params,
+        ).fetchall()
+        rows = cur.execute(
+            f"SELECT {_CALL_COLS} FROM tool_calls WHERE {where_sql} "
+            "ORDER BY ts DESC, call_id DESC LIMIT %(limit)s",
+            {**sql_params, "limit": int(limit)},
+        ).fetchall()
+    rows.reverse()
+    return {
+        "total": int(total_row["n"]) if total_row else 0,
+        "groups": groups,
+        "rows": rows,
+    }
+
+
+def call_line(row: dict[str, Any]) -> str:
+    """One ledger row as the agentlog surface renders it::
+
+        2026-10-27T08:52:56Z agentlog 512345 get kind='paper' id='pa1' view='toc' → ok 137ms
+        … search kind='job' → ERROR BadInput ([error:BadInput] kind …)
+
+    ``arg_sample`` was masked + bounded at write time, so it renders
+    verbatim; ``kind=``/``id=``/``view=`` lead, the rest sort after."""
+    from precis.utils.timeutil import as_utc
+
+    ts = as_utc(row.get("ts"))
+    stamp = ts.strftime("%Y-%m-%dT%H:%M:%SZ") if ts is not None else "?"
+    head = [stamp]
+    if row.get("agentlog_id") is not None:
+        head.append(f"agentlog {row['agentlog_id']}")
+    head.append(str(row.get("verb") or "?"))
+
+    items: list[tuple[str, Any]] = []
+    sample = row.get("arg_sample")
+    if isinstance(sample, dict):
+        seen = {k for k in ("kind", "id", "view") if k in sample}
+        items = [(k, sample[k]) for k in ("kind", "id", "view") if k in sample]
+        items += sorted((k, v) for k, v in sample.items() if k not in seen)
+    if row.get("kind") and not any(k == "kind" for k, _ in items):
+        items.insert(0, ("kind", row["kind"]))
+    args = " ".join(
+        f"{k}={v!r}" if isinstance(v, str) else f"{k}={json.dumps(v)}" for k, v in items
+    )
+
+    if row.get("outcome") == "error":
+        tail = f"→ ERROR {row.get('error_type') or 'error'}"
+        if row.get("error_head"):
+            tail += f" ({row['error_head']})"
+    else:
+        lat = row.get("latency_ms")
+        tail = "→ ok" + (f" {int(lat)}ms" if isinstance(lat, int | float) else "")
+    args_part = f" {args}" if args else ""
+    return f"{' '.join(head)}{args_part} {tail}"
+
+
 __all__ = [
+    "CALLS_DEFAULT_LIMIT",
+    "CALLS_DEFAULT_SINCE_HOURS",
+    "CALLS_MAX_LIMIT",
+    "CALLS_MAX_SINCE_HOURS",
     "DEFAULT_RETENTION_DAYS",
     "RETENTION_DAYS_ENV",
     "ToolCallRecord",
     "arg_sample",
+    "call_line",
+    "calls_for_agentlog",
+    "calls_mining",
     "current_client",
     "current_session_key",
     "error_head",

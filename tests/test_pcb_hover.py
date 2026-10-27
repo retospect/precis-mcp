@@ -178,6 +178,7 @@ def test_facts_join_catalogue_rows_and_route_state() -> None:
         "rating": "6.3V",
         "lcsc": "C19702",
         "datasheet": "https://datasheet.lcsc.com/lcsc/C19702.pdf",
+        "script": None,
     }
     assert parts["R9"]["value"] == "10k" and parts["R9"]["rating"] == "0.1W"
     assert parts["J1"] == {
@@ -186,6 +187,7 @@ def test_facts_join_catalogue_rows_and_route_state() -> None:
         "rating": None,
         "lcsc": None,
         "datasheet": None,
+        "script": None,
     }
     nets = out["facts"]["nets"]
     assert nets["VBUS"]["current_a"] == 0.5 and nets["VBUS"]["reason"] is None
@@ -220,3 +222,88 @@ def test_unreasoned_failure_and_unrouted_net_still_say_something() -> None:
     out = pcb_hover.facts_from_tables(_TABLES, route)
     assert out["facts"]["nets"]["CC2"]["reason"] == "router reported no reason"
     assert out["unrouted"] == ["CC2", "VBUS"] and out["failed"] == ["CC2"]
+
+
+def test_facts_merge_the_traced_placement_line_per_refdes() -> None:
+    """gr520540: the Selection box's board-script link is a facts field —
+    ``scripts`` merges ``{file, line, ws}`` per refdes, ``None`` where the
+    trace knows no maker."""
+    scripts = {
+        "C2": {"file": "main.py", "line": 4, "ws": "leaf-a"},
+        "J1": None,
+    }
+    out = pcb_hover.facts_from_tables(_TABLES, [], scripts=scripts)
+    parts = out["facts"]["parts"]
+    assert parts["C2"]["script"] == {"file": "main.py", "line": 4, "ws": "leaf-a"}
+    assert parts["J1"]["script"] is None
+    assert parts["R9"]["script"] is None
+
+
+_E2E_SCRIPT = """\
+import precis_geom.pcb as pcb
+
+
+def build():
+    b = pcb.Board("e2e")
+    u1 = b.part("U1", pins=["1"])
+    u2 = b.part("U2", pins=["1"])
+    b.wire(u1["1"], u2["1"], name="VCC")
+    return b
+"""
+
+
+def test_placed_scripts_names_the_maker_frames_script_line(
+    store: Any, tmp_path: Any
+) -> None:
+    """gr520540: the trace's ``meta.frame`` stamps resolve to the deepest
+    user frame — the script line that placed the part — never recomputed
+    (same data ``view='frames'`` walks)."""
+    from precis.dispatch import Hub
+    from precis.handlers.pcb import PcbHandler
+    from precis.store import Store
+    from precis_geom import trace, trace_schema
+    from precis_web import pcb_design
+    from tests.workspaces._script import load_script
+
+    assert isinstance(store, Store)
+    mod = load_script(tmp_path, _E2E_SCRIPT)
+    with trace.run(work_root=tmp_path) as tr:
+        board = mod.build()
+        doc = tr.dump()
+    doc["run"]["workspace"] = "leaf-a"
+    h = PcbHandler(hub=Hub(store=store))
+    h.put(id="tb", args={**board.to_batch(), "trace": trace_schema.dumps(doc)})
+    ref = store.get_ref(kind="pcb", id="tb")
+    assert ref is not None
+    with store.pcb_view_tx() as conn:
+        view = pcb_design.capture_view(store, ref, conn=conn)
+        placed = pcb_hover.placed_scripts(store, view)
+    u1 = placed["U1"]
+    assert u1 is not None
+    assert u1["file"] == "main.py" and u1["line"] == 4
+    assert u1["ws"] == "leaf-a"
+
+
+def test_placed_scripts_is_empty_without_a_bound_trace(store: Any) -> None:
+    """A board with no construction trace yields no script facts — the
+    Selection box shows no link (gr520540's "when that is known")."""
+    from precis.dispatch import Hub
+    from precis.handlers.pcb import PcbHandler
+    from precis.store import Store
+    from precis_web import pcb_design
+
+    assert isinstance(store, Store)
+    h = PcbHandler(hub=Hub(store=store))
+    h.put(
+        id="plain",
+        args={
+            "components": [{"refdes": "R1", "pins": [{"name": "1"}]}],
+            "nets": [{"name": "VCC"}],
+            "connections": [{"net": "VCC", "refdes": "R1", "pin": "1"}],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="plain")
+    assert ref is not None
+    with store.pcb_view_tx() as conn:
+        view = pcb_design.capture_view(store, ref, conn=conn)
+        assert pcb_hover.placed_scripts(store, view) == {}

@@ -165,6 +165,45 @@ def test_code_page_selects_file_param(store: Store, code_client: TestClient) -> 
     assert "{ tab: &#34;f1&#34; }" in r.text
 
 
+def test_code_page_file_param_selects_without_ws(
+    store: Store, code_client: TestClient
+) -> None:
+    """``?file=`` alone selects across workspaces — the Selection box's
+    board-script link names a file, not always a ws (gr520540)."""
+    _design(store, "cv-selfile-1")
+    _folder(store, ws="one", design="cv-selfile-1", files={"a.py": "A = 1\n"})
+    _folder(store, ws="two", design="cv-selfile-1", files={"b.py": "B = 2\n"})
+    r = code_client.get("/se/cv-selfile-1/code?file=b.py")
+    assert r.status_code == 200
+    assert "{ tab: &#34;f1&#34; }" in r.text
+
+
+def test_code_page_file_param_first_match_across_workspaces(
+    store: Store, code_client: TestClient
+) -> None:
+    """The same path in two workspaces, no ``ws=``: the first match is
+    selected, not the last (gr520540)."""
+    _design(store, "cv-seldup-1")
+    _folder(store, ws="one", design="cv-seldup-1", files={"x.py": "X = 1\n"})
+    _folder(store, ws="two", design="cv-seldup-1", files={"x.py": "X = 2\n"})
+    r = code_client.get("/se/cv-seldup-1/code?file=x.py")
+    assert r.status_code == 200
+    assert "{ tab: &#34;f0&#34; }" in r.text
+
+
+def test_code_page_line_anchors(store: Store, code_client: TestClient) -> None:
+    """One empty ``<a id="L<n>">`` marker per line start so a ``#L<n>``
+    fragment lands on the call site (gr520540)."""
+    _design(store, "cv-ln-1")
+    _folder(store, ws="cvws", design="cv-ln-1", files={"main.py": MAIN_PY})
+    r = code_client.get("/se/cv-ln-1/code")
+    assert r.status_code == 200
+    assert 'id="L1"' in r.text
+    assert 'id="L3"' in r.text
+    assert 'id="L5"' in r.text
+    assert 'id="L9"' not in r.text
+
+
 def test_code_page_xdata_attribute_parses(
     store: Store, code_client: TestClient
 ) -> None:

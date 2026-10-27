@@ -89,10 +89,16 @@ def part_summary(part: dict[str, Any] | None, component: dict[str, Any]) -> dict
 
 
 def facts_from_tables(
-    tables: dict[str, list[dict[str, Any]]], route_nets: list[dict[str, Any]]
+    tables: dict[str, list[dict[str, Any]]],
+    route_nets: list[dict[str, Any]],
+    *,
+    scripts: dict[str, dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """The ``hover`` manifest block from a snapshot's tables and
-    ``RouteStatus.nets`` rows. Pure."""
+    ``RouteStatus.nets`` rows. Pure. ``scripts`` is
+    :func:`placed_scripts`'s ``{refdes: {file, line, ws}}`` map — each
+    part's ``script`` field is the board-script line that placed it,
+    ``None`` when the bound trace knows no maker (gr520540)."""
 
     def live(name: str) -> list[dict[str, Any]]:
         return [r for r in tables.get(name, []) if not r.get("retired_at")]
@@ -105,9 +111,9 @@ def facts_from_tables(
     for inst in instances.values():
         comp = components.get(inst["component_id"])
         if comp is not None:
-            out_parts[inst["refdes"]] = part_summary(
-                parts.get(comp.get("part_lcsc")), comp
-            )
+            summary = part_summary(parts.get(comp.get("part_lcsc")), comp)
+            summary["script"] = (scripts or {}).get(inst["refdes"])
+            out_parts[inst["refdes"]] = summary
     nets_by_id = {r["net_id"]: r for r in live("pcb_nets")}
     labels: dict[int, list[str]] = {}
     for conn in tables.get("pcb_netconns", []):
@@ -142,8 +148,82 @@ def facts_from_tables(
     }
 
 
+def _frame_id(raw: Any) -> int | None:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def placed_scripts(store: Any, view: Any) -> dict[str, dict[str, Any] | None]:
+    """``{refdes: {'file', 'line', 'ws'}}`` — the board-script call site
+    that placed each instance, for the Selection box's script link
+    (gr520540). Reads exactly what ``get(kind='pcb', view='frames')``
+    walks — the ref's ``meta.generated.trace`` binding, the stored
+    ``ws_trace`` doc and the rows' ``meta.frame`` stamps (the instance's
+    own, else its component's — :func:`precis.pcb.frames.bound_frames`'
+    rule) — never recomputed. A placement is linked only when its maker
+    chain holds a user frame carrying ``file``/``line``; ``{}`` when no
+    trace is bound."""
+    from precis.pcb import frames as pcb_frames
+
+    trace_ref = ((getattr(view.ref, "meta", None) or {}).get("generated") or {}).get(
+        "trace"
+    )
+    if not isinstance(trace_ref, dict):
+        return {}
+    home = trace_ref.get("run_job")
+    doc = pcb_frames.read_ws_trace(
+        store,
+        view.ref.id if home is None else int(home),
+        trace_ref.get("root"),
+    )
+    if doc is None:
+        return {}
+    tr = pcb_frames.Trace(doc)
+    tables = view.raw["tables"]
+    components = {
+        r["component_id"]: r
+        for r in tables.get("pcb_components", [])
+        if not r.get("retired_at")
+    }
+    out: dict[str, dict[str, Any] | None] = {}
+    for inst in tables.get("pcb_instances", []):
+        if inst.get("retired_at"):
+            continue
+        refdes = inst["refdes"]
+        comp = components.get(inst["component_id"]) or {}
+        raw = (inst.get("meta") or {}).get("frame")
+        if raw is None:
+            raw = (comp.get("meta") or {}).get("frame")
+        maker = tr.maker_frame(_frame_id(raw))
+        if maker is None:
+            continue
+        # The maker itself may be a library-internal frame — the site a
+        # human wants is the script's own call, the deepest user frame on
+        # the root→maker path.
+        site = next(
+            (
+                f
+                for f in reversed(tr.path(maker))
+                if f.get("kind") == "user" and f.get("file") and f.get("line")
+            ),
+            None,
+        )
+        if site is None:
+            continue
+        out[refdes] = {
+            "file": str(site["file"]),
+            "line": int(site["line"]),
+            "ws": tr.ws,
+        }
+    return out
+
+
 def hover_facts(store: Any, view: Any) -> dict[str, Any]:
     """The ``hover`` block for the shown snapshot; routing facts come from
     :func:`route_state`, never a second computation."""
     status = route_state(store, view.ref.id, drc=False)
-    return facts_from_tables(view.raw["tables"], status.nets)
+    return facts_from_tables(
+        view.raw["tables"], status.nets, scripts=placed_scripts(store, view)
+    )
