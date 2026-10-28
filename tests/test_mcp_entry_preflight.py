@@ -93,6 +93,19 @@ def test_present_entry_is_a_silent_noop(rig: dict[str, str]) -> None:
     assert _calls(rig, "FAKE_ENSURE_CALLS") == []
 
 
+def test_existing_inline_entry_is_never_rewritten(rig: dict[str, str]) -> None:
+    """gr515184: entries minted before the env-reference change still hold
+    the token inline. The preflight must not swap one for the placeholder
+    — a session launched without mcp-token-env would then send 'Bearer '
+    and lock out until the token file lands. Add-only, forever."""
+    Path(rig["FAKE_CLAUDE_STATE"]).touch()
+    assert _run(rig).returncode == 0
+    assert _run(rig, "--dry-run").returncode == 0
+    adds = [c for c in _calls(rig, "FAKE_CLAUDE_CALLS") if "add-json" in c]
+    assert adds == []
+    assert _calls(rig, "FAKE_ENSURE_CALLS") == []
+
+
 def test_dry_run_present_reports_nothing_to_do(rig: dict[str, str]) -> None:
     Path(rig["FAKE_CLAUDE_STATE"]).touch()
     result = _run(rig, "--dry-run")

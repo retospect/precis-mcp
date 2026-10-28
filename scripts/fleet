@@ -188,8 +188,11 @@ up_thread() { # up_thread <slug>
   # hands the rest to subagents (AGENTS.md "Agent sizing"); editors run in
   # an isolated worktree so they never collide with the thread's own tree.
   local boot="Resume the work on $slug. Use subagents per AGENTS.md Agent sizing: you keep design and domain judgment; searches to navigator/extract/Explore, decided edits to coder/test-author/documenter, test runs to test-runner, cluster reads to cluster-ops, bug tracing to root-cause, pre-ship review to reviewer; independent pieces as parallel agents in one message; any agent that edits uses isolation worktree."
+  # mcp-token-env fills PRECIS_MCP_TOKEN from the client token file: the
+  # user-scope entry's bearer header is a ${PRECIS_MCP_TOKEN} env
+  # reference (gr515184), expanded at connect from the session env.
   tmux new-window -d -n "$slug" -c "$root" \
-    "claude -w $slug --model $(thread_model "$slug") '$boot'"
+    "'$root/scripts/mcp-token-env' claude -w $slug --model $(thread_model "$slug") '$boot'"
   echo "created: $slug"
 }
 
@@ -214,9 +217,9 @@ cmd_up() {
   if ! has_window review; then
     local prompt="You are the review session. Read $conf/review-protocol.md and follow it; the queue directory is $queue. Start with the gather step, then give Reto the status board and the first cluster."
     if tmux list-windows -F '#{window_index}' | grep -q -x 1; then
-      tmux new-window -d -b -t 1 -n review -c "$root" "claude --model $model '$prompt'"
+      tmux new-window -d -b -t 1 -n review -c "$root" "'$root/scripts/mcp-token-env' claude --model $model '$prompt'"
     else
-      tmux new-window -d -t 1 -n review -c "$root" "claude --model $model '$prompt'"
+      tmux new-window -d -t 1 -n review -c "$root" "'$root/scripts/mcp-token-env' claude --model $model '$prompt'"
     fi
     echo "created: review"
   fi

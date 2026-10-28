@@ -23,10 +23,12 @@ Safety, enforced here and tested in ``tests/test_wt_mcp.py``:
   names must start with ``precis-wt-`` (:func:`assert_wt_target`); the
   shared ``precis-mcp-http`` family is never started, stopped, restarted or
   reconfigured from here — not even by accident of a typo in a tree name;
-* the generated MCP config holds the bearer token: written mode 600 to
+* the generated MCP config's bearer header is the env reference
+  ``${PRECIS_MCP_TOKEN}`` (gr515184): written mode 600 to
   ``~/.cache/precis-mcp-wt/<tree>/mcp.json`` (outside the checkout), never
   printed or logged; this module never reads the token itself (the ensure
-  script's ``--config`` output goes straight to the file);
+  script's ``--config`` output goes straight to the file, and the value
+  reaches the ``claude`` child only through its environment);
 * a cap of :data:`MAX_SERVERS` live worktree servers, one port each from
   :data:`PORT_RANGE`; one tree root per server name;
 * the migration guard fails closed: ``up``, every watcher ``--restart`` and
@@ -494,11 +496,12 @@ def claim_root(tree: Tree) -> None:
 def write_config(tree: Tree, port: int) -> Path:
     """``<ensure state>/mcp.json`` naming the server ``precis``, mode 600.
 
-    The ensure script's ``--config`` prints the client entry (URL + bearer
-    header); it is parsed and wrapped into Claude Code's ``mcpServers``
-    shape and written with the file created 0600 before any byte lands.
-    Nothing from it is logged or returned. It lives in the tree's ensure
-    state dir under ``~/.cache``, never inside the checkout.
+    The ensure script's ``--config`` prints the client entry (URL + the
+    ``${PRECIS_MCP_TOKEN}`` bearer reference, gr515184); it is parsed and
+    wrapped into Claude Code's ``mcpServers`` shape and written with the
+    file created 0600 before any byte lands. Nothing from it is logged or
+    returned. It lives in the tree's ensure state dir under ``~/.cache``,
+    never inside the checkout.
     """
     res = run_ensure(tree, port, "--config", capture=True)
     if res.returncode != 0:
@@ -838,6 +841,66 @@ def cmd_watch(
     return 0
 
 
+def _readable_token_file(path: Path) -> bool:
+    """Owner/mode gate before any read (gr515184 review): ``True`` only
+    when ``path`` is a non-empty file owned by the current uid with no
+    group/other permission bits. A foreign-owned or too-open file is
+    refused loudly — path and ``next: chmod 600 <path>`` on stderr, never
+    the content. A missing file is silent (the caller tries the next
+    candidate)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if st.st_size == 0:
+        return False
+    if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077:
+        print(
+            f"wt-mcp: refusing {path} (owner/mode too open)\nnext: chmod 600 {path}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _session_mcp_env() -> dict[str, str]:
+    """Env for the ``claude`` child: ``os.environ`` plus ``PRECIS_MCP_TOKEN``
+    read from the client token file (gr515184). The generated
+    ``--mcp-config`` entry's bearer header is the env reference
+    ``${PRECIS_MCP_TOKEN}``, expanded at connect time — the value must be
+    in the child's environment and is never printed, logged or passed on
+    argv. ``PRECIS_MCP_TOKEN_FILE`` overrides the default
+    ``~/.config/precis/token`` (ansible's mode-600 file); the shared
+    server's ``~/.secrets/pw/PRECIS_MCP_TOKEN`` is the same value until
+    that run lands. Each candidate passes :func:`_readable_token_file`'s
+    owner/mode gate before any read."""
+    env = dict(os.environ)
+    if env.get("PRECIS_MCP_TOKEN"):
+        return env
+    token = ""
+    for cand in (
+        Path(env.get("PRECIS_MCP_TOKEN_FILE") or "~/.config/precis/token").expanduser(),
+        Path.home() / ".secrets" / "pw" / "PRECIS_MCP_TOKEN",
+    ):
+        if not _readable_token_file(cand):
+            continue
+        try:
+            token = cand.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        if token:
+            break
+    if token:
+        env["PRECIS_MCP_TOKEN"] = token
+    else:
+        print(
+            "wt-mcp: no client token file — the session starts but precis calls"
+            " will answer 401 (docs/runbooks/session-restart.md)",
+            file=sys.stderr,
+        )
+    return env
+
+
 def cmd_claude(tree: Tree, args: list[str]) -> int:
     """``up``, start the watcher, run Claude Code with this tree's server as
     its only ``precis``; stop the watcher when the session ends."""
@@ -859,7 +922,8 @@ def cmd_claude(tree: Tree, args: list[str]) -> int:
     port = pick_port(tree)
     print(f"session precis = {tree.server} on 127.0.0.1:{port} (strict mcp config)")
     proc = subprocess.Popen(
-        [claude, "--mcp-config", str(tree.config_file), "--strict-mcp-config", *args]
+        [claude, "--mcp-config", str(tree.config_file), "--strict-mcp-config", *args],
+        env=_session_mcp_env(),
     )
     prev = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:

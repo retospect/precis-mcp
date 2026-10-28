@@ -17,6 +17,8 @@
 #
 #   precis-mcp-http-ensure.sh                   # ensure up; quiet unless it acts
 #   precis-mcp-http-ensure.sh --config          # print the ~/.claude.json entry
+#                                               # (bearer = ${PRECIS_MCP_TOKEN}
+#                                               # env ref, never the value)
 #   precis-mcp-http-ensure.sh --recreate        # force a blue-green backend swap
 #   precis-mcp-http-ensure.sh --restart         # respawn the server child in place
 #   precis-mcp-http-ensure.sh --status          # report without changing anything
@@ -171,8 +173,12 @@ mint_token() {
 }
 
 client_config() {
-    printf '{"type":"http","url":"http://127.0.0.1:%s/mcp","headers":{"Authorization":"Bearer %s"}}\n' \
-        "$PORT" "$(cat "$TOKEN_FILE")"
+    # No token value in the entry (gr515184): Claude Code expands
+    # ${PRECIS_MCP_TOKEN} when it connects, so `claude mcp get precis`
+    # prints only the placeholder. The value lives in the mode-600
+    # client token file scripts/mcp-token-env reads into a session's
+    # environment at launch.
+    printf '%s\n' "{\"type\":\"http\",\"url\":\"http://127.0.0.1:${PORT}/mcp\",\"headers\":{\"Authorization\":\"Bearer \${PRECIS_MCP_TOKEN}\"}}"
 }
 
 if [ "$MODE" = config ]; then

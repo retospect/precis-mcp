@@ -90,4 +90,6 @@ if [ -n "$pin_tree" ] && [[ "$*" != *--append-system-prompt* ]]; then
         "You run in the castor lane. Your task tree is $pin_tree — use absolute paths under it only; file tools refuse paths outside it."
     )
 fi
-exec claude --model "$model" ${extra[@]+"${extra[@]}"} "$@"
+# mcp-token-env fills PRECIS_MCP_TOKEN from the client token file (gr515184):
+# the user-scope precis entry's bearer header is an env reference.
+exec "$(dirname "$0")/mcp-token-env" claude --model "$model" ${extra[@]+"${extra[@]}"} "$@"

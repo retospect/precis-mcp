@@ -118,7 +118,8 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
 ```
 precis-mcp-http-ensure.sh                   # ensure up; quiet unless it acts
 precis-mcp-http-ensure.sh --status          # proxy and backend reported separately
-precis-mcp-http-ensure.sh --config          # the ~/.claude.json entry (127.0.0.1:<port>)
+precis-mcp-http-ensure.sh --config          # the ~/.claude.json entry (127.0.0.1:<port>);
+                                            # bearer = the ${PRECIS_MCP_TOKEN} env ref, never the value
 precis-mcp-http-ensure.sh --restart         # respawn the serve child in place
 precis-mcp-http-ensure.sh --recreate        # force a blue-green backend swap
 precis-mcp-http-ensure.sh --migrate         # one-time cutover (below)
@@ -280,6 +281,15 @@ says LEGACY) yourself afterwards.
   hostname (one line). This file is public and cannot name the node; the old
   script had it as a literal. `PRECIS_MCP_DB_HOST` in the environment also
   works.
+- Client side (gr515184): the bearer token lives in `~/.config/precis/token`
+  (mode 600, ansible-managed; `~/.secrets/pw/PRECIS_MCP_TOKEN` is the same
+  value and serves until that file lands). `--config` emits the
+  `${PRECIS_MCP_TOKEN}` env reference — never the value — so
+  `claude mcp get precis` can't leak it; `scripts/mcp-token-env` fills the
+  variable into a session's environment at launch, and
+  `scripts/mcp-token-check` asserts both files' owner/mode plus one
+  authenticated call. The mounted `secrets/PRECIS_MCP_TOKEN` must be owned
+  by the uid the container runs as or the 0600 mode locks the server out.
 - Docker's default address pools hold about thirty networks. A machine with
   many compose test stacks can exhaust them ("all predefined address pools have
   been fully subnetted", seen with 30 present); the script then retries with an

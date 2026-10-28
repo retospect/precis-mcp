@@ -22,8 +22,8 @@
 # It goes through the `claude mcp` registry commands only — it never edits
 # ~/.claude.json or any settings file itself, and it never touches an
 # existing entry. Output is exactly what it changed: silent when the entry
-# is already present, one line per action otherwise (the Bearer token in
-# the server config is never printed).
+# is already present, one line per action otherwise (the config's bearer
+# header is the ${PRECIS_MCP_TOKEN} env reference, never a value, gr515184).
 #
 # Exit: 0 entry present or re-added; 2 usage / no claude CLI / no ensure
 #       script; 3 ensure --config failed; 4 `claude mcp add-json` failed
@@ -70,6 +70,10 @@ if ! command -v "$CLAUDE" >/dev/null 2>&1; then
     exit 2
 fi
 
+# An existing entry is NEVER rewritten (gr515184): entries minted before
+# the env-reference change still carry the token inline, and re-adding the
+# placeholder now would lock out sessions launched without mcp-token-env
+# until Reto rotates. Rotation re-adds the entry by hand.
 if "$CLAUDE" mcp get precis >/dev/null 2>&1; then
     if [ "$dry" = 1 ]; then
         echo "mcp-entry-preflight: user-scope precis entry present — nothing to do"
@@ -78,7 +82,8 @@ if "$CLAUDE" mcp get precis >/dev/null 2>&1; then
 fi
 
 # The entry the ensure script's --config prints is the same one the fleet
-# re-added by hand: {"type":"http","url":...,"headers":{"Authorization":...}}.
+# re-added by hand: {"type":"http","url":...,"headers":{"Authorization":
+# "Bearer ${PRECIS_MCP_TOKEN}"}} — the env reference, not the value.
 # Prefer the installed copy (PRECIS_MCP_ENSURE, as scripts/fleet does);
 # fall back to the repo copy next to this script.
 ensure="${PRECIS_MCP_ENSURE:-$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh}"

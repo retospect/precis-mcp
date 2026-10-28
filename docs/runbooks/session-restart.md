@@ -13,19 +13,17 @@ claude mcp list                # is there a precis line? "- ✔ Connected"?
 scripts/mcp-entry-preflight --dry-run   # what the heal would do
 ```
 
-`claude mcp get precis` answers the same question but prints the entry's
-`Authorization: Bearer …` header in full on stdout (gr515184) — the token
-lands in scrollback, transcripts and logs. Never run it where output is
-captured; if the entry detail is genuinely needed, read the
-`mcpServers.precis` block of `~/.claude.json` or filter the header out
-(`claude mcp get precis | grep -vi authorization`). Same for
-`precis-mcp-http-ensure.sh --config`, whose output IS the token-bearing
-client entry — feed it to `claude mcp add-json` and never echo it.
-
-The Bearer token currently sits inline in `~/.claude.json` (and in
-`~/.config/devin/mcp_config.json`, mode 600). The planned end-state is a
-mode-600 token file (`~/.config/precis/token`) with rotation, deferred to
-the next infrastructure/ansible run (Reto 2026-10-25, gr515184).
+`claude mcp get precis` answers the same question. Its bearer header is
+the `${PRECIS_MCP_TOKEN}` env reference since gr515184, not the token —
+safe to run, but prefer `claude mcp list` anyway (same answer, less
+noise). The token itself lives in `~/.config/precis/token` (mode 600,
+ansible-managed); `scripts/mcp-token-env` reads it into a session's
+environment at launch so Claude Code can expand the reference when it
+connects, and `scripts/mcp-token-check` asserts both files' owner and
+mode plus one authenticated call. The old shape — token inline in
+`~/.claude.json` — must never come back: entries minted before the
+change still hold it, so after a rotate re-add the entry once with the
+new `--config` output (below).
 
 The server being up is NOT evidence the entry exists: the server is a
 shared streamable-http daemon (`deploy/mcp-http/precis-mcp-http-ensure.sh`),

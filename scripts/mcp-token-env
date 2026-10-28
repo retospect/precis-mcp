@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+{ set +x; } 2>/dev/null
+# scripts/mcp-token-env — exec a command with PRECIS_MCP_TOKEN filled from
+# the client token file.
+#
+# The user-scope `precis` MCP entry in ~/.claude.json holds the env
+# reference `${PRECIS_MCP_TOKEN}`, not the bearer value (gr515184), so
+# `claude mcp get precis` no longer prints a credential. Claude Code
+# expands the reference when it connects — the value must be in the
+# session's environment, which is what this launcher provides:
+#
+#   scripts/mcp-token-env claude -w my-tree
+#
+# Token file: $PRECIS_MCP_TOKEN_FILE, else ~/.config/precis/token (the
+# ansible-managed mode-600 file), else the shared server's own
+# ~/.secrets/pw/PRECIS_MCP_TOKEN — the same value until the ansible run
+# lands the dedicated client file.
+#
+# The `set +x` above blocks SHELLOPTS=xtrace / bash -x echoing the
+# assignment. Before any read, the file must be owned by the current
+# uid with no group/other permission bits (a foreign-owned or
+# world-readable token file is refused, loudly: path + chmod hint on
+# stderr, never the content). A missing file warns but still execs: a
+# session that starts without precis auth beats no session;
+# mcp-entry-preflight names the restart runbook. The token is never
+# printed, logged or passed on argv.
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+    echo "usage: $(basename "$0") <command> [args...]" >&2
+    exit 2
+fi
+
+# Prints "uid mode" for $1 (macOS stat -f, GNU stat -c fallback). The
+# output is validated: GNU stat -f means --file-system and answers with
+# garbage rather than failing, so a shape mismatch retries with -c.
+file_meta() {
+    local m
+    m="$(stat -L -f '%u %Lp' "$1" 2>/dev/null)" || true
+    [[ "$m" =~ ^[0-9]+[[:space:]][0-7]{3,4}$ ]] \
+        || m="$(stat -L -c '%u %a' "$1" 2>/dev/null)" || true
+    printf '%s\n' "$m"
+}
+
+# 0 = safe to read: owned by this uid and no group/other bits.
+readable_token_file() {
+    local meta uid mode
+    meta="$(file_meta "$1")" || return 1
+    uid="${meta%% *}"
+    mode="${meta##* }"
+    if [ "$uid" != "$(id -u)" ] || [ $((8#${mode} & 8#077)) -ne 0 ]; then
+        printf 'mcp-token-env: refusing %s (owner/mode too open)\nnext: chmod 600 %s\n' \
+            "$1" "$1" >&2
+        return 1
+    fi
+    return 0
+}
+
+token=""
+for cand in \
+    "${PRECIS_MCP_TOKEN_FILE:-$HOME/.config/precis/token}" \
+    "$HOME/.secrets/pw/PRECIS_MCP_TOKEN"; do
+    [ -s "$cand" ] || continue
+    readable_token_file "$cand" || continue
+    token="$(tr -d '[:space:]' < "$cand")"
+    [ -n "$token" ] && break
+done
+if [ -n "$token" ]; then
+    PRECIS_MCP_TOKEN="$token"
+    export PRECIS_MCP_TOKEN
+else
+    echo "mcp-token-env: no readable client token file;" \
+        "precis MCP calls will answer 401 (docs/runbooks/session-restart.md)" >&2
+fi
+exec "$@"

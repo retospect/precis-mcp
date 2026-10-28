@@ -1,0 +1,218 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""Assert the precis MCP bearer token's file placement (gr515184).
+
+The token moved out of ``~/.claude.json``'s inline ``Authorization`` header
+into two mode-600 files, and this is the check the ansible task runs after
+applying that layout (gr515184 comments 1-2):
+
+1. **Client file** ``$PRECIS_MCP_TOKEN_FILE`` (default
+   ``~/.config/precis/token``): exists, mode 0600, owned by the invoking
+   user, in a parent directory that user owns — Claude Code running as
+   that user reads it via ``scripts/mcp-token-env`` at session launch.
+2. **Server file** ``${PRECIS_MCP_HTTP_STATE:-~/.cache/precis-mcp-http}``
+   ``/secrets/PRECIS_MCP_TOKEN``: exists, mode 0600, owned by the uid the
+   container runs as (``precis`` — the bind mount presents host uid
+   numbers, so the file's owner must equal the container's uid or the
+   0600 mode locks the server out of its own token). The uid comes from
+   ``PRECIS_MCP_CONTAINER_UID``, else ``docker exec`` on a live
+   ``<name>-a|b`` backend, else the invoking uid with a note (the dev
+   image is built with the host uid).
+3. **One authenticated MCP call**: ``initialize`` POSTed to
+   ``127.0.0.1:$PRECIS_MCP_HTTP_PORT/mcp`` (default 8765) with the client
+   file's token — anything but 401 proves the mounted secret and the
+   client credential agree.
+
+The token value is never printed; failures name the file and the fix.
+Exit 0 when every check passes, 1 with the first failure named, 2 on
+usage. ``--help`` prints this docstring.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+CLIENT_FILE = Path(
+    os.environ.get("PRECIS_MCP_TOKEN_FILE") or "~/.config/precis/token"
+).expanduser()
+SERVER_FILE = (
+    Path(
+        os.environ.get("PRECIS_MCP_HTTP_STATE") or "~/.cache/precis-mcp-http"
+    ).expanduser()
+    / "secrets"
+    / "PRECIS_MCP_TOKEN"
+)
+NAME = os.environ.get("PRECIS_MCP_HTTP_NAME", "precis-mcp-http")
+PORT = int(os.environ.get("PRECIS_MCP_HTTP_PORT", "8765"))
+
+
+def fail(what: str, detail: str, next_: str) -> int:
+    print(f"mcp-token-check: FAIL {what}: {detail}", file=sys.stderr)
+    print(f"  next= {next_}", file=sys.stderr)
+    return 1
+
+
+def container_uid() -> tuple[int | None, str]:
+    """The uid the backend container runs as, or None when undiscoverable."""
+    env = os.environ.get("PRECIS_MCP_CONTAINER_UID")
+    if env:
+        try:
+            return int(env), f"PRECIS_MCP_CONTAINER_UID={env}"
+        except ValueError:
+            return None, f"PRECIS_MCP_CONTAINER_UID={env!r} is not a uid"
+    if shutil.which("docker"):
+        try:
+            names = subprocess.run(
+                [
+                    "docker",
+                    "ps",
+                    "--format",
+                    "{{.Names}}",
+                    "--filter",
+                    f"name=^{NAME}-[ab]$",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                check=False,
+            ).stdout.split()
+        except (OSError, subprocess.SubprocessError):
+            names = []
+        for name in names:
+            try:
+                out = subprocess.run(
+                    ["docker", "exec", name, "id", "-u"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if out.returncode == 0 and out.stdout.strip().isdigit():
+                return int(out.stdout.strip()), f"{name} id -u"
+    return os.getuid(), "no live backend; assuming invoking uid"
+
+
+def check_file(path: Path, want_uid: int, what: str) -> int | None:
+    if not path.is_file():
+        return fail(what, f"{path} does not exist", "the ansible task writes it")
+    st = path.stat()
+    mode = st.st_mode & 0o777
+    if mode & 0o077:
+        return fail(
+            what,
+            f"{path} is mode {mode:04o} — group/other must have no bits "
+            "(0600 or stricter)",
+            f"chmod 600 {path}",
+        )
+    if st.st_uid != want_uid:
+        return fail(
+            what,
+            f"{path} is owned by uid {st.st_uid}, want {want_uid}",
+            "chown it to the reading uid (client: the user; server: the "
+            "container's precis uid)",
+        )
+    if st.st_size == 0:
+        return fail(what, f"{path} is empty", "the ansible task writes it")
+    print(
+        f"mcp-token-check: ok {what} ({path}: mode {mode:04o}, uid {want_uid})"
+    )
+    return None
+
+
+def authed_call(token: str) -> int | None:
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "mcp-token-check", "version": "1"},
+            },
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}/mcp",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    except (OSError, urllib.error.URLError) as e:
+        return fail(
+            "authenticated call",
+            f"no answer from 127.0.0.1:{PORT}/mcp ({e})",
+            "is the session server up? precis-mcp-http-ensure.sh --status",
+        )
+    if status == 401:
+        return fail(
+            "authenticated call",
+            "the server answered 401 — the client file and the mounted "
+            "server secret disagree",
+            "rotate: write the new token to both files, re-add the client "
+            "entry, restart sessions",
+        )
+    print(f"mcp-token-check: ok authenticated initialize -> HTTP {status}")
+    return None
+
+
+def main() -> int:
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        print(f"usage: {Path(sys.argv[0]).name} [--help]", file=sys.stderr)
+        return 2
+
+    rc = check_file(CLIENT_FILE, os.getuid(), "client token file")
+    if rc is not None:
+        return rc
+    parent = CLIENT_FILE.parent.stat()
+    if parent.st_uid != os.getuid():
+        return fail(
+            "client token file",
+            f"parent dir {CLIENT_FILE.parent} is owned by uid "
+            f"{parent.st_uid}, want {os.getuid()}",
+            "chown the directory to the invoking user",
+        )
+    print(
+        f"mcp-token-check: ok client parent dir ({CLIENT_FILE.parent}: "
+        f"uid {os.getuid()})"
+    )
+
+    uid, how = container_uid()
+    if uid is None:
+        return fail("server token file", how, "name a uid in PRECIS_MCP_CONTAINER_UID")
+    if how.startswith("no live backend"):
+        print(f"mcp-token-check: note container uid {uid} ({how})")
+    rc = check_file(SERVER_FILE, uid, "server token file")
+    if rc is not None:
+        return rc
+
+    rc = authed_call(CLIENT_FILE.read_text(encoding="utf-8").strip())
+    if rc is not None:
+        return rc
+    print("mcp-token-check: all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
