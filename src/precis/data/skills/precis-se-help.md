@@ -9,6 +9,7 @@ answers:
   - how do I check whether my structure is rigid or a mechanism (stability)?
   - how do I declare loads, supports, measures, manufacturing mode, BOM?
   - what units does se use, and what do envelope w/d/h mean?
+  - how do I round a block's edges/corners — a fillet radius on the envelope?
   - how do I declare a port and connect two blocks with a capability gate?
   - how do I search the library for a block matching several properties at once, like opto-deform + bistable + a click-chemistry port?
 applies-to: get/search/put/edit/delete/link (kind='se')
@@ -21,13 +22,13 @@ kinds: se
 
 An `se` design is a **block tree** (blocks with poses + cad-DSL envelopes)
 plus **connects** (port↔port edges carrying a joint class, objectives,
-and optional preload). You author with typed ops, then read views that
-check what you claimed. For the design *workflow* (abstraction ladder,
-refine, tradeoffs) see `precis-se-design-help`; for screwing a design
-together — picking a real ISO screw, what a printed part's threaded hole
-should be, and what `view='fasten'` reports — see `precis-se-fasten-help`;
-for printing a block — `realize`, build frame, process DRC, STL/3MF
-export, `view='fab'`'s fabrication table — see `precis-se-print-help`.
+optional preload). You author with typed ops, then read views that
+check what you claimed. Design *workflow* (abstraction ladder, refine,
+tradeoffs): `precis-se-design-help`; screwing a design together — a real
+ISO screw, a printed part's threaded hole, `view='fasten'` —
+`precis-se-fasten-help`; printing a block — `realize`, build frame,
+process DRC, STL/3MF export, `view='fab'` —
+`precis-se-print-help`.
 
 ## Units and geometry conventions — read first
 
@@ -39,21 +40,26 @@ export, `view='fab'`'s fabrication table — see `precis-se-print-help`.
   e-notation fine; mixing united and bare-nonzero components rejects.
   `envelope` DSL: unchanged (`cyl:r0.02h0.01`, metres).
 - **Writes acknowledge**: quantity-ingesting ops answer with
-  `understood: pose = [3 0 0] nm` lines — the canonical reading of what
-  was stored. Reads show units on every pose/rot; a homogeneous table
-  column carries one unit in its header (`gap (nm)`) with bare cells.
-- **Answers come back in your units** (respond-in-kind), and
-  `args={'prefunits': 'nm,deg'}` on a `get` forces a display unit —
-  per call only. `prefunits` in a `put`/`edit` payload makes it the
-  design's sticky preference (stored `meta.prefunits`); per-call wins
-  over sticky, a unit you just typed wins over both. Display only —
-  storage is SI either way.
+  `understood: pose = [3 0 0] nm` — the canonical stored reading; reads
+  show units on every pose/rot, and a homogeneous table column carries
+  one unit in its header (`gap (nm)`) with bare cells.
+- **Answers come back in your units** (respond-in-kind);
+  `args={'prefunits': 'nm,deg'}` on a `get` forces a display unit per
+  call; in a `put`/`edit` payload it is the sticky preference
+  (`meta.prefunits`) — per-call beats sticky, a unit you just typed
+  beats both. Display only — storage is SI either way.
 - **Never convert units yourself** — state your unit; `calc` converts.
 - **Envelope `box` `w`/`d`/`h` are FULL dimensions**: `box:w0.028d0.240
   h0.020` is a 28 × 240 × 20 mm block — centred in x/y, **base at
-  `z=0`** (spans z=0..h, like `cyl`) — verified against the kernel;
-  not half-extents.
+  `z=0`** (spans z=0..h, like `cyl`), not half-extents.
 - `cyl` has its **base at the pose** (not centred); `sphere` is centred.
+- **Rounded envelopes — `rd<radius>` rounds every edge and corner**: the
+  envelope DSL is the cad mini-DSL, so `box:w0.05d0.1h0.065rd0.003` is a
+  rounded enclosure with no fillet op (bare metres here; hand-authored
+  cad node configs at the boundary take units —
+  `box:w50mmd100mmh65mmrd3mm`), and `realize` seeds the cad design from
+  it. The ½·min rule and its refusal, the shapes that refuse `rd`, and
+  the export switch a round triggers: [[precis-cad-help]] §Round it.
 - `rot` is an Euler vector (composed `Rz@Ry@Rx`), written with `deg` or
   `rad`: `90°` about z is `"rot": "[0 0 90] deg"`.
 - `pose` is the block origin in the parent frame, e.g. `"[0 0 4] mm"`.
@@ -71,12 +77,12 @@ live") or promoted building blocks. Incremental changes go through
 `edit(kind='se', id=…, ops=[…])`. Op batches are **atomic**: one bad op
 rolls the whole batch back.
 
-`scenario` names the **production context** that governs the design —
-`prototype` (one off, lifetime physics OFF) · `small_batch` (100, indoor
-five-year service) · `mass_production` (100 000, full lifetime physics).
-It decides which checks are meaningful, so `view='validate'` and
-`view='drc'` print the governing scenario — or `scenario: none chosen`.
-An unknown name is rejected; an *absent* key keeps the earlier choice.
+`scenario` names the **production context**: `prototype` (one off,
+lifetime physics OFF) · `small_batch` (100, indoor five-year service) ·
+`mass_production` (100 000, full lifetime physics). It decides which
+checks are meaningful, so `view='validate'`/`view='drc'` print the
+governing scenario — or `scenario: none chosen`. An unknown name is
+rejected; an *absent* key keeps the earlier choice.
 
 **Every `put`/`edit` reply ends with a `validate:` digest** —
 `validate: clean`, or `validate: N error(s), M warning(s) — first:
@@ -92,11 +98,12 @@ re-pose the block (`set_pose`); blocks left at `[0,0,0]` pile up and
 trip it.
 
 **Blocks are addressed by label or by uid.** A label (the block `name`)
-is unique within a design. A block also carries a stable **uid** — `(uid
-#41)` in `view='block'` — that survives edits and re-`put`s. **Anywhere an
-op or a view takes an existing block**, `'#41'`/`'uid:41'` addresses it by
-uid, including the block half of `'block.port'` (`connect a='#41.bore'`);
-an ambiguous label's error lists every matching uid. The label is what
+is unique within a design; a block also carries a stable **uid** (`(uid
+#41)` in `view='block'`) that survives edits and re-`put`s. **Anywhere an
+op or a view takes an existing block**, `'#41'`/`'uid:41'` addresses it
+by uid, including the block half of `'block.port'` (`connect
+a='#41.bore'`); an ambiguous label's error lists every matching uid. The
+label is what
 gets stored either way. (A block name may not be `'uid:…'` or contain `'#'`, `'/'`, `'@'`, `'['` or `']'` —
 the last four delimit region selectors, `precis-se-regions-help`.)
 Read one block with `get(kind='se', id='<design>', view='block', args={'block': '<label or #uid>'})` — `block` is required (`name` still answers as a deprecated alias, with a hint).
@@ -128,24 +135,24 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
 - `update_port` — `block`, `name` (req) + `roles`/`direction`/
   `annotations`, each rewriting in full (a key absent leaves the stored
   value alone; pass `null`/`[]`/`{}` to clear one). Never touches `pose`/
-  `rot` — `set_port_pose` owns those. A workspace re-import uses this to
-  re-sync a surviving port's non-pose fields every run; the pose itself
-  moves only when nothing changed it since the last import (an agent's
-  own `set_port_pose` since then is kept — `port.pose_kept` in the echo
-  instead of a silent overwrite).
+  `rot` — `set_port_pose` owns those. A workspace re-import re-syncs a
+  surviving port's non-pose fields with this every run; the pose moves
+  only when nothing changed it since the last import (an agent's own
+  `set_port_pose` since then is kept — `port.pose_kept` in the echo,
+  not a silent overwrite).
 
 ## Ops — connect, disconnect, joints
 
 - `connect` — `a`, `b` (req, `"block.port"` — **ports must already
-  exist**; connect never auto-creates) · `joint` dict · `objectives`
-  flat dict (`force`/`torque`/`duty`/`cycles`) · **atomic mode:**
-  `kind` `bond|interaction` (default `bond`) — a `bond` connect
-  requires **both** ports to afford `'covalent'`, or, with
-  `objectives={'role': ...}`, both to afford that named role instead
-  (rejection names the actual roles); `interaction`
-  (non-bonded) skips the gate entirely. Declared intent, not chemical
-  plausibility. `kind` and `joint` are mutually exclusive — a
-  bond and a kinematic joint are different claims; declare one. **Complementary roles** need one port per
+  exist**; never auto-created) · `joint` dict · `objectives` flat dict
+  (`force`/`torque`/`duty`/`cycles`) · **atomic mode:** `kind`
+  `bond|interaction` (default `bond`) — a `bond` connect requires
+  **both** ports to afford `'covalent'`, or with
+  `objectives={'role': ...}` that named role on both (rejection names
+  the actual roles); `interaction` (non-bonded) skips the gate.
+  Declared intent, not chemical plausibility. `kind` and `joint` are
+  mutually exclusive — a bond and a kinematic joint are different
+  claims. **Complementary roles** need one port per
   half, never two of the same: `azide` ↔ `alkyne` (gate on either half
   or on `CuAAC`), `donor` ↔ `acceptor`, `bump` ↔ `hole`, `+` ↔ `-`.
   Azide + azide is refused naming both roles; unlisted roles are
@@ -156,39 +163,37 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
   compliant|captive|axial, "axis"?: [x,y,z], "mechanism"?: snap|screw|
   press|clamp|key|magnet|bearing|bond|integral|fuse|adhesive|rivet|pin|
   cable|tensioner, "params"?: {…}}` — nested, never flat. `view='joints'`
-  (no design id needed) lists the whole vocabulary generated from
-  `precis_se.joints` — class glosses, which classes take `axis`, and
-  each mechanism's DRC/BOM demands.
+  (no design id) lists the vocabulary from `precis_se.joints` — class
+  glosses, which classes take `axis`, each mechanism's DRC/BOM demands.
 
 ## Ops — loads, prose, measures
 
 - `set_load` — exactly one of `block` | `a`+`b` (connect), then flat
-  keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `pinned` · `fixed`
-  (true = `["x","y","z"]` or a subset of `x y z rx ry rz`; blocks only;
-  pin vs clamp under `view='stability'`) · `clear`. Flat, never under
-  `objectives=`. Keys MERGE across calls (a repeated key overwrites);
+  keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `pinned` ·
+  `fixed` (true = `["x","y","z"]` or a subset of `x y z rx ry rz`; blocks
+  only; pin vs clamp under `view='stability'`) · `clear`. Flat, never
+  under `objectives=`. Keys MERGE across calls (a repeat overwrites);
   `clear: true` is the only reset. Same on a connect target — amend in
   place, no disconnect/reconnect.
 - `set_desc` — `block` + `desc` and/or `use` (null clears). Amends a
   block's prose after creation; on a template, not an instance.
 - `add_measure` — `block`, `name` (req) · `value`/`min`/`max` · `unit`
   `m|count|ratio|deg` · `relation` `{source: "block.measure", scale,
-  offset, tol}` · `strength` `hard|soft|gauge` (default gauge; `hard`
-  on a measure with a toleranced relation makes its stack-up
-  `tolerance_mismatch` an error instead of a warning — that is the one
-  place hardness is consumed, so `hard` anywhere else draws
-  `minimum_constraint`) · `reason` · `origin` `user|proposed|generated`
-  (generators stamp their length anchors `generated`) · `datum` — the
-  feature the measure is declared
-  against: `frame` (default; prismatic → the three pose-frame faces,
-  rotational → axis + base face) · `port:<name>` · `face:<block>.<tag>`
-  · `axis:<block>`. Resolved through the block's cad primitive at read
+  offset, tol}` · `strength` `hard|soft|gauge` (default gauge; `hard` on
+  a toleranced relation makes its stack-up `tolerance_mismatch` an error
+  instead of a warning — the one place hardness is consumed, so `hard`
+  elsewhere draws `minimum_constraint`) · `reason` · `origin`
+  `user|proposed|generated` (generators stamp length anchors
+  `generated`) · `datum` — the feature the measure is declared against:
+  `frame` (default; prismatic → the three pose-frame faces, rotational →
+  axis + base face) · `port:<name>` · `face:<block>.<tag>` ·
+  `axis:<block>`. Resolved through the block's cad primitive at read
   time — a feature, never an optimiser DOF; see `view='datums'`.
   Relation key `feature: "face:<block>.<tag>"` (same selector grammar)
-  anchors the measure to a
-  geometric feature instead of chaining declared values. The derived
-  number's `mismatch` note is band-first: outside `[min_value,max_value]`
-  when declared, else beyond `tol` of `value`, else not exactly `value`.
+  anchors to a geometric feature instead of chaining declared values.
+  The derived number's `mismatch` note is band-first: outside
+  `[min_value,max_value]` when declared, else beyond `tol` of `value`,
+  else not exactly `value`.
 - `set_measure` / `remove_measure` — `block`, `name` (set needs ≥1
   field; no explicit nulls — remove then re-add)
 - `measurand=` (charge, contact angle, field…), region selectors
@@ -207,10 +212,10 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
 - `set_binding` — `block` + (`kind` ∈ `cad|structure|component|part|pcb` +
   `design`) or `clear: true`. `pcb` binds a board design by slug, resolved
   at tree load (not an op): the board's `mechanical_profile` derives one
-  conservative `box` envelope (mm→m, board frame) plus `H1..Hn` mounting-hole
-  ports. Unknown slug → `pcb_binding_unresolved` (warn); heights taken from
-  the package-class table rather than a part's own `height_mm` →
-  `pcb_height_proposed` (warn).
+  conservative `box` envelope (mm→m, board frame) plus `H1..Hn`
+  mounting-hole ports. Unknown slug → `pcb_binding_unresolved` (warn);
+  heights from the package-class table rather than a part's own
+  `height_mm` → `pcb_height_proposed` (warn).
 - `set_material` — `block`, `material` = `kind='material'` slug or null;
   wins over `mode`'s `family/material` half; manifest `material`
   replays it (gr514245).
@@ -241,7 +246,7 @@ a to-make table (`block · mode · qty`) for every unbound **leaf** block —
 an unbound block with children is a plain assembly, so it gets no row; a
 BOUND non-leaf instead gets one purchasable line saying `covers N
 block(s)`, its children never separately ordered. A cross-design instance
-(`template='<slug>#<block>'`) counts for the *borrowing* design at its own
+(`template='<slug>#<block>'`) counts for the *borrowing* design at its
 local quantity, resolving the binding through the foreign design. The
 honesty header mirrors `bom`'s:
 `purchasable: P of L leaf template(s) · to make: M` — `P`/`M`/`L` count
@@ -263,20 +268,20 @@ C-number).
 A block that can be in more than one shape — a bistable, a photoswitch, an
 assembly step — declares its states and the stimulus-labelled transitions
 between them; `view='kinematics'` reads the swing a transition performs off
-the two port frames, and `view='sweep'` checks every declared state at
+the two port frames, `view='sweep'` checks every declared state at
 once. See [[precis-se-states-help]].
 
 ## Finding and composing library blocks — search(kind='se')
 
 `search(kind='se', wants={...})` ranks library blocks by declared
-capabilities; `search(kind='se', compose={...})` proposes a composition
-(rotary unit + arms, the lever family) that meets a delta/span ask.
-Both, with their worked examples, are in [[precis-se-search-help]].
+capabilities; `compose={...}` proposes a composition (rotary unit +
+arms, the lever family) meeting a delta/span ask. Worked examples:
+[[precis-se-search-help]].
 
 ## Optical (FRET) ops — energy transfer as a comm channel
 
 Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
-`set_optical_link` / `set_optics`, checked by `view='fret'`. See
+`set_optical_link` / `set_optics`, checked by `view='fret'` —
 [[precis-se-fret-help]].
 
 ## The axial member (ties, struts, rods, spokes)
@@ -293,7 +298,7 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
   (consistency is NOT yet cross-checked; keep them honest yourself).
 - Mechanism for a tensioned member: `cable` (BOM demand: "the cable /
   wire rope") or `tensioner` for a threaded rod tensioned by a
-  nipple / turnbuckle (spoke, tie-rod; BOM demand names the rod and the
+  nipple / turnbuckle (spoke, tie-rod; the BOM demand names rod and
   tensioning part). `thread_pitch` [m > 0, default 0.0004536 = the
   56 TPI bicycle spoke thread of 2.0/2.2 mm spokes] sets the nipple's
   pitch; with `preload` and `rate` declared, `view='bom'` ends with an
@@ -324,12 +329,12 @@ as a region selector, `precis-se-regions-help`), `{'atoms': [...]}` (the
 set's LCA frame + coverage), `{'against': <run_job>}` (run diff). A
 finding row on a workspace-built design carries the script line.
 
-Beside each structure-bound block the default tree shows both halves
-labelled by source: the stored build report's error/warning counts
-(`build report:`) and the bound structure's current validator tally
+Beside each structure-bound block the default tree shows both halves by
+source: the stored build report's error/warning counts (`build
+report:`) and the bound structure's current validator tally
 (`validator:`) — a clean build report does not mean the geometry
 validates. `view='validate'` adds stored ERROR/WARN findings by block
-(grouped by error code, warnings summarised) plus `structure_validator_*`
+(error-code grouped, warnings summarised) plus `structure_validator_*`
 findings re-run on the bound geometry — build rows are build-time
 evidence, validator rows the current read.
 
@@ -337,9 +342,9 @@ evidence, validator rows the current read.
 where, message, span) plus the same `validator:` tally (one cached
 geometry read per structure — full detail stays in
 `view='validate'`/`view='block'`). Omit args for every
-direct block, or use `args={'block': '<label or #uid>'}`. Missing records are
+direct block, or `args={'block': '<label or #uid>'}`. Missing records are
 unavailable, not evidence of a successful build; template occurrences are not
-expanded. State overrides are not accepted.
+expanded; state overrides are not accepted.
 
 `view='ops'` is the only view that reads back into `put`: the design as a
 replayable ops list in a fenced `{"ops": [...]}` block, so a design can be
@@ -349,11 +354,11 @@ appears. Its header lists what the round-trip drops; the two that bite are
 **block uids** (a re-`put` mints fresh ones — re-resolve by label) and
 **declared states/transitions** (in `design_states` keyed by uid, not
 the tree). Exports run bigger than the tool-result fold (and `more()`
-re-folds, so the middle stays unreachable) — slice it:
+re-folds, so the middle stays unreachable); slice with
 `args={'page': <n>, 'page_size': <count>}` (`page_size=0` =
-everything from the window start; `offset`/`limit` still work as
-deprecated aliases — the reply's `interpreted:` line names the
-reading); concatenated slices are the whole payload.
+everything from the window start; `offset`/`limit` remain as
+deprecated aliases — `interpreted:` names the reading); concatenated
+slices are the whole payload.
 
 `view='links'` renders the design's link graph both directions. Write
 edges with the `link` verb: `link(kind='se', id='<slug>',
@@ -364,14 +369,14 @@ the design serves, default `related-to` for a sibling variant,
 
 ## The spatial eye (`~<focus>`)
 
-The fisheye ladder focuses one atom, frame or region:
+The fisheye ladder focuses an atom, frame or region:
 `get(kind='se', id='<slug>~<focus>', extent='kwd|summary|verbatim|fisheye|fisheye+1hop|fisheye+2hop')`.
 Focus is one atom (`<block>#<label>`, `<block>/<path>`, `#uid:<path>`,
 `<block>#<ord>`), a trace frame (`frame:<key>`), or any region selector
 (`pi:<block>#<id>` — the π system an atom's `pi:` line names —
 `atoms:`, `sites:`, `mol:`, …). `fisheye` walks the merged bond graph —
 the block's bonds plus `kind='bond'` seam connects — as a graduated
-shell (one line per bond at hop 1, element/hyb/relax groups at 2–3,
+shell (per-bond lines at hop 1, element/hyb/relax groups at 2–3,
 counts at 4–6), then the `Up:` construction ladder to the run and the
 `pi:` line. A `frame:` focus shows `Down:` children and the set's
 boundary shell, never an atom list. `+recall` refuses — atoms have no
@@ -385,18 +390,18 @@ eye. Observation rays (`add_ray`, `view='ray'`, `~ray:<name>`):
 UTC time, op names, block count. `edit(kind='se', id=…,
 ops=[{'op':'restore_revision','rev':N}])` puts the design back to
 revision N (a sole op in its call); the restore is itself recorded as a
-new revision, so nothing is rewound. An unknown N names the available range.
+new revision — nothing is rewound. An unknown N names the available range.
 
 **Envelope revision.** A save that replaces a surviving block's envelope
 (including none → set) mints the next envelope revision; a new block or a
 cleared envelope mints none. `view='validate'`/`view='drc'` print
-`envelope revision: N`, and stored results (rev snapshots, SIMP runs) carry
+`envelope revision: N`; stored results (rev snapshots, SIMP runs) carry
 it — a result scored under an older N is stale.
 
 **Checkpoints and branches** (each the sole op of its edit call).
 `{'op':'checkpoint','label':L,'reason'?}` snapshots the live tree;
 `{'op':'restore','label':L}` puts it back as a new revision (labels
-`rev-N` are reserved). `{'op':'pin','as':'<new slug>','reason':R,
+`rev-N` reserved). `{'op':'pin','as':'<new slug>','reason':R,
 'ops':[...]}` copies the design (uids kept, scenario/states/envelope
 log carried), applies `ops` to the copy only, and replies with a
 headline table (blocks, validate errors/warnings, BOM mass/cost when
@@ -412,7 +417,7 @@ needs fidelity). Solvers stamp their own (formfind → pose, relax_chain →
 pose, SIMP → geometry); `set_pose`/`set_envelope`/`set_binding` and
 `add_measure`/`set_measure` take `provenance=`; `set_provenance
 {block, facet: pose|envelope|geometry, provenance|null}` sets one
-directly. Overwriting a solver-claimed facet restates it as
+directly. Overwriting a solver-claimed facet restates it
 user_stated/llm_assumed. `view='provenance'` lists every claim;
 `args={'margin': true}` is the margin audit.
 
@@ -434,7 +439,7 @@ every cone. `view='contracts'` shows both.
   positions** (block pose + `add_port` pose); a block met at different
   points is a 6-DOF body (hub spokes on rim-offset ports carry axle
   torque), else a pin node. `rigid` connects merge blocks into ONE 6-DOF
-  body (reference = first grounded member, else first by name), so a rim
+  body (reference = first grounded member, else first by name) — a rim
   or frame needs no axial-truss stand-in; an axial inside one group is
   skipped. Other connects (`revolute` …) are NOT in the matrix.
 - `fixed` pins each grounded block's point on its body: one foot grounds
@@ -472,26 +477,26 @@ mechanism is `view='fasten'`'s), `axis_not_coaxial`/
 lined up or nested). A declared bearing/press interference stays clean.
 **Joining precedent** (a `bonded` transition's `driver_ref` names the
 reaction): a known joining (`CuAAC`, ...) with no `reaction` transition is
-`joining_unnamed` (info); a named rxn without `reaction_class` is
-`joining_class_unknown` (warn); a class with no yield rows is
-`joining_unprecedented` (warn), with rows `joining_precedent` (info) — the
-read is `search(kind='rxn', property='yield', reaction_class=...)`. The
+`joining_unnamed` (info); a named rxn without `reaction_class`
+`joining_class_unknown` (warn); a class with no yield rows
+`joining_unprecedented` (warn), with rows `joining_precedent` (info) —
+read: `search(kind='rxn', property='yield', reaction_class=...)`. The
 header's counts ignore `info` rows.
 `view='fasten'` refuses a stack-up with no screw-form component bound. It
-also decides **nothing** about what a printed member's far end threads into
-— `params.thread_strategy` (`nut | nut-trap | insert | thread-forming |
-tapped`) is contract-classed and required there, because a cut thread in
-plastic is the wrong default; metal members still default to `tapped`. The
-view reports the stack, the grip, the thread as a lead, which driver can
-reach the head, and every stamped hole with the provenance of its diameter.
+decides **nothing** about what a printed member's far end threads into —
+`params.thread_strategy` (`nut | nut-trap | insert | thread-forming |
+tapped`) is contract-classed and required there (a cut thread in plastic
+is the wrong default); metal members still default to `tapped`. The view
+reports the stack, the grip, the thread as a lead, which driver reaches
+the head, and every stamped hole with its diameter's provenance.
 Full workflow: `precis-se-fasten-help`.
 
 `view='clearance'`: with `args={'a': <block>, 'b': <block>}`, the signed
 envelope gap between those two blocks (interference/touching/clear).
 Omit `args` (or pass `{}`) for an all-pairs digest instead — every unique
 block pair named by the design's CONNECTS, worst gap first, capped at 64
-pairs; a block missing an effective envelope is skipped with a note
-rather than failing the whole survey.
+pairs; a block missing an effective envelope is skipped with a note,
+never failing the whole survey.
 
 **Finding ids and deltas.** `view='validate'`, `'drc'` and the
 `'clearance'` digest carry a 12-hex `id` per row: the `pcb` DRC hash over
@@ -506,13 +511,13 @@ share an id (diffed as a multiset).
 ## Build a block tree over atoms (atomic mode)
 
 See [[precis-se-atomic-help]]. The construction ops `generate`, `join` and
-`terminate` still work but are being retired when structure workspace
-slice 1 ships; new construction capability goes to workspaces
+`terminate` still work but retire when structure workspace slice 1
+ships; new construction capability goes to workspaces
 ([[precis-workspace-help]]), not new ops.
 
 Atomic mode applies when a block's realization is chemistry rather than a
 solid — nested envelopes down to bond-level threading, degrees of freedom,
-and a binding into a real `structure` design.
+a binding into a real `structure` design.
 
 ## Nucleic-acid chains (DNA/RNA design)
 
@@ -522,22 +527,22 @@ optional) · `add_domain`/`set_domain`/`remove_domain` (a strand's ordered
 route along a helix; `set_domain` edits one row in place, `remove_domain` is
 destructive) · `clear_chain` (un-declare,
 cascading) · `layout_chain` (materialise `<helix>.s<k>` segment children —
-what the 3D viewer draws). Pairing is DERIVED from two strands occupying
-one helix offset running opposite ways, never declared. Three
-handler-level ops, all proposals and never auto-applied: `relax_chain`
+what the 3D viewer draws). Pairing is DERIVED — two strands on one helix
+offset running opposite ways, never declared. Three
+handler-level ops, proposals never auto-applied: `relax_chain`
 (settle those segments — hinges, loop springs, excluded volume; poses
 back as `origin='proposed'`, each placed loop's curve onto its domain
 row), `fold_layout` (a ViennaRNA MFE fold as helix/strand/domain records;
 needs the optional `[chain]` extra) and `realize_chain` (Arnott B-DNA
 fibre atoms for one segment's region, minted and bound as a `structure`
 design). `view='chain'` reads helices/strands/pairing; `view='topology'`
-gains the domain rows; `view='export'` writes the design to
+gains the domain rows; `view='export'` writes
 scadnano/caDNAno/oxDNA/PDB.
 
 ## Cite the DB in the design script
 
-Same convention as pcb: when a workspace script authors the design, a
-decision taken from precis gets `# <handle> (<why>)` on its line —
+Same convention as pcb: a workspace script's decision taken from precis
+gets `# <handle> (<why>)` on its line —
 material/atom choices, constraint numbers, load values, objective
 weights. Full convention: [[precis-workspace-help]] §Cite the DB in the
 script (gr514049).

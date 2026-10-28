@@ -230,12 +230,11 @@ Exports and the viewer substitute a finite clamped box automatically.
 
 ## Round it — `rd<len>`, `blend:<len>`, `field:<sha256>`
 
-**Rounding.** Add `rd<len>` to any convex solid but the sphere/torus
-(`box:w40mmd20mmh10mmrd2mm`, `cyl:r5mmh10mmrd1mm`) to round **every edge
-and corner** of that node to radius `rd` — exact in the kernel (the shape
-is built shrunk by `rd` and its signed distance offset back out), so the
-bounding box is unchanged, the base stays at `z=0`, and probes see the
-round. `rd >= ½·min dimension` is refused by name (a thin feature would
+**Rounding.** `rd<len>` on any convex solid but the sphere/torus
+(`box:w40mmd20mmh10mmrd2mm`, `cyl:r5mmh10mmrd1mm`) rounds **every edge
+and corner** of that node to radius `rd` — exact in the kernel (built
+shrunk by `rd`, the signed distance offset back out): bounding box
+unchanged, base at `z=0`, probes see the round. `rd >= ½·min dimension` is refused by name (a thin feature would
 vanish — never clamped); a cone/pyramid apex becomes a sphere cap below
 the sharp tip. Rounding only opens *convex* corners: where an `add` node
 meets its part, the inside corner stays sharp — put `blend:<len>` on that
@@ -248,6 +247,33 @@ SDF at `args={'pitch': '0.2mm'}` — pass the layer height you'll print
 at; default ≈ 1/256 of the design's diagonal; a pitch whose band would
 exceed the sample budget is refused, never coarsened). Sharp designs
 export exactly as before; `step` has no field route yet.
+
+Refusals name the shape and dimension (bare SI numbers), never clamp:
+`box: rd=0.005 >= ½·min dimension — the round would erase h; rd must be
+< 0.005` (across-flats, not the circumradius, for `hex`/`ngon`/
+`frustum`); an apex body that closes up refuses as `cone: rd=0.0019
+closes the shrunk shape up at its slant (h would be …) — use a smaller
+rd`. `rd` must be `> 0`. `sphere`/`torus` refuse (`sphere does not take
+rd: a sphere is already round — drop rd (it would be a no-op)`);
+`chamfer:` refuses (an unbounded half-space, no extent to shrink);
+`field:`/`relief:` refuse — round the grid or map before storage
+(`fieldops.open`/`close`/`offset`, a height-map filter), not `rd`.
+
+**Rim recipe — a rounded box shell** = rounded exterior + inner void +
+flat cut:
+
+```
+component pot
+body  add  box:w50mmd100mmh65mmrd3mm          # rounded exterior, base at z=0
+void  cut  box:w40mmd90mmh55mm @0mm,0mm,5mm   # ≥ rd inside every wall
+mouth cut  box:w36mmd86mmh10mm @0mm,0mm,60mm  # flat cut opens the top
+```
+
+The void keeps ≥ `rd` from each face so the round survives on every
+wall; the sharp mouth box leaves a flat rim.
+
+**`.scad` export.** approximates `rd` with a minkowski on convex
+leaves, warning when it cannot.
 
 **Sampled field.** `field:<sha256>` is a leaf whose shape is a stored
 signed-distance grid — the way an optimiser's result (SIMP density,
