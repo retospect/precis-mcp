@@ -3380,6 +3380,36 @@ class PcbMixin:
                 return None
             inst_id, comp_id = int(inst[0]), int(inst[1])
             part_lcsc, part_description = inst[2], inst[3]
+            part_ref = self.part_ref_id(part_lcsc, conn=conn) if part_lcsc else None
+            decisions = []
+            if part_ref is not None:
+                decisions = [
+                    {
+                        "ref_id": int(r[0]),
+                        "title": r[1],
+                        "relation": r[2],
+                        "reason": r[3],
+                    }
+                    for r in conn.execute(
+                        """
+                        SELECT DISTINCT d.ref_id, d.title, l.relation,
+                               l.meta->>'reason'
+                        FROM links l JOIN refs d ON d.ref_id = l.src_ref_id
+                        WHERE l.dst_ref_id = %s
+                          AND l.relation IN ('selects', 'rejects')
+                          AND d.kind = 'memory' AND d.retired_at IS NULL
+                          AND NOT EXISTS (
+                              SELECT 1 FROM links s
+                              WHERE (s.dst_ref_id = d.ref_id
+                                     AND s.relation = 'supersedes')
+                                 OR (s.src_ref_id = d.ref_id
+                                     AND s.relation = 'superseded-by')
+                          )
+                        ORDER BY l.relation DESC, d.ref_id
+                        """,
+                        (part_ref,),
+                    ).fetchall()
+                ]
             pins = [
                 {
                     "pin": r[0],
@@ -3410,6 +3440,7 @@ class PcbMixin:
             "refdes": refdes,
             "part_lcsc": part_lcsc,
             "part_description": part_description,
+            "selection_decisions": decisions,
             "pins": pins,
         }
 

@@ -79,6 +79,8 @@ edge renders: `precis-fisheye-help`.
 | `superseded-in` | (none) | Paper A is subsumed by a later/review paper already integrated into document B; recorded, not separately woven. |
 | `off-topic-for` | (none) | Paper A was considered for document B and rejected as out of scope. |
 | `realized-by` | `realizes` | A is made real by B: a cad design's catalog part → the component that realizes it, or a component → the catalog part that builds it (`target='part:C25804'`; the part's ref is minted on its first link). |
+| `selects` | (none) | A memory selection record chooses a part or component; part selection only. |
+| `rejects` | (none) | A memory selection record rejects a part or component; requires nonblank `meta.reason`. |
 | `quantifies` | `quantified-by` | Paper chunk A states a number for measurand taxon B. One shared edge per chunk and measurand; each measure keeps its own span. Written by measure extraction (see `precis-measure-help`), never by hand. |
 | `datasheet-of` | `has-datasheet` | Datasheet A documents part B. `edit(kind='datasheet', part_lcsc='C25804')` writes it. |
 | `part-of` | `contains` | Two uses: a memory's membership edge to its `section:index` hub or summary node — hand-written, the "Memory ↔ memory" block above — and a supplementary-information PDF (own paper ref, `meta.role='supplement'` on the edge) part of its parent paper, written by the SI ingest, not by hand. The SI cites as the parent. A dedicated `supplements` / `has-supplement` pair is not seeded yet. |
@@ -92,6 +94,8 @@ write. Every other relation accepts any two refs.
 | `rel=` | domain (source kind) | range (target kind) | functional | acyclic |
 |---|---|---|---|---|
 | `contradicts` | memory | memory | - | - |
+| `selects` | memory | component, part | - | - |
+| `rejects` | memory | component, part | - | - |
 | `draft-of` | any | any | yes | - |
 | `plan-of` | any | any | yes | - |
 | `dossier-of` | any | any | yes | - |
@@ -125,11 +129,17 @@ Inverse slugs follow the same rule as the relation they mirror
 
 All relations except `related-to` and `see-also` auto-mirror: writing
 `cites` from A→B makes A→B queryable as `cited-by` from B's side
-without a second `link()`. `cited-in` / `corroborates` / `superseded-in` /
+without a second `link()`. `selects` / `rejects` and
+`cited-in` / `corroborates` / `superseded-in` /
 `off-topic-for` are the exception among the *non*-`related-to`/`see-also`
 set — asymmetric with NO inverse (like `see-also`): a paper's disposition
 toward a dossier reads from the dossier side via `get(kind='draft',
 id=<dossier-slug>, view='integration')`, not a mirrored `link()` read.
+
+For part selection, use `link(kind='memory', id=<record>,
+target='part:C123', rel='rejects', meta={'reason': '<why rejected>'})`.
+`get(kind='pcb', id='<board>#<REFDES>')` lists the catalog part's current
+selection records, selects before rejects. See [[precis-pcb-design-flow-help]].
 
 ## Cite a paper from a memory or another paper
 ## Record that A cites B

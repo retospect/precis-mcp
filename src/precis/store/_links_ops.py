@@ -1090,6 +1090,14 @@ class LinksMixin:
         agent-without-model writes are untouched.
         """
 
+        if relation == "rejects":
+            reason = (meta or {}).get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise BadInput(
+                    "rejects requires a non-empty meta.reason",
+                    next="link(..., rel='rejects', meta={'reason': 'why this part was rejected'})",
+                )
+
         def _do(c: Connection) -> Link:
             src_chunk_id = _resolve_chunk_id_for_link(c, src_ref_id, src_pos)
             dst_chunk_id = _resolve_chunk_id_for_link(c, dst_ref_id, dst_pos)

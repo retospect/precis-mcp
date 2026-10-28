@@ -4848,3 +4848,69 @@ def test_put_refuses_a_non_boolean_polarized(pcb):
             },
         )
     assert exc_info.value.next == "polarized: true|false (JSON bool, not a string)"
+
+
+def test_instance_lists_selection_decisions_before_rejections(pcb, store):
+    store.parts_import(
+        [catalog.normalize_jlcparts_row({"lcsc": "C1525", "description": "100nF cap"})]
+    )
+    pcb.put(id="selection-board", args=_DESIGN)
+    part = store.ensure_part_ref("C1525")
+    # Create the rejection first to catch accidental insertion-order rendering.
+    rejected = store.insert_ref(kind="memory", slug=None, title="reject high leakage")
+    selected = store.insert_ref(kind="memory", slug=None, title="choose low ESR")
+    unrelated = store.insert_ref(kind="memory", slug=None, title="an unrelated note")
+    store.add_link(
+        src_ref_id=rejected.id,
+        dst_ref_id=part,
+        relation="rejects",
+        meta={"reason": "leakage exceeds the night budget"},
+    )
+    store.add_link(src_ref_id=selected.id, dst_ref_id=part, relation="selects")
+    store.add_link(src_ref_id=unrelated.id, dst_ref_id=part, relation="related-to")
+
+    body = pcb.get(id="selection-board#C1").body
+    assert body.index("choose low ESR") < body.index("reject high leakage")
+    assert f"me{selected.id}" in body and f"me{rejected.id}" in body
+    assert "selects" in body and "rejects" in body
+    assert "leakage exceeds the night budget" in body
+    assert "an unrelated note" not in body
+    assert "choose low ESR" not in pcb.get(id="selection-board#U1").body
+
+
+@pytest.mark.parametrize("supersession_relation", ["supersedes", "superseded-by"])
+def test_instance_selection_hides_superseded_and_retired_records(
+    pcb, store, supersession_relation
+):
+    store.parts_import(
+        [catalog.normalize_jlcparts_row({"lcsc": "C1525", "description": "100nF cap"})]
+    )
+    pcb.put(id="selection-board", args=_DESIGN)
+    part = store.ensure_part_ref("C1525")
+    old = store.insert_ref(kind="memory", slug=None, title="old selection")
+    new = store.insert_ref(kind="memory", slug=None, title="current selection")
+    retired = store.insert_ref(kind="memory", slug=None, title="retired selection")
+    for decision in (old, new, retired):
+        store.add_link(src_ref_id=decision.id, dst_ref_id=part, relation="selects")
+    src, dst = (new, old) if supersession_relation == "supersedes" else (old, new)
+    store.add_link(src_ref_id=src.id, dst_ref_id=dst.id, relation=supersession_relation)
+    store.retire_ref(retired.id)
+
+    body = pcb.get(id="selection-board#C1").body
+    assert "current selection" in body
+    assert "old selection" not in body
+    assert "retired selection" not in body
+    # The old choice and its evidence stay graph-reachable one hop back.
+    assert any(
+        old.id in (link.src_ref_id, link.dst_ref_id)
+        for link in store.links_for(new.id, direction="out", relation="supersedes")
+    )
+    assert store.links_for(old.id, direction="out", relation="selects")
+
+
+def test_instance_without_linked_part_ref_reads_without_minting(pcb, store):
+    pcb.put(id="selection-board", args=_DESIGN)
+    assert store.part_ref_id("C1525") is None
+    body = pcb.get(id="selection-board#C1").body
+    assert "C1525" in body and "GND" in body
+    assert store.part_ref_id("C1525") is None

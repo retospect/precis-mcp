@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from itertools import pairwise
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
@@ -24,11 +25,13 @@ from precis.handlers.concept import ConceptHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.quest import QuestHandler
 from precis.store import Store
+from precis.store.types import Relation
 from precis.taproot.hub import EVIDENCE_SRC_KINDS, PATHWAY_EVIDENCE_KINDS
 from precis.utils import handle_registry
 from precis.utils.link_tag_ops import apply_link_ops
+from precis.utils.relations import validate_relation
 
-#: The relations migration 0180 seeds a rule on — nothing else.
+#: Relations with seeded endpoint, cardinality or cycle constraints.
 SEEDED = frozenset(
     {
         "contradicts",
@@ -41,6 +44,8 @@ SEEDED = frozenset(
         "contains",
         "has-prerequisite",
         "serves",
+        "selects",
+        "rejects",
     }
 )
 
@@ -89,6 +94,10 @@ def test_seeded_values(store: Store) -> None:
     for slug in ("specialises", "contains", "has-prerequisite", "serves"):
         assert c[slug].transitive and c[slug].acyclic
     assert not c["cites"].constrained
+    for slug in ("selects", "rejects"):
+        assert c[slug].domain_kinds == frozenset({"memory"})
+        assert c[slug].range_kinds == frozenset({"part", "component"})
+        assert not c[slug].functional and not c[slug].acyclic
 
 
 # ── AC2: contradicts through both doors ─────────────────────────────
@@ -369,3 +378,68 @@ class TestUnconstrainedUnchanged:
 
     def test_unknown_slug_in_the_cache_is_unconstrained(self, store: Store) -> None:
         assert "no-such-relation" not in store.relation_constraints()
+
+
+@pytest.mark.parametrize("relation", ["selects", "rejects"])
+def test_selection_relations_are_registered(relation: str, store: Store) -> None:
+    assert relation in get_args(Relation)
+    assert validate_relation(relation) == relation
+    assert relation in store.valid_relations(refresh=True)
+
+
+@pytest.mark.parametrize(
+    "meta", [None, {}, {"reason": ""}, {"reason": "  "}, {"reason": 3}]
+)
+def test_rejects_requires_a_nonempty_reason(meta, store: Store, hub: Hub) -> None:
+    decision = _ref(store, "memory", "capacitor choice")
+    component = _ref(store, "component", "candidate", slug="candidate")
+    with pytest.raises(BadInput) as exc:
+        MemoryHandler(hub=hub).link(
+            id=decision, target="component:candidate", rel="rejects", meta=meta
+        )
+    assert "reason" in exc.value.cause
+    assert exc.value.next
+    assert (component, "rejects") not in _links(store, decision)
+
+
+def test_rejects_preserves_reason_and_can_be_removed(store: Store, hub: Hub) -> None:
+    decision = _ref(store, "memory", "capacitor choice")
+    component = _ref(store, "component", "candidate", slug="candidate")
+    memory = MemoryHandler(hub=hub)
+    memory.link(
+        id=decision,
+        target="component:candidate",
+        rel="rejects",
+        meta={"reason": "leakage exceeds the night budget"},
+    )
+    links = store.links_for(decision, direction="out", relation="rejects")
+    assert len(links) == 1
+    assert links[0].dst_ref_id == component
+    assert links[0].meta["reason"] == "leakage exceeds the night budget"
+    memory.link(id=decision, target="component:candidate", rel="rejects", mode="remove")
+    assert _links(store, decision) == []
+
+
+@pytest.mark.parametrize("relation", ["selects", "rejects"])
+def test_selection_relations_refuse_non_part_targets(relation, store: Store, hub: Hub):
+    decision = _ref(store, "memory", "capacitor choice")
+    _ref(store, "paper", "datasheet evidence", slug="evidence")
+    with pytest.raises(BadInput, match="range_kinds"):
+        MemoryHandler(hub=hub).link(
+            id=decision,
+            target="paper:evidence",
+            rel=relation,
+            meta={"reason": "not suitable"},
+        )
+    assert _links(store, decision) == []
+
+
+@pytest.mark.parametrize("relation", ["selects", "rejects"])
+def test_selection_relations_refuse_non_memory_sources(relation, store: Store):
+    source = _ref(store, "finding", "a fact is not a selection record")
+    _ref(store, "component", "candidate", slug="candidate")
+    with pytest.raises(BadInput, match="domain_kinds = memory"):
+        apply_link_ops(
+            store, source, link="component:candidate", unlink=None, rel=relation
+        )
+    assert _links(store, source) == []

@@ -392,6 +392,31 @@ class MemoryHandler(NumericRefHandler):
     # plumbing; shared handler instances must never stage request state.
     accepts_put_meta: ClassVar[bool] = True
 
+    def link(
+        self,
+        *,
+        id: str | int | list[str | int] | None = None,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        meta: dict[str, Any] | None = None,
+        **kw: Any,
+    ) -> Response:
+        """Selection records keep candidate rejection reasons on their edges."""
+        if id is None:
+            raise BadInput(
+                "memory link requires id=",
+                next="link(kind='memory', id=<record>, target='kind:id', rel='...')",
+            )
+        if isinstance(id, list):
+            if meta is not None:
+                raise BadInput(
+                    "link meta requires a single memory id",
+                    next="link each selection record separately with its own meta.reason",
+                )
+            return self._link_batch(id, target=target, mode=mode, rel=rel)
+        return self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
+
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:

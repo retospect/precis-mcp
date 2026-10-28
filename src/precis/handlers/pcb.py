@@ -8545,6 +8545,24 @@ class PcbHandler(Handler):
                 )
                 derived = f"resistor {spec['ohm']:g} Ω, {rating}"
             body += f"derived: {derived} (from catalog description)\n"
+        decisions = nb.get("selection_decisions", [])
+        if decisions:
+            body += (
+                "\nselection decisions:\n"
+                + render_agent_table(
+                    [
+                        {
+                            "relation": d["relation"],
+                            "record": f"me{d['ref_id']}",
+                            "title": d["title"],
+                            "reason": d["reason"] or "—",
+                        }
+                        for d in decisions
+                    ],
+                    schema=["relation", "record", "title", "reason"],
+                )
+                + "\n"
+            )
         return Response(
             body=body
             + render_agent_table(

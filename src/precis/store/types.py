@@ -335,6 +335,10 @@ Relation = Literal[
     # `links_for(direction='both')`. Keep in sync with the `relations`
     # seed in 0205_bom_consolidation_roles.sql.
     "kept-distinct",
+    # Part-selection memory → part/component, migration 0259. No inverse;
+    # rejects requires links.meta.reason so the rejected candidate stays useful.
+    "selects",
+    "rejects",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and

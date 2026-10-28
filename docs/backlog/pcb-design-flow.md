@@ -353,8 +353,6 @@ the copper can't disagree. A failing assert blocks the publish.
    with `meta.role = selects|rejects` until slice 2 lands. It unblocks the
    live TAZ dogfood at once, and fi520367 is migrated by hand as the
    worked example.
-2. **Rels + `#REFDES` decisions** (3); slice 1's interim links are
-   rewritten.
 3. **Consigned lines** (4), with gr519924's BOM-home ask.
 4. **Budget helper + `est_current_a` hand-off** (6). This waits on the
    topo realiser's widening (pcb-topo-place slice 5) only for its AC4

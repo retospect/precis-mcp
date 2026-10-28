@@ -68,6 +68,13 @@ successor; its predecessor obligation survives and reattaches atomically on
 restaging. No signed bytes or timestamp proofs are rewritten.
 
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
+Part-selection records are memory refs linked by ``selects`` / ``rejects``
+to parts or components. Link admission requires a nonblank rejection reason
+so a rejected candidate remains reusable evidence. PCB instance reads resolve
+the existing LCSC part ref without minting one and list its current decisions,
+selects before rejects. Superseded records stay reachable through the new
+record's links but are omitted from this current-selection view.
+
 Generated baselines provision every extension prerequisite and load the full
 seed vocabulary with a transaction-local public search path, so sealed seed
 triggers resolve their helpers without changing function bodies or permissions.

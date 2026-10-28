@@ -24,10 +24,8 @@ link `served-by` decision nodes; decisions link `derived-from` the facts
 and chunks they rest on; every node is anchored to refdes/net handles.
 
 Owner skills named per step below own their verb detail — this skill is
-the router. Still landing (later slices of the same item): typed
-`selects`/`rejects` relations (interim below), consigned BOM lines, the
-budget `publish` helper and the `#REFDES`
-selection view.
+the router. Still landing (later slices of the same item): consigned BOM
+lines and the budget `publish` helper.
 
 ## The flow — eleven steps, each artifact homed
 
@@ -89,16 +87,17 @@ The record's links carry its evidence:
   on. There can be many — this is what a single-cited `finding` cannot
   hold.
 - `serves` → the requirement node(s) from step 1.
-- the pick → `part:<C#>` (or the `component` ref of a consigned part),
-  and each rejected part likewise.
+- `selects` → `part:<C#>` (or the `component` ref of a consigned part).
+- `rejects` → each rejected part, with `meta={'reason': '<why rejected>'}`.
 - an anchor link → `pcb:<slug>~#<refdes>` once the part is placed.
 
-**Interim rels** (until the typed `selects`/`rejects` relations land):
-use `related-to` for the pick and the rejects — the chosen/rejected role
-lives on the `candidates:`/`pick:` body lines, which are the load-bearing
-text anyway; slice 2 rewrites them as typed edges. The board script's
-part line cites the record: `# me<id> (why)` — cite-the-DB, same as a
-fact handle.
+Write the pick with `link(kind='memory', id=<record>, target='part:C123',
+rel='selects')`; rejects use `rel='rejects', meta={'reason': '<why>'}`.
+The board script's part line cites the record: `# me<id> (why)`.
+`get(kind='pcb', id='<board>#<REFDES>')` lists current decisions linked
+to that instance's catalog part: selects first, then rejects with reasons.
+Consigned component placement is a later slice. Existing interim
+`related-to` edges need an operator-approved rewrite to appear here.
 
 ## Managing a record over the design's life
 
@@ -106,20 +105,21 @@ A record is edited in place while `open`. Once `decided` it changes only
 through these moves, and no record is ever deleted:
 
 - **Add or drop a candidate while open.** Edit the `candidates:` block
-  and its link; each verdict line keeps its fact handles.
+  and its `rejects` link; each verdict line keeps its fact handles.
 - **Re-select** (better part, failed review, EOL/NRND/out of stock):
   write a *new* record for the same role whose `pick` is the new part;
   link it `supersedes` → the old record; set the old record to
   `status: superseded`. The new record copies the old rejects whose
-  reasons still hold and turns the old pick into a rejected candidate
-  whose verdict says why it fell ("EOL per Digi-Key 2026-11-02"). Update
-  the script's `# me<id>` cite in the same change.
+  reasons still hold and turns the old pick into a `rejects` link
+  whose `meta.reason` says why it fell ("EOL per Digi-Key 2026-11-02").
+  Update the script's `# me<id>` cite in the same change. `#REFDES`
+  omits the superseded record; its history stays one `supersedes` hop back.
 - **Keep rejects.** A rejected part is never unlinked — the reason is the
   reusable knowledge. A rejection later proved wrong is struck through in
   the body, not deleted.
 - **Reuse across designs.** A later design's record may `derived-from`
   an earlier record's rejects instead of re-arguing them. The
-  `selects`/`rejects` roles are scoped to part selection — architecture
+  `selects`/`rejects` relations are scoped to part selection — architecture
   decisions (step 2) use `derived-from` and `serves` only.
 
 ## The budget convention
