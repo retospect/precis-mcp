@@ -742,19 +742,18 @@ class TestLinkMeta:
     ) -> None:
         from precis.tools import core
 
-        m1 = _created_memory(store, "meta probe one")
-        m2 = _created_memory(store, "meta probe two")
+        # memory is meta-capable since gr519925 (selection records), so the
+        # probe uses gripe, whose link() declares no meta= and must refuse it.
         out = _verb_text(
             core.link(
-                kind="memory",
-                id=m1,
-                target=f"memory:{m2}",
+                kind="gripe",
+                id=1,
+                target="gripe:2",
                 rel="related-to",
                 meta={"axis": "composition"},
             )
         )
         assert "error" in out.lower() and "meta" in out
-        assert store.links_for(m1, direction="out", relation="related-to") == []
 
     def test_link_verb_signature_declares_meta(self) -> None:
         import inspect
