@@ -314,7 +314,7 @@ tts = ["kokoro-onnx>=0.4", "soundfile>=0.12"]
 # [tool.uv] override-dependencies (see that table for why and when to drop).
 paper = [
     "marker-pdf>=1.0; sys_platform != 'win32'",
-    "pymupdf>=1.24.10",     # ``fitz`` — page-level PDF text + metadata.
+    "pymupdf>=2.0",     # ``fitz`` — page-level PDF text + metadata.
                             # >=1.24.10 picks up the heap-corruption
                             # fixes shipped in the 1.24 maintenance
                             # series; agent-supplied PDFs reach
@@ -412,7 +412,7 @@ web = [
     # ``[web,estimate]`` only, so without this the route's
     # ``require_optional("fitz")`` refuses on prod. Same floor as
     # ``[paper]`` (the heap-corruption fixes note lives there).
-    "pymupdf>=1.24.10",
+    "pymupdf>=2.0",
 ]
 # CAD STEP interchange (ADR 0041 §10). The lightweight printable path
 # (``manifold3d`` CSG kernel → STL/3MF) is now core — see the "Deterministic,
