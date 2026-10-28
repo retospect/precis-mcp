@@ -284,7 +284,7 @@ asa = ["discord.py>=2.4", "aiohttp>=3.9"]
 # core. Socket Mode (a persistent outbound WebSocket), so no HTTP/ingress
 # deps needed. Install target: `precis-mcp[asa-slack]` on the same host
 # `asa` runs on.
-asa-slack = ["slack_bolt>=1.20", "slack_sdk>=3.27"]
+asa-slack = ["slack_bolt>=1.20", "slack_sdk>=3.45.0"]
 # tts — local text-to-speech for the audio-export renderer (voice drafts +
 # the morning brief). Kokoro (per-language native voices, Apache) via
 # kokoro-onnx; soundfile for WAV I/O; numpy rides along. Heavy + host-specific
