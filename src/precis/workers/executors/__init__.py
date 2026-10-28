@@ -38,12 +38,20 @@ The lanes
   and released handles, waits 120 seconds after terminalization, and
   conditionally claims each row before killing or deleting scratch. An
   unreadable/mismatched identity is stamped skipped, with no cleanup.
+  A matching identity whose group is unavailable still gets scratch reap
+  after its terminal stamp: directory cleanup sends no signals. If the
+  leader's proc stat vanished, only a matching boot and an ESRCH group
+  probe authorize this cleanup; live or inaccessible groups keep scratch.
+  Pathway cleanup confines deletion to resolved immediate temp-root children
+  with the submit prefix, so a corrupt handle cannot delete unrelated files.
   The owning node applies the same check at its poison-guard transition;
   periodic reap backs up external terminalizations. Completion and successful
   executor kill mark the handle released to prevent historical-row kills.
   Legacy handles already running at deploy retain one narrow deadline kill
   path: this pass must poll the child alive and lock/recheck a running row
-  pinned to this node. Orphan, poison and operator paths have no exception.
+  pinned to this node. Lock contention uses NOWAIT and retries next pass
+  without stamping or terminalizing. Orphan, poison and operator paths have
+  no identity exception.
   All dict handles must name a valid pgid distinct from the worker's group.
   Poison cleanup carries its transaction-observed completion stamp through
   ``DispatchContext.completion_stamped`` so reap sees the uncommitted write.

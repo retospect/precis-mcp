@@ -263,7 +263,21 @@ def _detached_identity_reason(handle: Any) -> str | None:
             return "boot-id-mismatch"
         # comm (field 2) can include spaces and ')'. Field 22 is offset
         # 19 after its final ')', not offset 21 of whitespace-split stat.
-        stat = Path(f"/proc/{pgid}/stat").read_text(encoding="utf-8", errors="replace")
+        try:
+            stat = Path(f"/proc/{pgid}/stat").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except FileNotFoundError:
+            # Boot matched, but a missing leader does not prove its group
+            # is gone: descendants can outlive it. Only ESRCH permits
+            # scratch cleanup; this path never authorizes a kill.
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return "group-unavailable"
+            except OSError:
+                pass
+            return "identity-unreadable"
         if int(stat.rsplit(")", 1)[1].split()[19]) != start_time:
             return "start-time-mismatch"
     except (OSError, ValueError, TypeError, IndexError, UnicodeError):
@@ -367,25 +381,29 @@ def _reap_detached_job(
         reason = "group-unavailable"
     if reason is None and (spec is None or spec.kill is None):
         reason = "no-kill-hook"
+    ctx = replace(
+        _build_dispatch_context(store, ref_id, title, meta),
+        completion_stamped=bool(claimed[1]),
+    )
     if reason is None:
         assert spec is not None and spec.kill is not None
-        ctx = replace(
-            _build_dispatch_context(store, ref_id, title, meta),
-            completion_stamped=bool(claimed[1]),
-        )
         try:
             spec.kill(ctx, handle)
         except Exception:  # pragma: no cover — defensive
             reason = "kill-raised"
             log.warning("ssh_node: orphan kill of job %d raised", ref_id, exc_info=True)
-        else:
-            if spec.reap is not None:
-                try:
-                    spec.reap(ctx, handle)
-                except Exception:  # pragma: no cover — defensive
-                    log.warning(
-                        "ssh_node: orphan reap of job %d raised", ref_id, exc_info=True
-                    )
+    if (
+        reason in (None, "group-unavailable")
+        and ctx.completion_stamped
+        and spec is not None
+        and spec.reap is not None
+    ):
+        # A missing group needs no signal, but its terminal job still owns
+        # scratch. Identity failures must retain the directory untouched.
+        try:
+            spec.reap(ctx, handle)
+        except Exception:  # pragma: no cover — defensive
+            log.warning("ssh_node: orphan reap of job %d raised", ref_id, exc_info=True)
     if reason is not None:
         conn.execute(
             "UPDATE refs SET meta = (meta - 'detached_orphan_reaped') || "
@@ -416,8 +434,9 @@ def _reap_detached_orphans(
 ) -> int:
     """Backstop external terminalizations; legacy/released handles are excluded.
 
-    No kill or scratch cleanup without matching boot ID and process start
-    ticks. Each conditional claim and its final stamp share a transaction.
+    No kill without matching boot ID and process start ticks. A missing
+    leader permits only scratch cleanup after matching boot and confirming
+    the entire group is gone. Claim and final stamp share a transaction.
     """
     reaped = 0
     for ref_id, title, meta in _orphaned_detached_jobs(store, node, limit=limit):
@@ -460,8 +479,8 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             continue
         if terminal:
             ok += 1
-        # False (still running) is a no-op this tick — the lease was
-        # already renewed inside _poll_one.
+        # False (still running) is a no-op: _poll_one renewed the lease
+        # or deferred a contended legacy deadline until the next pass.
 
     # 0.5) Reap detached computes left orphaned by terminalization paths
     # that skipped spec.kill (gr520866: the poison-guard fail below, the
@@ -651,7 +670,7 @@ def _polling_jobs(
 
 
 def _legacy_deadline_owned(conn: Any, ctx: DispatchContext, handle: Any) -> bool:
-    """Lock and recheck ownership after this pass's legacy-child poll."""
+    """Recheck ownership without waiting; contention retries next pass."""
     from psycopg.types.json import Jsonb
 
     node = os.environ.get("PRECIS_NODE")
@@ -670,7 +689,7 @@ def _legacy_deadline_owned(conn: Any, ctx: DispatchContext, handle: Any) -> bool
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = 'STATUS' AND t.value = %s
                )
-         FOR UPDATE OF r
+         FOR UPDATE OF r NOWAIT
         """,
         (ctx.ref_id, _EXECUTOR_NAME, node, Jsonb(handle), _RUNNING),
     ).fetchone()
@@ -686,7 +705,7 @@ def _kill_and_terminalize(
     summary: str,
     failure_class: str | None = None,
     polled_alive: bool = False,
-) -> None:
+) -> bool:
     """Shared terminalize-via-kill path for both the wall-clock deadline and
     the §B-2 operator ``kill_requested`` backstop: call the job_type's
     optional ``spec.kill``, then a terminal ``STATUS:failed`` + the given
@@ -702,7 +721,10 @@ def _kill_and_terminalize(
     ``summary`` as ``meta.error``, so a deadline kill (``"timeout"``) can be
     counted from meta without reading each job's event log. ``polled_alive``
     is same-call evidence for the legacy deadline exception only: it still
-    requires a locked running row owned by this node."""
+    requires a locked running row owned by this node. Returns False on
+    lock contention without changing the row; True after terminalization."""
+    from psycopg.errors import LockNotAvailable
+
     from precis.store import Tag
     from precis.utils.job_bubble import bubble_job_failure
 
@@ -717,11 +739,18 @@ def _kill_and_terminalize(
             skip_reason == "missing-identity"
             and swept_tag in {"wall-timeout", "deadline"}
             and polled_alive
-            and _legacy_deadline_owned(conn, ctx, handle)
         ):
-            # This fact is local to _poll_one's current call, never persisted
-            # in meta or accepted by the terminal-orphan/poison/operator paths.
-            skip_reason = None
+            try:
+                owned = _legacy_deadline_owned(conn, ctx, handle)
+            except LockNotAvailable:
+                # No writes have occurred on this connection. Clear the
+                # failed NOWAIT transaction and leave the row for next pass.
+                conn.rollback()
+                return False
+            if owned:
+                # This fact is local to _poll_one's current call, never persisted
+                # in meta or accepted by terminal-orphan/poison/operator paths.
+                skip_reason = None
         if process_handle and skip_reason is None and not _detached_group_alive(handle):
             skip_reason = "group-unavailable"
         if skip_reason is None and spec.kill is not None:
@@ -761,7 +790,9 @@ def _kill_and_terminalize(
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     bubble_job_failure(store, ref_id)
-    if released and getattr(spec, "reap", None) is not None:
+    if (released or skip_reason == "group-unavailable") and getattr(
+        spec, "reap", None
+    ) is not None:
         try:
             spec.reap(ctx, handle)
         except Exception:  # pragma: no cover — defensive
@@ -771,6 +802,7 @@ def _kill_and_terminalize(
                 ref_id,
                 exc_info=True,
             )
+    return True
 
 
 def _poll_one(ctx: DispatchContext) -> bool:
@@ -779,9 +811,9 @@ def _poll_one(ctx: DispatchContext) -> bool:
     Returns ``True`` once the plugin has driven the job to a terminal
     ``STATUS`` (via ``ctx`` — this function does nothing further, OR this
     function drove it terminal itself via the kill checks below);
-    ``False`` while still running, having renewed the lease here (``poll``
-    itself must not touch the lease — that's the executor's job, exactly
-    like the claim-time stamp).
+    ``False`` while still running, normally renewing the lease here
+    (``poll`` itself must not touch it). A busy legacy deadline row instead
+    returns False without writes, so a later pass can retry the kill.
 
     Takes the caller's already-built :class:`DispatchContext` (the pass
     loop mints one per polled row) rather than the raw ``(store, ref_id,
@@ -818,14 +850,13 @@ def _poll_one(ctx: DispatchContext) -> bool:
             if note
             else "runner: killed by operator"
         )
-        _kill_and_terminalize(
+        return _kill_and_terminalize(
             ctx,
             handle,
             spec,
             swept_tag="killed-by-operator",
             summary=summary,
         )
-        return True
 
     # §H piece 2: a never-completing ``poll`` would otherwise renew the
     # lease forever below — with the sweeper's wall-clock retirement (§H
@@ -849,7 +880,7 @@ def _poll_one(ctx: DispatchContext) -> bool:
             if spec.poll(ctx, handle):
                 return True
             polled_alive = _detached_group_alive(handle)
-        _kill_and_terminalize(
+        return _kill_and_terminalize(
             ctx,
             handle,
             spec,
@@ -858,7 +889,6 @@ def _poll_one(ctx: DispatchContext) -> bool:
             failure_class="timeout",
             polled_alive=polled_alive,
         )
-        return True
 
     terminal = bool(spec.poll(ctx, handle))
     if not terminal:

@@ -124,11 +124,14 @@ class _Ctx:
 
 
 @pytest.fixture
-def no_autocatpath(monkeypatch: pytest.MonkeyPatch) -> None:
+def no_autocatpath(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Simulate a host without the catalyst extra (CI): the kill/reap hooks
     must remove the scratch dir without importing ``autocatpath``."""
     import sys
+    import tempfile
 
+    # Model the submit's direct-child temp layout without touching global tmp.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setitem(sys.modules, "autocatpath", None)
     monkeypatch.delitem(sys.modules, "precis_pathway.runner", raising=False)
 

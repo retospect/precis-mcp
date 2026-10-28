@@ -483,7 +483,8 @@ def _kill(ctx: Any, handle: Any) -> None:
     :func:`_reap` runs after the terminal write has stamped the job."""
     from precis_pathway import scratch
 
-    scratch.kill_seed_partial_detached(handle, keep_scratch=True)
+    if scratch.kill_seed_partial_detached(handle, keep_scratch=True) is False:
+        raise RuntimeError("unsafe pgid")
 
 
 def _reap(ctx: Any, handle: Any) -> None:

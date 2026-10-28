@@ -3356,19 +3356,22 @@ def test_cleanup_detached_retains_failed_scratch_only_when_opted_in(
     """
     monkeypatch.delenv("PRECIS_PATHWAY_KEEP_FAILED_SCRATCH", raising=False)
 
-    d = tmp_path / "off_failed"
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    d = tmp_path / "autocatpath-seed-off_failed"
     d.mkdir()
     runner._cleanup_detached(str(d), failed=True)
     assert not d.exists(), "removed by default even on failure"
 
     monkeypatch.setenv("PRECIS_PATHWAY_KEEP_FAILED_SCRATCH", "1")
 
-    d = tmp_path / "on_failed"
+    d = tmp_path / "autocatpath-seed-on_failed"
     d.mkdir()
     runner._cleanup_detached(str(d), failed=True)
     assert d.exists(), "retained for forensics when opted in"
 
-    d = tmp_path / "on_succeeded"
+    d = tmp_path / "autocatpath-seed-on_succeeded"
     d.mkdir()
     runner._cleanup_detached(str(d), failed=False)
     assert not d.exists(), "a success is never retained — nothing to diagnose"

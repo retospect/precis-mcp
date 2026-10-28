@@ -60,7 +60,10 @@ def _tail_logs(scratch_dir: str, limit: int = 4000) -> str:
 def _cleanup_detached(scratch_dir: str, *, failed: bool = False) -> None:
     """Best-effort scratch-dir removal — a detached submit's dir is a bare
     ``tempfile.mkdtemp`` (not context-managed, unlike the blocking sibling's
-    ``TemporaryDirectory``), so nothing else reclaims it.
+    ``TemporaryDirectory``), so nothing else reclaims it. Only resolved
+    immediate children of the temporary root with the submit's
+    ``autocatpath-seed-`` prefix are deletable; traversal paths and a symlink
+    final component are refused.
 
     Set ``PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1`` to RETAIN the dir of a run
     that failed, so its full ``stdout.log`` / ``stderr.log`` outlive the
@@ -72,7 +75,25 @@ def _cleanup_detached(scratch_dir: str, *, failed: bool = False) -> None:
     """
     import os
     import shutil
+    import tempfile
 
+    resolved = os.path.realpath(scratch_dir)
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    if (
+        ".." in scratch_dir.split(os.sep)
+        or os.path.islink(scratch_dir)
+        or os.path.join(
+            os.path.realpath(os.path.dirname(scratch_dir)),
+            os.path.basename(scratch_dir),
+        )
+        != resolved
+        or os.path.dirname(resolved) != temp_root
+        or not os.path.basename(resolved).startswith("autocatpath-seed-")
+    ):
+        log.warning(
+            "autocatpath_seed: refusing unsafe scratch directory %r", scratch_dir
+        )
+        return
     if failed and os.environ.get("PRECIS_PATHWAY_KEEP_FAILED_SCRATCH") == "1":
         log.warning(
             "autocatpath_seed: retaining failed scratch dir %s "
@@ -80,7 +101,7 @@ def _cleanup_detached(scratch_dir: str, *, failed: bool = False) -> None:
             scratch_dir,
         )
         return
-    shutil.rmtree(scratch_dir, ignore_errors=True)
+    shutil.rmtree(resolved, ignore_errors=True)
 
 
 def finalize_seed_partial_detached(
@@ -104,7 +125,7 @@ def finalize_seed_partial_detached(
 
 def kill_seed_partial_detached(
     handle: DetachedHandle, *, keep_scratch: bool = False
-) -> None:
+) -> bool:
     """Best-effort SIGKILL of a detached submit's whole process group — the
     ssh_node wall-clock kill hook (§H piece 2), invoked once
     ``meta.deadline`` passes. ``os.killpg`` reaches every descendant the
@@ -117,16 +138,24 @@ def kill_seed_partial_detached(
     best-effort) when this happens to be the process that submitted it —
     same zombie concern :func:`_process_alive` explains: a killed child
     that's never reaped would otherwise sit defunct in this worker process
-    for the rest of its life."""
+    for the rest of its life. Unsafe or missing process groups return False
+    without signalling, waiting or deleting scratch; accepted groups return
+    True (the signal remains best-effort)."""
     import os
     import signal
 
-    pgid = handle.get("pgid")
-    if pgid is not None:
-        try:
-            os.killpg(int(pgid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+    value = handle.get("pgid")
+    try:
+        pgid = int(value) if value is not None else 0
+    except (TypeError, ValueError, OverflowError):
+        pgid = 0
+    if pgid <= 1 or pgid == os.getpgrp():
+        log.warning("autocatpath_seed: refusing unsafe process group %r", value)
+        return False
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
     pid = handle.get("pid")
     if pid is not None:
         try:
@@ -135,9 +164,9 @@ def kill_seed_partial_detached(
             pass
     scratch = handle.get("dir")
     if scratch:
-        # Log the tail before wiping: this path returns ``None`` (the
-        # executor terminalizes from its own side), so unlike the poll
-        # branches there is no channel to hand the child's output back on —
+        # Log the tail before wiping: the executor terminalizes from its
+        # own side, so unlike the poll branches there is no channel to
+        # hand the child's output back on —
         # and it deleted the dir without ever reading it. Every wall-clock
         # kill therefore explained itself with nothing but the handle dict.
         # SIGKILL leaves no in-process buffer to flush, but with an
@@ -152,3 +181,4 @@ def kill_seed_partial_detached(
             )
         if not keep_scratch:
             _cleanup_detached(scratch, failed=True)
+    return True
