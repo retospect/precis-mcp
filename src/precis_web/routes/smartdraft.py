@@ -470,7 +470,7 @@ def _hub_and_citation_stats(
         pass
     try:
         raw = _collect_raw_cites(store, nodes)
-        buckets, _doi_line = _build_rows(store, raw)
+        buckets, _doi_line, _coverage_line = _build_rows(store, raw)
         lifecycle = {p: len(rows) for p, rows in buckets.items()}
     except Exception:
         lifecycle = {}

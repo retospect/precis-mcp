@@ -8,7 +8,10 @@ process, cached per store like ``eye_render._RELATION_READING``.
 Free-form tags (the ``OPEN``/``FLAG`` sentinel namespaces,
 ``_tags_ops``) share the ``OPEN`` slot; an axis with no ``tag_axes``
 row sorts at :data:`UNLISTED_RANK` — after free-form, before the
-system tail. Within one slot, chips sort by their rendered text.
+system tail — *unless* its namespace is all-uppercase, which reads as
+pipeline bookkeeping (``*CASCADE``, ``INBOUND``) and sinks past the
+seeded tail instead (gr524226). Within one slot, chips sort by their
+rendered text.
 
 The ruling's one exception to "anything goes" — a tag that only
 restates the context is dropped *before* counting: ``STATUS:open`` on
@@ -78,7 +81,16 @@ def _axis_ranks(store: Any) -> dict[str, float]:
 def _rank(ns: str, ranks: Mapping[str, float]) -> float:
     if ns in _BARE_NAMESPACES:
         return ranks.get("OPEN", 4.0)
-    return ranks.get(ns, UNLISTED_RANK)
+    if ns in ranks:
+        return ranks[ns]
+    if ns.isupper():
+        # An unlisted all-uppercase axis is pipeline bookkeeping
+        # (``*CASCADE``, ``INBOUND``, … — gr524226): it sinks past the
+        # seeded tail rather than leading the row ahead of the
+        # categorizer axes, so a new pipeline axis never needs a
+        # migration just to stay quiet.
+        return max(ranks.values(), default=UNLISTED_RANK) + 1
+    return UNLISTED_RANK
 
 
 def _chip_text(ns: str, value: str) -> str:

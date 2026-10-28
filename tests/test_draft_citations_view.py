@@ -493,3 +493,78 @@ class TestDoiCompletenessLine:
         # ...but the draft cites zero papers directly, so there is no DOI
         # line at all (not even one driven by the evidence candidate).
         assert "DOI:" not in body
+
+
+# ---------------------------------------------------------------------------
+# 7. Inclusive coverage line (gr524227) — a cited [fi] hub's evidence papers
+#    count toward the draft's inclusive cited-paper total alongside the
+#    direct count; one hop through the hubs only, deduped by paper.
+# ---------------------------------------------------------------------------
+
+
+class TestInclusiveCoverageLine:
+    def test_hub_evidence_counts_and_dedupes_against_direct(
+        self, store, draft: DraftHandler
+    ) -> None:
+        hub = _hub(store, "A settled claim with two evidence papers.")
+        shared = seed_ref(store, title="Cited Both Ways", kind="paper")
+        via_only = seed_ref(store, title="Reached Via Hub", kind="paper")
+        for pid in (shared, via_only):
+            attach_evidence(
+                store,
+                hub_ref_id=hub,
+                paper_ref_id=pid,
+                role="corroborates",
+                check_retraction=False,
+            )
+        direct_only = seed_ref(store, title="Direct Only", kind="paper")
+
+        ref = _new_draft(store, draft, "cites-inclusive")
+        _add_para(
+            store,
+            draft,
+            "cites-inclusive",
+            ref,
+            f"Direct [pa{direct_only}] and again [pa{shared}], plus settled [fi{hub}].",
+        )
+
+        body = draft.get(id="cites-inclusive", view="citations").body
+        # direct={direct_only, shared} (2), hubs=1, via={shared, via_only}
+        # (2), union={direct_only, shared, via_only} (3) — `shared` counts
+        # once despite being cited both directly and through the hub.
+        assert (
+            "ℹ coverage: 3 distinct papers inclusive — 2 cited directly, "
+            "2 reached through 1 cited finding hub(s)" in body
+        )
+
+    def test_fi_only_draft_reports_zero_direct_but_counts_hub_papers(
+        self, store, draft: DraftHandler
+    ) -> None:
+        """The gripe's exact shape: a draft whose cites all run through
+        ``[fi]`` hubs must not read as citing zero papers."""
+        hub = _hub(store, "A settled claim with fetched evidence.")
+        evidence_paper = seed_ref(store, title="Hub Evidence", kind="paper")
+        seed_chunk(store, ref_id=evidence_paper, text="grounding passage")
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=evidence_paper,
+            role="corroborates",
+            check_retraction=False,
+        )
+
+        ref = _new_draft(store, draft, "cites-inclusive-fi-only")
+        _add_para(store, draft, "cites-inclusive-fi-only", ref, f"Settled: [fi{hub}].")
+
+        body = draft.get(id="cites-inclusive-fi-only", view="citations").body
+        assert (
+            "ℹ coverage: 1 distinct papers inclusive — 0 cited directly, "
+            "1 reached through 1 cited finding hub(s)" in body
+        )
+
+    def test_no_coverage_line_when_the_draft_cites_nothing(
+        self, store, draft: DraftHandler
+    ) -> None:
+        _new_draft(store, draft, "cites-inclusive-empty")
+        body = draft.get(id="cites-inclusive-empty", view="citations").body
+        assert "coverage:" not in body

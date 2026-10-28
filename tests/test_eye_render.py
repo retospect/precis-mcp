@@ -115,6 +115,39 @@ def test_eye_rows_and_head_carry_ranked_tag_chips(hub: Hub) -> None:
     assert nrow.rstrip().endswith("[STATUS:open] [five] [four] [one] +2 more")
 
 
+def test_eye_head_sinks_unlisted_uppercase_axes_to_the_tail(hub: Hub) -> None:
+    """gr524226: an unlisted all-uppercase axis is pipeline bookkeeping
+    (``*CASCADE``, ``INBOUND``) — it sorts past the seeded tail, so the
+    ref's own meaning tags (seeded axes and unlisted lowercase ones)
+    lead the header chips instead of the least informative ones."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Pipeline-tagged")
+    for ns, value in (
+        ("DOMAINCASCADE", "1"),
+        ("INBOUND", "pending"),
+        ("STUDYTYPECASCADE", "1"),
+        ("TOPICCASCADE", "3-75b618c5"),
+        ("DOMAIN", "other"),
+        ("STUDYTYPE", "unknown"),
+        ("DREAM", "acquire"),
+    ):
+        store.add_tag(focus.id, Tag.closed(ns, value), set_by="system")
+    # A free-form tag that happens to carry a colon parses as ``OPEN``
+    # (the ``thread:…``/``cluster:…`` chips on real refs are these) —
+    # the free-form slot leads ahead of the categorizer axes too.
+    store.add_tag(focus.id, Tag.open("thread:agent-surface"), set_by="system")
+
+    out = render_eye(
+        store, handle_registry.format_handle("memory", focus.id), "fisheye"
+    )
+    head = out.splitlines()[0]
+    assert head.rstrip().endswith(
+        "[thread:agent-surface] [DOMAIN:other] [STUDYTYPE:unknown] "
+        "[DREAM:acquire] [DOMAINCASCADE:1] [INBOUND:pending] "
+        "[STUDYTYPECASCADE:1] [TOPICCASCADE:3-75b618c5]"
+    )
+
+
 def test_eye_row_drops_the_space_the_ring_filter_already_applied(
     hub: Hub,
 ) -> None:

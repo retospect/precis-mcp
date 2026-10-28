@@ -51,6 +51,14 @@ the partition table below it. Shares its classifier
 Hygiene footer's own DOI line so the two surfaces can't drift on
 wording. Advisory only, same as every other signal in this view.
 
+**Inclusive coverage line** (gr524227): a second header line reporting
+the distinct papers cited *directly*, the distinct cited finding hubs,
+the distinct papers reached *through* those hubs (the same evidence
+sets the to-fetch rows derive — one hop, never transitive), and the
+deduped union. A draft whose cites run mostly through ``[fi]`` hubs
+otherwise reads as citing far fewer papers than it does — comparing two
+such drafts against the direct count alone invents a mass cite-drop.
+
 **Deliberately excluded.** Computational-evidence handles
 (:data:`~precis.utils.mentions.COMPUTED_EVIDENCE_KINDS` — a cited
 simulation structure, calc/math worksheet, or computed pathway) are NOT
@@ -266,7 +274,7 @@ def _evidence_unfetched_paper_ids(
 
 def _build_rows(
     store: Store, raw: list[_RawCite]
-) -> tuple[dict[str, list[dict[str, str]]], str]:
+) -> tuple[dict[str, list[dict[str, str]]], str, str]:
     paper_ids = {c.ref_id for c in raw if c.kind == "paper"}
     finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
     refs_by_id = store.fetch_refs_by_ids(paper_ids | finding_ids)
@@ -351,13 +359,36 @@ def _build_rows(
     from precis.export.retraction import summarize_doi_completeness
 
     doi_line = summarize_doi_completeness(sorted(paper_ids), dois, refs_by_id)
-    return buckets, doi_line
+
+    # Inclusive coverage line (gr524227) — the deduped union of direct
+    # paper cites and the papers reached one hop out through the cited
+    # finding hubs' evidence sets (``evidence_by_hub`` is already the
+    # all-evidence map the to-fetch rows above filter by fetched-ness,
+    # so this costs no extra reads). A paper cited both ways counts
+    # once, in the union.
+    coverage_line = ""
+    if raw:
+        via_hub = {pid for ids in evidence_by_hub.values() for pid in ids}
+        inclusive = paper_ids | via_hub
+        coverage_line = (
+            f"ℹ coverage: {len(inclusive)} distinct papers inclusive — "
+            f"{len(paper_ids)} cited directly, {len(via_hub)} reached "
+            f"through {len(finding_ids)} cited finding hub(s) (one hop, "
+            "deduped)."
+        )
+    return buckets, doi_line, coverage_line
 
 
 def _render(
-    ref: Ref, buckets: dict[str, list[dict[str, str]]], doi_line: str
+    ref: Ref,
+    buckets: dict[str, list[dict[str, str]]],
+    doi_line: str,
+    coverage_line: str,
 ) -> Response:
     lines = [f"# {ref.slug or ref.id} — citation lifecycle", ""]
+    if coverage_line:
+        lines.append(coverage_line)
+        lines.append("")
     if doi_line:
         marker = "ℹ" if doi_line.startswith("all ") else "⚠"
         lines.append(f"{marker} DOI: {doi_line}.")
@@ -380,8 +411,8 @@ def render_citations_view(store: Store, ref: Ref) -> Response:
     done. Read-only — no writes, no LLM call (see module docstring)."""
     chunks = store.drafts.reading_order(ref.id)
     raw = _collect_raw_cites(store, chunks)
-    buckets, doi_line = _build_rows(store, raw)
-    return _render(ref, buckets, doi_line)
+    buckets, doi_line, coverage_line = _build_rows(store, raw)
+    return _render(ref, buckets, doi_line, coverage_line)
 
 
 def draft_fetch_ref_ids(store: Store, ref: Ref) -> list[int]:
