@@ -195,7 +195,7 @@ dependencies = [
     # dft (light, torch-free) — ASE + spglib back CIF I/O, symmetry, the EMT
     # relax rung and slab ops. ase is also (harmlessly) listed by
     # [dft-ml]. The MLIP rung ([dft-ml], torch) stays optional.
-    "ase>=3.22",
+    "ase>=3.29.0",
     "spglib>=2.1",
     # scipy — already present in every install transitively via ase;
     # promoted to a direct dep for the se atomic clearance path (cKDTree
@@ -354,7 +354,7 @@ paper = [
 # learned potential (MACE-MP-0). torch is heavy — gated out of the default
 # install; rung-0 `clean` geometry repair needs none of this. GPAW/DFT
 # (`dft-gpaw`) runs as a cluster job, not inline.
-dft-ml = ["ase>=3.22", "mace-torch>=0.3", "torch-dftd>=0.4"]
+dft-ml = ["ase>=3.29.0", "mace-torch>=0.3", "torch-dftd>=0.4"]
 # Catalyst reaction-pathway plugin (bundle-pathway-in-tree proposal): the
 # `pathway` kind's KIND SURFACE — the `precis_pathway` glue imports the pure
 # `autocatpath` engine (numpy/scipy/ase/rdkit, no ML backend). Split from the
