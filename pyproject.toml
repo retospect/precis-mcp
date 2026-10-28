@@ -170,7 +170,7 @@ dependencies = [
     # (embed / paper / dft-ml / catalyst) deliberately stay optional.
     #
     # calc kind — sympy CAS + pint's curated unit registry.
-    "sympy>=1.12",
+    "sympy>=1.14.0",
     "pint>=0.23",
     # plot / figure render — matplotlib (deterministic raster). pydantic is
     # already present transitively via pydantic-settings; pinned direct
