@@ -1180,8 +1180,9 @@ class StructureMixin:
         ``conn`` joins the preparation save/revision transaction so a job
         retry cannot recover prepared geometry without its run evidence.
         ``pending_run_id`` completes only an uncached queued preparation row;
-        it never rewrites successful cache evidence.
-        Returns the new ``struct_runs.id``."""
+        a retry reuses an already closed row without rewriting its evidence
+        or duplicating frames. It never rewrites successful cache evidence.
+        Returns the recorded ``struct_runs.id``."""
         with nullcontext(conn) if conn is not None else self.tx() as conn:
             values = (
                 fidelity,
@@ -1210,6 +1211,17 @@ class StructureMixin:
                     (ref_id, *values),
                 ).fetchone()
             else:
+                existing = conn.execute(
+                    "SELECT id, status FROM struct_runs WHERE id=%s AND ref_id=%s "
+                    "AND cache_key IS NULL FOR UPDATE",
+                    (pending_run_id, ref_id),
+                ).fetchone()
+                if existing is not None and existing[1] != "queued":
+                    # A no-save preparation can commit without advancing the
+                    # structure version. After a metadata-write crash the
+                    # retry reaches here again: its preflight is already
+                    # recorded, including any warning and convergence curve.
+                    return int(existing[0])
                 # Only a pending, uncached preparation can be completed in
                 # place. Successful run-cube entries remain append-only.
                 row = conn.execute(

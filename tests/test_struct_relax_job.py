@@ -433,6 +433,93 @@ def test_deferred_preparation_recovers_only_its_own_committed_revision(
     assert sum(run["fidelity"] == "clean" for run in runs) == 1
 
 
+def test_rejected_preflight_retry_preserves_completed_run_and_frames(
+    structure, monkeypatch
+):
+    """A no-save preparation retry must not complete its clean audit row twice."""
+    import importlib
+    from copy import deepcopy
+    from dataclasses import replace
+
+    from precis.structure import RelaxResult
+
+    handler = importlib.import_module("precis.handlers.structure")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    structure.put(id="rejected_retry", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="rejected_retry")
+    version = structure.store.structure_version(ref.id)
+    scene, _ = structure.store.structure_load(ref.id)
+    original_poscar = to_poscar(scene)
+    response = structure.edit(
+        id="rejected_retry", ops=[{"op": "relax", "fidelity": "xtb"}]
+    )
+    job_id = response.ref_id
+    assert job_id is not None
+    job = structure.store.get_ref(kind="job", id=job_id)
+    params = deepcopy(job.meta["params"])
+    pending_id = structure.store.structure_runs(ref.id)[0]["id"]
+    attempts = []
+
+    def rejected_preflight(scene, mode, *, steps):
+        attempts.append(mode)
+        note = (
+            "preflight repair rejected: validator errors increased; kept input geometry"
+        )
+        curve = [0.4, 0.2] if len(attempts) == 1 else [0.9, 0.8, 0.7]
+        return RelaxResult(
+            "clean", False, len(curve), 0.0, curve=curve, note=note
+        ), note
+
+    def crash_after_preparation(**kwargs):
+        assert "params" in kwargs and "input_scene" not in kwargs["params"]
+        raise RuntimeError("crash before saving prepared job params")
+
+    monkeypatch.setattr(handler, "_preflight_relax", rejected_preflight)
+    monkeypatch.setattr(handler, "_run_preflight_gate", lambda scene: [])
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", _exploding_runner)
+    monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+    first, _ = _fake_ctx(structure.store, deepcopy(params))
+    first = replace(first, ref_id=job_id, set_meta=crash_after_preparation)
+    with pytest.raises(RuntimeError, match="crash before saving prepared job params"):
+        struct_relax._dispatch(first, struct_relax.SPEC)
+    assert structure.store.structure_version(ref.id) == version
+    with structure.store.pool.connection() as conn:
+        completed = conn.execute(
+            "SELECT to_jsonb(r) FROM struct_runs r WHERE id = %s", (pending_id,)
+        ).fetchone()[0]
+        frames = conn.execute(
+            "SELECT step, energy, max_force FROM struct_frames WHERE run_id = %s ORDER BY step",
+            (pending_id,),
+        ).fetchall()
+    assert completed["status"] == "succeeded" and completed["n_steps"] == 2
+    assert not completed["converged"] and len(frames) == 2
+
+    backend = _stub_ml_runner(original_poscar)
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", backend)
+    retry, events = _fake_ctx(structure.store, deepcopy(params))
+    retry = replace(retry, ref_id=job_id)
+    struct_relax._dispatch(retry, struct_relax.SPEC)
+    assert ("status", "succeeded") in events
+    assert len(backend.calls) == 1 and backend.calls[0]["poscar"] == original_poscar
+    assert attempts == ["clean", "clean"]
+    assert structure.store.structure_version(ref.id) == version
+    clean = [
+        r for r in structure.store.structure_runs(ref.id) if r["fidelity"] == "clean"
+    ]
+    assert len(clean) == 1 and clean[0]["id"] == pending_id
+    with structure.store.pool.connection() as conn:
+        after = conn.execute(
+            "SELECT to_jsonb(r) FROM struct_runs r WHERE id = %s", (pending_id,)
+        ).fetchone()[0]
+        after_frames = conn.execute(
+            "SELECT step, energy, max_force FROM struct_frames WHERE run_id = %s ORDER BY step",
+            (pending_id,),
+        ).fetchall()
+    assert after == completed and after_frames == frames
+    after_scene, _ = structure.store.structure_load(ref.id)
+    assert to_poscar(after_scene) == original_poscar
+
+
 def test_build_run_argv_docker_vs_podman():
     docker = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
     assert docker[:5] == ["docker", "run", "--rm", "--name", "precis-job-7"]

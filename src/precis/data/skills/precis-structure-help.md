@@ -431,6 +431,7 @@ then queues its input snapshot and returns the job id without saving a
 structure revision. A queued preflight run makes it visible immediately;
 it has no computed forces or convergence claim. The worker completes that
 same run. An existing `last_relax` result stays visible while work waits.
+The cache-hit path closes the preflight as `skipped`; a refusal closes it as `failed`.
 Inside the job: cache lookup, `clean` pre-relax
 (`preflight='emt'` for EMT), cache re-check, MLIP gate and save/perception.
 A repair that adds validator errors is discarded: the job uses the input
