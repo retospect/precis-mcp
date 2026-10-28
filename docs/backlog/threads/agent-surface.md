@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** [tool-description-budgets](../tool-description-budgets.md) slices 2+ (slice 1, the cap test into `CODE_HYGIENE`, landed 2026-10-21); the gr494831 error contract (M1–M3) is on main, so it unblocks nothing further.
+- **Next:** [block-navigation](../block-navigation.md) slice 1 (authoring lint); then [tool-description-budgets](../tool-description-budgets.md) slices 2+ (slice 1, the cap test into `CODE_HYGIENE`, landed 2026-10-21); the gr494831 error contract (M1–M3) is on main, so it unblocks nothing further.
 - **Blocked by:** Nothing.
 - **Unblocks:** Agents that recover from a refused call without a human, and fewer silent misuses on the surface every thread uses.
 - **Acceptance:** Each item's own criteria; for gr494831, a call either does exactly what its ack says or refuses with a next step.
@@ -32,11 +32,15 @@ description budgets, then Drive.
 
 ## Do next
 
-1. **backlog/tool-description-budgets.md** — verb descriptions sit at
+1. **backlog/block-navigation.md** — small addressable blocks, `budget=`
+   with refuse-with-outline instead of `more`, telemetry, batched get,
+   preload, acceptance harness and optimizer (Reto 2026-10-28). Slice 1
+   (authoring lint, skill cap below the 24 KiB split) first.
+2. **backlog/tool-description-budgets.md** — verb descriptions sit at
    966–971 of 1024 bytes; slice 1 (the cap test into `CODE_HYGIENE`) landed
    2026-10-21, the rest waits on it so kind clauses move into skills once
    refusals carry the fix.
-2. **backlog/drive-slash-command-line.md** — `/` in the Drive search box
+3. **backlog/drive-slash-command-line.md** — `/` in the Drive search box
    opens a command popdown; the web counterpart of discoverable verbs.
    Slice 2 (bare-word qualifiers + `//` escape) landed 2026-10-21;
    remaining slices are pipes (traverse) and result-list actions.
