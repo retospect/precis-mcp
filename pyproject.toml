@@ -187,7 +187,7 @@ dependencies = [
     # mermaid kind — mermaidx runs real mermaid.js in embedded QuickJS +
     # resvg (no Node/Chromium/network). The kind still ships dark behind
     # PRECIS_MERMAID_ENABLED; core just guarantees the render/validate engine.
-    "mermaidx>=0.8",
+    "mermaidx>=0.10.1",
     # cad-export — manifold3d CSG kernel: in-process booleans → STL/3MF, no
     # external app. Exact-STEP interchange ([cad-step] / OCCT, ~200 MB)
     # stays optional.
