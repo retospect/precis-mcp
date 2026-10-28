@@ -150,6 +150,7 @@ from precis.pcb import resolved as pcb_resolved
 from precis.pcb import review as pcb_review
 from precis.pcb import route_digest as pcb_route_digest
 from precis.pcb import route_state as pcb_route_state
+from precis.pcb import run_record as pcb_run_record
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
 from precis.pcb import session_store as pcb_session_store
@@ -180,6 +181,7 @@ from precis.utils.link_tag_ops import (
     require_link_target,
     validate_link_mode,
 )
+from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 from precis.utils.units import parse_angle_deg
 
@@ -2064,6 +2066,24 @@ class PcbHandler(Handler):
             graph, params, session_state=snap.session_state()
         )
         idem_key = f"pcb_{op}:{ref.id}:{digest}"
+        # D2 (design-rerun-pull S1): a terminal run whose record matches
+        # this exact request — on its input digest (a stored-and-recovered
+        # board) or its result digest (an unchanged one) — serves the
+        # stored result verbatim instead of minting another anneal. The
+        # footprint fingerprint is the part-identity half content_hash
+        # does not cover (a footprint swap on the same refdes must NOT
+        # hit). A non-terminal job never carries a record, so in-flight
+        # idempotency below is untouched; an unreadable record is a miss,
+        # never a failure.
+        hit = pcb_run_record.lookup(
+            self.store,
+            ref.id,
+            op,
+            digest,
+            pcb_run_record.footprint_fingerprint(graph),
+        )
+        if hit is not None:
+            return self._replay_op(ref, op, hit, snap)
         job_resp = self.hub.sibling("job").put(
             job_type=f"pcb_{op}",
             executor="job_inproc",
@@ -2103,6 +2123,73 @@ class PcbHandler(Handler):
             + drain_note
             + f"Next: get(kind='pcb', id='{ref.slug}', view='crossings') "
             "to check progress once the job lands."
+        )
+
+    def _replay_op(
+        self,
+        ref: Any,
+        op: str,
+        hit: Any,
+        snap: Any,
+    ) -> str:
+        """Serve a stored run verbatim (design-rerun-pull S1, D2). A
+        ``committed`` record's poses/side flips/rip-up are re-applied
+        through the same write calls the job used — bit-identical by
+        construction. A ``refused`` record replays the refusal: same
+        input, same verdict, no optimiser spend."""
+        record = hit.record
+        if record["outcome"] == "refused":
+            refusal = record.get("refusal") or {}
+            raise BadInput(
+                f"pcb: {ref.slug}: this {op} request already ran and was "
+                f"refused — replaying the verdict of job {hit.job_id}: "
+                f"{refusal.get('verdict') or '(no verdict recorded)'}",
+                next="change the design or the params to make it a new "
+                "request — or pass force=True (a different digest) to "
+                "write a worse placement anyway",
+            )
+        moved, flips, n_ripped = pcb_run_record.apply_record(
+            self.store,
+            ref.id,
+            record,
+            board_id=(snap.graph.get("board") or {}).get("board_id"),
+            current_layers={
+                str(i["refdes"]): str(i.get("layer") or "top")
+                for i in snap.graph.get("instances") or []
+            },
+        )
+        scores = record.get("scores") or {}
+        score_bits = ", ".join(f"{k}={v}" for k, v in sorted(scores.items()))
+        return (
+            f"# {op} {ref.slug} — replayed run {hit.job_id}\n\n"
+            f"served the stored result of job {hit.job_id} verbatim "
+            f"({record.get('placer')} run, matched on the record's "
+            f"{hit.matched} digest): wrote {moved} pose(s)"
+            + (f", {flips} side flip(s)" if flips else "")
+            + (f", retired {n_ripped} fixed-copper row(s)" if n_ripped else "")
+            + (f" — scores: {score_bits}" if score_bits else "")
+            # Replay restores poses, scores and sides only — never the
+            # routed copper — so EVERY record carries a route caveat:
+            # placement_only records name the stage that never ran,
+            # routed records the copper this replay did not restore.
+            # The flag is absent on records written before the
+            # route-aware stamp (gr512900 fix 4); replay never re-routes
+            # either way, so absent reads placement-only.
+            + (
+                " — placement replayed; route not replayed"
+                if record.get("placement_only", True)
+                else " — placement replayed; routed copper not restored, re-run route"
+            )
+            + "\nno optimiser call, no new job minted — identity by "
+            "replay, never by re-execution.\n\n"
+            + render_next_section(
+                [
+                    (
+                        f"get(kind='pcb', id='{ref.slug}', view='placement')",
+                        "see the placement the replay wrote",
+                    )
+                ]
+            )
         )
 
     def _claiming_worker_live(self) -> bool:

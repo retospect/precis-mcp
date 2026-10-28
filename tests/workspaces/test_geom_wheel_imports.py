@@ -109,6 +109,7 @@ _EXCLUDED = {_SRC / "precis" / "structure" / "importers"} | {
         "jlc_library.py",
         "jlc_order.py",
         "review.py",
+        "run_record.py",
         "session_store.py",
         "snapshot.py",
     )

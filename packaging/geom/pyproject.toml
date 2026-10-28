@@ -103,6 +103,7 @@ exclude = [
     "precis/pcb/jlc_library.py",
     "precis/pcb/jlc_order.py",
     "precis/pcb/review.py",
+    "precis/pcb/run_record.py",
     "precis/pcb/session_store.py",
     "precis/pcb/snapshot.py",
 ]

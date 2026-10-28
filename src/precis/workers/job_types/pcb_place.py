@@ -37,6 +37,7 @@ import numpy as np
 
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
+from precis.pcb import run_record as pcb_run_record
 from precis.pcb import session as pcb_session
 from precis.pcb import session_store as pcb_session_store
 from precis.pcb.optimize import (
@@ -473,6 +474,63 @@ def _topo_route(
     return text, meta
 
 
+def _run_record_poses(ir: PcbIR) -> dict[str, dict[str, Any]]:
+    """The committed pose map as ``{refdes: {x, y, rot, side}}`` — the
+    D1 record's replayable payload (``side`` rides ``inst_bottom``;
+    NaN-pose instances are omitted like :func:`pcb_session.positions`)."""
+    return {
+        str(ir.instance_refdes[i]): {
+            "x": float(ir.inst_x[i]),
+            "y": float(ir.inst_y[i]),
+            "rot": float(ir.inst_rot[i]),
+            "side": "bottom" if bool(ir.inst_bottom[i]) else "top",
+        }
+        for i in range(ir.n_instances)
+        if math.isfinite(float(ir.inst_x[i])) and math.isfinite(float(ir.inst_y[i]))
+    }
+
+
+def _stamp_committed_record(
+    ctx: DispatchContext,
+    *,
+    pcb_ref_id: int,
+    placer: str,
+    params: dict[str, Any],
+    input_digest: str,
+    ir: PcbIR,
+    scores: dict[str, Any],
+    ripped: set[int],
+    placement_only: bool,
+    elites: dict[str, Any] | None = None,
+) -> None:
+    """D1 (design-rerun-pull S1): the terminal ``pcb_place`` job carries
+    its run record on ``meta.run_record`` — the pose map + scores a later
+    resubmit replays verbatim. ``result_digest`` is the post-commit
+    ``content_hash`` over a FRESH snapshot, so a resubmit on the board
+    this run left behind hits on it (``run_record.lookup``).
+    ``placement_only`` marks a run that had no route stage (gr512900
+    fix 4) — replay says "placement replayed; route not replayed"."""
+    after = pcb_session_store.load_snapshot(ctx.store, pcb_ref_id)
+    result_digest = pcb_session.content_hash(
+        after.graph, params, session_state=after.session_state()
+    )
+    ctx.set_meta(
+        run_record=pcb_run_record.committed_record(
+            op="place",
+            placer=placer,
+            params=params,
+            input_digest=input_digest,
+            result_digest=result_digest,
+            footprint_digest=pcb_run_record.footprint_fingerprint(after.graph),
+            poses=_run_record_poses(ir),
+            scores=scores,
+            ripped_fixed_ids=sorted(ripped),
+            placement_only=placement_only,
+            elites=elites,
+        )
+    )
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pcb_ref_id = int(params["pcb_ref_id"])
@@ -505,6 +563,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             failure_class="infra",
         )
         return
+
+    # D1 (design-rerun-pull S1): the digest this run was enqueued under —
+    # same recipe ``_enqueue_op`` hashes at submit (raw graph + minted
+    # params + the snapshot surfaces), so a resubmit on the PRE-run state
+    # (a stored-and-recovered board) hits this record's ``input_digest``.
+    input_digest = pcb_session.content_hash(
+        design.graph, params, session_state=design.session_state()
+    )
 
     features = design.features
     board_id = (graph.get("board") or {}).get("board_id")
@@ -760,18 +826,35 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         and n_placement_errors > errors_before
     )
     if worse and not force:
+        verdict = (
+            "refusing to commit — the new placement has "
+            f"{n_placement_errors} pre-route DRC error(s), the stored one has "
+            f"{errors_before}; nothing written.\n{placement_report}\n"
+            "Pin the parts that must not move (fixed='both', or keep the "
+            "source placement of an imported board), try another seed, or "
+            "pass force=True to write it anyway."
+        )
         if topo_files is not None:
             # The run happened and its files are computed even though the
             # pose was refused — stamp them so view='topo' and bench
             # metrics can read a refused run (gr515107 loop).
             ctx.set_meta(topo_run={"files": topo_files})
+        # A refused run is recorded too (evidence of what did NOT work —
+        # S1): the resubmit on this exact input replays the refusal
+        # instead of paying for the same anneal.
+        ctx.set_meta(
+            run_record=pcb_run_record.refused_record(
+                op="place",
+                placer=placer or "anneal",
+                params=params,
+                input_digest=input_digest,
+                footprint_digest=pcb_run_record.footprint_fingerprint(design.graph),
+                verdict=verdict,
+                failure_class="non-convergence",
+            )
+        )
         ctx.record_failure(
-            "pcb_place: refusing to commit — the new placement has "
-            f"{n_placement_errors} pre-route DRC error(s), the stored one has "
-            f"{errors_before}; nothing written.\n{placement_report}\n"
-            "Pin the parts that must not move (fixed='both', or keep the "
-            "source placement of an imported board), try another seed, or "
-            "pass force=True to write it anyway.",
+            f"pcb_place: {verdict}",
             failure_class="non-convergence",
         )
         return
@@ -815,6 +898,31 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             )
             if ripped and gate_board_id is not None
             else 0
+        )
+
+    # D1 (design-rerun-pull S1): the committed run's replayable record.
+    # A topo run submitted with route=True records ONLY once its route
+    # stage has succeeded — that stamp lands inside the topo block below
+    # so a route failure is not a replayable hit (gr512900 fix 4). Every
+    # other run has no route stage at all: record it now, flagged
+    # placement-only, so replay can say "placement replayed; route not
+    # replayed".
+    if not (placer == "topo" and route):
+        _stamp_committed_record(
+            ctx,
+            pcb_ref_id=pcb_ref_id,
+            placer=placer or "anneal",
+            params=params,
+            input_digest=input_digest,
+            ir=ir,
+            scores=last_place,
+            ripped=ripped,
+            elites=(
+                {"topo_run": "elites.json"}
+                if placer == "topo" and topo_files is not None
+                else None
+            ),
+            placement_only=True,
         )
 
     # The pre-route DRC report (gr451052: nothing used to run a geometric
@@ -861,6 +969,26 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
                 if isinstance(exc, CorridorOverflow):
                     route_meta["corridor_overflow"] = exc.count
+        # D1 (gr512900 fix 4): a route=True run is recorded only once its
+        # route stage SUCCEEDED. The placement committed above still
+        # stands and a raised route still fails the job below — but the
+        # run is no replayable hit: a resubmit mints a fresh job rather
+        # than replaying a placement the route half never proved.
+        if route and not route_error:
+            _stamp_committed_record(
+                ctx,
+                pcb_ref_id=pcb_ref_id,
+                placer=placer or "anneal",
+                params=params,
+                input_digest=input_digest,
+                ir=ir,
+                scores=last_place,
+                ripped=ripped,
+                elites=(
+                    {"topo_run": "elites.json"} if topo_files is not None else None
+                ),
+                placement_only=False,
+            )
         # Decision 20: the whole run payload rides the job ref's meta for
         # ``view='topo'`` drill-down; the summary text is the same file.
         # ``route`` stays absent when the stage never ran.

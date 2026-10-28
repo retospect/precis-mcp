@@ -2128,6 +2128,20 @@ class JobHandler(NumericRefHandler):
                         "delete once it is STATUS:cancelled"
                     ),
                 )
+            meta_row = conn.execute(
+                "SELECT meta ? 'run_record' FROM refs WHERE ref_id = %s",
+                (job_id,),
+            ).fetchone()
+            if meta_row and meta_row[0]:
+                raise BadInput(
+                    f"job id={job_id} carries a pcb run record "
+                    "(meta.run_record) — the design-rerun archive "
+                    "(design-rerun-pull S1) lives on terminal job refs, "
+                    "so deleting it would reap a replayable run",
+                    next="keep it — the record is how an unchanged "
+                    "resubmit replays this run; if the run is wrong, "
+                    "re-run op='place' with changed params instead",
+                )
             self.store.retire_ref(job_id, conn=conn)
         return Response(body=f"deleted {self._sense()} id={job_id}")
 

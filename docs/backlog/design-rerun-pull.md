@@ -150,15 +150,6 @@ that is the tolerance story, not a shipped model.
 
 Draft ranking; each slice lands alone.
 
-**S1 — pcb run record + exact-hit replay.** Persist the D1 record for
-`pcb_place` (anneal and topo paths share it — topo already assembles
-`manifest`/`elites`; the anneal gains the equivalent pose+score
-payload). `_enqueue_op` and the workspace importer consult terminal runs
-by idem digest and serve the stored result on a hit. Tests: a resubmit
-on an unchanged design mints no anneal and lands bit-identical poses; a
-corrupted or unknown-version record is skipped without failing the run;
-a refused run's record replays as a refusal, never a result.
-
 **S2 — elite warm start + the cold/warm bench.** Top-K elite seeding by
 refdes for the anneal; `EliteArchive` preload for topo. Measure on the
 standing dogfood boards (`heater-base-test`, `taz15`) with a small ECO
@@ -176,6 +167,13 @@ it is routable").
 **S4 — the seam generalised.** se relax records keyed on
 structure + settings; `struct_search` warm-start rebased onto the shared
 record (absorbing slice 2's node-local-path hazard ruling).
+
+**Open item — workspace importer lookup.** S1 built the record and the
+`_enqueue_op` replay door but NOT the importer side: when
+[pcb-workspace-code](pcb-workspace-code.md) lands, its §3 request-cache
+door consults the run record (`run_record.lookup`/`apply_record`) the
+same way `_enqueue_op` does. There is no pcb workspace importer yet —
+the seam exists, the second consumer does not.
 
 ## Explicitly NOT in scope
 
