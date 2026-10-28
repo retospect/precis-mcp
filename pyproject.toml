@@ -240,7 +240,7 @@ dependencies = [
     # it was never safely optional (it shipped only via extras + dev).
     "httpx>=0.27",
     "wolframalpha>=5.0",           # wolfram kind (key-gated)
-    "youtube-transcript-api>=1.0", # youtube kind
+    "youtube-transcript-api>=1.2.4", # youtube kind
     "trafilatura>=1.6",            # web page → markdown extractor
     "feedparser>=6.0",             # RSS/Atom for the news kind / news_poll
     "python-epo-ops-client>=4.0",  # patent kind — EPO OPS (OAuth2 fair-use)
