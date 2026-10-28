@@ -66,7 +66,8 @@ pull-out, cracking, creep, repeat assembly.
   face and `sink_risks()` flags columns past `ratio × nominal` with the
   thickening leaf named as the cause — run it on the cosmetic face
   opposite any boss/rib cluster ("no solid plug under the bore" made
-  probe-visible).
+  probe-visible). `method='ball'` is the rolling-ball/medial measure
+  (true local thickness); `'ray'` (default) is the column view.
 - Box2 uses: Ø8 boss (2.0d, ABS molded minimum — FDM-leaning designs
   should take 9–10 mm), 1.5 mm ribs (0.5T molded rule; take 2.25–3 mm
   for an FDM-first part), ribs to 0.82H stopping below the lid lip.

@@ -606,6 +606,72 @@ class ThicknessInspection:
         return tuple(s for s in self.samples if s.thickness_m > limit)
 
 
+def _ball_thickness(
+    design: Design,
+    expr: Expr,
+    entry_m: tuple[float, float, float],
+    outward_normal_m: tuple[float, float, float],
+) -> float:
+    """Rolling-ball thickness along the inward normal: sphere-trace
+    toward the medial ridge; the thickness is ``2 ×`` the largest
+    inscribed ball found (the ball touches the entry skin on one
+    side and the constraining wall on the other)."""
+    q = np.asarray(entry_m, dtype=np.float64)
+    inward = -np.asarray(outward_normal_m, dtype=np.float64)
+    best = 0.0
+    prev = q
+    brk = q
+    miss = 0
+    for _ in range(2048):
+        v = float(_sdf(design, expr, q[None, :])[0])
+        dist = -v
+        if dist <= 0.0:
+            # A hair of positive sdf right at a merged prim's coincident
+            # face is fold noise (material continues behind it) — probe
+            # ahead: material means step through, growing positive sdf
+            # means a real exit.
+            ahead = q + inward * max(best * 0.02, 1e-9)
+            if float(_sdf(design, expr, ahead[None, :])[0]) < 0.0:
+                q = ahead
+                continue
+            brk = q
+            break
+        if dist < best:
+            # Valley: either the medial ridge (a real descent) or a merged
+            # prim's coincident interface (the union fold reads SHALLOW
+            # there — each prim measures its own interior face). Step a
+            # bounded recovery window; climbing back above ``best``
+            # resumes the march, 16 consecutive non-improving steps
+            # confirm the ridge.
+            miss += 1
+            if miss > 16:
+                brk = q
+                break
+            q = q + inward * max(best * 0.15, 1e-9)
+            continue
+        miss = 0
+        best = dist
+        prev = q
+        q = q + inward * dist
+    else:
+        brk = q
+    # Refine: the peak sits on the prev→brk segment, which can carry
+    # fold-valleys (not unimodal) — sample it uniformly and take the max.
+    peak = best
+    for k in range(1, 65):
+        mk = prev + (brk - prev) * (k / 65.0)
+        peak = max(peak, -float(_sdf(design, expr, mk[None, :])[0]))
+    return 2.0 * peak
+
+
+def _column_thickness(design: Design, expr: Expr, hit: RayHit, method: str) -> float:
+    """Per-sample thickness for :func:`thickness` — run length (ray)
+    or the rolling-ball measure (ball)."""
+    if method == "ray":
+        return float(hit.t_exit_m - hit.t_entry_m)
+    return _ball_thickness(design, expr, hit.entry_m, hit.entry_normal_m)
+
+
 def thickness(
     design: Design,
     expr: Expr,
@@ -615,6 +681,7 @@ def thickness(
     pitch_m: float,
     nominal_m: float | None = None,
     ratio: float = 1.5,
+    method: str = "ray",
     feature: str | None = None,
     role: str | None = None,
 ) -> ThicknessInspection:
@@ -630,7 +697,19 @@ def thickness(
     ``feature=``/``role=`` the column is the first *matching* run (the
     filters pass through to :func:`ray`), so ``feature='boss-1'`` maps
     only the columns behind ``boss-1``.
+
+    ``method='ray'`` (default) reports the material column — the run's
+    length, the thermal-mass view behind sink marks. ``method='ball'``
+    is the industry-standard rolling-ball check: sphere-trace inward
+    along the surface normal and report ``2 ×`` the largest inscribed
+    ball (the medial-ridge measure mold-DFM tools use) — true local
+    thickness on oblique walls, but blind to a tall boss's column
+    mass, so keep ``'ray'`` for the sink gate.
+
+    Raises ``ValueError`` for any other ``method``.
     """
+    if method not in ("ray", "ball"):
+        raise ValueError(f"method must be 'ray' or 'ball', got {method!r}")
     n = np.asarray(as_vec3(normal_m), dtype=np.float64)
     n = n / np.linalg.norm(n)
     ref = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
@@ -681,7 +760,7 @@ def thickness(
             samples.append(
                 ThicknessSample(
                     position_m=_vec3f(p),
-                    thickness_m=float(h.t_exit_m - h.t_entry_m),
+                    thickness_m=_column_thickness(design, expr, h, method),
                     entry_features=h.entry_features,
                     exit_features=h.exit_features,
                 )

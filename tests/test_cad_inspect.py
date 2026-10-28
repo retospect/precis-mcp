@@ -312,3 +312,44 @@ def test_ray_keeps_one_run_across_a_coincident_merge_interface() -> None:
     assert len(r.hits) == 1
     assert r.hits[0].t_exit_m - r.hits[0].t_entry_m == pytest.approx(40.0, abs=1e-6)
     assert any(fr.label == "boss" for fr in r.hits[0].exit_features)
+
+
+def test_thickness_ball_method_measures_the_inscribed_ball() -> None:
+    """Rolling-ball thickness is the medial measure: the flat 10 mm plate
+    reads 10 (ball r5), and the Ø16 boss reads 2 × 8 = 16 — pinned by the
+    boss wall, not the 40 mm column the ray measures."""
+    d, part = boss_plate_design()
+    ball = thickness(
+        d,
+        part,
+        origin_m=(0, 0, 0),
+        normal_m=(0, 0, -1),
+        pitch_m=2.0,
+        nominal_m=10.0,
+        method="ball",
+    )
+    # a mid-wall sample of the flat 10 mm plate: ball r5 (z is the nearest
+    # face; sampling near an edge would be pinned by the side wall — that
+    # is the rolling-ball measure working as intended)
+    mid = _nearest_xy(ball.samples, 9, 9)
+    assert mid.thickness_m == pytest.approx(10.0, abs=0.2)
+    core = _nearest_xy(ball.samples, 0, 0)
+    # nearest grid node to the axis is (±1, ±1) — the inscribed ball there
+    # is pinned by the Ø16 boss wall at 8 − √2, not at the axis radius
+    assert core.thickness_m == pytest.approx(2.0 * (8.0 - math.sqrt(2.0)), abs=0.2)
+    # same map, ray method: the column, not the ball
+    raymap = thickness(
+        d,
+        part,
+        origin_m=(0, 0, 0),
+        normal_m=(0, 0, -1),
+        pitch_m=2.0,
+        nominal_m=10.0,
+    )
+    assert _nearest_xy(raymap.samples, 0, 0).thickness_m == pytest.approx(
+        40.0, abs=1e-6
+    )
+    with pytest.raises(ValueError, match="method"):
+        thickness(
+            d, part, origin_m=(0, 0, 0), normal_m=(0, 0, -1), pitch_m=2.0, method="x"
+        )
