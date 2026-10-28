@@ -13,7 +13,7 @@ never as a new builder module.
 
 Signatures are the contract: the builders above keep atom ordinal order
 (strips, then walls, then seams), ``AtomPath`` names and seed
-coordinates byte-identical (tests/hexfold/test_sha_goldens.py enforces
+coordinates byte-identical (tests/test_hexfold/test_sha_goldens.py enforces
 it), so the internals are the code they replace — ``y_junction._sheet``,
 ``join._seam_k3``, the railtube pore machinery, the sp3 armchair sheet —
 moved here.

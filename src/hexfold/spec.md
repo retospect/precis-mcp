@@ -1384,7 +1384,7 @@ state against these numbers, never a second ordering. Test pieces that
 drive the order: the box (step 3) and the rotary ratchet valve
 (`docs/backlog/rotary-ratchet-valve.md`, steps 3 and 8).
 
-1. **Fold-in** (this repo): `src/hexfold/` + `tests/hexfold/` + root
+1. **Fold-in** (this repo): `src/hexfold/` + `tests/test_hexfold/` + root
    `hexfold/` export seed; cherry-pick the `feat/hexfold-integration`
    generator and skill; import-boundary test; MIT marked.
 2. **0.2 discrete work**: `port`/`rim` vocabulary and `seam.rings`

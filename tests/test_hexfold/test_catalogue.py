@@ -3,7 +3,7 @@
 
 Behaviour-preserving: seed rows restate `hexfold.join`'s own module
 constants (a test pins the two equal), and `compose` with no ``catalogue``
-argument is untouched (`tests/hexfold/test_join.py` already covers that).
+argument is untouched (`tests/test_hexfold/test_join.py` already covers that).
 This file covers the new surface only -- the store, the lookup, the
 measurement library function, `compose`'s catalogue-aware radius/threshold
 resolution, and `hexfold.chain.CachedBackend`.
@@ -385,7 +385,7 @@ def test_compose_records_the_resolution_label_even_when_overridden() -> None:
 
 def test_compose_with_no_catalogue_is_unaffected() -> None:
     # today's path (no catalogue, default rung) still gives the exact
-    # numbers `tests/hexfold/test_join.py` pins.
+    # numbers `tests/test_hexfold/test_join.py` pins.
     spec1 = "hexfold 0.2\na: tube(8,0, len=3)\n"
     a = _resolved(spec1)
     b = _resolved(spec1)

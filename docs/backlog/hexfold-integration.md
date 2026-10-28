@@ -27,7 +27,7 @@ development, with the boundary kept clean for a later pip re-export.
 - `src/hexfold/` — the package, MIT `LICENSE` inside, imports nothing
   from `precis*` (import-walk test); hatch `packages` += `src/hexfold`;
   `[project.scripts] hexfold = "hexfold.cli:main"`.
-- `tests/hexfold/` — its 102 tests (7 files), run by `scripts/test`.
+- `tests/test_hexfold/` — its 102 tests (7 files), run by `scripts/test`.
 - `hexfold/` (repo root) — export seed only: short README pointing at the
   spec, `examples/*.hx`, `CITATION.cff`, `.zenodo.json`, MIT `LICENSE`.
 - `src/precis_se/atomic/generators/hexfold_spec.py` + skill
@@ -199,7 +199,7 @@ displacement). Step 1: `Port.rim_type`, `rim.nonstandard` INFO, spec §10
 rim standard, `GeneratedPort.lattice`/`payload` filled by `build_hexfold`.
 
 **Step 2 built (2026-09-27, hexfold side).** `hexfold.options.options`
-+ CLI `hexfold options`; `tests/hexfold/test_options.py`. Not built: the
++ CLI `hexfold options`; `tests/test_hexfold/test_options.py`. Not built: the
 se handler ("new handler" in §25.3) — a thin op over this function once
 step 5 says what a handle is on a resolved block; `options` handles over
 roll-up domains and collars `{Rxk @fit}` are still unexposed.
@@ -235,7 +235,7 @@ pinned ends). `GeometryBackend` protocol (`catalogue`, `rim`, `pitch_A`,
 `fixed_length_A`); `StubBackend` answers from the chiral-index formulas
 with no build (pinned equal to `hexfold.lattice` / `domains.rim_n` by
 test). End parts with one rim auto-face the chain. Tests
-`tests/hexfold/test_chain.py`; the cross-generator interface proof
+`tests/test_hexfold/test_chain.py`; the cross-generator interface proof
 `tests/test_se_hexfold_chain.py` (a hexfold-generated se block → pinned
 part from `GeneratedPort.payload` + its `_len` measure → composes with
 stub caps). Not built: a se handler op over `solve` (step 5 says what a
@@ -246,7 +246,7 @@ a `hole` wall in a chain).
 **Seed placement residuals (from step 0), fixed 2026-09-28.** Three
 placement paths seeded 5-26 A crossing bonds that `stick()` then hid
 (every earlier test asserted post-relax lengths); each now has a
-*pre-relax* `net.seed3` case in `tests/hexfold/test_place_seeds.py`:
+*pre-relax* `net.seed3` case in `tests/test_hexfold/test_place_seeds.py`:
 nanobud `@` menus (no placement edge; now a six-point Kabsch fit from
 `_solve_bud_attach`'s pairs plus a one-sigma outward seed offset, because
 the six host atoms mix ring and second-shell atoms and have no shared rim
@@ -346,7 +346,7 @@ print `0.0000 A` for the measure that did *not* trip, making a genuine
 0.060°-vs-0.025° breach read as a false alarm).
 
 **Uncommitted but green at the wind-down (32 passed** across
-`tests/hexfold/test_join.py`, `tests/test_se_join.py`,
+`tests/test_hexfold/test_join.py`, `tests/test_se_join.py`,
 `tests/test_se_join_geo.py`, `tests/test_hexfold_import_boundary.py`;
 ruff and mypy clean**), awaiting the user's own `/qland`:**
 - `JOINERS` re-keyed on a **sorted lattice pair**, `("sp2-hex","sp2-hex")`
@@ -484,7 +484,7 @@ the multiplier does not bind at all — and the radius still moves 8 → 14.
    direct test for this failure.
 
 Until then the four `seam_radius` numbers pinned by `==` in
-`tests/hexfold/test_catalogue.py` and `tests/test_hexfold_seam_decay.py`
+`tests/test_hexfold/test_catalogue.py` and `tests/test_hexfold_seam_decay.py`
 are pinning the default tube length, not a physical quantity. They are
 still worth pinning — they make a change to this code visible — but no
 document should quote them as decay lengths.

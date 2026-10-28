@@ -3970,7 +3970,7 @@ def _place_seeds(
     ``registry.closure`` cycle (``sheet_bud_22.hx`` / ``nanobud_22.hx``'s
     ``[2+2]`` cycloaddition, two authored bonds onto the same lattice
     site) must stay on the untouched two-phase BFS result (regression
-    guard: ``tests/hexfold/test_place_seeds.py`` tree-graph bit-identity).
+    guard: ``tests/test_hexfold/test_place_seeds.py`` tree-graph bit-identity).
     """
     if net.seed3 is None:
         return net.seed3, net.seed_kind

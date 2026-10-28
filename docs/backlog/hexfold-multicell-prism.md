@@ -271,12 +271,12 @@ slice 3.
 ## Slices, in build order
 
 Every slice lands in precis-mcp and ships its skill edits in the same
-commit (§Skills). Goldens live in `tests/hexfold/data/goldens/` (SHA) and
-`tests/hexfold/data/multicell/` (census).
+commit (§Skills). Goldens live in `tests/test_hexfold/data/goldens/` (SHA) and
+`tests/test_hexfold/data/multicell/` (census).
 
 ### Slice 0 — goldens first
 
-No coordinate goldens exist today (`tests/hexfold/data/` holds only
+No coordinate goldens exist today (`tests/test_hexfold/data/` holds only
 `foot_anchors.json`).
 
 1. **Per-builder SHA goldens.** For every builder — `prism_tube` (`+`/`-`
@@ -439,7 +439,7 @@ skill: `precis-hexfold-seams-help` is about 1,700 words; split
 
 | slice | gap | lands in | size | agent |
 |---|---|---|---|---|
-| 0 SHA goldens + census + glossary | — | `tests/hexfold/data/`, `docs/glossary.md` | S–M, 1 build | coder (Sonnet) |
+| 0 SHA goldens + census + glossary | — | `tests/test_hexfold/data/`, `docs/glossary.md` | S–M, 1 build | coder (Sonnet) |
 | 1a primitives; prism + railtube as layouts | — | new `src/hexfold/sheetnet.py`; `prism.py`, `railtube.py` | L, 1 build | coder-chain (Sonnet); Opus design-review of the primitive signatures |
 | 1b channel, fin120, y_junction, sp3_seam as layouts | — | `channel.py`, `fin120.py`, `y_junction.py`, `sp3_seam.py`, `fin.py` | M–L, 1 build | coder-chain (Sonnet) |
 | 1c shared SE adapter | — | `precis_se/atomic/generators/` | M, 1 build | coder (Sonnet) |

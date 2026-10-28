@@ -213,7 +213,7 @@ by this spec or add an unrelated general solver.
 
 ### Acceptance/replay for the reviewed build
 
-- New focused `tests/hexfold/test_seam_k3.py`: selector parse/JSON/text
+- New focused `tests/test_hexfold/test_seam_k3.py`: selector parse/JSON/text
   round-trip (legacy phase unchanged), positive Y fixture, deterministic
   repeated outputs, unequal k=3 and k>=5 `fit.unsolvable`, rim mismatch.
   Refusal tests trap seam minting/placement/relaxer calls.
@@ -231,8 +231,8 @@ by this spec or add an unrelated general solver.
   absent. Any open-segment census/Euler limitation must be resolved or
   explicitly reported, never hidden to obtain a green fixture.
 - Planned canonical replay after contract verdict:
-  `scripts/test -n0 tests/hexfold/test_seam_k3.py tests/hexfold/test_seam.py
-  tests/hexfold/test_rim_type.py`, scoped container types and Ruff.
+  `scripts/test -n0 tests/test_hexfold/test_seam_k3.py tests/test_hexfold/test_seam.py
+  tests/test_hexfold/test_rim_type.py`, scoped container types and Ruff.
   Nothing in this spec is an executed positive result.
 - Codex code review precedes root merge. Exact deployment/same-owner native
   exposure is a later gate; a pure fixture does not claim native SE join

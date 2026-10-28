@@ -152,7 +152,7 @@ def test_plan_foot_refuses_a_census_its_3_plus_3_build_cannot_realise() -> None:
 
 
 # --- the three foot anchors, pinned before S2 routed plan_foot through the
-# census (tests/hexfold/data/foot_anchors.json).  In-session the refactor was
+# census (tests/test_hexfold/data/foot_anchors.json).  In-session the refactor was
 # byte-identical (sha256 of the positions); across platforms the relax is
 # compared to 1e-6 relative.
 

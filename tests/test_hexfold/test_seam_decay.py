@@ -27,7 +27,7 @@ the measurement holds for two consecutive increments -- the len=3 calls
 below are *start* lengths, not the measured extent.
 
 Lives in top-level ``tests/`` because it imports both ``hexfold`` and
-``precis.structure`` (``tests/hexfold/`` stays hexfold-only).
+``precis.structure`` (``tests/test_hexfold/`` stays hexfold-only).
 """
 
 from __future__ import annotations

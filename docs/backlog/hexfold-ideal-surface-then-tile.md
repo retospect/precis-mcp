@@ -82,7 +82,7 @@ the tiling by how closely it follows that surface, with no trade-off knob.
      foot census (sheet → two C_3 heptagon rows → `(n,0)` tube) and
      refuses any other census by name. The three anchors reproduce
      byte-identically: sha256 of the positions is unchanged, pinned in
-     `tests/hexfold/data/foot_anchors.json`. The census row radii can be
+     `tests/test_hexfold/data/foot_anchors.json`. The census row radii can be
      compared with where the build puts its outer row: (12,0) R = 8 has
      its census row 0 at r 7.41 Å and the built rim at 7.65 Å. Building
      any other census (a cap, a reducer frustum) is S3 work.
@@ -374,7 +374,7 @@ the separately held k3 work, in the existing isolated task worktree.
 - A fillet tighter than about one ring row cannot be followed by any
   tiling. S1 reports the smallest radius each row pitch can follow.
 
-test: tests/hexfold/test_ideal_surface.py (new); tests/test_precis_surface_*.py
+test: tests/test_hexfold/test_ideal_surface.py (new); tests/test_precis_surface_*.py
 ## R17 stored authored-target read — gr470905
 
 Assignment: window9, isolated `work/hexfold/stored-surface-target` from

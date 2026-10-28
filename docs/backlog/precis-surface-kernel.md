@@ -857,7 +857,7 @@ Reto's ask is "I want to see smooth". He wants the radii calculated from
 strain, not authored, and he does not want to draw anything; the agent
 draws the drum. He also argued that the discrete step should "just solve
 to fit" rather than reuse hexfold's cut-lid rings. Ruling: do all of it.
-The rings (gr459928, `tests/hexfold/test_graded_bend.py`) stay as the
+The rings (gr459928, `tests/test_hexfold/test_graded_bend.py`) stay as the
 hand-authoring path and as the oracle the fit is compared against.
 
 1. **Smooth target from strain.**

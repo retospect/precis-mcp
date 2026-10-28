@@ -80,9 +80,7 @@ from precis_se.atomic.generators.y_junction import build_y_junction
 _GOLDEN = Path(__file__).parent / "data" / "goldens" / "sha256.json"
 _UPDATE = bool(os.environ.get("PRECIS_UPDATE_HEXFOLD_GOLDENS"))
 _FORMAT = "hexfold-sha256-goldens/1"
-_REGENERATE = (
-    "PRECIS_UPDATE_HEXFOLD_GOLDENS=1 scripts/test tests/hexfold/test_sha_goldens.py"
-)
+_REGENERATE = "PRECIS_UPDATE_HEXFOLD_GOLDENS=1 scripts/test tests/test_hexfold/test_sha_goldens.py"
 
 
 def _sha(data: bytes) -> str:

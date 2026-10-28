@@ -21,7 +21,7 @@ from precis_se.atomic.join import finish_join, prepare_join
 from precis_se.handler import _render_block, _render_report
 from precis_se.ops import SeTree, apply_ops
 
-#: zigzag N=8 tube -- the same shape `tests/hexfold/test_join.py`'s
+#: zigzag N=8 tube -- the same shape `tests/test_hexfold/test_join.py`'s
 #: `test_two_tube_fuse_matches_whole_spec_build` pins at the stick rung.
 _TUBE_Z8 = "hexfold 0.2\na: tube(8,0, len=3)\n"
 #: pure-z (N=12) onto pure-a (N=12): the grain-boundary adapter motif.
@@ -287,7 +287,7 @@ def test_join_port_mismatch_mints_no_orphan(store: Store) -> None:
 
 def test_join_seam_radius_override_threads_through_the_op(store: Store) -> None:
     """The op's ``seam_radius`` key (`hexfold.join.compose`'s own
-    per-side override, `tests/hexfold/test_join.py`'s
+    per-side override, `tests/test_hexfold/test_join.py`'s
     ``test_seam_radius_override_fires_leak_silent_at_table_radius`` at the
     pure-numpy layer) makes it all the way from the op dict to `compose` --
     silent at the table radius (the default `_join` calls above never pass

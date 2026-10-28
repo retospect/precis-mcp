@@ -319,7 +319,7 @@ def _relaxed_geometry(block: GeneratedBlock) -> tuple[float, float, float]:
 
 #: Tolerance on the relaxed geometry. The cross-host spread (gr464502) was a
 #: degenerate fuse twist picked by rounding noise, fixed in
-#: ``hexfold.build._fuse_transform`` (tests/hexfold/test_fuse_twist_degenerate.py);
+#: ``hexfold.build._fuse_transform`` (tests/test_hexfold/test_fuse_twist_degenerate.py);
 #: what is left is float noise, so this is a guard band, not a hiding place.
 _RELAXED_TOL_A = 0.01
 

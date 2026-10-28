@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run python
-"""Regenerate tests/hexfold/data/multicell/census.json from the prototype.
+"""Regenerate tests/test_hexfold/data/multicell/census.json from the prototype.
 
 Slice 0 of docs/backlog/hexfold-multicell-prism.md: the multi-cell
 reference census comes from the scratch builder in the hexfold repo's
@@ -7,7 +7,7 @@ reference census comes from the scratch builder in the hexfold repo's
 ``prototypes/multicell-prism/build.py`` — usually checked out at
 /tmp/hp99 on the build host).  The fixture is frozen reference data; the
 closed forms ``C = 2*R*P*walls + P*k3`` and ``H = 2*P*hydrogenated
-folds`` are asserted by tests/hexfold/test_multicell_census.py.
+folds`` are asserted by tests/test_hexfold/test_multicell_census.py.
 
     scripts/hexfold-multicell-census [--build-py /tmp/hp99/build.py]
 """

@@ -134,7 +134,7 @@ Accelerate and OpenBLAS and picked a different twist, cut and seam per
 platform — fixed by rounding every solver branch key to a tie grid
 (positions 1e-9 A, angles 1e-9 rad, costs 1e-6 A^2) with ordinal
 tie-breaks; topology is now pinned by
-`tests/hexfold/test_tunnel_steps.py::test_stepped_rail_tunnel_topology_is_deterministic`.
+`tests/test_hexfold/test_tunnel_steps.py::test_stepped_rail_tunnel_topology_is_deterministic`.
 
 **Target.** `src/hexfold/check.py` (per-zone counts),
 `tests/test_se_tunnel_steps.py` (fixture, gate reads the counts),
@@ -154,5 +154,5 @@ Ready-check 2026-10-20 (scope: H2 outer cone/Y transition + star-notch residual)
 - blocker: scope bundles three deliverables (cone transition, notch-wall clash closure, zigzag rims) behind one "Left:" line, and the umbrella item is a multi-slice `in-progress` spec whose acceptance `test:` covers only slice 1. Zigzag (n,0) is excluded by the coordinator but the spec still lists it as Left; split into a cone-transition spec (with the notch closure as its acceptance) and leave zigzag separate. Also the "Deferred" vs "in scope" boundary is not written (no Not-in-scope section).
 - advisory: the spec's claim that the cone "shortens the notch" so clashes close is unverified in the repo (no experiment or fixture); builder may find the ~1 A residual persists. Add a stop condition: if clashes remain after the cone, report and stop rather than widen margins.
 - advisory: the H3 `hexfold_relax` job claim holds (landed per spec; `src/precis_se` relax path exists), but the finish line does not say whether the cone must pass through relax; state "stick preview only" or "after hexfold_relax" so the builder does not wire a job (prod relax timing is still an open Reto call).
-- advisory: spec text references the external-repo layout (`hexfold/examples/tunnel_reservoirs.hx`, "Same blocker as ...") and states `Reto 2026-10-16 option (a)` without a link; refresh paths to the monorepo (`src/hexfold/`, `tests/hexfold/`, `tests/test_se_tunnel_steps.py`).
+- advisory: spec text references the external-repo layout (`hexfold/examples/tunnel_reservoirs.hx`, "Same blocker as ...") and states `Reto 2026-10-16 option (a)` without a link; refresh paths to the monorepo (`src/hexfold/`, `tests/test_hexfold/`, `tests/test_se_tunnel_steps.py`).
 - advisory: model tier: new geometry/abstraction work; declare `model: opus` (front matter has none).

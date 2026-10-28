@@ -287,8 +287,8 @@ PATH_MAP: list[tuple[str, list[str]]] = [
     (
         "**/*.hx",
         [
-            "tests/hexfold/test_seam.py",
-            "tests/hexfold/test_rebuild_idempotent.py",
+            "tests/test_hexfold/test_seam.py",
+            "tests/test_hexfold/test_rebuild_idempotent.py",
         ],
     ),
     # Web colour ratchet: it walks the template, static CSS/JS and web Python

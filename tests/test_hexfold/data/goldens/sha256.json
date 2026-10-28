@@ -514,5 +514,5 @@
     }
   },
   "format": "hexfold-sha256-goldens/1",
-  "regenerate": "PRECIS_UPDATE_HEXFOLD_GOLDENS=1 scripts/test tests/hexfold/test_sha_goldens.py"
+  "regenerate": "PRECIS_UPDATE_HEXFOLD_GOLDENS=1 scripts/test tests/test_hexfold/test_sha_goldens.py"
 }

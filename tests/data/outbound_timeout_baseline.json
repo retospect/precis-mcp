@@ -116,7 +116,7 @@
    "tests/conftest.py::_initialise_test_db::psycopg.connect": 4,
    "tests/conftest.py::_live_backends::psycopg.connect": 1,
    "tests/conftest.py::_truncate_data_tables::psycopg.connect": 1,
-   "tests/hexfold/test_phase3.py::test_view_writes_png::subprocess.run": 1,
+   "tests/test_hexfold/test_phase3.py::test_view_writes_png::subprocess.run": 1,
    "tests/ingest/test_claim.py::_sessions_are_isolated::psycopg.connect": 2,
    "tests/test_agent_build_watchdog.py::test_the_script_is_executable_and_parses::subprocess.run": 1,
    "tests/test_anki_creds.py::vaulted_store::psycopg.connect": 1,

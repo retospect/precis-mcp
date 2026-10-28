@@ -285,7 +285,7 @@ def stick_info(
     # one-period armchair tube is exactly that net — every atom sits on a
     # rim and no ring closes — so `tube(5,5,len=1)` with geometry on
     # reached the caller as "hexfold internal error while compiling the
-    # spec", on a spec whose topology is fine (tests/hexfold/
+    # spec", on a spec whose topology is fine (tests/test_hexfold/
     # test_len1_rims.py). Empty index arrays make the assignments below a
     # no-op, which is the right answer.
     springs = np.array(angle_springs(net), dtype=np.float64).reshape(-1, 3)

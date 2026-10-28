@@ -13,7 +13,7 @@ the whole reason this file is `pytest.mark.slow`: the tube has to be long
 enough (`len=4`, 128 atoms/side) to leave atoms beyond the table radius's
 guard band (shell > 10) for the localisation check to mean anything --
 shorter tubes were measured to top out at shell 10 exactly, leaving
-nothing "beyond" to compare (`tests/hexfold/test_join.py`'s own len=10
+nothing "beyond" to compare (`tests/test_hexfold/test_join.py`'s own len=10
 comment makes the same point for the stick rung's sub-graph-size test).
 The mixed-rung/forced-rung tests below need none of that physics, so they
 use a `len=1` tube (32 atoms, sub-second relax) instead.
@@ -158,7 +158,7 @@ def test_join_geo_rung_matches_whole_spec_fuse_beyond_the_guard_band(
     )
 
     # the same "one .hx text, both instances, one build+stick" whole-spec
-    # fuse the stick-rung test compares against (`tests/hexfold/test_join.py`
+    # fuse the stick-rung test compares against (`tests/test_hexfold/test_join.py`
     # module docstring) -- but relaxed on geo instead of stick.
     whole_text = (
         "hexfold 0.2\na: tube(8,0, len=4)\nb: tube(8,0, len=4)\n"
@@ -185,7 +185,7 @@ def test_join_geo_rung_matches_whole_spec_fuse_beyond_the_guard_band(
 
     # instance a's own path-sorted ordinals are the same whether built
     # alone or as part of the two-instance whole spec (checked, not
-    # assumed -- the same fact `tests/hexfold/test_join.py` and
+    # assumed -- the same fact `tests/test_hexfold/test_join.py` and
     # `tests/test_hexfold_seam_decay.py` both rely on); instance b's
     # ordinals then follow at offset n_a, the SAME offset the se composite
     # itself uses for its own b-side ordinals (module docstring's

@@ -146,7 +146,7 @@ R35_CASES = [
         "tests/test_skill_refs.py",
     ),
     # h1-tunnel: new .hx example -> seam snapshot table
-    (["hexfold/examples/tunnel_reservoirs.hx"], "tests/hexfold/test_seam.py"),
+    (["hexfold/examples/tunnel_reservoirs.hx"], "tests/test_hexfold/test_seam.py"),
     # gardener: reviewed-blob pin edited -> mirror acceptance
     (["src/precis/utils/text.py"], "tests/test_memory_mirror_acceptance.py"),
 ]

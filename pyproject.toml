@@ -1101,7 +1101,7 @@ ignore = [
 "src/**" = ["E402", "RUF059"]
 # The U+00D7 repeat marker is required by the hexfold notation format.
 "src/hexfold/text.py" = ["RUF001", "RUF002"]
-"tests/hexfold/*" = ["RUF001", "RUF002"]
+"tests/test_hexfold/*" = ["RUF001", "RUF002"]
 # D417 (missing docstring Args entry) is a ratchet for precis_geom/pcb.py
 # ONLY: _bad_kwarg quotes a param's Google-style doc line, so every
 # public Board/Part/Pin/Net param must have one. The `!` negation

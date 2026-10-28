@@ -45,7 +45,7 @@ Existing notes to build from:
   from the cache";
 - `precis-surface-kernel.md` slice "Smooth drum": the catenoid row radii,
   and the finding that a closed lid forces regular hexagonal rings;
-- the graded hexfold rings (gr459928, `tests/hexfold/test_graded_bend.py`)
+- the graded hexfold rings (gr459928, `tests/test_hexfold/test_graded_bend.py`)
   as the hand-built symmetric oracle. se `hexa-nanobud-drum-graded33` is
   that style on prod, but on a (12,0) stalk.
 

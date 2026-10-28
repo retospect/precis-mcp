@@ -86,7 +86,7 @@ def test_excess_is_zero_inside_the_bars_and_sums_the_overshoot() -> None:
 
 
 # rt-s3: the S3 sweep and the wide-(24,0) regression ran the SAME three
-# plan_foot calls as tests/hexfold/test_ideal_surface.py's golden anchors
+# plan_foot calls as tests/test_hexfold/test_ideal_surface.py's golden anchors
 # (byte-identical arguments) — ~600 s of repeated solves. Their assertions
 # live there now: plan.k/meets, the per-row misses ('bond min'/'bond max'),
 # the k+2 loser rows, chosen.pyramid_max < 12 (under C60's) and the

@@ -543,7 +543,7 @@ def resolve_edge(
 def _kabsch_align(x: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float]:
     """Best-fit rotation+translation of ``x`` onto ``ref`` (no reflection);
     returns the aligned copy and the RMSD -- the same convention
-    `precis.structure.georelax.kabsch_align` and `tests/hexfold/
+    `precis.structure.georelax.kabsch_align` and `tests/test_hexfold/
     test_join.py`'s local `_kabsch_rmsd` use, restated numpy-only so
     `measure_environment` never imports `precis`."""
     xc = x - x.mean(axis=0)

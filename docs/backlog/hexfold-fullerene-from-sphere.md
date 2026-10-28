@@ -80,4 +80,4 @@ hero generation stops hand-building balls.
 - `precis_se` generators can reuse the spiral builder (sp2.py's "later
   round" note).
 
-test: tests/hexfold/test_fullerene_spiral.py (new)
+test: tests/test_hexfold/test_fullerene_spiral.py (new)

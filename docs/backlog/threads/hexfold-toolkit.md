@@ -605,7 +605,7 @@ removed as met — the transport move it waited on happened 09-29)
    - Reto, 2026-10-01: concretely, "2 heptagons in this ring, 2 more in
      the next, and 2 more in the next" instead of 6 in one.
    - Built 2026-10-01 for the sheet-to-tube foot
-     (tests/hexfold/test_graded_bend.py). Each row is a flat lid with a
+     (tests/test_hexfold/test_graded_bend.py). Each row is a flat lid with a
      centred p-wedge cut and a centred hole, i.e. a cone frustum with rims
      6-p and -(6-p), so each seam mints only the step between neighbours.
      3+3 (`+ 3@`) is clean. 2+2+2 (`+ square@`, then `+ 2@`) has clean
@@ -860,7 +860,7 @@ not tick, wake or re-scope them without his word. On prod they are tagged
   `stick.py`'s `springs[:, 0]`, because `_angle_springs` returns `[]` for
   a net with no rings and `np.array([])` is shape `(0,)` against a
   documented `(K,3)` contract. One-line `.reshape(-1, 3)`; tests in
-  `tests/hexfold/test_len1_geometry_crash.py` assert the report comes
+  `tests/test_hexfold/test_len1_geometry_crash.py` assert the report comes
   back *and* that `geom.summary` is present, so a future "fix" that skips
   the geometry pass instead of running it fails the test. It surfaced as
   "hexfold internal error while compiling the spec" on a legal spec.
