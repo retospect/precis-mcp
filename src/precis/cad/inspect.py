@@ -338,6 +338,7 @@ def ray(
     min_abs = abs(v_prev)
     inside = v_prev < 0.0
     span_start = 0.0 if inside else None
+    stuck = 0
 
     for _ in range(100_000):
         p = o + t * d
@@ -375,7 +376,21 @@ def ray(
             t_prev = t
             continue
         t_prev = t
-        t += max(abs(v), min_step)
+        step = max(abs(v), min_step)
+        if step <= min_step:
+            # |sdf| under the step floor: either a creep step or two
+            # through an exact crossing (the strict crossing tests
+            # fire immediately after) or a tangent slide along a
+            # surface that never crosses (gr530414 — thickness-map
+            # nodes on a wall plane crawled min_step to the iteration
+            # cap, ~1 s per ray on field designs). Give the tangent
+            # up: the report is no run and min_distance ≈ 0.
+            stuck += 1
+            if stuck > 64:
+                break
+        else:
+            stuck = 0
+        t += step
         if t > t_max_m:
             break
         # Crossing tests are strict (``v < 0.0`` / ``v > 0.0``): merged
@@ -384,7 +399,7 @@ def ray(
         # phantom run-split there would break the thickness columns.
         # Landing exactly on a REAL surface creeps one min_step
         # inside/outside and the strict tests still fire on the next
-        # sample; the iteration cap is the only bailout.
+        # sample; the iteration cap is the last bailout.
 
     if inside and span_start is not None:
         entry = o + span_start * d

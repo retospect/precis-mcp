@@ -11,6 +11,7 @@ quadrature volume against the closed-form value.
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 
@@ -353,3 +354,20 @@ def test_thickness_ball_method_measures_the_inscribed_ball() -> None:
         thickness(
             d, part, origin_m=(0, 0, 0), normal_m=(0, 0, -1), pitch_m=2.0, method="x"
         )
+
+
+def test_ray_tangent_slide_gives_up_instead_of_crawling() -> None:
+    """A ray sliding along a surface keeps |sdf| under the step floor;
+    the march must give up (no run, zero closest approach) instead of
+    crawling min_step to the iteration cap. Regression for gr530414:
+    thickness-map nodes landing exactly on a wall plane made every
+    tangent ray crawl ~100 k evaluations (~1 s each on field designs).
+    """
+    d = Design()
+    ext = d.prim("ext", build_config("box:w50d100h65rd3"))
+    start = time.perf_counter()
+    r = ray(d, ext, origin_m=(0, 0, 65), axis_m=(1, 0, 0))
+    elapsed = time.perf_counter() - start
+    assert r.hits == ()
+    assert r.min_distance_m == pytest.approx(0.0, abs=1e-6)
+    assert elapsed < 5.0
