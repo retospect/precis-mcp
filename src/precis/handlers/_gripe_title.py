@@ -25,6 +25,12 @@ cut lands mid-phrase ("…silently: no abnormal"). gr520270 had ``put``
 refuse that case with ``next=`` naming the limit rather than store a
 fragment; Reto overruled it — take the gripe anyway, triage can fix the
 title — so the mid-phrase cut is stored like any other derived title.
+
+gr528151 adds an ellipsis to that fallback at filing time, reserving one
+character inside ``TITLE_MAX``. ``put`` opts into ``mark_truncation`` on
+the same helper the gardening pass uses; there is no separate checked
+implementation. Long explicit ``title=`` values follow the same path and
+remain intact in the body, without a title-length refusal.
 """
 
 from __future__ import annotations
@@ -265,7 +271,7 @@ def _clause(text: str) -> str:
     return text
 
 
-def _derive(text: str) -> str | None:
+def _derive(text: str, *, mark_truncation: bool = False) -> str | None:
     """The derived title for a gripe body's first line, or ``None`` when
     the first line already fits. Lenient: a mid-phrase cut (no clause
     boundary inside the limit) is returned like any other derivation."""
@@ -277,14 +283,18 @@ def _derive(text: str) -> str | None:
         area, rest = m.group(1).strip(), m.group(2)
     clause = _clause(rest)
     prefix = f"{area}: " if area else ""
-    title = prefix + _cut(clause, TITLE_MAX - len(prefix))
+    limit = TITLE_MAX - len(prefix)
+    marker = "…" if mark_truncation and len(clause) > limit else ""
+    title = prefix + _cut(clause, limit - len(marker))
     if not title.strip(_TRIM):
-        title = _cut(line, TITLE_MAX)
-    return title
+        title = _cut(line, TITLE_MAX - len(marker))
+    return title + marker
 
 
-def short_title(text: str) -> str | None:
+def short_title(text: str, *, mark_truncation: bool = False) -> str | None:
     """The derived title for a gripe body, or ``None`` when its first line
     already fits in :data:`TITLE_MAX` chars. Lenient: a mid-phrase
-    fragment is still returned — see :func:`_derive`."""
-    return _derive(text)
+    fragment is still returned — see :func:`_derive`. ``mark_truncation``
+    adds an ellipsis to a fragment while keeping it inside the cap; filing
+    opts in, gardening retains its existing unmarked titles."""
+    return _derive(text, mark_truncation=mark_truncation)

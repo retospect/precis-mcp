@@ -2,9 +2,9 @@
 
 ``put`` files a first line over 60 chars with a derived
 ``Area: slogan`` title (the body keeps the full text) and the ack says
-so — a first clause no boundary fits inside the cap stores the
-mid-phrase cut too (gr524014 superseded gr520270's refusal: take the
-gripe anyway, triage can fix the title).
+so — a first clause with no boundary inside the cap stores an
+ellipsis-marked cut (gr524014, gr528151), whether it comes from text=
+or an explicit title=. The body keeps the full report in either case.
 ``edit(kind='gripe', title=)`` rewrites the title only. The one-time
 gardening pass (``precis gripes --shorten-titles``) lists by default and
 records the old title in a comment when it writes.
@@ -35,8 +35,8 @@ LONG = (
 )
 
 # A first line over TITLE_MAX whose first clause fits — ``put`` files it
-# (LONG's own cut lands mid-phrase; stored as-is since gr524014 — it
-# stays for the lenient-derivation and gardening tests).
+# (LONG's own cut lands mid-phrase; filing marks that cut with an ellipsis,
+# while the default derivation and gardening retain the unmarked form).
 LONG_BOUNDED = (
     "pcb router: copper pours vanish; after a reroute the two ground "
     "nets short, see the attached run"
@@ -89,18 +89,58 @@ def test_no_boundary_cuts_at_a_word_and_never_exceeds_the_cap() -> None:
     assert len(short_title("x" * 200) or "") == TITLE_MAX
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi",
+        "pcb board-script runs don't attach their construction trace anywhere",
+        "x" * 200,
+    ],
+)
+def test_marked_fragments_reserve_space_for_the_ellipsis(text: str) -> None:
+    marked = short_title(text, mark_truncation=True)
+    unmarked = short_title(text)
+    assert marked is not None and unmarked is not None
+    assert len(marked) <= TITLE_MAX
+    assert marked.endswith("…")
+    assert text.startswith(marked[:-1])
+    assert not marked[:-1].endswith(" ")
+    assert not unmarked.endswith("…")
+
+
+@pytest.mark.parametrize(
+    "text", ["router: pours vanish\n\nlong detail " * 3, "x" * TITLE_MAX]
+)
+def test_marking_leaves_short_first_lines_unchanged(text: str) -> None:
+    assert short_title(text, mark_truncation=True) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        (LONG_BOUNDED, "pcb router: copper pours vanish"),
+        ("x" * TITLE_MAX + "; more details follow", "x" * TITLE_MAX),
+    ],
+)
+def test_marking_keeps_a_complete_clause_without_an_ellipsis(
+    text: str, want: str
+) -> None:
+    assert short_title(text, mark_truncation=True) == want
+    assert short_title(text) == want
+
+
 def test_no_boundary_inside_the_limit_still_files(
     gripe: GripeHandler,
 ) -> None:
     """gr524014: when no clause boundary fits TITLE_MAX the derived
     title is a mid-phrase fragment ("…silently: no abnormal") — ``put``
-    stores it anyway (superseding gr520270's refusal: take the gripe
-    anyway, triage can fix the title) and the ack reports the cut."""
+    stores it with an ellipsis (superseding gr520270's refusal: take the
+    gripe anyway, triage can fix the title) and the ack reports the cut."""
     text = "agents route around empty paper TOCs silently: no abnormal ever surfaces"
     body = gripe.put(text=text).body
     gid = _latest(gripe)
-    want = short_title(text)
-    assert want == "agents route around empty paper TOCs silently: no abnormal"
+    want = short_title(text, mark_truncation=True)
+    assert want == "agents route around empty paper TOCs silently: no abnormal…"
     assert _title(gripe, gid) == want
     assert f'title shortened to "{want}"' in body
     assert "chars" in body  # the N→M cut size is reported
@@ -111,6 +151,47 @@ def test_no_boundary_inside_the_limit_still_files(
     )
     gid = _latest(gripe)
     assert _title(gripe, gid) == "agents route around empty paper TOCs silently"
+
+
+def test_no_boundary_files_the_census_example(gripe: GripeHandler) -> None:
+    """The gr528151 example: "pcb board-script runs don't attach their
+    construction trace" was the refused candidate cut; with a longer
+    first line it now lands as the stored title plus the ellipsis."""
+    gripe.put(
+        text=(
+            "pcb board-script runs don't attach their construction trace "
+            "anywhere in the run dir"
+        )
+    )
+    gid = _latest(gripe)
+    assert (
+        _title(gripe, gid)
+        == "pcb board-script runs don't attach their construction trace…"
+    )
+
+
+def test_a_single_long_token_is_hard_cut(gripe: GripeHandler) -> None:
+    """No word boundary exists at all — the title is hard-cut one char
+    short and the ellipsis still marks the truncation."""
+    gripe.put(text="x" * 200)
+    gid = _latest(gripe)
+    assert _title(gripe, gid) == "x" * (TITLE_MAX - 1) + "…"
+
+
+def test_an_explicit_over_limit_title_derives_the_same_cut(
+    gripe: GripeHandler,
+) -> None:
+    """title= is sugar for prepending a first line — over the cap it
+    files exactly like a text=-only call: the stored title is the
+    ellipsis-marked cut and the body keeps the explicit title."""
+    title = "pcb board-script runs don't attach their construction trace anywhere"
+    gripe.put(title=title, text="run dir is empty after every pass")
+    gid = _latest(gripe)
+    assert (
+        _title(gripe, gid)
+        == "pcb board-script runs don't attach their construction trace…"
+    )
+    assert title in gripe.get(id=gid, view="full").body
 
 
 def test_a_mid_phrase_cut_ends_on_a_content_word(gripe: GripeHandler) -> None:
@@ -136,8 +217,8 @@ def test_a_mid_phrase_cut_ends_on_a_content_word(gripe: GripeHandler) -> None:
         title = short_title(first)
         assert title is not None and title.endswith(want_tail)
         assert title.split()[-1].lower() not in _gripe_title._TRAILING_FUNCTION_WORDS
-    # A cut that lands mid-phrase is stored as-is (gr524014) — the
-    # put-level coverage for that lives in
+    # Filing keeps a mid-phrase cut with an ellipsis (gr528151) — the
+    # put-level coverage lives in
     # test_no_boundary_inside_the_limit_still_files; the function-word
     # drop stays exercised by the lenient derivation above.
 
@@ -226,7 +307,9 @@ def test_a_refused_title_write_still_files_the_gripe(
     """The title UPDATE runs in a savepoint: when it fails (an agent_ro
     connection cannot UPDATE refs; here a NUL byte psycopg refuses), the
     gripe files with its full-text title and the ack says nothing."""
-    monkeypatch.setattr(_gripe_title, "short_title", lambda _t: "bad\x00title")
+    monkeypatch.setattr(
+        _gripe_title, "short_title", lambda _t, **_kwargs: "bad\x00title"
+    )
     body = gripe.put(text=LONG_BOUNDED).body
     gid = _latest(gripe)
     assert f"created gripe id={gid}" in body

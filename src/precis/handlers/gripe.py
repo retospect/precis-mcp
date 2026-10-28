@@ -525,6 +525,8 @@ class GripeHandler(NumericRefHandler):
             text = f"{head}\n\n{body}" if head else body
         # A gripe's title is the first line of its body, so ``title=`` is
         # sugar for prepending it (skipped when text already leads with it).
+        # An over-limit title= files like text=-only: the stored title is
+        # the same ellipsis-marked derived cut, never a refusal (gr528151).
         if title is not None and id is None and title.strip():
             title = title.strip()
             existing = (text or "").strip()
@@ -1386,14 +1388,14 @@ class GripeHandler(NumericRefHandler):
 
         Uses the lenient :func:`._gripe_title.short_title` (gr524014
         supersedes gr520270's refusal): a first clause that fits no
-        boundary inside ``TITLE_MAX`` stores its mid-phrase cut like any
-        other derivation — take the gripe anyway, triage can fix the
-        title."""
+        boundary inside ``TITLE_MAX`` stores its mid-phrase cut with an
+        ellipsis (gr528151), inside the cap — take the gripe anyway,
+        triage can fix the title."""
         import psycopg
 
         from precis.handlers._gripe_title import short_title
 
-        title = short_title(text)
+        title = short_title(text, mark_truncation=True)
         if title is None:
             return None
         try:
