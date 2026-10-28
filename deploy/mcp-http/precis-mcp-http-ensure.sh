@@ -98,11 +98,16 @@ fi
 # cluster runs) — by scripts/deploy on the deploying machine, and by
 # follow_prod below everywhere. REPO stays the build context for the image.
 # No clone -> serve the main checkout, as before.
-SRC_REPO="${PRECIS_MCP_SRC:-${REPO}-prod}"
-# A linked worktree's `.git` is a `gitdir:` pointer file, not a directory.
-if [ ! -f "${SRC_REPO}/.git/HEAD" ] && [ ! -f "${SRC_REPO}/.git" ]; then
-    SRC_REPO="$REPO"
-fi
+# A function so require_canonical_checkout can re-derive it when it adopts a
+# different REPO on a host's first run.
+resolve_src_repo() {
+    SRC_REPO="${PRECIS_MCP_SRC:-${REPO}-prod}"
+    # A linked worktree's `.git` is a `gitdir:` pointer file, not a directory.
+    if [ ! -f "${SRC_REPO}/.git/HEAD" ] && [ ! -f "${SRC_REPO}/.git" ]; then
+        SRC_REPO="$REPO"
+    fi
+}
+resolve_src_repo
 SECRETS="${HOME}/.secrets/pw"
 IMAGE="${PRECIS_MCP_IMAGE:-precis-mcp:dev}"
 NAME="${PRECIS_MCP_HTTP_NAME:-precis-mcp-http}"
@@ -247,9 +252,24 @@ require_canonical_checkout() {
             canon="$(invoker_main_checkout)"
             [ -n "$canon" ] || canon="$resolved"
         fi
-        mkdir -p "$STATE_DIR"
-        printf '%s\n' "$canon" > "$marker"
-        note "canonical main checkout recorded as ${canon} (${marker})"
+        # Record only a real checkout: a marker naming a missing path would
+        # make every later run refuse until someone deletes it.
+        if [ -d "${canon}/.git" ]; then
+            mkdir -p "$STATE_DIR"
+            printf '%s\n' "$canon" > "$marker"
+            note "canonical main checkout recorded as ${canon} (${marker})"
+        fi
+        # First run on a host with no marker: REPO is still the built-in
+        # default, which need not exist here. Adopt the checkout just
+        # recorded instead of refusing on a path nobody chose (2026-10-26:
+        # the default's project/ vs this host's projects/ refused a
+        # --recreate that a plain re-run then passed).
+        if [ "$REPO_FROM" = "the built-in default" ] && [ -d "${canon}/.git" ]; then
+            REPO="$canon"
+            REPO_FROM="the marker just recorded from the invoking checkout"
+            resolved="$canon"
+            resolve_src_repo
+        fi
     fi
     # Whatever the resolution source left in REPO must BE a checkout: a
     # marker whose path moved, or a host whose layout differs from the

@@ -5,7 +5,8 @@
 (then a nonexistent plural-"projects" path) — resolved to a stale SECOND
 copy of this repo recreated the live backend, which then mounted and
 served that copy's tree. The ensure script now records the canonical
-main checkout in ``$STATE_DIR/main-checkout`` on its first pass, refuses
+main checkout in ``$STATE_DIR/main-checkout`` on its first pass (and
+uses it in that pass when only the default had resolved), refuses
 (exit 3) when a later run resolves a different physical path OR a path
 that is not a checkout at all (gr515239 follow-up: a moved marker target
 crash-looped a standby backend on 2026-10-25), and never silently falls
@@ -185,19 +186,35 @@ def _rig_checkout(tmp_path: Path) -> Path:
     return repo
 
 
-def test_invokers_checkout_is_recorded_and_the_bare_default_refused(
+def test_invokers_checkout_is_recorded_and_adopted_over_the_default(
     env: dict[str, str], tmp_path: Path
 ) -> None:
     """The incident shape: env unset, no marker, invoked from inside a
     precis-mcp tree. The invoker's MAIN checkout is recorded as canonical
-    and the unresolved built-in default refuses — it has no .git dir
-    under the rig's fake HOME — instead of silently serving it."""
+    and that same run uses it — the built-in default (no .git under the
+    rig's fake HOME) is never served. 2026-10-26: this run refused on the
+    default and only a plain re-run passed."""
     want = os.path.realpath(_rig_checkout(tmp_path))
     r = _ensure(env, cwd=Path(want))
-    assert r.returncode == 3, r.stderr
-    assert want in r.stderr and "built-in default" in r.stderr
+    # Past the guard: stops at the image check (the rig image is absent).
+    assert r.returncode == 2, r.stderr
+    assert f"recorded as {want}" in r.stderr
     marker = Path(env["PRECIS_MCP_HTTP_STATE"]) / "main-checkout"
     assert marker.read_text(encoding="utf-8").strip() == want
+
+
+def test_bare_default_refuses_and_records_no_marker(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """Env unset, no marker, invoked outside any checkout: the built-in
+    default refuses, and no marker naming that missing path is written —
+    one would make every later run refuse until someone deleted it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    r = _ensure(env, cwd=outside)
+    assert r.returncode == 3, r.stderr
+    assert "built-in default" in r.stderr and "next=" in r.stderr
+    assert not (Path(env["PRECIS_MCP_HTTP_STATE"]) / "main-checkout").exists()
 
 
 def test_marker_naming_a_missing_path_refuses_then_recovers(
