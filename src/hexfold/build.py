@@ -18,6 +18,7 @@ import platform
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
@@ -65,6 +66,18 @@ from .report import (
     Severity,
 )
 from .text import Connect, Instance, SiteDefect, Spec, parse
+
+try:  # construction-trace frames; absent under a standalone hexfold install
+    from precis_geom.trace import traced as _traced
+except ImportError:  # pragma: no cover
+
+    def _traced(
+        fn: Callable[..., Any] | None = None,
+        *,
+        kind: str = "core",
+        name: str | None = None,
+    ) -> Any:
+        return fn if fn is not None else (lambda f: f)
 
 
 @dataclass(frozen=True)

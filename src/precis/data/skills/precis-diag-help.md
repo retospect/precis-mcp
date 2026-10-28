@@ -2,7 +2,7 @@
 id: precis-diag-help
 family: se
 title: precis — Diag/RunResult: the structured failure record anchored to a trace frame
-summary: precis_diag is the domain-free diagnostics core (stdlib-only, in the precis-geom wheel). A Diag is one structured check/failure record — status ok|info|not_checked|warn|error, anchor{frame_key|op_id, file, line, chain}, refs, message, next, data — a superset of hexfold.report.Finding with tested conversion both ways. A RunResult is the run-level record (diags + a trace.json pointer). The first adapter is the CAD run failure (precis_geom.run_diag.failed_run_result): a failed out.run's manifest+trace becomes one error Diag anchored on the user-facing traced call under the nearest user ancestor, so a failure names its fix site by stable frame key instead of prose.
+summary: precis_diag is the domain-free diagnostics core (stdlib-only, in the precis-geom wheel). A Diag is one structured check/failure record — status ok|info|not_checked|warn|error, anchor{frame_key|op_id, file, line, chain}, refs, message, next, data — a superset of hexfold.report.Finding with tested conversion both ways. A RunResult is the run-level record (diags + a trace.json pointer). The first adapter is the CAD run failure (precis_geom.run_diag.failed_run_result): a failed out.run's manifest+trace becomes one error Diag anchored on the user-facing traced call under the nearest user ancestor — or one Diag per finding when the exception carried a serialized report (hexfold BuildError) — so a failure names its fix site by stable frame key instead of prose.
 answers:
   - how do I get a machine-readable record of a failed workspace script run?
   - what is a Diag / RunResult and how do they map to hexfold Findings?
@@ -64,6 +64,31 @@ In-process Python callers can read `exc.result.diags[0].anchor`.
 An MCP caller receives the `BadInput` text: the error type and message,
 user-facing op frame key when available, script file/line, and the fix-and-rerun next
 step. The Python exception attribute is not an MCP response field.
+
+## Report-carrying failures: one Diag per finding
+
+When the run's exception carried a structured report, the RunResult is
+one Diag per finding instead of the single `cad.run-failed`.
+
+- `precis_geom.out._error_entry` serializes an exception's `.report`
+  via `to_dict()` into `manifest.error.report`. The report is found
+  through a bounded `__cause__`/`__context__` walk, so a
+  `GeneratorError`-wrapped `hexfold.BuildError` still lands; a report
+  that raises or will not serialize reads as absent.
+- Each serialized finding (`code`, `severity`, `message`, `where`,
+  `span`, `data`, `fix`) becomes its own Diag, verbatim — `fix` maps to
+  `next`, and codes stay the domain's API (e.g. `port.unknown`), not
+  `cad.*`. Every finding shares the one anchor: the op that raised.
+- A malformed report or finding — not a dict, a `findings` list that
+  is not dicts, a field that will not convert — loses the whole
+  conversion and falls back to the generic `cad.run-failed` Diag;
+  the adapter never emits a partial record.
+- `hexfold.build`/`check` mint trace frames through a soft
+  `precis_geom.trace` import (a no-op without the wheel), so a
+  spec-compile `BuildError` is anchored on the `build` call frame.
+- The live-object direction is `hexfold.diag.diags_from_report(report,
+  *, anchor)` — the mirror of `finding_from_diag` for callers holding
+  the `Report` object rather than the manifest.
 
 ## See also
 

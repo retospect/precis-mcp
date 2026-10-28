@@ -1,18 +1,21 @@
 """Adapter conformance (shared-core-layers S1a): every registered
 adapter turns a real domain failure into a valid anchored Diag.
 
-``ADAPTERS`` maps adapter name → a fixture callable
-``tmp_path -> (RunResult, trace_doc)``: run the real failure path,
-adapt its manifest + trace, hand back both so the suite can assert the
+``ADAPTERS`` maps adapter name → ``(fixture, error_code)``: the fixture
+``tmp_path -> (RunResult, trace_doc)`` runs the real failure path,
+adapts its manifest + trace, hands back both so the suite can assert the
 Diag's anchor names the user-facing traced op and its script call site,
-with inner frames in the chain (gr522025). ``cad-run-failure``
-(``precis_geom.run_diag``) is the first registrant; S1b adds the pcb
-adapter, S2 the hex/structure one.
+with inner frames in the chain (gr522025); ``error_code`` is the
+adapter's own record code. ``cad-run-failure``
+(``precis_geom.run_diag``) is the first registrant, ``hex-run-failure``
+the S2 one (gr522031) — a report-carrying failure yields one Diag per
+finding instead of the run-level code. S1b adds the pcb adapter.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -41,6 +44,22 @@ _SCRIPT = (
     "    strip(rows=rows, periods=3)\n"
 )
 
+#: ``build_net()`` compiles a .hx spec with one deliberate bad feature —
+#: the fuse endpoint ``nope.in`` resolves to nothing, so the traced
+#: ``hexfold.build`` raises ``BuildError`` whose Report carries exactly
+#: one ERROR finding (``port.unknown``, spec line 4 — gr522031).
+_HEX_SCRIPT = (
+    "from hexfold.build import build\n"
+    "\n"
+    "\n"
+    "def build_net():\n"
+    '    build("""hexfold 0.2\n'
+    "origin s\n"
+    "s: sheet(40,40) - hex(2)@(20,20,A):0\n"
+    "s.hole --fuse k=0--> nope.in\n"
+    '""", strict=True)\n'
+)
+
 
 def _cad_run_failure(tmp_path: Path) -> tuple[RunResult, dict]:
     """A real ``out.run`` failure: script raise → failed manifest +
@@ -59,21 +78,47 @@ def _cad_run_failure(tmp_path: Path) -> tuple[RunResult, dict]:
     )
 
 
-#: name → ``tmp_path -> (RunResult, trace_doc)``.
-ADAPTERS = {"cad-run-failure": _cad_run_failure}
+def _hex_run_failure(tmp_path: Path) -> tuple[RunResult, dict]:
+    """A real hexfold spec failure under ``out.run``: the traced
+    ``build`` raises ``BuildError``, its serialized Report rides
+    ``manifest.error.report``, and the adapter turns the findings into
+    anchored Diags (gr522031)."""
+    from hexfold.report import BuildError
+
+    mod = load_script(tmp_path, _HEX_SCRIPT)
+    out_dir = tmp_path / "out" / "x"
+    with pytest.raises(BuildError), geom_out.run(out_dir, work_root=tmp_path):
+        mod.build_net()
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    trace_doc = trace_schema.loads((out_dir / "trace.json").read_text(encoding="utf-8"))
+    return (
+        run_diag.failed_run_result(
+            manifest, trace_doc, run=str(out_dir / "trace.json")
+        ),
+        trace_doc,
+    )
+
+
+#: name → ``(tmp_path -> (RunResult, trace_doc), expected error code)``.
+ADAPTERS = {
+    "cad-run-failure": (_cad_run_failure, "cad.run-failed"),
+    "hex-run-failure": (_hex_run_failure, "port.unknown"),
+}
 
 
 @pytest.mark.parametrize("name", sorted(ADAPTERS))
 def test_failure_yields_one_anchored_error(name: str, tmp_path: Path) -> None:
-    """gr522025 acceptance: one error Diag whose ``frame_key`` and
-    ``file:line`` match the error-marked frame in ``trace.json``."""
-    rr, doc = ADAPTERS[name](tmp_path)
+    """One error Diag whose ``frame_key`` and ``file:line`` match the
+    error-marked frame in ``trace.json`` (gr522025; the record code is
+    the adapter's own — gr522031's finding codes carry verbatim)."""
+    fixture, code = ADAPTERS[name]
+    rr, doc = fixture(tmp_path)
     assert isinstance(rr, RunResult)
     assert not rr.ok
     assert Path(rr.run).name == "trace.json"
     assert Path(rr.run).is_file()
     [d] = [d for d in rr.diags if d.status is Status.ERROR]
-    assert d.code == "cad.run-failed"
+    assert d.code == code
     marked = [f for f in doc["frames"] if f.get("error")]
     assert len(marked) == 1
     f = marked[0]
@@ -87,12 +132,144 @@ def test_failure_yields_one_anchored_error(name: str, tmp_path: Path) -> None:
 def test_diag_is_wire_valid(name: str, tmp_path: Path) -> None:
     """The Diag survives its own dict round trip and renders — the
     shape an MCP error path ships."""
-    rr, _doc = ADAPTERS[name](tmp_path)
+    fixture, _code = ADAPTERS[name]
+    rr, _doc = fixture(tmp_path)
     d = rr.diags[0]
     assert diag_from_dict(diag_to_dict(d)) == d
     text = render(rr.diags)
-    assert "run failed" in text
+    assert d.message in text
     assert f"frame {d.anchor.frame_key}" in text
+
+
+def test_hex_failure_emits_one_record_per_finding(tmp_path: Path) -> None:
+    """gr522031 acceptance: a .hx spec with one deliberate bad feature
+    yields one error record — the finding's code and spec ``span``
+    verbatim, anchored on the traced ``build`` call (its frame key and
+    the script's call site) so the agent goes straight to the fix site.
+    """
+    rr, doc = _hex_run_failure(tmp_path)
+    [d] = rr.diags
+    assert d.status is Status.ERROR
+    assert d.code == "port.unknown"
+    assert "fuse endpoints unresolved" in d.message
+    assert d.span == (4, 1)
+    build_frame = next(f for f in doc["frames"] if f["qual"] == "build.build")
+    assert build_frame["error"] == "BuildError"
+    assert d.anchor.frame_key == build_frame["key"]
+    assert (d.anchor.file, d.anchor.line) == ("main.py", 5)
+
+
+def test_hex_failure_serializes_the_report(tmp_path: Path) -> None:
+    """``Run.fail`` writes the exception's report on
+    ``manifest.error.report`` — the adapter's only input — and stashes
+    the per-finding RunResult on ``run.result``."""
+    from hexfold.report import BuildError
+
+    mod = load_script(tmp_path, _HEX_SCRIPT)
+    out_dir = tmp_path / "out" / "x"
+    with pytest.raises(BuildError), geom_out.run(out_dir, work_root=tmp_path) as o:
+        mod.build_net()
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    [finding] = manifest["error"]["report"]["findings"]
+    assert finding["code"] == "port.unknown"
+    assert isinstance(o.result, RunResult)
+    assert [d.code for d in o.result.diags] == ["port.unknown"]
+    assert manifest["error"]["frame"] == o.result.diags[0].anchor.frame_key
+
+
+def test_report_survives_a_wrapping_exception(tmp_path: Path) -> None:
+    """A ``BuildError`` chained under a wrapper (``raise … from`` — the
+    se-side ``GeneratorError`` shape) still reports per-finding Diags;
+    without a traced op between the raise and user code the anchor is
+    the script's own site."""
+    script = (
+        "from hexfold.build import build\n"
+        "from hexfold.report import BuildError\n"
+        "\n"
+        "\n"
+        "def wrap():\n"
+        "    try:\n"
+        '        build("""hexfold 0.2\norigin s\n'
+        "s: sheet(40,40) - hex(2)@(20,20,A):0\n"
+        's.hole --fuse k=0--> nope.in\n""", strict=True)\n'
+        "    except BuildError as exc:\n"
+        '        raise ValueError("generator refused the spec") from exc\n'
+    )
+    mod = load_script(tmp_path, script)
+    out_dir = tmp_path / "out" / "x"
+    with pytest.raises(ValueError, match="generator refused"):
+        with geom_out.run(out_dir, work_root=tmp_path) as o:
+            mod.wrap()
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["error"]["type"] == "ValueError"
+    assert manifest["error"]["report"]["findings"][0]["code"] == "port.unknown"
+    assert o.result is not None
+    [d] = o.result.diags
+    assert d.code == "port.unknown"
+    # The ``build`` frame outranks the wrapper's raise as the failure
+    # anchor (last error-marked frame in doc order).
+    assert d.anchor.frame_key
+    assert (d.anchor.file, d.anchor.line) == ("main.py", 7)
+
+
+def test_diags_from_report_matches_the_wire_path(tmp_path: Path) -> None:
+    """``hexfold.diag.diags_from_report`` (live-object conversion) and
+    the manifest wire path agree — same findings, same fields."""
+    from hexfold.diag import diags_from_report
+    from hexfold.report import BuildError
+
+    mod = load_script(tmp_path, _HEX_SCRIPT)
+    out_dir = tmp_path / "out" / "x"
+    with pytest.raises(BuildError) as exc_info:
+        with geom_out.run(out_dir, work_root=tmp_path):
+            mod.build_net()
+    report = exc_info.value.report
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    doc = trace_schema.loads((out_dir / "trace.json").read_text(encoding="utf-8"))
+    wire = run_diag.failed_run_result(manifest, doc).diags
+    live = diags_from_report(report)
+    assert len(live) == len(wire)
+    for w, l in zip(wire, live, strict=True):
+        assert replace(l, anchor=w.anchor) == w
+
+
+def test_warn_only_report_still_fails_the_run() -> None:
+    """A failed run whose report carries only INFO/WARN findings keeps
+    its per-finding Diags but gets ``cad.run-failed`` appended — the
+    run failed, so ``RunResult.ok`` is never True."""
+    manifest = {
+        "status": "failed",
+        "error": {
+            "type": "BuildError",
+            "message": "warn-only spec",
+            "report": {
+                "findings": [
+                    {
+                        "code": "port.shaky",
+                        "severity": "WARN",
+                        "message": "tolerance loose",
+                        "where": "spec",
+                        "span": [2, 1],
+                        "fix": "tighten",
+                    },
+                    {
+                        "code": "mesh.sparse",
+                        "severity": "INFO",
+                        "message": "coarse",
+                    },
+                ]
+            },
+        },
+    }
+    rr = run_diag.failed_run_result(manifest, None)
+    assert not rr.ok
+    assert [d.code for d in rr.diags] == [
+        "port.shaky",
+        "mesh.sparse",
+        "cad.run-failed",
+    ]
+    assert [d.status for d in rr.diags[:2]] == [Status.WARN, Status.INFO]
+    assert rr.diags[-1].status is Status.ERROR
 
 
 def test_run_fail_stashes_the_result(tmp_path: Path) -> None:

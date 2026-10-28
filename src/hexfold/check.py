@@ -23,8 +23,8 @@ import json
 import math
 import re
 import sys
-from collections.abc import Sequence
-from typing import NamedTuple
+from collections.abc import Callable, Sequence
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -41,6 +41,18 @@ from .report import (
     Severity,
 )
 from .text import Spec, parse, spec_from_dict
+
+try:  # construction-trace frames; absent under a standalone hexfold install
+    from precis_geom.trace import traced as _traced
+except ImportError:  # pragma: no cover
+
+    def _traced(
+        fn: Callable[..., Any] | None = None,
+        *,
+        kind: str = "core",
+        name: str | None = None,
+    ) -> Any:
+        return fn if fn is not None else (lambda f: f)
 
 
 def _findings_from_net(net: Net) -> list[Finding]:
@@ -788,6 +800,7 @@ def geometry_findings(
     return _geometry_findings(net, profile, relaxed, zones)
 
 
+@_traced
 def check(
     spec: str | Spec,
     *,

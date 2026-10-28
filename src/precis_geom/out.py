@@ -868,6 +868,9 @@ def _error_entry(
         "type": type(exc).__name__,
         "message": (msg if len(msg) <= _ERR_MSG_CAP else msg[: _ERR_MSG_CAP - 1] + "…"),
     }
+    report = _report_dict(exc)
+    if report is not None:
+        entry["report"] = report
     anchor, below = _error_path(doc)
     at = _failure_at(exc, tr, anchor)
     if at is not None:
@@ -875,6 +878,38 @@ def _error_entry(
     if below:
         entry["below"] = below
     return entry
+
+
+def _report_dict(exc: BaseException) -> dict[str, Any] | None:
+    """The exception's serialized structured report, if any — an
+    exception carrying ``.report`` with a JSON-able ``to_dict()``
+    holding a ``findings`` list (a hexfold ``BuildError`` carries one;
+    a domain wrapper such as ``GeneratorError`` chains to it via
+    ``__cause__``/``__context__``, gr522031). The failure path must not
+    itself raise: anything odd — a ``report`` property that raises, a
+    ``to_dict`` that does not serialize — reads as no report."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(seen) < 6:
+        seen.add(id(cur))
+        try:
+            report = getattr(cur, "report", None)
+        except Exception:
+            report = None
+        if report is not None and hasattr(report, "to_dict"):
+            try:
+                doc = report.to_dict()
+                if isinstance(doc, dict) and isinstance(doc.get("findings"), list):
+                    json.dumps(doc)
+                    return doc
+            except Exception:
+                return None
+            return None
+        nxt: BaseException | None = cur.__cause__
+        if nxt is None and not cur.__suppress_context__:
+            nxt = cur.__context__
+        cur = nxt
+    return None
 
 
 def _error_path(

@@ -14,6 +14,18 @@ the ``BadInput`` refusal (``exc.result``).
 The Diag's ``message`` is the verbatim prose the importer's
 ``_vet_manifest`` raises today — callers matching on ``"run failed"``
 do not regress.
+
+When the failed exception carried a structured report — serialized to
+``manifest.error.report`` by :func:`precis_geom.out._error_entry` (a
+hexfold ``BuildError`` carries one, gr522031) — the RunResult is one
+Diag per finding instead of the single ``cad.run-failed``: the
+finding's code/message/``where``/``span``/``data``/``fix`` carry
+verbatim (codes are the domain's API), every finding shares the anchor
+of the op that raised, and the report shape is read as plain data so
+the adapter stays domain-free — the reverse direction lives in
+``hexfold.diag``. A report whose findings are all below ``error``
+still appends the ``cad.run-failed`` Diag: a failed run's RunResult is
+never ``ok``.
 """
 
 from __future__ import annotations
@@ -67,18 +79,69 @@ def failed_run_result(
             for f in below[1:]
         ),
     )
-    return RunResult(
-        diags=(
-            Diag(
-                status=Status.ERROR,
-                code="cad.run-failed",
-                message=f"manifest.json: run failed{detail}",
-                anchor=anchor,
-                next=NEXT,
-                data=(("exception", str(err["type"])),) if has_type else (),
-            ),
-        ),
-        run=run,
+    run_failed = Diag(
+        status=Status.ERROR,
+        code="cad.run-failed",
+        message=f"manifest.json: run failed{detail}",
+        anchor=anchor,
+        next=NEXT,
+        data=(("exception", str(err["type"])),) if has_type else (),
+    )
+    diags = _finding_diags(err, anchor)
+    if diags:
+        # A failed run is never ok: a report of only INFO/WARN findings
+        # still carries the run-level error after its per-finding Diags.
+        if all(d.status < Status.ERROR for d in diags):
+            diags = (*diags, run_failed)
+        return RunResult(diags=diags, run=run)
+    return RunResult(diags=(run_failed,), run=run)
+
+
+def _finding_diags(err: Any, anchor: Anchor) -> tuple[Diag, ...]:
+    """``manifest.error.report.findings`` → one Diag each, all anchored
+    on the op that raised. Reads the serialized report as plain data;
+    a malformed finding loses the whole conversion (the caller falls
+    back to the single run-failed Diag) rather than minting a partial
+    or invalid record."""
+    if not isinstance(err, dict):
+        return ()
+    report = err.get("report")
+    if not isinstance(report, dict):
+        return ()
+    findings = report.get("findings")
+    if not isinstance(findings, list) or not findings:
+        return ()
+    if any(not isinstance(f, dict) for f in findings):
+        return ()
+    try:
+        return tuple(_finding_diag(f, anchor) for f in findings)
+    except (ValueError, TypeError, KeyError, IndexError):
+        return ()
+
+
+def _finding_diag(f: dict[str, Any], anchor: Anchor) -> Diag:
+    """One serialized finding dict (``code``, ``severity``, ``message``,
+    ``where``, ``span``, ``data``, ``fix``) → its Diag — the wire twin
+    of :func:`precis_diag.diag_from_finding`."""
+    try:
+        status = Status[str(f.get("severity") or "INFO").upper()]
+    except KeyError:
+        status = Status.INFO
+    span = f.get("span")
+    data = f.get("data")
+    return Diag(
+        status=status,
+        code=str(f.get("code") or ""),
+        message=str(f.get("message") or ""),
+        anchor=anchor,
+        where=str(f.get("where") or ""),
+        span=(int(span[0]), int(span[1]))
+        if isinstance(span, (list, tuple)) and len(span) == 2
+        else None,
+        data=tuple((str(k), v) for k, v in data.items())
+        if isinstance(data, dict)
+        else (),
+        next=str(f.get("fix") or ""),
     )
 
 
