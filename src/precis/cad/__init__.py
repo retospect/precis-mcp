@@ -43,8 +43,10 @@ takes an *injected* ``resolve`` callable rather than reaching for the
 store: :func:`~precis.cad.scene.expand_instances` inlines the referenced
 design into a flat spec, and the one production resolver lives outside
 this package in :mod:`precis.cad_resolve`. Everything downstream — probe,
-relate, export, tessellate — therefore still sees a plain flat spec and
-never learns that instancing exists. A ``field:`` leaf is resolved the
+relate, inspect (:mod:`~precis.cad.inspect`: the ray/section/overlap
+inspection family, docs/backlog/cad-inspect.md), export, tessellate —
+therefore still sees a plain flat spec and never learns that instancing
+exists. A ``field:`` leaf is resolved the
 same way — an injected :data:`~precis.cad.dsl.FieldLoader` riding on
 :attr:`~precis.cad.scene.SceneSpec.field_loader` (``Store.cad_load``
 binds the store's; the grid is never inlined in the DSL).

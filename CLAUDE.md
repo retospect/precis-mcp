@@ -61,6 +61,10 @@ delete what shipped, insert what you filed at its rank (README there).
 
 ## Orientation
 
+Specialist-domain work too: `search(kind='skill', q='<the task>')` before
+doing any — precis carries curated skill families well beyond repo-dev, so
+assume one exists until search says otherwise. Missing or hard to find →
+gripe.
 `docs/codebase.md` (shape, lifecycle, seams) → the owning package's
 `__init__.py` docstring. Runtime kinds/affordances: skills `precis-overview`,
 `precis-toolpath-help`. Coined terms: `docs/glossary.md`. Planned work:
@@ -73,6 +77,11 @@ Install/run the product: `docs/setup-single-machine.md` · cluster:
 Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
 `src/precis_web/`, Discord bridge `src/asa_bot/`, SSRF guard
 `src/precis/utils/safe_fetch.py`.
+Design in se / CAD / mechanical (geometry, joints, fasteners, bosses,
+enclosures, molds, prints): the product's own skills are the spec — read
+them before authoring. `precis-se-help` first (op grammar), then the task
+skill (`precis-se-fasten-help`, `-print-`, `-fit-`, `-check-`, …). Repo
+entry point: the `se-design` skill. Missing one → gripe.
 
 ## Conventions that bite (irreversible, or reddens the ship)
 
