@@ -30,6 +30,7 @@ from collections.abc import Callable
 import numpy as np
 
 from . import _VerbModule
+from ._trace import traced as _traced
 from .build import Net
 from .lattice import ideal_angle_deg
 
@@ -293,6 +294,7 @@ def stick_info(
     )
 
 
+@_traced
 def stick(net: Net, tether: Tether | None = None, k_tether: float = 0.0) -> np.ndarray:
     pos, _ = stick_info(net, tether=tether, k_tether=k_tether)
     return pos

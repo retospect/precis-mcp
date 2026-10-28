@@ -313,9 +313,12 @@ def _scene_from_parts(
     *,
     cell: Any = None,
     maker: int | None = None,
+    makers: list[int | None] | None = None,
 ) -> Any:
     """A ``precis.structure.scene.Scene`` from cartesian parts — atoms
-    labelled ``a<El><n>`` in input order."""
+    labelled ``a<El><n>`` in input order. ``makers`` overrides ``maker``
+    per atom (a Net's atoms cite the builder frame that minted them);
+    bonds always take the single ``maker``."""
     from precis.structure.scene import Atom, Bond, Scene
 
     cell = cell if cell is not None else _bounds_cell(carts)
@@ -323,7 +326,12 @@ def _scene_from_parts(
     fracs = np.asarray(carts, dtype=float) @ inv if len(carts) else np.zeros((0, 3))
     labels = _mint_labels(list(elements))
     atoms: dict[str, Atom] = {
-        la: Atom(label=la, element=el, frac=fracs[i], maker=maker)
+        la: Atom(
+            label=la,
+            element=el,
+            frac=fracs[i],
+            maker=makers[i] if makers is not None else maker,
+        )
         for i, (la, el) in enumerate(zip(labels, elements))
     }
     return Scene(
@@ -504,11 +512,13 @@ def geom(
     bonds = getattr(block, "bonds", None)
     coord_kind = "seed"
     census: dict[str, Any] | None = None
+    makers: list[int | None] | None = None
     if elements is None:
         atoms = getattr(obj, "atoms", None)
         if atoms is not None and hasattr(obj, "seed3"):  # a Net
             ordered = sorted(atoms, key=lambda a: a.ord)
             elements = [a.element for a in ordered]
+            makers = [getattr(a, "maker", None) for a in ordered]
             bonds = list(getattr(obj, "bonds", ()))
             census = _net_census(obj, ordered, elements)
             if coords is not None:
@@ -552,6 +562,7 @@ def geom(
             # (i, j, order) or (i, j, order, kind) — GeneratedBlock and
             # hexfold Block/Net bond rows alike
             [(int(b_[0]), int(b_[1]), float(b_[2])) for b_ in (bonds or ())],
+            makers=makers,
         )
         m = {"units": "A", "coords": coord_kind, **dict(meta or {})}
         if census is not None:

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# scratch-import — import a scratch out/<run> tree into a dev se design
+# (gr514239), so get(kind='se', ...) views work without a throwaway
+# pytest. Dev DB only: the module refuses a non-precis_dev/precis_test*
+# DSN before connecting.
+set -euo pipefail
+exec "$(dirname "$0")/dev" uv run --no-sync python -m precis_se.scratch_import "$@"

@@ -24,6 +24,10 @@ from typing import Any, cast
 import numpy as np
 
 from . import __version__, _VerbModule, domains, menus
+from ._trace import leaf_id as _leaf_id
+from ._trace import record as _trace_record
+from ._trace import trace as _trace_frame
+from ._trace import traced as _traced
 from .defects import (
     GLYPHS,
     Defect,
@@ -70,6 +74,9 @@ class Atom:
     element: str
     hyb: str
     instance: str
+    #: The construction-trace frame that minted the atom (``leaf_id``
+    #: inside the builder call) — joins extxyz rows to trace frames.
+    maker: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1256,6 +1263,7 @@ def _assemble(
     instance_of: dict[str, str],  # patch key -> instance name
     findings: list[Finding],
     hole_index: dict[tuple[str, frozenset[Vid]], int] | None = None,
+    patch_makers: dict[str, int] | None = None,
 ) -> tuple[Net, dict[str, Any]]:
     atoms: list[Atom] = []
     bonds: list[tuple[int, int, int]] = []
@@ -1293,6 +1301,7 @@ def _assemble(
                     else lat.elements[0],
                     hyb="sp2",
                     instance=inst,
+                    maker=(patch_makers or {}).get(key),
                 )
             )
         regions[inst] = sorted(region)
@@ -1899,6 +1908,7 @@ def check_registry(net: Net) -> list[Finding]:
     return out
 
 
+@_traced
 def build(
     spec_text_or_ast: str | Spec,
     *,
@@ -2016,6 +2026,9 @@ def build(
     # the check_registry(net) call near the end of this function.
     patches: dict[str, Patch] = {}
     instance_of: dict[str, str] = {}
+    # patch key -> the build.<kind> frame id that minted it (traced runs
+    # only; the atoms _assemble stamps cite it as their maker)
+    patch_makers: dict[str, int] = {}
     hole_requests: dict[str, list[tuple[int, Site, int | None]]] = {}
     # fuse dst 'inst @ inst/site[:d]' mints a hole on that instance
     conn_hole: dict[int, tuple[str, Site, int | None]] = {}
@@ -2045,107 +2058,117 @@ def build(
         for cname in copies:
             key = cname
             instance_of[key] = cname
-            if inst.kind == "sheet":
-                w = int(_param(inst, "0", _param(inst, "W", "10")))
-                h = int(_param(inst, "1", _param(inst, "H", "10")))
-                patch = Patch(lat, _sheet_sites(w, h))
-            elif inst.kind == "tube":
-                n = int(_param(inst, "0", _param(inst, "n", "5")))
-                m = int(_param(inst, "1", _param(inst, "m", "5")))
-                lp = _param(inst, "len", _param(inst, "2", "1"))
-                length = 1 if lp == "fit" else int(lp)
-                patch = _tube_patch(lat, n, m, length, seam_of.get(cname, 0.0))
-            elif inst.kind == "cone":
-                pnum = int(_param(inst, "0", _param(inst, "P", "1")))
-                rad = int(_param(inst, "rad", _param(inst, "1", "12")))
-                defs = _cone_defects(pnum, lat)
-                patch = Patch(lat, _hexagon_sites(rad))
-                patch.cone_p = pnum
-                inside = set(patch.flatpos)
-                disks = [cut_disk(d, lat) for d in defs]
-                bad = any(not dk <= inside for dk in disks)
-                bad = bad or any(
-                    disks[i] & disks[j]
-                    for i in range(len(disks))
-                    for j in range(i + 1, len(disks))
-                )
-                if bad:
-                    findings.append(
-                        Finding(
-                            "cut.overlap",
-                            Severity.ERROR,
-                            f"cone rad={rad} too small: wedge cut disks "
-                            "overlap or leave the patch",
-                            where=inst.name,
-                            span=inst.span,
-                        )
+            with _trace_frame(
+                f"build.{inst.kind}",
+                kind="core",
+                args={"instance": cname, "span": inst.span},
+            ):
+                _mk = _leaf_id()
+                if inst.kind == "sheet":
+                    w = int(_param(inst, "0", _param(inst, "W", "10")))
+                    h = int(_param(inst, "1", _param(inst, "H", "10")))
+                    patch = Patch(lat, _sheet_sites(w, h))
+                elif inst.kind == "tube":
+                    n = int(_param(inst, "0", _param(inst, "n", "5")))
+                    m = int(_param(inst, "1", _param(inst, "m", "5")))
+                    lp = _param(inst, "len", _param(inst, "2", "1"))
+                    length = 1 if lp == "fit" else int(lp)
+                    patch = _tube_patch(lat, n, m, length, seam_of.get(cname, 0.0))
+                elif inst.kind == "cone":
+                    pnum = int(_param(inst, "0", _param(inst, "P", "1")))
+                    rad = int(_param(inst, "rad", _param(inst, "1", "12")))
+                    defs = _cone_defects(pnum, lat)
+                    patch = Patch(lat, _hexagon_sites(rad))
+                    patch.cone_p = pnum
+                    inside = set(patch.flatpos)
+                    disks = [cut_disk(d, lat) for d in defs]
+                    bad = any(not dk <= inside for dk in disks)
+                    bad = bad or any(
+                        disks[i] & disks[j]
+                        for i in range(len(disks))
+                        for j in range(i + 1, len(disks))
                     )
+                    if bad:
+                        findings.append(
+                            Finding(
+                                "cut.overlap",
+                                Severity.ERROR,
+                                f"cone rad={rad} too small: wedge cut disks "
+                                "overlap or leave the patch",
+                                where=inst.name,
+                                span=inst.span,
+                            )
+                        )
+                    else:
+                        for d in defs:
+                            patch.excise(d)
+                elif inst.kind == "fullerene":
+                    n_at = _param(inst, "0", "C60")
+                    if n_at not in ("C60", "60"):
+                        findings.append(
+                            Finding(
+                                "build.fullerene",
+                                Severity.ERROR,
+                                f"only C60 supported in v1, got {n_at}",
+                                where=inst.name,
+                                span=inst.span,
+                            )
+                        )
+                        continue
+                    patch = _c60_patch(lat)
+                elif inst.kind == "cap":
+                    cn = int(_param(inst, "0", _param(inst, "n", "5")))
+                    cm = int(_param(inst, "1", _param(inst, "m", "5")))
+                    cpatch = _cap_patch(lat, cn, cm)
+                    if cpatch is None:
+                        findings.append(
+                            Finding(
+                                "build.kind",
+                                Severity.ERROR,
+                                f"cap({cn},{cm}): supported are (5,5) (C60 "
+                                "hemisphere) and (6k,0) flat lids, k >= 1",
+                                where=inst.name,
+                                span=inst.span,
+                            )
+                        )
+                        continue
+                    patch = cpatch
                 else:
-                    for d in defs:
-                        patch.excise(d)
-            elif inst.kind == "fullerene":
-                n_at = _param(inst, "0", "C60")
-                if n_at not in ("C60", "60"):
-                    findings.append(
-                        Finding(
-                            "build.fullerene",
-                            Severity.ERROR,
-                            f"only C60 supported in v1, got {n_at}",
-                            where=inst.name,
-                            span=inst.span,
-                        )
-                    )
-                    continue
-                patch = _c60_patch(lat)
-            elif inst.kind == "cap":
-                cn = int(_param(inst, "0", _param(inst, "n", "5")))
-                cm = int(_param(inst, "1", _param(inst, "m", "5")))
-                cpatch = _cap_patch(lat, cn, cm)
-                if cpatch is None:
                     findings.append(
                         Finding(
                             "build.kind",
                             Severity.ERROR,
-                            f"cap({cn},{cm}): supported are (5,5) (C60 "
-                            "hemisphere) and (6k,0) flat lids, k >= 1",
+                            f"primitive {inst.kind!r} not supported in phase 1",
                             where=inst.name,
                             span=inst.span,
                         )
                     )
                     continue
-                patch = cpatch
-            else:
-                findings.append(
-                    Finding(
-                        "build.kind",
-                        Severity.ERROR,
-                        f"primitive {inst.kind!r} not supported in phase 1",
-                        where=inst.name,
-                        span=inst.span,
+                # a flat lid is a flat disc, so authored surgery applies
+                # to it as to a sheet (a centred wedge cut makes it a
+                # cone frustum)
+                if inst.kind not in ("fullerene", "cap") or patch.flat_lid:
+                    _apply_defects(patch, inst, lat, findings)
+                elif inst.defects:
+                    # a closed or curved part has no flat chart to cut; these
+                    # were silently dropped before (gr459928)
+                    findings.append(
+                        Finding(
+                            "build.defect",
+                            Severity.ERROR,
+                            f"{inst.kind}: authored defects apply to flat parts "
+                            "only (sheet, cone, cap(6k,0) lid) -- not built",
+                            where=inst.name,
+                            span=inst.span,
+                        )
                     )
+                hole_requests.setdefault(key, []).extend(
+                    (h.ring, h.site, h.dir) for h in inst.holes
                 )
-                continue
-            # a flat lid is a flat disc, so authored surgery applies to it
-            # as to a sheet (a centred wedge cut makes it a cone frustum)
-            if inst.kind not in ("fullerene", "cap") or patch.flat_lid:
-                _apply_defects(patch, inst, lat, findings)
-            elif inst.defects:
-                # a closed or curved part has no flat chart to cut; these
-                # were silently dropped before (gr459928)
-                findings.append(
-                    Finding(
-                        "build.defect",
-                        Severity.ERROR,
-                        f"{inst.kind}: authored defects apply to flat parts "
-                        "only (sheet, cone, cap(6k,0) lid) -- not built",
-                        where=inst.name,
-                        span=inst.span,
-                    )
-                )
-            hole_requests.setdefault(key, []).extend(
-                (h.ring, h.site, h.dir) for h in inst.holes
-            )
-            patches[key] = patch
+                patches[key] = patch
+                if _mk is not None:
+                    patch_makers[key] = _mk
+                _trace_record(made={"atoms": len(patch.flatpos)})
 
     # holes: remove ring atoms after faces known
     conn_rims: dict[int, tuple[str, frozenset[Vid]]] = {}
@@ -2237,11 +2260,20 @@ def build(
                     patches[key].hole_bexp[new_rim] = hbe
 
     net, ctx = _assemble(
-        spec, lat, patches, hole_requests, instance_of, findings, hole_index
+        spec,
+        lat,
+        patches,
+        hole_requests,
+        instance_of,
+        findings,
+        hole_index,
+        patch_makers,
     )
 
     net, spec = _apply_connects(spec, net, ctx, patches, conn_rims, findings)
-    net = _apply_terminate(spec, net, findings)
+    if spec.terminate:  # frame iff made
+        with _trace_frame("build.terminate", kind="core"):
+            net = _apply_terminate(spec, net, findings)
 
     # internal euler assertion per component
     chi, comp = net_euler(patches)
@@ -4367,6 +4399,7 @@ def _apply_terminate(
                         element=elem,
                         hyb="s",
                         instance=inst,
+                        maker=_leaf_id(),
                     )
                 )
                 bonds.append((min(d_ord, new_ord), max(d_ord, new_ord), 1))
@@ -4385,6 +4418,7 @@ def _apply_terminate(
                     assert seed is not None
                     seed.append(tuple(pos[d_ord] + out * net.lattice.sigma_CH_A))
                 new_ord += 1
+            _trace_record(made={"atoms": len(port.dangling)})
             findings.append(
                 Finding(
                     "terminate.done",
@@ -4851,52 +4885,58 @@ def _apply_connects(
             # shell (Zhu & Su 2009 9-6/8-7), with no single shared rim
             # normal, and the twist-only fit left a bud/host clash after
             # stick() (see _fuse_transform_kabsch's docstring).
-            n_vb = len(vbonds)
-            fuse_frames.append(
-                (
-                    c.dst,
-                    tuple(ords[(host_key, hv)] for _bv, hv in vbonds),
-                    bud_port.name,
-                    tuple(ords[(c.src, vbonds[(-j) % n_vb][0])] for j in range(n_vb)),
-                    0,
-                    True,
-                    True,
+            # frame iff made (gr514054): the minting tail only — a menu
+            # refused above produced findings, not geometry, and gets none
+            with _trace_frame("build.menu", kind="core", args={"span": c.span}):
+                n_vb = len(vbonds)
+                fuse_frames.append(
+                    (
+                        c.dst,
+                        tuple(ords[(host_key, hv)] for _bv, hv in vbonds),
+                        bud_port.name,
+                        tuple(
+                            ords[(c.src, vbonds[(-j) % n_vb][0])] for j in range(n_vb)
+                        ),
+                        0,
+                        True,
+                        True,
+                    )
                 )
-            )
-            host_subs: dict[str, int] = {"A": 0, "B": 0}
-            for bv, hv in vbonds:
-                a, b = ords[(c.src, bv)], ords[(host_key, hv)]
-                bonds.append((min(a, b), max(a, b), 1))
-                sub = annot(a, b, c.src)
-                if sub is not None:
-                    host_subs[sub] += 1
-                attach_bonds.append((min(a, b), max(a, b)))
-            findings.append(
-                Finding(
-                    "annot.host_sublattices",
-                    Severity.INFO,
-                    f"{name} host atoms A={host_subs['A']} B={host_subs['B']}",
-                    span=c.span,
-                    data=(("A", host_subs["A"]), ("B", host_subs["B"])),
+                host_subs: dict[str, int] = {"A": 0, "B": 0}
+                for bv, hv in vbonds:
+                    a, b = ords[(c.src, bv)], ords[(host_key, hv)]
+                    bonds.append((min(a, b), max(a, b), 1))
+                    sub = annot(a, b, c.src)
+                    if sub is not None:
+                        host_subs[sub] += 1
+                    attach_bonds.append((min(a, b), max(a, b)))
+                _trace_record(made={"bonds": n_vb})
+                findings.append(
+                    Finding(
+                        "annot.host_sublattices",
+                        Severity.INFO,
+                        f"{name} host atoms A={host_subs['A']} B={host_subs['B']}",
+                        span=c.span,
+                        data=(("A", host_subs["A"]), ("B", host_subs["B"])),
+                    )
                 )
-            )
-            rings.extend(sfaces)
-            scensus: dict[int, int] = {}
-            for f in sfaces:
-                scensus[len(f)] = scensus.get(len(f), 0) + 1
-            findings.append(
-                Finding(
-                    "seam.rings",
-                    Severity.INFO,
-                    f"{name} seam rings {dict(sorted(scensus.items()))}",
-                    span=c.span,
-                    data=(("k", 2), ("rings", dict(sorted(scensus.items())))),
+                rings.extend(sfaces)
+                scensus: dict[int, int] = {}
+                for f in sfaces:
+                    scensus[len(f)] = scensus.get(len(f), 0) + 1
+                findings.append(
+                    Finding(
+                        "seam.rings",
+                        Severity.INFO,
+                        f"{name} seam rings {dict(sorted(scensus.items()))}",
+                        span=c.span,
+                        data=(("k", 2), ("rings", dict(sorted(scensus.items())))),
+                    )
                 )
-            )
-            # the bud rim is fully bonded: the hole port is consumed
-            consumed_rims.append(tuple(bud_port.atoms))
-            del ports[bud_port.name]
-            spec = _record_menu(spec, ci, vbonds, c.src, host_key, ords)
+                # the bud rim is fully bonded: the hole port is consumed
+                consumed_rims.append(tuple(bud_port.atoms))
+                del ports[bud_port.name]
+                spec = _record_menu(spec, ci, vbonds, c.src, host_key, ords)
             continue
         if c.verb == "fuse":
             p = ports.get(c.src)
@@ -4951,45 +4991,48 @@ def _apply_connects(
                 )
             else:
                 kk = c.k or 0
-            fuse_frames.append(
-                (p.name, p.dangling, q.name, q.dangling, kk, True, False)
-            )
-            new = [(p.dangling[i], q.dangling[(kk - i) % n]) for i in range(n)]
-            for a, b in new:
-                bonds.append((min(a, b), max(a, b), 1))
-                annot(a, b, c.src)
-            fused_edges.extend(new)
-            faces = _seam_faces(p.atoms, q.atoms, new)
-            fcensus: dict[int, int] = {}
-            for face in faces:
-                rings.append(face)
-                fcensus[len(face)] = fcensus.get(len(face), 0) + 1
-            findings.append(
-                Finding(
-                    "seam.rings",
-                    Severity.INFO,
-                    f"seam rings {dict(sorted(fcensus.items()))}",
-                    span=c.span,
-                    data=(("k", 2), ("rings", dict(sorted(fcensus.items())))),
+            # frame iff made (gr514054): the minting tail only
+            with _trace_frame("build.fuse", kind="core", args={"span": c.span}):
+                fuse_frames.append(
+                    (p.name, p.dangling, q.name, q.dangling, kk, True, False)
                 )
-            )
-            if c.source == "reducer":
-                reducer_rings.setdefault(c.span, Counter()).update(fcensus)
-                junction_recs.append(_reducer_junction(spec, c, new, faces))
-            for sz in fcensus:
-                if not 4 <= sz <= 8:
-                    findings.append(
-                        Finding(
-                            "ring.size.unusual",
-                            Severity.WARN,
-                            f"seam ring of size {sz}",
-                            span=c.span,
-                        )
+                new = [(p.dangling[i], q.dangling[(kk - i) % n]) for i in range(n)]
+                for a, b in new:
+                    bonds.append((min(a, b), max(a, b), 1))
+                    annot(a, b, c.src)
+                _trace_record(made={"bonds": n})
+                fused_edges.extend(new)
+                faces = _seam_faces(p.atoms, q.atoms, new)
+                fcensus: dict[int, int] = {}
+                for face in faces:
+                    rings.append(face)
+                    fcensus[len(face)] = fcensus.get(len(face), 0) + 1
+                findings.append(
+                    Finding(
+                        "seam.rings",
+                        Severity.INFO,
+                        f"seam rings {dict(sorted(fcensus.items()))}",
+                        span=c.span,
+                        data=(("k", 2), ("rings", dict(sorted(fcensus.items())))),
                     )
-            consumed_rims.append(tuple(p.atoms))
-            consumed_rims.append(tuple(q.atoms))
-            del ports[p.name]
-            del ports[q.name]
+                )
+                if c.source == "reducer":
+                    reducer_rings.setdefault(c.span, Counter()).update(fcensus)
+                    junction_recs.append(_reducer_junction(spec, c, new, faces))
+                for sz in fcensus:
+                    if not 4 <= sz <= 8:
+                        findings.append(
+                            Finding(
+                                "ring.size.unusual",
+                                Severity.WARN,
+                                f"seam ring of size {sz}",
+                                span=c.span,
+                            )
+                        )
+                consumed_rims.append(tuple(p.atoms))
+                consumed_rims.append(tuple(q.atoms))
+                del ports[p.name]
+                del ports[q.name]
 
     # a tube-to-tube reducer is a flat annulus between two coaxial rims:
     # Euler over it (chi = 0, two boundaries) forces P5 = P7, and the
@@ -5090,98 +5133,110 @@ def _apply_connects(
         def _idx(j: int, i: int, _n: int = n, _kk: int = seam.k) -> int:
             return i if j == 0 else (_kk - i) % _n
 
-        new_ords: list[int] = []
-        for i in range(n):
-            o = len(atoms)
-            path = AtomPath(seam.name, Site(0, 0, 0), label=f"s{i}")
-            atoms.append(
-                Atom(
-                    path=path,
-                    ord=o,
-                    element=net.lattice.elements[0],
-                    hyb="sp2",
-                    instance=seam.name,
+        # frame iff made (gr514054): the refusal paths all continued
+        # above, so this frame always mints — its id is the seam atoms'
+        # maker
+        with _trace_frame("build.seam", kind="core", args={"span": seam.span}):
+            _smk = _leaf_id()
+            new_ords: list[int] = []
+            for i in range(n):
+                o = len(atoms)
+                path = AtomPath(seam.name, Site(0, 0, 0), label=f"s{i}")
+                atoms.append(
+                    Atom(
+                        path=path,
+                        ord=o,
+                        element=net.lattice.elements[0],
+                        hyb="sp2",
+                        instance=seam.name,
+                        maker=_smk,
+                    )
+                )
+                path_to_ord[path] = o
+                new_ords.append(o)
+                seam_nbrs[o] = []
+            for i in range(n):
+                for j, port in enumerate(resolved):
+                    rim_ord = port.dangling[_idx(j, i)]
+                    a, b = new_ords[i], rim_ord
+                    bonds.append((min(a, b), max(a, b), 1))
+                    annot(min(a, b), max(a, b), seam.name)
+                    seam_nbrs[new_ords[i]].append(rim_ord)
+            seam_atom_ords.update(new_ords)
+            _trace_record(made={"atoms": n, "bonds": n * krim})
+            faces = _seam_faces_k(
+                [p.atoms for p in resolved],
+                [p.dangling for p in resolved],
+                new_ords,
+                seam.k,
+            )
+            seam_census: dict[int, int] = {}
+            for face in faces:
+                rings.append(face)
+                seam_census[len(face)] = seam_census.get(len(face), 0) + 1
+            findings.append(
+                Finding(
+                    "seam.rings",
+                    Severity.INFO,
+                    f"{seam.name} seam rings {dict(sorted(seam_census.items()))}",
+                    span=seam.span,
+                    data=(("k", krim), ("rings", dict(sorted(seam_census.items())))),
                 )
             )
-            path_to_ord[path] = o
-            new_ords.append(o)
-            seam_nbrs[o] = []
-        for i in range(n):
-            for j, port in enumerate(resolved):
-                rim_ord = port.dangling[_idx(j, i)]
-                a, b = new_ords[i], rim_ord
-                bonds.append((min(a, b), max(a, b), 1))
-                annot(min(a, b), max(a, b), seam.name)
-                seam_nbrs[new_ords[i]].append(rim_ord)
-        seam_atom_ords.update(new_ords)
-        faces = _seam_faces_k(
-            [p.atoms for p in resolved],
-            [p.dangling for p in resolved],
-            new_ords,
-            seam.k,
-        )
-        seam_census: dict[int, int] = {}
-        for face in faces:
-            rings.append(face)
-            seam_census[len(face)] = seam_census.get(len(face), 0) + 1
-        findings.append(
-            Finding(
-                "seam.rings",
-                Severity.INFO,
-                f"{seam.name} seam rings {dict(sorted(seam_census.items()))}",
-                span=seam.span,
-                data=(("k", krim), ("rings", dict(sorted(seam_census.items())))),
-            )
-        )
-        # no ring.size.unusual for k>=3 seam faces: they are in no census
-        # (SPEC 6.3) -- a triple seam of hexagonal rims is 9-rings by
-        # construction, and `seam.rings` above already reports the sizes
-        for port in resolved:
-            seam_rims.append((port.atoms, port.b, port.b_expected))
-            del ports[port.name]
-        # part-graph edges for registry closure: the bonding loop above
-        # offsets only the primary rim by seam.k (_idx: rim 0 uses i, every
-        # other rim uses (k - i) % n), so rim0-rim1 carries phase k and
-        # every later consecutive pair is in direct register (phase 0).
-        # The same consecutive-pair correspondence, fed to `fuse_frames`
-        # as placement-only entries (the trailing False -- no bonds/atoms
-        # minted, no registry edge of their own: seam_registry_edges above
-        # already covers that), is what lets _place_seeds' BFS span every
-        # seam-linked instance (root-caused 2026-09-28 item 2: with no
-        # fuse_frames edge at all, an origin that only touches a seam left
-        # the whole spec unplaced).
-        #
-        # A fuse_frames entry pairs P[i] with Q[(phase - i) mod n], the
-        # rim0-rim1 pairing above.  A later pair is bonded index to index
-        # (rim_j[m] and rim_j+1[m] share seam atom (k - m)), so its Q list
-        # goes in reversed, Q'[x] = Q[-x mod n], to make that the pairing
-        # the transform fits.  Passed as is, it registered rim j+1 mirrored
-        # (gr462075: flanged_doughnut's flange ran against top and bottom).
-        for j in range(krim - 1):
-            phase = seam.k if j == 0 else 0
-            seam_registry_edges.append(
-                (
-                    atoms[resolved[j].atoms[0]].instance,
-                    atoms[resolved[j + 1].atoms[0]].instance,
-                    phase,
-                    n,
+            # no ring.size.unusual for k>=3 seam faces: they are in no
+            # census (SPEC 6.3) -- a triple seam of hexagonal rims is
+            # 9-rings by construction, and `seam.rings` above already
+            # reports the sizes
+            for port in resolved:
+                seam_rims.append((port.atoms, port.b, port.b_expected))
+                del ports[port.name]
+            # part-graph edges for registry closure: the bonding loop
+            # above offsets only the primary rim by seam.k (_idx: rim 0
+            # uses i, every other rim uses (k - i) % n), so rim0-rim1
+            # carries phase k and every later consecutive pair is in
+            # direct register (phase 0).  The same consecutive-pair
+            # correspondence, fed to `fuse_frames` as placement-only
+            # entries (the trailing False -- no bonds/atoms minted, no
+            # registry edge of their own: seam_registry_edges above
+            # already covers that), is what lets _place_seeds' BFS span
+            # every seam-linked instance (root-caused 2026-09-28 item 2:
+            # with no fuse_frames edge at all, an origin that only
+            # touches a seam left the whole spec unplaced).
+            #
+            # A fuse_frames entry pairs P[i] with Q[(phase - i) mod n],
+            # the rim0-rim1 pairing above.  A later pair is bonded index
+            # to index (rim_j[m] and rim_j+1[m] share seam atom (k - m)),
+            # so its Q list goes in reversed, Q'[x] = Q[-x mod n], to
+            # make that the pairing the transform fits.  Passed as is,
+            # it registered rim j+1 mirrored (gr462075:
+            # flanged_doughnut's flange ran against top and bottom).
+            for j in range(krim - 1):
+                phase = seam.k if j == 0 else 0
+                seam_registry_edges.append(
+                    (
+                        atoms[resolved[j].atoms[0]].instance,
+                        atoms[resolved[j + 1].atoms[0]].instance,
+                        phase,
+                        n,
+                    )
                 )
-            )
-            q_dang = resolved[j + 1].dangling
-            if j > 0:
-                q_dang = tuple(q_dang[(-x) % n] for x in range(n))
-            fuse_frames.append(
-                (
-                    resolved[j].name,
-                    resolved[j].dangling,
-                    resolved[j + 1].name,
-                    q_dang,
-                    phase,
-                    False,
-                    False,
+                q_dang = resolved[j + 1].dangling
+                if j > 0:
+                    q_dang = tuple(q_dang[(-x) % n] for x in range(n))
+                fuse_frames.append(
+                    (
+                        resolved[j].name,
+                        resolved[j].dangling,
+                        resolved[j + 1].name,
+                        q_dang,
+                        phase,
+                        False,
+                        False,
+                    )
                 )
+            seam_records.append(
+                SeamRecord(seam.name, seam.rims, seam.k, tuple(new_ords))
             )
-        seam_records.append(SeamRecord(seam.name, seam.rims, seam.k, tuple(new_ords)))
 
     # bond connects (SPEC 23.2): resolved last so a `--bond-->` endpoint
     # can name a seam atom `<seam>/s<i>` the k>=3 seam pass above just
@@ -5209,10 +5264,13 @@ def _apply_connects(
                     )
                 )
         if ai is not None and bi is not None:
-            bonds.append((min(ai, bi), max(ai, bi), c.order or 1))
-            annot(ai, bi, c.src.split("/", 1)[0])
-            bond_links.append((ai, bi))
-            attach_bonds.append((min(ai, bi), max(ai, bi)))
+            # frame iff made (gr514054): unresolved refs get findings only
+            with _trace_frame("build.bond", kind="core", args={"span": c.span}):
+                bonds.append((min(ai, bi), max(ai, bi), c.order or 1))
+                annot(ai, bi, c.src.split("/", 1)[0])
+                bond_links.append((ai, bi))
+                attach_bonds.append((min(ai, bi), max(ai, bi)))
+                _trace_record(made={"bonds": 1})
         else:
             # Any endpoint that resolves to neither a real atom nor a
             # fragment names an atom that does not exist (SPEC 23.2:

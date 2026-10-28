@@ -51,6 +51,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ._trace import traced as _traced
 from .build import Net
 from .join import _segment_frame
 from .lattice import Lattice
@@ -248,6 +249,7 @@ def _rib_clearance(
                 )
 
 
+@_traced
 def prism_tube(
     periods: int,
     rows: int,

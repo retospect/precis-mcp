@@ -880,24 +880,34 @@ def traced(
 
 
 @contextlib.contextmanager
-def trace(name: str) -> Iterator[None]:
-    """``with trace("bundle"):`` — a named user frame without a function
-    boundary (optional sugar; nothing requires it)."""
+def trace(
+    name: str, *, kind: str = "user", args: dict[str, Any] | None = None
+) -> Iterator[None]:
+    """``with trace("bundle"):`` — a named frame without a function
+    boundary (optional sugar; nothing requires it). ``kind='user'`` (the
+    default) mints a script-side frame; wheel internals mint ``kind=
+    'core'`` frames this way when the traced region has no function of
+    its own (one loop iteration, one spec entry — hexfold's per-instance
+    ``build.<kind>`` frames)."""
     tr = _ACTIVE.get()
     if tr is None:
         yield
         return
+    if kind not in ts.FRAME_KINDS:
+        raise ValueError(
+            f"trace kind must be one of {sorted(ts.FRAME_KINDS)}; got {kind!r}"
+        )
     f = sys._getframe(1)
     tr._sync(f)
     line_in_def, src = tr._site(f)
     fr = tr._push(
         qual=name,
-        kind="user",
+        kind=kind,
         file=tr._file_of(f),
         line=f.f_lineno,
         line_in_def=line_in_def,
         src=src,
-        args={},
+        args={k: _arg_digest(v) for k, v in (args or {}).items()},
         py=f,
     )
     try:

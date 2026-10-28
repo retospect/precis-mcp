@@ -22,12 +22,14 @@ moved here.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
 
 import numpy as np
 
+from ._trace import leaf_id as _leaf_id
+from ._trace import record as _trace_record
+from ._trace import traced as _traced
 from .build import Atom, JunctionRecord, Net
 from .ids import AtomPath
 from .join import (
@@ -39,25 +41,6 @@ from .join import (
 from .lattice import Lattice, Site
 from .report import Report
 from .text import Spec
-
-try:  # construction-trace frames; absent under a standalone hexfold install
-    from precis_geom.trace import record as _trace_record
-    from precis_geom.trace import traced as _traced
-except ImportError:  # pragma: no cover
-
-    def _traced(
-        fn: Callable[..., Any] | None = None,
-        *,
-        kind: str = "core",
-        name: str | None = None,
-    ) -> Any:
-        return fn if fn is not None else (lambda f: f)
-
-    def _trace_record(
-        *, made: dict[str, int] | None = None, touched: dict[str, Any] | None = None
-    ) -> None:
-        return None
-
 
 #: an inward strip's tip must keep this much clearance from whatever it
 #: approaches (the tube axis, a far wall, a neighbouring rib) — one gate,
@@ -308,6 +291,10 @@ class Strip:
     rims: dict[str, _ZigzagSegment | _ArmchairSegment]
     sites: dict[tuple[int, int, int], int]
     pore_rims: tuple[tuple[int, ...], ...] = ()
+    #: The trace frame that minted the block's atoms (``leaf_id`` inside
+    #: ``strip``); ``pore`` carries it over — its atoms' maker is still
+    #: the ``strip`` call that created them.
+    maker: int | None = None
 
 
 @_traced
@@ -331,7 +318,7 @@ def strip(
     if periods < 1:
         raise ValueError(f"strip periods must be >= 1; got {periods}")
     if edge == "armchair":
-        return _armchair_strip(periods, rows)
+        return replace(_armchair_strip(periods, rows), maker=_leaf_id())
     if edge != "zigzag":
         raise ValueError(f"strip edge must be 'zigzag' or 'armchair'; got {edge!r}")
     drops = set(drop)
@@ -343,7 +330,15 @@ def strip(
     sigma = Lattice().sigma_A if sigma is None else sigma
     block = _zigzag_block(periods, rows, alive, sigma)
     sites = {site: n for n, site in enumerate(sorted(alive))}
-    out = Strip(block, rows, periods, edge, _zigzag_rims(sites, periods, rows), sites)
+    out = Strip(
+        block,
+        rows,
+        periods,
+        edge,
+        _zigzag_rims(sites, periods, rows),
+        sites,
+        maker=_leaf_id(),
+    )
     _trace_record(made={"atoms": len(block.elements), "bonds": len(block.bonds)})
     return out
 
@@ -594,6 +589,7 @@ def pore(
         seg,
         sites,
         tuple(tuple(int(remap[o]) for o in rim) for rim in rims),
+        st.maker,
     )
 
 
@@ -689,6 +685,9 @@ class Junction:
     seam_xy: tuple[float, float] | None = None
     snap: tuple[tuple[int, tuple[float, float]], ...] = ()
     record: str | None = None
+    #: The trace frame of this ``junction`` call — ``assemble`` stamps it
+    #: on the seam column's atoms.
+    maker: int | None = None
 
 
 @_traced
@@ -721,7 +720,17 @@ def junction(
         raise ValueError(
             f"junction k3 flavour must be 'sp2' or 'sp3-z'; got {flavour!r}"
         )
-    return Junction(tuple(rims), k, flavour, side, seam, seam_xy, tuple(snap), record)
+    return Junction(
+        tuple(rims),
+        k,
+        flavour,
+        side,
+        seam,
+        seam_xy,
+        tuple(snap),
+        record,
+        _leaf_id(),
+    )
 
 
 # ------------------------------------------------------------- assemble
@@ -920,10 +929,29 @@ def assemble(
     atoms: list[Atom] = []
     regions: list[tuple[str, tuple[int, ...]]] = []
     n_pores = 0
-    for p, off in zip(parts, offsets):
+    # per-atom makers (gr514054): a block part's atoms cite the
+    # ``strip`` frame that built its sheet, a seam column's the
+    # ``junction`` spec that minted it — so the exported extxyz maker
+    # column joins every atom to the builder call that made it.
+    seam_makers = {j.seam: j.maker for j in junctions}
+    for pi, (p, off) in enumerate(zip(parts, offsets)):
         n = len(p.block.elements) if p.block is not None else p.count
+        maker = (
+            p.strip.maker
+            if p.strip is not None
+            else seam_makers.get(pi)
+            if p.block is None
+            else None
+        )
         atoms += [
-            Atom(AtomPath(p.inst, Site(o, 0, 0)), off + o, p.element, p.hyb, p.inst)
+            Atom(
+                AtomPath(p.inst, Site(o, 0, 0)),
+                off + o,
+                p.element,
+                p.hyb,
+                p.inst,
+                maker=maker,
+            )
             for o in range(n)
         ]
         regions.append((p.region, tuple(range(off, off + n))))
