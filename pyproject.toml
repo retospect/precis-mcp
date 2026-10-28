@@ -773,9 +773,9 @@ root_packages = [
     # `packaging/geom/` (structure-workspaces slice 2).
     "precis_geom",
     # `precis_diag` is the domain-free diagnostics core (shared-core-layers
-    # S1a): stdlib only, `precis.utils.units` the one allowed precis edge;
-    # ships in the precis-geom wheel AND the server wheel (precis_se's
-    # adapters import it).
+    # S1a): stdlib only, no first-party edge at all; ships in the
+    # precis-geom wheel AND the server wheel (precis_se's adapters import
+    # it).
     "precis_diag",
 ]
 
@@ -860,23 +860,24 @@ ignore_imports = [
 # narrows to `precis_geom.pcb` (`tests/workspaces/test_pcb_board.py`).
 
 [[tool.importlinter.contracts]]
-name = "precis_diag imports only precis.utils.units"
+name = "precis_diag is stdlib-only"
 type = "forbidden"
 source_modules = ["precis_diag"]
-forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
-unmatched_ignore_imports_alerting = "none"
-ignore_imports = [
-    "precis_diag -> precis",
-    "precis_diag.* -> precis",
-    "precis_diag -> precis.utils",
-    "precis_diag.* -> precis.utils",
-    "precis_diag -> precis.utils.units",
-    "precis_diag.* -> precis.utils.units",
+forbidden_modules = [
+    "precis",
+    "precis_web",
+    "asa_bot",
+    "asa_slack",
+    "precis_chain",
+    "precis_flow",
+    "precis_geom",
 ]
-# The diagnostics core is domain-free: the one allowed `precis` edge is
-# `precis.utils.units` (shared-core-layers S1a). The lazy
-# `hexfold.report` import inside `finding_from_diag` is fine — hexfold
-# is not a forbidden module and ships in the same wheel.
+# The diagnostics core is stdlib-only (shared-core-layers S1a): no
+# first-party edge at all, so there are no ignore_imports — every root
+# package except precis_diag itself is forbidden. The old
+# `precis.utils.units` allowance is gone; `tests/test_precis_diag.py`
+# walks the AST and checks every import lands in
+# `sys.stdlib_module_names`.
 
 [[tool.importlinter.contracts]]
 name = "precis_geom never reaches server-side precis (store/fetch/web) even via carved modules"

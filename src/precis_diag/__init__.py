@@ -205,7 +205,7 @@ def render(diags: Iterable[Diag]) -> str:
     ``next:``/``refs:`` continuations. ``"ok"`` on an empty list."""
     lines: list[str] = []
     for d in sorted(diags, key=_sort_key):
-        code = f"{d.code} " if d.code else ""
+        code = f"{d.code} "
         lines.append(
             f"{d.status.name.lower():>11} {code}{_site(d)}{d.message}".rstrip()
         )
@@ -257,9 +257,8 @@ def diag_to_dict(d: Diag) -> dict[str, Any]:
         "schema_version": d.schema_version,
         "status": d.status.name.lower(),
         "message": d.message,
+        "code": d.code,
     }
-    if d.code:
-        out["code"] = d.code
     if d.anchor != Anchor():
         out["anchor"] = {
             k: v
