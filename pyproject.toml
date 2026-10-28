@@ -498,7 +498,7 @@ estimate = [
 # A promotion must also add `viennarna -> RNA` to
 # `scripts/lib/check-core-deps.py`'s IMPORT_NAME_OVERRIDES: the module the
 # distribution installs is `RNA`, which that script's default guess misses.
-chain = ["ViennaRNA>=2.7"]
+chain = ["ViennaRNA>=2.7.2"]
 # `pourbaix` — the bulk Pourbaix verdict job (`pourbaix_bulk`,
 # src/precis_dft/pourbaix_bulk.py): pymatgen's PourbaixDiagram
 # (same pin as `[estimate]`) over Materials Project entries fetched with
@@ -641,7 +641,7 @@ dev = [
     # checks' *installed* branch is exercised by CI and not only the
     # `chain_fold_unavailable` degradation. Needs a dev-image rebuild to
     # activate in-container; until then those tests `importorskip("RNA")`.
-    "ViennaRNA>=2.7",
+    "ViennaRNA>=2.7.2",
     # Architecture contracts (`uv run lint-imports`, wired into the ship
     # gate): mechanises the layering conventions that used to live only in
     # prose — see [tool.importlinter] below. Built on grimp (already here).
