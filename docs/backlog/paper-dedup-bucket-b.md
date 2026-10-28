@@ -1,11 +1,22 @@
 ---
-status: ready
+status: parked
 pillar: memory-graph
 ---
 
 # Paper metadata resolution — run Bucket B + the titleless cohort on prod
 
 Ops-gated resolve-metadata runs plus the standing-worker follow-up.
+
+PARKED (2026-10-28, fix/paper-dedup-bucket-b): every code slice below is
+already shipped on `main` — the CLI parked-lane fix (`d1f25f844`), the
+`reconcile-doi-case` corroboration gate (`1c5be6480`), and the
+`redirect_to` door (`src/precis/handlers/paper.py`). What's left is pure
+ops: a network-bound `resolve-metadata --apply` run on a cluster node
+against prod, and the 3 prod `redirect_to` calls — both explicitly
+reserved for ops/chat-99 below, not something a worktree code fixer should
+run unprompted. Parked (not deleted — still open) so the autonomous fixer
+stops re-picking it as a coding task; reopen as `ready` once someone runs
+the ops steps and only wiring/worker-build work remains.
 
 - `precis resolve-metadata` dry-run over the 94 needs-triage; inspect the
   auto/review/discard/parked lanes, then --apply (network-bound, on-cluster;
