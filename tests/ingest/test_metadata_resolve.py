@@ -379,11 +379,13 @@ def _titleless_paper(
     title: str = "",
     year: int | None = None,
     chunks: tuple[str, ...] = (),
+    chunk_pages: tuple[int | None, ...] | None = None,
     doi: str | None = None,
     tag: bool = False,
 ) -> int:
     """A chunked (``pdf_sha256`` set) paper with N body chunks. ``tag=False``
-    leaves it *untagged* — the case the widened selection must now reach."""
+    leaves it *untagged* — the case the widened selection must now reach.
+    ``chunk_pages`` seeds ``chunks.page_first`` per ord (NULL otherwise)."""
     ref = store.insert_ref(kind="paper", slug=slug, title=title, year=year)
     sha = f"{n:064x}"
     with store.pool.connection() as conn, conn.transaction():
@@ -395,9 +397,9 @@ def _titleless_paper(
         conn.execute("UPDATE refs SET pdf_sha256=%s WHERE ref_id=%s", (sha, ref.id))
         for i, text in enumerate(chunks):
             conn.execute(
-                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
-                "VALUES (%s, %s, 'paragraph', %s)",
-                (ref.id, i, text),
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, page_first) "
+                "VALUES (%s, %s, 'paragraph', %s, %s)",
+                (ref.id, i, text, chunk_pages[i] if chunk_pages else None),
             )
         if doi:
             store.set_ref_identifier(ref.id, "doi", doi, source="system", conn=conn)
@@ -496,6 +498,151 @@ def test_title_candidates_drop_affiliation_lines(store: Store) -> None:
     cands, trusted = _title_candidates(store, _ref(store, rid))
     assert cands == ["Continuous deformations in random networks"]
     assert not trusted
+
+
+def test_title_candidates_try_page2_on_cover_sheet(store: Store) -> None:
+    """gr524005: page 1 a cover sheet — the title track must take
+    candidates from page 2's chunks before giving up (the leading-ord
+    scan never reached past the cover)."""
+    rid = _titleless_paper(
+        store,
+        slug="cover",
+        n=0x120,
+        chunks=(
+            "Journal of Catalysis Today",
+            "Available online 12 March 2024",
+            "In This Issue",
+            "https://doi.org/10.1000/cover",
+            "Solid oxide electrolysis cells for durable clean energy",
+            "A. Researcher and B. Author",
+        ),
+        chunk_pages=(0, 0, 0, 0, 1, 1),
+    )
+    cands, trusted = _title_candidates(store, _ref(store, rid))
+    assert "Solid oxide electrolysis cells for durable clean energy" in cands
+    assert not trusted
+
+
+def test_title_candidates_follow_page_first_not_ord(store: Store) -> None:
+    """gr524005: page 1 is the earliest ``page_first``, not the leading
+    ords — a re-ingest can park the title page past ord 0 (pa478: the
+    title sat at ord 10 behind a later page's chunks)."""
+    rid = _titleless_paper(
+        store,
+        slug="ordvs",
+        n=0x121,
+        chunks=(
+            "- Rayment, I. et al. Structure of the actin-myosin complex",
+            "letters to nature",
+            "Light-driven monodirectional molecular rotor",
+            "N. Koumura, R. W. J. Zijlstra and B. L. Feringa",
+        ),
+        chunk_pages=(2, 2, 0, 0),
+    )
+    cands, trusted = _title_candidates(store, _ref(store, rid))
+    assert cands[0] == "Light-driven monodirectional molecular rotor"
+    assert not trusted
+
+
+def test_title_candidates_caps_page1_for_page2(store: Store) -> None:
+    """gr524005: a title-dense page 1 (cover/contents with 4+ title-like
+    lines) is capped at ``_MAX_PAGE1_TITLE_CANDIDATES`` slots — without
+    the cap it fills all four slots and page 2 is never reached."""
+    rid = _titleless_paper(
+        store,
+        slug="dense1",
+        n=0x122,
+        chunks=(
+            "Cover Highlights: Advances Across The Catalysis Community",
+            "Recent advances in electrochemical reactor design",
+            "New perspectives on membrane separation science",
+            "Trends in photocatalytic water splitting research",
+            "Progress report on solid oxide fuel cell ageing",
+            "Solid oxide electrolysis cells for durable clean energy",
+            "A. Researcher and B. Author",
+        ),
+        chunk_pages=(0, 0, 0, 0, 0, 1, 1),
+    )
+    cands, trusted = _title_candidates(store, _ref(store, rid))
+    assert cands[:2] == [
+        "Cover Highlights: Advances Across The Catalysis Community",
+        "Recent advances in electrochemical reactor design",
+    ]
+    assert "Solid oxide electrolysis cells for durable clean energy" in cands
+    assert not trusted
+
+
+def test_title_candidates_page1_title_keeps_first_slot(store: Store) -> None:
+    """Page 1 carries the real title plus an author line; the page-2
+    heading fills the remaining slots — the title stays ``cands[0]``."""
+    rid = _titleless_paper(
+        store,
+        slug="real1",
+        n=0x123,
+        chunks=(
+            "Solid oxide electrolysis cells for durable clean energy",
+            "A. Researcher and B. Author",
+            "Journal of Catalysis Today",
+            "1. Introduction to high temperature electrolysis",
+        ),
+        chunk_pages=(0, 0, 0, 1),
+    )
+    cands, _trusted = _title_candidates(store, _ref(store, rid))
+    assert cands[0] == "Solid oxide electrolysis cells for durable clean energy"
+    assert "1. Introduction to high temperature electrolysis" in cands
+
+
+def test_title_candidates_null_provenance_bound(store: Store) -> None:
+    """All-NULL ``page_first``: the ord fallback is bounded — the leading
+    ``_TITLE_SCAN_CHUNKS`` ords stand in for page 1, the next
+    ``_TITLE_SCAN_CHUNKS`` for page 2, and nothing deeper is scanned."""
+    rid = _titleless_paper(
+        store,
+        slug="nullpg",
+        n=0x124,
+        chunks=(
+            "Only first page title-like opener line",
+            "Another page one title-like line bravo",
+            "Received 12 March 2024",
+            "v. auth",
+            "Page two stand-in real article title",
+            "Available online 1 June 2024",
+            "https://doi.org/10.1000/deep",
+            "p. 12",
+            "Deep scan beyond the bound should never surface",
+            "Ord nine also past the bounded page two",
+        ),
+    )
+    cands, _trusted = _title_candidates(store, _ref(store, rid))
+    assert cands == [
+        "Only first page title-like opener line",
+        "Another page one title-like line bravo",
+        "Page two stand-in real article title",
+    ]
+    assert not any("Deep scan" in c or "Ord nine" in c for c in cands)
+
+
+def test_title_candidates_mixed_null_rides_page1(store: Store) -> None:
+    """NULL ``page_first`` chunks count as page 1 even when interleaved
+    with provenanced ones — a NULL leading chunk's line leads, and page
+    2 still fills the remaining slots."""
+    rid = _titleless_paper(
+        store,
+        slug="mixnull",
+        n=0x125,
+        chunks=(
+            "NULL provenance title-like opener line",
+            "Cover sheet second title-like line bravo",
+            "Cover sheet third title-like line charlie",
+            "Cover sheet fourth title-like line delta",
+            "Page two carries the real article title",
+            "A. Author and B. Collaborator",
+        ),
+        chunk_pages=(None, 0, 0, 0, 1, 1),
+    )
+    cands, _trusted = _title_candidates(store, _ref(store, rid))
+    assert cands[0] == "NULL provenance title-like opener line"
+    assert "Page two carries the real article title" in cands
 
 
 def test_track2_s2_rate_limited_defers_and_stops(store: Store) -> None:

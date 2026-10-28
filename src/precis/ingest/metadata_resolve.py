@@ -244,6 +244,15 @@ def _years_compatible(a: int | None, b: int | None) -> bool:
 # write, so extra candidates only add recall, never a wrong auto-title.
 _TITLE_SCAN_CHUNKS = 4
 _MAX_TITLE_CANDIDATES = 4
+#: Page 1's share of the candidate slots: a title-dense cover or
+#: contents page (4+ title-like lines — gr524005) must not fill every
+#: slot and starve page 2, so page 1 caps here and page 2 fills the rest.
+_MAX_PAGE1_TITLE_CANDIDATES = 2
+#: Ords of body text the title-candidate scan fetches — wide enough to
+#: hold two PDF pages of chunks even when ``ord`` order and
+#: ``page_first`` disagree (gr524005; pa478's re-ingest parked the
+#: page-0 title chunks at ords 10+, behind a later page's text).
+_TITLE_SCAN_ORDS = 64
 
 # Body-text furniture that looks title-length but never is a title. Distinct
 # from ``is_garbage_title`` (which targets PDF ``/Title`` *embedded-metadata*
@@ -413,27 +422,9 @@ def _body_window(store: Store, ref_id: int, span: int) -> tuple[int, int]:
     return start, start + span
 
 
-def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
-    """Ordered title-query candidates for the S2 title track, plus whether
-    they are *trusted*.
-
-    The stored title wins if usable — that single candidate is trusted:
-    it is independent ground truth, so query-vs-hit similarity genuinely
-    validates the hit. Otherwise scan the first ``_TITLE_SCAN_CHUNKS`` body
-    chunks — not just chunk 0's first line — and collect title-like lines in
-    document order (the title usually precedes the authors/abstract, so
-    first-seen is the best guess; the Track-2 similarity gate resolves
-    ambiguity by keeping the best-matching candidate). Scraped candidates
-    are *untrusted*: the scraped line IS the search query, so a high
-    query-vs-hit similarity only proves S2 found something title-shaped like
-    it, not that the hit is this paper.
-    """
-    t = (ref.title or "").strip()
-    if t and not is_placeholder_title(t) and not is_garbage_title(t) and not is_pii(t):
-        return [t], True
-    blocks = store.chunks.list_chunks_for_ref(
-        ref.id, pos_range=_body_window(store, ref.id, _TITLE_SCAN_CHUNKS - 1)
-    )
+def _title_lines(blocks: Any) -> list[str]:
+    """Cleaned, deduped title-like lines from ``blocks`` in document
+    order, capped at :data:`_MAX_TITLE_CANDIDATES`."""
     seen: set[str] = set()
     cands: list[str] = []
     for block in blocks:
@@ -447,8 +438,65 @@ def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
             seen.add(key)
             cands.append(line)
             if len(cands) >= _MAX_TITLE_CANDIDATES:
-                return cands, False
-    return cands, False
+                return cands
+    return cands
+
+
+def _title_candidates(store: Store, ref: Any) -> tuple[list[str], bool]:
+    """Ordered title-query candidates for the S2 title track, plus whether
+    they are *trusted*.
+
+    The stored title wins if usable — that single candidate is trusted:
+    it is independent ground truth, so query-vs-hit similarity genuinely
+    validates the hit. Otherwise scan the body's first two PDF *pages* —
+    not just chunk 0's first line — and collect title-like lines in
+    document order (the title usually precedes the authors/abstract, so
+    first-seen is the best guess; the Track-2 similarity gate resolves
+    ambiguity by keeping the best-matching candidate). Page 2 rides along
+    for the cover-sheet case (gr524005): a publisher cover, ad or "in
+    this issue" page 1 hides the article title on the next page, and the
+    ruling is to try it before escalating. Page 1 is the earliest
+    ``page_first`` among the scanned chunks, never the leading ords —
+    ``ord`` order and page order disagree on re-ingested spreads; chunks
+    with NULL ``page_first`` count as page 1, and "page 2" means the
+    next PDF page that has chunks, not ``first + 1``. Page 1 is capped
+    at :data:`_MAX_PAGE1_TITLE_CANDIDATES` slots so a title-dense cover
+    or contents page cannot fill every slot and starve page 2.
+    Scraped candidates are *untrusted*: the scraped line IS the search
+    query, so a high query-vs-hit similarity only proves S2 found
+    something title-shaped like it, not that the hit is this paper.
+    """
+    t = (ref.title or "").strip()
+    if t and not is_placeholder_title(t) and not is_garbage_title(t) and not is_pii(t):
+        return [t], True
+    blocks = store.chunks.list_chunks_for_ref(
+        ref.id, pos_range=_body_window(store, ref.id, _TITLE_SCAN_ORDS - 1)
+    )
+    pages = store.chunks.chunk_pages(ref.id, [b.ord for b in blocks])
+    if pages:
+        first, *rest = sorted(set(pages.values()))
+        # Page 1's bucket — chunks with no page provenance ride along
+        # (they were page-1 text as far as the record can tell); page 2
+        # is the next PDF page present (gr524005).
+        second = rest[0] if rest else None
+        page1 = [b for b in blocks if pages.get(b.ord, first) == first]
+        page2 = (
+            [b for b in blocks if pages.get(b.ord) == second]
+            if second is not None
+            else []
+        )
+    else:
+        # No page provenance at all (a pre-Marker ingest): the leading
+        # ords stand in for page 1, the next few for page 2 — bounded so
+        # the scan can't wander deep into the article.
+        page1, page2 = (
+            blocks[:_TITLE_SCAN_CHUNKS],
+            blocks[_TITLE_SCAN_CHUNKS : 2 * _TITLE_SCAN_CHUNKS],
+        )
+    p1 = _title_lines(page1)[:_MAX_PAGE1_TITLE_CANDIDATES]
+    seen = {c.lower() for c in p1}
+    p2 = [c for c in _title_lines(page2) if c.lower() not in seen]
+    return (p1 + p2)[:_MAX_TITLE_CANDIDATES], False
 
 
 def _similarity(store: Store, a: str, b: str) -> float:
