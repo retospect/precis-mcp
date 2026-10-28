@@ -379,6 +379,63 @@ def place_footprint_pads(
     return out_pads, out_drills
 
 
+def apply_pad_overrides(
+    fp: dict[str, Any], overrides: dict[str, Any] | None
+) -> dict[str, Any]:
+    """One footprint row with ``op='pad'``'s per-pad deltas applied
+    (gr520149) — a NEW dict with a copied ``pads`` list; the cached or
+    authored source row is never mutated, so other designs and other
+    instances of the same part keep the shared geometry.
+
+    ``overrides`` is the ``pcb_instances.meta['pad_overrides']`` shape,
+    ``{pad_number: {dx, dy?, w?, h?}}``: ``dx``/``dy`` shift the pad's
+    stored centre in footprint-local mm; ``w``/``h`` REPLACE the pad's
+    extent in mm. On a ``shape='polygon'`` pad the vertex ring is
+    translated by the same delta and then scaled about the ring's own
+    bbox centre so the outline and ``w``/``h`` stay one fact. ``shape``,
+    ``rot``, ``layer``, ``drill``/``slot``, ``mask``/``paste`` and a pad
+    the map doesn't name all pass through untouched — those are
+    slice-2+ fields the op refuses at the door.
+    """
+    if not overrides:
+        return fp
+    pads: list[dict[str, Any]] = []
+    for pad in fp.get("pads") or []:
+        ov = overrides.get(str(pad.get("number") or ""))
+        if not isinstance(ov, dict) or not ov:
+            pads.append(pad)
+            continue
+        p = dict(pad)
+        dx = float(ov.get("dx") or 0.0)
+        dy = float(ov.get("dy") or 0.0)
+        cx, cy = float(p["x"]) + dx, float(p["y"]) + dy
+        poly = p.get("poly")
+        if poly:
+            ring = [(float(vx) + dx, float(vy) + dy) for vx, vy in poly]
+            if "w" in ov or "h" in ov:
+                xs, ys = [v[0] for v in ring], [v[1] for v in ring]
+                old_w, old_h = max(xs) - min(xs), max(ys) - min(ys)
+                bcx, bcy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+                sx = float(ov["w"]) / old_w if "w" in ov and old_w > 0 else 1.0
+                sy = float(ov["h"]) / old_h if "h" in ov and old_h > 0 else 1.0
+                ring = [
+                    (bcx + (vx - bcx) * sx, bcy + (vy - bcy) * sy) for vx, vy in ring
+                ]
+                xs, ys = [v[0] for v in ring], [v[1] for v in ring]
+                cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+                p["w"] = round(max(xs) - min(xs), 4)
+                p["h"] = round(max(ys) - min(ys), 4)
+            p["poly"] = [[round(vx, 4), round(vy, 4)] for vx, vy in ring]
+        else:
+            if "w" in ov:
+                p["w"] = round(float(ov["w"]), 4)
+            if "h" in ov:
+                p["h"] = round(float(ov["h"]), 4)
+        p["x"], p["y"] = round(cx, 4), round(cy, 4)
+        pads.append(p)
+    return {**fp, "pads": pads, "pad_overrides": dict(overrides)}
+
+
 def board_pads(
     instances: list[dict[str, Any]],
     footprints: dict[str, dict[str, Any]],
@@ -420,6 +477,9 @@ def board_pads(
             fp = footprints.get(lcsc) if lcsc else None
         if not fp or not fp.get("pads"):
             continue
+        # gr520149 — this instance's own op='pad' deltas, applied to a copy;
+        # the shared cache row the OTHER instances read stays untouched.
+        fp = apply_pad_overrides(fp, inst.get("pad_overrides"))
         refdes = str(inst.get("refdes") or "")
         local_pin_to_net = {
             pin: net for (r, pin), net in pin_to_net.items() if r == refdes
@@ -437,6 +497,7 @@ def board_pads(
 
 
 __all__ = [
+    "apply_pad_overrides",
     "board_pads",
     "is_bottom_instance",
     "pad_label",

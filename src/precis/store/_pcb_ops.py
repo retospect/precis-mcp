@@ -3306,6 +3306,10 @@ class PcbMixin:
                             # (`op='move'`'s `label_spot` writes it) —
                             # `session.label_spots` reads it hoisted.
                             "label_spot",
+                            # gr520149: per-pad footprint override
+                            # (`op='pad'` writes it) — view='pinout' and
+                            # view='footprints' read it hoisted.
+                            "pad_overrides",
                         )
                         if k in (r[13] or {})
                     },
@@ -3549,6 +3553,11 @@ class PcbMixin:
                             # plus the WHY string on a "differ".
                             "local_fp_lcsc",
                             "local_fp_diff",
+                            # gr520149 — `op='pad'`'s per-pad deltas
+                            # ({pad_number: {dx,dy,w?,h?}}); from_graph
+                            # carries them on the IR so
+                            # `session.footprints_by_refdes` applies them.
+                            "pad_overrides",
                         )
                         if k in (r[12] or {})
                     },

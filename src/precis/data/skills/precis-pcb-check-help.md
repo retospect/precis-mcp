@@ -2,7 +2,7 @@
 id: precis-pcb-check-help
 family: pcb
 title: precis — the PCB check surface (view='check', phases, finding delta, ERC, footprint and pin fixes)
-summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling, over_current) join the geometric DRC on the same table; the get views are read-only and delta against the last recorded run of the same phase; put op='check' records a run; fixes: op='footprint' for synthesized_footprint, pads vs pins, op='pin_rename'/'pin_remove', op='pins' for ERC pin facts
+summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling, over_current) join the geometric DRC on the same table; the get views are read-only and delta against the last recorded run of the same phase; put op='check' records a run; fixes: op='footprint' for synthesized_footprint, pads vs pins, op='pin_rename'/'pin_remove', op='pins' for ERC pin facts, op='pad' for a per-instance pad move/resize
 answers:
   - how do I check a pcb design — DRC, netlist checks, ERC?
   - how do I see only errors, or only one rule's findings?
@@ -208,8 +208,9 @@ the drill file and DRC at the part's current pose. A
 courtyard) and the stored ones are cleared, so re-send them with every edit.
 
 `view='footprints'` lists every catalog-part instance on the board
-(refdes, C-number, cached?, source, pad count) — the read-side counterpart,
-and where to check before trusting a `view='drc'` pass on that part.
+(refdes, C-number, cached?, source, pad count, authored `op='pad'`
+overrides) — the read-side counterpart, and where to check before
+trusting a `view='drc'` pass on that part.
 
 ## Fix a wrong pin name — `op='pin_rename'` / `op='pin_remove'`
 
@@ -248,3 +249,19 @@ the datasheet's "CIN ≥ X7R"-style requirement: `passive_rating` holds
 every capacitor on the pin's rail to it. The rating side needs no
 annotation — a part carrying a C-number gets value/dielectric/rating
 parsed from its catalog description, shown as `derived:` on `#REFDES`.
+
+## Move or resize one pad on one placed part — `op='pad'`
+
+A pad that needs a nudge or a new extent on ONE placed part (a vendor
+land revision, a hand-solder enlargement) is a per-instance override,
+not a footprint re-pull — the shared row is never written, so other
+designs and other instances keep catalog geometry while this part's
+rendered pads, DRC and gerber use the override.
+`args={'op':'pad','refdes':'J1','pad':'3','dx':0.2,'dy':-0.1}` shifts the
+pad's centre in footprint-local mm; `'w'`/`'h'` resize to an absolute
+extent. `revert:true` drops that pad's override — without `pad`, all of
+the part's. Judged like every inline edit: a delta that adds or deepens
+an error stores nothing. `view='pinout'` marks each overridden pad
+`authored pad override`; `view='footprints'` lists their numbers.
+Adding/removing pads or holes and `drill` edits refuse with a `next=`
+that names the tracking design note (slice-2+).

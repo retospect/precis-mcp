@@ -657,6 +657,7 @@ def footprints_by_refdes(
     out: dict[str, dict[str, Any]] = {}
     local_footprints_by_name = local_footprints_by_name or {}
     local_names_by_refdes = local_names_by_refdes or {}
+    pad_overrides = ir.inst_pad_overrides
     for inst_id in range(ir.n_instances):
         refdes = str(ir.instance_refdes[inst_id])
         lcsc = ir.instance_part_lcsc[inst_id]
@@ -667,7 +668,14 @@ def footprints_by_refdes(
         if fp is None and lcsc:
             fp = footprints_by_lcsc.get(str(lcsc))
         if fp:
-            out[refdes] = fp
+            # gr520149 — op='pad' deltas on this instance only: applied to a
+            # copy of the resolved row so the shared cache stays untouched.
+            ov = pad_overrides[inst_id] if pad_overrides is not None else None
+            out[refdes] = (
+                pcb_padplace.apply_pad_overrides(fp, ov)
+                if isinstance(ov, dict) and ov
+                else fp
+            )
     return out
 
 

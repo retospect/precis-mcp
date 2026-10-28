@@ -37,6 +37,10 @@ pixels. The verbs map onto the seven-verb surface:
   clients (:mod:`precis.pcb.footprint`), or authors one directly
   (``footprint={...}`` with ``part=``) when the API has nothing for the
   C-number — per-part failures report in that part's own row, never raise.
+  ``op='pad'`` (gr520149) moves/resizes ONE pad of ONE placed part
+  (``refdes``+``pad``+``dx``/``dy``/``w``/``h``, ``revert=True`` to undo) —
+  a design-local delta on ``pcb_instances.meta``, never the shared
+  footprint row (docs/backlog/pcb-pad-overrides.md).
   ``op='order'`` (pcb-jlc-order) dry-runs or places the JLCPCB order
   (``dry_run`` default True; the live path needs ``confirm='add-to-cart'``
   and creates an unpaid order — the API's cart equivalent, never a
@@ -311,6 +315,8 @@ _INLINE_EDIT_OPS = (
     "pin_rename",
     "pin_remove",
     "corner_nuts",
+    # gr520149 — pad-level footprint-local overrides on one placed part.
+    "pad",
 )
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
 #: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
@@ -1052,6 +1058,23 @@ class PcbHandler(Handler):
                 # `to` is the new net name (pin_rename only).
                 "pin",
                 "to",
+                # op='pad' (gr520149): per-pad footprint-local move
+                # (dx/dy), absolute resize (w/h) and per-override revert
+                # on one pad of one placed part. `add`/`remove`/`hole`/
+                # `drill` are ACCEPTED here so _op_pad can refuse them
+                # with a next= — adding/removing pads or holes and
+                # changing a drill are slice-2+ (docs/backlog/
+                # pcb-pad-overrides.md).
+                "pad",
+                "dx",
+                "dy",
+                "w",
+                "h",
+                "revert",
+                "add",
+                "remove",
+                "hole",
+                "drill",
                 # op='fork': the source board slug or pb<id>.
                 "from",
                 # op='check': force the inline run past reuse (gr496242).
@@ -1958,6 +1981,8 @@ class PcbHandler(Handler):
             return self._op_pins(ref, args)
         if op in ("pin_rename", "pin_remove"):
             return self._op_pin_edit(ref, op, args)
+        if op == "pad":
+            return self._op_pad(ref, args)
         if op == "corner_nuts":
             return self._op_corner_nuts(ref, args)
         if op == "stackup":
@@ -3433,6 +3458,205 @@ class PcbHandler(Handler):
         return Response(
             body=head + f"\nNext: get(kind='pcb', id='{ref.slug}', view='footprints')"
             " — the pin-name warning no longer lists it."
+        )
+
+    def _footprint_of_instance(
+        self, ref: Any, instance: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None, str]:
+        """The footprint row one instance resolves to — ``c.footprint``
+        naming a ``pcb_local_footprints`` row first, else the catalog
+        ``part_footprints`` cache row for its C-number — with the key and
+        a provenance label ``view='pinout'`` prints. The ONE resolution
+        ``_render_pinout`` and ``op='pad'`` share so they can never
+        disagree about which row a pad lives on."""
+        lcsc = instance.get("part_lcsc")
+        key = str(lcsc or instance.get("footprint") or "")
+        if lcsc:
+            footprint = self.store.part_footprint_get(key)
+            source = (
+                f"catalog-cache; source={(footprint or {}).get('source') or 'unknown'}"
+            )
+        else:
+            footprint = self.store.pcb_local_footprints_for(ref.id).get(key)
+            source = "design-local-authored"
+        return key, footprint, source
+
+    def _op_pad(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'pad','refdes':'J1','pad':'3','dx':…,'dy':…,
+        'w':…,'h':…}})`` — gr520149, docs/backlog/pcb-pad-overrides.md
+        slice 1: a per-pad, per-INSTANCE footprint-local override. ``dx``/
+        ``dy`` shift the pad's stored centre (mm); ``w``/``h`` replace its
+        extent (mm, absolute). Stored as a design-local delta on
+        ``pcb_instances.meta['pad_overrides']`` — the shared footprint row
+        is never written — and applied at the one footprint join
+        (:func:`precis.pcb.session.footprints_by_refdes`), so the board's
+        rendered pads, DRC and exports all see the overridden geometry
+        while other designs and other instances of the part do not.
+
+        ``revert=true`` drops the override: with ``pad``, that pad's entry
+        only; without, the whole map for the refdes. Runs inside
+        :meth:`_judged_mutation` at its default refuse=True: a delta that
+        adds or deepens a validity error stores nothing, and stored routed
+        copper it collides with is ripped (the same report as every other
+        judged edit)."""
+        for key in ("add", "remove", "hole", "drill"):
+            if args.get(key) is not None:
+                raise BadInput(
+                    f"op='pad' does not {key!r} in this slice — only dx/dy "
+                    "moves and w/h resizes on an existing pad",
+                    next="adding/removing pads and holes and drill edits are "
+                    "tracked in docs/backlog/pcb-pad-overrides.md",
+                )
+        refdes = str(args.get("refdes") or "").strip()
+        if not refdes:
+            raise BadInput(
+                "op='pad' needs args.refdes",
+                next="args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}",
+            )
+        revert = bool(args.get("revert"))
+        patch: dict[str, float] = {}
+        for key in ("dx", "dy", "w", "h"):
+            value = args.get(key)
+            if value is None:
+                continue
+            try:
+                f = float(value) if not isinstance(value, bool) else math.nan
+            except (TypeError, ValueError):
+                f = math.nan
+            if not math.isfinite(f) or (key in ("w", "h") and f <= 0):
+                raise BadInput(
+                    f"op='pad': {key} must be "
+                    + (
+                        "a positive mm extent"
+                        if key in ("w", "h")
+                        else "a finite number of mm"
+                    )
+                    + f" (got {value!r})",
+                    next="args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}",
+                )
+            patch[key] = f
+        if revert and patch:
+            raise BadInput(
+                "op='pad': give revert=true OR dx/dy/w/h, not both",
+                next="args={'op':'pad','refdes':'J1','pad':'3','revert':true}",
+            )
+        pad = str(args.get("pad") or "").strip()
+        if not revert and not pad:
+            raise BadInput(
+                "op='pad' needs args.pad — the pad number to override",
+                next="get(kind='pcb', id='<slug>#<refdes>', view='pinout') "
+                "lists pad numbers",
+            )
+        if not revert and not patch:
+            raise BadInput(
+                "op='pad' needs at least one of dx / dy / w / h (or revert=true)",
+                next="args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}",
+            )
+
+        def apply(conn: Any) -> dict[str, Any]:
+            graph = self.store.pcb_graph(ref.id)
+            instance = next(
+                (
+                    i
+                    for i in graph.get("instances") or []
+                    if str(i.get("refdes")) == refdes
+                ),
+                None,
+            )
+            if instance is None:
+                raise NotFound(
+                    f"pcb instance {refdes!r} not found in {ref.slug!r}",
+                    next=f"get(kind='pcb', id='{ref.slug}') lists this design's refdes",
+                )
+            current = dict(instance.get("pad_overrides") or {})
+            if revert:
+                if pad:
+                    if pad not in current:
+                        return {"status": "unchanged", "pad": pad, "n": len(current)}
+                    del current[pad]
+                elif not current:
+                    return {"status": "unchanged", "pad": None, "n": 0}
+                else:
+                    current = {}
+                ok = self.store.pcb_move_instance(
+                    ref.id,
+                    refdes,
+                    meta={"pad_overrides": current or None},
+                    conn=conn,
+                )
+                if not ok:
+                    raise NotFound(
+                        f"pcb instance {refdes!r} went away mid-edit",
+                        next=f"get(kind='pcb', id='{ref.slug}') lists this "
+                        "design's live refdes",
+                    )
+                return {"status": "reverted", "pad": pad or None, "n": len(current)}
+            _key, fp, _source = self._footprint_of_instance(ref, instance)
+            numbers = [
+                str(p.get("number"))
+                for p in (fp or {}).get("pads") or []
+                if p.get("number") is not None
+            ]
+            if not fp or not numbers:
+                raise BadInput(
+                    f"pcb: {refdes} has no stored footprint to override — "
+                    "its pads are a synthesized bound, not real geometry",
+                    next="put(args={'op':'footprint','part':'<C-number>'}) "
+                    "first, or author a design-local footprint",
+                )
+            if pad not in numbers:
+                raise BadInput(
+                    f"pcb: {refdes} has no pad {pad!r} — its footprint "
+                    f"numbers {sorted(numbers)[:24]}",
+                    next=f"get(kind='pcb', id='{ref.slug}#{refdes}', "
+                    "view='pinout') lists pad numbers",
+                )
+            merged = {**(current.get(pad) or {}), **patch}
+            if current.get(pad) == merged:
+                return {"status": "unchanged", "pad": pad, "n": len(current)}
+            current[pad] = merged
+            ok = self.store.pcb_move_instance(
+                ref.id, refdes, meta={"pad_overrides": current}, conn=conn
+            )
+            if not ok:
+                raise NotFound(
+                    f"pcb instance {refdes!r} went away mid-edit",
+                    next=f"get(kind='pcb', id='{ref.slug}') lists this "
+                    "design's live refdes",
+                )
+            return {"status": "overridden", "pad": pad, "n": len(current)}
+
+        result, judged = self._judged_mutation(ref.id, apply)
+        status = result["status"]
+        if status == "unchanged":
+            head = f"# {refdes}: no change — " + (
+                f"pad {result['pad']} has no override"
+                if revert
+                else "that override is already applied"
+            )
+        elif status == "reverted":
+            head = f"# {refdes}: " + (
+                f"pad {result['pad']} override reverted"
+                if result["pad"] is not None
+                else "all pad overrides reverted"
+            )
+        else:
+            head = (
+                f"# {refdes} pad {result['pad']}: override stored "
+                f"({result['n']} overridden pad(s) on this part)"
+            )
+        return Response(
+            body=head
+            + "\n"
+            + judged.lines()
+            + render_next_section(
+                [
+                    (
+                        f"get(kind='pcb', id='{ref.slug}#{refdes}', view='pinout')",
+                        "the pad's row and head reflect the stored overrides",
+                    )
+                ]
+            )
         )
 
     def _op_stackup(self, ref: Any, args: dict[str, Any]) -> Response:
@@ -6382,6 +6606,13 @@ class PcbHandler(Handler):
                     "source": summary["source"],
                     "n_pads": summary["n_pads"],
                     "synthesized": synthesized,
+                    # gr520149 — op='pad' deltas on THIS instance
+                    # (pcb_instances.meta['pad_overrides']), one entry per
+                    # overridden pad number.
+                    "overrides": ",".join(
+                        sorted(str(k) for k in (i.get("pad_overrides") or {}))
+                    )
+                    or "-",
                 }
             )
         head = (
@@ -6399,7 +6630,15 @@ class PcbHandler(Handler):
             + "\n"
             + render_agent_table(
                 rows,
-                schema=["refdes", "lcsc", "cached", "source", "n_pads", "synthesized"],
+                schema=[
+                    "refdes",
+                    "lcsc",
+                    "cached",
+                    "source",
+                    "n_pads",
+                    "synthesized",
+                    "overrides",
+                ],
             )
         )
 
@@ -8084,15 +8323,13 @@ class PcbHandler(Handler):
                 next=f"get(kind='pcb', id={ref.slug!r})",
             )
         lcsc = instance.get("part_lcsc")
-        key = str(lcsc or instance.get("footprint") or "")
-        if lcsc:
-            footprint = self.store.part_footprint_get(key)
-            source = (
-                f"catalog-cache; source={(footprint or {}).get('source') or 'unknown'}"
-            )
-        else:
-            footprint = self.store.pcb_local_footprints_for(ref.id).get(key)
-            source = "design-local-authored"
+        key, footprint, source = self._footprint_of_instance(ref, instance)
+        # gr520149 — op='pad' deltas live on the instance, not the shared
+        # footprint row; render the overridden geometry and say so.
+        overrides = instance.get("pad_overrides") or {}
+        if overrides and footprint:
+            footprint = padplace.apply_pad_overrides(footprint, overrides)
+            source += f"; {len(overrides)} authored pad override(s)"
         preview = proposals is not None
         view = "pinout-preview" if preview else "pinout"
         head = (
@@ -8150,6 +8387,10 @@ class PcbHandler(Handler):
         rows = []
         for pad in result["rows"]:
             row = dict(pad)
+            if overrides and row.get("pad_number") in overrides:
+                row["notes"] = sorted(
+                    {*(row.get("notes") or []), "authored pad override"}
+                )
             for field in (
                 "local_x_mm",
                 "local_y_mm",

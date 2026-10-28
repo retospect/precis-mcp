@@ -480,6 +480,17 @@ included, so a large sensor electrode still gets a stencil opening;
 `role='electrode'` (or `'tape_land'`) defaults it to `'none'`, and an
 explicit `paste` always wins.
 
+`op='pad'` edits ONE pad of ONE placed part — a delta on the instance,
+never the shared footprint row, so other designs and other instances
+keep catalog geometry while this part's rendered pads, DRC and gerber
+use the override: `args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}`
+shifts the pad's centre in footprint-local mm (the `view='pinout'`
+frame); `'w'`/`'h'` resize to an absolute extent; `revert:true` drops
+that pad's override — without `pad`, all of the part's. `view='pinout'`
+marks each overridden pad; `view='footprints'` lists their numbers.
+`add`/`remove`/`hole`/`drill` refuse with a `next=` that names the
+tracking design note (slice-2+).
+
 ## Place it — `put(args={'op':'place', …})`
 
 **`op='route'` refuses with `next=`** — the vector router was deleted
@@ -494,7 +505,7 @@ routed before the cut still render, and `view='route-status'` /
 
 ### The judged-mutation gate
 
-A batch `put`, `op='class_rules'` and `op='footprint'` on a design with placed
+A batch `put`, `op='class_rules'`, `op='pad'` and `op='footprint'` on a design with placed
 parts are checked before and after in one transaction. A design's first put
 counts when it carries x/y: its board is checked against an empty "before".
 Judged: pads, authored copper, courtyards, holes, the outline, edge mating. Parts with only
@@ -522,7 +533,7 @@ a synthesized (guessed) footprint are not.
 Placement runs as an **enqueued worker job** — never inline in this
 call (a real board is minutes of compute, not milliseconds). `put` returns a
 job id immediately. The rest of the `op=` surface is the inline edits
-`move`/`rip`/`pin_side`/`plane_net`/`class_rules`/`stackup` (plus `check`,
+`move`/`rip`/`pin_side`/`plane_net`/`class_rules`/`stackup`/`pad` (plus `check`,
 `review`, `footprint`, `phase`, `order`, `import_epro`).
 
 ```python
