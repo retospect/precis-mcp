@@ -51,8 +51,11 @@ Evidence, strongest first:
              anchored joins, ``importlib.resources.files(<pkg>)``, dir
              enumerations), and a changed path selects every test whose
              refs cover it.
-  always     never narrowed away: a changed test file is itself;
-             ``*/migrations/*.sql`` selects the migration/schema set;
+  always     never narrowed away: a changed test file is itself, and the
+             branch's added/modified ``tests/**/test_*.py`` union in
+             unconditionally (gr524268 — a changed-file-map miss drops a
+             brand-new test silently); ``*/migrations/*.sql`` selects the
+             migration/schema set;
              docs-only diffs select the doc-hygiene set; a non-doc file
              with zero other evidence adds the smoke set (unsure widens).
   full       pyproject/uv.lock/conftest/scripts/test/docker/workflow
@@ -985,6 +988,7 @@ class Selector:
         self._mb: str | None = None
         self._mb_tried = False
         self._trees: dict[str, set[str]] = {}
+        self._branch_tests: list[str] | None = None
 
     def index(self):
         """The repo python index, built once per Selector."""
@@ -1010,6 +1014,57 @@ class Selector:
         if rev not in self._trees:
             self._trees[rev] = _tree_paths(self.repo, rev)
         return self._trees[rev]
+
+    def branch_tests(self) -> list[str]:
+        """gr524268: the branch's own added/modified collectable tests —
+        ``git diff --name-only --diff-filter=AM <main>...HEAD`` plus
+        porcelain-untracked ``test_*.py`` (``-uall``, so a new file inside a
+        new directory isn't hidden behind its collapsed ``?? dir/`` entry).
+        A new test file has no import/corpus/measured edge yet, so whenever
+        the changed-file map misses it (a caller's narrower diff, an
+        unresolvable merge-base, a collapsed untracked dir) the skip is
+        silent — a ds-allow red escaped ``--selected`` exactly that way.
+        Union, never rely on detection. Empty without git or a main ref
+        (the gate container)."""
+        if self._branch_tests is not None:
+            return self._branch_tests
+        out: set[str] = set()
+        for ref in ("origin/main", "main"):
+            try:
+                exists = _git(self.repo, "rev-parse", "--verify", "-q", ref).strip()
+                if not exists:
+                    continue
+                diff = _git(
+                    self.repo,
+                    "diff",
+                    "--name-only",
+                    "--no-renames",
+                    "--diff-filter=AM",
+                    f"{ref}...HEAD",
+                )
+            except SystemExit:
+                continue
+            out.update(diff.splitlines())
+            break
+        try:
+            status = _git(
+                self.repo,
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            )
+        except SystemExit:
+            status = ""
+        for rec in status.split("\0"):
+            if rec.startswith("?? "):
+                out.add(rec[3:].strip('"'))
+        self._branch_tests = sorted(
+            p
+            for p in out
+            if _is_test(p) and _collectable(p) and (self.repo / p).is_file()
+        )
+        return self._branch_tests
 
     def build_corpus(self) -> None:
         if self._corpus_built:
@@ -1250,6 +1305,12 @@ def _select(
                 continue
             if any(i == a or i.startswith(a + ".") for a in affected for i in imps):
                 offer(rel, "imports an affected module")
+
+    # gr524268: the branch's own added/modified test files are unconditional
+    # — a fresh test file can sit outside every evidence tier, and a miss in
+    # the changed-file map drops it silently. Offer dedupes by path.
+    for p in maps.branch_tests():
+        offer(p, "branch test file (added/modified vs main)")
 
     if docs_only:
         notes.append("docs-only diff")

@@ -385,6 +385,56 @@ def test_absent_coverage_db_names_fetch_db(mod: ModuleType, toy_repo: Path) -> N
     assert any("--fetch-db" in n for n in res["notes"]), res["notes"]
 
 
+def test_branch_new_test_file_is_always_selected(
+    mod: ModuleType, toy_repo: Path
+) -> None:
+    """gr524268: a test file added on the branch must be in the selection
+    even when the changed-file map handed to the selector misses it — a
+    ds-allow red escaped ``--selected`` exactly that way. Committed (diff
+    vs main), renamed (an `R` entry is outside the AM filter), and
+    untracked-inside-a-new-dir (porcelain collapses the dir to ``?? dir/``)
+    all count; a committed-but-worktree-deleted file must not be offered."""
+    _git(toy_repo, "switch", "-qc", "selwork")
+    try:
+
+        def files() -> set[str]:
+            # A changes map naming none of them — the bug's input shape. A
+            # fresh Selector each call: branch_tests() is memoized per map.
+            return set(
+                mod._select(
+                    toy_repo,
+                    {"docs/README.md": "M"},
+                    base=None,
+                    head=None,
+                    db=None,
+                    maps=mod.Selector(toy_repo),
+                )["files"]
+            )
+
+        _write(toy_repo, "tests/test_branch_new.py", "def test_new():\n    pass\n")
+        _git(toy_repo, "add", "-A")
+        _git(toy_repo, "commit", "-qm", "new branch test")
+        _write(
+            toy_repo,
+            "tests/newdir/test_untracked.py",
+            "def test_untracked():\n    pass\n",
+        )
+        assert "tests/test_branch_new.py" in files()
+        assert "tests/newdir/test_untracked.py" in files()
+        # A renamed branch test is an `R` diff entry — outside the AM filter,
+        # so --no-renames must expand it to D+A for the new path to surface.
+        _git(toy_repo, "mv", "tests/test_other.py", "tests/test_moved_elsewhere.py")
+        _git(toy_repo, "commit", "-qm", "rename test")
+        assert "tests/test_moved_elsewhere.py" in files()
+        # Committed on the branch but deleted in the working tree: the AM
+        # diff still names it — the is_file filter keeps it unoffered.
+        (toy_repo / "tests/test_branch_new.py").unlink()
+        assert "tests/test_branch_new.py" not in mod.Selector(toy_repo).branch_tests()
+        assert "tests/test_branch_new.py" not in files()
+    finally:
+        _git(toy_repo, "switch", "-q", "main")
+
+
 def test_near_suite_selection_is_flagged(
     mod: ModuleType, toy_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
