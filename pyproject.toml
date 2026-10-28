@@ -624,7 +624,7 @@ dev = [
     # in via `uv run --with` too, so this entry just bakes it into the image
     # and documents the dep.
     "pytest-testmon>=2.1",
-    "ruff>=0.11",
+    "ruff>=0.17.2",
     "mypy>=1.15",
     "pre-commit>=4",
     # FastAPI's TestClient (starlette) needs httpx; used by the
