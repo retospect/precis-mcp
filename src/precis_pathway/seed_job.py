@@ -339,7 +339,11 @@ def _job_stamped(ctx: Any) -> bool:
     """True once the job row carries its completion stamp
     (``meta.finished_at``, written with the terminal ``STATUS:`` by
     ``store.add_tag``). Reads the row fresh — ``ctx.meta`` is the claim-time
-    snapshot."""
+    snapshot. A reap inside the executor's terminal transaction may carry
+    its freshly observed stamp explicitly; another connection cannot see
+    that write until commit."""
+    if getattr(ctx, "completion_stamped", False):
+        return True
     with ctx.store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta ? 'finished_at' FROM refs WHERE ref_id = %s", (ctx.ref_id,)
@@ -379,6 +383,10 @@ def _poll(ctx: Any, handle: Any) -> bool:
     state = status.get("state")
     if state == "running":
         return False
+
+    # The runner observed completion; historical terminal rows must never
+    # authorize an orphan kill after their process-group number is reused.
+    ctx.set_meta(compute_handle_released=True)
 
     if state == "failed":
         tail = status.get("tail") or ""
@@ -424,8 +432,15 @@ def _poll(ctx: Any, handle: Any) -> bool:
 
     # state == "done"
     params = (ctx.meta or {}).get("params") or {}
-    seed = int(params["seed"])
-    model_index = int(params["model_index"])
+    try:
+        seed = int(params["seed"])
+        model_index = int(params["model_index"])
+    except (KeyError, TypeError, ValueError) as exc:
+        # Poll already observed completion, so release precedes even this
+        # failure path; malformed persisted params must not strand the row.
+        ctx.record_failure(f"autocatpath_seed: malformed params ({exc})")
+        _reap_scratch(ctx, handle, failed=True)
+        return True
     result = status["result"]
     partial = result["partial"]
     ctx.set_meta(

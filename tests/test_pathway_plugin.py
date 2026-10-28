@@ -2095,6 +2095,7 @@ def test_seed_job_poll_infra_failure_tags_infra_child_killed(
     assert ctx.status == "failed"
     assert ctx.open_tag == "infra:child-killed"
     assert ctx.failure_class == "infra"
+    assert ctx.meta_updates["compute_handle_released"] is True
 
 
 def test_seed_job_poll_non_infra_failure_does_not_tag_infra_child_killed(
@@ -2429,7 +2430,7 @@ def test_submit_seed_partial_detached_returns_handle_without_blocking(
     elapsed = time.time() - before
 
     assert elapsed < 2.0  # never waits on the (gated, un-released) child
-    assert set(handle) == {"pid", "pgid", "dir", "started_at"}
+    assert {"pid", "pgid", "dir", "started_at"} <= set(handle)
     assert handle["pgid"] == handle["pid"]
     assert os.path.isdir(handle["dir"])
     assert os.path.exists(os.path.join(handle["dir"], "request.json"))
@@ -2437,6 +2438,43 @@ def test_submit_seed_partial_detached_returns_handle_without_blocking(
     # cleanup: release the gate so the child exits instead of leaking.
     open(os.path.join(handle["dir"], "go"), "w", encoding="utf-8").close()
     _poll_until_terminal(handle)
+
+
+@pytest.mark.parametrize("identity_readable", [True, False])
+def test_detached_submit_captures_identity_on_spawning_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identity_readable: bool
+) -> None:
+    import subprocess
+
+    launched: list[bool] = []
+
+    def fake_popen(*_args: Any, **kwargs: Any) -> Any:
+        assert kwargs["start_new_session"] is True
+        launched.append(True)
+        return SimpleNamespace(pid=4321)
+
+    def proc_read(path: Path, *_args: Any, **_kwargs: Any) -> str:
+        assert launched  # Identity belongs to the child just launched.
+        if not identity_readable:
+            raise PermissionError("proc is unavailable")
+        if str(path) == "/proc/sys/kernel/random/boot_id":
+            return "boot-identity\n"
+        assert str(path) == "/proc/4321/stat"
+        # Parenthesized comm includes both whitespace and a closing paren.
+        return "4321 (seed ) worker) S " + "0 " * 18 + "987654 0 0"
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(Path, "read_text", proc_read)
+    monkeypatch.setattr(runner, "_child_cmd", lambda *_args: ["fake-child"])
+    handle = runner.submit_seed_partial_detached({}, 7, 1, work_dir=str(tmp_path))
+
+    assert handle["pid"] == handle["pgid"] == 4321
+    if identity_readable:
+        assert handle["boot_id"] == "boot-identity"
+        assert handle["start_time"] == 987654
+    else:
+        assert "boot_id" not in handle
+        assert "start_time" not in handle
 
 
 def test_poll_seed_partial_detached_running_then_done(
@@ -2693,6 +2731,38 @@ def test_seed_job_poll_running_returns_false(
     terminal = seed_job._poll(ctx, {"pid": 1})
     assert terminal is False
     assert ctx.status is None
+    assert "compute_handle_released" not in ctx.meta_updates
+
+
+def test_seed_job_poll_done_malformed_params_releases_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_pathway import seed_job
+
+    updates: dict[str, Any] = {}
+    failures: list[str] = []
+    reaped: list[Any] = []
+    ctx = SimpleNamespace(
+        meta={"params": {"seed": "invalid", "model_index": 0}},
+        set_meta=lambda **fields: updates.update(fields),
+        record_failure=failures.append,
+    )
+    handle = {"pid": 4321}
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda *_args, **_kwargs: {"state": "done", "result": {}},
+    )
+    monkeypatch.setattr(
+        seed_job,
+        "_reap_scratch",
+        lambda _ctx, handle, **_kwargs: reaped.append(handle),
+    )
+
+    assert seed_job._poll(ctx, handle) is True
+    assert updates["compute_handle_released"] is True
+    assert len(failures) == 1 and "malformed params" in failures[0]
+    assert reaped == [handle]
 
 
 def test_seed_job_poll_done_sets_meta_and_succeeds(
@@ -2733,6 +2803,7 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
     assert ctx.failure is None
     assert ctx.status == "succeeded"
     assert set(ctx.meta_updates) == {
+        "compute_handle_released",
         "content_key",
         "seed",
         "model_index",
@@ -2743,6 +2814,7 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
         "weights_sha256",
     }
     assert ctx.meta_updates["content_key"] == "deadbeef"
+    assert ctx.meta_updates["compute_handle_released"] is True
     assert ctx.meta_updates["seed"] == 1
     assert ctx.meta_updates["model_index"] == 0
     assert ctx.meta_updates["model"] == "emt"

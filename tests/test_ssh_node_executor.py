@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -1201,6 +1204,7 @@ def test_poll_past_deadline_terminalizes_without_kill_hook(
     assert "swept:wall-timeout" in tags
     meta = _meta(store, rid)
     assert meta["failure_class"] == "timeout"
+    assert not meta.get("compute_handle_released", False)
     assert "killed at wall-clock deadline" in meta["error"]
     events = [
         c.text
@@ -1248,6 +1252,7 @@ def test_poll_past_deadline_calls_kill_hook_when_present(
 
     assert result == {"claimed": 0, "ok": 1, "failed": 0}
     assert killed == [(rid, "remote-pid-kill")]
+    assert _meta(store, rid)["compute_handle_released"] is True
     assert _status(store, rid) == "failed"
 
 
@@ -1508,3 +1513,687 @@ def test_reclaimed_row_with_compute_handle_is_re_adopted_not_double_submitted(
         if getattr(c, "chunk_kind", None) == "job_event"
     ]
     assert any("re-adopted" in t for t in events)
+
+
+# ── gr520866: identity-safe detached orphan reap ──────────────────
+
+
+def _identity_handle() -> dict[str, Any]:
+    return {
+        "pid": 4242,
+        "pgid": 4242,
+        "dir": "/tmp/autocatpath-seed-fake",
+        "boot_id": "boot-for-test",
+        "start_time": 123456,
+    }
+
+
+def _fake_detached_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    boot_id: str = "boot-for-test",
+    start_time: int = 123456,
+    error: OSError | None = None,
+) -> None:
+    """All process probes are fake; comm deliberately contains spaces and ')'."""
+    original = Path.read_text
+
+    def read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if str(path) == "/proc/sys/kernel/random/boot_id":
+            if error is not None:
+                raise error
+            return boot_id + "\n"
+        if str(path) == "/proc/4242/stat":
+            if error is not None:
+                raise error
+            fields = ["S", *(["0"] * 18), str(start_time), "0"]
+            return "4242 (runner with ) spaces) " + " ".join(fields)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
+
+
+def _mk_terminal_handle_job(
+    store: Store,
+    *,
+    compute_handle: Any,
+    target_node: str | None = "spark",
+    status: str = "failed",
+    terminal_age_s: int = 300,
+    released: bool = False,
+) -> int:
+    params: dict[str, Any] = {}
+    if target_node is not None:
+        params["target_node"] = target_node
+    meta: dict[str, Any] = {
+        "executor": "ssh_node",
+        "job_type": "fake_relax",
+        "params": params,
+        "compute_handle": compute_handle,
+        "compute_handle_released": released,
+    }
+    ref = store.insert_ref(
+        kind="job", slug=None, title="orphaned terminal job", meta=meta
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - make_interval(secs => %s) "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'STATUS'",
+            (terminal_age_s, ref.id),
+        )
+        conn.commit()
+    return int(ref.id)
+
+
+def _kill_reap_spec(
+    killed: list[tuple[Any, Any]], reaped: list[tuple[Any, Any]]
+) -> JobTypeSpec:
+    return JobTypeSpec(
+        name="fake_relax",
+        params_schema={"type": "object"},
+        compatible_executors=frozenset({"ssh_node"}),
+        requires=frozenset({"has_gpaw"}),
+        description="fake relax for tests",
+        run=lambda *a, **k: "noop",
+        submit=lambda c, s: None,
+        poll=lambda c, h: False,
+        kill=lambda c, h: killed.append((c.ref_id, h)),
+        reap=lambda c, h: reaped.append((c.ref_id, h)),
+    )
+
+
+def test_orphan_reap_kills_identity_matched_terminal_handle_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = _identity_handle()
+    rid = _mk_terminal_handle_job(store, compute_handle=handle)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert killed == [(rid, handle)]
+    assert reaped == [(rid, handle)]
+    meta = _meta(store, rid)
+    assert meta["detached_orphan_reaped"]["action"] == "killed"
+    assert meta["compute_handle_released"] is True
+    assert "reaped:detached-orphan" in {str(t) for t in store.tags_for(rid)}
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert killed == [(rid, handle)]
+    assert reaped == [(rid, handle)]
+
+
+@pytest.mark.parametrize(
+    ("handle", "status", "released", "terminal_age_s"),
+    [
+        pytest.param(_identity_handle(), "succeeded", True, 300, id="released-success"),
+        pytest.param({"pid": 4242, "pgid": 4242}, "failed", False, 300, id="legacy"),
+        pytest.param("remote-pid-string", "failed", False, 300, id="opaque"),
+        pytest.param(_identity_handle(), "failed", False, 119, id="grace"),
+        pytest.param(_identity_handle(), "failed", False, 0, id="just-terminal"),
+    ],
+)
+def test_orphan_reap_excludes_unsafe_candidates(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    handle: Any,
+    status: str,
+    released: bool,
+    terminal_age_s: int,
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    rid = _mk_terminal_handle_job(
+        store,
+        compute_handle=handle,
+        status=status,
+        released=released,
+        terminal_age_s=terminal_age_s,
+    )
+
+    assert ssh_node._reap_detached_orphans(store, "spark") == 0
+    assert killed == []
+    assert reaped == []
+    meta = _meta(store, rid)
+    assert "detached_orphan_reaped" not in meta
+    assert "detached_orphan_skipped" not in meta
+
+
+@pytest.mark.parametrize(
+    ("boot_id", "start_time", "error", "reason"),
+    [
+        ("boot-for-test", 999999, None, "start-time-mismatch"),
+        ("new-boot", 123456, None, "boot-id-mismatch"),
+        ("boot-for-test", 123456, PermissionError(), "identity-unreadable"),
+        ("boot-for-test", 123456, FileNotFoundError(), "identity-unreadable"),
+    ],
+)
+def test_orphan_reap_skips_and_stamps_unverified_identity(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    boot_id: str,
+    start_time: int,
+    error: OSError | None,
+    reason: str,
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(
+        monkeypatch, boot_id=boot_id, start_time=start_time, error=error
+    )
+    rid = _mk_terminal_handle_job(store, compute_handle=_identity_handle())
+
+    ssh_node._reap_detached_orphans(store, "spark")
+    ssh_node._reap_detached_orphans(store, "spark")
+
+    assert killed == []
+    assert reaped == []  # mismatched scratch directories must survive too
+    meta = _meta(store, rid)
+    assert meta["detached_orphan_skipped"]["reason"] == reason
+    assert "detached_orphan_reaped" not in meta
+
+
+def test_orphan_reap_skips_missing_start_time(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    handle = _identity_handle()
+    del handle["start_time"]
+    rid = _mk_terminal_handle_job(store, compute_handle=handle)
+
+    ssh_node._reap_detached_orphans(store, "spark")
+
+    assert killed == []
+    assert reaped == []
+    assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "missing-identity"
+
+
+def test_orphan_reap_leaves_running_and_claimable_rows_alone(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    polled: list[Any] = []
+
+    def poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    spec = replace(_kill_reap_spec(killed, []), poll=poll)
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = _identity_handle()
+    running = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle=handle, target_node="spark"
+    )
+    queued = _mk_terminal_handle_job(store, compute_handle=handle, status="queued")
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert killed == []
+    assert polled == [handle]
+    assert result["claimed"] == 1
+    assert _status(store, running) == "running"
+    assert _status(store, queued) == "running"
+    assert "detached_orphan_reaped" not in _meta(store, running)
+    assert "detached_orphan_reaped" not in _meta(store, queued)
+
+
+@pytest.mark.parametrize("target_node", ["elsewhere", None])
+def test_orphan_reap_node_gate_only_same_host(
+    store: Store, monkeypatch: pytest.MonkeyPatch, target_node: str | None
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    rid = _mk_terminal_handle_job(
+        store, compute_handle=_identity_handle(), target_node=target_node
+    )
+
+    assert ssh_node._reap_detached_orphans(store, "spark") == 0
+    assert killed == []
+    assert reaped == []
+    assert "detached_orphan_reaped" not in _meta(store, rid)
+
+
+def test_orphan_reap_marks_row_with_no_kill_hook(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=lambda c, h: False, submit=lambda c, s: None),
+    )
+    _fake_detached_identity(monkeypatch)
+    rid = _mk_terminal_handle_job(store, compute_handle=_identity_handle())
+
+    ssh_node._reap_detached_orphans(store, "spark")
+    ssh_node._reap_detached_orphans(store, "spark")
+
+    assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "no-kill-hook"
+
+
+def test_orphan_reap_competing_passes_only_one_claim_kills(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both passes select the same row before either performs its UPDATE claim."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    handle = _identity_handle()
+    rid = _mk_terminal_handle_job(store, compute_handle=handle)
+    select = ssh_node._orphaned_detached_jobs
+    barrier = Barrier(2)
+
+    def select_together(*args: Any, **kwargs: Any) -> Any:
+        rows = select(*args, **kwargs)
+        assert [row[0] for row in rows] == [rid]
+        barrier.wait(timeout=10)
+        return rows
+
+    monkeypatch.setattr(ssh_node, "_orphaned_detached_jobs", select_together)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(ssh_node._reap_detached_orphans, store, "spark")
+            for _ in range(2)
+        ]
+        counts = [future.result(timeout=20) for future in futures]
+
+    assert sorted(counts) == [0, 1]
+    assert killed == [(rid, handle)]
+    assert reaped == [(rid, handle)]
+    assert _meta(store, rid)["detached_orphan_reaped"]["action"] == "killed"
+
+
+def test_poison_guarded_detached_job_killed_at_transition(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owning node kills immediately, without waiting for the reap grace."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    store.record_heartbeat(
+        "spark-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    handle = _identity_handle()
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=ssh_node._MAX_ATTEMPTS,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-poison",
+        compute_handle=handle,
+        target_node="spark",
+    )
+
+    first = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert first == {"claimed": 1, "ok": 0, "failed": 1}
+    assert _status(store, rid) == "failed"
+    assert killed == [(rid, handle)]
+    assert reaped == [(rid, handle)]
+    assert _meta(store, rid)["compute_handle_released"] is True
+    assert _meta(store, rid)["detached_orphan_reaped"]["action"] == "killed"
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert killed == [(rid, handle)]
+
+
+def test_detached_group_permission_error_is_not_ours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def denied(pgid: int, signal: int) -> None:
+        raise PermissionError("not our process group")
+
+    monkeypatch.setattr(ssh_node.os, "killpg", denied)
+    assert ssh_node._detached_group_alive(_identity_handle()) is False
+
+
+def test_orphan_reap_unavailable_group_is_skipped_without_cleanup(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: False)
+    rid = _mk_terminal_handle_job(store, compute_handle=_identity_handle())
+
+    ssh_node._reap_detached_orphans(store, "spark")
+
+    assert killed == []
+    assert reaped == []
+    assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "group-unavailable"
+
+
+@pytest.mark.parametrize("trigger", ["operator", "deadline"])
+@pytest.mark.parametrize(
+    "identity", ["missing-identity", "start-time-mismatch", "matched"]
+)
+def test_terminal_kill_requires_process_identity(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    trigger: str,
+    identity: str,
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(
+        monkeypatch, start_time=654321 if identity == "start-time-mismatch" else 123456
+    )
+    handle = _identity_handle()
+    if identity == "missing-identity":
+        del handle["boot_id"]
+    if trigger == "operator":
+        rid = _mk_hung_job_with_kill_request(store, compute_handle=handle)
+    else:
+        rid = _mk_running_job(store, lease_offset_s=3600, compute_handle=handle)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float) "
+                "WHERE ref_id = %s",
+                (time.time() - 5, rid),
+            )
+            conn.commit()
+    ctx = ssh_node._build_dispatch_context(
+        store, rid, "identity test", _meta(store, rid)
+    )
+
+    assert ssh_node._poll_one(ctx) is True
+
+    meta = _meta(store, rid)
+    assert _status(store, rid) == "failed"
+    if identity == "matched":
+        assert killed == [(rid, handle)]
+        assert reaped == [(rid, handle)]
+        assert meta["compute_handle_released"] is True
+        assert "detached_orphan_skipped" not in meta
+    else:
+        assert killed == []
+        assert reaped == []
+        assert not meta.get("compute_handle_released", False)
+        assert meta["detached_orphan_skipped"]["reason"] == identity
+
+
+def _legacy_deadline_context(store: Store) -> tuple[Any, dict[str, Any]]:
+    handle = {"pid": 4242, "pgid": 4242, "dir": "/tmp/autocatpath-legacy-fake"}
+    rid = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle=handle, target_node="spark"
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float) "
+            "WHERE ref_id = %s",
+            (time.time() - 5, rid),
+        )
+        conn.commit()
+    return ssh_node._build_dispatch_context(
+        store, rid, "legacy test", _meta(store, rid)
+    ), handle
+
+
+def test_legacy_own_deadline_polls_alive_then_kills(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    base = _kill_reap_spec(killed, reaped)
+
+    def poll(ctx: Any, handle: Any) -> bool:
+        calls.append("poll")
+        return False
+
+    def kill(ctx: Any, handle: Any) -> None:
+        calls.append("kill")
+        killed.append((ctx.ref_id, handle))
+
+    spec = replace(base, poll=poll, kill=kill)
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    ctx, handle = _legacy_deadline_context(store)
+
+    assert ssh_node._poll_one(ctx) is True
+
+    assert calls == ["poll", "kill"]
+    assert killed == [(ctx.ref_id, handle)]
+    assert reaped == [(ctx.ref_id, handle)]
+    assert _status(store, ctx.ref_id) == "failed"
+    meta = _meta(store, ctx.ref_id)
+    assert meta["compute_handle_released"] is True
+    assert "detached_orphan_skipped" not in meta
+
+
+@pytest.mark.parametrize(
+    "veto",
+    [
+        "not-polled",
+        "wrong-node",
+        "wrong-executor",
+        "terminal",
+        "changed-handle",
+        "operator",
+    ],
+)
+def test_legacy_deadline_fallback_requires_current_owned_running_row(
+    store: Store, monkeypatch: pytest.MonkeyPatch, veto: str
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    spec = _kill_reap_spec(killed, reaped)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
+    ctx, handle = _legacy_deadline_context(store)
+    if veto == "terminal":
+        store.add_tag(
+            ctx.ref_id,
+            Tag.closed("STATUS", "succeeded"),
+            set_by="system",
+            replace_prefix=True,
+        )
+    elif veto in {"wrong-node", "wrong-executor", "changed-handle"}:
+        patch = {
+            "wrong-node": {"params": {"target_node": "elsewhere"}},
+            "wrong-executor": {"executor": "coordinator"},
+            "changed-handle": {"compute_handle": {**handle, "pgid": 4343, "pid": 4343}},
+        }[veto]
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (json.dumps(patch), ctx.ref_id),
+            )
+            conn.commit()
+
+    ssh_node._kill_and_terminalize(
+        ctx,
+        handle,
+        spec,
+        swept_tag="killed-by-operator" if veto == "operator" else "wall-timeout",
+        summary="legacy guard regression",
+        polled_alive=veto != "not-polled",
+    )
+
+    assert killed == []
+    assert reaped == []
+    assert not _meta(store, ctx.ref_id).get("compute_handle_released", False)
+    assert (
+        _meta(store, ctx.ref_id)["detached_orphan_skipped"]["reason"]
+        == "missing-identity"
+    )
+
+
+def test_legacy_operator_does_not_use_poll_fallback(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    polled: list[Any] = []
+
+    def poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    spec = replace(_kill_reap_spec(killed, reaped), poll=poll)
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    ctx, _ = _legacy_deadline_context(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (json.dumps({"kill_requested": {"actor": "operator"}}), ctx.ref_id),
+        )
+        conn.commit()
+    ctx = ssh_node._build_dispatch_context(
+        store, ctx.ref_id, "legacy operator", _meta(store, ctx.ref_id)
+    )
+
+    assert ssh_node._poll_one(ctx) is True
+
+    assert polled == []
+    assert killed == []
+    assert reaped == []
+    assert (
+        _meta(store, ctx.ref_id)["detached_orphan_skipped"]["reason"]
+        == "missing-identity"
+    )
+
+
+@pytest.mark.parametrize("pgid", [0, 1, None, 8888, "not-a-pgid"])
+def test_invalid_group_never_probes_or_falls_back_to_pid(
+    monkeypatch: pytest.MonkeyPatch, pgid: Any
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(ssh_node.os, "getpgrp", lambda: 8888)
+    monkeypatch.setattr(
+        ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
+    )
+    handle = {**_identity_handle(), "pgid": pgid}
+    if pgid is None:
+        del handle["pgid"]
+
+    assert ssh_node._detached_group_alive(handle) is False
+    assert ssh_node._detached_identity_reason(handle) == "invalid-handle"
+    assert signals == []
+
+
+@pytest.mark.parametrize("path", ["orphan", "poison", "operator", "deadline"])
+def test_zero_pgid_is_never_killed_in_any_terminal_path(
+    store: Store, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = {**_identity_handle(), "pgid": 0}
+    if path == "orphan":
+        rid = _mk_terminal_handle_job(store, compute_handle=handle)
+        ssh_node._reap_detached_orphans(store, "spark")
+    elif path == "poison":
+        store.record_heartbeat(
+            "spark-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        )
+        rid = _mk_running_job(
+            store,
+            lease_offset_s=3600,
+            attempts=ssh_node._MAX_ATTEMPTS,
+            lease_boot_id="dead-generation",
+            lease_process="ssh_node",
+            lease_host="spark-poison",
+            compute_handle=handle,
+            target_node="spark",
+        )
+        ssh_node.run_ssh_node_pass(store, limit=2)
+    else:
+        rid = _mk_running_job(
+            store, lease_offset_s=3600, compute_handle=handle, target_node="spark"
+        )
+        patch: dict[str, Any] = {"deadline": time.time() - 5}
+        if path == "operator":
+            patch = {"kill_requested": {"actor": "operator"}}
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (json.dumps(patch), rid),
+            )
+            conn.commit()
+        ctx = ssh_node._build_dispatch_context(
+            store, rid, "zero pgid", _meta(store, rid)
+        )
+        ssh_node._poll_one(ctx)
+
+    assert killed == []
+    assert reaped == []
+    meta = _meta(store, rid)
+    assert meta["detached_orphan_skipped"]["reason"] == "invalid-handle"
+    assert not meta.get("compute_handle_released", False)
+
+
+def test_empty_dict_handle_cannot_bypass_terminal_identity_guard(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    spec = _kill_reap_spec(killed, reaped)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    ctx, _ = _legacy_deadline_context(store)
+
+    ssh_node._kill_and_terminalize(
+        ctx,
+        {},
+        spec,
+        swept_tag="wall-timeout",
+        summary="malformed handle",
+        polled_alive=True,
+    )
+
+    assert killed == []
+    assert reaped == []
+    assert (
+        _meta(store, ctx.ref_id)["detached_orphan_skipped"]["reason"]
+        == "invalid-handle"
+    )

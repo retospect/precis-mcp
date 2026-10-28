@@ -157,13 +157,31 @@ def test_reaper_skips_unstamped_and_reaps_stamped(
 
 
 def test_kill_keeps_dir_until_reap_hook_after_stamp(
-    store: Store, tmp_path: Path, no_autocatpath: None
+    store: Store, tmp_path: Path, no_autocatpath: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from precis_pathway import seed_job
 
     scratch = tmp_path / "autocatpath-seed-y"
     scratch.mkdir()
-    handle = {"pid": None, "pgid": None, "dir": str(scratch)}
+    # A valid process handle with fake process operations: invalid/missing
+    # pgids are now refused before kill, independently of stamp ordering.
+    handle = {
+        "pid": 4242,
+        "pgid": 4242,
+        "dir": str(scratch),
+        "boot_id": "test-boot",
+        "start_time": 1234,
+    }
+    monkeypatch.setattr(ssh_node, "_detached_identity_reason", lambda h: None)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda h: True)
+    from precis_pathway import scratch as scratch_module
+
+    def fake_kill(h: Any, *, keep_scratch: bool = False) -> None:
+        assert h == handle
+        assert keep_scratch
+        assert scratch.is_dir()
+
+    monkeypatch.setattr(scratch_module, "kill_seed_partial_detached", fake_kill)
 
     ref_id = _mk_job(store)
     meta = _meta(store, ref_id)
@@ -196,4 +214,55 @@ def test_kill_keeps_dir_until_reap_hook_after_stamp(
         mp.undo()
     assert seen == [True]
     assert not os.path.exists(scratch)
+    assert "finished_at" in _meta(store, ref_id)
+
+
+def test_poison_reap_sees_uncommitted_completion_stamp(
+    store: Store, tmp_path: Path, no_autocatpath: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Poison cleanup uses its transaction's stamp, not a stale second read."""
+    from precis_pathway import seed_job
+
+    scratch = tmp_path / "autocatpath-seed-poison"
+    scratch.mkdir()
+    handle = {
+        "pid": 4242,
+        "pgid": 4242,
+        "dir": str(scratch),
+        "boot_id": "test-boot",
+        "start_time": 1234,
+    }
+    ref_id = _mk_job(
+        store,
+        compute_handle=handle,
+        params={"target_node": "node-a"},
+        attempts=ssh_node._MAX_ATTEMPTS,
+    )
+    meta = _meta(store, ref_id)
+    killed: list[Any] = []
+    spec = JobTypeSpec(
+        name="fake",
+        params_schema={},
+        compatible_executors=frozenset({"ssh_node"}),
+        requires=frozenset(),
+        description="x",
+        run=lambda *a, **k: None,
+        dispatch=lambda *a, **k: None,
+        kill=lambda ctx, h: killed.append(h),
+        reap=seed_job._reap,
+    )
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    monkeypatch.setattr(ssh_node, "_detached_identity_reason", lambda h: None)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda h: True)
+
+    with store.pool.connection() as conn:
+        assert _common.poison_guard(store, conn, ref_id, meta)
+        # A fresh connection really cannot see the stamp at this point.
+        assert "finished_at" not in _meta(store, ref_id)
+        assert ssh_node._reap_detached_job(
+            store, conn, ref_id, "poison", meta, node="node-a", require_grace=False
+        )
+        assert killed == [handle]
+        assert not scratch.exists()
+        conn.commit()
     assert "finished_at" in _meta(store, ref_id)

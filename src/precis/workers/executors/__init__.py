@@ -32,6 +32,21 @@ The lanes
   deprecation naming gr187627 (a blocking call starved a worker's whole
   rotation long enough to trip host-dark). A reclaimed row that already
   carries a handle is re-adopted, never re-submitted.
+  Seed handles record Linux boot ID and process start ticks at launch:
+  a live process-group number alone can belong to an unrelated process
+  after reuse. Orphan cleanup requires matching identity, excludes legacy
+  and released handles, waits 120 seconds after terminalization, and
+  conditionally claims each row before killing or deleting scratch. An
+  unreadable/mismatched identity is stamped skipped, with no cleanup.
+  The owning node applies the same check at its poison-guard transition;
+  periodic reap backs up external terminalizations. Completion and successful
+  executor kill mark the handle released to prevent historical-row kills.
+  Legacy handles already running at deploy retain one narrow deadline kill
+  path: this pass must poll the child alive and lock/recheck a running row
+  pinned to this node. Orphan, poison and operator paths have no exception.
+  All dict handles must name a valid pgid distinct from the worker's group.
+  Poison cleanup carries its transaction-observed completion stamp through
+  ``DispatchContext.completion_stamped`` so reap sees the uncommitted write.
 * ``claude_docker`` — runs ``sandbox_run`` as a detached container on a
   sandbox host: launch, poll by name, reap. A reclaimed row
   carrying ``meta.container`` is re-adopted by name-match, never

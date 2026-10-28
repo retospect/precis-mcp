@@ -109,6 +109,11 @@ class DispatchContext:
     #: built outside the executor (tests).
     defer: Callable[[datetime | None, str], bool] | None = None
 
+    #: Executor-observed completion stamp in the current transaction.
+    #: Reap hooks can use this when their own connection cannot yet see
+    #: a poison-guard terminal write. Never inferred from claim-time meta.
+    completion_stamped: bool = False
+
     def spawn_child(
         self,
         job_type: str,

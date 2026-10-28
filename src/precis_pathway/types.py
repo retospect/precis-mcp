@@ -20,7 +20,7 @@ is a shape-documentation pass, not a schema for autocatpath's internals.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 
 class TopologyState(TypedDict):
@@ -155,6 +155,8 @@ class DetachedHandle(TypedDict):
     pgid: int
     dir: str
     started_at: float
+    boot_id: NotRequired[str]
+    start_time: NotRequired[int]
 
 
 class PollResult(TypedDict, total=False):

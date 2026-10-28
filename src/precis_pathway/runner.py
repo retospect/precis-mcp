@@ -1260,14 +1260,17 @@ def submit_seed_partial_detached(
     on a wall-clock kill — never here.
 
     Returns the JSON-serialisable handle
-    ``{"pid", "pgid", "dir", "started_at"}`` persisted onto
-    ``meta.compute_handle`` by the executor.
+    ``{"pid", "pgid", "dir", "started_at", "boot_id", "start_time"}``
+    persisted onto ``meta.compute_handle`` by the executor. The Linux
+    identity is captured on the spawning node; an unavailable identity
+    leaves the handle ineligible for orphan reaping.
     """
     import json as _json
     import os
     import subprocess
     import tempfile
     import time
+    from pathlib import Path
 
     request = {
         "config": config,
@@ -1296,12 +1299,28 @@ def submit_seed_partial_detached(
         )
     # start_new_session=True makes the child its own session/process-group
     # leader, so its pgid is its pid — no separate os.getpgid round-trip.
-    return {
+    handle: DetachedHandle = {
         "pid": proc.pid,
         "pgid": proc.pid,
         "dir": scratch,
         "started_at": time.time(),
     }
+    try:
+        boot_id = (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        )
+        # comm (field 2) can contain spaces and ')'; fields after its final
+        # ')' start at field 3, so starttime (field 22) is offset 19.
+        stat = Path(f"/proc/{proc.pid}/stat").read_text(encoding="utf-8")
+        start_time = int(stat.rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError, UnicodeError):
+        # The child may already have exited, or /proc may be unavailable.
+        # Never lose its handle just because identity cannot be established.
+        log.warning("autocatpath_seed: cannot read identity of child %s", proc.pid)
+    else:
+        handle["boot_id"] = boot_id
+        handle["start_time"] = start_time
+    return handle
 
 
 def poll_seed_partial_detached(

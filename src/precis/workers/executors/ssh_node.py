@@ -43,10 +43,18 @@ Each pass:
    detached job; a no-op for a legacy blocking ``dispatch`` (below) until
    that call returns, since this executor can't observe it mid-run. Past
    ``meta.deadline`` (stamped at submit time, §H
-   piece 2), the pass stops calling ``poll`` and terminalizes the job
-   itself instead — a never-completing ``poll`` would otherwise renew the
+   piece 2), the pass terminalizes the job itself. A legacy process
+   handle first needs a same-pass live poll on its owning node to authorize
+   that deadline kill. A never-completing ``poll`` would otherwise renew the
    lease forever, and the sweeper's own wall-clock retirement (§H piece 6)
    leaves no other termination path for a detached job_type.
+0.5. **Reap** detached orphans (gr520866): a terminal job still carrying
+   ``meta.compute_handle`` — terminalized by a path that skipped
+   ``spec.kill`` (the crash-loop guard, a sweeper transition, a direct
+   STATUS tag) — leaves its detached child running unbounded.
+   :func:`_reap_detached_orphans` claims unreleased handles after a 120s
+   grace and calls the plugin's ``kill`` only when boot ID and process
+   start ticks match on this host. Unverifiable identities are skipped.
 1. Claim up to ``limit`` ``kind='job'`` rows with
    ``meta.executor == 'ssh_node'``, ``STATUS:queued``, lease expired
    or absent, not terminal — ``FOR UPDATE … SKIP LOCKED``.
@@ -70,6 +78,9 @@ import logging
 import math
 import os
 import time
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.executors._common import (
@@ -88,6 +99,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     RUNNING as _RUNNING,
+)
+from precis.workers.executors._common import (
+    TERMINAL as _TERMINAL,
 )
 from precis.workers.executors._common import (
     append_chunk as _append_chunk,
@@ -191,6 +205,227 @@ def _wall_bound_seconds(meta: dict[str, Any], spec: JobTypeSpec | None = None) -
 #: operational fact, not per-job noise.
 _warned_legacy_job_types: set[str] = set()
 
+#: How many orphaned detached computes one pass visits — bounded so a deep
+#: terminal backlog can't make a tick expensive; drains oldest-first.
+_ORPHAN_REAP_LIMIT = 25
+
+
+# Let a terminal poll finish exiting before considering its handle orphaned.
+_ORPHAN_REAP_GRACE_S = 120
+
+
+def _detached_pgid(handle: Any) -> int | None:
+    """Validate the exact group the kill hook uses; never fall back to pid."""
+    if not isinstance(handle, dict):
+        return None
+    value = handle.get("pgid")
+    if value is None:
+        return None
+    try:
+        pgid = int(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if pgid <= 1 or pgid == os.getpgrp():
+        return None
+    return pgid
+
+
+def _detached_group_alive(handle: Any) -> bool:
+    """Probe group liveness; this alone never establishes process identity."""
+    pgid = _detached_pgid(handle)
+    if pgid is None:
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except PermissionError:
+        # Not ours: permission to observe a group is not permission to kill it.
+        return False
+    except OSError:
+        return False
+
+
+def _detached_identity_reason(handle: Any) -> str | None:
+    """Fail closed unless the local group leader has the recorded identity."""
+    pgid = _detached_pgid(handle)
+    if pgid is None:
+        return "invalid-handle"
+    if not handle.get("boot_id") or handle.get("start_time") is None:
+        return "missing-identity"
+    try:
+        start_time = int(handle["start_time"])
+        if start_time < 0:
+            return "invalid-handle"
+        if (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+            != handle["boot_id"]
+        ):
+            return "boot-id-mismatch"
+        # comm (field 2) can include spaces and ')'. Field 22 is offset
+        # 19 after its final ')', not offset 21 of whitespace-split stat.
+        stat = Path(f"/proc/{pgid}/stat").read_text(encoding="utf-8", errors="replace")
+        if int(stat.rsplit(")", 1)[1].split()[19]) != start_time:
+            return "start-time-mismatch"
+    except (OSError, ValueError, TypeError, IndexError, UnicodeError):
+        return "identity-unreadable"
+    return None
+
+
+def _orphaned_detached_jobs(
+    store: Store, node: str | None, *, limit: int
+) -> list[tuple[int, str, dict[str, Any]]]:
+    """Unreleased identity-bearing handles, terminal on this node for 120s."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.meta
+              FROM refs r
+             WHERE r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND r.meta->>'executor' = %s
+               AND r.meta->'compute_handle' ? 'boot_id'
+               AND r.meta->>'compute_handle_released' IS DISTINCT FROM 'true'
+               AND NOT (r.meta ? 'detached_orphan_reaped')
+               AND NOT (r.meta ? 'detached_orphan_skipped')
+               AND (r.meta->'params'->>'target_node') = %s
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'STATUS'
+                        AND t.value = ANY(%s)
+                        AND rt.created_at < now() - make_interval(secs => %s)
+                   )
+             ORDER BY r.ref_id
+             LIMIT %s
+            """,
+            (_EXECUTOR_NAME, node, list(_TERMINAL), _ORPHAN_REAP_GRACE_S, limit),
+        ).fetchall()
+    return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+
+
+def _reap_detached_job(
+    store: Store,
+    conn: Any,
+    ref_id: int,
+    title: str,
+    meta: dict[str, Any],
+    *,
+    node: str | None,
+    require_grace: bool = True,
+) -> bool:
+    """Claim and identity-check one orphan, holding the row lock through cleanup.
+
+    The conditional UPDATE arbitrates competing passes. The provisional
+    stamp is replaced by the final outcome in the same transaction; a
+    competing UPDATE rechecks its predicates after the winner commits.
+    Poison-guard uses its existing claim transaction and bypasses grace.
+    """
+    from psycopg.types.json import Jsonb
+
+    from precis.store import Tag
+
+    handle = meta.get("compute_handle")
+    stamp = {"at": datetime.now(UTC).isoformat(), "action": "claimed"}
+    claimed = conn.execute(
+        """
+        UPDATE refs r
+           SET meta = meta || jsonb_build_object('detached_orphan_reaped', %s::jsonb)
+         WHERE r.ref_id = %s
+           AND r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'executor' = %s
+           AND NOT (r.meta ? 'detached_orphan_reaped')
+           AND NOT (r.meta ? 'detached_orphan_skipped')
+           AND r.meta->>'compute_handle_released' IS DISTINCT FROM 'true'
+           AND r.meta->'compute_handle' = %s::jsonb
+           AND r.meta->'params'->>'target_node' = %s
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = 'STATUS' AND t.value = ANY(%s)
+                    AND (NOT %s OR
+                         rt.created_at < now() - make_interval(secs => %s))
+               )
+         RETURNING r.ref_id, r.meta ? 'finished_at'
+        """,
+        (
+            Jsonb(stamp),
+            ref_id,
+            _EXECUTOR_NAME,
+            Jsonb(handle),
+            node,
+            list(_TERMINAL),
+            require_grace,
+            _ORPHAN_REAP_GRACE_S,
+        ),
+    ).fetchone()
+    if claimed is None:
+        return False
+
+    reason = _detached_identity_reason(handle)
+    spec = get_job_type(str(meta.get("job_type") or ""))
+    if reason is None and not _detached_group_alive(handle):
+        reason = "group-unavailable"
+    if reason is None and (spec is None or spec.kill is None):
+        reason = "no-kill-hook"
+    if reason is None:
+        assert spec is not None and spec.kill is not None
+        ctx = replace(
+            _build_dispatch_context(store, ref_id, title, meta),
+            completion_stamped=bool(claimed[1]),
+        )
+        try:
+            spec.kill(ctx, handle)
+        except Exception:  # pragma: no cover — defensive
+            reason = "kill-raised"
+            log.warning("ssh_node: orphan kill of job %d raised", ref_id, exc_info=True)
+        else:
+            if spec.reap is not None:
+                try:
+                    spec.reap(ctx, handle)
+                except Exception:  # pragma: no cover — defensive
+                    log.warning(
+                        "ssh_node: orphan reap of job %d raised", ref_id, exc_info=True
+                    )
+    if reason is not None:
+        conn.execute(
+            "UPDATE refs SET meta = (meta - 'detached_orphan_reaped') || "
+            "jsonb_build_object('detached_orphan_skipped', %s::jsonb) WHERE ref_id = %s",
+            (Jsonb({"at": datetime.now(UTC).isoformat(), "reason": reason}), ref_id),
+        )
+        summary = f"runner: skipped orphaned detached compute — {reason}"
+    else:
+        _set_meta(
+            conn,
+            ref_id,
+            detached_orphan_reaped={
+                "at": datetime.now(UTC).isoformat(),
+                "action": "killed",
+            },
+            compute_handle_released=True,
+        )
+        store.add_tag(
+            ref_id, Tag.open("reaped:detached-orphan"), set_by="system", conn=conn
+        )
+        summary = "runner: reaped orphaned detached compute of terminal job — killed"
+    _append_chunk(store, ref_id, _JOB_EVENT_KIND, summary, conn=conn)
+    return True
+
+
+def _reap_detached_orphans(
+    store: Store, node: str | None, *, limit: int = _ORPHAN_REAP_LIMIT
+) -> int:
+    """Backstop external terminalizations; legacy/released handles are excluded.
+
+    No kill or scratch cleanup without matching boot ID and process start
+    ticks. Each conditional claim and its final stamp share a transaction.
+    """
+    reaped = 0
+    for ref_id, title, meta in _orphaned_detached_jobs(store, node, limit=limit):
+        with store.pool.connection() as conn:
+            reaped += _reap_detached_job(store, conn, ref_id, title, meta, node=node)
+            conn.commit()
+    return reaped
+
 
 def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     """Process up to ``limit`` ssh_node jobs.
@@ -228,6 +463,13 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
         # False (still running) is a no-op this tick — the lease was
         # already renewed inside _poll_one.
 
+    # 0.5) Reap detached computes left orphaned by terminalization paths
+    # that skipped spec.kill (gr520866: the poison-guard fail below, the
+    # sweeper's dead-node/off-lane transitions, a direct STATUS tag) —
+    # before claiming anything new, so freed memory/GPU is back before
+    # the next submit.
+    _reap_detached_orphans(store, node)
+
     poisoned = 0
     to_run: list[tuple[int, str, dict[str, Any]]] = []
     with store.pool.connection() as conn:
@@ -261,6 +503,21 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             # `struct_relax`-style harvest reading `failure_class` must
             # not treat it as a rule-out.
             if _poison_guard(store, conn, ref_id, meta):
+                if (
+                    node is not None
+                    and (meta.get("params") or {}).get("target_node") == node
+                    and meta.get("compute_handle")
+                    and not meta.get("compute_handle_released")
+                ):
+                    _reap_detached_job(
+                        store,
+                        conn,
+                        ref_id,
+                        title,
+                        meta,
+                        node=node,
+                        require_grace=False,
+                    )
                 poisoned += 1
                 continue
             spec = get_job_type(str(meta.get("job_type") or ""))
@@ -393,6 +650,33 @@ def _polling_jobs(
     return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
 
 
+def _legacy_deadline_owned(conn: Any, ctx: DispatchContext, handle: Any) -> bool:
+    """Lock and recheck ownership after this pass's legacy-child poll."""
+    from psycopg.types.json import Jsonb
+
+    node = os.environ.get("PRECIS_NODE")
+    if node is None:
+        return False
+    row = conn.execute(
+        """
+        SELECT r.ref_id FROM refs r
+         WHERE r.ref_id = %s AND r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'executor' = %s
+           AND r.meta->'params'->>'target_node' = %s
+           AND r.meta->'compute_handle' = %s::jsonb
+           AND r.meta->>'compute_handle_released' IS DISTINCT FROM 'true'
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = 'STATUS' AND t.value = %s
+               )
+         FOR UPDATE OF r
+        """,
+        (ctx.ref_id, _EXECUTOR_NAME, node, Jsonb(handle), _RUNNING),
+    ).fetchone()
+    return row is not None
+
+
 def _kill_and_terminalize(
     ctx: DispatchContext,
     handle: Any,
@@ -401,6 +685,7 @@ def _kill_and_terminalize(
     swept_tag: str,
     summary: str,
     failure_class: str | None = None,
+    polled_alive: bool = False,
 ) -> None:
     """Shared terminalize-via-kill path for both the wall-clock deadline and
     the §B-2 operator ``kill_requested`` backstop: call the job_type's
@@ -415,23 +700,42 @@ def _kill_and_terminalize(
 
     ``failure_class`` (optional) is stamped on ``meta.failure_class`` with
     ``summary`` as ``meta.error``, so a deadline kill (``"timeout"``) can be
-    counted from meta without reading each job's event log."""
-    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
-    if spec.kill is not None:
-        try:
-            spec.kill(ctx, handle)
-        except Exception:  # pragma: no cover — defensive
-            log.warning(
-                "ssh_node: kill(handle=%r) of job %d raised",
-                handle,
-                ref_id,
-                exc_info=True,
-            )
+    counted from meta without reading each job's event log. ``polled_alive``
+    is same-call evidence for the legacy deadline exception only: it still
+    requires a locked running row owned by this node."""
     from precis.store import Tag
     from precis.utils.job_bubble import bubble_job_failure
 
-    gpu_reset = _maybe_reset_gpu_after_kill(meta)
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
+    released = False
+    # Opaque handles belong to other plugins' own kill protocols. Every
+    # dict must validate the actual pgid before any process kill.
+    process_handle = isinstance(handle, dict)
+    skip_reason = _detached_identity_reason(handle) if process_handle else None
     with store.pool.connection() as conn:
+        if (
+            skip_reason == "missing-identity"
+            and swept_tag in {"wall-timeout", "deadline"}
+            and polled_alive
+            and _legacy_deadline_owned(conn, ctx, handle)
+        ):
+            # This fact is local to _poll_one's current call, never persisted
+            # in meta or accepted by the terminal-orphan/poison/operator paths.
+            skip_reason = None
+        if process_handle and skip_reason is None and not _detached_group_alive(handle):
+            skip_reason = "group-unavailable"
+        if skip_reason is None and spec.kill is not None:
+            try:
+                spec.kill(ctx, handle)
+                released = True
+            except Exception:  # pragma: no cover — defensive
+                log.warning(
+                    "ssh_node: kill(handle=%r) of job %d raised",
+                    handle,
+                    ref_id,
+                    exc_info=True,
+                )
+        gpu_reset = _maybe_reset_gpu_after_kill(meta) if released else None
         _append_chunk(store, ref_id, _JOB_EVENT_KIND, summary, conn=conn)
         store.add_tag(
             ref_id,
@@ -439,6 +743,17 @@ def _kill_and_terminalize(
             set_by="system",
             conn=conn,
         )
+        if skip_reason is not None:
+            _set_meta(
+                conn,
+                ref_id,
+                detached_orphan_skipped={
+                    "at": datetime.now(UTC).isoformat(),
+                    "reason": skip_reason,
+                },
+            )
+        if released:
+            _set_meta(conn, ref_id, compute_handle_released=True)
         if gpu_reset is not None:
             _set_meta(conn, ref_id, kill_gpu_reset=gpu_reset)
         if failure_class is not None:
@@ -446,7 +761,7 @@ def _kill_and_terminalize(
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     bubble_job_failure(store, ref_id)
-    if getattr(spec, "reap", None) is not None:
+    if released and getattr(spec, "reap", None) is not None:
         try:
             spec.reap(ctx, handle)
         except Exception:  # pragma: no cover — defensive
@@ -515,12 +830,25 @@ def _poll_one(ctx: DispatchContext) -> bool:
     # §H piece 2: a never-completing ``poll`` would otherwise renew the
     # lease forever below — with the sweeper's wall-clock retirement (§H
     # piece 6) there is no OTHER termination path for a detached submit/
-    # poll job_type. Past ``meta.deadline``, stop polling and terminalize
-    # here instead — give the plugin a chance to actually stop the remote
+    # poll job_type. Past ``meta.deadline``, terminalize here (legacy
+    # process handles first need a fresh live poll) — let the plugin stop the
     # compute first (``spec.kill``, optional; mirrors ``claude_docker``'s
     # own wall-clock deadline kill in ``_poll_job``).
     deadline = meta.get("deadline")
     if deadline is not None and time.time() > float(deadline):
+        polled_alive = False
+        node = os.environ.get("PRECIS_NODE")
+        if (
+            _detached_identity_reason(handle) == "missing-identity"
+            and node is not None
+            and (meta.get("params") or {}).get("target_node") == node
+        ):
+            # Legacy handles already running at deploy have no identity.
+            # Only a fresh owning-executor poll may authorize their deadline
+            # kill; a terminal poll finishes normally and needs no kill.
+            if spec.poll(ctx, handle):
+                return True
+            polled_alive = _detached_group_alive(handle)
         _kill_and_terminalize(
             ctx,
             handle,
@@ -528,6 +856,7 @@ def _poll_one(ctx: DispatchContext) -> bool:
             swept_tag="wall-timeout",
             summary=f"runner: killed at wall-clock deadline (handle {handle!r})",
             failure_class="timeout",
+            polled_alive=polled_alive,
         )
         return True
 
