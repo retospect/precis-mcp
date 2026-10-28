@@ -129,6 +129,7 @@ from precis.cad.scene import (
 )
 from precis.design import scenarios as design_scenarios
 from precis.errors import BadInput, NotFound
+from precis.provenance import refs as prov_refs
 from precis.store.types import ChunkInsert
 from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
 from precis.utils.md_parse import _normalize_segment
@@ -2508,6 +2509,16 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
                 f"import_workspace: 'files' {where} does not compile — {detail}",
                 next="fix the script and re-upload — the folder syncs verbatim source",
             ) from exc
+    # gr514049 layer 2: a ``# <handle>`` annotation whose handle does not
+    # resolve is flagged in the echo — warn, never refuse (a workspace
+    # legitimately cites refs another session will mint or the author
+    # re-keys). The flag names file:line and drops nothing.
+    ref_lint: list[str] = []
+    for rel, text in (files or {}).items():
+        if not rel.endswith(".py"):
+            continue
+        for issue in prov_refs.lint_references(text, resolve=store.resolve_handle):
+            ref_lint.append(f"{rel}:{issue.lineno} {issue.handle} ({issue.reason})")
     dry_run = bool(op.get("dry_run"))
     target = str(op.get("target") or "design").strip()
     if target not in ("design", "fork"):
@@ -2589,6 +2600,13 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
     parts = [head]
     if files_echo is not None:
         parts.append(files_echo)
+    if ref_lint:
+        shown = ref_lint[:8]
+        more = f" +{len(ref_lint) - len(shown)} more" if len(ref_lint) > 8 else ""
+        parts.append(
+            f"ref-lint: {len(ref_lint)} unresolved db handle(s) in workspace "
+            f"code — {', '.join(shown)}{more}"
+        )
     parts.append(result.echo())
     parts.append(
         f"Next: get(kind='se', id={result.design_slug!r}, view='tree')"

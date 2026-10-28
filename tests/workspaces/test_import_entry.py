@@ -199,6 +199,28 @@ def test_files_py_null_byte_refuses(store: Store) -> None:
     assert persist.load_tree(store, se_ref.id).blocks == {}
 
 
+def test_files_ref_lint_flags_unresolved_handles(store: Store) -> None:
+    """gr514049 layer 2: a ``# <handle>`` annotation that does not
+    resolve is flagged in the import echo — warn, not refuse."""
+    se = _se(store)
+    _design(se)
+    paper = store.insert_ref(kind="paper", slug="lintp20", title="t", meta={})
+    ok = f"pa{paper.id}"
+    resp = se.edit(
+        id="ws-op",
+        ops=[
+            _op(
+                files={
+                    "main.py": f"x = 1  # {ok} (fine)\ny = 2  # pa999999999\n",
+                }
+            )
+        ],
+    )
+    assert "ref-lint: 1 unresolved db handle(s)" in resp.body
+    assert "main.py:2 pa999999999" in resp.body
+    assert ok not in resp.body.split("ref-lint:")[-1]
+
+
 def test_dry_run_reports_sha_verification(store: Store) -> None:
     """gr517643: the dry run shares the import path, so it reports the
     same sha256 verification line."""

@@ -283,12 +283,20 @@ why — short enough that the code still reads as code. A citation into a
 chunk of a document uses the `~` selector form (`pa481516~chunk3`,
 `ds:<slug>~p<n>`).
 
-The lint that checks the handles still resolve and the export pass that
-expands each into a self-contained citation (title / part number / DOI /
-page + a short verbatim excerpt, inline or a REFERENCES block — a reader
-without this DB can check it) are later slices; the convention stands on
-the handles alone today (gr514049). Generators that emit workspace code
-(an EasyEDA → script rewrite) write the same convention.
+A `# <handle>` comment is an annotation only when the handle is the
+comment's **first** token (`# see gr513665 for history` is prose, and
+external forms like `# lcsc:C6186`/`# ds:<slug>` are never handles —
+they stay prose). The import op lints every `.py` file it syncs:
+`import_workspace` echoes `ref-lint:` with `file:line` for every
+handle that does not resolve — a warning, never a refusal. On export,
+`expand_references` (`precis.provenance.refs`) rewrites each resolved
+handle to a self-contained citation (title / part number / DOI / page
++ a capped verbatim excerpt) as `#|` inline details, a `REFERENCES`
+comment block, or a `REFERENCES.md` sidecar; internal handles (gr, td,
+me, …) become `(internal ref, not exported)` so no internal id leaks,
+and `strip_references` reverses the pass on import (gr514049).
+Generators that emit workspace code (an EasyEDA → script rewrite)
+write the same convention.
 
 ## Import a run — the `import_workspace` op
 

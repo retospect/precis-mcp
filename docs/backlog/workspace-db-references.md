@@ -184,11 +184,17 @@ excerpts.
   or a separate command (warn only)?
 - Internal handles (gr, td, fi of a private design) in a public export:
   replace by a placeholder (proposed) or refuse the export?
-- v1 strictness: is "comment content is only handles" too narrow for the
-  LLM, which will want to write a gloss from day one? (The extension
-  syntax exists for this; moving it into v1 costs a few lines in slice 1.)
-- The layer-1 convention that already shipped (829d68a10, live in r107)
-  writes `# <handle> (<why>)` — a handle inside free text — which this
-  spec's v1 grammar explicitly does not parse. Either slice 1 accepts the
-  shipped form (handle anywhere, rest of comment = gloss) or the landed
-  skill text is tightened to handles-only; decide before the parser.
+- DECIDED (handle-lint branch): the parser accepts the shipped form —
+  a comment is an annotation iff its **first** token is a handle; the
+  rest is gloss. `# see gr513665 …` stays prose; `# lcsc:`/`# ds:` are
+  not handles. Unknown handle-shaped codes are annotations (a typo
+  must flag, not pass silently). Implemented in
+  `src/precis/provenance/refs.py`.
+- May verbatim chunk text of copyrighted papers leave the instance in
+  an export, or is citation-only the default? (Shipped: excerpts on,
+  `include_excerpts=False` switch exists — question stays open.)
+- Should the lint refuse, or warn? (Shipped: warn in the
+  `import_workspace` echo.)
+- Wiring (slice 5) still blocks on the se/pcb code-export paths —
+  `tree_to_json` carries no workspaces section yet and pcb has no
+  design export.
