@@ -55,6 +55,7 @@ import errno
 import re
 import shutil
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -175,9 +176,27 @@ def _git_tracked_files(root: Path) -> list[Path] | None:
     """
     if not root.is_relative_to(_REPO_ROOT) or not (_REPO_ROOT / ".git").exists():
         return None
+    # Linked worktrees in the gate container: /app/.git is a FILE naming a host
+    # gitdir that may be pruned or refused (safe.directory/uid). Probe first so
+    # an unreadable gitdir falls back to the walk instead of going red (gr525065).
+    probe = subprocess.run(
+        ["git", "-C", str(root), "-c", "safe.directory=*", "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if probe.returncode != 0:
+        warnings.warn(
+            f"git gitdir unreadable under {root} (rev-parse exit "
+            f"{probe.returncode}: {probe.stderr.strip()[:200]}); "
+            "falling back to filesystem walk",
+            stacklevel=2,
+        )
+        return None
     try:
         out = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
+            ["git", "-C", str(root), "-c", "safe.directory=*", "ls-files", "-z"],
             check=True,
             capture_output=True,
             text=True,
@@ -414,6 +433,21 @@ def test_only_tracked_files_reach_the_gate(
     subprocess.run(["git", "-C", str(tmp_path), "add", "scratch.txt"], check=True)
     hits = _scan(tmp_path, _FORBIDDEN_ANYWHERE)
     assert hits == [f"scratch.txt:1: tailscale ip (CGNAT) → ip {tailnet}"]
+
+
+def test_unreadable_gitdir_falls_back_to_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr525065: a linked-worktree ``.git`` file naming a missing gitdir makes
+    git exit 128; the listing warns and falls back instead of raising."""
+    if shutil.which("git") is None:
+        pytest.skip("git not on PATH")
+    (tmp_path / ".git").write_text(
+        f"gitdir: {tmp_path / 'no-such-gitdir'}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(f"{__name__}._REPO_ROOT", tmp_path)
+    with pytest.warns(UserWarning, match="gitdir unreadable"):
+        assert _git_tracked_files(tmp_path) is None
 
 
 _ENFILE = OSError(errno.ENFILE, "Too many open files in system")
