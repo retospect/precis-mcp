@@ -11,9 +11,15 @@
 at_label=${at_label:?set at_label before sourcing agent-tree.sh}
 
 at_init() {
-	at_root=$(git rev-parse --path-format=absolute --git-common-dir)
+	at_here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)  # the scripts dir
+	# git wins (a launcher run from inside a worktree must still target the
+	# main checkout's .claude/worktrees); outside any repo — the test gate
+	# copies the tree without .git — fall back to the checkout root (the
+	# scripts dir's parent) so argument validation and --dry-run stay
+	# repo-independent (gr531394).
+	at_root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || at_root=""
 	at_root=${at_root%/.git}
-	at_here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+	[[ -n $at_root ]] || at_root=$(cd "$at_here/.." && pwd -P)
 }
 
 at_check_name() {

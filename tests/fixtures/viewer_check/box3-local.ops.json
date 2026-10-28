@@ -1,0 +1,30 @@
+{
+ "cad": {
+  "box3-local-body": "# box3-local-body — hollow shell, four cored bosses, two gusset ribs\n# (viewer_check `meshes` fixture: a box3-shaped realized enclosure)\ncomponent shell\nwall   add box:w200mmd150mmh100mm\ncavity cut box:w190mmd140mmh96mm @0mm,0mm,4mm\ncomponent boss-1\nbody1  add cyl:r8mmh90mm @85mm,60mm,-5mm\ncore1  cut cyl:r2.5mmh100mm @85mm,60mm,-5mm\ncomponent boss-2\nbody2  add cyl:r8mmh90mm @-85mm,60mm,-5mm\ncore2  cut cyl:r2.5mmh100mm @-85mm,60mm,-5mm\ncomponent boss-3\nbody3  add cyl:r8mmh90mm @85mm,-60mm,-5mm\ncore3  cut cyl:r2.5mmh100mm @85mm,-60mm,-5mm\ncomponent boss-4\nbody4  add cyl:r8mmh90mm @-85mm,-60mm,-5mm\ncore4  cut cyl:r2.5mmh100mm @-85mm,-60mm,-5mm\ncomponent gusset-1\nrib1   add box:w40mmd10mmh30mm @0mm,65mm,-35mm\ncomponent gusset-2\nrib2   add box:w40mmd10mmh30mm @0mm,-65mm,-35mm\n"
+ },
+ "ops": [
+  {
+   "op": "add_block",
+   "name": "enclosure",
+   "envelope": "box:w0.2d0.15h0.1",
+   "pose": "[0.0 0.0 0.05] m",
+   "desc": "box3-shaped realized enclosure: hollow shell, four cored bosses, two gussets (viewer meshes fixture).",
+   "use": "realized-rung mesh render check"
+  },
+  {
+   "op": "set_binding",
+   "block": "enclosure",
+   "kind": "cad",
+   "design": "box3-local-body"
+  },
+  {
+   "op": "add_block",
+   "name": "lid",
+   "parent": "enclosure",
+   "pose": "[0.0 0.0 0.055] m",
+   "envelope": "box:w0.2d0.15h0.01",
+   "desc": "Cover plate, UNBOUND on purpose: the meshes-on render must keep it as a plain envelope (fallback witness).",
+   "use": "envelope-fallback witness under the meshes toggle"
+  }
+ ]
+}

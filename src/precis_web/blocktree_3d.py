@@ -71,6 +71,23 @@ raises rather than emit a corrupt path.
 **Known simplifications** (this module's own honesty-header entries,
 alongside the SVG projector's convex-hull-for-concave-envelopes one):
 
+* **Realized meshes are coarse.** With the viewer's mesh toggle on,
+  a block whose governing level is ``realized`` draws its realized
+  geometry (the caller's ``realized_meshes`` — for se, the bound cad
+  design's per-component meshes) instead of its envelope, as one leaf
+  per component under the block's node (the assembly tree's
+  boss/gusset/core rows). The mesh is a coarse-pitch field extraction
+  (or the analytic tessellation for sharp designs), posed by the
+  block's own pose/rot exactly like :func:`world_mesh` poses an
+  envelope — a READING aid, never the export mesh. A container block's
+  realized self-geometry becomes a ``<name> (realized)`` group in
+  place of the ``(envelope)`` self-leaf and joins
+  ``container_paths``, so the client's translucent-container default
+  covers it (a realized enclosure is exactly the opaque box that would
+  otherwise hide its children). A block with no realized geometry
+  keeps its envelope at every rung — the envelope is the fallback, not
+  an error.
+
 * **Face picking granularity.** :func:`group_planar_faces` reconstructs
   coarse analytic faces from the flat triangle soup ``mesh_config``
   returns by merging edge-adjacent triangles whose flat normals agree —
@@ -117,7 +134,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -142,6 +159,20 @@ _FACE_ANGLE_EPS = 1e-4
 _FACE_COS_EPS = math.cos(_FACE_ANGLE_EPS)
 
 Vec3f = tuple[float, float, float]
+
+#: One block's realized geometry, component by component:
+#: ``(component label, LOCAL-frame verts, tris)`` per entry — the same
+#: local frame :func:`world_mesh`'s envelope verts come in, so the scene
+#: builder poses and display-scales both identically. ``None`` = no
+#: realized geometry (an unrealized block, a dangling binding, a mesh
+#: failure) — the caller draws the envelope instead (honest absence,
+#: same convention as :func:`world_mesh`). Kind-agnostic on purpose,
+#: like ``EffectiveEnvelopeFn``: the se adapter supplies the bound-cad
+#: loader, this module never reaches for the DB.
+RealizedMeshFn = Callable[
+    [Tree[BlockNode, Connect], BlockNode],
+    "list[tuple[str, NDArray[np.float64], NDArray[np.int64]]] | None",
+]
 
 
 def _as_vec3f(v: list[float]) -> Vec3f:
@@ -478,6 +509,33 @@ def _shape_leaf(
 _SHAPE_COLOUR = "#8a9bb0"
 _BOX_COLOUR = "#cbd5e1"
 
+
+def _realized_leaves(
+    parent_path: str,
+    block_name: str,
+    meshes: list[tuple[str, NDArray[np.float64], NDArray[np.int64]]],
+    xf: Any,
+    scale: float,
+    uid: int,
+) -> list[dict[str, Any]]:
+    """One solid leaf per realized component, posed and display-scaled
+    exactly like the block's envelope mesh (:func:`world_mesh` + the
+    caller's ``scale``). Each leaf carries the block's ``uid`` (so
+    revision tinting, picking and the topology correspondence keep
+    resolving it to the block) plus a ``"block"`` field naming the
+    owning block — the leaf's own ``name`` is the COMPONENT's, and the
+    client's select/argue glue needs the block's."""
+    leaves: list[dict[str, Any]] = []
+    for comp, verts, tris in meshes:
+        world = apply_rigid(xf, verts) * scale
+        leaf = _shape_leaf(
+            _child_path(parent_path, comp), comp, (world, tris), _SHAPE_COLOUR, uid
+        )
+        leaf["block"] = block_name
+        leaves.append(leaf)
+    return leaves
+
+
 #: The revision scrubber's "this block changed at N" tint
 #: (the design-workbench build, slice 2 (2026-09-18)) — amber, the same hue the
 #: structure page's hover-highlight halo uses, so "changed" reads the same
@@ -525,6 +583,8 @@ def build_shapes_node(
     assembly: Assembly3D,
     seen: set[str] | None = None,
     scale: float = 1.0,
+    realized_meshes: RealizedMeshFn | None = None,
+    mesh_blocks: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Recursively build the ``Shapes`` node for ``name`` (module
     docstring: ``id`` is the "/"-join of ``name``s from the root, exactly
@@ -539,6 +599,14 @@ def build_shapes_node(
     ``scale`` (default ``1.0``, a no-op) is :func:`scene_scale`'s
     display-only multiplier (gr337751) — applied to every emitted
     vertex, never to anything read back off ``tree``.
+
+    ``realized_meshes``/``mesh_blocks`` (both or neither; ``None`` is
+    today's envelope-only render) draw the realized rung:
+    ``mesh_blocks`` names the shown blocks whose governing ladder level
+    is ``realized`` (:attr:`~precis_web.blocktree_svg.VisiblePlan.level_of`
+    — computed once in :func:`build_scene`), and for those
+    ``realized_meshes(tree, node)`` replaces the envelope geometry with
+    per-component leaves (module docstring's "realized meshes" entry).
 
     ``seen`` guards against a stored parent cycle: ``plan_visibility``
     legitimately marks every node of a cyclic ``parent`` chain "shape"
@@ -589,15 +657,63 @@ def build_shapes_node(
     env = effective_envelope(tree, node)
     raw_mesh = world_mesh(env, node.pose, node.rot) if env else None
     mesh = (raw_mesh[0] * scale, raw_mesh[1]) if raw_mesh is not None else None
+    # Realized rung (module docstring's "realized meshes" entry): the
+    # caller's mesh fn answers this block's per-component realized
+    # geometry in its LOCAL frame; ``None`` (or an empty list) keeps the
+    # envelope — the fallback, never an error.
+    realized = None
+    if realized_meshes is not None and mesh_blocks is not None and name in mesh_blocks:
+        found = realized_meshes(tree, node)
+        if found:
+            realized = [(c, v, t) for c, v, t in found if len(t)] or None
+    xf = cad_pose(cad_as_vec3(list(node.pose)), cad_as_vec3(list(node.rot)))
 
     if not visible_kids:
+        if realized:
+            # The block's own node becomes a GROUP of its components —
+            # the assembly tree's boss/gusset/core rows (module
+            # docstring). The path is unchanged, so connectivity,
+            # explode and picking still address it as before.
+            assembly.primary_path[name] = own_path
+            return {
+                "version": 3,
+                "id": own_path,
+                "name": name,
+                "uid": block_uid,
+                "loc": None,
+                "parts": _realized_leaves(
+                    own_path, name, realized, xf, scale, block_uid
+                ),
+            }
         if mesh is None:
             return None
         assembly.primary_path[name] = own_path
         return _shape_leaf(own_path, name, mesh, _SHAPE_COLOUR, block_uid)
 
     parts: list[dict[str, Any]] = []
-    if mesh is not None:
+    if realized:
+        # The container's realized self-geometry: a ``<name> (realized)``
+        # group of component leaves where the ``(envelope)`` self-leaf
+        # would sit. The group path joins ``container_paths`` so the
+        # client's translucent-container default covers it (module
+        # docstring) — an opaque realized enclosure would hide the very
+        # children it contains.
+        self_name = f"{name} (realized)"
+        self_path = _child_path(own_path, self_name)
+        parts.append(
+            {
+                "version": 3,
+                "id": self_path,
+                "name": self_name,
+                "uid": block_uid,
+                "loc": None,
+                "parts": _realized_leaves(
+                    self_path, name, realized, xf, scale, block_uid
+                ),
+            }
+        )
+        assembly.container_paths.append(self_path)
+    elif mesh is not None:
         # A container leaf: this block has its own envelope AND visible
         # children, so it doubles its last path segment (module
         # docstring). The vendored assembly tree would otherwise show
@@ -625,6 +741,8 @@ def build_shapes_node(
             assembly,
             seen,
             scale=scale,
+            realized_meshes=realized_meshes,
+            mesh_blocks=mesh_blocks,
         )
         if child is not None:
             parts.append(child)
@@ -1124,15 +1242,21 @@ class TopoNode:
     #: (the ladder is measured from the root, so a depth-1 parent at
     #: ambient ``interfaces`` is a box, i.e. ``envelope``): ``"envelope"``
     #: if collapsed to a box, ``"interfaces"`` if it is a shape with a
-    #: collapsed child, else ``"refined"``. The chip underlines the
-    #: shallowest lettered rung at or above it.
+    #: collapsed child, else ``"refined"`` — or ``"realized"`` when the
+    #: meshes-on render draws (part of) its subtree from realized
+    #: geometry. The chip underlines the shallowest lettered rung at or
+    #: above it.
     level_active: str = "refined"
 
 
 def _level_active(
     name: str, plan: VisiblePlan, kids: dict[str, list[str]]
 ) -> Literal["envelope", "interfaces", "refined"]:
-    """The rung ``name`` is drawn at relative to itself in ``plan``."""
+    """The rung ``name`` is drawn at relative to itself in ``plan`` —
+    the envelope-only ladder. The realized rung is layered on in
+    :func:`topology_nodes`, which knows whether realized geometry is
+    actually being drawn (this function's three-way answer is the
+    correct fallback whenever it is not)."""
     if plan.shown.get(name) == "box":
         return "envelope"
     if any(plan.shown.get(k) == "box" for k in kids.get(name, [])):
@@ -1146,6 +1270,9 @@ def topology_nodes(
     uid_by_name: dict[str, int],
     kids: dict[str, list[str]],
     primary_path: dict[str, str],
+    *,
+    has_realized: Callable[[str], bool] | None = None,
+    mesh_blocks: set[str] | None = None,
 ) -> list[TopoNode]:
     """The visible blocks as :class:`TopoNode` rows, parent-linked.
 
@@ -1155,7 +1282,14 @@ def topology_nodes(
     assembly tree renders. Blocks with no uid, or with no rendered
     geometry (absent from ``primary_path`` — :func:`build_shapes_node`
     dropped them as undrawable), are omitted: the panel shows what the
-    viewer actually drew, never a node the user cannot select."""
+    viewer actually drew, never a node the user cannot select.
+
+    ``has_realized`` (block name -> it has realized geometry to draw)
+    drives the realized rung flag of :func:`level_rungs`; ``mesh_blocks``
+    names the blocks this render actually draws from realized meshes —
+    a shown block in ``mesh_blocks`` whose envelope-only rung would be
+    ``refined`` reports ``level_active="realized"``. Both default to the
+    meshes-off answers when absent."""
     parent_of = {k: p for p, ks in kids.items() for k in ks}
     out: list[TopoNode] = []
     for name in sorted(plan.shown):
@@ -1177,6 +1311,16 @@ def topology_nodes(
             mode = getattr(node, "mode", None)
             if mode:
                 detail.append(f"mode: {mode}")
+        rungs = level_rungs(name, kids, has_realized)
+        active: str = _level_active(name, plan, kids)
+        if (
+            active == "refined"
+            and mesh_blocks is not None
+            and name in mesh_blocks
+            and has_realized is not None
+            and has_realized(name)
+        ):
+            active = "realized"
         out.append(
             TopoNode(
                 id=f"B{uid}",
@@ -1185,8 +1329,8 @@ def topology_nodes(
                 parent=f"B{parent_uid}" if parent_uid is not None else None,
                 kind=plan.shown[name],
                 detail=detail,
-                level_rungs=level_rungs(name, kids),
-                level_active=_level_active(name, plan, kids),
+                level_rungs=rungs,
+                level_active=active,
             )
         )
     return out
@@ -1232,6 +1376,8 @@ def build_scene(
     root_name: str,
     label_fn: Any,
     colour_fn: Any,
+    realized_meshes: RealizedMeshFn | None = None,
+    has_realized: Callable[[str], bool] | None = None,
 ) -> Scene3D:
     """Assemble the whole round-2a bundle for one render pass — the
     ``Shapes`` tree (assembly + a ``connections`` sibling group carrying
@@ -1242,7 +1388,19 @@ def build_scene(
     :func:`_root_path`, never accepted as a separate argument — module
     docstring's id-mirrors-name invariant is a hard one, so there is
     deliberately no way for a caller to hand this function a root id that
-    disagrees with the root's own name."""
+    disagrees with the root's own name.
+
+    ``realized_meshes``/``has_realized`` (both or neither; the default
+    ``None`` pair is byte-identical to the meshes-off render): shown
+    blocks whose governing ladder level is ``realized`` are drawn from
+    the realized component meshes ``realized_meshes`` resolves
+    (:func:`build_shapes_node`), and the topology rows carry the
+    realized rung flag/active level (:func:`topology_nodes`)."""
+    mesh_blocks = (
+        {n for n in plan.shown if plan.level_of.get(n) == "realized"}
+        if realized_meshes is not None
+        else None
+    )
     root_id = _root_path(root_name)
     assembly = Assembly3D()
     parts: list[dict[str, Any]] = []
@@ -1265,6 +1423,8 @@ def build_scene(
             assembly,
             seen,
             scale=scale,
+            realized_meshes=realized_meshes,
+            mesh_blocks=mesh_blocks,
         )
         if node is not None:
             parts.append(node)
@@ -1329,7 +1489,15 @@ def build_scene(
     ):
         _edges_default_off(shapes)
     offsets = explode_offsets(tree, lines, assembly.primary_path, magnitude=0.3 * diag)
-    nodes = topology_nodes(tree, plan, uid_by_name, kids, assembly.primary_path)
+    nodes = topology_nodes(
+        tree,
+        plan,
+        uid_by_name,
+        kids,
+        assembly.primary_path,
+        has_realized=has_realized,
+        mesh_blocks=mesh_blocks,
+    )
     return Scene3D(
         shapes=shapes,
         connections=lines,

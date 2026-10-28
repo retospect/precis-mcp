@@ -165,6 +165,13 @@
     <input type="checkbox" id="bt3d-tool-volumes" />
     tool volumes
   </label>
+  {% if has_realized %}
+  <label class="flex items-center gap-1 text-xs text-fg-muted"
+         title="at the realized ladder rung (or a block's z chip), draw the bound cad design's realized component meshes instead of the envelope — coarse, server-cached; off draws envelopes everywhere, exactly as before">
+    <input type="checkbox" id="bt3d-meshes" />
+    meshes
+  </label>
+  {% endif %}
   {% endif %}
   <label class="flex items-center gap-1 text-xs text-fg-muted"
          title="the x/y/z orientation marker in the corner of the 3D view; PNG/SVG export includes it only while this is on">
@@ -409,6 +416,7 @@
     explodeButton: document.getElementById("bt3d-explode"),
     connectionsToggle: document.getElementById("bt3d-connections"),
     toolVolumesToggle: document.getElementById("bt3d-tool-volumes"),
+    meshesToggle: document.getElementById("bt3d-meshes"),
     axesToggle: document.getElementById("bt3d-axes"),
     containerModeSelect: document.getElementById("bt3d-container-mode"),
     levelSelect: document.getElementById("bt3d-level"),

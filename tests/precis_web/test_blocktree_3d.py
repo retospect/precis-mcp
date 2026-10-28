@@ -1179,3 +1179,186 @@ def test_build_scene_root_name_guard_rejects_a_slash() -> None:
             label_fn=lambda c: "tie",
             colour_fn=lambda c: "#16a34a",
         )
+
+
+# ── realized-rung meshes (se-3d-viewer) ──────────────────────────────────
+
+
+def _tetra(size: float = 0.01) -> tuple[np.ndarray, np.ndarray]:
+    s = size
+    verts = np.array([[0, 0, 0], [s, 0, 0], [0, s, 0], [0, 0, s]], dtype=np.float64)
+    tris = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int64)
+    return verts, tris
+
+
+def _mesh_tree() -> Tree[BlockNode, Connect]:
+    """encl (container, cad-bound in spirit) + its unbound child lid."""
+    return _tree(
+        encl=BlockNode(name="encl", pose=[0, 0, 0], envelope="box:w0.2d0.15h0.1"),
+        lid=BlockNode(
+            name="lid",
+            parent="encl",
+            pose=[0, 0, 0.06],
+            envelope="box:w0.2d0.15h0.01",
+        ),
+    )
+
+
+def _fake_meshes(calls: list[str], *, fail: bool = False):
+    def fn(tree: Tree[BlockNode, Connect], node: BlockNode):
+        calls.append(node.name)
+        if fail or node.name != "encl":
+            return None
+        v, t = _tetra()
+        return [("shell", v, t), ("boss-1", v, t)]
+
+    return fn
+
+
+def _mesh_scene(
+    tree: Tree[BlockNode, Connect],
+    level: str,
+    *,
+    meshes: Any = None,
+    has_realized: Any = None,
+    overrides: dict[str, str] | None = None,
+):
+    kids = children_map(tree)
+    plan = plan_visibility(
+        tree, kids, level=level, isolate=None, level_overrides=overrides
+    )
+    return build_scene(
+        tree,
+        _effective_envelope,
+        kids,
+        plan,
+        {"encl": 1, "lid": 2},
+        root_name="x",
+        label_fn=lambda c: "tie",
+        colour_fn=lambda c: "#16a34a",
+        realized_meshes=meshes,
+        has_realized=has_realized,
+    )
+
+
+def _leaf_paths(node: dict) -> list[str]:
+    if "shape" in node:
+        return [node["id"]]
+    return [p for part in node.get("parts", []) for p in _leaf_paths(part)]
+
+
+def test_realized_leaf_block_renders_a_component_group() -> None:
+    tree = _tree(
+        encl=BlockNode(name="encl", pose=[0, 0, 0], envelope="box:w0.2d0.15h0.1")
+    )
+    calls: list[str] = []
+    scene = _mesh_scene(
+        tree,
+        "realized",
+        meshes=_fake_meshes(calls),
+        has_realized=lambda n: True,
+    )
+    assert calls == ["encl"]
+    group = scene.shapes["parts"][0]
+    assert group["id"] == "/x/encl" and group["name"] == "encl"
+    assert group["uid"] == 1
+    leaves = {p["id"]: p for p in group["parts"]}
+    assert set(leaves) == {"/x/encl/shell", "/x/encl/boss-1"}
+    for leaf in leaves.values():
+        # Every component leaf joins back to the BLOCK: uid for the
+        # topology/tint correspondence, `block` for the client's argue
+        # handle (the leaf's own name is the component's).
+        assert leaf["uid"] == 1 and leaf["block"] == "encl"
+        assert leaf["type"] == "shapes"
+    node = next(n for n in scene.nodes if n.name == "encl")
+    assert node.path == "/x/encl"
+    assert node.level_active == "realized"
+    assert node.level_rungs == [True, False, False, True]
+
+
+def test_meshes_off_is_byte_identical_to_the_envelope_render() -> None:
+    tree = _mesh_tree()
+    off = _mesh_scene(tree, "realized")
+    refined = _mesh_scene(tree, "refined")
+    assert off.shapes == refined.shapes
+    assert [(n.name, n.level_active, n.level_rungs) for n in off.nodes] == [
+        (n.name, n.level_active, n.level_rungs) for n in refined.nodes
+    ]
+
+
+def test_realized_container_self_geometry_joins_container_paths() -> None:
+    tree = _mesh_tree()
+    scene = _mesh_scene(
+        tree,
+        "realized",
+        meshes=_fake_meshes([]),
+        has_realized=lambda n: n == "encl",
+    )
+    group = next(p for p in scene.shapes["parts"] if p["id"] == "/x/encl")
+    self_group = next(p for p in group["parts"] if p["id"] == "/x/encl/encl (realized)")
+    assert self_group["name"] == "encl (realized)"
+    assert {p["name"] for p in self_group["parts"]} == {"shell", "boss-1"}
+    # The client's translucent-container default covers the group (the
+    # standing 0.25 ruling): an opaque realized enclosure would hide its
+    # own children.
+    assert scene.container_paths == ["/x/encl/encl (realized)"]
+    # The unbound child keeps its envelope leaf — the fallback, never an
+    # error.
+    lid = next(p for p in group["parts"] if p["id"] == "/x/encl/lid")
+    assert lid["type"] == "shapes" and "shape" in lid
+    by_name = {n.name: n for n in scene.nodes}
+    assert by_name["encl"].level_active == "realized"
+    assert by_name["encl"].level_rungs[3] is True
+    assert by_name["lid"].level_active == "refined"
+    assert by_name["lid"].level_rungs[3] is False
+
+
+def test_realized_mesh_fn_none_keeps_the_envelope() -> None:
+    tree = _tree(
+        encl=BlockNode(name="encl", pose=[0, 0, 0], envelope="box:w0.2d0.15h0.1")
+    )
+    scene = _mesh_scene(
+        tree,
+        "realized",
+        meshes=_fake_meshes([], fail=True),
+        has_realized=lambda n: True,
+    )
+    leaf = scene.shapes["parts"][0]
+    assert leaf["id"] == "/x/encl" and leaf["type"] == "shapes"
+    assert "shape" in leaf and not leaf.get("parts")
+
+
+def test_mesh_fn_is_only_called_at_the_realized_rung() -> None:
+    tree = _mesh_tree()
+    calls: list[str] = []
+    scene = _mesh_scene(
+        tree,
+        "refined",
+        meshes=_fake_meshes(calls),
+        has_realized=lambda n: True,
+    )
+    # governing level is refined everywhere: the realized rung is not in
+    # the plan, so no block meshes — byte-identical to meshes off.
+    assert calls == []
+    assert scene.shapes == _mesh_scene(tree, "refined").shapes
+    assert all(n.level_active == "refined" for n in scene.nodes)
+
+
+def test_z_override_meshes_one_subtree_under_an_envelope_ambient() -> None:
+    tree = _mesh_tree()
+    calls: list[str] = []
+    scene = _mesh_scene(
+        tree,
+        "envelope",
+        meshes=_fake_meshes(calls),
+        has_realized=lambda n: n == "encl",  # the predicate is binding-aware
+        overrides={"encl": "realized"},
+    )
+    assert calls == ["encl", "lid"]  # lid's fn answers None (unbound)
+    group = next(p for p in scene.shapes["parts"] if p["id"] == "/x/encl")
+    assert any(p["id"] == "/x/encl/encl (realized)" for p in group["parts"])
+    by_name = {n.name: n for n in scene.nodes}
+    assert by_name["encl"].level_active == "realized"
+    # lid follows the override's re-rooted ladder (refined-shaped), and
+    # with no realized geometry of its own stays at the envelope fallback.
+    assert by_name["lid"].level_active == "refined"

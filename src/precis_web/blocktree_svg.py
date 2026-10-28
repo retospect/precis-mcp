@@ -221,30 +221,41 @@ class VisiblePlan:
 
     shown: dict[str, Literal["shape", "box"]] = field(default_factory=dict)
     render_roots: list[str] = field(default_factory=list)
+    #: The ladder level that governs each shown node (the ambient level, or
+    #: the nearest per-subtree override on its ancestor chain — the override
+    #: re-roots the ladder there). 'refined' and 'realized' collapse
+    #: identically, so the 2D/SVG readers never needed this; the 3D
+    #: viewer's realized-mesh rung does (a block draws its realized mesh
+    #: only when its governing level IS 'realized').
+    level_of: dict[str, str] = field(default_factory=dict)
 
 
 def _resolve_level_overrides(
     tree: Tree[BlockNode, Connect],
     roots: list[str],
     level_overrides: dict[str, str] | None,
-) -> tuple[dict[str, int | None], set[str]]:
-    """``(cutoffs, force_open)`` for the reachable overrides: ``cutoffs``
+) -> tuple[dict[str, int | None], set[str], dict[str, str]]:
+    """``(cutoffs, force_open, level_names)`` for the reachable overrides: ``cutoffs``
     maps an override's block name to its OWN collapse depth (validating
     the level name in the process — an unknown level still raises, same
     as an ambient ``level``); ``force_open`` is every STRICT ancestor
     (render root exclusive... inclusive of the root, see below) on the
     path from an override target up to its render root — these must
     never collapse, or the override target behind them would be
-    unreachable (module docstring). An override whose name isn't in
+    unreachable (module docstring). ``level_names`` keeps the override's
+    level NAME beside its cutoff (:attr:`VisiblePlan.level_of` — the
+    cutoff alone cannot tell 'refined' from 'realized', which collapse
+    identically). An override whose name isn't in
     ``tree.blocks``, or whose ancestor chain runs off the top without
     ever reaching one of ``roots`` (outside the current isolate subtree,
     or a stored cycle), is dropped rather than raised — see the module
     docstring's "silently inert" convention."""
     if not level_overrides:
-        return {}, set()
+        return {}, set(), {}
     roots_set = set(roots)
     cutoffs: dict[str, int | None] = {}
     force_open: set[str] = set()
+    level_names: dict[str, str] = {}
     for name, lvl in level_overrides.items():
         if name not in tree.blocks:
             continue
@@ -265,8 +276,9 @@ def _resolve_level_overrides(
         if not reached:
             continue
         cutoffs[name] = collapse_depth(lvl)  # raises on an unknown level
+        level_names[name] = lvl
         force_open.update(chain[1:])  # strict ancestors only
-    return cutoffs, force_open
+    return cutoffs, force_open, level_names
 
 
 def plan_visibility(
@@ -284,10 +296,11 @@ def plan_visibility(
         raise KeyError(isolate)
     default_cutoff = collapse_depth(level)
     roots = [isolate] if isolate is not None else root_names(tree)
-    override_cutoffs, force_open = _resolve_level_overrides(
+    override_cutoffs, force_open, override_levels = _resolve_level_overrides(
         tree, roots, level_overrides
     )
     shown: dict[str, Literal["shape", "box"]] = {}
+    level_of: dict[str, str] = {}
     #: The render path runs BEFORE ``adapter.validate`` (which is where a
     #: stored parent-cycle would normally surface as a finding), so a
     #: cycle must not hang this walk — a block can only ever have one
@@ -296,13 +309,15 @@ def plan_visibility(
     #: :func:`group_of`'s own ``seen`` guard).
     visited: set[str] = set()
 
-    def walk(name: str, depth: int, cutoff: int | None) -> None:
+    def walk(name: str, depth: int, cutoff: int | None, lvl: str) -> None:
         if name in visited:
             return
         visited.add(name)
         if name in override_cutoffs:
             cutoff = override_cutoffs[name]
+            lvl = override_levels[name]
             depth = 0  # the override re-roots the ladder here
+        level_of[name] = lvl
         node_kids = sorted(kids.get(name, []))
         if not node_kids:
             shown[name] = "shape"
@@ -312,14 +327,18 @@ def plan_visibility(
             return
         shown[name] = "shape"
         for k in node_kids:
-            walk(k, depth + 1, cutoff)
+            walk(k, depth + 1, cutoff, lvl)
 
     for r in roots:
-        walk(r, 0, default_cutoff)
-    return VisiblePlan(shown=shown, render_roots=roots)
+        walk(r, 0, default_cutoff, level)
+    return VisiblePlan(shown=shown, render_roots=roots, level_of=level_of)
 
 
-def level_rungs(name: str, kids: dict[str, list[str]]) -> list[bool]:
+def level_rungs(
+    name: str,
+    kids: dict[str, list[str]],
+    has_realized: Callable[[str], bool] | None = None,
+) -> list[bool]:
     """Which of the four ladder rungs ``[envelope, interfaces, refined,
     realized]`` render ``name``'s subtree differently from the next-
     shallower rung when ``name`` ALONE is overridden (the ladder re-roots
@@ -330,14 +349,19 @@ def level_rungs(name: str, kids: dict[str, list[str]]) -> list[bool]:
     Closed form over :func:`plan_visibility`'s shape/box plan: envelope
     is always lettered; interfaces differs iff ``name`` has children
     (a childless node is a shape at any cutoff); refined differs from
-    interfaces iff some child has children of its own; realized never
-    differs in 3D (it only changes the 2D SVG's realization outline)."""
+    interfaces iff some child has children of its own. Realized differs
+    only where realized GEOMETRY exists to draw (the viewer's
+    meshes-on render): ``has_realized(name)`` answers "this block or one
+    of its descendants carries a realizable solid"; without the
+    predicate (the 2D readers, and the 3D scene fetched with meshes off)
+    the flag stays False — the dash is the honest "this rung draws
+    identically" there."""
     children = kids.get(name, [])
     return [
         True,
         bool(children),
         any(kids.get(k) for k in children),
-        False,
+        bool(has_realized is not None and has_realized(name)),
     ]
 
 

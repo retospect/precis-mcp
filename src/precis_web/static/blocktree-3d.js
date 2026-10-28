@@ -225,7 +225,7 @@ function showViewerFallback(viewerEl, err, { reload = false, message = null } = 
   for (const id of [
     "bt3d-level", "bt3d-explode", "bt3d-export-png", "bt3d-export-svg",
     "bt3d-connections", "bt3d-container-mode", "bt3d-atoms", "bt3d-target",
-    "bt3d-smooth", "bt3d-tool-volumes",
+    "bt3d-smooth", "bt3d-tool-volumes", "bt3d-meshes",
   ]) {
     const el = document.getElementById(id);
     if (el) el.disabled = true;
@@ -936,6 +936,11 @@ export async function blocktreeViewer3D({
   // se only: draws the swept fastener/driver/hand volumes behind each
   // insertion-path finding (tool-volumes.json). Absent = no toggle.
   toolVolumesToggle,
+  // se only: the realized-rung meshes toggle — ON refetches the scene
+  // with `meshes=1`, drawing realized-rung blocks from their bound cad
+  // design's per-component meshes; OFF (the default) is the plain
+  // envelope render. Absent = the design has nothing realized to draw.
+  meshesToggle,
   axesToggle,
   containerModeSelect,
   // The three scene-shaping controls. They were a plain GET form until
@@ -1181,6 +1186,27 @@ export async function blocktreeViewer3D({
     return _groupAt(path);
   }
 
+  //: The LEAF paths a container_paths entry covers. The entry is usually
+  //: a leaf itself (the `(envelope)` self-leaf); a realized container's
+  //: entry is the `<name> (realized)` GROUP of component leaves instead
+  //: (blocktree_3d.py's realized-rung branch) — the vendored ObjectGroups
+  //: a mode is applied to exist per leaf, so a group entry descends to
+  //: its leaf descendants (a nested realized group under it included).
+  function _containerLeafPaths(path) {
+    const part = findPart(shownShapes, path);
+    if (!part) return [];
+    if (!Array.isArray(part.parts) || !part.parts.length) return [path];
+    const out = [];
+    (function walk(node) {
+      if (Array.isArray(node.parts) && node.parts.length) {
+        for (const child of node.parts) walk(child);
+        return;
+      }
+      out.push(node.id);
+    })(part);
+    return out;
+  }
+
   function applyContainerMode(mode) {
     for (const path of data.container_paths || []) {
       // Under a client-side isolate the rendered tree is a PRUNE of the
@@ -1189,22 +1215,24 @@ export async function blocktreeViewer3D({
       // quietly; present in the shapes but missing a group = the real
       // id/name mismatch worth shouting about.
       if (!findPart(shownShapes, path)) continue;
-      try {
-        const grp = _containerGroup(path);
-        if (!grp) {
-          console.error("blocktree-3d: container envelope group not found for", path);
-          continue;
+      for (const leafPath of _containerLeafPaths(path)) {
+        try {
+          const grp = _containerGroup(leafPath);
+          if (!grp) {
+            console.error("blocktree-3d: container envelope group not found for", leafPath);
+            continue;
+          }
+          if (mode === "hidden") {
+            grp.setShapeVisible(false);
+          } else {
+            grp.setShapeVisible(visibility.shapeShown(leafPath));
+            grp.setTransparent(mode === "translucent");
+            grp.setOpacity(mode === "translucent" ? _CONTAINER_OPACITY : 1.0);
+          }
+        } catch (err) {
+          // Best-effort — see recolour's own try/catch for the convention.
+          console.error("blocktree-3d: container envelope mode failed for", leafPath, err);
         }
-        if (mode === "hidden") {
-          grp.setShapeVisible(false);
-        } else {
-          grp.setShapeVisible(visibility.shapeShown(path));
-          grp.setTransparent(mode === "translucent");
-          grp.setOpacity(mode === "translucent" ? _CONTAINER_OPACITY : 1.0);
-        }
-      } catch (err) {
-        // Best-effort — see recolour's own try/catch for the convention.
-        console.error("blocktree-3d: container envelope mode failed for", path, err);
       }
     }
     // The setters above mutate the per-leaf ObjectGroup directly — same
@@ -1277,26 +1305,50 @@ export async function blocktreeViewer3D({
     repaint();
   }
 
-  //: The leaf that carries a block's colour on screen: the block itself
+  //: The leaves that carry a block's colour on screen: the block itself
   //: when it is a leaf, its own `(envelope)` leaf when it is a container
-  //: (`data.container_paths`), else null. A container's group has no
-  //: material — tinting it is what left a selected axle's most important
-  //: partners, the crank assemblies, unmarked.
-  function tintLeafOf(path) {
-    if (recolourable(path)) return path;
-    const leaf = (data.container_paths || []).find(
+  //: (`data.container_paths`), else the component leaves of its realized
+  //: group — a realized leaf block's primary path is a GROUP of component
+  //: leaves, and a realized container's `container_paths` entry is the
+  //: `<name> (realized)` group (blocktree_3d.py's realized-rung branch);
+  //: both carry the block's uid on every leaf and the block's name in
+  //: each leaf's `block` field. A container's group has no material —
+  //: tinting it is what left a selected axle's most important partners,
+  //: the crank assemblies, unmarked.
+  function tintLeavesOf(path) {
+    if (recolourable(path)) return [path];
+    const blockName = path.split("/").pop();
+    const selfPath = (data.container_paths || []).find(
       (p) => p.startsWith(path + "/") && !p.slice(path.length + 1).includes("/")
     );
-    return leaf && recolourable(leaf) ? leaf : null;
+    if (selfPath) {
+      if (recolourable(selfPath)) return [selfPath];
+      const self = findPart(data.shapes, selfPath);
+      if (self && Array.isArray(self.parts)) {
+        return self.parts
+          .filter((p) => p.block === blockName && recolourable(p.id))
+          .map((p) => p.id);
+      }
+      return [];
+    }
+    const part = findPart(data.shapes, path);
+    if (
+      part && Array.isArray(part.parts) && part.parts.length &&
+      part.parts.every((p) => p.block === blockName)
+    ) {
+      return part.parts.filter((p) => recolourable(p.id)).map((p) => p.id);
+    }
+    return [];
   }
 
   function tint(path, colour) {
-    const leaf = tintLeafOf(path);
-    if (!leaf || highlighted.has(leaf)) return;
-    const part = findPart(data.shapes, leaf);
-    if (!part) return;
-    highlighted.set(leaf, part.color);
-    recolour(leaf, colour);
+    for (const leaf of tintLeavesOf(path)) {
+      if (highlighted.has(leaf)) continue;
+      const part = findPart(data.shapes, leaf);
+      if (!part) continue;
+      highlighted.set(leaf, part.color);
+      recolour(leaf, colour);
+    }
   }
 
   //: The current selection's path, so a re-render (level change, isolate)
@@ -1362,9 +1414,13 @@ export async function blocktreeViewer3D({
     // being parsed back out of the path.
     const part = findPart(data.shapes, primaryPath);
     if (part && part.uid !== undefined) highlightTopologyNode(part.uid);
-    if (part && part.name) insertArgueHandle(part.name);
-    if (typeof onSelectBlock === "function" && part && part.name) {
-      onSelectBlock(part.name);
+    // A realized component leaf's own `name` is the COMPONENT's — the
+    // argue handle and the chat handle speak block names, so prefer the
+    // leaf's `block` field (blocktree_3d.py's `_realized_leaves`).
+    const blockName = part && (part.block || part.name);
+    if (blockName) insertArgueHandle(blockName);
+    if (typeof onSelectBlock === "function" && blockName) {
+      onSelectBlock(blockName);
     }
     if (!finding && part && part.uid !== undefined) showPick({ token: `<se:${part.uid}>` });
   }
@@ -1440,8 +1496,7 @@ export async function blocktreeViewer3D({
       // Reveal previously hidden envelope leaves through the existing
       // visibility state; clipping controls themselves stay unchanged.
       for (const path of paths) {
-        const leaf = tintLeafOf(path);
-        if (leaf) viewer.setState(leaf, [1, 0]);
+        for (const leaf of tintLeavesOf(path)) viewer.setState(leaf, [1, 0]);
       }
       selectPath(paths[0], { finding: true });
       for (const path of paths.slice(1)) tint(path, SELECTED_COLOUR);
@@ -1641,7 +1696,17 @@ export async function blocktreeViewer3D({
     if (change && change.states && !rendering) visibility.update(change.states.new);
     const pick = change && change.lastPick && change.lastPick.new;
     if (!pick) return;
-    selectPath(primaryPathOf(`${pick.path}/${pick.name}`));
+    const full = `${pick.path}/${pick.name}`;
+    const picked = findPart(data.shapes, full);
+    // A realized component leaf picks as the BLOCK it belongs to (the
+    // leaf's `block` field / shared uid): connectivity, explode and the
+    // argue handle all address the block's primary path, never a
+    // component's.
+    const primary =
+      picked && picked.block && picked.uid !== undefined
+        ? findPathByUid(data.shapes, String(picked.uid)) || primaryPathOf(full)
+        : primaryPathOf(full);
+    selectPath(primary);
   }
 
   const treeHeightCapEl = document.createElement("style");
@@ -2591,7 +2656,7 @@ export async function blocktreeViewer3D({
     }
     // The revision slider stays live: disabling it blurred it mid-keyboard-step,
     // and a step during a load now just supersedes the load (sceneLatest).
-    for (const el of [levelSelect, overridesInput]) {
+    for (const el of [levelSelect, overridesInput, meshesToggle]) {
       if (el) el.disabled = busy;
     }
     // The per-block chips start the same refetch, so they go dark with
@@ -2743,6 +2808,8 @@ export async function blocktreeViewer3D({
     try {
       const url = new URL(revUrl(sceneUrl), window.location.href);
       if (levelSelect) url.searchParams.set("level", levelSelect.value);
+      if (meshesToggle && meshesToggle.checked) url.searchParams.set("meshes", "1");
+      else url.searchParams.delete("meshes");
       if (overridesInput) {
         const raw = overridesInput.value.trim();
         if (raw) url.searchParams.set("overrides", raw);
@@ -2787,6 +2854,9 @@ export async function blocktreeViewer3D({
   }
 
   if (levelSelect) levelSelect.addEventListener("change", loadScene);
+  // The meshes toggle is a scene-shaping control like `level`: flipping
+  // it refetches the scene (with/without `meshes=1`), camera held.
+  if (meshesToggle) meshesToggle.addEventListener("change", loadScene);
   if (isolateSelect) isolateSelect.addEventListener("change", applyIsolate);
   if (overridesInput) {
     overridesInput.addEventListener("change", loadScene);

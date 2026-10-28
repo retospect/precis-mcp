@@ -11,6 +11,9 @@ smooth_drum (target surface, strain layers, pentagon θp).
         # target surface + strain layers (nightly: small-drum.ops.json)
     viewer_check.py nowebgl <base-url> <slug> <out-dir>   # WebGL off: the
         # fallback message + inline 2D view appear (gr462702)
+    viewer_check.py meshes <base-url> <slug> <out-dir> <ops.json>
+        # the realized-rung meshes toggle (a cad-bound fixture:
+        # box3-local.ops.json)
 
 Why it exists: explode, selection highlighting and the level control were
 each dead from the commit that introduced them, behind a green suite. A
@@ -135,6 +138,7 @@ def seed(ops_path: str, slug: str) -> None:
     from psycopg_pool import ConnectionPool
 
     from precis.dispatch import boot
+    from precis.handlers.cad import CadHandler
     from precis.store import Store
     from precis_se.handler import SeHandler
 
@@ -142,11 +146,21 @@ def seed(ops_path: str, slug: str) -> None:
     dsn = os.environ["PRECIS_DATABASE_URL"]
     with ConnectionPool(dsn, min_size=1, max_size=4, open=True) as pool:
         hub = boot(store=Store(pool, dsn=dsn))
+        # A fixture may carry the cad design(s) its ``set_binding`` ops of
+        # kind ``cad`` point at — ``{"cad": {slug: source}}`` alongside
+        # ``ops``. Put first: the se put's validation sees the binding
+        # resolve. (A ``component``-kind binding's standards-series refs
+        # are minted below instead.)
+        for cad_slug, source in sorted(payload.get("cad", {}).items()):
+            print(f"seeding cad design -> cad:{cad_slug}")
+            print(CadHandler(hub=hub).put(id=cad_slug, text=source))
         minted = _seed_bound_components(hub, payload["ops"])
         if minted:
             print(f"minted component(s): {', '.join(minted)}")
         print(f"seeding {len(payload['ops'])} op(s) -> se:{slug}")
-        print(SeHandler(hub=hub).put(id=slug, text=json.dumps(payload)))
+        # The ``cad`` key is this script's own carrier, not se grammar.
+        se_payload = {k: v for k, v in payload.items() if k != "cad"}
+        print(SeHandler(hub=hub).put(id=slug, text=json.dumps(se_payload)))
 
 
 def _diff(a: Any, b: Any) -> dict[str, Any]:
@@ -856,6 +870,141 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
 
 #: (label, width, height): a phone, a small laptop, the desktop the other
 #: checks use.
+def _fixture_component_names(ops_path: str) -> list[str]:
+    """The component names a fixture's bundled cad designs declare — the
+    rows the assembly tree must GROW by when the meshes toggle comes on
+    (the tree and the canvas fail independently, module docstring)."""
+    payload = json.loads(pathlib.Path(ops_path).read_text(encoding="utf-8"))
+    names: list[str] = []
+    for source in payload.get("cad", {}).values():
+        names.extend(re.findall(r"(?m)^\s*component\s+(\S+)\s*$", source))
+    return names
+
+
+def meshes_probe(base_url: str, slug: str, out_dir: str, ops_path: str) -> int:
+    """The realized-rung meshes toggle (se-3d-viewer): at ``level=realized``
+    flipping ``#bt3d-meshes`` ON must change the canvas AND grow the
+    assembly tree by the bound cad design's component rows; OFF must
+    restore the byte-level base picture; and at ``level=envelope`` the
+    toggle must move nothing (meshes only exist at the realized rung).
+    The default-OFF render is asserted first: it IS today's render, so
+    the base shot is taken with the toggle off."""
+    from playwright.sync_api import sync_playwright
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    checks: list[Check] = []
+    console: list[str] = []
+    components = _fixture_component_names(ops_path)
+
+    rows_js = (
+        "() => [...document.querySelectorAll('.tv-tree-node')]"
+        ".map((n) => n.textContent.trim())"
+    )
+
+    with sync_playwright() as p:
+        browser, page, _canvas, shot, settle = _open(p, out, console)
+        page.goto(
+            f"{base_url}/se/{slug}?level=realized",
+            wait_until="networkidle",
+            timeout=90000,
+        )
+        page.wait_for_selector("#bt3d-viewer canvas", timeout=60000)
+        has_toggle = page.locator("#bt3d-meshes").count() == 1
+        checks.append(
+            Check("meshes_toggle_rendered", has_toggle, {"found": has_toggle})
+        )
+        base = settle("00_base_realized_meshes_off")
+
+        page.wait_for_timeout(600)
+        floor = _diff(base, shot("01_noise"))
+        checks.append(Check("noise_floor", floor["n"] <= NOISE_MAX, floor))
+
+        rows_off = page.evaluate(rows_js)
+        missing_off = [c for c in components if any(c in r for r in rows_off)]
+        checks.append(
+            Check(
+                "off_has_no_component_rows",
+                not missing_off,
+                {"unexpected": missing_off, "n_rows": len(rows_off)},
+            )
+        )
+
+        def busy_watch() -> None:
+            # The busy mark is the refetch witness (see probe's level
+            # check): watch it from BEFORE the action so a fast refetch
+            # cannot slip between two polls.
+            page.evaluate(
+                """() => {
+                  window.__busySeen = false;
+                  const el = document.getElementById('bt3d-busy');
+                  new MutationObserver(() => {
+                    if (!el.hidden) window.__busySeen = true;
+                  }).observe(el, {attributes: true});
+                }"""
+            )
+
+        def wait_busy_done() -> None:
+            page.wait_for_function(
+                "() => window.__busySeen && document.getElementById('bt3d-busy').hidden",
+                timeout=int(WAIT_S * 1000),
+            )
+
+        def flip_and_wait() -> None:
+            busy_watch()
+            page.click("#bt3d-meshes")
+            wait_busy_done()
+
+        if has_toggle:
+            flip_and_wait()
+            on = settle("02_meshes_on")
+            grew = _diff(base, on)
+            rows_on = page.evaluate(rows_js)
+            missing_on = [c for c in components if not any(c in r for r in rows_on)]
+            checks.append(
+                Check(
+                    "meshes_on_redraws_with_component_rows",
+                    grew["n"] >= CHANGED_MIN and not missing_on,
+                    {**grew, "missing_rows": missing_on, "n_rows": len(rows_on)},
+                )
+            )
+
+            flip_and_wait()
+            off_again = settle("03_meshes_off_again")
+            restored = _diff(base, off_again)
+            rows_back = page.evaluate(rows_js)
+            leftover = [c for c in components if any(c in r for r in rows_back)]
+            checks.append(
+                Check(
+                    "meshes_off_restores",
+                    restored["n"] <= RESTORED_MAX and not leftover,
+                    {**restored, "leftover_rows": leftover},
+                )
+            )
+
+            # The toggle only speaks for the realized rung: at
+            # ``level=envelope`` every block is a collapsed box, meshes on
+            # or off.
+            busy_watch()
+            page.select_option("#bt3d-level", "envelope")
+            wait_busy_done()
+            env_off = settle("04_envelope_meshes_off")
+            flip_and_wait()
+            env_on = _diff(env_off, settle("05_envelope_meshes_on"))
+            checks.append(
+                Check(
+                    "envelope_rung_ignores_meshes",
+                    env_on["n"] <= RESTORED_MAX,
+                    env_on,
+                )
+            )
+
+        checks.append(Check("console_clean", not console, {"errors": console[:20]}))
+        browser.close()
+
+    return _report(base_url, slug, out, checks)
+
+
 NOWEBGL_VIEWPORTS = (
     ("phone", 390, 844),
     ("laptop", 1280, 720),
@@ -934,6 +1083,8 @@ def main(argv: list[str]) -> int:
         return strain_probe(argv[2], argv[3], argv[4])
     if len(argv) == 5 and argv[1] == "nowebgl":
         return nowebgl_probe(argv[2], argv[3], argv[4])
+    if len(argv) == 6 and argv[1] == "meshes":
+        return meshes_probe(argv[2], argv[3], argv[4], argv[5])
     print(__doc__, file=sys.stderr)
     return 2
 

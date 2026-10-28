@@ -1444,3 +1444,105 @@ def test_se_view3d_page_has_the_tool_volumes_toggle(
     r = blocktree_client.get("/se/unicycle_web")
     assert 'id="bt3d-tool-volumes"' in r.text
     assert 'toolVolumesToggle: document.getElementById("bt3d-tool-volumes")' in r.text
+
+
+# ── realized-rung meshes (se-3d-viewer): ?meshes=1 ───────────────────────
+
+_MESH_CAD = """\
+component shell
+wall   add box:w200mmd150mmh100mm
+cavity cut box:w190mmd140mmh96mm @0mm,0mm,4mm
+component boss-1
+body1  add cyl:r8mmh90mm @85mm,60mm,-5mm
+core1  cut cyl:r2.5mmh100mm @85mm,60mm,-5mm
+"""
+
+_MESH_OPS: list[dict[str, Any]] = [
+    {
+        "op": "add_block",
+        "name": "encl",
+        "pose": [0, 0, 0],
+        "envelope": "box:w0.2d0.15h0.1",
+    },
+    {"op": "set_binding", "block": "encl", "kind": "cad", "design": "box3_web"},
+    {
+        "op": "add_block",
+        "name": "lid",
+        "parent": "encl",
+        "pose": "[0 0 0.06] m",
+        "envelope": "box:w0.2d0.15h0.01",
+    },
+]
+
+
+def _seed_mesh_design(runtime_with_store) -> None:
+    from precis.handlers.cad import CadHandler
+
+    CadHandler(hub=runtime_with_store.hub).put(id="box3_web", text=_MESH_CAD)
+    SeHandler(hub=runtime_with_store.hub).put(
+        id="mesh_web", text=json.dumps({"ops": _MESH_OPS})
+    )
+
+
+def _all_ids(node: dict[str, Any]) -> list[str]:
+    return [node["id"], *[i for p in node.get("parts", []) for i in _all_ids(p)]]
+
+
+def test_scene3d_meshes_toggle_draws_realized_components(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_mesh_design(runtime_with_store)
+    plain = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized")
+    assert plain.status_code == 200
+    off = plain.json()
+    # Default OFF: today's envelope render, byte-identical — no component
+    # rows, no realized rung flag, envelope-level drawing.
+    off_ids = _all_ids(off["shapes"])
+    assert not any("boss-1" in i or "shell" in i for i in off_ids)
+    encl_off = next(n for n in off["nodes"] if n["name"] == "encl")
+    assert encl_off["level_rungs"][3] is False
+    assert encl_off["level_active"] == "refined"
+    # meshes=0 parses false: the same bytes as the absent param.
+    assert (
+        blocktree_client.get("/se/mesh_web/scene3d.json?level=realized&meshes=0").json()
+        == off
+    )
+
+    r = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized&meshes=1")
+    assert r.status_code == 200
+    on = r.json()
+    on_ids = _all_ids(on["shapes"])
+    assert "/Structural envelopes/encl/encl (realized)/shell" in on_ids
+    assert "/Structural envelopes/encl/encl (realized)/boss-1" in on_ids
+    # The realized self-geometry group is a translucent container entry
+    # (the 0.25 ruling), the unbound child stays a plain envelope leaf.
+    assert on["container_paths"] == ["/Structural envelopes/encl/encl (realized)"]
+    assert "/Structural envelopes/encl/lid" in on_ids
+    by_name = {n["name"]: n for n in on["nodes"]}
+    assert by_name["encl"]["level_rungs"][3] is True
+    assert by_name["encl"]["level_active"] == "realized"
+    assert by_name["lid"]["level_rungs"][3] is False
+    assert by_name["lid"]["level_active"] == "refined"
+
+
+def test_scene3d_meshes_param_changes_nothing_below_the_realized_rung(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_mesh_design(runtime_with_store)
+    for level in ("envelope", "interfaces", "refined"):
+        off = blocktree_client.get(f"/se/mesh_web/scene3d.json?level={level}").json()
+        on = blocktree_client.get(
+            f"/se/mesh_web/scene3d.json?level={level}&meshes=1"
+        ).json()
+        # The rung flag rides the nodes even below realized (the chip is
+        # honest about what z WOULD draw); the drawn shapes never move.
+        assert on["shapes"] == off["shapes"]
+
+
+def test_view3d_page_renders_the_meshes_toggle_only_with_a_cad_binding(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_mesh_design(runtime_with_store)
+    assert 'id="bt3d-meshes"' in blocktree_client.get("/se/mesh_web").text
+    _seed_se(runtime_with_store)
+    assert 'id="bt3d-meshes"' not in blocktree_client.get("/se/unicycle_web").text

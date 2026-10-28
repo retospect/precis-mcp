@@ -27,10 +27,13 @@ Owner anchors: `src/precis_web/templates/blocktree/detail3d.html.j2`, `src/preci
   the rung the block is drawn at relative to itself). The tree now opens
   fully (`collapse: 2`) so every block row carries its chip; the overrides
   text box is hidden and only carries state. Browser-checked by
-  `viewer_check.py probe` (`chip_*`). Open: z is a dash on every block in 3D
-  (realized draws like refined there) — Reto's call in review item
-  se-3d-viewer-2; and whether the 220 px tree is wide enough for chip plus
-  label (his look).
+  `viewer_check.py probe` (`chip_*`). z letters once the meshes toggle is
+  on and the block's subtree has a resolvable cad binding (the realized
+  rung draws realized meshes then; do-next 8 in
+  `threads/se-3d-viewer.md`) — with meshes OFF the dash is the honest
+  "this rung draws like refined", which is also Reto's default-OFF ruling.
+  Remaining of the old open: whether the 220 px tree is wide enough for
+  chip plus label (his look).
 
 - [ ] **A colour-channel selector.** Colour blocks by material, by process, by finding severity, or by change-vs-previous-revision, rather than one fixed scheme.
 

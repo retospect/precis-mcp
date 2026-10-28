@@ -181,7 +181,7 @@ up:
 8. **Realized-geometry rung** (triaged 2026-10-28; symptom + dogfood: box3,
    gr529551). The viewer draws envelopes at every rung, so hollow parts
    render solid — box3's cavity, bosses and cores are invisible on /se
-   (every rung shows the same AABB box). Build: mesh each block's realized
+   (every rung shows the same AABB box). ~~Build: mesh each block's realized
    expression at the realized rung (field backend, coarse pitch,
    server-cached), set the rung-differ flags so the `[E·I·R·z]` chips go
    live, add component-level tree rows (boss-1..4, gusset-*, core-*), and
@@ -189,7 +189,29 @@ up:
    `scripts/viewer_check.py` canvas pixel-diff (box3-derived local fixture;
    prod copy-down per the view='ops' recipe). Ruling hooks: z-column
    review item se-3d-viewer-2 and Do-next 0; envelope stays the fallback
-   for blocks without realized geometry; mind the stale-server trap.
+   for blocks without realized geometry; mind the stale-server trap.~~
+   BUILT 2026-10-28 in this worktree, pending ship: `?meshes=1` on
+   `scene3d.json` (the page's "meshes" toggle, default OFF, rendered only
+   when the design has a resolvable cad binding) draws realized-rung
+   blocks from the bound cad design's per-component meshes
+   (`precis.cad.export._component_meshes` — field backend at a coarse
+   diag/48 pitch for rd/blend/field designs, analytic manifold3d route for
+   sharp ones), server-cached by `cad_source_sha` of the EXPANDED spec
+   (sub-design edits invalidate). One leaf per component under the block's
+   node (`_realized_leaves`, each carrying the block's `uid` + a `block`
+   field); a container's realized self-geometry is a `<name> (realized)`
+   group in `container_paths`, so the translucent-0.25 ruling covers it.
+   The plan carries `level_of` (refined/realized collapse identically, so
+   the rung name had to ride beside the cutoff); chips get the z flag from
+   a subtree-inclusive binding predicate, and a picked component selects
+   its BLOCK. Verified: unit + route tests, and `viewer_check.py meshes`
+   against the box3-shaped `box3-local` fixture (hollow shell, four cored
+   bosses, two gussets, one unbound lid as the envelope-fallback witness).
+   Residue: fasten-stamped hole cuts are not applied to the viewer meshes
+   (the printsolid cut path stays export-only); a `?rev=` past revision
+   draws the LIVE cad design's meshes (cad content is not in the se
+   checkpoint); atom pick unchanged; the nightly workflow does not run the
+   `meshes` probe yet; prod copy-down pixel-diff of box3 itself still open.
 
 ## Horizon
 

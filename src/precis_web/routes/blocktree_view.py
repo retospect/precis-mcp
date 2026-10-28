@@ -29,7 +29,13 @@ through it.
   (:class:`~precis_web.blocktree_3d.Scene3D`). Refetched in place
   whenever ``level``/``overrides`` change; ``isolate`` is accepted and
   IGNORED here, because the page filters the scene it already holds
-  rather than paying a rebuild (see :func:`se_scene3d`).
+  rather than paying a rebuild (see :func:`se_scene3d`). ``?meshes=1``
+  (the page's "meshes" toggle, default OFF) draws blocks at the
+  realized ladder rung from their bound cad design's per-component
+  realized meshes (:func:`_se_realized_mesh_fn`) instead of the
+  envelope — byte/pixel-identical to the plain render when absent, and
+  the envelope stays the fallback for any block whose mesh does not
+  resolve.
 * ``GET  /se/{slug}/2d`` — the 2D SVG reader
   page, still reachable via a link off the 3D page: axis/level/colour/
   isolate selectors (a plain GET form — no client JS needed) over an
@@ -123,13 +129,18 @@ from fastapi.responses import (
 )
 
 from precis.blocktree.types import BlockNode, Tree
+from precis.cad.export import _component_meshes
+from precis.cad.relate import _positive_bounds
+from precis.cad.scene import build_design, expand_instances
 from precis.cad.tessellate import apply_rigid
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis.cad_resolve import design_resolver
 from precis.design import history as design_history
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.store._cad_ops import cad_source_sha
 from precis.structure.probe import detect_bonds
 from precis.viz3d.sheetsmooth import deviation as sheet_deviation
 from precis.viz3d.sheetsmooth import ring_faces, smooth_sheet
@@ -151,6 +162,7 @@ from precis_surface.revolution import revolve
 from precis_web import design_chat, design_turn, relax_provenance
 from precis_web.blocktree_3d import (
     CHANGED_COLOUR,
+    RealizedMeshFn,
     Scene3D,
     build_scene,
     scene_scale,
@@ -252,6 +264,11 @@ class _Adapter:
     #: not a shared-core field.
     connect_label: Any  # Callable[[Connect], str]
     connect_colour: Any  # Callable[[Connect], str]
+    #: The realized-rung mesh resolver factory (se-3d-viewer realized
+    #: meshes): ``store -> RealizedMeshFn`` — ``None`` for a kind whose
+    #: blocks never have realized geometry to draw, which keeps
+    #: ``scene3d.json`` byte-identical to the envelope-only render.
+    realized_meshes: Any = None  # Callable[[Store], RealizedMeshFn] | None
 
 
 def _se_is_realized(node: Any) -> bool:
@@ -541,6 +558,185 @@ _ROLE_TIE = "#16a34a"
 _ROLE_NEUTRAL = "#64748b"
 
 
+# ── realized-rung meshes (se-3d-viewer: the `meshes` toggle) ───────────
+#
+# A block at the realized ladder rung whose (template-resolved) binding is
+# a cad design draws that design's per-component meshes instead of its
+# envelope. Everything here is derived at READ time — nothing is stored —
+# so the `_VERDICTS` op totality is untouched, and a render with the
+# toggle off is byte-identical to before this seam existed.
+
+#: Bumped when the mesh payload's derivation changes (pitch fraction,
+#: component naming, …) so a stale cache entry can never outlive a code
+#: change that would have produced different bytes.
+REALIZED_MESH_PAYLOAD_VERSION = 1
+
+#: Field-backend pitch for viewer meshes: deliberately coarse (the export
+#: default is 1/256 of the positive-material AABB diagonal — print
+#: fidelity). 1/48 is a legible silhouette at interactive-fetch cost; the
+#: analytic route (sharp designs) ignores pitch entirely.
+_VIEWER_PITCH_DIAG_FRACTION = 1.0 / 48.0
+
+#: Server-side cache of one cad design's realized component meshes,
+#: content-hash addressed (:func:`cad_source_sha` of the EXPANDED spec —
+#: inlined ``use:`` sub-designs included, so an edit anywhere in the
+#: instance chain invalidates). Meshing is the expensive step of a
+#: meshes-on render and the design changes rarely; LRU-capped, and a
+#: resolution FAILURE is cached as ``None`` too — a design that does not
+#: mesh today will not mesh on the next request either.
+_MESH_CACHE_CAP = 64
+_MESH_CACHE: OrderedDict[tuple[int, int, str], list[tuple[str, Any, Any]] | None] = (
+    OrderedDict()
+)
+_MESH_CACHE_LOCK = threading.Lock()
+
+
+def _se_template_resolved(tree: Tree[BlockNode, Any], node: Any) -> Any:
+    """Follow ``node.template`` to the block the binding actually lives
+    on (the printsolid precedent: a template instance carries no binding
+    of its own), with a cycle guard — a stored template loop degrades to
+    the last resolvable node rather than spinning."""
+    seen: set[str] = set()
+    while node is not None and getattr(node, "template", None):
+        if node.name in seen:
+            break
+        seen.add(node.name)
+        node = tree.blocks.get(node.template)
+    return node
+
+
+def _se_component_leaf_names(names: list[str]) -> list[str]:
+    """Viewer-safe unique component leaf names. A leaf id is the
+    "/"-join of names (:mod:`precis_web.blocktree_3d`'s hard invariant),
+    so a literal "/" in a component name is unsplittable — mapped to the
+    look-alike division slash — and a collision after that mapping gets
+    a counter suffix (identity here is positional anyway: the leaf's own
+    ``block``/``uid`` fields carry the join back to the block)."""
+    out: list[str] = []
+    taken: set[str] = set()
+    for raw in names:
+        base = raw.replace("/", "∕") or "component"
+        name = base
+        n = 2
+        while name in taken:
+            name = f"{base} ({n})"
+            n += 1
+        taken.add(name)
+        out.append(name)
+    return out
+
+
+def _se_realized_component_meshes(
+    store: Store, node: Any
+) -> list[tuple[str, Any, Any]] | None:
+    """One ``(component, verts, tris)`` triple per component of the
+    block's bound cad design, in the design's LOCAL frame (the block's
+    own pose/rot positions it — the same convention the envelope mesh
+    uses), or ``None`` for honest absence: dangling binding, a design
+    that fails to expand/build, or a mesh backend that refuses. Cached
+    by content hash (:data:`_MESH_CACHE`)."""
+    ref = store.get_ref(kind="cad", id=str(node.bound))
+    if ref is None:
+        return None  # a dangling binding is the validator's finding
+    try:
+        spec, _handles = store.cad_load(ref.id)
+        expanded = expand_instances(spec, design_resolver(store))
+    except Exception:
+        log.exception("realized meshes: expand failed for cad %s", node.bound)
+        return None
+    key = (REALIZED_MESH_PAYLOAD_VERSION, ref.id, cad_source_sha(expanded))
+    with _MESH_CACHE_LOCK:
+        if key in _MESH_CACHE:
+            _MESH_CACHE.move_to_end(key)
+            return _MESH_CACHE[key]
+    meshes: list[tuple[str, Any, Any]] | None = None
+    try:
+        design = build_design(expanded)
+        box = _positive_bounds(design, design.whole())
+        if box is not None:
+            diag = float(np.linalg.norm(box[1] - box[0]))
+            pitch = diag * _VIEWER_PITCH_DIAG_FRACTION
+            found = _component_meshes(expanded, pitch=pitch)
+            named = _se_component_leaf_names([c for c, _v, _t in found])
+            meshes = [
+                (leaf, verts, tris)
+                for leaf, (_comp, verts, tris) in zip(named, found, strict=True)
+                if len(tris)
+            ]
+    except Exception:
+        # Honest absence: the viewer falls back to the envelope — never
+        # a 500 because a design's mesh backend refused.
+        log.exception("realized meshes: meshing failed for cad %s", node.bound)
+    with _MESH_CACHE_LOCK:
+        _MESH_CACHE[key] = meshes
+        _MESH_CACHE.move_to_end(key)
+        while len(_MESH_CACHE) > _MESH_CACHE_CAP:
+            _MESH_CACHE.popitem(last=False)
+    return meshes
+
+
+def _se_realized_mesh_fn(store: Store) -> RealizedMeshFn:
+    """The se adapter's :data:`_Adapter.realized_meshes` factory: the
+    returned fn answers a block's realized component meshes, resolving
+    template indirection first. Only a ``cad`` binding qualifies —
+    structure/component/part/pcb bindings have no per-component mesh
+    this view knows how to draw, so they keep the envelope."""
+
+    def _meshes(tree: Tree[BlockNode, Any], node: Any) -> Any:
+        owner = _se_template_resolved(tree, node)
+        if (
+            owner is None
+            or getattr(owner, "bound_kind", None) != "cad"
+            or not getattr(owner, "bound", None)
+        ):
+            return None
+        return _se_realized_component_meshes(store, owner)
+
+    return _meshes
+
+
+def _se_has_realized(store: Store, tree: Tree[BlockNode, Any]) -> Callable[[str], bool]:
+    """The realized-rung predicate for the level chips: ``has(name)`` is
+    True when ``name``'s SUBTREE (itself included, template-resolved)
+    carries a cad binding whose ref resolves. Subtree-inclusive because
+    the chip answers "does this rung render this block's subtree
+    differently" — a container whose realized geometry is all in its
+    children still earns the flag. Ref lookups are memoised per slug for
+    the one call."""
+    kids = children_map(tree)
+    ref_ok: dict[str, bool] = {}
+
+    def _bound_realized(node: Any) -> bool:
+        owner = _se_template_resolved(tree, node)
+        if (
+            owner is None
+            or getattr(owner, "bound_kind", None) != "cad"
+            or not getattr(owner, "bound", None)
+        ):
+            return False
+        slug = str(owner.bound)
+        ok = ref_ok.get(slug)
+        if ok is None:
+            ok = store.get_ref(kind="cad", id=slug) is not None
+            ref_ok[slug] = ok
+        return ok
+
+    memo: dict[str, bool] = {}
+
+    def has(name: str) -> bool:
+        if name in memo:
+            return memo[name]
+        node = tree.blocks.get(name)
+        memo[name] = False  # guard a stored parent cycle before recursing
+        ans = (node is not None and _bound_realized(node)) or any(
+            has(k) for k in kids.get(name, [])
+        )
+        memo[name] = ans
+        return ans
+
+    return has
+
+
 _ADAPTERS: dict[str, _Adapter] = {
     "se": _Adapter(
         kind="se",
@@ -552,6 +748,7 @@ _ADAPTERS: dict[str, _Adapter] = {
         has_stability=True,
         connect_label=_se_connect_label,
         connect_colour=_se_connect_colour,
+        realized_meshes=_se_realized_mesh_fn,
     ),
 }
 
@@ -1064,6 +1261,7 @@ async def _view3d_page(
         Tree[BlockNode, Any],
         dict[str, Any],
         list[relax_provenance.BoundStructure],
+        bool,
     ]:
         axis = _revision_axis(store, ref.id, rev)
         tree = _tree_at(store, kind, ref.id, axis)
@@ -1072,10 +1270,24 @@ async def _view3d_page(
         structures = (
             relax_provenance.bound_structures(store, tree) if kind == "se" else []
         )
-        return axis, tree, _revision_panel(store, ref.id, axis, tree), structures
+        # The realized-rung meshes toggle only renders when the design has
+        # a resolvable cad binding to draw meshes from — the same
+        # predicate the meshes-on scene3d render consults.
+        realized = (
+            any(_se_has_realized(store, tree)(name) for name in tree.blocks)
+            if kind == "se" and adapter.realized_meshes is not None
+            else False
+        )
+        return (
+            axis,
+            tree,
+            _revision_panel(store, ref.id, axis, tree),
+            structures,
+            realized,
+        )
 
     try:
-        axis, tree, revision, structures = await asyncio.to_thread(_load)
+        axis, tree, revision, structures, has_realized = await asyncio.to_thread(_load)
     except _NoSuchRevision as exc:
         return templates.TemplateResponse(
             request,
@@ -1200,6 +1412,7 @@ async def _view3d_page(
             "block_names": block_names,
             "scene_url": scene_url,
             "has_atomic": has_atomic,
+            "has_realized": has_realized,
             "atomic3d_url": atomic3d_url,
             "detail_2d_url": detail_2d_url,
             "flow_url": flow_url,
@@ -1275,6 +1488,7 @@ def _build_scene3d(
     level_overrides: dict[str, str],
     rev: int | None = None,
     validation_context: dict[str, Any] | None = None,
+    meshes: bool = False,
 ) -> tuple[
     Scene3D | None,
     dict[str, dict[str, Any]],
@@ -1294,6 +1508,12 @@ def _build_scene3d(
     vocabulary (the same reason ``_build_svg`` calls ``se_stability``
     directly). ``{}`` for a kind without a stability solve, or when the
     solve/validate itself fails.
+
+    ``meshes`` is the realized-rung toggle (default OFF): when set and
+    the adapter offers a mesh resolver, blocks whose governing ladder
+    level is ``realized`` draw per-component realized meshes and the
+    topology rows carry the realized rung flag; OFF (or no resolver) is
+    byte-identical to the envelope-only render.
 
     ``rev`` (the scrubber) renders the ``rev-N`` snapshot instead of the
     live rows, with the blocks that changed between N−1 and N tinted
@@ -1332,6 +1552,10 @@ def _build_scene3d(
     )
     if plan is None:
         return None, {}, {}, [], err
+    realized_fn = (
+        adapter.realized_meshes(store) if meshes and adapter.realized_meshes else None
+    )
+    has_realized = _se_has_realized(store, tree) if realized_fn is not None else None
     scene = build_scene(
         tree,
         adapter.effective_envelope,
@@ -1351,6 +1575,8 @@ def _build_scene3d(
         root_name=adapter.label,
         label_fn=adapter.connect_label,
         colour_fn=adapter.connect_colour,
+        realized_meshes=realized_fn,
+        has_realized=has_realized,
     )
     tint_blocks(scene.shapes, changed, CHANGED_COLOUR)
     facts: dict[str, dict[str, Any]] = {}
@@ -1432,6 +1658,7 @@ async def _scene3d_response(
     isolate: str | None,
     overrides: str,
     rev: int | None = None,
+    meshes: str = "",
 ) -> Response:
     store = get_store(request)
     try:
@@ -1467,6 +1694,7 @@ async def _scene3d_response(
             level_overrides=level_overrides,
             rev=rev,
             validation_context=validation_context if kind == "se" else None,
+            meshes=meshes.strip().lower() in ("1", "true"),
         )
 
     try:
@@ -2356,6 +2584,7 @@ async def se_scene3d(
     isolate: str | None = None,
     overrides: str = "",
     rev: int | None = None,
+    meshes: str = "",
 ) -> Response:
     """``isolate`` is ACCEPTED AND IGNORED here (live-scene slice).
 
@@ -2368,10 +2597,22 @@ async def se_scene3d(
 
     The 2-D SVG reader's own ``isolate`` is untouched and still prunes
     server-side: it has no client to filter in.
+
+    ``meshes`` ("1"/"true") is the realized-rung toggle (module
+    docstring): realized-rung blocks draw their bound cad design's
+    per-component meshes; absent/off renders envelopes exactly as
+    before.
     """
     del isolate
     return await _scene3d_response(
-        request, "se", slug, level=level, isolate=None, overrides=overrides, rev=rev
+        request,
+        "se",
+        slug,
+        level=level,
+        isolate=None,
+        overrides=overrides,
+        rev=rev,
+        meshes=meshes,
     )
 
 

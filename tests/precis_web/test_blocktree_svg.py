@@ -374,3 +374,59 @@ def test_level_rungs_leaf_parent_and_grandparent() -> None:
     assert level_rungs("leaf", kids) == [True, False, False, False]
     assert level_rungs("p", kids) == [True, True, False, False]
     assert level_rungs("gp", kids) == [True, True, True, False]
+
+
+# ── realized rung (se-3d-viewer): level_of + the z chip flag ──────────────
+
+
+def test_plan_visibility_level_of_records_the_governing_level() -> None:
+    """refined and realized collapse identically (collapse_depth returns
+    None for both), so ``shown`` alone cannot tell them apart — the 3D
+    viewer's realized-mesh rung reads ``level_of`` instead."""
+    tree = _fork_tree()
+    from precis_web.blocktree_svg import children_map
+
+    kids = children_map(tree)
+    realized = plan_visibility(tree, kids, level="realized", isolate=None)
+    assert set(realized.level_of) == set(realized.shown)
+    assert all(lvl == "realized" for lvl in realized.level_of.values())
+    refined = plan_visibility(tree, kids, level="refined", isolate=None)
+    # The collapse itself is untouched: same plan, different level names.
+    assert refined.shown == realized.shown
+    assert all(lvl == "refined" for lvl in refined.level_of.values())
+
+
+def test_plan_visibility_level_of_follows_a_subtree_override() -> None:
+    tree = _fork_tree()
+    from precis_web.blocktree_svg import children_map
+
+    plan = plan_visibility(
+        tree,
+        children_map(tree),
+        level="envelope",
+        isolate=None,
+        level_overrides={"fork": "realized"},
+    )
+    assert plan.level_of["hub"] == "envelope"
+    # The override re-roots the ladder: the whole subtree inherits it.
+    assert plan.level_of["fork"] == "realized"
+    assert plan.level_of["fork_arm"] == "realized"
+    assert plan.level_of["fork_tip"] == "realized"
+
+
+def test_level_rungs_realized_flag_only_with_the_predicate() -> None:
+    """The z rung is lettered only where realized geometry exists to draw
+    — and only a caller that can answer that (the meshes-on 3D render)
+    passes the predicate; everyone else keeps the honest dash."""
+    kids = {"gp": ["p"], "p": ["leaf"]}
+    assert level_rungs("leaf", kids)[3] is False
+    assert level_rungs("leaf", kids, lambda n: False) == [True, False, False, False]
+    assert level_rungs("leaf", kids, lambda n: n == "leaf") == [
+        True,
+        False,
+        False,
+        True,
+    ]
+    # The predicate's own subtree-inclusiveness is the caller's business;
+    # level_rungs just asks it about the block itself.
+    assert level_rungs("gp", kids, lambda n: True) == [True, True, True, True]
