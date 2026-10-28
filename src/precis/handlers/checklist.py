@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from precis.checklist import ItemStatus, bridge_for, compute_statuses
-from precis.checklist.status import NOT_CHECKABLE, VERDICTS
+from precis.checklist.status import NOT_CHECKABLE, VERDICTS, default_applies
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -712,9 +712,9 @@ class ChecklistHandler(Handler):
             target_ref_id=ref.id, checklist_id=checklist["id"]
         )
         if not removed:
-            if ref.kind in checklist["default_for"]:
+            if default_applies(self.store, checklist, ref.kind, ref.id):
                 raise BadInput(
-                    f"{checklist['name']!r} applies to every {ref.kind} by kind "
+                    f"{checklist['name']!r} applies to this {ref.kind} by kind "
                     "default — there is no explicit assignment to remove",
                     next="record n/a or waived verdicts (with rationale) instead",
                 )
@@ -786,7 +786,11 @@ class ChecklistHandler(Handler):
             {
                 "checklist": r["name"],
                 "origin": r["origin"],
-                "via": ("kind default" if ref.kind in r["default_for"] else "explicit"),
+                "via": (
+                    "kind default"
+                    if default_applies(self.store, r, ref.kind, ref.id)
+                    else "explicit"
+                ),
             }
             for r in rows
         ]
@@ -847,7 +851,9 @@ class ChecklistHandler(Handler):
         explicit = self.store.checklist_assignment_live(
             target_ref_id=ref.id, checklist_id=checklist["id"]
         )
-        if not explicit and ref.kind not in checklist["default_for"]:
+        if not explicit and not default_applies(
+            self.store, checklist, ref.kind, ref.id
+        ):
             return Response(
                 body=f"{head}\n\nno checklist assigned\n\nNext: "
                 f"edit(kind='checklist', id={checklist['name']!r}, "

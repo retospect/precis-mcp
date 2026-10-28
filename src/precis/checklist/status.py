@@ -96,6 +96,26 @@ def bridge_for(kind: str) -> KindBridge | None:
     return None
 
 
+def default_applies(
+    store: Any, checklist: dict[str, Any], kind: str | None, ref_id: int
+) -> bool:
+    """Kind defaults, with the pcb mechanical checklist's declaration gate.
+
+    Explicit assignments remain authoritative. This predicate is shared by
+    listing, status and review so a rigid board never acquires a hidden gate.
+    """
+    if kind not in (checklist.get("default_for") or []):
+        return False
+    if kind == "pcb" and checklist["name"] == "pcb-mech-env":
+        from precis.checklist.pcb import mech_env_applies
+
+        graph = store.pcb_graph(ref_id)
+        if mech_env_applies(graph):
+            return True
+        return mech_env_applies({**graph, "features": store.pcb_features_list(ref_id)})
+    return True
+
+
 def current_fingerprint(
     store: Any, *, kind: str, ref_id: int, anchors: Sequence[str] = ()
 ) -> Fingerprint | None:

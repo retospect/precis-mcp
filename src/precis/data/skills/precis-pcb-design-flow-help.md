@@ -26,7 +26,7 @@ and chunks they rest on; every node is anchored to refdes/net handles.
 Owner skills named per step below own their verb detail — this skill is
 the router. Still landing (later slices of the same item): typed
 `selects`/`rejects` relations (interim below), consigned BOM lines, the
-budget `publish` helper, the `pcb-mech-env` checklist, and the `#REFDES`
+budget `publish` helper and the `#REFDES`
 selection view.
 
 ## The flow — eleven steps, each artifact homed
@@ -44,6 +44,30 @@ selection view.
 | 9 | layout | topo place → topo route → post-route widening from `est_current_a` → check surface | pcb | [[precis-pcb-topo-help]], [[precis-pcb-check-help]] |
 | 10 | mechanical / environment | checklist `pcb-mech-env` answered | checklist on the pcb | this skill |
 | 11 | review + fab | `op='review'`, then exports, consigned lines separate | pcb | [[precis-pcb-review-help]], [[precis-pcb-fab-help]] |
+
+## Mechanical / environment review (step 10)
+
+To activate `pcb-mech-env`, declare the board's flex process
+(`board.meta.process = 'flex-…'`), `fold_lines`, or the applicable fab
+features: `bend_zone`, `stiffener`, `coverlay_opening` or `tape_mask`
+(coating keep-off). These declarations are authorable through the MCP today.
+
+Board metadata keys `flex`, `coating`, `enclosure`, `environment`, `outdoor`
+and `wet` are also read if present and trigger the checklist by presence,
+including incomplete declarations. They cannot be set through the MCP yet
+(gr524298). A plain rigid board gets only `pcb-tapeout` by default.
+
+`put(kind='pcb', id=<slug>, args={'op':'review', 'page_size':60})` works
+both checklists through the same review job; re-run if the summary reports
+items left. Read `get(kind='checklist', id='pcb-mech-env', target='pcb:<slug>')`.
+Its eight judgment items cover bend zones, stiffeners, coverlay clearances,
+coating keep-off, access after coating, mounting/strain relief, every part's
+temperature rating and condensation/ingress. Coverlay openings must be
+≥ pad + 0.1 mm and ≥ 0.15 mm from the next trace.
+
+Unrepresented or missing geometry answers `not checkable (gr520329)`;
+it never becomes a pass. See [[precis-pcb-review-help]] for verdicts,
+evidence and re-runs.
 
 ## The selection record — why a part was chosen
 

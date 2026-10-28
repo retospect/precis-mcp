@@ -359,7 +359,6 @@ the copper can't disagree. A failing assert blocks the publish.
 4. **Budget helper + `est_current_a` hand-off** (6). This waits on the
    topo realiser's widening (pcb-topo-place slice 5) only for its AC4
    copper check; the publish half ships alone.
-5. **`pcb-mech-env` checklist** (5).
 
 ## Open questions / decisions log
 

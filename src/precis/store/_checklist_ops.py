@@ -379,7 +379,18 @@ class ChecklistMixin:
                 ") ORDER BY c.name",
                 (target_ref_id, target_kind),
             ).fetchall()
-        return [_row_to_checklist(r) for r in rows]
+        from precis.checklist.status import default_applies
+
+        return [
+            cl
+            for r in rows
+            if default_applies(
+                self, cl := _row_to_checklist(r), target_kind, target_ref_id
+            )
+            or self.checklist_assignment_live(
+                target_ref_id=target_ref_id, checklist_id=cl["id"]
+            )
+        ]
 
     # -- verdicts ------------------------------------------------------------
 

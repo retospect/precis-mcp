@@ -2127,7 +2127,8 @@ class PcbHandler(Handler):
     def _op_review(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'review', 'item'?, 'page_size'?})`` — pcb-datasheet-
         review slice 7: enqueue a ``pcb_review`` job over the
-        ``pcb-tapeout`` judgment items that are not checked or stale. The
+        applicable ``pcb-tapeout`` / ``pcb-mech-env`` judgment items that
+        are not checked or stale. The
         job runs the check surface fresh itself (:mod:`precis.pcb.
         check_run`, persisted, ERC included) and quotes the run by id; this
         op runs no check. Nothing queued → no job: a settled design costs
@@ -2166,13 +2167,10 @@ class PcbHandler(Handler):
                     "checklist_sync job — file a gripe if it stays absent",
                 ],
             )
-        status_next = (
-            f"Next: get(kind='checklist', id='{pcb_review.CHECKLIST}', "
-            f"target='pcb:{ref.slug}')"
-        )
+        status_next = f"Next: get(kind='checklist', target='pcb:{ref.slug}')"
         if item is not None and not any(st.name == item for st in q.statuses):
             raise BadInput(
-                f"pcb: {item!r} is not an item on {pcb_review.CHECKLIST}",
+                f"pcb: {item!r} is not an item on the applicable review checklists",
                 options=[st.name for st in q.statuses],
             )
         work = list(q.todo)

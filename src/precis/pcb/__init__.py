@@ -7,6 +7,15 @@ board already placed rectangles — and keep every stage a pure function
 over it so each is unit-testable in isolation. Export is the one place a
 design leaves the relational graph.
 
+``pcb_review`` works the shipped ``pcb-tapeout`` and conditionally assigned
+``pcb-mech-env`` judgment ledgers through the same checklist sync/status/write
+path. Mechanical review is declaration-driven (flex process, fab features or
+board metadata), so a plain rigid board gains no implicit mechanical gate.
+Mechanical verdicts cover the whole board and consume the ``pcb:mech-env``
+input revision: pcb_graph omits fab polygons, copper and footprint geometry,
+so its fingerprint alone cannot invalidate a mask/coverlay decision. Missing
+geometry records ``not checkable (gr520329)``, never an inferred pass.
+
 **Routing is retired** (Reto 2026-10-25): the vector router
 (:mod:`~precis.pcb.vroute`) was deleted — main keeps tag ``vroute-final``
 for its last build. Topological routing (topo slice 2,

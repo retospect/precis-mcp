@@ -25,6 +25,50 @@ from precis.pcb.route_state import route_state
 #: How many offending names a tool result quotes before truncating.
 _EVIDENCE_LIMIT = 20
 
+MECH_ENV_CHECKLIST = "pcb-mech-env"
+MECH_ENV_INPUT = "pcb:mech-env"
+MECH_ENV_META_KEYS = frozenset(
+    {"flex", "coating", "enclosure", "environment", "outdoor", "wet"}
+)
+MECH_ENV_FEATURES = frozenset(
+    {"bend_zone", "stiffener", "coverlay_opening", "tape_mask"}
+)
+
+
+def mech_env_applies(design: dict[str, Any]) -> bool:
+    """Authored flex/fab declarations, or the metadata fallback (gr519925).
+
+    Key presence is deliberate: even an incomplete environment declaration
+    calls for review. A layer count alone says nothing about flexibility.
+    """
+    board = design.get("board") or {}
+    meta = board.get("meta") or {}
+    return bool(
+        MECH_ENV_META_KEYS.intersection(meta)
+        or str(meta.get("process") or "").startswith("flex-")
+        or board.get("fold_lines")
+        or any(
+            f.get("ftype") in MECH_ENV_FEATURES for f in design.get("features") or []
+        )
+    )
+
+
+def mech_env_design(store: Any, ref_id: int) -> dict[str, Any]:
+    """Review geometry omitted by pcb_graph; use the existing stored rows."""
+    graph = _graph(store, ref_id)
+    board = dict(graph.get("board") or {})
+    board["meta"] = {
+        k: v for k, v in (board.get("meta") or {}).items() if k != "drc_runs_by_phase"
+    }
+    board_id = board.get("board_id")
+    return {
+        "board": board,
+        "features": store.pcb_features_list(ref_id),
+        "copper": store.pcb_copper_list(board_id) if board_id is not None else [],
+        "footprints": store.pcb_footprints_for(ref_id),
+        "local_footprints": store.pcb_local_footprints_for(ref_id),
+    }
+
 
 def _digest(payload: Any) -> str:
     raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
@@ -190,6 +234,8 @@ class PcbBridge:
         )
 
     def input_revision(self, store: Any, ref_id: int, name: str) -> Any:
+        if name == MECH_ENV_INPUT:
+            return _digest(mech_env_design(store, ref_id))
         # ``part:<C#>`` — the part's datasheet-facts rev (slice 7's
         # pcb_review records it per consumed part): a corrected fact
         # marks every verdict that read it stale. A part with no ref yet

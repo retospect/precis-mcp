@@ -18,7 +18,8 @@ kinds: [pcb, checklist, job]
 # precis-pcb-review-help — the review pass
 
 `put(kind='pcb', id=<slug>, args={'op':'review'})` queues one
-`pcb_review` job over the `pcb-tapeout` **judgment** items whose status is
+`pcb_review` job over the `pcb-tapeout` and applicable `pcb-mech-env`
+**judgment** items whose status is
 `not checked` or `stale (…)`. When nothing is queued it says so and mints
 no job (and no check run is written).
 
@@ -70,6 +71,37 @@ anchored to the refdes/nets it is about.
 
 Read the result: `get(kind='checklist', id='pcb-tapeout',
 target='pcb:<slug>')`.
+
+## Mechanical / environment checklist
+
+To activate `pcb-mech-env`, declare the board's flex process
+(`board.meta.process = 'flex-…'`), `fold_lines`, or the applicable fab
+features: `bend_zone`, `stiffener`, `coverlay_opening` or `tape_mask`
+(coating keep-off). These declarations are authorable through the MCP today.
+
+Board metadata keys `flex`, `coating`, `enclosure`, `environment`, `outdoor`
+and `wet` are also read if present and trigger the checklist by presence.
+They cannot be set through the MCP yet (gr524298). Plain rigid boards have
+no implicit mechanical checklist; explicit assignment still works.
+
+The eight judgment items ask about bend zones clear of vias/parts, stiffener
+support, coverlay openings ≥ pad + 0.1 mm and ≥ 0.15 mm from the next trace,
+coating keep-off, test/programming access after coating, mounting and strain
+relief, every part's operating temperature, and condensation/ingress.
+
+The same `op='review'` works both ledgers; use `page_size:60` or re-run to
+continue beyond the default 15 items. `args.item` can name either checklist's
+item. Read `get(kind='checklist', id='pcb-mech-env', target='pcb:<slug>')`.
+The reviewer also receives board declarations, fab features, stored copper,
+footprints and instance poses.
+Missing geometry records `not checkable` with reason
+`not checkable (gr520329): …`. Missing footprints/placements and unrepresented
+assembled enclosure/access geometry cannot support a pass. A clean electrical
+DRC never proves mechanical compliance.
+
+Mechanical verdicts cover the whole board and consume `pcb:mech-env`, a
+revision of its declarations, features and copper. Changing the environment
+or a mask makes them stale even when no refdes or net changed.
 
 ## Staleness and re-runs
 

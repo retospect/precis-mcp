@@ -1,7 +1,8 @@
 """The pcb re-check pass — ``pcb_review``'s queue, evidence, prompt and
 verdict write (docs/backlog/pcb-datasheet-review.md slice 7, in-scope 7).
 
-The work queue is the ``pcb-tapeout`` checklist's status on one design
+The work queue is the status of ``pcb-tapeout`` and applicable
+``pcb-mech-env`` on one design
 (:func:`precis.checklist.status.compute_statuses`): only ``judgment``
 items whose status is ``not checked`` or ``stale (...)`` are worked. A
 settled item is never re-asked, so a re-run on an unchanged design makes
@@ -52,11 +53,13 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from precis import pcb as _pcb_pkg
+from precis.checklist.pcb import MECH_ENV_CHECKLIST, MECH_ENV_INPUT, mech_env_design
 from precis.checklist.status import (
     NOT_CHECKABLE,
     ItemStatus,
     bridge_for,
     compute_statuses,
+    default_applies,
 )
 from precis.pcb import datasheet_facts as ds_facts
 from precis.pcb.catalog import parse_passive_description
@@ -64,7 +67,7 @@ from precis.pcb.catalog import parse_passive_description
 if TYPE_CHECKING:
     from precis.store import Store
 
-#: The checklist the pass works (``default_for: [pcb]``).
+#: The primary checklist (``pcb-mech-env`` supplements it when applicable).
 CHECKLIST = "pcb-tapeout"
 
 #: ``checked_by`` on every verdict this pass writes — what ``op='forget'`` and a reader filter on.
@@ -96,8 +99,9 @@ def part_input(lcsc: str) -> str:
 
 @dataclass
 class Queue:
-    """One design's review state: the checklist row, every item's status,
-    and the judgment items the pass must work, in checklist order."""
+    """One design's review state: the primary checklist row, every applicable
+    item's status and queued judgment items. Each item retains its checklist
+    id so multiple ledgers share one pass without mixing verdicts."""
 
     checklist: dict[str, Any] | None
     statuses: list[ItemStatus] = field(default_factory=list)
@@ -106,19 +110,47 @@ class Queue:
 
 
 def queue(store: Store, ref_id: int, *, item: str | None = None) -> Queue:
-    """The judgment items on ``pcb-tapeout`` that are ``not checked`` or
+    """The judgment items on the applicable pcb checklists that are ``not checked`` or
     ``stale`` for this design. ``reason`` says why the queue is empty when
     the checklist is missing or not assigned. A current ``not checkable``
     verdict is neither of those, so it is not queued until it goes stale."""
     checklist = store.checklist_get(CHECKLIST)
     if checklist is None:
         return Queue(None, reason=f"checklist {CHECKLIST!r} is not installed")
+    primary = _queue_checklist(store, ref_id, checklist, item=item)
+    if primary.reason is not None:
+        return primary
+    mechanical = store.checklist_get(MECH_ENV_CHECKLIST)
+    if mechanical is None:
+        # A declared board must not silently lose its mechanical review
+        # if boot-time checklist sync has not installed the new file yet.
+        if default_applies(
+            store, {"name": MECH_ENV_CHECKLIST, "default_for": ["pcb"]}, "pcb", ref_id
+        ):
+            primary.reason = f"checklist {MECH_ENV_CHECKLIST!r} is not installed"
+        return primary
+    extra = _queue_checklist(store, ref_id, mechanical, item=item)
+    if extra.reason is None:
+        primary.statuses.extend(extra.statuses)
+        primary.todo.extend(extra.todo)
+    return primary
+
+
+def _queue_checklist(
+    store: Store, ref_id: int, checklist: dict[str, Any], *, item: str | None
+) -> Queue:
     explicit = store.checklist_assignment_live(
         target_ref_id=ref_id, checklist_id=checklist["id"]
     )
-    if not explicit and "pcb" not in (checklist.get("default_for") or []):
-        return Queue(checklist, reason=f"{CHECKLIST} is not assigned to this design")
+    if not explicit and not default_applies(store, checklist, "pcb", ref_id):
+        return Queue(
+            checklist, reason=f"{checklist['name']} is not assigned to this design"
+        )
     items = store.checklist_items_current(checklist["id"], target_ref_id=ref_id)
+    items = [
+        dict(it, checklist_id=checklist["id"], checklist_name=checklist["name"])
+        for it in items
+    ]
     verdicts = store.checklist_verdicts_latest_for_target(
         target_ref_id=ref_id, checklist_id=checklist["id"]
     )
@@ -157,7 +189,9 @@ def _lcscs(graph: dict[str, Any]) -> set[str]:
     }
 
 
-def evidence(store: Store, ref_id: int, graph: dict[str, Any]) -> str:
+def evidence(
+    store: Store, ref_id: int, graph: dict[str, Any], *, mechanical: bool = False
+) -> str:
     """The shared evidence block: the latest persisted check run, the
     parts (with datasheet facts, or the line saying there are none) and
     the nets. Built once per run."""
@@ -219,6 +253,23 @@ def evidence(store: Store, ref_id: int, graph: dict[str, Any]) -> str:
     if len(nets_text) > _MAX_NETS_CHARS:
         nets_text = nets_text[:_MAX_NETS_CHARS] + "\n- … (nets cut for length)"
     out.append("\n## Nets\n" + (nets_text or "(no nets)"))
+    if mechanical:
+        design = mech_env_design(store, ref_id)
+        design["instances"] = graph.get("instances") or []
+        raw = json.dumps(design, sort_keys=True, default=str)
+        out.append(
+            "\n## Mechanical / environment declarations and stored geometry\n"
+            + raw[:24000]
+            + (
+                "\n(geometry cut for length; missing evidence is not checkable)"
+                if len(raw) > 24000
+                else ""
+            )
+            + "\nFootprints are part-local: mirror X on bottom, rotate clockwise, "
+            "then translate by the instance pose to compare to board features. "
+            "Enclosure/strain-relief geometry is not represented. Never infer "
+            "clearances when a footprint or placement is missing."
+        )
     return "\n".join(out)
 
 
@@ -266,7 +317,8 @@ def prompt(*, title: str, st: ItemStatus, evidence_text: str) -> str:
         phase=item.get("phase") or "—",
         severity=item.get("severity") or "—",
         prevents=item.get("prevents") or "",
-        body=(f"Notes: {body}\n" if body else ""),
+        body=(f"Applies: {item['applies']}\n" if item.get("applies") else "")
+        + (f"Notes: {body}\n" if body else ""),
         offered=json.dumps([MARGIN_INPUT]),
         evidence=evidence_text,
     )
@@ -361,8 +413,22 @@ def record(
         for a in answer.anchors
         if bridge is not None and bridge.anchor_exists(store, ref_id, a)
     ]
+    mechanical = st.item.get("checklist_name") == MECH_ENV_CHECKLIST
+    if mechanical:
+        # Environment and geometry belong to the board, even when the model
+        # names one connector. Narrow refdes fingerprints omit both.
+        anchors = []
+        if answer.verdict == "pass":
+            missing = _mechanical_missing(store, ref_id, st.name)
+            if missing:
+                answer = replace(answer, verdict="not_checkable", reason=missing)
     if answer.verdict == "pass":
-        factless = factless_parts(anchors, graph, revisions)
+        factless = factless_parts(
+            anchors,
+            graph,
+            revisions,
+            allow_generic=not (mechanical and st.name == "operating-temperature"),
+        )
         if factless:
             answer = replace(
                 answer,
@@ -370,10 +436,14 @@ def record(
                 reason=f"pass refused: no datasheet facts for {', '.join(factless)}",
             )
     inputs = _consumed(answer, anchors, revisions, graph)
+    if mechanical and bridge is not None:
+        inputs[MECH_ENV_INPUT] = revisions[MECH_ENV_INPUT]
     fp = bridge.fingerprint(store, ref_id, anchors).digest if bridge else None
     not_checkable = answer.verdict == "not_checkable"
     verdict = NOT_CHECKABLE if not_checkable else answer.verdict
     reason = answer.reason or ("evidence missing" if not_checkable else "")
+    if mechanical and not_checkable and "not checkable (gr520329)" not in reason:
+        reason = f"not checkable (gr520329): {reason}"
     evidence_out: dict[str, Any] = {"reason": reason}
     if not not_checkable:
         evidence_out["quote"] = answer.quote
@@ -402,6 +472,42 @@ def record(
     if answer.correction:
         line += f" — fix: {answer.correction}"
     return line
+
+
+def _mechanical_missing(store: Store, ref_id: int, name: str) -> str | None:
+    """Refuse geometry passes beyond the evidence offered to the reviewer.
+
+    gr520329 landed fab polygons and bend-zone DRC; it did not add an
+    enclosure/strain-relief model. Missing footprints and placements also
+    cannot establish clearances just because a fab polygon exists.
+    """
+    unavailable = {
+        "post-coating-access": "assembled test/programming access geometry after coating",
+        "mounting-strain-relief": "enclosure, mounting and strain-relief geometry",
+    }
+    if name in unavailable:
+        return unavailable[name]
+    feature = {
+        "bend-zones-clear": "bend_zones",
+        "stiffeners-support-loads": "stiffeners",
+        "coverlay-clearances": "coverlay_openings",
+        "coating-keepoff": "tape_masks",
+    }.get(name)
+    if feature:
+        from precis.pcb.session import fab_layers_from_features
+
+        design = mech_env_design(store, ref_id)
+        if not fab_layers_from_features(design["features"]).get(feature):
+            return f"no {feature} geometry declared"
+        for inst in store.pcb_graph(ref_id).get("instances") or []:
+            fp = (
+                design["footprints"].get(inst["part_lcsc"])
+                if inst.get("part_lcsc")
+                else design["local_footprints"].get(inst.get("footprint"))
+            ) or {}
+            if inst.get("x") is None or inst.get("y") is None or not fp.get("pads"):
+                return f"missing placement or footprint geometry for {inst['refdes']}"
+    return None
 
 
 def _consumed(
@@ -480,17 +586,22 @@ def generic_passive(inst: dict[str, Any]) -> bool:
 
 
 def factless_parts(
-    anchors: Sequence[str], graph: dict[str, Any], revisions: dict[str, Any]
+    anchors: Sequence[str],
+    graph: dict[str, Any],
+    revisions: dict[str, Any],
+    *,
+    allow_generic: bool = True,
 ) -> list[str]:
     """The parts a verdict reads (:func:`_consumed_refdes`) that have no
     datasheet facts (no part number, an unknown part, or facts rev 0) and
     are not :func:`generic_passive`. :func:`record` refuses a pass that
-    rests on any of them (Reto's ruling 2026-10-16)."""
+    rests on any of them (Reto's ruling 2026-10-16). Temperature review
+    disables the generic exemption: a value/package gives no temperature rating."""
     instances = {str(i["refdes"]): i for i in graph.get("instances") or []}
     out: list[str] = []
     for r in sorted(_consumed_refdes(anchors, graph)):
         inst = instances[r]
-        if generic_passive(inst):
+        if allow_generic and generic_passive(inst):
             continue
         lcsc = str(inst.get("part_lcsc") or "").strip().upper()
         if not lcsc:

@@ -1,7 +1,7 @@
 """``pcb_review`` job_type — the re-check pass over one pcb design
 (docs/backlog/pcb-datasheet-review.md slice 7, in-scope 7).
 
-Works the ``pcb-tapeout`` judgment items that are ``not checked`` or
+Works the ``pcb-tapeout`` and applicable ``pcb-mech-env`` judgment items that are ``not checked`` or
 ``stale`` on the design, one fresh-context model call each, and writes a
 ``machine``-origin verdict anchored to the refdes/nets it names with the
 decisive line quoted — or, when the evidence is missing (a part with no
@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from precis.checklist.pcb import MECH_ENV_CHECKLIST, MECH_ENV_INPUT, PcbBridge
 from precis.checklist.status import NOT_CHECKABLE
 from precis.errors import BadInput
 from precis.pcb import check_run, review
@@ -60,7 +61,8 @@ COMPATIBLE_EXECUTORS = frozenset({"job_inproc"})
 REQUIRES: frozenset[str] = frozenset()
 
 DESCRIPTION = (
-    "Re-check a pcb design against pcb-tapeout: work the not-checked and "
+    "Re-check a pcb design against pcb-tapeout and applicable pcb-mech-env: "
+    "work the not-checked and "
     "stale judgment items (one fresh-context call each), write anchored "
     "machine verdicts quoting the decisive line, or a 'not checkable' verdict."
 )
@@ -88,7 +90,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     if q.checklist is None or q.reason is not None:
         ctx.record_failure(f"pcb_review: {slug}: {q.reason}", failure_class="infra")
         return
-    checklist_id = int(q.checklist["id"])
     graph = store.pcb_graph(pcb_ref_id)
     revisions = review.input_revisions(store, graph)
 
@@ -103,6 +104,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         return
     work = work[:limit]
+    mechanical = any(st.item.get("checklist_name") == MECH_ENV_CHECKLIST for st in work)
+    if mechanical:
+        revisions[MECH_ENV_INPUT] = PcbBridge().input_revision(
+            store, pcb_ref_id, MECH_ENV_INPUT
+        )
 
     design = store.pcb_load(pcb_ref_id)
     if design["board"] is None:
@@ -130,7 +136,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         else "check: nothing the rules at this phase can check"
     )
 
-    evidence_text = review.evidence(store, pcb_ref_id, graph)
+    evidence_text = review.evidence(store, pcb_ref_id, graph, mechanical=mechanical)
     lines: list[str] = []
     failures: list[str] = []
     cancelled = False
@@ -148,7 +154,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 review.record(
                     store,
                     pcb_ref_id,
-                    checklist_id=checklist_id,
+                    checklist_id=int(st.item["checklist_id"]),
                     st=st,
                     answer=answer,
                     revisions=revisions,
@@ -188,8 +194,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         + (f"; {'; '.join(tail)}" if tail else "")
         + f"\n{check_line}\n"
         + "\n".join(f"- {line}" for line in lines)
-        + f"\nNext: get(kind='checklist', id='{review.CHECKLIST}', "
-        f"target='pcb:{slug}')\n",
+        + f"\nNext: get(kind='checklist', target='pcb:{slug}')\n",
     )
 
 

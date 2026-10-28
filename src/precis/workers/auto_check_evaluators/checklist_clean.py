@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.checklist import compute_statuses
+from precis.checklist.status import default_applies
 from precis.errors import BadInput
 
 if TYPE_CHECKING:
@@ -68,7 +69,7 @@ def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
     ref_id, kind = resolved
     assigned = store.checklist_assignment_live(
         target_ref_id=ref_id, checklist_id=checklist["id"]
-    ) or kind in (checklist.get("default_for") or [])
+    ) or default_applies(store, checklist, kind, ref_id)
     if not assigned:
         return None
     items = store.checklist_items_current(checklist["id"], target_ref_id=ref_id)

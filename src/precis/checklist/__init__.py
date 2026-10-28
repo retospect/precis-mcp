@@ -7,6 +7,14 @@ holds the one piece two callers need identically — **how a target's
 per-item status is derived** — plus the per-kind code that turns a
 checklist from a generic ledger into a gate on a real design.
 
+Kind defaults share :func:`precis.checklist.status.default_applies` across
+assignment listing, status, review and checklist_clean. ``pcb-mech-env`` is
+the conditional pcb default: authored flex/fab/environment declarations turn
+it on, while an explicit assignment remains authoritative. It uses the same
+shipped YAML sync and append-only ledger as ``pcb-tapeout``; no second seed
+or verdict mechanism. Board-level mechanical verdicts additionally consume
+a geometry input revision because the pcb graph omits those features.
+
 Why a separate package and not more handler code: the handler renders
 status, and the ``checklist_clean`` ``auto_check`` evaluator
 (``workers/auto_check_evaluators/checklist_clean.py``) decides a todo on

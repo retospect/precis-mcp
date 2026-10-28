@@ -1,0 +1,93 @@
+# Seeded and revisioned by checklist_sync, exactly like pcb-tapeout.
+# The pcb bridge gates this kind default on authored mechanical/environment
+# declarations. Explicit assignments remain available on any board.
+name: pcb-mech-env
+default_for: [pcb]
+items:
+  - name: bend-zones-clear
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "Undeclared bends or vias and parts in a bend zone crack the flex or its joints."
+    applies: "flex or a declared fold/bend"
+    body: >-
+      Bend zones must be declared and free of vias and parts. Read bend_zone
+      features and the fresh bend_zone_via/bend_zone_part DRC findings. Missing
+      geometry or incomplete placement is not_checkable with reason
+      'not checkable (gr520329)', never pass. A clean unrelated check is not evidence.
+  - name: stiffeners-support-loads
+    phase: layout
+    severity: blocking
+    decidability: judgment
+    prevents: "Connector insertion or heavy parts tear unsupported flex and solder joints."
+    applies: "flex with connectors or heavy parts"
+    body: >-
+      Confirm a stiffener under every connector and heavy part, using the
+      stiffener polygon, side, thickness and the supported part's footprint.
+      If the geometry or load/part evidence is missing, answer not_checkable
+      with reason 'not checkable (gr520329)'; do not infer support from a label.
+  - name: coverlay-clearances
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "Coverlay obscures a solder pad or exposes an adjacent trace."
+    applies: "flex with coverlay"
+    body: >-
+      Coverlay openings must be >= pad + 0.1 mm, with >= 0.15 mm to the next
+      trace. Quote measured dimensions from the opening, pad and trace geometry.
+      If any geometry is unavailable, answer not_checkable with reason
+      'not checkable (gr520329)', never pass from a declaration alone.
+  - name: coating-keepoff
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "Coating blocks a sensor, connector contact or test point."
+    applies: "a coated board"
+    body: >-
+      Confirm coating keep-off over every sensor, connector and test point,
+      using the tape_mask polygons and the exposed surfaces of those parts.
+      Missing geometry answers not_checkable with reason
+      'not checkable (gr520329)', never a silent pass.
+  - name: post-coating-access
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "The coated assembly cannot be tested or programmed without destructive rework."
+    applies: "a coated board"
+    body: >-
+      Establish a test or programming access path after coating and assembly.
+      A netlist test point alone is insufficient: quote the mask and physical
+      probe/cable access evidence. Unrepresented access geometry answers
+      not_checkable with reason 'not checkable (gr520329)'.
+  - name: mounting-strain-relief
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "Mounting loads or cable pulls damage the board, flex or connectors."
+    body: >-
+      Review mounting and strain relief against the enclosure and cable loads.
+      Mounting holes alone do not establish strain relief. If the required
+      assembly geometry is not represented, answer not_checkable with reason
+      'not checkable (gr520329)', never pass.
+  - name: operating-temperature
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "A part operates outside its rated temperature in the declared environment."
+    body: >-
+      Every part's operating-temperature range must cover the environment's
+      full minimum/maximum range. Quote each rating and the environment bounds;
+      generic passives need temperature ratings too. Missing ratings or
+      environment bounds answer not_checkable with reason
+      'not checkable (gr520329)', never pass.
+  - name: condensation-ingress
+    phase: fab
+    severity: blocking
+    decidability: judgment
+    prevents: "Condensation or water ingress corrodes or shorts the assembly."
+    body: >-
+      Review condensation and ingress for the declared environment, coating
+      and enclosure. Quote evidence for sealing, drainage/venting and the
+      applicable exposure; coating alone is not proof of ingress protection.
+      Missing evidence or unrepresented enclosure geometry answers
+      not_checkable with reason 'not checkable (gr520329)', never pass.
