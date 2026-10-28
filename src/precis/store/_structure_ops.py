@@ -352,12 +352,16 @@ class StructureMixin:
         failure lands as ``{'skipped': …}``."""
         from precis.structure import cache as _cache
         from precis.structure import probe as _probe
+        from precis.structure.relax_dispatch import phase
 
-        key = _cache.pi_key(scene)
+        with phase(ref_id, "pi_cache_key"):
+            key = _cache.pi_key(scene)
         try:
-            data = _probe.pi_perceive(scene)
+            with phase(ref_id, "pi_perceive"):
+                data = _probe.pi_perceive(scene)
             if "skipped" not in data:
-                data["check"] = _probe.pi_crosscheck(scene, data)
+                with phase(ref_id, "pi_crosscheck"):
+                    data["check"] = _probe.pi_crosscheck(scene, data)
         except Exception as exc:
             # Perception is advisory — log it and store the skip reason
             # rather than failing the save.
@@ -1056,6 +1060,90 @@ class StructureMixin:
         return int(ref.meta.get("version", 0))
 
     # -- compute runs ----------------------------------
+    def structure_queue_preflight(
+        self, ref_id: int, *, on_version: int, request_key: str, fidelity: str = "clean"
+    ) -> int:
+        """Expose deferred preparation without claiming it has computed.
+
+        Lock the owner so request and worker can both ensure the pending row
+        without duplicating it. The uncached pending row is completed in the
+        worker's preparation transaction; completed cache evidence is untouched.
+        """
+        with self.tx() as conn:
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,)
+            )
+            row = conn.execute(
+                "SELECT id FROM struct_runs WHERE ref_id = %s "
+                "AND params->>'preflight_request' = %s ORDER BY id DESC LIMIT 1",
+                (ref_id, request_key),
+            ).fetchone()
+            if row is not None:
+                return int(row[0])
+            run_id = self.structure_record_run(
+                ref_id,
+                fidelity=fidelity,
+                on_version=on_version,
+                converged=False,
+                n_steps=0,
+                max_disp=0.0,
+                status="queued",
+                params={"preflight_request": request_key},
+                conn=conn,
+            )
+            # Keep a previous actual result visible while another job waits.
+            summary = {
+                "rung": fidelity,
+                "status": "queued",
+                "converged": False,
+                "n_steps": 0,
+                "max_disp": 0.0,
+                "note": "preflight queued; geometry has not been relaxed",
+                "preflight_request": request_key,
+            }
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object('last_relax', %s::jsonb) "
+                "WHERE ref_id = %s AND (meta->>'version')::int = %s "
+                "AND NOT (meta ? 'last_relax')",
+                (Jsonb(summary), ref_id, on_version),
+            )
+        return run_id
+
+    def structure_fail_preflight(
+        self, ref_id: int, request_key: str, reason: str
+    ) -> None:
+        """Close queued preparation after refusal without inventing evidence."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE struct_runs SET status = 'failed', params = params || %s "
+                "WHERE ref_id = %s AND params->>'preflight_request' = %s "
+                "AND status = 'queued'",
+                (Jsonb({"warning": reason}), ref_id, request_key),
+            )
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_set(meta, '{last_relax}', "
+                "(meta->'last_relax') || %s::jsonb) WHERE ref_id = %s "
+                "AND meta->'last_relax'->>'status' = 'queued' "
+                "AND meta->'last_relax'->>'preflight_request' = %s",
+                (Jsonb({"status": "failed", "note": reason}), ref_id, request_key),
+            )
+
+    def structure_stamp_last_relax(
+        self,
+        ref_id: int,
+        *,
+        on_version: int,
+        summary: dict[str, Any],
+        conn: Connection | None = None,
+    ) -> None:
+        """A worker result describes only the version it actually computed."""
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object('last_relax', %s::jsonb) "
+                "WHERE ref_id = %s AND (meta->>'version')::int = %s",
+                (Jsonb(summary), ref_id, on_version),
+            )
+
     def structure_record_run(
         self,
         ref_id: int,
@@ -1076,6 +1164,8 @@ class StructureMixin:
         final_geometry: dict[str, Any] | None = None,
         forces: dict[str, Any] | None = None,
         charges: dict[str, Any] | None = None,
+        conn: Connection | None = None,
+        pending_run_id: int | None = None,
     ) -> int:
         """Record one compute pass + its per-step convergence curve. The curve
         is stored as ``struct_frames`` (energy/force per step); geometry frames
@@ -1087,33 +1177,52 @@ class StructureMixin:
         force estimate was available. ``charges`` is always NULL today (no
         backend produces partial charges yet); the param exists so a future
         charge-bearing rung has a column to write without another migration.
+        ``conn`` joins the preparation save/revision transaction so a job
+        retry cannot recover prepared geometry without its run evidence.
+        ``pending_run_id`` completes only an uncached queued preparation row;
+        it never rewrites successful cache evidence.
         Returns the new ``struct_runs.id``."""
-        with self.tx() as conn:
-            row = conn.execute(
-                "INSERT INTO struct_runs "
-                "(ref_id, fidelity, status, model, on_version, converged, "
-                " n_steps, energy, max_force, max_disp, params, "
-                " cache_key, structure_sha, final_geometry, forces, charges) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (
-                    ref_id,
-                    fidelity,
-                    status,
-                    model,
-                    on_version,
-                    converged,
-                    n_steps,
-                    energy,
-                    max_force,
-                    max_disp,
-                    Jsonb(params or {}),
-                    cache_key,
-                    structure_sha,
-                    Jsonb(final_geometry) if final_geometry is not None else None,
-                    Jsonb(forces) if forces is not None else None,
-                    Jsonb(charges) if charges is not None else None,
-                ),
-            ).fetchone()
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
+            values = (
+                fidelity,
+                status,
+                model,
+                on_version,
+                converged,
+                n_steps,
+                energy,
+                max_force,
+                max_disp,
+                Jsonb(params or {}),
+                cache_key,
+                structure_sha,
+                Jsonb(final_geometry) if final_geometry is not None else None,
+                Jsonb(forces) if forces is not None else None,
+                Jsonb(charges) if charges is not None else None,
+            )
+            if pending_run_id is None:
+                row = conn.execute(
+                    "INSERT INTO struct_runs "
+                    "(ref_id, fidelity, status, model, on_version, converged, "
+                    " n_steps, energy, max_force, max_disp, params, "
+                    " cache_key, structure_sha, final_geometry, forces, charges) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (ref_id, *values),
+                ).fetchone()
+            else:
+                # Only a pending, uncached preparation can be completed in
+                # place. Successful run-cube entries remain append-only.
+                row = conn.execute(
+                    "UPDATE struct_runs SET fidelity=%s, status=%s, model=%s, "
+                    "on_version=%s, converged=%s, n_steps=%s, energy=%s, "
+                    "max_force=%s, max_disp=%s, params=params || %s, "
+                    "cache_key=%s, structure_sha=%s, final_geometry=%s, "
+                    "forces=%s, charges=%s WHERE id=%s AND ref_id=%s "
+                    "AND status='queued' AND cache_key IS NULL RETURNING id",
+                    (*values, pending_run_id, ref_id),
+                ).fetchone()
+            if row is None:
+                raise ValueError("structure_record_run write returned no run id")
             run_id = int(row[0])
             # the per-step curve is max_force (ml) or the max atomic move (clean);
             # either way a force-proxy, stored in max_force. Per-step energy is not

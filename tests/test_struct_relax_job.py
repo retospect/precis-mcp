@@ -167,6 +167,272 @@ def _exploding_runner(*a: Any, **kw: Any):
     raise AssertionError("the container RUNNER must not be called for this rung")
 
 
+def test_deferred_preflight_and_save_run_before_xtb(structure, monkeypatch):
+    """gr524236: the claimed job owns preparation before any xTB compute."""
+    import importlib
+
+    from precis.structure import RelaxResult
+
+    handler = importlib.import_module("precis.handlers.structure")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    payload = json.loads(_PD)
+    payload["cell"]["pbc"] = [False, False, False]
+    structure.put(id="deferred_xtb", text=json.dumps(payload))
+    ref = structure.store.get_ref(kind="structure", id="deferred_xtb")
+    version = structure.store.structure_version(ref.id)
+    structure.edit(id="deferred_xtb", ops=[{"op": "relax", "fidelity": "xtb"}])
+    with structure.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+    params = row[0]["params"]
+    assert params["input_scene"]
+    assert structure.store.structure_version(ref.id) == version
+    pending = structure.store.structure_runs(ref.id)
+    assert len(pending) == 1 and pending[0]["status"] == "queued"
+    phases = []
+
+    def preflight(scene, mode, *, steps):
+        phases.append("preflight")
+        assert mode == "clean" and steps == 200
+        scene.atoms["aPd2"].frac[0] = 0.27
+        return RelaxResult("clean", True, 1, 0.1), None
+
+    def gate(scene):
+        phases.append("gate")
+        assert scene.atoms["aPd2"].frac[0] == pytest.approx(0.27)
+        return []
+
+    original_save = structure.store.structure_save
+
+    def save(**kwargs):
+        phases.append("save")
+        return original_save(**kwargs)
+
+    def xtb(**kwargs):
+        assert phases == ["preflight", "gate", "save"]
+        phases.append("xtb")
+        assert kwargs["fidelity"] == "xtb"
+        scene, _ = structure.store.structure_load(ref.id)
+        assert kwargs["poscar"] == to_poscar(scene)
+        assert scene.atoms["aPd2"].frac[0] == pytest.approx(0.27)
+        return _stub_ml_runner(kwargs["poscar"])(**kwargs)
+
+    monkeypatch.setattr(handler, "_preflight_relax", preflight)
+    monkeypatch.setattr(handler, "_run_preflight_gate", gate)
+    monkeypatch.setattr(structure.store, "structure_save", save)
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", xtb)
+    monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+    assert phases == ["preflight", "gate", "save", "xtb"]
+    assert ("status", "succeeded") in events
+    assert structure.store.structure_version(ref.id) == version + 1
+    runs = structure.store.structure_runs(ref.id)
+    assert {run["fidelity"] for run in runs} == {"clean", "xtb"}
+    clean = [run for run in runs if run["fidelity"] == "clean"]
+    assert len(clean) == 1 and clean[0]["id"] == pending[0]["id"]
+    assert clean[0]["status"] == "succeeded" and clean[0]["n_steps"] == 1
+    assert clean[0]["converged"]
+    completed = structure.store.get_ref(kind="structure", id=ref.id).meta["last_relax"]
+    assert completed["rung"] == "xtb" and completed["converged"]
+    assert completed["energy"] == pytest.approx(-3.21)
+
+    structure.edit(id="deferred_xtb", ops=[{"op": "relax", "fidelity": "xtb"}])
+    last = structure.store.get_ref(kind="structure", id=ref.id).meta["last_relax"]
+    assert last == completed
+    queued = [
+        run
+        for run in structure.store.structure_runs(ref.id)
+        if run["status"] == "queued"
+    ]
+    assert len(queued) == 1 and queued[0]["id"] != pending[0]["id"]
+    assert queued[0]["fidelity"] == "clean" and not queued[0]["converged"]
+
+
+def test_finished_relax_does_not_replace_newer_last_relax(structure, monkeypatch):
+    """A late result belongs to its input version, never the current design."""
+    import importlib
+
+    from precis.structure import RelaxResult
+
+    handler = importlib.import_module("precis.handlers.structure")
+    structure.put(id="late_xtb", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="late_xtb")
+    params = _build_params(structure, ident="late_xtb", fidelity="xtb")
+    params["model"] = "gfn2-xtb"
+    scene, _ = structure.store.structure_load(ref.id)
+    params["cache_key"] = relax_cache.run_cache_key(
+        scene, fidelity="xtb", model="gfn2-xtb", params={"steps": 200}
+    )
+    monkeypatch.setattr(
+        handler, "run_relax", lambda *args, **kwargs: RelaxResult("clean", True, 2, 0.1)
+    )
+    structure.edit(id="late_xtb", ops=[{"op": "relax", "fidelity": "clean"}])
+    current = structure.store.get_ref(kind="structure", id=ref.id)
+    assert current.meta["version"] > params["on_version"]
+    latest = current.meta["last_relax"]
+    assert latest["rung"] == "clean" and latest["n_steps"] == 2
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", _stub_ml_runner(params["poscar"]))
+    monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+    assert ("status", "succeeded") in events
+    after = structure.store.get_ref(kind="structure", id=ref.id)
+    assert after.meta["last_relax"] == latest
+    assert after.meta["version"] == current.meta["version"]
+    result = structure.store.structure_runs(ref.id)[0]
+    assert result["fidelity"] == "xtb" and result["on_version"] == params["on_version"]
+
+
+def test_stale_queued_relax_marks_pending_run_failed(structure, monkeypatch):
+    """Input refusal closes the queued audit row without claiming a preflight."""
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    structure.put(id="stale_queued_xtb", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="stale_queued_xtb")
+    structure.edit(id="stale_queued_xtb", ops=[{"op": "relax", "fidelity": "xtb"}])
+    pending = structure.store.structure_runs(ref.id)[0]
+    assert pending["status"] == "queued"
+    with structure.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s", (ref.id,)
+        ).fetchone()
+    params = row[0]["params"]
+    structure.edit(
+        id="stale_queued_xtb",
+        ops=[{"op": "add_atom", "element": "H", "frac": [0.5, 0.5, 0.5]}],
+    )
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", _exploding_runner)
+    monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+    failures = [event[1] for event in events if event[0] == "fail"]
+    assert len(failures) == 1 and failures[0]["failure_class"] == "input"
+    runs = structure.store.structure_runs(ref.id)
+    assert len(runs) == 1 and runs[0]["id"] == pending["id"]
+    assert runs[0]["status"] == "failed"
+    assert not runs[0]["converged"] and runs[0]["n_steps"] == 0
+    assert runs[0]["energy"] is None and runs[0]["forces"] is None
+
+
+@pytest.mark.parametrize(
+    ("error_type", "failure_class"),
+    [("BadInput", "input"), ("Unsupported", "input"), ("RuntimeError", "infra")],
+)
+def test_deferred_preparation_failure_class(
+    store, monkeypatch, error_type, failure_class
+):
+    """Invalid queued inputs are terminal input failures, not infrastructure."""
+    from precis.errors import BadInput, Unsupported
+
+    detail = "preparation rejected the queued structure"
+    if error_type == "RuntimeError":
+        error: Exception = RuntimeError(detail)
+    else:
+        cls = {"BadInput": BadInput, "Unsupported": Unsupported}[error_type]
+        error = cls(detail, next="repair the structure before requesting relax again")
+
+    def prepare(self, params, *, job_id=None):
+        assert job_id == 999
+        raise error
+
+    monkeypatch.setattr(StructureHandler, "prepare_relax_job", prepare)
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", _exploding_runner)
+    monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+    ctx, events = _fake_ctx(store, {"input_scene": {}})
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+    failures = [event[1] for event in events if event[0] == "fail"]
+    assert len(failures) == 1
+    assert failures[0]["failure_class"] == failure_class
+    assert detail in failures[0]["reason"]
+    assert ("status", "succeeded") not in events
+
+
+@pytest.mark.parametrize("retry_kind", ["same-job", "different-job", "later-edit"])
+def test_deferred_preparation_recovers_only_its_own_committed_revision(
+    structure, monkeypatch, retry_kind
+):
+    """A crash after save resumes once; another job or later edit cannot adopt it."""
+    import importlib
+    from copy import deepcopy
+    from dataclasses import replace
+
+    from precis.structure import RelaxResult
+
+    handler = importlib.import_module("precis.handlers.structure")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    structure.put(id="recover_xtb", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="recover_xtb")
+    version = structure.store.structure_version(ref.id)
+    structure.edit(id="recover_xtb", ops=[{"op": "relax", "fidelity": "xtb"}])
+    with structure.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+    job_id, params = row[0], row[1]["params"]
+
+    def preflight(scene, mode, *, steps):
+        scene.atoms["aPd2"].frac[0] = 0.27
+        return RelaxResult("clean", True, 1, 0.1), None
+
+    monkeypatch.setattr(handler, "_preflight_relax", preflight)
+    monkeypatch.setattr(handler, "_run_preflight_gate", lambda scene: [])
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", _exploding_runner)
+    monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+
+    def crash_after_save(**kwargs):
+        assert "params" in kwargs and "input_scene" not in kwargs["params"]
+        raise RuntimeError("crash before saving prepared job params")
+
+    first, _ = _fake_ctx(structure.store, deepcopy(params))
+    first = replace(first, ref_id=job_id, set_meta=crash_after_save)
+    with pytest.raises(RuntimeError, match="crash before saving prepared job params"):
+        struct_relax._dispatch(first, struct_relax.SPEC)
+    assert structure.store.structure_version(ref.id) == version + 1
+    assert "input_scene" in first.meta["params"]
+    runs = structure.store.structure_runs(ref.id)
+    assert len(runs) == 1 and runs[0]["fidelity"] == "clean"
+
+    if retry_kind == "later-edit":
+        structure.edit(
+            id="recover_xtb",
+            ops=[{"op": "add_atom", "element": "H", "frac": [0.5, 0.5, 0.5]}],
+        )
+    saved_version = structure.store.structure_version(ref.id)
+    saved_scene, _ = structure.store.structure_load(ref.id)
+    saved_poscar = to_poscar(saved_scene)
+
+    def no_reprepare(*args, **kwargs):
+        pytest.fail("a committed preparation must not run or save again")
+
+    monkeypatch.setattr(handler, "_preflight_relax", no_reprepare)
+    monkeypatch.setattr(handler, "_run_preflight_gate", no_reprepare)
+    monkeypatch.setattr(structure.store, "structure_save", no_reprepare)
+    backend = _stub_ml_runner(saved_poscar)
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", backend)
+    retry, events = _fake_ctx(structure.store, deepcopy(params))
+    retry = replace(retry, ref_id=job_id + (retry_kind == "different-job"))
+    struct_relax._dispatch(retry, struct_relax.SPEC)
+
+    if retry_kind == "same-job":
+        assert ("status", "succeeded") in events
+        assert len(backend.calls) == 1
+        assert backend.calls[0]["fidelity"] == "xtb"
+        assert backend.calls[0]["poscar"] == saved_poscar
+    else:
+        assert backend.calls == []
+        failures = [event[1] for event in events if event[0] == "fail"]
+        assert len(failures) == 1 and failures[0]["failure_class"] == "input"
+        assert "stale" in failures[0]["reason"]
+    assert structure.store.structure_version(ref.id) == saved_version
+    after, _ = structure.store.structure_load(ref.id)
+    assert to_poscar(after) == saved_poscar
+    runs = structure.store.structure_runs(ref.id)
+    assert sum(run["fidelity"] == "clean" for run in runs) == 1
+
+
 def test_build_run_argv_docker_vs_podman():
     docker = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
     assert docker[:5] == ["docker", "run", "--rm", "--name", "precis-job-7"]
@@ -210,9 +476,14 @@ def test_dispatch_populates_the_run_cube(structure, tmp_path, monkeypatch):
 def test_seam_a_later_handler_relax_is_a_zero_compute_hit(
     structure, tmp_path, monkeypatch
 ):
-    """The whole point: the dispatch writes the cube, then an *otherwise-gated*
-    ml relax on the same design returns from cache — no backend, no Unsupported,
-    and the relaxed geometry lands on the design."""
+    """A worker cache hit needs neither a local ML backend nor preflight."""
+    import importlib
+
+    from precis.structure import RelaxUnsupported
+
+    handler = importlib.import_module("precis.handlers.structure")
+    relax_module = importlib.import_module("precis.structure.relax")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
     structure.put(id="pd_pair", text=_PD)
     params = _build_params(structure, fidelity="ml")
     monkeypatch.setattr(
@@ -223,9 +494,24 @@ def test_seam_a_later_handler_relax_is_a_zero_compute_hit(
     ctx, _ = _fake_ctx(structure.store, params)
     struct_relax._dispatch(ctx, struct_relax.SPEC)
 
-    # ml would raise Unsupported (no MACE here); the seam makes it a cache hit.
+    def missing_backend(*args, **kwargs):
+        raise RelaxUnsupported("no ML backend on request host")
+
+    def no_preflight(*args, **kwargs):
+        pytest.fail("raw input cache hit must not run the clean preflight")
+
+    monkeypatch.setattr(relax_module, "_ml_calculator", missing_backend)
+    monkeypatch.setattr(relax_module, "_check_ml_backend", missing_backend)
+    monkeypatch.setattr(handler, "_preflight_relax", no_preflight)
     resp = structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
-    assert "relax[ml]" in resp.body and "converged" in resp.body
+    assert "dispatched" in resp.body
+    with structure.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (params["structure_ref_id"],),
+        ).fetchone()
+    prepared = structure.prepare_relax_job(row[0]["params"])
+    assert prepared["cached_run_id"]
     reloaded, _ = structure.store.structure_load(
         structure.store.get_ref(kind="structure", id="pd_pair").id
     )

@@ -181,7 +181,7 @@ edit(
 )
 ```
 
-Each edit bumps the design version. A graph edit invalidates any prior relax.
+Each saved edit bumps the design version; a dispatched relax defers saving to its job. A graph edit invalidates any prior relax.
 
 ## Read the TOC — `get(id=<slug>)`
 
@@ -422,13 +422,21 @@ job to the GPU node and returns immediately. The job parents on the
 **structure itself** — you do *not* need to create a todo first (that
 requirement is gone). The relaxed geometry lands in the run-cube on
 completion; poll `view='runs'`. An identical relax — same geometry, same
-rung — is a **zero-compute cache hit** (returns synchronously, mints no job).
+rung — can be a **zero-compute cache hit**. Dispatched rungs (always `xtb`)
+look up the cache inside the job; locally available rungs can hit inline.
 
-**Pre-flight before the GPU spend.** A dispatch first runs `validate` as a
+**Preflight before the GPU spend.** A dispatched edit runs `validate` as a
 hard reject (overlap / over-valence / impossible bond, naming the pair),
-then a cheap local `clean` pre-relax (`preflight='emt'` for EMT), then
-re-checks the cache. The GPU is the last resort on bad geometry. (A plain
-local `clean`/`emt` to *fix* a clash is never gated.)
+then queues its input snapshot and returns the job id without saving a
+structure revision. A queued preflight run makes it visible immediately;
+it has no computed forces or convergence claim. The worker completes that
+same run. An existing `last_relax` result stays visible while work waits.
+Inside the job: cache lookup, `clean` pre-relax
+(`preflight='emt'` for EMT), cache re-check, MLIP gate and save/perception.
+A repair that adds validator errors is discarded: the job uses the input
+geometry and records a warning on the run. If the design changed while the
+job waited, it refuses the stale save; request relax again. A plain local
+`clean`/`emt` to fix a clash is never gated by the dispatch validator.
 
 ```python
 edit(

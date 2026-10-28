@@ -14,6 +14,15 @@ Slice 2). So a converged relax becomes a zero-compute cache hit for the next
 identical ``(structure_sha, fidelity, model, params, code_version)`` request, on
 this design or any other sharing the input geometry.
 
+**Preparation belongs to the job (gr524236).** New jobs carry an immutable
+Scene snapshot. Through Hub's structure sibling, the worker checks the cache,
+performs guarded preflight, gates and saves before backend compute. Prepared
+params are saved on the job for retry; the preparation revision also stores
+them atomically with its geometry/run evidence, so a crash before that job
+metadata write can recover the same preparation. Input refusals are classified
+as ``input``; only unexpected preparation failures are ``infra``.
+Legacy POSCAR jobs still run directly.
+
 **Two backends, routed by rung (gr346449).** The precis-dft image exposes
 exactly one subcommand, ``precis-dft-run gpaw-relax``, so it can only compute a
 GPAW rung (:data:`_CONTAINER_FIDELITIES`). The in-process rungs
@@ -89,6 +98,7 @@ from typing import Any
 
 import numpy as np
 
+from precis.structure.relax_dispatch import phase
 from precis.utils.container_limits import container_limit_flags, container_user_flags
 from precis.workers.job_types import JobTypeSpec
 
@@ -1067,6 +1077,47 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     result, and records the run-cube. ``ctx`` is a
     :class:`~precis.workers.executors._context.DispatchContext`."""
     params = (ctx.meta or {}).get("params") or {}
+    if "input_scene" in params:
+        # Workers reach kind behavior through Hub, never import handlers.
+        from precis.dispatch import Hub
+        from precis.errors import BadInput, Unsupported
+
+        try:
+            params = (
+                Hub(store=ctx.store)
+                .sibling("structure")
+                .prepare_relax_job(params, job_id=ctx.ref_id)
+            )
+        except (BadInput, Unsupported) as exc:
+            if (
+                "structure_ref_id" in params
+                and "on_version" in params
+                and "cache_key" in params
+            ):
+                ctx.store.structure_fail_preflight(
+                    int(params["structure_ref_id"]),
+                    f"{params['on_version']}:{params['cache_key']}",
+                    str(exc),
+                )
+            ctx.record_failure(
+                f"struct_relax: preparation refused: {exc}", failure_class="input"
+            )
+            return
+        except Exception as exc:
+            ctx.record_failure(
+                f"struct_relax: preparation failed: {exc}", failure_class="infra"
+            )
+            return
+        # A retry resumes the prepared input, not another preflight/save.
+        ctx.set_meta(params=params)
+        ctx.meta["params"] = params
+    if params.get("cached_run_id") is not None:
+        ctx.set_meta(
+            struct_run_id=params["cached_run_id"], cache_key=params["cache_key"]
+        )
+        ctx.append_chunk("job_summary", "relax cache hit after worker preflight")
+        ctx.set_status("succeeded")
+        return
     try:
         structure_ref_id = int(params["structure_ref_id"])
         on_version = int(params["on_version"])
@@ -1356,24 +1407,42 @@ def _record_run(
     if fmax is not None:
         run_params["fmax"] = fmax
 
-    run_id = ctx.store.structure_record_run(
-        structure_ref_id,
-        fidelity=fidelity,
-        on_version=on_version,
-        converged=converged,
-        n_steps=n_steps,
-        max_disp=float(scalars.get("max_disp", 0.0) or 0.0),
-        energy=float(scalars["E_tot"]),
-        max_force=scalars.get("max_force"),
-        model=model,
-        curve=curve,
-        cache_key=cache_key,
-        structure_sha=structure_sha,
-        final_geometry=final_geometry,
-        params=run_params or None,
-    )
+    warning = ((ctx.meta or {}).get("params") or {}).get("preflight_warning")
+    if warning:
+        run_params["preflight_warning"] = warning
+
+    with phase(structure_ref_id, "record_run"):
+        run_id = ctx.store.structure_record_run(
+            structure_ref_id,
+            fidelity=fidelity,
+            on_version=on_version,
+            converged=converged,
+            n_steps=n_steps,
+            max_disp=float(scalars.get("max_disp", 0.0) or 0.0),
+            energy=float(scalars["E_tot"]),
+            max_force=scalars.get("max_force"),
+            model=model,
+            curve=curve,
+            cache_key=cache_key,
+            structure_sha=structure_sha,
+            final_geometry=final_geometry,
+            params=run_params or None,
+        )
     ctx.set_meta(
         struct_run_id=run_id, cache_key=cache_key, energy=float(scalars["E_tot"])
+    )
+    ctx.store.structure_stamp_last_relax(
+        structure_ref_id,
+        on_version=on_version,
+        summary={
+            "rung": fidelity,
+            "model": model,
+            "converged": converged,
+            "n_steps": n_steps,
+            "max_disp": float(scalars.get("max_disp", 0.0) or 0.0),
+            "energy": float(scalars["E_tot"]),
+            "max_force": scalars.get("max_force"),
+        },
     )
     if converged:
         ctx.append_chunk(

@@ -33,6 +33,20 @@ Compute-adjacent seams, each with its own module docstring:
   the ``ml`` rung routes by composition (``relax.route_ml_model``): an
   all-organic-element, non-periodic, formally-neutral scene defaults to
   ``mace_off`` (MACE-OFF23); anything else keeps ``mace_mp``.
+- `relax_dispatch` — lossless queued Scene snapshots and per-phase timing.
+  Dispatched edits validate and mint before repair/cache/save work; the
+  worker prepares through the structure handler. This keeps xTB requests
+  bounded even when clean/settle/RDKit take minutes. A worse preflight repair
+  retains its input and records a warning; stale versions refuse save.
+  Preparation revisions atomically carry the originating job/request and
+  prepared parameters with geometry and run evidence. Retries recover only
+  that job's immediately following, latest revision after a metadata-write
+  crash; another job or a later edit remains a stale-input refusal.
+  Mint also opens one explicitly queued preflight run and, if no prior
+  result exists, a queued last_relax summary for the web polling baseline.
+  The worker completes this uncached row with actual evidence; queued rows
+  never claim convergence. Completed worker results update last_relax only
+  on their computed version, and new requests preserve existing results.
 - `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
   spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
   faults, never physical verdicts.

@@ -1192,6 +1192,17 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
     so a backend that disappears is still reported, and only the expensive
     model build belongs in the cache.
     """
+    family = _check_ml_backend(model, dispersion=dispersion)
+    return _cached_ml_calculator(family, dispersion)
+
+
+def _check_ml_backend(model: str, *, dispersion: bool = False) -> str:
+    """Check imports and options without loading model weights.
+
+    The request dispatcher uses this before canonical cache work so an
+    unavailable backend queues immediately; inline cache hits still avoid
+    constructing an expensive calculator.
+    """
     name = (model or "mace_mp").lower().replace("-", "_")
     if name in ("mace", "mace_mp", "mace_mp_0"):
         try:
@@ -1209,7 +1220,7 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
                     "dispersion=True (DFT-D3 on top of MACE) needs torch-dftd — "
                     "pip install 'precis-mcp[dft-ml]'"
                 ) from exc
-        return _cached_ml_calculator("mace_mp", dispersion)
+        return "mace_mp"
     if name in ("mace_off", "mace_off23"):
         try:
             from mace.calculators import mace_off  # noqa: F401
@@ -1226,7 +1237,7 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
                     "dispersion=True (DFT-D3 on top of MACE-OFF) needs "
                     "torch-dftd — pip install 'precis-mcp[dft-ml]'"
                 ) from exc
-        return _cached_ml_calculator("mace_off", dispersion)
+        return "mace_off"
     if name == "chgnet":
         if dispersion:
             raise RelaxUnsupported(
@@ -1240,7 +1251,7 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
                 "relax rung 'ml' (CHGNet) needs the [dft-ml] extra — "
                 "pip install 'precis-mcp[dft-ml]'"
             ) from exc
-        return _cached_ml_calculator("chgnet", False)
+        return "chgnet"
     raise RelaxUnsupported(
         f"unknown MLIP model {model!r} (try 'mace_mp', 'mace_off', or 'chgnet')"
     )

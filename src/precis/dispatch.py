@@ -239,6 +239,7 @@ class Hub:
     _SIBLING_HANDLERS: ClassVar[dict[str, tuple[str, str]]] = {
         "todo": ("precis.handlers.todo", "TodoHandler"),
         "job": ("precis.handlers.job", "JobHandler"),
+        "structure": ("precis.handlers.structure", "StructureHandler"),
         "taxon": ("precis.handlers.taxon", "TaxonHandler"),
         "quest": ("precis.handlers.quest", "QuestHandler"),
         "finding": ("precis.handlers.finding", "FindingHandler"),

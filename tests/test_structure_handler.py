@@ -68,6 +68,7 @@ def no_local_mlip(monkeypatch):
         raise relax_mod.RelaxUnsupported("no MLIP backend (test)")
 
     monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
+    monkeypatch.setattr(relax_mod, "_check_ml_backend", _no_mlip)
 
 
 def test_put_creates_lists_and_round_trips(structure):
@@ -362,6 +363,93 @@ def test_relax_xtb_dispatches_a_job_never_inline(
     assert params["target_node"] in {"alpha", "beta"}
 
 
+def test_relax_xtb_defers_slow_preflight_and_writes_no_revision(
+    structure, store, no_inline_xtb, monkeypatch
+):
+    """gr524236: every slow phase belongs to the queued job, not edit()."""
+    import importlib
+    import time
+
+    from precis.structure import probe
+
+    handler = importlib.import_module("precis.handlers.structure")
+    preflight = importlib.import_module("precis.structure.preflight")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    structure.put(id="organic", text=_ORGANIC_MOLECULE)
+    ref = store.get_ref(kind="structure", id="organic")
+    version = store.structure_version(ref.id)
+    before, _ = store.structure_load(ref.id)
+
+    calls = []
+
+    def slow_phase(*_args, **_kwargs):
+        calls.append("slow")
+        time.sleep(5)
+        pytest.fail("request entered a deferred preflight/save phase")
+
+    monkeypatch.setenv("PRECIS_STRUCTURE_PREFLIGHT", "1")
+    monkeypatch.setattr(handler, "_preflight_relax", slow_phase)
+    monkeypatch.setattr(preflight, "_settle", slow_phase)
+    monkeypatch.setattr(probe, "pi_crosscheck", slow_phase)
+    monkeypatch.setattr(handler, "_relax_cache_address", slow_phase)
+    t0 = time.monotonic()
+    response = structure.edit(id="organic", ops=[{"op": "relax", "fidelity": "xtb"}])
+    assert time.monotonic() - t0 < 1.0
+    assert "job id=" in response.body
+    assert calls == []
+    assert store.structure_version(ref.id) == version
+    runs = store.structure_runs(ref.id)
+    assert len(runs) == 1
+    assert runs[0]["fidelity"] == "clean" and runs[0]["status"] == "queued"
+    assert not runs[0]["converged"] and runs[0]["n_steps"] == 0
+    after, _ = store.structure_load(ref.id)
+    for label, atom in before.atoms.items():
+        np.testing.assert_array_equal(after.atoms[label].frac, atom.frac)
+    with store.pool.connection() as conn:
+        revisions = conn.execute(
+            "SELECT COUNT(*) FROM design_revisions WHERE ref_id = %s", (ref.id,)
+        ).fetchone()
+    assert revisions[0] == 1
+
+
+def test_relax_dispatch_records_one_honest_pending_run_on_resubmission(
+    structure, store, monkeypatch
+):
+    """The immediate clean row announces queued work without claiming compute."""
+    import importlib
+
+    handler = importlib.import_module("precis.handlers.structure")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    structure.put(id="pending_relax", text=_ORGANIC_MOLECULE)
+    ref = store.get_ref(kind="structure", id="pending_relax")
+    version = store.structure_version(ref.id)
+
+    def no_preflight(*args, **kwargs):
+        pytest.fail("dispatch must only announce preflight, not execute it")
+
+    monkeypatch.setattr(handler, "_preflight_relax", no_preflight)
+    first = structure.edit(id="pending_relax", ops=[{"op": "relax", "fidelity": "xtb"}])
+    repeated = structure.edit(
+        id="pending_relax", ops=[{"op": "relax", "fidelity": "xtb"}]
+    )
+    assert first.ref_id is not None and repeated.ref_id == first.ref_id
+    assert len(_child_jobs2(store, ref.id)) == 1
+    runs = store.structure_runs(ref.id)
+    assert len(runs) == 1
+    pending = runs[0]
+    assert pending["fidelity"] == "clean" and pending["status"] == "queued"
+    assert pending["on_version"] == version
+    assert not pending["converged"]
+    assert pending["n_steps"] == 0 and pending["max_disp"] == 0
+    assert pending["energy"] is None and pending["max_force"] is None
+    assert pending["forces"] is None
+    last = store.get_ref(kind="structure", id=ref.id).meta["last_relax"]
+    assert last["rung"] == "clean" and last["status"] == "queued"
+    assert not last["converged"] and last["n_steps"] == 0
+    assert last.get("energy") is None and last.get("max_force") is None
+    assert store.structure_version(ref.id) == version
+
+
 def test_relax_xtb_refuses_fast_without_a_compute_node(
     structure, no_inline_xtb, monkeypatch
 ):
@@ -509,15 +597,20 @@ def test_dispatch_still_succeeds_for_physical_geometry(structure, store, no_loca
 def test_dispatch_preflight_cleans_geometry_before_staging(
     structure, store, no_local_mlip
 ):
-    """A mild clash (below the hard-reject floor) is repaired by a local
-    ``clean`` pre-relax before the POSCAR is staged for the cloud job (gripe
-    51393): the saved design and the dispatched POSCAR both reflect the
-    cleaned geometry, not the as-authored 2.6 Å Pd-Pd."""
+    """The worker repairs a mild clash before staging, after edit returns."""
     from precis.structure import export, probe
 
     structure.put(id="pd_pair_dirty", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair_dirty")
+    version = store.structure_version(ref.id)
     structure.edit(id="pd_pair_dirty", ops=[{"op": "relax", "fidelity": "ml"}])
+
+    assert store.structure_version(ref.id) == version
+    pending = store.structure_runs(ref.id)
+    assert len(pending) == 1 and pending[0]["status"] == "queued"
+    jobs = _child_jobs2(store, ref.id)
+    assert len(jobs) == 1
+    prepared = structure.prepare_relax_job(jobs[0]["params"])
 
     # write-back: the design itself moved off the as-authored 2.6 Å.
     scene, _ = structure.store.structure_load(ref.id)
@@ -525,23 +618,20 @@ def test_dispatch_preflight_cleans_geometry_before_staging(
 
     # the staged POSCAR is exported from that same cleaned scene, not the
     # pre-preflight geometry.
-    jobs = _child_jobs2(store, ref.id)
-    assert len(jobs) == 1
-    assert jobs[0]["params"]["poscar"] == export.to_poscar(scene)
+    assert prepared["poscar"] == export.to_poscar(scene)
 
     # a run recorded the pre-relax (write-back parity with an ordinary
     # local 'clean' relax — the run-cube isn't silently skipped).
     runs = structure.store.structure_runs(ref.id)
-    assert any(r["fidelity"] == "clean" for r in runs)
+    assert len(runs) == 1 and runs[0]["id"] == pending[0]["id"]
+    assert runs[0]["fidelity"] == "clean" and runs[0]["status"] == "succeeded"
+    assert runs[0]["n_steps"] > 0
 
 
-def test_dispatch_cache_hit_after_preflight_short_circuits_no_job(
+def test_dispatch_cache_hit_after_preflight_is_resolved_by_worker(
     structure, store, no_local_mlip
 ):
-    """A design whose *preflight-cleaned* geometry matches an already-
-    completed cached run must be a zero-compute hit — not a fresh cloud
-    dispatch. The early cache lookup runs against the as-authored geometry
-    and can't see this; the post-preflight re-check must (gripe 51393)."""
+    """Preflight cache lookup remains zero-compute, but happens in the job."""
     from precis.structure import cache as relax_cache
     from precis.structure import relax as run_relax
 
@@ -575,9 +665,82 @@ def test_dispatch_cache_hit_after_preflight_short_circuits_no_job(
     )
 
     resp = structure.edit(id="pd_pair_cached", ops=[{"op": "relax", "fidelity": "ml"}])
-    assert "relax[ml]" in resp.body and "converged" in resp.body
-    assert "dispatched" not in resp.body
-    assert _child_jobs2(store, ref.id) == []
+    assert "dispatched" in resp.body
+    jobs = _child_jobs2(store, ref.id)
+    assert len(jobs) == 1
+    prepared = structure.prepare_relax_job(jobs[0]["params"])
+    assert prepared["cached_run_id"]
+    runs = store.structure_runs(ref.id)
+    assert runs[0]["fidelity"] == "ml" and runs[0]["converged"]
+
+
+def test_preflight_repair_with_more_validator_errors_is_not_committed(
+    structure, store, monkeypatch
+):
+    """A failed repair cannot replace the input or claim its forces (gr524236)."""
+    import importlib
+
+    from precis.structure import RelaxResult, export, validate
+
+    handler = importlib.import_module("precis.handlers.structure")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    structure.put(id="repair_regression", text=_PD)
+    ref = store.get_ref(kind="structure", id="repair_regression")
+    before, _ = store.structure_load(ref.id)
+    version = store.structure_version(ref.id)
+    assert validate(before) == []
+    structure.edit(id="repair_regression", ops=[{"op": "relax", "fidelity": "xtb"}])
+
+    def broken_repair(scene, **kwargs):
+        assert kwargs["fidelity"] == "clean"
+        scene.atoms["aPd2"].frac = scene.atoms["aPd1"].frac.copy()
+        assert validate(scene)
+        return RelaxResult(
+            rung="clean",
+            converged=True,
+            n_steps=1,
+            max_disp=2.6,
+            forces={"aPd1": [7.0, 0.0, 0.0], "aPd2": [-7.0, 0.0, 0.0]},
+        )
+
+    monkeypatch.setattr(handler, "run_relax", broken_repair)
+    prepared = structure.prepare_relax_job(_child_jobs2(store, ref.id)[0]["params"])
+    assert prepared["poscar"] == export.to_poscar(before)
+    assert "validator errors increased" in prepared["preflight_warning"]
+    assert store.structure_version(ref.id) == version
+    after, _ = store.structure_load(ref.id)
+    assert export.to_poscar(after) == export.to_poscar(before)
+    runs = store.structure_runs(ref.id)
+    assert len(runs) == 1 and runs[0]["fidelity"] == "clean"
+    assert not runs[0]["converged"]
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT params, forces FROM struct_runs WHERE ref_id = %s", (ref.id,)
+        ).fetchone()
+    assert "validator errors increased" in row[0]["warning"]
+    assert not row[1]
+
+
+def test_relax_job_preparation_refuses_stale_design_version(
+    structure, store, monkeypatch
+):
+    """A queued snapshot must not overwrite an edit made while it waited."""
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha")
+    structure.put(id="stale_relax", text=_PD)
+    ref = store.get_ref(kind="structure", id="stale_relax")
+    structure.edit(id="stale_relax", ops=[{"op": "relax", "fidelity": "xtb"}])
+    params = _child_jobs2(store, ref.id)[0]["params"]
+    structure.edit(
+        id="stale_relax",
+        ops=[{"op": "add_atom", "element": "H", "frac": [0.5, 0.5, 0.5]}],
+    )
+    version = store.structure_version(ref.id)
+    with pytest.raises(BadInput):
+        structure.prepare_relax_job(params)
+    assert store.structure_version(ref.id) == version
+    runs = store.structure_runs(ref.id)
+    assert len(runs) == 1 and runs[0]["status"] == "queued"
+    assert not runs[0]["converged"] and runs[0]["n_steps"] == 0
 
 
 def test_nav_views_line_fragments_pov(structure):
@@ -884,11 +1047,17 @@ def test_toc_default_view_never_runs_the_live_emt_estimate(structure, monkeypatc
     assert "—" in resp.body  # the |F| column shows the dash, not a live estimate
 
 
-def test_cache_hit_short_circuits_a_gated_rung(structure):
+def test_cache_hit_short_circuits_a_gated_rung(structure, monkeypatch):
     """A pre-seeded run-cube entry makes the (otherwise gated) ``ml`` rung a
     zero-compute hit — it returns the cached envelope instead of raising
     Unsupported, proving the cache short-circuits *before* the backend."""
+    import importlib
+
     from precis.structure import cache as relax_cache
+
+    relax_module = importlib.import_module("precis.structure.relax")
+    monkeypatch.setattr(relax_module, "_ml_calculator", lambda *a, **kw: object())
+    monkeypatch.setattr(relax_module, "_check_ml_backend", lambda *a, **kw: "mace_mp")
 
     structure.put(id="pd_pair", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
@@ -954,11 +1123,17 @@ def test_store_cache_round_trip(structure):
     assert hit["forces"] is None  # no forces payload was recorded on this run
 
 
-def test_cache_hit_propagates_forces_onto_the_fresh_run_row(structure):
+def test_cache_hit_propagates_forces_onto_the_fresh_run_row(structure, monkeypatch):
     """A cache hit still records a fresh struct_runs row (append-only audit,
     §9/§12) — its forces payload rides along from the cached run rather than
     silently going missing."""
+    import importlib
+
     from precis.structure import cache as relax_cache
+
+    relax_module = importlib.import_module("precis.structure.relax")
+    monkeypatch.setattr(relax_module, "_ml_calculator", lambda *a, **kw: object())
+    monkeypatch.setattr(relax_module, "_check_ml_backend", lambda *a, **kw: "mace_mp")
 
     structure.put(id="pd_pair_hitforce", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair_hitforce")
@@ -1027,10 +1202,12 @@ def test_energy_rung_mints_a_struct_relax_job_parented_on_the_structure(
     assert meta["job_type"] == "struct_relax" and meta["executor"] == "ssh_node"
     params = meta["params"]
     assert params["structure_ref_id"] == ref.id
-    assert params["cache_key"] and params["structure_sha"]
     assert params["fidelity"] == "ml"
-    assert "Pd" in params["poscar"]
-    assert set(params["poscar_labels"]) == {"aPd1", "aPd2"}
+    assert params["input_scene"]
+    prepared = structure.prepare_relax_job(params)
+    assert prepared["cache_key"] and prepared["structure_sha"]
+    assert "Pd" in prepared["poscar"]
+    assert set(prepared["poscar_labels"]) == {"aPd1", "aPd2"}
 
 
 def test_relax_cell_mode_rides_the_dispatch_and_keys(structure, store, no_local_mlip):
@@ -1045,14 +1222,14 @@ def test_relax_cell_mode_rides_the_dispatch_and_keys(structure, store, no_local_
     )
     params = _child_jobs(store, ref_a.id)[0]["params"]
     assert params["cell"] == "inplane"
-    key_inplane = params["cache_key"]
+    key_inplane = structure.prepare_relax_job(params)["cache_key"]
 
     structure.put(id="slab_b", text=_PD)  # same geometry, atoms-only relax
     ref_b = structure.store.get_ref(kind="structure", id="slab_b")
     structure.edit(id="slab_b", ops=[{"op": "relax", "fidelity": "ml"}])
     params_b = _child_jobs(store, ref_b.id)[0]["params"]
     assert "cell" not in params_b  # historical param shape preserved
-    assert key_inplane != params_b["cache_key"]  # cell folds into the address
+    assert key_inplane != structure.prepare_relax_job(params_b)["cache_key"]
 
 
 def test_relax_cell_mode_requires_energy_rung(structure):
@@ -1081,14 +1258,14 @@ def test_relax_fmax_rides_the_dispatch_and_keys(structure, store, no_local_mlip)
     structure.edit(id="slab_a", ops=[{"op": "relax", "fidelity": "ml", "fmax": 0.01}])
     params = _child_jobs(store, ref_a.id)[0]["params"]
     assert params["fmax"] == 0.01
-    key_tight = params["cache_key"]
+    key_tight = structure.prepare_relax_job(params)["cache_key"]
 
     structure.put(id="slab_b", text=_PD)  # same geometry, default relax
     ref_b = structure.store.get_ref(kind="structure", id="slab_b")
     structure.edit(id="slab_b", ops=[{"op": "relax", "fidelity": "ml"}])
     params_b = _child_jobs(store, ref_b.id)[0]["params"]
     assert "fmax" not in params_b  # historical param shape preserved
-    assert key_tight != params_b["cache_key"]  # fmax folds into the address
+    assert key_tight != structure.prepare_relax_job(params_b)["cache_key"]
 
 
 def test_relax_fmax_requires_an_energy_rung(structure):

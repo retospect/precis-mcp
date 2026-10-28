@@ -18,15 +18,13 @@ the seven-verb surface:
   :mod:`precis.structure.pair_check`.
 - ``delete`` — soft-retire a whole design.
 
-The relaxer/DFT and file export (CIF/POSCAR/XYZ) are rented backends
-(:mod:`precis.structure.relax`). A relax that would dispatch to the GPU
-first runs ``validate()`` as a **hard-reject** (overlap / over-valence /
-impossibly-long declared bond mints no job), then a local ``clean`` (or
-opt-in ``preflight='emt'``) pre-relax and a ``cache_key`` re-check — cloud
-is last-resort; a plain local ``clean``/``emt`` edit is never gated.
-``put``/``edit`` also run the tier-0 MLIP preflight
-(:mod:`precis.structure.preflight`, dark by default) and reject + undo a
-failing edit before the version commits.
+The relaxer/DFT and file export are rented backends. A dispatched edit
+validates and queues an immutable scene; it writes no structure revision.
+The worker owns clean/EMT preflight, canonical cache lookup, the MLIP gate,
+save/perception and run recording. Repairs that increase validator errors
+are discarded with a run warning. Version checks prevent queued work from
+overwriting later edits. Inline relax and ordinary put/edit retain their
+normal save paths; the tier-0 MLIP gate remains dark by default.
 
 ``view='literature'`` assembles a deterministic paper query from the design
 (description + host metals / adsorbate / facet from ``scene.composition()``)
@@ -42,6 +40,7 @@ See ``precis-structure-help``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -49,6 +48,7 @@ import os
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -99,6 +99,7 @@ from precis.structure.importers.extxyz import extxyz_to_scene
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
+from precis.structure.relax_dispatch import pack_scene, phase, unpack_scene
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     format_link_tag_ack,
@@ -107,6 +108,8 @@ from precis.utils.link_tag_ops import (
 )
 
 if TYPE_CHECKING:
+    from psycopg import Connection
+
     from precis.store.protocols import LinksStore
 
 # NB: ``precis.structure`` re-exports the ``relax`` *function* under that
@@ -217,26 +220,13 @@ _HOST_METAL_ELEMENTS = frozenset(
 
 @dataclass
 class _NeedsDispatch:
-    """An energy-rung relax that missed the §23.16 cache and has no local
-    backend — it must run on the GPU node as a ``struct_relax`` job (§23.12).
-    Carries everything the dispatch needs: the content address + the staged
-    input geometry + the canonical / POSCAR-row orderings for the write-back.
+    """A deferred relax request with immutable input and a cheap queue digest.
 
-    ``requester_id`` is the optional todo that *asked for* this relax and
-    wants to block on it (compute lane). The job parents on the
-    structure regardless; when a requester is named, the dispatch also
-    writes a ``requested`` link + a ``derived_job_succeeded`` auto_check so
-    the todo closes on completion / bubbles on failure.
-
-    ``preflight_result`` is the cheap local relax (``clean``, or ``emt`` when
-    opted in) run on the scene before it was staged — a last-resort-cloud
-    guardrail (gripe 51393): mild clashes get repaired for free before the
-    GPU node ever sees the geometry. ``poscar``/``poscar_labels``/
-    ``cache_key``/``structure_sha``/``order`` are all taken from the
-    *post-preflight* scene, so the recorded address matches what's actually
-    dispatched. ``preflight_note`` carries a legible fallback explanation
-    (e.g. ``emt`` requested but unavailable) — ``None`` when nothing needed
-    explaining."""
+    ``cache_key`` is the request digest until worker preparation computes
+    the canonical run address. The empty POSCAR/order fields preserve the
+    legacy job schema; the worker fills them before invoking a backend.
+    ``requester_id`` wires an optional waiting todo to the structure's job.
+    """
 
     fidelity: str
     model: str
@@ -254,6 +244,8 @@ class _NeedsDispatch:
     fmax: float | None = None
     preflight_result: RelaxResult | None = None
     preflight_note: str | None = None
+    input_scene: dict[str, Any] | None = None
+    preflight: str = "clean"
 
 
 def _poscar_row_labels(scene: Scene) -> list[str]:
@@ -392,10 +384,41 @@ def _run_params(res: RelaxResult) -> dict[str, Any] | None:
         params["dispersion"] = True
     if res.fmax is not None:
         params["fmax"] = res.fmax
+    if res.note:
+        params["warning"] = res.note
     return params or None
 
 
 def _preflight_relax(
+    scene: Scene, mode: str, *, steps: int
+) -> tuple[RelaxResult, str | None]:
+    """Repair a copy; never accept a higher validator error count (gr524236)."""
+    candidate = deepcopy(scene)
+    before = len(validate(scene))
+    result, note = _preflight_relax_unchecked(candidate, mode, steps=steps)
+    after = len(validate(candidate))
+    if after > before:
+        warning = (
+            f"preflight repair rejected: validator errors increased "
+            f"from {before} to {after}; kept input geometry"
+        )
+        return RelaxResult(
+            rung=result.rung,
+            converged=False,
+            n_steps=result.n_steps,
+            max_disp=0.0,
+            curve=[],
+            note=warning,
+        ), warning
+    scene.cell = candidate.cell
+    scene.atoms = candidate.atoms
+    scene.bonds = candidate.bonds
+    scene.measures = candidate.measures
+    scene.label_hi = candidate.label_hi
+    return result, note
+
+
+def _preflight_relax_unchecked(
     scene: Scene, mode: str, *, steps: int
 ) -> tuple[RelaxResult, str | None]:
     """The cheap local pre-relax that always runs before a heavy relax is
@@ -1119,11 +1142,8 @@ class StructureHandler(Handler):
         relax_ops, import_echo = self._apply_ops_with_imports(scene, ops)
         res = self._run_ops(scene, relax_ops)
         if isinstance(res, _NeedsDispatch):
-            # The preflight clean/emt pre-relax already ran (mutating
-            # ``scene``) as part of staging the dispatch — carry its result
-            # through the normal relax-summary/run-recording path below so
-            # the pre-relaxed geometry's write-back is indistinguishable
-            # from an ordinary local ``clean`` relax (gripe 51393).
+            # put must create the design before its job can have an owner.
+            # Preparation itself is deferred just as for edit.
             relax_result: RelaxResult | None = res.preflight_result
             dispatch: _NeedsDispatch | None = res
         else:
@@ -1156,6 +1176,7 @@ class StructureHandler(Handler):
             record_revision(self.store, ref.id, rev=version, ops=list(ops), conn=conn)
         self._record_run(ref.id, relax_result, version)
         if dispatch is not None:
+            dispatch.input_scene = pack_scene(scene)
             return self._with_echo(
                 self._dispatch_relax(ref, version, dispatch),
                 _combine_echo(import_echo, preflight_caveats),
@@ -1459,17 +1480,21 @@ class StructureHandler(Handler):
                 next="edit(kind='structure', id='pd111', "
                 "ops=[{'op':'add_atom','element':'O','frac':[0.33,0.33,0.55]}])",
             )
+        version = self.store.structure_version(ref.id)
         scene, _ = self.store.structure_load(ref.id)
+        if self.store.structure_version(ref.id) != version:
+            raise BadInput(
+                "structure changed while loading the edit input",
+                next="retry the edit on the current structure",
+            )
         relax_ops, import_echo = self._apply_ops_with_imports(scene, op_list)
-        res = self._run_ops(scene, relax_ops)
+        res = self._run_ops(scene, relax_ops, structure_id=ref.id)
         if isinstance(res, _NeedsDispatch):
-            # See put()'s matching branch: the preflight relax already ran
-            # as part of staging the dispatch, so its result rides the
-            # normal relax-summary/run-recording path (gripe 51393).
-            relax_result: RelaxResult | None = res.preflight_result
-            dispatch: _NeedsDispatch | None = res
-        else:
-            relax_result, dispatch = res, None
+            return self._with_echo(
+                self._dispatch_relax(ref, version, res, ops=op_list, turn=turn),
+                import_echo,
+            )
+        relax_result = res
         relax_summary = self._relax_summary(relax_result)
         version = self.store.structure_version(ref.id) + 1
         desc = str((ref.meta or {}).get("description") or "").strip()
@@ -1478,34 +1503,32 @@ class StructureHandler(Handler):
         # version commits — the prior version stands (transactional undo).
         # A passing verdict may still carry never-gating domain caveats
         # (gripe 285774) — echoed below, never dropped silently.
-        preflight_caveats = _format_preflight_caveats(_run_preflight_gate(scene))
-        with self.store.tx() as conn:
-            self.store.structure_save(
-                slug=str(ref.slug),
-                title=ttl,
-                scene=scene,
-                version=version,
-                card_text=self._card_text(ttl, scene, desc),
-                description=desc,
-                relax_summary=relax_summary,
-                conn=conn,
-            )
-            # Same transaction as the save: the version and its record are
-            # one fact (design-workbench slice 2).
-            record_revision(
-                self.store,
-                ref.id,
-                rev=version,
-                ops=list(op_list),
-                turn=turn,
-                conn=conn,
-            )
-        self._record_run(ref.id, relax_result, version)
-        if dispatch is not None:
-            return self._with_echo(
-                self._dispatch_relax(ref, version, dispatch),
-                _combine_echo(import_echo, preflight_caveats),
-            )
+        with phase(ref.id, "mlip_preflight_gate"):
+            preflight_caveats = _format_preflight_caveats(_run_preflight_gate(scene))
+        with phase(ref.id, "structure_save"):
+            with self.store.tx() as conn:
+                self.store.structure_save(
+                    slug=str(ref.slug),
+                    title=ttl,
+                    scene=scene,
+                    version=version,
+                    card_text=self._card_text(ttl, scene, desc),
+                    description=desc,
+                    relax_summary=relax_summary,
+                    conn=conn,
+                )
+                # Same transaction as the save: the version and its record are
+                # one fact (design-workbench slice 2).
+                record_revision(
+                    self.store,
+                    ref.id,
+                    rev=version,
+                    ops=list(op_list),
+                    turn=turn,
+                    conn=conn,
+                )
+        with phase(ref.id, "record_run"):
+            self._record_run(ref.id, relax_result, version)
         _scene, handles = self.store.structure_load(ref.id)
         return self._with_echo(
             self._toc_response(
@@ -3896,7 +3919,11 @@ class StructureHandler(Handler):
         return relax_ops, ("\n".join(echoes) if echoes else None)
 
     def _run_ops(
-        self, scene: Scene, ops: list[dict[str, Any]]
+        self,
+        scene: Scene,
+        ops: list[dict[str, Any]],
+        *,
+        structure_id: str | int = "new",
     ) -> RelaxResult | _NeedsDispatch | None:
         """Run the relax tail of an op list. Callers apply graph ops via
         :meth:`_apply_ops_with_imports` first and pass only the relax op(s)
@@ -4013,6 +4040,36 @@ class StructureHandler(Handler):
                 next="ops=[{'op': 'relax', 'fidelity': 'ml', 'dispersion': true}]",
             )
 
+        # Dispatch-only rungs do no canonical hashing or repair in the
+        # request. Inline ML retains its existing cache/backend behavior.
+        dispatch_cause = None
+        if fidelity == "ml":
+            # Check imports, not model weights: inline cache hits must not
+            # construct a calculator merely to decide where to run.
+            from precis.structure.relax import _check_ml_backend
+
+            try:
+                _check_ml_backend(model, dispersion=dispersion)
+            except RelaxUnsupported as exc:
+                dispatch_cause = exc
+        if (
+            fidelity not in ("clean", "0", "geo", "jiggle", "emt", "ml")
+            or dispatch_cause
+        ):
+            return self._stage_relax_dispatch(
+                scene,
+                ro,
+                fidelity=fidelity,
+                model=model,
+                steps=steps,
+                cell_mode=cell_mode,
+                dispersion=dispersion,
+                cache_key=None,
+                fmax=fmax,
+                structure_id=structure_id,
+                cause=dispatch_cause,
+            )
+
         # Cache-first for the expensive energy rungs. The rung-0
         # ``clean`` repair is instant + pure + energy-free, so it is never
         # cached — it just runs. ``jiggle`` is uncached too: it is a
@@ -4028,15 +4085,16 @@ class StructureHandler(Handler):
             # Only fold ``cell`` into the key when a variable-cell relax is
             # asked for — an atoms-only relax keeps its historical key so the
             # existing run-cube stays a hit (a bare {"steps"} vs {"steps","cell"}).
-            cache_key, structure_sha, order = _relax_cache_address(
-                scene,
-                fidelity=fidelity,
-                model=model,
-                steps=steps,
-                cell_mode=cell_mode,
-                dispersion=dispersion,
-                fmax=fmax,
-            )
+            with phase(structure_id, "cache_address"):
+                cache_key, structure_sha, order = _relax_cache_address(
+                    scene,
+                    fidelity=fidelity,
+                    model=model,
+                    steps=steps,
+                    cell_mode=cell_mode,
+                    dispersion=dispersion,
+                    fmax=fmax,
+                )
             hit_result = self._cache_hit_result(
                 scene,
                 cache_key=cache_key,
@@ -4046,26 +4104,6 @@ class StructureHandler(Handler):
             )
             if hit_result is not None:
                 return hit_result
-
-        # gr496562: rung 'xtb' is dispatch-only from the request path — a
-        # GFN2-xTB relax on a real block is minutes of compute, and tblite
-        # being importable in the MCP container must not turn the call into
-        # a blocking inline relax (three hexfold blocks hung 300 s+ that
-        # way, minting no job). Stage it exactly like a rung with no local
-        # backend; the in-process compute still happens inside the
-        # struct_relax job on the compute group (_INPROC_FIDELITIES).
-        if fidelity == "xtb":
-            return self._stage_relax_dispatch(
-                scene,
-                ro,
-                fidelity=fidelity,
-                model=model,
-                steps=steps,
-                cell_mode=cell_mode,
-                dispersion=dispersion,
-                cache_key=cache_key,
-                fmax=fmax,
-            )
 
         try:
             res = run_relax(
@@ -4102,6 +4140,7 @@ class StructureHandler(Handler):
                 cache_key=cache_key,
                 fmax=fmax,
                 cause=exc,
+                structure_id=structure_id,
             )
 
         # Cache miss: stamp the content address + relaxed geometry so the next
@@ -4126,25 +4165,13 @@ class StructureHandler(Handler):
         cache_key: str | None,
         fmax: float | None = None,
         cause: RelaxUnsupported | None = None,
+        structure_id: str | int = "new",
     ) -> RelaxResult | _NeedsDispatch:
-        """Stage a ``struct_relax`` dispatch for a rung that must not compute
-        in the request path — either an energy rung whose local backend is
-        missing (``cause`` carries the :class:`RelaxUnsupported` the inline
-        attempt raised) or the dispatch-only ``xtb`` rung (gr496562;
-        ``cause=None`` — tblite importable or not, a GFN2-xTB relax never
-        runs inside an MCP call).
+        """Validate and snapshot a deferred request without expensive work.
 
-        Refuses rather than stages when the dispatch contract cannot carry
-        the request honestly (``dispersion``: the ``struct_relax`` params
-        schema carries no dispersion field, so a dispatched job would compute
-        D3-*free* and sink it into the run-cube under a dispersion=True cache
-        key — the same call the dispatcher's own fidelity gate made,
-        gr346449), or when the geometry fails the hard-reject validator
-        (gripe 51393). Otherwise it runs the cheap local pre-relax
-        (``preflight=`` picks ``clean``/``emt``), re-checks the run-cube over
-        the cleaned geometry — a preflight-clean onto an already-computed
-        input is still a zero-compute hit — and returns the
-        :class:`_NeedsDispatch` the caller mints."""
+        Reject unsupported dispatch arguments before minting; preflight,
+        cache lookup and persistence belong to prepare_relax_job (gr524236).
+        """
         if dispersion:
             raise Unsupported(
                 f"{cause} — dispersion=True runs locally only; the "
@@ -4153,97 +4180,258 @@ class StructureHandler(Handler):
                 next="install the [dft-ml] extra locally, or re-run with "
                 "dispersion omitted to use the cluster",
             ) from cause
-        # xtb dispatches like ml: its jobs pin to the compute group
-        # (struct_relax.mlip_nodes), whose worker venv carries the
-        # linux-aarch64 tblite wheel from the wheelhouse
-        # (scripts/build-tblite-wheel, gr488907). A node without it fails
-        # the job as infra, naming the extra.
-        if cache_key is None:  # defensive — an uncached rung never reaches here
-            raise Unsupported(
-                str(cause),
-                next="relax with fidelity='clean' (geometry repair, always available)",
-            ) from cause
-
-        # Hard-reject gate (gripe 51393): cloud dispatch is a last
-        # resort, never a place to burn GPU time on an impossible
-        # geometry. Only the heavy-dispatch branch is gated — a direct
-        # local ``clean``/``emt`` relax above never reaches here, so it
-        # stays free to repair the very geometry this would reject.
-        findings = validate(scene)
+        with phase(structure_id, "validate"):
+            findings = validate(scene)
         if findings:
             raise BadInput(
                 _format_gate_rejection(findings),
-                next="fix the flagged atom(s)/bond(s), or run "
-                "edit(ops=[{'op':'relax','fidelity':'clean'}]) locally "
-                "first to repair mild clashes before requesting "
-                f"fidelity={fidelity!r}",
+                next="fix the flagged atoms/bonds or run fidelity='clean' first",
             ) from cause
-
-        # Always pre-relax locally before staging anything for the cloud
-        # (gripe 51393) — ``clean`` by default, or ``emt`` when the op
-        # opts in and the element set/backend allow it. Mutates ``scene``
-        # in place, so the caller's subsequent ``structure_save`` persists
-        # the cleaned geometry exactly like a normal ``clean`` relax would.
         preflight_mode = str(ro.get("preflight", "clean"))
-        preflight_result, preflight_note = _preflight_relax(
-            scene, preflight_mode, steps=steps
-        )
-        # gripe 161576: label-pair the preflight's own forces (a real
-        # local clean/emt pass) for storage — same as an ordinary
-        # standalone relax above (FIX 1: never canonical-rank-indexed).
-        if preflight_result.forces is not None:
-            preflight_result.forces_labels, preflight_result.forces_vectors = (
-                relax_cache.serialize_forces(preflight_result.forces)
-            )
-        # The geometry just changed — recompute the address so the
-        # dispatched job / run-cube row is addressed by what's actually
-        # staged, not the pre-preflight input. A design that happens to
-        # preflight-clean onto an already-cached geometry (e.g. another
-        # design's completed relax converged to the same input) must
-        # still be a zero-compute hit here too — the earlier lookup ran
-        # against the as-authored (pre-preflight) geometry and can't
-        # have caught this.
-        #
-        # ``dispersion`` is threaded explicitly even though the guard above
-        # means it is always False here: stating it keeps this address
-        # honest if that early raise is ever relaxed, rather than silently
-        # minting a dispersion-free key for a dispersion-on relax.
-        cache_key, structure_sha, order = _relax_cache_address(
-            scene,
-            fidelity=fidelity,
-            model=model,
-            steps=steps,
-            cell_mode=cell_mode,
-            dispersion=dispersion,
-            fmax=fmax,
-        )
-        hit_result = self._cache_hit_result(
-            scene,
-            cache_key=cache_key,
-            structure_sha=structure_sha,
-            fidelity=fidelity,
-            dispersion=dispersion,
-        )
-        if hit_result is not None:
-            return hit_result
+        if preflight_mode not in ("clean", "emt"):
+            raise BadInput("unknown preflight mode", options=["clean", "emt"])
+        snapshot = pack_scene(scene)
+        # This linear JSON digest is only a queue identity, never a run-cube
+        # address. Canonical hashing and cache lookup happen in the worker.
+        request_key = hashlib.sha256(
+            json.dumps(
+                [snapshot, fidelity, model, steps, cell_mode, fmax, preflight_mode],
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
         return _NeedsDispatch(
             fidelity=fidelity,
             model=model,
             steps=steps,
             cell=cell_mode,
             fmax=fmax,
-            cache_key=cache_key,
-            structure_sha=structure_sha or "",
-            order=order,
-            poscar=export.to_poscar(scene),
-            poscar_labels=_poscar_row_labels(scene),
-            # Optional requesting todo (compute lane). Accept
-            # the clear ``requested_by`` key; tolerate the legacy
-            # ``parent_id`` spelling from before the lane split.
+            cache_key=request_key,
+            structure_sha="",
+            order=[],
+            poscar="",
+            poscar_labels=[],
             requester_id=_as_int_or_none(ro.get("requested_by", ro.get("parent_id"))),
-            preflight_result=preflight_result,
-            preflight_note=preflight_note,
+            input_scene=snapshot,
+            preflight=preflight_mode,
         )
+
+    def prepare_relax_job(
+        self, params: dict[str, Any], *, job_id: int | None = None
+    ) -> dict[str, Any]:
+        """Worker-only preparation; preserve the normal save/run audit path.
+
+        Jobs carry immutable input, not a pointer to whatever geometry is
+        current when claimed. Check the version again under the write lock
+        before committing, since preflight can take minutes. The preparation
+        revision carries the job identity and execution parameters in the
+        same transaction as the geometry and run evidence. A crash before
+        updating job metadata therefore resumes that exact preparation,
+        never a second clean/save or an unrelated edit. Legacy jobs
+        already carry prepared POSCARs and do not call this method.
+        """
+        ref_id = int(params["structure_ref_id"])
+        version = int(params["on_version"])
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=str(ref_id))
+        pending_run_id = self.store.structure_queue_preflight(
+            ref_id,
+            on_version=version,
+            request_key=f"{version}:{params['cache_key']}",
+            fidelity=params.get("preflight", "clean"),
+        )
+        if self.store.structure_version(ref_id) != version:
+            recovered = self._recover_relax_preparation(params, job_id=job_id)
+            if recovered is not None:
+                return recovered
+            raise BadInput(
+                "queued relax input is stale; the structure version changed",
+                next="request relax again on the current structure",
+            )
+        scene = unpack_scene(params["input_scene"])
+
+        def lookup() -> tuple[str, str, list[str], RelaxResult | None]:
+            with phase(ref_id, "cache_address"):
+                key, sha, order = _relax_cache_address(
+                    scene,
+                    fidelity=params["fidelity"],
+                    model=params["model"],
+                    steps=int(params["steps"]),
+                    cell_mode=params.get("cell"),
+                    fmax=params.get("fmax"),
+                )
+                hit = self._cache_hit_result(
+                    scene, cache_key=key, structure_sha=sha, fidelity=params["fidelity"]
+                )
+            return key, sha, order, hit
+
+        key, sha, order, hit = lookup()
+        pre, note = None, None
+        if hit is None:
+            with phase(ref_id, "preflight_relax"):
+                pre, note = _preflight_relax(
+                    scene, params.get("preflight", "clean"), steps=int(params["steps"])
+                )
+            key, sha, order, hit = lookup()
+        rejected = bool(note and "preflight repair rejected" in note)
+        with phase(ref_id, "mlip_preflight_gate"):
+            caveats = _run_preflight_gate(scene)
+        if pre is not None and pre.forces is not None:
+            pre.forces_labels, pre.forces_vectors = relax_cache.serialize_forces(
+                pre.forces
+            )
+        # A rejected repair leaves the original design/version alone. Graph
+        # ops bundled with relax are still committed as authored in the job.
+        save = (
+            not rejected
+            or hit is not None
+            or any(op.get("op") != "relax" for op in params.get("ops", []))
+        )
+        prepared = {
+            **params,
+            "on_version": version + int(save),
+            "cache_key": key,
+            "structure_sha": sha,
+            "order": order,
+            "poscar": export.to_poscar(scene),
+            "poscar_labels": _poscar_row_labels(scene),
+            "preflight_warning": "; ".join(filter(None, [note, *caveats])),
+        }
+        prepared.pop("input_scene", None)
+        with phase(ref_id, "structure_save"):
+            with self.store.tx() as conn:
+                row = conn.execute(
+                    "SELECT meta->>'version' FROM refs WHERE ref_id = %s FOR UPDATE",
+                    (ref_id,),
+                ).fetchone()
+                if row is None or int(row[0] or 0) != version:
+                    recovered = self._recover_relax_preparation(params, job_id=job_id)
+                    if recovered is not None:
+                        return recovered
+                    raise BadInput(
+                        "queued relax input became stale during preflight",
+                        next="request relax again on the current structure",
+                    )
+                if save:
+                    version += 1
+                    desc = str((ref.meta or {}).get("description") or "")
+                    title = ref.title or str(ref.slug)
+                    self.store.structure_save(
+                        slug=str(ref.slug),
+                        title=title,
+                        scene=scene,
+                        version=version,
+                        description=desc,
+                        card_text=self._card_text(title, scene, desc),
+                        relax_summary=self._relax_summary(hit or pre),
+                        conn=conn,
+                    )
+                with phase(ref_id, "record_run"):
+                    # Cache coordinates can differ from preflight positions;
+                    # never attach preflight forces to cached geometry.
+                    if hit is None:
+                        self._record_run(
+                            ref_id,
+                            pre,
+                            version,
+                            conn=conn,
+                            pending_run_id=pending_run_id,
+                        )
+                    else:
+                        # A cache hit skips rather than fabricates a clean
+                        # result; retain the pending row as an honest audit.
+                        self._record_run(
+                            ref_id,
+                            RelaxResult(
+                                rung=params.get("preflight", "clean"),
+                                converged=False,
+                                n_steps=0,
+                                max_disp=0.0,
+                                note=note or "preflight result superseded by cache hit",
+                            ),
+                            version,
+                            conn=conn,
+                            pending_run_id=pending_run_id,
+                            status="skipped",
+                        )
+                        if note:
+                            hit.note = note
+                    cached_run_id = self._record_run(ref_id, hit, version, conn=conn)
+                    if cached_run_id is not None:
+                        prepared["cached_run_id"] = cached_run_id
+                    if not save and pre is not None:
+                        self.store.structure_stamp_last_relax(
+                            ref_id,
+                            on_version=version,
+                            summary=self._relax_summary(pre) or {},
+                            conn=conn,
+                        )
+                if save:
+                    revision_ops = [dict(op) for op in params.get("ops", [])]
+                    if not revision_ops or revision_ops[-1].get("op") != "relax":
+                        revision_ops.append(
+                            {"op": "relax", "fidelity": params["fidelity"]}
+                        )
+                    if job_id is not None:
+                        # The receipt commits with the geometry and run rows.
+                        # Omit ops to avoid nesting an entire revision inside
+                        # itself; replay merges the original request's ops.
+                        revision_ops[-1]["_relax_preparation"] = {
+                            "job_id": job_id,
+                            "request_key": params["cache_key"],
+                            "prepared": {
+                                k: v
+                                for k, v in prepared.items()
+                                if k not in ("ops", "turn")
+                            },
+                        }
+                    record_revision(
+                        self.store,
+                        ref_id,
+                        rev=version,
+                        ops=revision_ops,
+                        turn=params.get("turn"),
+                        conn=conn,
+                    )
+        return prepared
+
+    def _recover_relax_preparation(
+        self, params: dict[str, Any], *, job_id: int | None
+    ) -> dict[str, Any] | None:
+        """Recover only this job's immediately following, latest revision.
+
+        Read version and revision together: a later edit or another job's
+        preparation must remain a stale-input refusal, even if it has the
+        same geometry. The receipt preserves the pre-relax cache address,
+        warnings and any cache-hit run id instead of recomputing them.
+        """
+        if job_id is None:
+            return None
+        expected_version = int(params["on_version"]) + 1
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT r.meta->>'version', d.rev, d.ops FROM refs r "
+                "LEFT JOIN LATERAL (SELECT rev, ops FROM design_revisions "
+                "WHERE ref_id = r.ref_id ORDER BY rev DESC LIMIT 1) d ON TRUE "
+                "WHERE r.ref_id = %s",
+                (int(params["structure_ref_id"]),),
+            ).fetchone()
+        if (
+            row is None
+            or int(row[0] or 0) != expected_version
+            or row[1] != expected_version
+        ):
+            return None
+        ops = row[2] or []
+        receipt = ops[-1].get("_relax_preparation") if ops else None
+        if not isinstance(receipt, dict):
+            return None
+        if (
+            receipt.get("job_id") != job_id
+            or receipt.get("request_key") != params["cache_key"]
+        ):
+            return None
+        prepared = {**params, **receipt["prepared"]}
+        prepared.pop("input_scene", None)
+        return prepared
 
     def _cache_hit_result(
         self,
@@ -4320,14 +4508,23 @@ class StructureHandler(Handler):
             out["dispersion"] = True
         return out
 
-    def _record_run(self, ref_id: int, res: RelaxResult | None, version: int) -> None:
+    def _record_run(
+        self,
+        ref_id: int,
+        res: RelaxResult | None,
+        version: int,
+        *,
+        conn: Connection | None = None,
+        pending_run_id: int | None = None,
+        status: str = "succeeded",
+    ) -> int | None:
         """Persist a relax as a ``struct_runs`` row + its convergence curve.
 
         A cache *hit* still records a row for this design/version (per-design
         audit truth — ``view='runs'`` shows it was relaxed), carrying the same
         cache_key, so the cube stays append-only and internally consistent."""
         if res is None:
-            return
+            return None
         forces_payload = None
         if res.forces_vectors is not None:
             # gripe 161576: {"vectors", "labels", "approx", "source"} —
@@ -4341,7 +4538,7 @@ class StructureHandler(Handler):
                 "approx": res.forces_approx,
                 "source": res.forces_source,
             }
-        self.store.structure_record_run(
+        return self.store.structure_record_run(
             ref_id,
             fidelity=res.rung,
             on_version=version,
@@ -4365,9 +4562,20 @@ class StructureHandler(Handler):
             # the ``calc:`` header so a D3-corrected energy is never read as a
             # bare-MLIP one.
             params=_run_params(res),
+            conn=conn,
+            pending_run_id=pending_run_id,
+            status=status,
         )
 
-    def _dispatch_relax(self, ref: Any, version: int, nd: _NeedsDispatch) -> Response:
+    def _dispatch_relax(
+        self,
+        ref: Any,
+        version: int,
+        nd: _NeedsDispatch,
+        *,
+        ops: list[dict[str, Any]] | None = None,
+        turn: str | None = None,
+    ) -> Response:
         """Mint a ``struct_relax`` job for an energy rung with no local backend. The relaxed geometry lands in the §23.16
         run-cube on completion, so the next identical relax — on this design or
         any other sharing the input — is a zero-compute cache hit.
@@ -4434,15 +4642,30 @@ class StructureHandler(Handler):
             # share one host's NFS view.
             "target_node": target,
         }
-        job_resp = hub.sibling("job").put(
-            job_type="struct_relax",
-            executor="ssh_node",
-            # The build subject owns the job (compute lane).
-            parent_id=ref.id,
-            params=params,
-            # Collapse re-submits of the *same* relax onto one in-flight job.
-            idem_key=f"struct_relax:{nd.cache_key}",
-        )
+        if nd.input_scene is not None:
+            params.update(
+                input_scene=nd.input_scene,
+                preflight=nd.preflight,
+                ops=ops or [],
+                turn=turn,
+            )
+        with phase(ref.id, "job_put"):
+            job_resp = hub.sibling("job").put(
+                job_type="struct_relax",
+                executor="ssh_node",
+                # The build subject owns the job (compute lane).
+                parent_id=ref.id,
+                params=params,
+                # Collapse re-submits of the *same* relax onto one in-flight job.
+                idem_key=f"struct_relax:{ref.id}:{version}:{nd.cache_key}",
+            )
+        if nd.input_scene is not None:
+            self.store.structure_queue_preflight(
+                ref.id,
+                on_version=version,
+                request_key=f"{version}:{nd.cache_key}",
+                fidelity=nd.preflight,
+            )
         note = ""
         if nd.requester_id is not None:
             if job_resp.ref_id is None:  # defensive — put always reports the id
@@ -4459,18 +4682,19 @@ class StructureHandler(Handler):
             f"# pre-relaxed locally (rung {pre.rung!r}, "
             f"{'converged' if pre.converged else 'not converged'}) before staging\n"
             if pre is not None
-            else ""
+            else "# preflight and cache lookup run inside the job\n"
         )
         if nd.preflight_note:
             preflight_line += f"# {nd.preflight_note}\n"
         return Response(
+            ref_id=job_resp.ref_id,
             body=(
                 f"# relax[{nd.fidelity}] dispatched to the GPU node{note}\n"
                 f"{preflight_line}\n"
                 f"{job_resp.body}\n\n"
                 f"The run lands in the cache on completion. "
                 f"Poll: get(kind='structure', id='{slug}', view='runs')."
-            )
+            ),
         )
 
     def _wire_requester(self, requester_id: int, job_id: int) -> None:
