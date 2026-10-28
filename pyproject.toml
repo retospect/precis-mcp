@@ -507,7 +507,7 @@ chain = ["ViennaRNA>=2.7"]
 # imports both lazily, so a venv without the extra still imports it.
 pourbaix = [
     "pymatgen>=2026.5",
-    "mp-api>=0.45",
+    "mp-api>=0.47.0",
 ]
 all =["precis-mcp[embed,paper,web]"]
 
