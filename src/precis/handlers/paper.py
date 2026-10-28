@@ -2004,6 +2004,13 @@ class PaperHandler(Handler):
 
         mark_paper_active(self.store, ref)
 
+        # cite_resolve access mark (gr513768 slice 5): same read event,
+        # marks CITERES:pending once — the only thing the dark pass's
+        # claim query reads. Dark behind PRECIS_CITE_RESOLVE_ENABLED.
+        from precis.workers.cite_resolve import mark_paper_for_cite_resolve
+
+        mark_paper_for_cite_resolve(self.store, ref)
+
         # Path view (`slug/cite/bib`) takes precedence over kwarg `view`,
         # because the agent is being explicit in the id. Whatever wins,
         # normalise it through the same alias map so view='cite/bib' and

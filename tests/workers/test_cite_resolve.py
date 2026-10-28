@@ -27,6 +27,8 @@ from precis.workers.cite_resolve import (
     BibEntry,
     _author_year_index,
     _ordered_occurrences,
+    cite_resolve_enabled,
+    mark_paper_for_cite_resolve,
     run_cite_resolve_pass,
 )
 from tests.factories import seed_paper_ref
@@ -109,6 +111,96 @@ def _citeres_tagged(store: Any, chunk_id: int, version: str = CITERES_VERSION) -
             (chunk_id, version),
         ).fetchone()
     return row is not None
+
+
+# ── the access mark (slice 5): flag, mark, and the get hook ──────────
+
+
+def _citeres_paper_tag(store: Any, ref_id: int) -> str | None:
+    """The paper's ``CITERES`` lifecycle tag value (pending/swept), or
+    None — error/backoff tags aren't the lifecycle row this reads."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = 'CITERES' "
+            "AND t.value IN ('pending', 'swept')",
+            (ref_id,),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def test_cite_resolve_mark_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PRECIS_CITE_RESOLVE_ENABLED", raising=False)
+    assert cite_resolve_enabled() is False
+
+
+def test_mark_noop_while_dark(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dark feature leaves no tag — the env is the mark's only gate."""
+    monkeypatch.delenv("PRECIS_CITE_RESOLVE_ENABLED", raising=False)
+    ref_id = seed_paper_ref(store, slug="crmark-dark")
+    ref = store.get_ref(kind="paper", id=ref_id)
+    mark_paper_for_cite_resolve(store, ref)
+    assert _citeres_paper_tag(store, ref_id) is None
+
+
+def test_mark_tags_pending_once(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_CITE_RESOLVE_ENABLED", "1")
+    ref_id = seed_paper_ref(store, slug="crmark-once")
+    ref = store.get_ref(kind="paper", id=ref_id)
+    mark_paper_for_cite_resolve(store, ref)
+    assert _citeres_paper_tag(store, ref_id) == "pending"
+
+    # A second read never re-tags, and a swept paper never re-marks —
+    # the permanent mark-once contract.
+    mark_paper_for_cite_resolve(store, ref)
+    store.add_tag(
+        ref_id,
+        Tag.closed("CITERES", "swept"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    mark_paper_for_cite_resolve(store, ref)
+    assert _citeres_paper_tag(store, ref_id) == "swept"
+
+
+def test_mark_ignores_non_paper(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_CITE_RESOLVE_ENABLED", "1")
+    mem = store.insert_ref(kind="memory", slug=None, title="not a paper")
+    ref = store.get_ref(kind="memory", id=mem.id)
+    mark_paper_for_cite_resolve(store, ref)
+    assert _citeres_paper_tag(store, mem.id) is None
+
+
+def test_paper_get_marks_pending(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The access trigger itself: a real ``PaperHandler.get`` marks the
+    paper ``CITERES:pending`` — the wire the drain pass claims on."""
+    from precis.dispatch import Hub
+    from precis.embedder import MockEmbedder
+    from precis.handlers.paper import PaperHandler
+
+    monkeypatch.setenv("PRECIS_CITE_RESOLVE_ENABLED", "1")
+    ref_id = seed_paper_ref(store, slug="crmark-get")
+    handler = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+    handler.get(id="crmark-get")
+    assert _citeres_paper_tag(store, ref_id) == "pending"
+    handler.get(id="crmark-get")
+    assert _citeres_paper_tag(store, ref_id) == "pending"
+
+
+def test_paper_get_dark_marks_nothing(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.dispatch import Hub
+    from precis.embedder import MockEmbedder
+    from precis.handlers.paper import PaperHandler
+
+    monkeypatch.delenv("PRECIS_CITE_RESOLVE_ENABLED", raising=False)
+    ref_id = seed_paper_ref(store, slug="crmark-getdark")
+    handler = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+    handler.get(id="crmark-getdark")
+    assert _citeres_paper_tag(store, ref_id) is None
 
 
 # ── _ordered_occurrences (unit) ──────────────────────────────────────

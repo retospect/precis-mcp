@@ -58,8 +58,8 @@ deterministic writes carry no model identity, so the machine-edge
 gate does not apply to them (``_links_ops._machine_write_context``).
 
 **Dark + convergent.** The pass claims only papers tagged
-``CITERES:pending`` (slice 5 wires the first-``get`` trigger — until
-then nothing marks a paper and the claim set is empty), and only once
+``CITERES:pending`` — :func:`mark_paper_for_cite_resolve`, the
+first-``get`` access mark (slice 5), is the only writer — and only once
 ``bib_mark`` has swept them — every live body chunk carries its
 ``BIBMARK:<version>`` tag, or the paper has no parsed bib entries at
 all (spec ruling: ``chunk_citations`` is the numeric whitelist, so
@@ -95,6 +95,7 @@ cite_resolve``) is the only thing that runs it.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -456,6 +457,45 @@ def ensure_chunk_cites_links(
         )
         ensured += 1
     return ensured
+
+
+# ── the access mark (slice 5) ────────────────────────────────────────
+
+
+def cite_resolve_enabled() -> bool:
+    """``PRECIS_CITE_RESOLVE_ENABLED`` — the read-path mark's dark gate
+    (default OFF).
+
+    The pass itself is gated per cycle by ``service_config`` (§L: the
+    env no longer feeds the pass default); this flag gates only the
+    mark, mirroring ``inbound_chase_enabled`` — no tag write while the
+    feature is dark. Lighting the feature is therefore two deliberate
+    acts: the env on the MCP server (marks start landing) and a
+    ``service prio`` row (the pass claims them).
+    """
+    return bool(int(os.environ.get("PRECIS_CITE_RESOLVE_ENABLED", "0") or "0"))
+
+
+def mark_paper_for_cite_resolve(store: Store, ref: Any) -> None:
+    """Mark paper ``ref`` ``CITERES:pending`` the first time it is read.
+
+    No-op while the feature is dark, when ``ref`` isn't a paper, or when
+    the paper already carries ``CITERES:pending`` or ``CITERES:swept``
+    — the mark-once contract. Called from ``PaperHandler.get`` beside
+    ``inbound_chase.mark_paper_active`` — the same "read via get is the
+    engagement event" pick. The pass's claim query is the mark's only
+    reader, so while the pass stays dark the marks just accumulate as
+    the access record they were filed to be.
+    """
+    if not cite_resolve_enabled():
+        return
+    if getattr(ref, "kind", None) != "paper":
+        return
+    if store.has_tag(ref.id, _CITERES_NS, _PENDING) or store.has_tag(
+        ref.id, _CITERES_NS, _SWEPT
+    ):
+        return
+    store.add_tag(ref.id, Tag.closed(_CITERES_NS, _PENDING), set_by="system")
 
 
 # ── the drain pass ───────────────────────────────────────────────────
