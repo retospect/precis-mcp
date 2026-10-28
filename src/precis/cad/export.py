@@ -45,7 +45,16 @@ from xml.sax.saxutils import escape, quoteattr
 
 import numpy as np
 
-from precis.cad.dsl import FIELD_ALIAS, RELIEF_ALIAS, ROUND_KEY, format_spec, parse
+from precis.cad.dsl import (
+    FIELD_ALIAS,
+    RELIEF_ALIAS,
+    ROUND_KEY,
+    ROUNDABLE,
+    ShapeSpec,
+    format_spec,
+    parse,
+    shrunk,
+)
 from precis.cad.fieldmesh import FieldMeshError, field_mesh, snap_lo
 from precis.cad.fold import Diff, Expr, Inter, Union
 from precis.cad.graph import Design
@@ -208,6 +217,46 @@ def _scad_primitive(config: str) -> str:
     raise ExportError(f"shape {a!r} has no OpenSCAD export")
 
 
+def _leaf_scad(node: NodeSpec, shape: ShapeSpec, warnings: list[str]) -> str:
+    """OpenSCAD for one leaf, honouring ``rd``.
+
+    The kernel rounds by shrinking the shape by ``rd`` on every side and
+    offsetting the field back out by ``rd`` (``Rounded`` — see
+    :func:`precis.cad.dsl.build`); for a convex leaf that offset is exactly
+    the Minkowski sum with a ball of radius ``rd``, which OpenSCAD spells
+    ``minkowski()``. The shrunk body is lifted by ``rd`` on local ``+z``
+    (``Rounded.lift``) so the rounded solid's base stays at ``z=0``.
+
+    A leaf that is not convex can't take the Minkowski shortcut — the sum
+    with a ball over-fills concavities. Today every ``rd``-accepting alias
+    (:data:`~precis.cad.dsl.ROUNDABLE`) is convex, so the fallback is
+    defensive: keep the sharp leaf and record a warning rather than emit
+    a silently wrong solid.
+    """
+    rd = shape.params.get(ROUND_KEY)
+    if rd is None:
+        return _scad_primitive(node.config)
+    if shape.alias in ROUNDABLE:
+        inner = _scad_primitive(
+            format_spec(ShapeSpec(shape.alias, shrunk(shape.alias, shape.params)))
+        )
+        return (
+            "minkowski() {\n"
+            f"  translate([0,0,{_g(rd)}]) {inner}\n"
+            f"  sphere(r={_g(rd)}, $fn={_FN});\n"
+            "}"
+        )
+    warnings.append(
+        f"{node.name} ({node.config}): rd={_g(rd)} dropped — {shape.alias} "
+        "is not convex, so this .scad shows the SHARP solid; stl/3mf "
+        "(the field backend) renders the true round"
+    )
+    sharp = ShapeSpec(
+        shape.alias, {k: v for k, v in shape.params.items() if k != ROUND_KEY}
+    )
+    return _scad_primitive(format_spec(sharp))
+
+
 def _multmatrix(xf: Transform) -> str:
     rows = []
     for i in range(3):
@@ -219,8 +268,11 @@ def _multmatrix(xf: Transform) -> str:
     return "multmatrix([" + ",".join(rows) + "])"
 
 
-def _node_scad(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None) -> str:
-    if parse(node.config).alias == "chamfer":
+def _node_scad(
+    node: NodeSpec, aabb: tuple[Vec3, Vec3] | None, warnings: list[str]
+) -> str:
+    shape = parse(node.config)
+    if shape.alias == "chamfer":
         # unbounded half-space — clamp to a box covering the design (see
         # tessellate.halfspace_clamp_params); `aabb` is always present here
         # because `to_openscad` only computes it when the design has a
@@ -233,7 +285,7 @@ def _node_scad(node: NodeSpec, aabb: tuple[Vec3, Vec3] | None) -> str:
         if len(placements) == 1:
             return placements[0]
         return "union() {\n  " + "\n  ".join(placements) + "\n}"
-    prim = _scad_primitive(node.config)
+    prim = _leaf_scad(node, shape, warnings)
     if node.pattern is not None:
         placements = [f"{_multmatrix(xf)} {prim}" for xf in _pattern_transforms(node)]
         return "union() {\n  " + "\n  ".join(placements) + "\n}"
@@ -245,10 +297,12 @@ def _indent(text: str, n: int = 2) -> str:
     return "\n".join(pad + line for line in text.splitlines())
 
 
-def _component_scad(nodes: list[NodeSpec], aabb: tuple[Vec3, Vec3] | None) -> str:
+def _component_scad(
+    nodes: list[NodeSpec], aabb: tuple[Vec3, Vec3] | None, warnings: list[str]
+) -> str:
     cur: str | None = None
     for node in nodes:
-        snippet = _node_scad(node, aabb)
+        snippet = _node_scad(node, aabb, warnings)
         if cur is None:
             cur = snippet
         elif node.op == "add":
@@ -269,8 +323,15 @@ def _by_component(spec: SceneSpec) -> dict[str, list[NodeSpec]]:
 
 def to_openscad(spec: SceneSpec, *, name: str = "design") -> str:
     """Render a :class:`SceneSpec` to OpenSCAD source (assembly = union of
-    each component's folded solid)."""
+    each component's folded solid).
+
+    A rounded leaf (``rd``) exports as ``minkowski() { <shrunk leaf>;
+    sphere(r=rd) }`` — the exact SDF offset for a convex solid. A rounded
+    leaf that is not convex keeps its sharp solid and adds a
+    ``// WARNING:`` comment under the header (the scad text is the only
+    channel both callers return)."""
     spec = _scaled_for_export(spec)
+    warnings: list[str] = []
     # A chamfer node needs the design's AABB to clamp its unbounded
     # half-space to a finite cube (see tessellate.halfspace_clamp_params);
     # only pay for building the kernel Design when one is actually present.
@@ -281,11 +342,13 @@ def to_openscad(spec: SceneSpec, *, name: str = "design") -> str:
     for comp in spec.components:
         if comp not in by_comp:
             continue
-        body = _component_scad(by_comp[comp], aabb)
+        body = _component_scad(by_comp[comp], aabb, warnings)
         if body:
             blocks.append(f"// component {comp}\n{body}")
 
     head = f"// {name} — generated by precis cad; units = mm\n$fn = {_FN};\n"
+    for warning in warnings:
+        head += f"// WARNING: {warning}\n"
     if not blocks:
         return head + "// (empty design)\n"
     if len(blocks) == 1:

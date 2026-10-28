@@ -145,6 +145,46 @@ def test_to_openscad_assembly_unions_components() -> None:
     assert scad.strip().startswith("//")
 
 
+def test_to_openscad_rounded_box_minkowski() -> None:
+    # rd lowers to minkowski(shrunk leaf, sphere) — the exact SDF offset
+    # for a convex solid (dsl.build's Rounded); the shrunk box is lifted
+    # by rd on +z so the rounded solid's base stays at z=0.
+    scad = to_openscad(parse_source("b add box:w50mmd100mmh65mmrd3mm"))
+    assert "minkowski() {" in scad
+    assert "translate([0,0,3]) translate([-22,-47,0]) cube([44,94,59]);" in scad
+    assert "sphere(r=3, $fn=64);" in scad
+    assert "WARNING" not in scad
+
+
+def test_to_openscad_rounded_cyl_shrinks_radius_and_height() -> None:
+    scad = to_openscad(parse_source("c add cyl:r5mmh10mmrd1mm"))
+    assert "translate([0,0,1]) cylinder(h=8, r=4, $fn=64);" in scad
+    assert "sphere(r=1, $fn=64);" in scad
+
+
+def test_to_openscad_sharp_design_has_no_minkowski_or_warning() -> None:
+    scad = to_openscad(parse_source(_FLANGE))
+    assert "minkowski" not in scad and "WARNING" not in scad
+
+
+def test_leaf_scad_nonconvex_rd_keeps_sharp_and_warns() -> None:
+    # Defensive: every rd-accepting alias today is convex, so no stored
+    # design can reach this — a non-convex roundable must degrade to the
+    # sharp leaf + a warning, never a silently wrong minkowski.
+    from precis.cad.dsl import ShapeSpec
+    from precis.cad.export import _leaf_scad
+
+    node = parse_source("t add torus:R8mmr2mm").nodes[0]
+    warnings: list[str] = []
+    out = _leaf_scad(
+        node, ShapeSpec("torus", {"R": 8.0, "r": 2.0, "rd": 1.0}), warnings
+    )
+    assert "rotate_extrude(" in out  # the sharp torus, rd dropped
+    assert "minkowski" not in out
+    assert len(warnings) == 1
+    assert "torus" in warnings[0] and "rd=1" in warnings[0]
+
+
 # ── tessellation (numpy-only; validity needs manifold3d) ──────────────
 
 
