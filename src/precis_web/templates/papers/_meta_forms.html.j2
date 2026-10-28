@@ -208,11 +208,13 @@
          abstract carries a newline every ~80 chars; this joins the lines
          of each paragraph into one, client-side only (a blank line still
          starts a new paragraph). Line-break hyphens between two lowercase
-         letters are dropped (gr509439 — the "certain" cases only).
+         letters are dropped (gr509439 — the "certain" cases only), and
+         consistent PDF margin line numbers are stripped (gr524013 —
+         digits glued to a line's end or start, strictly increasing).
          Left in the editor for review before Save — never auto-applied. #}
       <button type="button" onclick="__paperUnwrapAbstract(this)"
               class="unwrap-abstract-btn ml-2 rounded border border-line-strong bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-muted hover:bg-surface-muted"
-              title="join hard-wrapped lines within each paragraph into one line; drops line-break hyphens between lowercase letters">
+              title="join hard-wrapped lines within each paragraph into one line; drops line-break hyphens between lowercase letters and consistent PDF margin line numbers">
         ⤒ Unwrap
       </button>
       {# One-click strip of OCR'd citation superscripts (gr515240 —
@@ -279,8 +281,9 @@ if (!window.__paperFillBlanks) {
 }
 </script>
 
-{# Abstract "⤒ Unwrap" handler (gr349107; dehyphenation added gr509439) —
-   same guarded-singleton-global pattern as ``__paperFillBlanks`` above.
+{# Abstract "⤒ Unwrap" handler (gr349107; dehyphenation added gr509439;
+   margin line numbers gr524013) — same guarded-singleton-global pattern
+   as ``__paperFillBlanks`` above.
    Pure client-side text massage: splits on blank-line paragraph breaks,
    joins each paragraph's own lines into one, then rejoins paragraphs on a
    blank line. Dehyphenation is the same "certain" rule as
@@ -288,8 +291,11 @@ if (!window.__paperFillBlanks) {
    only when BOTH neighbours are lowercase letters, so real compounds
    ("Z-scheme", "Cu-MOF") keep theirs; a line-final soft hyphen (\u00ad)
    is a wrap artifact by definition and always folds bare, and any SHY
-   left mid-text strips. Never touches the server; the operator still
-   reviews + Saves. #}
+   left mid-text strips. Consistent PDF margin line numbers (glued to a
+   line's end or start, strictly increasing) strip via
+   ``window.__stripPdfLineNumbers`` — abstract-cite.js's
+   ``stripLineNumbers``, set by the type="module" block below. Never
+   touches the server; the operator still reviews + Saves. #}
 <script>
 if (!window.__paperUnwrapAbstract) {
   window.__paperUnwrapAbstract = function (btn) {
@@ -297,10 +303,17 @@ if (!window.__paperUnwrapAbstract) {
     const ta = form ? form.querySelector('[name="abstract"]') : null;
     if (!ta) return;
     const joinPara = (para) => {
-      const lines = para
+      const raw = para
         .replace(/\u00ad[ \t]*\n/g, '')
         .replace(/\u00ad/g, '')
         .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      // PDF margin line numbers go too (gr524013) — stripLineNumbers is
+      // an ES-module export wired up by the type="module" block below;
+      // the ?. call degrades to a no-op if the module didn't load. A
+      // number-only line strips to '', so re-filter.
+      const lines = (window.__stripPdfLineNumbers?.(raw) || raw)
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
       let out = '';
@@ -325,7 +338,8 @@ if (!window.__paperUnwrapAbstract) {
    scripts/abstract_cite_smoke.mjs can exercise them under node —
    including the gripe's gecko abstract fixture. #}
 <script type="module">
-import { stripCitationMarks } from '/n/abstract-cite.js';
+import { stripCitationMarks, stripLineNumbers } from '/n/abstract-cite.js';
+window.__stripPdfLineNumbers = stripLineNumbers;
 if (!window.__paperStripCitations) {
   window.__paperStripCitations = function (btn) {
     const form = btn.closest('form');

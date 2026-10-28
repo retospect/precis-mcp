@@ -2,8 +2,9 @@
 
 ``put`` files a first line over 60 chars with a derived
 ``Area: slogan`` title (the body keeps the full text) and the ack says
-so — unless no clause boundary fits the cap, which ``put`` refuses
-outright (gr520270) rather than store a mid-phrase fragment.
+so — a first clause no boundary fits inside the cap stores the
+mid-phrase cut too (gr524014 superseded gr520270's refusal: take the
+gripe anyway, triage can fix the title).
 ``edit(kind='gripe', title=)`` rewrites the title only. The one-time
 gardening pass (``precis gripes --shorten-titles``) lists by default and
 records the old title in a comment when it writes.
@@ -34,8 +35,8 @@ LONG = (
 )
 
 # A first line over TITLE_MAX whose first clause fits — ``put`` files it
-# (LONG itself is a mid-phrase fragment ``put`` now refuses, gr520270;
-# it stays for the lenient-derivation and gardening tests).
+# (LONG's own cut lands mid-phrase; stored as-is since gr524014 — it
+# stays for the lenient-derivation and gardening tests).
 LONG_BOUNDED = (
     "pcb router: copper pours vanish; after a reroute the two ground "
     "nets short, see the attached run"
@@ -88,23 +89,23 @@ def test_no_boundary_cuts_at_a_word_and_never_exceeds_the_cap() -> None:
     assert len(short_title("x" * 200) or "") == TITLE_MAX
 
 
-def test_no_boundary_inside_the_limit_refuses_the_filing(
+def test_no_boundary_inside_the_limit_still_files(
     gripe: GripeHandler,
 ) -> None:
-    """gr520270: when no clause boundary fits TITLE_MAX the derived
-    title would be a mid-phrase fragment ("…silently: no abnormal") —
-    ``put`` refuses with next= naming the limit and the candidate cut
-    instead of storing it. Nothing files."""
+    """gr524014: when no clause boundary fits TITLE_MAX the derived
+    title is a mid-phrase fragment ("…silently: no abnormal") — ``put``
+    stores it anyway (superseding gr520270's refusal: take the gripe
+    anyway, triage can fix the title) and the ack reports the cut."""
     text = "agents route around empty paper TOCs silently: no abnormal ever surfaces"
-    with pytest.raises(BadInput, match="mid-phrase fragment") as exc:
-        gripe.put(text=text)
-    assert str(TITLE_MAX) in str(exc.value)
-    assert "silently" in str(exc.value)  # the candidate cut is named
-    nxt = exc.value.next
-    assert isinstance(nxt, str) and "first line" in nxt
-    assert gripe.store.list_refs(kind="gripe", limit=1) == []
+    body = gripe.put(text=text).body
+    gid = _latest(gripe)
+    want = short_title(text)
+    assert want == "agents route around empty paper TOCs silently: no abnormal"
+    assert _title(gripe, gid) == want
+    assert f'title shortened to "{want}"' in body
+    assert "chars" in body  # the N→M cut size is reported
 
-    # A clause boundary before the limit files normally.
+    # A clause boundary before the limit still files cleanly.
     gripe.put(
         text="agents route around empty paper TOCs silently; no abnormal ever surfaces"
     )
@@ -135,10 +136,10 @@ def test_a_mid_phrase_cut_ends_on_a_content_word(gripe: GripeHandler) -> None:
         title = short_title(first)
         assert title is not None and title.endswith(want_tail)
         assert title.split()[-1].lower() not in _gripe_title._TRAILING_FUNCTION_WORDS
-    # A cut that lands mid-phrase is now refused outright (gr520270) —
-    # the put-level coverage for that lives in
-    # test_no_boundary_inside_the_limit_refuses_the_filing; the
-    # function-word drop stays exercised by the lenient derivation above.
+    # A cut that lands mid-phrase is stored as-is (gr524014) — the
+    # put-level coverage for that lives in
+    # test_no_boundary_inside_the_limit_still_files; the function-word
+    # drop stays exercised by the lenient derivation above.
 
 
 def test_a_clause_boundary_inside_parens_or_quotes_is_not_a_cut() -> None:
@@ -225,7 +226,7 @@ def test_a_refused_title_write_still_files_the_gripe(
     """The title UPDATE runs in a savepoint: when it fails (an agent_ro
     connection cannot UPDATE refs; here a NUL byte psycopg refuses), the
     gripe files with its full-text title and the ack says nothing."""
-    monkeypatch.setattr(_gripe_title, "short_title_checked", lambda _t: "bad\x00title")
+    monkeypatch.setattr(_gripe_title, "short_title", lambda _t: "bad\x00title")
     body = gripe.put(text=LONG_BOUNDED).body
     gid = _latest(gripe)
     assert f"created gripe id={gid}" in body

@@ -3,10 +3,10 @@
 A gripe's title was its whole body text, so list views showed 90+ chars of
 prose per row. :func:`short_title` derives a short title from the body's
 first line (gripe system batch F slice 6); the body keeps the full text.
-:func:`short_title` is deterministic and never raises — a line with no
-usable clause boundary is cut at a word boundary (kept for the lenient
-gardening pass). ``put`` instead calls :func:`short_title_checked`,
-which refuses the fragment case (gr520270, below).
+It is deterministic and never raises — a line with no usable clause
+boundary is cut at a word boundary. ``put`` and the gardening pass
+(``cli/gripe.py::shorten_titles``) both use it: a fragment title lands
+and triage fixes it (gr524014, below).
 
 Rules, in order: a first line that already fits is kept (``None``); a
 leading ``Area:`` head (2-24 chars, no sentence punctuation) is kept as
@@ -19,21 +19,17 @@ drops trailing function words so the title ends on a content word
 (``…returns stale source on`` read as a fragment, gr514360). The create
 ack reports the cut size, so the shortening is never silent.
 
-gr520270: a first *clause* longer than the limit has no boundary the
-title can break at, so even the function-word-tidied cut lands
-mid-phrase ("…silently: no abnormal"). :func:`short_title_checked` —
-what ``put`` uses — refuses that case with ``next=`` naming the limit
-and the candidate cut instead of storing a fragment in every listing;
-:func:`short_title` stays lenient for the gardening pass
-(``cli/gripe.py::shorten_titles``), where a skipped row only means the
-title stays long.
+gr524014 (supersedes gr520270): a first *clause* longer than the limit
+has no boundary the title can break at, so even the function-word-tidied
+cut lands mid-phrase ("…silently: no abnormal"). gr520270 had ``put``
+refuse that case with ``next=`` naming the limit rather than store a
+fragment; Reto overruled it — take the gripe anyway, triage can fix the
+title — so the mid-phrase cut is stored like any other derived title.
 """
 
 from __future__ import annotations
 
 import re
-
-from precis.errors import BadInput
 
 #: Titles at or under this length are kept as written.
 TITLE_MAX = 60
@@ -269,59 +265,26 @@ def _clause(text: str) -> str:
     return text
 
 
-def _derive(text: str) -> tuple[str | None, str | None]:
-    """``(title, fragment)`` for a gripe body's first line.
-
-    ``title`` is the derived short title, or ``None`` when the first
-    line already fits. ``fragment`` is the mid-phrase cut that WOULD be
-    stored when no clause boundary fits the limit — ``None`` when the
-    derivation landed cleanly. Callers decide whether a fragment is a
-    store (the lenient gardening pass) or a refuse (``put``).
-    """
+def _derive(text: str) -> str | None:
+    """The derived title for a gripe body's first line, or ``None`` when
+    the first line already fits. Lenient: a mid-phrase cut (no clause
+    boundary inside the limit) is returned like any other derivation."""
     line = first_line(text)
     if len(line) <= TITLE_MAX:
-        return None, None
+        return None
     area, rest = "", line
     if m := _AREA_RE.match(line):
         area, rest = m.group(1).strip(), m.group(2)
     clause = _clause(rest)
     prefix = f"{area}: " if area else ""
-    limit = TITLE_MAX - len(prefix)
-    title = prefix + _cut(clause, limit)
+    title = prefix + _cut(clause, TITLE_MAX - len(prefix))
     if not title.strip(_TRIM):
         title = _cut(line, TITLE_MAX)
-    if len(clause) > limit:
-        return title, title
-    return title, None
+    return title
 
 
 def short_title(text: str) -> str | None:
     """The derived title for a gripe body, or ``None`` when its first line
     already fits in :data:`TITLE_MAX` chars. Lenient: a mid-phrase
     fragment is still returned — see :func:`_derive`."""
-    title, _fragment = _derive(text)
-    return title
-
-
-def short_title_checked(text: str) -> str | None:
-    """Like :func:`short_title`, but refuses a mid-phrase cut (gr520270).
-
-    When the first clause is longer than the limit the derived title is
-    a fragment — meaningless in every listing. Raise ``BadInput`` with
-    ``next=`` naming the limit and the candidate cut instead of storing
-    it; one extra round-trip is cheaper than a meaningless title.
-    """
-    title, fragment = _derive(text)
-    if fragment is not None:
-        raise BadInput(
-            f"gripe title would be a mid-phrase fragment: no clause "
-            f"boundary fits the {TITLE_MAX}-char limit — the candidate "
-            f"cut was {fragment!r}",
-            next=(
-                f"re-file with a first line that fits {TITLE_MAX} chars, "
-                "or put a clause boundary (':' ';' '.' ',' ' — ' or an "
-                "'Area:' head) before the limit, e.g. "
-                "put(kind='gripe', text='<slogan>: <rest of report>')"
-            ),
-        )
-    return title
+    return _derive(text)

@@ -1384,16 +1384,16 @@ class GripeHandler(NumericRefHandler):
         rolls back alone and the full-text title stays. Returns the stored
         short title, or ``None``.
 
-        Uses :func:`._gripe_title.short_title_checked` (gr520270): a
-        first clause that fits no boundary inside ``TITLE_MAX`` would
-        store a mid-phrase fragment, so the whole filing is refused —
-        the ``BadInput`` propagates out of ``_insert_gripe``'s
-        transaction and nothing lands."""
+        Uses the lenient :func:`._gripe_title.short_title` (gr524014
+        supersedes gr520270's refusal): a first clause that fits no
+        boundary inside ``TITLE_MAX`` stores its mid-phrase cut like any
+        other derivation — take the gripe anyway, triage can fix the
+        title."""
         import psycopg
 
-        from precis.handlers._gripe_title import short_title_checked
+        from precis.handlers._gripe_title import short_title
 
-        title = short_title_checked(text)
+        title = short_title(text)
         if title is None:
             return None
         try:

@@ -9,7 +9,7 @@ import { dirname, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const { stripCitationMarks } = await import(
+const { stripCitationMarks, stripLineNumbers } = await import(
   resolve(here, '../src/precis_web/static/abstract-cite.js')
 );
 
@@ -90,5 +90,66 @@ assert.equal(stripCitationMarks('peeling 2 led'), 'peeling 2 led');
 // a word-initial / sentence-final Æ stays.
 assert.equal(stripCitationMarks('Æve and Ærst'), 'five and first');
 assert.equal(stripCitationMarks('the Æ column'), 'the Æ column');
+
+// ── stripLineNumbers (gr524013) ────────────────────────────────────────
+// The gripe's trenches abstract, verbatim — margin digits 2–8 glued to
+// each line's end; consistently increasing, so they all strip.
+const TRENCHES = [
+  'We demonstrate the self-assembly synthesis of millimetre-long guided trenches2',
+  'and micro-holes/rings in the supersaturated GeSn epilayers through two3',
+  'approaches: epitaxial growth engineering and thermal annealing treatment. It4',
+  'reveals that the ordered trenches originate from a central nucleation point which5',
+  'typically accompanied by micro-hole/ring formation. These trenches are caused6',
+  'by the migration of Sn droplets on the film surface with the orientation7',
+  'dominantly along <100> or <110>axis, determined by the Sn-content of the8',
+];
+assert.deepEqual(
+  stripLineNumbers(TRENCHES),
+  TRENCHES.map((l) => l.replace(/\d+$/, '')),
+);
+
+// Leading style — spaced, glued to a lowercase letter, or a number-only
+// line — strips the same way; a mixed trailing/leading run is the
+// wrapped-extraction norm ("each line is either 12\n or \n12").
+assert.deepEqual(
+  stripLineNumbers([
+    'first line of text 12',
+    '13 second line continues',
+    '14third line glued lowercase',
+    '15',
+    'last line ends here16',
+  ]),
+  [
+    'first line of text',
+    'second line continues',
+    'third line glued lowercase',
+    '',
+    'last line ends here',
+  ],
+);
+
+// The consistency gate keeps real numbers: not strictly increasing…
+assert.deepEqual(
+  stripLineNumbers([
+    'Each 30±130 mm long seta is one-tenth the diameter of a hair7',
+    'and contains hundreds of projections terminating in 0.2 mm2',
+    'spatula-shaped structures seen under the microscope9',
+  ]),
+  [
+    'Each 30±130 mm long seta is one-tenth the diameter of a hair7',
+    'and contains hundreds of projections terminating in 0.2 mm2',
+    'spatula-shaped structures seen under the microscope9',
+  ],
+);
+// …too few candidates (<3, or under 60% of lines)…
+assert.deepEqual(
+  stripLineNumbers(['alpha beta 1', 'gamma delta 2', 'epsilon zeta stays']),
+  ['alpha beta 1', 'gamma delta 2', 'epsilon zeta stays'],
+);
+// …and a leading run glued to an uppercase letter is never a candidate.
+assert.deepEqual(
+  stripLineNumbers(['12It started here', '13Then it went on', '14And more']),
+  ['12It started here', '13Then it went on', '14And more'],
+);
 
 console.log('abstract-cite smoke: ok');
