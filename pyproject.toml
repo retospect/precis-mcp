@@ -636,7 +636,7 @@ dev = [
     # host-runnable; grimp only needs to be present under `uv run` / in the dev
     # image. Needs a dev-image rebuild to activate the grimp verbs in-container;
     # until then their tests `importorskip("grimp")`.
-    "grimp>=3",
+    "grimp>=3.17",
     # ViennaRNA (the `[chain]` extra) in the dev image, so the `se` fold
     # checks' *installed* branch is exercised by CI and not only the
     # `chain_fold_unavailable` degradation. Needs a dev-image rebuild to
