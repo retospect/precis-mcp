@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -147,6 +149,134 @@ def test_idle_expiry_keeps_recent(env):
     h._resolve_alias("wt-e")
     known = {p.name for p in h.cache.known_roots()}
     assert "e" in known and not ({"a", "b", "c", "d"} & known)
+
+
+def _drain_warm(h: PythonHandler) -> None:
+    """Wait out any speculative warm threads (bounded, never hangs)."""
+    deadline = time.monotonic() + 10
+    while h._wt_warm_inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not h._wt_warm_inflight
+
+
+def test_first_listing_is_baseline_no_warm(env):
+    """gr525769 follow-up: the first scan only primes — trees it names
+    are never speculatively warmed. Only a tree a *later* listing
+    discovers earns a warm."""
+    main, wts, _ = env
+    h, reg, clock = _make(env, ("alpha",))
+    h._resolve_alias("wt-alpha")
+    _drain_warm(h)
+    alpha = reg.listing()[0]["wt-alpha"].path
+    assert alpha not in h.cache.known_roots()  # resolved, not indexed
+    # beta appears after the first listing → it warms.
+    _checkout(wts / "beta")
+    _register(main, "beta", f"{HOST}/wts/beta")
+    clock.t += 6
+    h._resolve_alias("wt-beta")
+    _drain_warm(h)
+    beta = reg.listing()[0]["wt-beta"].path
+    assert beta in h.cache.known_roots()
+
+
+def test_background_warm_indexes_new_worktrees(env):
+    """gr525769: a scan that discovers a new tree kicks a background
+    corpus warm — a later first hit reuses the built index instead of
+    paying the cold build."""
+    main, wts, _ = env
+    h, reg, clock = _make(env, ("alpha",))
+    h._resolve_alias("wt-alpha")  # primes the baseline listing
+    _checkout(wts / "beta")
+    _register(main, "beta", f"{HOST}/wts/beta")
+    clock.t += 6
+    h._resolve_alias("wt-beta")
+    _drain_warm(h)
+    beta = reg.listing()[0]["wt-beta"].path
+    # beta was warmed in the background — no beta query happened yet.
+    assert beta in h.cache.known_roots()
+    # Its first real call is a stat-check, not a cold rebuild.
+    out = h.get(id="wt-beta::m.f").body
+    assert "cold corpus" not in out
+    assert "def f" in out or "return 1" in out
+
+
+def test_warm_max_zero_disables_warming(env, monkeypatch: pytest.MonkeyPatch):
+    """``PRECIS_PYTHON_WT_WARM_MAX=0`` turns speculative warming off."""
+    monkeypatch.setenv("PRECIS_PYTHON_WT_WARM_MAX", "0")
+    main, wts, _ = env
+    h, reg, clock = _make(env, ("alpha",))
+    h._resolve_alias("wt-alpha")
+    _checkout(wts / "beta")
+    _register(main, "beta", f"{HOST}/wts/beta")
+    clock.t += 6
+    h._resolve_alias("wt-beta")
+    _drain_warm(h)
+    beta = reg.listing()[0]["wt-beta"].path
+    assert beta not in h.cache.known_roots()
+
+
+def test_warm_cap_counts_held_indexes(env, monkeypatch: pytest.MonkeyPatch):
+    """The cap bounds warm-built indexes *currently held*, not a
+    lifetime total: a full cap skips fresh discoveries, and evicting a
+    warmed index frees the slot for the next listing."""
+    monkeypatch.setenv("PRECIS_PYTHON_WT_WARM_MAX", "1")
+    main, wts, _ = env
+    h, reg, clock = _make(env, ("alpha",))
+    h._resolve_alias("wt-alpha")  # baseline: primed, no warm
+    _checkout(wts / "beta")
+    _register(main, "beta", f"{HOST}/wts/beta")
+    clock.t += 6
+    h._resolve_alias("wt-beta")
+    _drain_warm(h)
+    beta = reg.listing()[0]["wt-beta"].path
+    assert beta in h.cache.known_roots()
+    # gamma appears while the cap (1 held) is full — it stays cold.
+    _checkout(wts / "gamma")
+    _register(main, "gamma", f"{HOST}/wts/gamma")
+    clock.t += 6
+    h._resolve_alias("wt-gamma")
+    _drain_warm(h)
+    gamma = reg.listing()[0]["wt-gamma"].path
+    assert gamma not in h.cache.known_roots()
+    # Free the held warm → the next listing warms gamma.
+    h.cache.drop(beta)
+    clock.t += 6
+    h._resolve_alias("wt-gamma")
+    _drain_warm(h)
+    assert gamma in h.cache.known_roots()
+
+
+def test_warm_semantic_does_not_scan_worktrees(env):
+    """The boot hook warms symbol embeddings only — worktree corpora
+    warm lazily on discovery, never from a boot scan."""
+    h, _, _ = _make(env, ("alpha",))
+    h._semantic.start_warmup = lambda *a, **k: None
+    h.warm_semantic()
+    assert not h._wt_warm_primed
+    assert not h._wt_warm_inflight
+    assert not h.cache.known_roots()
+
+
+def test_queued_warm_does_not_rebuild_evicted_root(env):
+    """A warm queued on the per-root lock when its tree vanished and
+    drop() ran must not rebuild — the rebuilt index would sit in the
+    cache outside the registry LRU, freed by nothing."""
+    h, reg, clock = _make(env, ("alpha",))
+    h._resolve_alias("wt-alpha")
+    path = reg.listing()[0]["wt-alpha"].path
+    # Occupy the root lock so the warm queues behind it.
+    lock = h.cache._lock_for(path)
+    lock.acquire()
+    t = threading.Thread(target=h._warm_one, args=("wt-alpha", path), daemon=True)
+    t.start()
+    # While the warm waits: the tree vanishes and its drop runs.
+    (path / ".git").unlink()
+    clock.t += 6
+    h._worktree_listing()  # reaps: alpha gone → cache.drop(path)
+    lock.release()
+    t.join(5)
+    assert not t.is_alive()
+    assert path not in h.cache.known_roots()
 
 
 def test_read_only_refusal(env):

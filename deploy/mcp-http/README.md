@@ -59,7 +59,10 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   `PRECIS_PYTHON_GITDIR_MAP`); no restart needed, read-only, lazy; an index is
   dropped after 24 h unused (`PRECIS_PYTHON_WORKTREE_IDLE_HOURS`) or when the
   tree is removed. `PRECIS_PYTHON_WORKTREE_MAX` adds an optional LRU cap
-  (default 0 = none).
+  (default 0 = none). A tree discovered *after* the first listing also gets
+  a speculative background index warm, capped at
+  `PRECIS_PYTHON_WT_WARM_MAX` warm-built indexes held (default 4; 0
+  disables warming).
 - One checkout per host serves as the image build context, the `/main` mount
   (and so its worktrees) and the parent of the `-prod` clone that `/src`
   serves. It is `PRECIS_MCP_REPO`, else the absolute path in `main-checkout`

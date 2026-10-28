@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import os
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 from precis.python_index import RepoCache
+from precis.python_index import cache as cache_mod
 
 
 def _write(repo: Path, relpath: str, content: str) -> Path:
@@ -164,6 +167,52 @@ def test_drop_forces_full_reparse(tmp_path: Path) -> None:
 
     # New ModuleIndex instances after drop, even though content unchanged.
     assert first.module("pkg.a") is not second.module("pkg.a")
+
+
+def test_concurrent_gets_share_one_build(tmp_path: Path, monkeypatch) -> None:
+    """gr525769: two callers racing a cold root share one parse —
+    the second waits on the per-root lock and reuses the index the
+    first built. Without the lock both would parse the whole tree."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/a.py", "def a(): pass\n")
+    cache = RepoCache()
+    real = cache_mod.index_module
+    calls = 0
+
+    def counting(path, **kw):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.02)  # widen the race window
+        return real(path, **kw)
+
+    monkeypatch.setattr(cache_mod, "index_module", counting)
+    results = []
+
+    def run() -> None:
+        results.append(cache.get(tmp_path))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(results) == 2
+    assert calls == 2  # one shared build of two files, not two
+
+
+def test_warm_skips_cached_and_vetoed_roots(tmp_path: Path) -> None:
+    """`cache.warm` builds only when the root is still wanted and not
+    already cached — both checked under the per-root lock so a queued
+    warm can't redo a build or resurrect a dropped one."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/a.py", "def a(): pass\n")
+    cache = RepoCache()
+    assert cache.warm(tmp_path, wanted=lambda: False) is None
+    assert tmp_path.resolve() not in cache.known_roots()
+    idx = cache.warm(tmp_path, wanted=lambda: True)
+    assert idx is not None and idx.module("pkg.a") is not None
+    # Once cached, further warms are no-ops even when still wanted.
+    assert cache.warm(tmp_path, wanted=lambda: True) is None
 
 
 def test_get_on_nonexistent_root_raises(tmp_path: Path) -> None:

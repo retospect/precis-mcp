@@ -25,7 +25,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from precis.python_index.types import ModuleIndex, RepoIndex
+from precis.python_index.types import IndexObservation, ModuleIndex, RepoIndex
 from precis.response import Response
 
 
@@ -236,6 +236,50 @@ def _parse_errors(idx: RepoIndex) -> int:
     return sum(mod.parse_error is not None for mod in idx._by_file.values())
 
 
+#: A partial refresh gets a cost note only when it actually reparsed
+#: the majority of the corpus or took long enough to feel (gr525769).
+_REFRESH_NOTE_MIN_S = 1.0
+
+
+def _obs_seconds(observation: IndexObservation) -> float:
+    """Wall seconds of an index observation, parsed from its ISO stamps."""
+    try:
+        t0 = datetime.fromisoformat(observation.started_at)
+        t1 = datetime.fromisoformat(observation.finished_at)
+    except ValueError:
+        return 0.0
+    return max(0.0, (t1 - t0).total_seconds())
+
+
+def _corpus_cost_note(idx: RepoIndex) -> str | None:
+    """``cold corpus: built in N s`` / refresh note, or None (gr525769).
+
+    The first read against a worktree corpus pays a full walk+parse
+    (~17 s on a 4k-file tree) while later calls stat-check in <1 s —
+    the header says which one this call was so the agent pays the
+    cold build once and stays on the kind. A refresh that reparsed
+    names the count (``reparsed 1 file``); one whose time went into
+    the stat-walk instead says ``checked N files``.
+    """
+    obs = idx.observation
+    if obs is None:
+        return None
+    elapsed = _obs_seconds(obs)
+    if obs.reused == 0:
+        if not obs.reparsed:
+            return None
+        return f"cold corpus: built in {elapsed:.1f} s; later calls reuse it"
+    if obs.reparsed >= obs.reused or elapsed >= _REFRESH_NOTE_MIN_S:
+        if obs.reparsed:
+            noun = "file" if obs.reparsed == 1 else "files"
+            detail = f"reparsed {obs.reparsed} {noun}"
+        else:
+            noun = "file" if obs.reused == 1 else "files"
+            detail = f"checked {obs.reused} {noun}"
+        return f"corpus refresh: {detail} in {elapsed:.1f} s; later calls reuse it"
+    return None
+
+
 def empty_root_reason(root: Path) -> str:
     """Why an existing root can index zero modules (gr520147).
 
@@ -297,6 +341,8 @@ def _render_summary(
             path, mod = touched[0]
             corpus += f" file {path} {(mod.bytes_sha256 or 'UNKNOWN')[:8]}"
         parts.append(corpus)
+        if (note := _corpus_cost_note(idx)) is not None:
+            parts.append(note)
     parts.append(git.summary())
     return (
         " · ".join(parts)

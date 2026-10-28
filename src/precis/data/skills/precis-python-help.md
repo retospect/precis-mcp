@@ -57,6 +57,14 @@ search; name one with `scope='wt-x'` (or `wt-x::pkg.mod`). Semantic vectors
 are not warmed for them (cached vectors from main still hit). If the alias does
 not resolve, fall back to Grep.
 
+Cold builds: the first read on a never-indexed corpus pays one full
+walk+parse (~seconds on a large tree; the summary line reports
+`cold corpus: built in N s; later calls reuse it`); every later call
+is a fast stat-check. A tree the listing discovers as *new* may
+already be warming on a background thread when you first query it —
+joining that build is normal. Pay the cold build once and stay on the
+kind; do not drop to grep because the first call was slow.
+
 A `cli` root, when the deployment mounts one, is the host's *installed*
 `precis` package — the code `precis <cmd>` actually runs, which can be
 older or newer than `main` (checkout) and `precis` (server image)
@@ -79,6 +87,10 @@ Reads of exactly one file add ` file <path> <8-hex digest>`. Non-default states
 are upper-cased in the line: `DIRTY`, `dirty=UNKNOWN`, `git UNAVAILABLE`,
 `PARTIAL` (Git), `PARTIAL WALK`, `PARSE ERRORS n`, `root UNAVAILABLE`,
 `freshness UNKNOWN`; `(expected_root ok)` appears when you asserted one.
+When the call itself paid a full corpus (re)build, the line also carries
+`cold corpus: built in N s` (or `corpus refresh: reparsed n files in N s`,
+`checked n files in N s` when the stat-walk was the cost) followed by
+`later calls reuse it`.
 
 Drill down with `view='provenance'` on an alias, file or symbol id: it renders
 the full block (alias/root, corpus framing and full SHA256, freshness window,
@@ -419,7 +431,11 @@ search(kind="python", mode="pattern", q="async @router\\.get")
 
 `mode='pattern'` ANDs whitespace-separated terms: `async`, `@regex`
 (matches a decorator), or a regex on qualname / signature. Same
-`scope=` and `page_size=` as the lexical search.
+`scope=` and `page_size=` as the lexical search. A multi-word
+natural-language query ANDs every word to zero — when that happens
+the search retries the identifier-like terms (longest first) itself
+and reports `query narrowed to '<term>'`; on a still-empty result the
+`Next:` block suggests a bare-symbol `mode='hybrid'` retry.
 
 ## Find every use of a string value
 ## Who reads this enum/kind/status string?

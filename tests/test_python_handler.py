@@ -14,7 +14,12 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers.python import PythonHandler, _is_test_path, _parse_id
+from precis.handlers.python import (
+    PythonHandler,
+    _identifier_terms,
+    _is_test_path,
+    _parse_id,
+)
 from tests.hintcheck import assert_hints_round_trip
 
 # ---------------------------------------------------------------------------
@@ -484,6 +489,67 @@ def test_search_no_match_qualified_symbol_roots_note_is_prose(
 def test_search_requires_q(handler: PythonHandler) -> None:
     with pytest.raises(BadInput, match="search requires"):
         handler.search()
+
+
+def test_search_pattern_prose_query_narrows_to_identifier(
+    handler: PythonHandler,
+) -> None:
+    """gr525768: a natural-language query in pattern mode AND-ed every
+    token to zero hits and left the caller no recovery. The handler
+    now retries the identifier-like tokens server-side, longest
+    first, and the response names the term it narrowed to."""
+    out = handler.search(q="Greeter class that says hello", mode="pattern")
+    assert "no python symbols match" not in out.body
+    assert "query narrowed to 'Greeter'" in out.body
+    assert "r::pkg.m.Greeter" in out.body
+
+
+def test_search_pattern_retry_skips_nonmatching_longest(
+    handler: PythonHandler,
+) -> None:
+    """The retries walk tokens longest-first and take the first that
+    hits — here 'zzzlongtoken' misses and 'greet' wins."""
+    out = handler.search(q="zzzlongtoken greet", mode="pattern")
+    assert "query narrowed to 'greet'" in out.body
+    assert "r::pkg.m.Greeter.greet" in out.body
+
+
+def test_search_pattern_still_empty_suggests_bare_hybrid_retry(
+    handler: PythonHandler,
+) -> None:
+    """When even the narrowed retries miss, the empty response names
+    the bare-symbol retry under the meaning-aware mode."""
+    out = handler.search(q="zork midas frobnicate dingle", mode="pattern")
+    assert "no python symbols match" in out.body
+    retry_line = next(ln for ln in out.body.splitlines() if "mode='hybrid'" in ln)
+    assert "q='frobnicate'" in retry_line  # longest token
+
+    def dispatch(verb: str, kwargs: dict) -> object:
+        kwargs.pop("kind", None)
+        return getattr(handler, verb)(**kwargs)
+
+    assert_hints_round_trip(out.body, dispatch)
+
+
+def test_identifier_terms_equal_length_order_is_deterministic() -> None:
+    """Equal-length identifier tokens sort by name, not hash-seeded
+    set order — the token the narrowing retry picks can't depend on
+    PYTHONHASHSEED."""
+    assert _identifier_terms("zz aaa bbb") == ["aaa", "bbb", "zz"]
+    # Input order doesn't matter: same tokens, same output.
+    assert _identifier_terms("bbb zz aaa") == ["aaa", "bbb", "zz"]
+    assert _identifier_terms("aaa aaa") == ["aaa"]  # deduped
+
+
+def test_search_pattern_single_token_miss_unchanged(
+    handler: PythonHandler,
+) -> None:
+    """Single-token pattern queries get the pre-existing recovery
+    trailer only — no bare-symbol retry (it would just echo q)."""
+    out = handler.search(q="zzzsingle", mode="pattern")
+    assert "no python symbols match" in out.body
+    assert "mode='hybrid'" not in out.body
+    assert "Next:" in out.body
 
 
 def test_search_scope_to_repo(handler: PythonHandler) -> None:

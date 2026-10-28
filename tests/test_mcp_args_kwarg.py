@@ -15,6 +15,7 @@ test, mirroring how the FastMCP loop wires it up via
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,16 @@ def _body(out: Any) -> str:
 def _is_error(out: Any) -> bool:
     """True when the tool result carries the protocol-level error flag."""
     return isinstance(out, CallToolResult) and bool(out.isError)
+
+
+def _summary_line(body: str, prefix: str) -> str:
+    """The ``prefix`` summary line with the volatile corpus cost note
+    stripped (gr525769): which call paid the cold build is runtime
+    variance, not payload."""
+    line = next(ln for ln in body.splitlines() if ln.startswith(prefix))
+    return re.sub(
+        r" · (?:cold corpus|corpus refresh)[^·]*?later calls reuse it", "", line
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +181,9 @@ def test_args_none_is_noop(server_runtime: PrecisRuntime) -> None:
     )
     assert with_none.splitlines()[0] == explicit_none.splitlines()[0]
     for prefix in ("checkout:",):
-        assert next(
-            line for line in with_none.splitlines() if line.startswith(prefix)
-        ) == next(
-            line for line in explicit_none.splitlines() if line.startswith(prefix)
-        )
+        # The corpus cost note (gr525769) marks the call that paid the
+        # cold build — runtime variance, not a payload difference.
+        assert _summary_line(with_none, prefix) == _summary_line(explicit_none, prefix)
     assert "demopkg" in with_none
 
 

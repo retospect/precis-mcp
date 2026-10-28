@@ -9,6 +9,8 @@ are not atomic snapshots; partial walks retain earlier entries with a warning.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,13 +35,30 @@ class _CachedFile:
 
 
 class RepoCache:
-    """Independent per-root caches; stat checks reuse ASTs without byte scans."""
+    """Independent per-root caches; stat checks reuse ASTs without byte scans.
+
+    Builds for the same root are serialized on a per-root lock
+    (gr525769): a background warm and a synchronous read, or two
+    concurrent first reads, share one build — the second caller waits
+    on the lock and gets the finished index instead of reparsing in
+    parallel. Different roots still build concurrently.
+    """
 
     def __init__(self) -> None:
         self._cache: dict[Path, dict[str, _CachedFile]] = {}
+        self._locks: dict[Path, threading.Lock] = {}
+        self._locks_lock = threading.Lock()
+
+    def _lock_for(self, root: Path) -> threading.Lock:
+        with self._locks_lock:
+            return self._locks.setdefault(root, threading.Lock())
 
     def get(self, root: Path) -> RepoIndex:
         root = root.resolve()
+        with self._lock_for(root):
+            return self._get(root)
+
+    def _get(self, root: Path) -> RepoIndex:
         if not root.is_dir():
             self.drop(root)
             raise NotADirectoryError(f"not a directory: {root}")
@@ -100,6 +119,22 @@ class RepoCache:
                 tuple(issues),
             ),
         )
+
+    def warm(self, root: Path, *, wanted: Callable[[], bool]) -> RepoIndex | None:
+        """Speculative build under the per-root lock; ``None`` when skipped.
+
+        A warm queues behind real builds on the same lock: by the time it
+        runs, the root may already be cached (a real query finished it —
+        skip, the work is done) or dropped + delisted while it waited
+        (skip — rebuilding would re-cache a root no eviction path
+        reaches). ``wanted`` runs under the lock so the check cannot
+        race the drop.
+        """
+        root = root.resolve()
+        with self._lock_for(root):
+            if root in self._cache or not wanted():
+                return None
+            return self._get(root)
 
     def drop(self, root: Path) -> None:
         """Forget a root; the next read reparses its files."""

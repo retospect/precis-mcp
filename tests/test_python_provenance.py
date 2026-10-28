@@ -173,6 +173,70 @@ def test_summary_is_one_line_with_drilldown(tmp_path: Path) -> None:
         _handler(tmp_path).get(id="r::m.nope", view="provenance")
 
 
+def test_summary_names_cold_corpus_build_then_quiet(tmp_path: Path) -> None:
+    """gr525769: the first read against a root pays a full walk+parse —
+    the summary line says so (and that later calls reuse it), so a
+    ~17 s cold hit reads as one-time cost, not per-call latency. A
+    warm call stays silent."""
+    _source(tmp_path)
+    handler = _handler(tmp_path)
+    first = handler.get(id="r::m.hello").body
+    assert "cold corpus: built in" in first
+    assert "later calls reuse it" in first
+    again = handler.get(id="r::m.hello").body
+    assert "cold corpus" not in again
+
+
+def test_summary_names_majority_refresh(tmp_path: Path) -> None:
+    """A refresh that reparses most of the corpus gets its own note;
+    a single-file touch below the bar stays quiet."""
+    _source(tmp_path)
+    (tmp_path / "n.py").write_text("def n(): pass\n", encoding="utf-8")
+    (tmp_path / "o.py").write_text("def o(): pass\n", encoding="utf-8")
+    handler = _handler(tmp_path)
+    handler.get(id="r")
+    (tmp_path / "m.py").write_text("def hello(): return 2\n", encoding="utf-8")
+    (tmp_path / "n.py").write_text("def n(): return 2\n", encoding="utf-8")
+    body = handler.get(id="r").body
+    assert "corpus refresh: reparsed 2 files" in body
+    (tmp_path / "o.py").write_text("def o(): return 2\n", encoding="utf-8")
+    quiet = handler.get(id="r").body
+    assert "corpus refresh" not in quiet
+
+
+def test_summary_refresh_note_singular_file(tmp_path: Path) -> None:
+    """One reparsed file reads 'reparsed 1 file', not 'reparsed 1 files'."""
+    _source(tmp_path)
+    (tmp_path / "n.py").write_text("def n(): pass\n", encoding="utf-8")
+    handler = _handler(tmp_path)
+    handler.get(id="r")
+    (tmp_path / "m.py").write_text("def hello(): return 22\n", encoding="utf-8")
+    body = handler.get(id="r").body
+    assert "reparsed 1 file " in body
+    assert "reparsed 1 files" not in body
+
+
+@pytest.mark.parametrize(
+    "extra,expected", [(0, "checked 1 file"), (1, "checked 2 files")]
+)
+def test_summary_names_slow_stat_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: int, expected: str
+) -> None:
+    """A refresh whose cost was the stat-walk, not reparsing, says
+    'checked N file(s)' — pluralised like the reparsed branch — rather
+    than 'reparsed 0 files'."""
+    _source(tmp_path)
+    for i in range(extra):
+        (tmp_path / f"n{i}.py").write_text("def n(): pass\n", encoding="utf-8")
+    handler = _handler(tmp_path)
+    handler.get(id="r")
+    monkeypatch.setattr(provenance, "_obs_seconds", lambda obs: 3.5)
+    body = handler.get(id="r").body
+    line = next(ln for ln in body.splitlines() if ln.startswith("checkout:"))
+    assert f"corpus refresh: {expected} in 3.5 s" in line
+    assert "reparsed" not in line
+
+
 def test_summary_flags_non_default_states(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

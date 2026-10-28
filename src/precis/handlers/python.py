@@ -39,6 +39,7 @@ import dataclasses
 import difflib
 import logging
 import re
+import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,6 +89,7 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.env import env_int
 from precis.utils.eye_render import parse_extent
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
@@ -369,9 +371,23 @@ class PythonHandler(Handler):
         )
         # Semantic half of search (embedder may be None -> lexical only).
         self._semantic = SemanticIndex(getattr(hub, "embedder", None))
+        # Speculative worktree-corpus warm bookkeeping (gr525769): see
+        # ``_warm_new_worktrees``.
+        self._wt_warmed: set[str] = set()
+        self._wt_warm_inflight: set[str] = set()
+        self._wt_warm_built: set[Path] = set()
+        self._wt_seen: set[Path] = set()
+        self._wt_warm_primed = False
+        self._wt_warm_lock = threading.Lock()
 
     def warm_semantic(self) -> None:
-        """Start the background symbol-embedding pass (server boot hook)."""
+        """Start the background symbol-embedding pass (server boot hook).
+
+        Worktree corpora deliberately do NOT warm here: boot-time scans
+        warmed every existing tree for coverage nobody asked for — a
+        tree warms only when a query-time listing discovers it as *new*
+        (gr525769 follow-up).
+        """
         self._semantic.start_warmup(self._all_symbols, keep=self._held_worktree_symbols)
 
     def _held_worktree_symbols(self) -> list[Symbol]:
@@ -849,6 +865,15 @@ class PythonHandler(Handler):
             )
         sim_of = {id(scoped[i][1]): sim for i, sim in sims.items()}
 
+        # A multi-term pattern query ANDs every token: a natural-language
+        # query reads as predicates ("ObjectiveShares via share
+        # placement") and self-destructs to zero hits (gr525768). Retry
+        # with the identifier-like tokens, longest first; first token
+        # that hits wins and the response says it was narrowed.
+        narrowed_to: str | None = None
+        if not hits and mode == "pattern" and len(q.split()) > 1:
+            hits, narrowed_to = _narrowed_pattern_hits(q, scoped, demote)
+
         if not hits:
             # Empty-search recovery (MCP critic round 2): a bare
             # "no matches" body leaves the caller without a next
@@ -863,10 +888,24 @@ class PythonHandler(Handler):
             # the trailer doesn't explode on multi-repo setups.
             first_alias = sorted(roots.keys())[0]
             hints: list[tuple[str, str]] = []
+            if mode == "pattern" and len(q.split()) > 1:
+                # The narrowed retries above also missed — the
+                # recovery the gripe asks for is a bare-symbol retry
+                # under the meaning-aware mode (gr525768).
+                bare = (
+                    _identifier_terms(q) or sorted(q.split(), key=len, reverse=True)
+                )[0]
+                hints.append(
+                    (
+                        f"search(kind='python', mode='hybrid', q={bare!r})",
+                        "retry the bare symbol name (multi-term "
+                        "patterns AND every token)",
+                    )
+                )
             if scope is not None:
-                # Widen scope suggestion first — the most common fix
-                # when a scoped search misses is that the scope was
-                # too narrow (typo in alias or qualname prefix).
+                # Widen scope suggestion — the most common fix when a
+                # scoped search misses is that the scope was too narrow
+                # (typo in alias or qualname prefix).
                 hints.append(
                     (
                         f"search(kind='python', q={q!r})",
@@ -941,6 +980,11 @@ class PythonHandler(Handler):
                 query=q,
             )
         ]
+        if narrowed_to is not None:
+            lines.append(
+                f"query narrowed to {narrowed_to!r} — the multi-term "
+                "pattern AND-ed every token to zero hits"
+            )
         if n_all is not None:
             lines.append(
                 f"{n_all} match all {len(terms)} terms; "
@@ -2044,7 +2088,106 @@ class PythonHandler(Handler):
         listing, gone = self.worktrees.listing()
         for path in gone:
             self.cache.drop(path)
-        return {a: w.path for a, w in listing.items()}
+        wts = {a: w.path for a, w in listing.items()}
+        live = set(wts.values())
+        # Reap orphan builds: a warm queued on the per-root lock can land
+        # in the cache after its drop ran — the registry LRU never saw
+        # it, so nothing else frees it. Evict any cached root the
+        # registry once named (``_wt_seen``) and no longer lists; static
+        # and workspace roots are never in that set.
+        for root in self.cache.known_roots():
+            if root in self._wt_seen and root not in live:
+                self.cache.drop(root)
+        self._wt_seen.update(live)
+        self._warm_new_worktrees(wts)
+        return wts
+
+    #: Concurrent warm threads — AST parsing is GIL-bound anyway.
+    _WT_WARM_INFLIGHT_MAX = 1
+    #: ``PRECIS_PYTHON_WT_WARM_MAX`` — how many warm-built worktree
+    #: indexes to hold at once; 0 disables speculative warming.
+    _WT_WARM_MAX_ENV = "PRECIS_PYTHON_WT_WARM_MAX"
+    _WT_WARM_MAX_DEFAULT = 4
+
+    def _warm_new_worktrees(self, wts: dict[str, Path]) -> None:
+        """Background-warm worktree corpora discovered *after* the first
+        listing (gr525769).
+
+        The first scan is the baseline — the trees it names are marked,
+        never warmed: there is no boot-time scan+warm anymore, so a
+        corpus warms only when a later listing discovers a new tree (the
+        likeliest next navigation target when sibling sessions open
+        worktrees). The per-root lock inside ``RepoCache.warm`` joins a
+        real call that races the warm into one build. Newest checkouts
+        (dir mtime) warm first, bounded to ``_WT_WARM_INFLIGHT_MAX``
+        concurrent builds and ``PRECIS_PYTHON_WT_WARM_MAX`` warm-built
+        indexes held at once (default 4; 0 disables speculative warming
+        entirely) — a live-held count, not a lifetime total: evicting a
+        warmed index frees the slot. Speculative warms deliberately do
+        NOT enter the registry LRU: a warm must never evict a corpus a
+        real query is using.
+        """
+        if not self._wt_warm_primed:
+            self._wt_warm_primed = True
+            self._wt_warmed.update(wts)
+            return
+        self._wt_warmed.intersection_update(wts)
+        fresh = [a for a in wts if a not in self._wt_warmed]
+        if not fresh:
+            return
+        warm_max = env_int(self._WT_WARM_MAX_ENV, self._WT_WARM_MAX_DEFAULT, lo=0)
+        if warm_max == 0:
+            return
+        known = set(self.cache.known_roots())
+        self._wt_warm_built.intersection_update(known)
+        cands: list[tuple[float, str]] = []
+        for a in fresh:
+            if wts[a] in known:
+                self._wt_warmed.add(a)  # already built — nothing to warm
+                continue
+            try:
+                cands.append((wts[a].stat().st_mtime, a))
+            except OSError:
+                continue
+        cands.sort(key=lambda c: (-c[0], c[1]))
+        with self._wt_warm_lock:
+            for _mtime, a in cands:
+                if (
+                    a in self._wt_warmed
+                    or len(self._wt_warm_inflight) >= self._WT_WARM_INFLIGHT_MAX
+                    or len(self._wt_warm_built) >= warm_max
+                ):
+                    continue
+                self._wt_warmed.add(a)
+                self._wt_warm_inflight.add(a)
+                self._wt_warm_built.add(wts[a])
+                threading.Thread(
+                    target=self._warm_one,
+                    args=(a, wts[a]),
+                    name=f"python-wt-warm-{a}",
+                    daemon=True,
+                ).start()
+
+    def _warm_one(self, alias: str, path: Path) -> None:
+        try:
+            self.cache.warm(path, wanted=lambda: self._still_listed(path))
+        except Exception as exc:  # speculative — never propagate
+            log.debug("worktree corpus warm for %s failed: %r", alias, exc)
+        finally:
+            with self._wt_warm_lock:
+                self._wt_warm_inflight.discard(alias)
+
+    def _still_listed(self, path: Path) -> bool:
+        """``path`` still names a root in the last worktree listing.
+
+        Reads the snapshot, never ``listing()`` itself: the registry is
+        not locked, so a warm-thread ``listing()`` could race a request
+        thread's ``touch()`` and would swallow the once-only ``gone``
+        report (idle-expired trees would never be dropped).
+        """
+        if self.worktrees is None:
+            return False
+        return any(w.path == path for w in self.worktrees.snapshot().values())
 
     def git_dir_for(self, root: Path) -> Path | None:
         """GIT_DIR for a worktree root (its own ``.git`` file is host-pathed)."""
@@ -2989,6 +3132,45 @@ def _score_pattern(
         else:
             vals.append(1.0)
     return sum(vals) / len(vals) if vals else 1.0
+
+
+#: A pattern-mode retry pass over a prose query tries its
+#: identifier-like tokens at most this many times (gr525768).
+_PATTERN_NARROW_MAX_RETRIES = 3
+
+
+def _identifier_terms(q: str) -> list[str]:
+    """Identifier-shaped tokens of `q` (CamelCase, snake_case or plain
+    lowercase words), longest first, deduped (gr525768).
+
+    Used by the pattern-mode narrowing retry and the still-empty
+    bare-symbol hint. Stopwords and non-identifier shapes (``a.b``,
+    ``@deco``, ``foo-bar``) are dropped: retrying them as a pattern
+    regex can only echo the query's own prose back.
+    """
+    seen = {t for t in q.split() if t.isidentifier() and t.lower() not in _STOPWORDS}
+    return sorted(seen, key=lambda t: (-len(t), t))
+
+
+def _narrowed_pattern_hits(
+    q: str,
+    scoped: list[tuple[str, Symbol]],
+    demote: dict[int, float],
+) -> tuple[list[tuple[float, str, Symbol]], str | None]:
+    """Rescan `scoped` with each identifier-like token as a one-term
+    pattern, longest first; first non-empty result wins (gr525768).
+    """
+    for token in _identifier_terms(q)[:_PATTERN_NARROW_MAX_RETRIES]:
+        preds = reverse.compile_pattern(token)
+        retry = [
+            (sc * demote.get(id(sym), 1.0), alias, sym)
+            for alias, sym in scoped
+            if (sc := _score_pattern(sym, preds)) > 0
+        ]
+        if retry:
+            retry.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
+            return retry, token
+    return [], None
 
 
 def _enclosing_note(alias: str, mod: ModuleIndex, start: int, end: int) -> str:

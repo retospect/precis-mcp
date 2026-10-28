@@ -11,7 +11,11 @@ translates host paths to container paths; a worktree is a root only when its
 translated path exists here. Aliases are ``<prefix>-<basename>``.
 
 The listing is re-read at most every ``ttl`` seconds. Worktree indexes build
-lazily on first query and stay cached until unused for ``idle_ttl`` seconds
+lazily on first query — or earlier on a daemon thread, when a scan discovers
+a tree the handler has not seen before (the first listing is the baseline;
+``PythonHandler`` caps how many of those speculative warms it holds; see
+``_warm_new_worktrees``, gr525769) —
+and stay cached until unused for ``idle_ttl`` seconds
 (default 24 h: many worktrees coexist), the worktree vanishes, or an optional
 ``max_indexes`` cap (0 = none) evicts the least recently used; eviction goes
 through ``RepoCache.drop``. Worktree roots are never part of the
@@ -133,6 +137,15 @@ class WorktreeRegistry:
         gone_aliases = [a for a in self._lru if a not in self._listing]
         gone = [self._lru.pop(a)[0] for a in gone_aliases]
         return self._listing, gone + self._expire(now)
+
+    def snapshot(self) -> dict[str, Worktree]:
+        """The last listing — read-only, no rescan and no LRU expiry.
+
+        ``listing()`` mutates ``_lru`` and reports each vanished path
+        exactly once, so it is request-thread only; background threads
+        (the speculative corpus warm) consult this snapshot instead.
+        """
+        return dict(self._listing)
 
     def _expire(self, now: float) -> list[Path]:
         expired: list[Path] = []
