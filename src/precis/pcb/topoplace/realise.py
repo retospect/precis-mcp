@@ -384,6 +384,29 @@ def plan_route(
             else:
                 pad_sets[0].append(row)
                 pad_sets[1].append(row)
+    # Non-primary footprint pads (gr524392) — the via keep-out must
+    # clear the same lands the DRC flashes: a pin's second same-named
+    # pad, a split slug half, an unpinned land. Same part-local rect
+    # rows, same side→roster rule.
+    for k in range(len(d.pad_extra_xy)):
+        part = int(d.pad_extra_part[k])
+        if not 0 <= part < len(pose_a) or not np.isfinite(pose_a[part, :2]).all():
+            continue
+        row = (
+            part,
+            float(d.pad_extra_xy[k, 0]),
+            float(d.pad_extra_xy[k, 1]),
+            float(d.pad_extra_wh[k, 0]) / 2.0,
+            float(d.pad_extra_wh[k, 1]) / 2.0,
+        )
+        side = int(d.pad_extra_side[k])
+        if side == 0:
+            pad_sets[0].append(row)
+        elif side == 1:
+            pad_sets[1].append(row)
+        else:
+            pad_sets[0].append(row)
+            pad_sets[1].append(row)
     pieces: list[RoutePiece] = []
     vias: list[ViaSite] = []
     placed: list[tuple[float, float, float]] = []

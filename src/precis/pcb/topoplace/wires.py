@@ -58,6 +58,7 @@ from precis.pcb.topoplace.mesh import (
     OWNER_NONE,
     TopoMesh,
 )
+from precis.pcb.topoplace.proxy import local_to_world
 
 _EPS = 1e-9
 
@@ -238,7 +239,8 @@ class _Ctx:
     # would invent gaps on synth fixtures. The fan boundary IS the pad
     # ring, so its endpoint bounding box is the pad's world rect — read
     # off the mesh, correct under whatever pose built it.
-    pad_pin: np.ndarray  # (Rp,) global pin id per ringed pad
+    pad_pin: np.ndarray  # (Rp,) global pin id per pad, -1 = unpinned extra
+    pad_part: np.ndarray  # (Rp,) owning part id per pad (extras included)
     pad_lo: np.ndarray  # (Rp, 2) world AABB lo
     pad_hi: np.ndarray  # (Rp, 2) world AABB hi
     pad_copper: np.ndarray  # (Rp,) int — layers the pad has copper on
@@ -278,11 +280,39 @@ def _pin_mask(pin_side: int, n_layers: int) -> int:
     return 1 << (n_layers - 1 if pin_side == 1 else 0)
 
 
-def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
-    tri_verts = [(int(a), int(b), int(c)) for a, b, c in mesh.tris]
+@dataclass(frozen=True, slots=True)
+class GuardPads:
+    """The pad set the wire guard's gap rule measures — the same pads
+    :func:`precis.pcb.realize.pads_for_ir` hands the DRC (gr524392):
+    each pin's ringed pad plus every non-primary footprint pad
+    (:attr:`TopoDesign.pad_extra_*` — a pin's second same-named land, a
+    split slug half, an unpinned land). ``pin`` is the owning pin id,
+    ``-1`` for an unpinned land — foreign copper to every net, the same
+    ``net=""`` the DRC pad set gives it. ``part`` the owning instance
+    for attribution; ``copper`` the ``_pin_mask`` layer bitmask."""
+
+    pin: np.ndarray  # (Rp,) global pin id per pad, -1 = unpinned extra
+    part: np.ndarray  # (Rp,) owning part id per pad
+    lo: np.ndarray  # (Rp, 2) world AABB lo
+    hi: np.ndarray  # (Rp, 2) world AABB hi
+    copper: np.ndarray  # (Rp,) blocked-layer bitmask
+    pin_pad: dict[int, int]  # pin -> ringed-pad index (extras excluded)
+    fan_boundary: dict[int, frozenset[int]]  # pin -> boundary edges of its fan
+    pad_contrib: dict[int, list[tuple[int, int]]]  # edge -> [(pin, mask)]
+
+
+def guard_pad_rects(
+    mesh: TopoMesh,
+    d: TopoDesign,
+    n_layers: int,
+    pose: np.ndarray | None = None,
+) -> GuardPads:
+    """The guard's pad rectangles for a mesh built at ``pose`` (defaults
+    ``d.pose0``, the same default :func:`build_wires` applies)."""
+    pose_a = np.asarray(d.pose0 if pose is None else pose)
     v2t: list[list[int]] = [[] for _ in range(len(mesh.verts))]
-    for t, tri in enumerate(tri_verts):
-        for v in tri:
+    for t, tri in enumerate(mesh.tris):
+        for v in (int(x) for x in tri):
             v2t[v].append(t)
     # Pad fan boundary: the edges opposite the pad vertex in its fan
     # tris. Entering the fan = crossing one of these.
@@ -306,6 +336,7 @@ def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
     # missing or zero) get NO box: their fan boundary is arbitrary CDT
     # edges and a box read from them invents false gaps on synth.
     pad_pin_l: list[int] = []
+    pad_part_l: list[int] = []
     pad_lo_l: list[np.ndarray] = []
     pad_hi_l: list[np.ndarray] = []
     pad_copper_l: list[int] = []
@@ -320,9 +351,38 @@ def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
         pts = mesh.verts[vids]
         pin_pad[p] = len(pad_pin_l)
         pad_pin_l.append(p)
+        pad_part_l.append(int(d.pin_part[p]))
         pad_lo_l.append(pts.min(axis=0))
         pad_hi_l.append(pts.max(axis=0))
         pad_copper_l.append(_pin_mask(int(d.pin_side[p]), n_layers))
+    # Non-primary footprint pads (gr524392): no fan ring exists for
+    # them — the mesh never saw the land — so the world AABB comes
+    # straight off the local rect's placed corners.
+    for k in range(len(d.pad_extra_xy)):
+        part = int(d.pad_extra_part[k])
+        if not 0 <= part < len(pose_a) or not np.isfinite(pose_a[part, :2]).all():
+            continue
+        cx, cy = float(d.pad_extra_xy[k, 0]), float(d.pad_extra_xy[k, 1])
+        hw = float(d.pad_extra_wh[k, 0]) / 2.0
+        hh = float(d.pad_extra_wh[k, 1]) / 2.0
+        if hw <= _EPS or hh <= _EPS:
+            continue
+        wpts = local_to_world(
+            np.asarray(
+                [
+                    [cx - hw, cy - hh],
+                    [cx + hw, cy - hh],
+                    [cx + hw, cy + hh],
+                    [cx - hw, cy + hh],
+                ]
+            ),
+            pose_a[part],
+        )
+        pad_pin_l.append(int(d.pad_extra_pin[k]))
+        pad_part_l.append(part)
+        pad_lo_l.append(wpts.min(axis=0))
+        pad_hi_l.append(wpts.max(axis=0))
+        pad_copper_l.append(_pin_mask(int(d.pad_extra_side[k]), n_layers))
     pad_lo = (
         np.asarray(pad_lo_l, dtype=np.float64).reshape(-1, 2)
         if pad_lo_l
@@ -333,6 +393,30 @@ def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
         if pad_hi_l
         else np.zeros((0, 2))
     )
+    return GuardPads(
+        pin=np.asarray(pad_pin_l, dtype=np.int64),
+        part=np.asarray(pad_part_l, dtype=np.int64),
+        lo=pad_lo,
+        hi=pad_hi,
+        copper=np.asarray(pad_copper_l, dtype=np.int64),
+        pin_pad=pin_pad,
+        fan_boundary=fan_boundary,
+        pad_contrib=pad_contrib,
+    )
+
+
+def _make_ctx(
+    mesh: TopoMesh, d: TopoDesign, n_layers: int, pose: np.ndarray | None = None
+) -> _Ctx:
+    pads = guard_pad_rects(mesh, d, n_layers, pose)
+    fan_boundary = pads.fan_boundary
+    pad_contrib = pads.pad_contrib
+    pin_pad = pads.pin_pad
+    tri_verts = [(int(a), int(b), int(c)) for a, b, c in mesh.tris]
+    v2t: list[list[int]] = [[] for _ in range(len(mesh.verts))]
+    for t, tri in enumerate(tri_verts):
+        for v in tri:
+            v2t[v].append(t)
     n_parts = len(d.parts)
     all_mask = (1 << n_layers) - 1
     zone_contrib: dict[int, list[tuple[int, int]]] = {}
@@ -456,10 +540,11 @@ def _make_ctx(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> _Ctx:
         fan_boundary=fan_boundary,
         pad_contrib=pad_contrib,
         zone_contrib=zone_contrib,
-        pad_pin=np.asarray(pad_pin_l, dtype=np.int64),
-        pad_lo=pad_lo,
-        pad_hi=pad_hi,
-        pad_copper=np.asarray(pad_copper_l, dtype=np.int64),
+        pad_pin=pads.pin,
+        pad_part=pads.part,
+        pad_lo=pads.lo,
+        pad_hi=pads.hi,
+        pad_copper=pads.copper,
         pin_pad=pin_pad,
         edge_lo=edge_lo,
         edge_hi=edge_hi,
@@ -1451,7 +1536,7 @@ def _wall_owners(
             if pin in own:
                 continue
             if _seg_pad_int(ctx, e, pi_, r) is not None:
-                acc.add(int(d.pin_part[pin]))
+                acc.add(int(ctx.pad_part[pi_]))
 
     owners: set[int] = set()
     for e in cut or boundary:
@@ -1659,7 +1744,11 @@ def _blocked_masks(
     blocked_gap, _free, edge_pads, pad_edges = _pad_eval(ctx, r)
     if edge_pads:
         gap_mask = blocked_gap.copy()
-        own_pads = frozenset(ctx.pin_pad[p] for p in own if p in ctx.pin_pad)
+        # own-net pads stay out of the coverage — the pin's ringed pad
+        # AND every extra pad pinned to one of the net's pins (a second
+        # same-named land is the same net's copper). An unpinned extra
+        # (pad_pin -1) is in no net's own set — foreign to all.
+        own_pads = frozenset(i for i, pn in enumerate(ctx.pad_pin) if int(pn) in own)
         if own_pads:
             seen_e: set[int] = set()
             for pi_ in own_pads:
@@ -1992,7 +2081,8 @@ def build_wires(
     capacity reads each endpoint pad's extent through it, so a caller
     routing a placed pose passes it — the authored pose prices a
     rotated or flipped pad's shadow wrong (gr520904 follow-up)."""
-    ctx = _make_ctx(mesh, d, n_layers)
+    pose_a = np.asarray(d.pose0 if pose is None else pose)
+    ctx = _make_ctx(mesh, d, n_layers, pose_a)
     pin_vids = frozenset(int(v) for v in mesh.pin_vertex)
     n_e = len(mesh.edges)
     branches: list[WirePath] = []
@@ -2029,9 +2119,7 @@ def build_wires(
         gap_cap[e] = np.where(
             f > 1e-9, np.floor(f / (t_ref + c_ref)) + 1.0, 0.0
         ).astype(np.int64)
-    capacity_mm = _edge_capacity_mm(
-        ctx, mesh, d, np.asarray(d.pose0 if pose is None else pose)
-    )
+    capacity_mm = _edge_capacity_mm(ctx, mesh, d, pose_a)
     # The corridor capacity the occupancy term and the cut share: a pad
     # channel takes gap_cap traces summed across EVERY layer a wire can
     # use (an inner signal layer is as good a crossing as an outer);
@@ -2178,7 +2266,11 @@ def build_wires(
     # capacity — demand over capacity is recorded for the caller to
     # refuse on, never silently priced through.
     def _owners(e: int) -> tuple[str, ...]:
-        names = {str(d.parts[int(d.pin_part[p])]) for p in edge_pins[e]}
+        names = {str(d.parts[int(d.pin_part[p])]) for p in edge_pins[e] if p >= 0}
+        # unpinned extra pads (edge_pins -1) still name their part
+        names.update(
+            str(d.parts[int(ctx.pad_part[pi_])]) for pi_ in edge_pads_ref.get(e, ())
+        )
         names.update(
             str(d.zones[z].name or f"zone{z}") for z, _zm in ctx.zone_contrib.get(e, ())
         )

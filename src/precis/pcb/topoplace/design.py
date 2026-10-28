@@ -28,11 +28,13 @@ from typing import Any
 import numpy as np
 
 from precis.errors import BadInput
-from precis.pcb import ratsnest
+from precis.pcb import padplace, ratsnest
 from precis.pcb.ir import (
     COURTYARD_CLEARANCE_MM,
     NO_NET,
     PcbIR,
+    footprint_pad_extent,
+    footprint_pad_set,
     instance_courtyard_polygons,
     layer_name,
 )
@@ -332,6 +334,30 @@ class TopoDesign:
     #: an authored group demoted to independent members names itself
     #: here. They never fail the run; the place reply prints them.
     warnings: tuple[str, ...] = ()
+    #: The non-primary pads of the IR's pad set (gr524392) — the lands
+    #: ``pin_xy``/``pin_wh`` do not describe: a pin's second same-named
+    #: pad, a split thermal slug half, an unpinned NC land. Same part
+    #: frame as ``pin_xy`` (footprint-local, pre-rotation, pre-mirror),
+    #: centre + ``(w, h)`` off :func:`precis.pcb.ir.footprint_pad_extent`
+    #: — the same rect approximation ``pin_wh`` already is for the
+    #: primary pad. ``pad_extra_part`` the owning instance,
+    #: ``pad_extra_pin`` the pin whose label the pad shares or -1
+    #: (unpinned — foreign to every net, the ``net=""`` the DRC pad set
+    #: gives it), ``pad_extra_side`` ``pin_side``'s encoding (0 top /
+    #: 1 bottom / 2 drilled — a drilled land blocks every layer). The
+    #: wire guard and the via keep-out read these so the guard measures
+    #: the same pad set :func:`precis.pcb.realize.pads_for_ir` hands the
+    #: DRC; before them the guard saw one pad per pin and could pass a
+    #: wire through copper the checker then errored on.
+    pad_extra_xy: np.ndarray = field(
+        default_factory=lambda: np.zeros((0, 2), np.float64)
+    )
+    pad_extra_wh: np.ndarray = field(
+        default_factory=lambda: np.zeros((0, 2), np.float64)
+    )
+    pad_extra_part: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
+    pad_extra_pin: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
+    pad_extra_side: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int8))
 
 
 def qrot(v: np.ndarray, q: int) -> np.ndarray:
@@ -356,8 +382,9 @@ def _pin_sides(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.nda
     keys off this); no footprint row → SMD on the instance's side."""
     drilled: dict[str, set[str]] = {}
     for refdes, fp in footprints.items():
+        pin_map = fp.get("pin_map") or {}
         nums = {
-            str(p.get("number") or "").strip()
+            padplace.pad_label(p, pin_map)
             for p in (fp.get("pads") or [])
             if p.get("drill") is not None
         }
@@ -394,6 +421,52 @@ def _pin_roles(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.nda
         if role:
             out[pin_id] = role
     return out
+
+
+def _extra_pads(
+    ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]
+) -> dict[str, np.ndarray]:
+    """The ``pad_extra_*`` arrays — the non-primary rows of
+    :func:`precis.pcb.ir.footprint_pad_set`, in the same footprint-local
+    frame as ``pin_xy``. Recomputed here rather than read off
+    ``ir.footprint_pads`` so the design is right however the IR was
+    hydrated (a caller may pass footprints the IR never saw). Centre +
+    ``(w, h)`` come off :func:`~precis.pcb.ir.footprint_pad_extent` —
+    the same rect approximation ``_real_pin_pads`` gives the primary
+    pad, so guard and DRC read the one pad set. Side mirrors
+    ``_pin_sides``/``_footprint_pad_rows``: a pad carrying ``drill`` is
+    through-hole (2 — copper on every layer), else the instance's mount
+    side."""
+    xy: list[list[float]] = []
+    wh: list[list[float]] = []
+    part: list[int] = []
+    pin: list[int] = []
+    side: list[int] = []
+    for pad in footprint_pad_set(
+        ir, {k: dict(v) for k, v in footprints.items()} if footprints else None
+    ):
+        if pad.primary:
+            continue
+        ext = footprint_pad_extent(pad.raw)
+        if ext is None:
+            continue
+        cx, cy, w, h, _ring = ext
+        xy.append([cx, cy])
+        wh.append([w, h])
+        part.append(int(pad.instance))
+        pin.append(int(pad.pin))
+        side.append(
+            2
+            if pad.raw.get("drill") is not None
+            else int(bool(ir.inst_bottom[pad.instance]))
+        )
+    return {
+        "xy": np.asarray(xy, dtype=np.float64).reshape(-1, 2),
+        "wh": np.asarray(wh, dtype=np.float64).reshape(-1, 2),
+        "part": np.asarray(part, dtype=np.int64),
+        "pin": np.asarray(pin, dtype=np.int64),
+        "side": np.asarray(side, dtype=np.int8),
+    }
 
 
 #: Layer ``layers`` rules may name the stackup's own layer names or the
@@ -783,6 +856,7 @@ def design_from_ir(
 
     names = _layer_name_map(ir)
     pin_side = _pin_sides(ir, footprints)
+    extras = _extra_pads(ir, footprints)
 
     fixed = np.asarray(ir.inst_fixed_xy, dtype=bool).copy()
 
@@ -982,6 +1056,11 @@ def design_from_ir(
         group_members=tuple(members_of),
         group_off=group_off,
         warnings=tuple(warnings),
+        pad_extra_xy=extras["xy"],
+        pad_extra_wh=extras["wh"],
+        pad_extra_part=extras["part"],
+        pad_extra_pin=extras["pin"],
+        pad_extra_side=extras["side"],
     )
 
 
