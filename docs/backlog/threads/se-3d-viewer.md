@@ -59,6 +59,18 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 (flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
+**2026-10-28 (box3 dogfood, gr529551):** box3 (screw-down enclosure,
+`box3-fdm`/`box3-molding`) published with exact-AABB envelopes — it reads
+as boxes now, but every rung still draws envelopes, so the hollow shell
+renders solid (cavity, bosses, cores invisible on /se). Reto asks:
+assembly tree of the box visible in the element (the tree panel and
+`[E·I·R·z]` chips exist — they collapse visually because every rung draws
+identically), and mesh visibility OFF by default. The build is Do-next 8;
+the design/probe side (`precis.cad.inspect` family: ray/section/overlap/
+thickness) shipped 7dd5d936c. Not an se-representation or import bug: the
+design realizes correctly (probe-verified) and exports hollow STL/3MF —
+only the web render path is envelope-only.
+
 **Resume (2026-10-03, session closed to save usage).**
 - **Done:** round 3 is deployed and dogfooded (below). The /drive
   redirect landed in 063421d9, not deployed yet.
@@ -166,6 +178,18 @@ up:
    `backlog/printable-atomic-models.md`. The floor is computed on the
    server (one source of truth), so the dialog asks the route for it and
    does not hard-code 1e7/5e7.
+8. **Realized-geometry rung** (triaged 2026-10-28; symptom + dogfood: box3,
+   gr529551). The viewer draws envelopes at every rung, so hollow parts
+   render solid — box3's cavity, bosses and cores are invisible on /se
+   (every rung shows the same AABB box). Build: mesh each block's realized
+   expression at the realized rung (field backend, coarse pitch,
+   server-cached), set the rung-differ flags so the `[E·I·R·z]` chips go
+   live, add component-level tree rows (boss-1..4, gusset-*, core-*), and
+   a mesh-visibility toggle (Reto: default OFF). Verify with
+   `scripts/viewer_check.py` canvas pixel-diff (box3-derived local fixture;
+   prod copy-down per the view='ops' recipe). Ruling hooks: z-column
+   review item se-3d-viewer-2 and Do-next 0; envelope stays the fallback
+   for blocks without realized geometry; mind the stale-server trap.
 
 ## Horizon
 
