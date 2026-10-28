@@ -1,0 +1,127 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""Forget Kimi Code workspaces whose precis-mcp worktree no longer exists.
+
+    scripts/reap-kimi-workspaces [--dry-run] [--for-hook]
+
+Kimi registers every directory it starts in as a workspace in
+~/.kimi-code/workspaces.json (and logs each session's workDir in
+session_index.jsonl). A reaped worktree stays in Kimi's workspace list
+forever, pointing at a missing path. State-based like scripts/reap-test-dbs:
+whatever removed the tree, a workspace rooted under this repo's
+.claude/worktrees/ whose directory is gone is forgotten.
+
+Forgetting mirrors Kimi's own workspace delete (WorkspaceService.delete):
+the entry leaves `workspaces`, and its id plus every session-index alias for
+the same root joins `deleted_workspace_ids` — without that, Kimi re-adds
+the workspace from the session index on its next start. Session transcripts
+under sessions/ stay, as Claude's do; Kimi compacts its own index.
+
+Called by scripts/reap-worktrees after its own removals. KIMI_CODE_HOME
+overrides the Kimi home (tests). No Kimi install → no-op.
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path(os.environ.get("KIMI_CODE_HOME", Path.home() / ".kimi-code"))
+
+
+def main_checkout():
+    r = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return os.path.dirname(r.stdout.strip()) if r.returncode == 0 else None
+
+
+def is_gone_tree(root, prefix):
+    return root.startswith(prefix) and not os.path.isdir(root)
+
+
+def index_entries(path):
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in lines:
+        try:
+            e = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and isinstance(e.get("workDir"), str):
+            out.append(e)
+    return out
+
+
+def plan(catalog, entries, prefix):
+    """-> (names of forgotten workspaces, ids to add to deleted_workspace_ids)."""
+    workspaces = catalog.get("workspaces") or {}
+    gone_roots, names, ids = set(), [], set()
+    for wid, ws in workspaces.items():
+        root = ws.get("root") if isinstance(ws, dict) else None
+        if isinstance(root, str) and is_gone_tree(root, prefix):
+            gone_roots.add(root)
+            names.append(ws.get("name") or os.path.basename(root))
+            ids.add(wid)
+    deleted = set(catalog.get("deleted_workspace_ids") or [])
+    for e in entries:
+        root = e["workDir"]
+        if not is_gone_tree(root, prefix):
+            continue
+        # The session dir's parent is the workspace id Kimi derives from it.
+        alias = os.path.basename(os.path.dirname(e.get("sessionDir") or ""))
+        if not alias or alias in deleted or alias in ids:
+            continue
+        ids.add(alias)
+        if root not in gone_roots:
+            gone_roots.add(root)
+            names.append(os.path.basename(root))
+    return sorted(names), ids
+
+
+def main(argv):
+    dry_run = "--dry-run" in argv
+    for_hook = "--for-hook" in argv
+    catalog_path = HOME / "workspaces.json"
+    repo = main_checkout()
+    if repo is None or not catalog_path.is_file():
+        return 0
+    prefix = os.path.join(repo, ".claude", "worktrees") + os.sep
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(catalog, dict):
+        return 0
+    names, ids = plan(catalog, index_entries(HOME / "session_index.jsonl"), prefix)
+    if not ids:
+        if not for_hook:
+            print("reap-kimi-workspaces: nothing to forget")
+        return 0
+    if dry_run:
+        print(
+            f"reap-kimi-workspaces --dry-run: would forget {len(names)}: {' '.join(names)}"
+        )
+        return 0
+    workspaces = catalog.get("workspaces") or {}
+    catalog["workspaces"] = {k: v for k, v in workspaces.items() if k not in ids}
+    catalog["deleted_workspace_ids"] = sorted(
+        set(catalog.get("deleted_workspace_ids") or []) | ids
+    )
+    tmp = catalog_path.with_name(catalog_path.name + ".reap-tmp")
+    tmp.write_text(json.dumps(catalog, separators=(",", ":")), encoding="utf-8")
+    os.chmod(tmp, catalog_path.stat().st_mode & 0o777)
+    os.replace(tmp, catalog_path)
+    print(f"reap-kimi-workspaces: forgot {len(names)}: {' '.join(names)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

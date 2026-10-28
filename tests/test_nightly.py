@@ -73,6 +73,16 @@ echo "===== 1 failed in 0.05s ====="
 exit 1
 """
 
+# gr530830: the wrapper's progress heartbeat and closing verdict share the
+# `scripts/test: ` prefix with its refusals; a run that hung and ran no tests
+# must stay RED, not read as "environment failure — pytest … 10s".
+_TEST_HEARTBEAT_THEN_NO_TESTS = r"""#!/usr/bin/env bash
+echo "scripts/test: pytest … 10s" >&2
+echo "no tests ran in 100.76s"
+echo "scripts/test: FAIL (rc 5) — no pytest summary | 110s" >&2
+exit 5
+"""
+
 
 def _stage(tmp_path: Path, test_stub: str) -> Path:
     tree = tmp_path / "tree"
@@ -145,6 +155,15 @@ def test_stale_image_refusal_is_environment_not_red(tmp_path: Path) -> None:
 def test_pytest_internal_error_stays_red(tmp_path: Path) -> None:
     """A pytest-level crash with no wrapper refusal is still suite signal."""
     tree = _stage(tmp_path, _TEST_PYTEST_INTERNAL)
+    proc = _run(tmp_path, tree)
+    assert proc.returncode == 0
+    top = _top_result(tree)
+    assert "✗ RED" in top
+    assert "environment failure" not in top
+
+
+def test_wrapper_heartbeat_is_not_an_environment_refusal(tmp_path: Path) -> None:
+    tree = _stage(tmp_path, _TEST_HEARTBEAT_THEN_NO_TESTS)
     proc = _run(tmp_path, tree)
     assert proc.returncode == 0
     top = _top_result(tree)

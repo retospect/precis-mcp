@@ -42,7 +42,7 @@ REPOS = [
     ("catpath", "/Users/reto/work/project/code/catpath"),
 ]
 NEVER_TOUCH = ("CHAT", "COORDINATOR", "GRIPE_FIX", "BUILDER")
-WINDOW_PREFIXES = ("devin-", "codex-", "local-")
+WINDOW_PREFIXES = ("devin-", "codex-", "kimi-", "local-")
 # Hard denylist (gr515476): script-moved refs (scripts/ship, release, round
 # push main, prod, gated, release/r<N>, ci/<branch>, deployed/*) are always
 # "merged" because main reaches them, so they must never be deleted. good/*

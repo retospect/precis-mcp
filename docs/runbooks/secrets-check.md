@@ -52,3 +52,4 @@ script only keeps the clock — it never probes anything.
 ## Log
 
 - **2026-10-18** — cadence established (this runbook, `scripts/secrets-check-review`, `precis secret check`). First pass due.
+- **2026-10-28** — 14 ok, 0 failed, 14 unprobed, 4 missing (FARNELL, MOUSER, CATHUB filed as waiting-for:reto todos; SUMMARIZE_LLM_KEY optional).

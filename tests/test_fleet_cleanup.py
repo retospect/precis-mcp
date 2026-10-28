@@ -115,6 +115,10 @@ def test_apply_remote_never_deletes_script_refs(tmp_path):
     assert set(heads) == {"main", "release/r1", "gated", "prod", "ci/x", "oddball"}
 
 
+def test_kimi_windows_are_swept():
+    assert not fc.is_protected_window("kimi-boxmake")
+
+
 def test_never_touch_windows():
     for w in ("CHAT", "COORDINATOR", "GRIPE_FIX", "BUILDER", "random"):
         assert fc.is_protected_window(w)

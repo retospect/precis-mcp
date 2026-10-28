@@ -378,6 +378,13 @@ fi
 
 sweep_ci_refs
 reap_branchless_branches
+# Kimi Code keeps its own workspace list; drop entries for trees now gone
+# (any removal path, not just this run's). No Kimi install → silent no-op.
+if [ -x scripts/reap-kimi-workspaces ]; then
+    KIMI_ARGS=(--for-hook)
+    [ "$DRY_RUN" = 1 ] && KIMI_ARGS+=(--dry-run)
+    scripts/reap-kimi-workspaces "${KIMI_ARGS[@]}" 2>/dev/null || true
+fi
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
     [ "$FOR_HOOK" = 1 ] || echo "reap-worktrees: nothing to reap"

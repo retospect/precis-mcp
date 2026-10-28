@@ -158,7 +158,7 @@ lock_pid_for() {
 # other_session_in <worktree-path> <own-session-pid>
 #
 # gr474985: the lock records ONE pid, but two sessions can sit in one tree
-# (a second `claude` started there by hand). Liveness read from the lock
+# (a second `claude` or a `kimi` started there by hand). Liveness read from the lock
 # alone then lets whichever session ends first reap the tree out from under
 # the other. This asks the process table instead: is any OTHER live session
 # process (same comm/argv discriminator as find_session_pid) standing in
@@ -178,7 +178,10 @@ other_session_in() {
     while read -r pid comm; do
         [ -z "${pid:-}" ] && continue
         base=${comm##*/}
-        if [ "$base" != "claude" ]; then
+        # A Kimi Code session (comm `kimi-code`) counts too: kimi-tree locks
+        # its own trees, but a `kimi` started by hand in a Claude tree holds
+        # no lock, and only this check keeps that tree from being reaped.
+        if [ "$base" != "claude" ] && [ "$base" != "kimi-code" ] && [ "$base" != "kimi" ]; then
             [ "$base" = "node" ] || continue
             args=$(ps -o args= -p "$pid" 2>/dev/null)
             case "$args" in

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from psycopg import sql
 from psycopg.rows import dict_row
 
 import precis.store.migrate as migrate
@@ -383,7 +384,7 @@ def test_rebuild_and_drop_refuse_non_test_database(tmp_path) -> None:
     scratch = f"notprecis_rebuild_guard_{uuid.uuid4().hex[:8]}"
     admin_dsn = _dsn_with_db(PG_TEST_DSN, "postgres")
     with psycopg.connect(admin_dsn, autocommit=True) as admin:
-        admin.execute(f'CREATE DATABASE "{scratch}"')
+        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(scratch)))
     scratch_dsn = _dsn_with_db(PG_TEST_DSN, scratch)
     try:
         snapshot_dir = tmp_path / "migrations"
@@ -411,7 +412,11 @@ def test_rebuild_and_drop_refuse_non_test_database(tmp_path) -> None:
         )
     finally:
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
-            admin.execute(f'DROP DATABASE IF EXISTS "{scratch}"')
+            admin.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                    sql.Identifier(scratch)
+                )
+            )
 
 
 # ── bounded lock-contention retry (gr511981) ───────────────────────────
