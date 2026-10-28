@@ -45,7 +45,8 @@ launcher is `scripts/fleet-codex` (`codex-fleet.md`); Devin launch is
 ## Devin
 
 - The CLI lives at `~/.local/bin/devin`, not on tmux's PATH —
-  `scripts/devin-tree` exports PATH, creates the tree + `worktree-NAME`
+  `scripts/devin-tree --tmux [SESSION]` (without `--tmux` it runs Devin in
+  the calling terminal, not a window) exports PATH, creates the tree + `worktree-NAME`
   branch, locks the tree to Devin's pid and writes `.claude/purpose`.
 - Devin starts on a "trust this directory" prompt that only Reto
   answers; NEVER `tmux send-keys` into a window showing it — Enter

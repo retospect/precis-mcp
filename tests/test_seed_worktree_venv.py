@@ -133,7 +133,7 @@ def test_seed_missing_tree_refuses(tmp_path: Path) -> None:
 
 
 def test_devin_tree_wires_the_seed() -> None:
-    src = (_REPO_ROOT / "scripts" / "devin-tree").read_text(encoding="utf-8")
+    src = (_REPO_ROOT / "scripts" / "lib" / "agent-tree.sh").read_text(encoding="utf-8")
     assert "seed-worktree-venv" in src
 
 

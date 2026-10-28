@@ -1129,8 +1129,9 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
             "--permission-mode",
             LAUNCH_PERMISSION_MODE["devin"],
         ]
-        if f.session:
-            argv += ["--session", f.session]
+        # Fleet waves always get a tmux window; devin-tree defaults to
+        # running in the calling terminal.
+        argv += ["--tmux"] + ([f.session] if f.session else [])
         if f.model_set:
             argv += ["--model", f.model_set]
         if a.dry_run:

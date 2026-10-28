@@ -202,7 +202,7 @@ the script also handles.
 The first `uv run` in a fresh worktree used to resolve and install ~160
 packages mid-task. New worktrees instead get a **copy of the main
 checkout's `.venv`**, planted by `scripts/seed-worktree-venv` and wired
-into `scripts/devin-tree` and `scripts/fleet-wave::_ensure_tree` (the
+into `scripts/lib/agent-tree.sh` (shared by `scripts/devin-tree` and `scripts/kimi-tree`) and `scripts/fleet-wave::_ensure_tree` (the
 `claude -w` creation path lives in .claude hooks; a tree made by hand can
 run `scripts/seed-worktree-venv <tree>` itself). `cp -Rc` makes the copy
 an APFS clone — instant, no extra disk; `cp -a` elsewhere.
