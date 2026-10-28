@@ -525,22 +525,41 @@ def run_mint_gates(
     for i, passage in enumerate(passages, start=1):
         violations += _check_passage(store, i, passage, frozen=frozen)
 
-    # 5 — structured-field quote containment (fi176435 "2–30 GPa" class).
+    # 5 — structured-field containment (fi176435 "2–30 GPa" class).
+    # `quantity` stays quote-strict: a number the quote does not state is
+    # the overclaim. `material` / `method` are scope words an abstract or
+    # title often states better than the one quoted sentence (gr530995), so
+    # they also pass on the passages' full chunks, the bundle's grounding
+    # chunks, or the cited sources' title / abstract. A frozen payload only
+    # gains the legacy (pre-fold) match — never stricter.
     quotes = [str(p.get("quote") or "") for p in passages]
+    wide: list[str] | None = None
     for key in ("material", "method", "quantity"):
         value = fields.get(key)
-        if value and not any(
-            sniplib.normalize_text(str(value)) in sniplib.normalize_text(q)
-            for q in quotes
-        ):
-            violations.append(
-                GateViolation(
-                    "field-containment",
-                    f"structured field {key}={value!r} is not contained in "
-                    "any sourceQuote of this artifact — a field the quotes "
-                    "don't state is an overclaim",
-                )
+        if not value:
+            continue
+        scope_word = key != "quantity"
+        if _field_in(str(value), quotes, frozen, whole_token_short=scope_word):
+            continue
+        if scope_word:
+            if wide is None:
+                wide = _evidence_texts(store, bundle, passages)
+            if _field_in(str(value), wide, frozen, whole_token_short=True):
+                continue
+            where = (
+                "any sourceQuote, the quoted passages' chunk text, the "
+                "grounding chunks, or the cited sources' title/abstract"
             )
+        else:
+            where = "any sourceQuote of this artifact"
+        violations.append(
+            GateViolation(
+                "field-containment",
+                f"structured field {key}={value!r} is not contained in "
+                f"{where} — a field the evidence doesn't state is an "
+                "overclaim",
+            )
+        )
 
     # 15 — mint-order: a composite SIGNS only after its atoms are signed
     # (approval order stays free).
@@ -548,6 +567,73 @@ def run_mint_gates(
         violations += check_mint_order(store, bundle)
 
     return violations
+
+
+#: A scope value this short ("Co", "Si", "Au") is matched as whole tokens,
+#: not a substring — "Co" must not pass on "cost", "Si" on "is".
+_SHORT_FIELD_CHARS = 3
+
+
+def _word_tokens(text: str, *, legacy: bool) -> list[str]:
+    """``snip.tokens`` with hyphen-joined tokens split ("co-doped" -> co, doped)."""
+    return [w for t in sniplib.tokens(text, legacy=legacy) for w in t.split("-")]
+
+
+def _has_token_run(needle: list[str], hay: list[str]) -> bool:
+    n = len(needle)
+    return any(hay[i : i + n] == needle for i in range(len(hay) - n + 1))
+
+
+def _field_in(
+    value: str, texts: list[str], frozen: bool, *, whole_token_short: bool = False
+) -> bool:
+    """Fold-match ``value`` inside any of ``texts``; a frozen payload also
+    passes on the legacy (pre-fold) comparison it was approved under.
+    ``whole_token_short`` makes a value of <= :data:`_SHORT_FIELD_CHARS`
+    characters match whole tokens only (``material`` / ``method``)."""
+    if whole_token_short and len(value.strip()) <= _SHORT_FIELD_CHARS:
+        for legacy in (False, True) if frozen else (False,):
+            needle = _word_tokens(value, legacy=legacy)
+            if needle and any(
+                _has_token_run(needle, _word_tokens(t, legacy=legacy))
+                for t in texts
+                if t
+            ):
+                return True
+        if sniplib.tokens(value):
+            return False
+    return any(
+        sniplib.contains_verbatim(value, t)
+        or (frozen and sniplib.contains_verbatim(value, t, legacy=True))
+        for t in texts
+        if t
+    )
+
+
+def _evidence_texts(
+    store: Store, bundle: ev.HubBundle, passages: list[dict[str, Any]]
+) -> list[str]:
+    """The wider evidence text a ``material`` / ``method`` field may be
+    stated in: each passage's full chunk, ``bundle.grounding_chunks``, and
+    the title + ``meta['abstract']`` of the papers the passages quote
+    (``refs`` rows only — no new query path)."""
+    ids = [
+        c
+        for c in (integral_chunk_id(p.get("chunk_id")) for p in passages)
+        if c is not None
+    ]
+    passage_chunks = ev.fetch_chunks(store, ids) if ids else []
+    texts = [c.text for c in [*passage_chunks, *bundle.grounding_chunks]]
+    # Title / abstract speak only for the quoted passages' own papers — a
+    # grounding chunk from another paper contributes its text, not its title.
+    ref_ids = sorted({c.ref_id for c in passage_chunks})
+    refs = store.fetch_refs_by_ids(ref_ids) if ref_ids else {}
+    for ref in refs.values():
+        texts.append(ref.title or "")
+        abstract = (ref.meta or {}).get("abstract")
+        if isinstance(abstract, str):
+            texts.append(abstract)
+    return texts
 
 
 def check_nonempirical(
@@ -1389,7 +1475,11 @@ def _check_passage(
     # 3 — quote verbatim-containment.
     if not quote:
         out.append(GateViolation("grounding", f"{label}: empty quote"))
-    elif not sniplib.contains_verbatim(quote, chunk.text):
+    elif not (
+        sniplib.contains_verbatim(quote, chunk.text)
+        # frozen: a payload approved under the pre-fold rule still passes
+        or (frozen and sniplib.contains_verbatim(quote, chunk.text, legacy=True))
+    ):
         out.append(
             GateViolation(
                 "quote-verbatim",
@@ -1399,8 +1489,12 @@ def _check_passage(
             )
         )
 
-    # 4 — snip validity + unique-within-paper.
-    if not sniplib.is_valid_snip(snip):
+    # 4 — snip validity + unique-within-paper, on the canonical (markup-
+    # folded, token-joined) snip; a frozen payload passes on old OR new.
+    canon = sniplib.canonical_snip(snip)
+    if not sniplib.is_valid_snip(canon) and not (
+        frozen and sniplib.is_valid_snip(snip)
+    ):
         out.append(
             GateViolation(
                 "snip",
@@ -1410,7 +1504,11 @@ def _check_passage(
         )
     else:
         haystacks = [c.text for c in ev.paper_body_chunks(store, chunk.ref_id)]
-        matches = sniplib.count_matches(snip, haystacks)
+        matches = sniplib.count_matches(canon, haystacks) if canon else 0
+        if matches != 1 and frozen and sniplib.is_valid_snip(snip):
+            matches_old = sniplib.count_matches(snip, haystacks, legacy=True)
+            if matches_old == 1:
+                matches = 1
         if matches != 1:
             out.append(
                 GateViolation(

@@ -163,6 +163,72 @@ def test_falls_back_to_the_parked_proposal(store: Store) -> None:
     assert "llm-attribution" in stripped.body
 
 
+_CLEAN_CHUNK = (
+    "Nanoindentation measured an elastic modulus increase of twelve percent "
+    "under uniaxial strain in the annealed film."
+)
+
+
+def _grounded_hub(store: Store, *, pinned: bool = True) -> tuple[int, int]:
+    from tests.test_nanopub_gates_mint import _seed_paper
+
+    paper, chunk, _sha = _seed_paper(store, chunk_text=_CLEAN_CHUNK)
+    hub = mint_hub(store, CanonicalClaim(sentence=_CLEAN, scope={}))
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk}"} if pinned else {},
+        check_retraction=False,
+    )
+    return hub, chunk
+
+
+def test_derives_the_payload_from_chunk_grounded_evidence(store: Store) -> None:
+    hub, chunk = _grounded_hub(store)
+    out = _handler(store).get(id=hub, view="mint-preflight")
+    assert "derived from 1 chunk-grounded evidence edges" in out.body
+    assert f"pc{chunk}" in out.body
+    assert "elastic modulus increase" in out.body
+    assert "parked/frozen payload" not in out.body
+    assert "Next:" not in out.body
+    assert "BLOCKED" not in out.body, out.body
+
+
+def test_frozen_row_beats_derivation(store: Store, monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+
+    hub, _chunk = _grounded_hub(store)
+    row = SimpleNamespace(grounding={"passages": [], "fields": {}, "hanging": True})
+    monkeypatch.setattr(store, "nanopub_publish_row", lambda _id: row)
+    out = _handler(store).get(id=hub, view="mint-preflight")
+    assert "parked/frozen payload" in out.body
+    assert "derived from" not in out.body
+
+
+def test_paper_level_only_hub_is_told_to_attach_a_chunk(store: Store) -> None:
+    hub, _chunk = _grounded_hub(store, pinned=False)
+    out = _handler(store).get(id=hub, view="mint-preflight")
+    assert "derived from" not in out.body
+    assert "source_handle" in out.body
+    assert "pc<N>" in out.body
+
+
+def test_parked_payload_without_passages_gets_no_attach_hint(
+    store: Store, monkeypatch: Any
+) -> None:
+    from types import SimpleNamespace
+
+    hub, _chunk = _grounded_hub(store, pinned=False)
+    row = SimpleNamespace(grounding={"passages": [], "fields": {}, "hanging": True})
+    monkeypatch.setattr(store, "nanopub_publish_row", lambda _id: row)
+    out = _handler(store).get(id=hub, view="mint-preflight")
+    assert "parked/frozen payload" in out.body
+    assert "Next:" not in out.body
+    assert "source_handle" not in out.body
+
+
 def test_non_dict_payload_is_refused(store: Store) -> None:
     hub = _bare_hub(store, _CLEAN)
     with pytest.raises(BadInput, match="payload must be a dict"):

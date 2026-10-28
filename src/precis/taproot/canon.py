@@ -1605,6 +1605,163 @@ def judge_candidates(
         ]
 
 
+# ── containment_judge — MEDIUM, the agent put door's second look ────────
+
+#: Hub-mint (agent put door) neighbours farther than this cosine distance
+#: are not offered to :func:`containment_judge` (same-passage neighbours
+#: bypass it). 0.30 covers the calibration pair fi530867/fi350175 (0.294);
+#: recalibrate with docs/backlog/hub-duplicate-reconcile.md item 3.
+CONTAINMENT_MAX_DISTANCE = 0.30
+#: At most this many ANN neighbours go to the containment judge per put.
+CONTAINMENT_MAX_CANDIDATES = 3
+
+ContainmentKind = Literal["same", "component", "generalization", "different"]
+CONTAINMENT_KINDS: tuple[str, ...] = (
+    "same",
+    "component",
+    "generalization",
+    "different",
+)
+
+_CONTAINMENT_SYS = (
+    "You are a precise scientific claim comparator. Reply with ONLY the "
+    "requested JSON object, no prose."
+)
+
+_CONTAINMENT_PROMPT = """\
+An author is about to add NEW CLAIM as its own claim hub. EXISTING CLAIM is
+a claim hub already in the corpus. Decide how they relate:
+
+SAME           — the same fact under the same conditions, differing only in
+                 wording or restated detail.
+COMPONENT      — NEW CLAIM is one atomic piece of EXISTING CLAIM: the
+                 existing claim is a compound that asserts NEW CLAIM
+                 together with other findings.
+GENERALIZATION — NEW CLAIM is a broader or narrower statement of the same
+                 finding (one contains the other, same subject and
+                 conditions family), so that two hubs would double-count it.
+DIFFERENT      — a genuinely distinct claim, a different scope, or only
+                 topically related.
+
+Default to DIFFERENT unless the overlap is clear. A different material,
+method, quantity or regime makes the claims DIFFERENT.
+
+NEW CLAIM: {new}
+
+EXISTING CLAIM: {existing}
+
+Respond with EXACTLY ONE JSON object, nothing else:
+{{
+  "verdict": "same" | "component" | "generalization" | "different",
+  "confidence": <float 0.0-1.0>,
+  "rationale": "<one sentence>"
+}}
+"""
+
+
+class ContainmentVerdict(TypedDict):
+    """One :func:`containment_judge` outcome. ``"error"`` is a dispatch
+    failure, not a verdict (the caller retries once, then refuses)."""
+
+    verdict: ContainmentKind | Literal["error"]
+    confidence: float
+    rationale: str
+
+
+def containment_judge(new: str, existing: str) -> ContainmentVerdict:
+    """Is ``new`` the same as, a component of, or a generalization of the
+    existing hub claim ``existing`` — or different? MEDIUM tier, one bounded
+    pairwise call. Separate from :func:`dedup_judge` (whose prompt and eval
+    fixtures stay frozen); only the agent put door calls it.
+
+    Bias-safe like :func:`dedup_judge`: unparseable output -> ``different``
+    at confidence 0.0; a dispatch failure or empty reply -> ``error``.
+    """
+    prompt = _CONTAINMENT_PROMPT.format(new=new, existing=existing)
+    res = route(
+        LlmRequest(
+            tier=Tier.MEDIUM,
+            messages=[
+                {"role": "system", "content": _CONTAINMENT_SYS},
+                {"role": "user", "content": prompt},
+            ],
+            prompt=prompt,
+            source="taproot:containment",
+        )
+    )
+    if res.error:
+        log.warning("taproot: containment_judge dispatch failed: %s", res.error)
+        return ContainmentVerdict(
+            verdict="error", confidence=0.0, rationale=f"dispatch error: {res.error}"
+        )
+    if not res.data and not (res.text or "").strip():
+        return ContainmentVerdict(
+            verdict="error", confidence=0.0, rationale="empty model reply"
+        )
+    data = res.data or _parse_json_object(res.text)
+    verdict: ContainmentKind = "different"
+    confidence = 0.0
+    rationale = "unparseable model output"
+    if isinstance(data, dict):
+        if data.get("verdict") in CONTAINMENT_KINDS:
+            verdict = data["verdict"]
+        raw_conf = data.get("confidence")
+        if isinstance(raw_conf, int | float) and not isinstance(raw_conf, bool):
+            confidence = max(0.0, min(1.0, float(raw_conf)))
+        raw_rat = data.get("rationale")
+        if isinstance(raw_rat, str) and raw_rat.strip():
+            rationale = raw_rat.strip()
+    return ContainmentVerdict(
+        verdict=verdict, confidence=confidence, rationale=rationale
+    )
+
+
+def judge_containment(
+    sentence: str,
+    candidates: list[MergeCandidate],
+    judge_fn: Callable[[str, str], ContainmentVerdict] = containment_judge,
+    *,
+    max_workers: int = JUDGE_MAX_WORKERS,
+) -> list[tuple[MergeCandidate, ContainmentVerdict]]:
+    """Run ``judge_fn(sentence, cand.claim)`` per candidate concurrently, one
+    retry on ``error`` (as :func:`judge_candidates`); candidate order kept.
+    A candidate still errored after the retry raises :class:`Upstream` —
+    an unjudged neighbour must not read as "different" and mint a duplicate.
+    """
+
+    def once(claim: str) -> ContainmentVerdict:
+        v = judge_fn(sentence, claim)
+        if v["verdict"] == "error":
+            v = judge_fn(sentence, claim)
+        return v
+
+    if not candidates:
+        return []
+    if len(candidates) == 1:
+        out = [(candidates[0], once(candidates[0].claim))]
+    else:
+        with ThreadPoolExecutor(
+            max_workers=min(max_workers, len(candidates)),
+            thread_name_prefix="containment-judge",
+        ) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, once, c.claim)
+                for c in candidates
+            ]
+            out = [(c, f.result()) for c, f in zip(candidates, futures, strict=True)]
+    errored = [v for _, v in out if v["verdict"] == "error"]
+    if errored:
+        raise Upstream(
+            f"containment judge failed on {len(errored)}/{len(out)} neighbours "
+            f"after retry ({errored[0]['rationale']}); hub not minted — retry",
+            next="retry the same put() (the judge is transient; nothing was "
+            "written). If it keeps failing, dedup='force' mints without the "
+            "neighbour check, or dedup=False skips dedup entirely — use "
+            "either only once you have looked for the duplicate yourself",
+        )
+    return out
+
+
 # ── merge_confirm — BIG, only on a risky same ───────────────────────────
 
 _MERGE_CONFIRM_SYS = (
@@ -1795,6 +1952,8 @@ def place(
 __all__ = [
     "CLAIM_FORM_RULES",
     "CLAIM_HUB_PREDICATE_PARAMS",
+    "CONTAINMENT_MAX_CANDIDATES",
+    "CONTAINMENT_MAX_DISTANCE",
     "MAX_HUBS_PER_CHUNK_PER_RUN",
     "MERGE_CONFIDENCE_THRESHOLD",
     "NONEMPIRICAL_ARTIFACT_TYPES",
@@ -1807,6 +1966,7 @@ __all__ = [
     "TAPROOT_REVIEW",
     "CanonicalClaim",
     "ClaimExtraction",
+    "ContainmentVerdict",
     "ExtractionUnavailable",
     "MergeCandidate",
     "MintCap",
@@ -1817,12 +1977,14 @@ __all__ = [
     "block",
     "claim_hub_predicate_sql",
     "claim_sha",
+    "containment_judge",
     "dedup_judge",
     "extract_claim",
     "extract_claim_strict",
     "extract_claim_strict_big",
     "is_proxy_deferral",
     "judge_candidates",
+    "judge_containment",
     "merge_confirm",
     "nearest_hubs",
     "not_hypothesis_predicate_sql",

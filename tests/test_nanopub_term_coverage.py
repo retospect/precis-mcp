@@ -353,7 +353,7 @@ def test_prefill_puts_the_caption_before_the_abstract_for_a_method_claim(
 
 
 def test_prefill_order_unchanged_without_method_terms(store: Any) -> None:
-    from precis_web.nanopub_render import _prefill_chunk_order
+    from precis.nanopub.prefill import _prefill_chunk_order
 
     hub, _abstract, _caption = _prefill_hub(
         store, "nanobuds sit on the surface of nanotubes."

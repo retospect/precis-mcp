@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.nanopub import assemble, evidence, freshness, gates
+from precis.nanopub import snip as sniplib
 from precis.nanopub.aida import aida_uri, canonical_sentence
 from precis.nanopub.keys import fingerprint, load_profile
 from precis.store._nanopub_ops import PublishRow
@@ -261,6 +262,7 @@ def approve(
     frozen_payload["passages"] = _freeze_source_anchor(
         store, list(payload.get("passages") or [])
     )
+    frozen_payload["passages"] = _freeze_canonical_snip(frozen_payload["passages"])
     frozen_payload["passages"] = _freeze_contiguity(store, frozen_payload["passages"])
     frozen_payload["passages"] = _freeze_context_sentence(
         store, frozen_payload["passages"]
@@ -408,6 +410,19 @@ def _freeze_source_anchor(
             p["source_uri"] = assemble.doi_source_uri(str(p["doi"]))
         stamped.append(p)
     return stamped
+
+
+def _freeze_canonical_snip(passages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Store each passage's snip in canonical form (markup-folded tokens,
+    single-spaced) — the form the approve-time gate validated. New
+    approvals only: an already-frozen payload is never rewritten."""
+    out: list[dict[str, Any]] = []
+    for p in passages:
+        canon = sniplib.canonical_snip(str(p.get("snip") or ""))
+        out.append(
+            {**p, "snip": canon} if canon and sniplib.is_valid_snip(canon) else p
+        )
+    return out
 
 
 def _freeze_contiguity(

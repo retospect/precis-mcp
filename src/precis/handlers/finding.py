@@ -250,7 +250,7 @@ class FindingHandler(NumericRefHandler):
         scope: dict[str, Any] | None = None,
         cited_in: str | None = None,
         supporters: list[dict[str, Any]] | None = None,
-        dedup: bool = True,
+        dedup: bool | str = True,
         wants: list[dict[str, Any]] | None = None,
         provenance: str | None = None,
         hypothesis: bool = False,
@@ -309,7 +309,12 @@ class FindingHandler(NumericRefHandler):
         supporters there instead of minting a near-duplicate hub; a risky/
         unconfirmed match mints anyway and files a review todo naming both
         hubs. ``dedup=False`` skips the cascade and mints unconditionally
-        (needs no embedder). See :mod:`precis.handlers._finding_hub_mint`.
+        (needs no embedder). A claim that is the same as, a component of,
+        or a generalization of a near hub (or a hub already grounded on the
+        same passage) is refused with ``options`` attach / refine / force:
+        ``dedup='attach:fi<N>'`` attaches the supporters to that hub,
+        ``dedup='force'`` mints anyway and stamps ``meta.dedup_override``.
+        See :mod:`precis.handlers._finding_hub_mint`.
 
         **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
         ``testable_by=``, ``motivated_by=`` (≥2 artifacts across ≥2 source

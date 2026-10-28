@@ -774,3 +774,22 @@ def test_verify_atoms_batch_supported_without_quote_is_coerced_unsupported(
     _patch_dispatch(monkeypatch, [_result(data=payload)])
     results = verify_atoms_batch(_ATOMS, _PASSAGES)
     assert results == [AtomVerifyResult(0, False, None, None, None)]
+
+
+def test_fold_quote_text_resolves_escaped_bracket_citation_links() -> None:
+    """pc782525's real shape: marker-ingest's ``[\\[22\\]](#page-11-0)`` link
+    folds to its visible ``[22]`` on both sides (the shared snip fold)."""
+    chunk = "as reported previously.[\\[22\\]](#page-11-0) Next sentence."
+    assert reground._fold_quote_text(chunk) == (
+        "as reported previously.[22] Next sentence."
+    )
+
+
+def test_fold_quote_text_merges_split_superscript_exponent() -> None:
+    assert reground._fold_quote_text("10<sup>\u2212</sup><sup>4</sup> A") == (
+        reground._fold_quote_text("10\u207b\u2074 A")
+    )
+
+
+def test_strip_markup_unescapes_bracket_citation_link() -> None:
+    assert reground._strip_markup("see[\\[22\\]](#page-11-0) end") == "see[22] end"

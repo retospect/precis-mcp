@@ -33,21 +33,43 @@ from precis.response import Response
 from precis.store import Store
 from precis.store.types import Ref
 from precis.utils import handle_registry
+from precis.utils.next_block import render_next_section
 
 
-def _default_payload(store: Store, ref: Ref) -> dict[str, Any]:
-    """The payload to gate when the caller supplied none.
+def _default_payload(store: Store, ref: Ref, bundle: Any) -> tuple[dict[str, Any], str]:
+    """The payload to gate when the caller supplied none, and its label.
 
     Preference order mirrors what a reviewer would see on the approve form:
     the frozen envelope once one exists, else an agent's parked proposal,
-    else an empty payload (which gates the sentence and the hub's own state
-    — still the most useful answer for a hub nobody has prepared yet).
+    else the passages derived from the hub's own chunk-grounded evidence
+    (:func:`precis.nanopub.prefill.derived_payload`; ``fields`` stay empty,
+    so field gates still speak for the human).
     """
+    from precis.nanopub import prefill
+
     row = store.nanopub_publish_row(ref.id)
     if row is not None and row.grounding:
-        return dict(row.grounding)
+        return dict(row.grounding), "parked/frozen payload"
     parked = (ref.meta or {}).get(META_PROPOSED_PAYLOAD)
-    return dict(parked) if isinstance(parked, dict) else {}
+    if isinstance(parked, dict):
+        return dict(parked), "parked/frozen payload"
+    derived = prefill.derived_payload(store, bundle, source_fallback=False)
+    n = len(derived["passages"])
+    if not n:
+        return derived, ""
+    return derived, (
+        f"derived from {n} chunk-grounded evidence edges (approve-form prefill)"
+    )
+
+
+def _derived_passage_lines(payload: dict[str, Any]) -> str:
+    out = []
+    for p in payload.get("passages") or []:
+        out.append(
+            f"  - pc{p.get('chunk_id')}: quote={p.get('quote', '')!r} "
+            f"snip={p.get('snip', '')!r}"
+        )
+    return "\n".join(out)
 
 
 def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Response:
@@ -63,9 +85,11 @@ def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Res
                 "args={'payload': {'hypothesis': True, 'passages': [], ...}})"
             ),
         )
-    resolved = payload if payload is not None else _default_payload(store, ref)
-
     bundle = ev.load_bundle(store, ref.id)
+    if payload is not None:
+        resolved, label = payload, "supplied payload"
+    else:
+        resolved, label = _default_payload(store, ref, bundle)
     # hub_meta rides along so the meta-scoped gates (rejected-memo,
     # llm-attribution's parked-proposal signal) report here exactly as
     # they would at approve — omitting it made preflight silently softer.
@@ -76,13 +100,26 @@ def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Res
     # above was produced under, since the blocking set is scoped by it.
     artifact = resolve_artifact_type(bundle, resolved)
     header = f"mint-preflight {handle} ({artifact})"
-    source = (
-        "supplied payload"
-        if payload is not None
-        else "parked/frozen payload"
-        if resolved
-        else "no payload (sentence + hub state only)"
-    )
+    source = label or "no payload (sentence + hub state only)"
+    if label.startswith("derived"):
+        source += "\n" + _derived_passage_lines(resolved)
+    hint = ""
+    # Only a *derived* payload that found no passage is paper-level; a parked
+    # / frozen one has its own (possibly empty) passages by the author's choice.
+    if payload is None and label == "" and bundle.sources:
+        # Routed through the shared Next renderer so the read-scope filter
+        # drops this write recipe on read-only connections.
+        section = render_next_section(
+            [
+                (
+                    f"put(kind='finding', id='fi{ref.id}', supporters=[{{'paper': ..., "
+                    "'source_handle': 'pc<N>'}])",
+                    "the hub's evidence is paper-level (no chunk pinned), so no "
+                    "passage can be derived — attach a chunk, then re-run",
+                )
+            ]
+        )
+        hint = f"\n{section}" if section else ""
 
     if not violations:
         return Response(
@@ -93,6 +130,7 @@ def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Res
                 "This is admissibility, not truth: it means well-formed, "
                 "sourced and traceable, never verified. A human still "
                 "approves and signs."
+                f"{hint}"
             )
         )
     lines = "\n".join(f"  - [{v.gate}] {v.message}" for v in violations)
@@ -103,6 +141,7 @@ def render_mint_preflight(store: Store, ref: Ref, *, payload: Any = None) -> Res
             f"BLOCKED — {len(violations)} gate violation(s):\n{lines}\n"
             "Fix the sentence/payload and re-run; approve would refuse "
             "these identically."
+            f"{hint}"
         )
     )
 

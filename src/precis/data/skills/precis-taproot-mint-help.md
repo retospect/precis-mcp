@@ -217,6 +217,40 @@ consensus-verified, never widened and not publishable as nanopubs — see
 | Mechanism | "Charge transfer at the C60–nanotube junction alters field-emission behavior." | Name the mechanism, not "plays an important role". |
 | Landscape | "Fullerene–2D hybridization has been pursued across graphene, g-C₃N₄, TMDs, h-BN, and black phosphorus." | Most prone to dangling referents; reviews are the right grounding. |
 
+## Near-duplicate refusal at put, and merging twins
+
+When the cascade finds no `same`, a second
+check compares your sentence with the nearest hubs (and any hub already
+grounded on the same passage — a sibling you minted a moment ago). If
+yours is the same as, one component of, or a broader/narrower form of one
+of them, the put is **refused** and nothing is minted; the error names the
+hub (`fi<N>`) and its sentence, with three options:
+
+- **attach** — re-put the same call with `dedup='attach:fi<N>'`: your
+  supporters become evidence on that hub (right when it already states
+  your claim, or yours is an atomic piece of its compound).
+- **refine** — reword the neighbour (`edit(kind='finding', id='fi<N>',
+  title=...)`) so the two stay distinct, then re-put. Not offered once the
+  neighbour's nanopub row is past `candidate`; the error says so.
+- **force** — re-put with `dedup='force'`: mints anyway and records
+  `meta.dedup_override={neighbour, verdict, reason}` for the reviewer.
+  Use only when the claim really is distinct. It also bypasses a
+  containment-judge outage, recording `verdict='unjudged'`.
+
+Same-passage neighbours (up to 3) also go through the ordinary dedup
+judge, so a same-passage `same` verdict attaches automatically instead of
+refusing. An identical re-put (same sentence and scope) converges onto its
+own hub first and is never refused. Cost per put: up to 3 extra MEDIUM
+dedup calls and up to 6 containment calls, typically 0–3.
+
+Found two already-minted hubs that are the same claim? `get(kind='finding',
+id='fi<winner>', view='merge-plan', args={'loser': 'fi<loser>'})` shows
+the dry-run plan for collapsing the loser into the winner: edges
+repointed, edges dropped as redundant (and the winner edge each collides
+with), self-loops dropped, and `can_merge` with the refusal reason (a
+side past `candidate` cannot merge). It never writes. Applying is a human
+door — hand the reviewer the winner's claim page, `/nanopub/fi<winner>`.
+
 ## Search before you mint — strengthen, don't duplicate
 
 **The mint door now runs this search itself.** `supporters=` mint runs
@@ -226,17 +260,11 @@ supporters to the existing hub instead of minting a near-duplicate
 unconfirmed match still mints — a hand-grounded claim is never silently
 dropped — but flags a review todo naming both hubs. `dedup=False` skips
 the cascade and mints unconditionally (bulk re-puts). `view='similar'`
-on a minted hub runs the same query read-only, without minting. None of
+on a minted hub runs the same query read-only, without minting.
+
+A near-duplicate put is refused (section above). None of
 this replaces the judgment call below — the cascade only auto-attaches
 on a confident match.
-
-Found two already-minted hubs that are the same claim? `get(kind='finding',
-id='fi<winner>', view='merge-plan', args={'loser': 'fi<loser>'})` shows
-the dry-run plan for collapsing the loser into the winner: edges
-repointed, edges dropped as redundant (and the winner edge each collides
-with), self-loops dropped, and `can_merge` with the refusal reason (a
-side past `candidate` cannot merge). It never writes. Applying is a human
-door — hand the reviewer the winner's claim page, `/nanopub/fi<winner>`.
 
 **A hard gate: never mint without searching first.** `pub_id` convergence
 is a *content hash* — it catches only byte-identical (post-NFKD)

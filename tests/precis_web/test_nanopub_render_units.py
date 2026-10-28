@@ -466,14 +466,14 @@ def _seed_body_chunk(store: Any, *, ref_id: int, ord: int, text: str) -> int:
 
 
 def test_suggest_quote_snip_falls_through_a_seam_sentence(store: Any) -> None:
-    """The top-ranked sentence in chunk B is verbatim-duplicated in chunk
-    A (the routine chunk-boundary overlap) — no 8-token window of it is
-    unique across the paper's live body chunks. The old best-sentence-only
-    pick returned that sentence with an empty snip (unsubmittable, first
-    seen on fi191121); the fix must fall through to the next candidate."""
+    """The top-ranked sentence in chunk B is verbatim-duplicated at the end
+    of chunk A (the routine chunk-boundary overlap). Seen twice, it used to
+    have no unique 8-token window (fi191121: an empty snip, unsubmittable);
+    ``count_matches`` now counts a match wholly inside the neighbours'
+    overlap once, so the seam sentence itself is a valid pick."""
     from precis.nanopub import evidence as ev
     from precis.nanopub import snip as sniplib
-    from precis_web.nanopub_render import _suggest_quote_snip
+    from precis.nanopub.prefill import _suggest_quote_snip
     from tests.workers._helpers import seed_ref
 
     ref_id = seed_ref(store, title="a seam-overlap paper", kind="paper")
@@ -501,7 +501,7 @@ def test_suggest_quote_snip_falls_through_a_seam_sentence(store: Any) -> None:
 
     quote, snip = _suggest_quote_snip(store, chunk_b, claim)
 
-    assert quote.startswith("As a result")
+    assert quote.startswith("When the bias exceeds")
     assert snip != ""
     toks = snip.split(" ")
     assert len(toks) == 8
@@ -513,7 +513,7 @@ def test_suggest_quote_snip_happy_path_no_overlap(store: Any) -> None:
     """No seam collision: the most claim-relevant sentence is unique on
     its own, so the existing single-shot behaviour still holds."""
     from precis.nanopub import evidence as ev
-    from precis_web.nanopub_render import _suggest_quote_snip
+    from precis.nanopub.prefill import _suggest_quote_snip
     from tests.workers._helpers import seed_ref
 
     ref_id = seed_ref(store, title="a standalone paper", kind="paper")
@@ -546,7 +546,7 @@ def test_suggest_quote_snip_prefers_the_sentence_carrying_the_claims_numerals(
     the measurement sentence carries the claim's numbers — the numerals
     outrank word overlap (2026-08-17 nanobud batch review)."""
     from precis.nanopub import evidence as ev
-    from precis_web.nanopub_render import _suggest_quote_snip
+    from precis.nanopub.prefill import _suggest_quote_snip
     from tests.workers._helpers import seed_ref
 
     ref_id = seed_ref(store, title="a graphene strength paper", kind="paper")
@@ -574,7 +574,7 @@ def test_suggest_quote_snip_marker_only_chunk_prefills_blank(store: Any) -> None
     the whole-chunk fallback must not hand back marker residue the gate
     refuses — the quote is left blank for the reviewer."""
     from precis.nanopub import evidence as ev
-    from precis_web.nanopub_render import _suggest_quote_snip
+    from precis.nanopub.prefill import _suggest_quote_snip
     from tests.workers._helpers import seed_ref
 
     ref_id = seed_ref(store, title="a heavily cited review", kind="paper")
@@ -593,12 +593,13 @@ def test_suggest_quote_snip_marker_only_chunk_prefills_blank(store: Any) -> None
 def test_suggest_quote_snip_no_unique_window_anywhere_returns_empty_snip(
     store: Any,
 ) -> None:
-    """Two chunks with identical text: every sentence in either occurs
-    twice, so no candidate ever yields a unique window. The picker must
+    """Two non-adjacent-text chunks repeating the same sentences (no shared
+    boundary overlap): every sentence occurs twice, so no candidate ever
+    yields a unique window. The picker must
     exhaust the ranked list and return the top sentence with an empty
     snip rather than crash."""
     from precis.nanopub import evidence as ev
-    from precis_web.nanopub_render import _suggest_quote_snip
+    from precis.nanopub.prefill import _suggest_quote_snip
     from tests.workers._helpers import seed_ref
 
     ref_id = seed_ref(store, title="a duplicated-text paper", kind="paper")
@@ -607,12 +608,18 @@ def test_suggest_quote_snip_no_unique_window_anywhere_returns_empty_snip(
         "flows in the semiconducting system. As a result we conclude "
         "that nanobuds keep the character of the pristine nanotube base."
     )
-    chunk_a_id = _seed_body_chunk(store, ref_id=ref_id, ord=0, text=text)
-    _seed_body_chunk(store, ref_id=ref_id, ord=1, text=text)
+    text_a = f"{text} Tail of A."
+    text_b = f"Head of B. {text}"
+    chunk_a_id = _seed_body_chunk(store, ref_id=ref_id, ord=0, text=text_a)
+    _seed_body_chunk(store, ref_id=ref_id, ord=1, text=text_b)
     claim = "threshold bias near one volt in the semiconducting system"
 
     chunk_a = ev.ChunkInfo(
-        chunk_id=chunk_a_id, ref_id=ref_id, ord=0, text=text, section_path=["Results"]
+        chunk_id=chunk_a_id,
+        ref_id=ref_id,
+        ord=0,
+        text=text_a,
+        section_path=["Results"],
     )
 
     quote, snip = _suggest_quote_snip(store, chunk_a, claim)
@@ -631,7 +638,7 @@ def test_suggest_quote_snip_no_sentence_candidates_falls_back_to_whole_chunk(
     fallback has nothing to match uniquely against and snip stays empty —
     no crash either way."""
     from precis.nanopub import evidence as ev
-    from precis_web.nanopub_render import _suggest_quote_snip
+    from precis.nanopub.prefill import _suggest_quote_snip
     from tests.workers._helpers import seed_ref
 
     ref_id = seed_ref(store, title="a fragment paper", kind="paper")
@@ -868,3 +875,104 @@ def test_hub_context_no_embedder_yields_empty_nearest_and_note(store: Any) -> No
     assert ctx is not None
     assert ctx["nearest"] == []
     assert ctx["nearest_note"] == "nearest claims unavailable (no embedder)"
+
+
+# ── snip markup fold, seam de-dup (hub-mint-gate-fixes item 2) ─────────
+
+
+def test_contains_verbatim_folds_split_superscripts_both_ways() -> None:
+    from precis.nanopub import snip as sniplib
+
+    # Real pc782545 / pc782519 shapes: extractor splits the exponent.
+    chunk = "at 10<sup>\u2212</sup><sup>4</sup> ng s<sup>\u2212</sup><sup>1</sup> here"
+    assert sniplib.contains_verbatim("10\u207b\u2074 ng s\u207b\u00b9", chunk)
+    assert sniplib.contains_verbatim("10<sup>\u2212</sup><sup>4</sup> ng", chunk)
+    # plain-minus digits are a different number than the exponent
+    assert not sniplib.contains_verbatim("10<sup>\u22124</sup> ng s\u22121", chunk)
+    # half-tagged form (pc782519: ``50 mV s\u2212<sup>1</sup>``): the minus
+    # sits outside the tag, so it stays a plain minus before the superscript
+    assert sniplib.contains_verbatim(
+        "50 mV s\u2212\u00b9", "scan 50 mV s\u2212<sup>1</sup> rate"
+    )
+    # but a different exponent is still a different quote
+    assert not sniplib.contains_verbatim("10\u207b\u2075", chunk)
+
+
+def test_contains_verbatim_plain_quote_vs_figure_link_chunk() -> None:
+    from precis.nanopub import snip as sniplib
+
+    chunk = "The rate rose [\\[22\\]](#page-11-0) and then **fell** sharply."
+    assert sniplib.contains_verbatim("The rate rose [22] and then fell sharply.", chunk)
+    assert not sniplib.contains_verbatim("The rate rose and then fell", chunk)
+
+
+def test_tokens_treat_tags_as_boundary_and_canonical_snip_is_stable() -> None:
+    from precis.nanopub import snip as sniplib
+
+    assert sniplib.tokens("mol<sub>2</sub>x") == ["mol", "2", "x"]
+    assert sniplib.canonical_snip("Rate of 10<sup>\u22124</sup> ng.") == (
+        "rate of 10 4 ng"
+    )
+    # a snip typed with punctuation canonicalizes to the contract form
+    canon = sniplib.canonical_snip("anisotropy can reach a 400:1 ratio.")
+    assert canon == "anisotropy can reach a 400 1 ratio"
+    assert sniplib.is_valid_snip(canon)
+    assert sniplib.canonical_snip(canon) == canon
+
+
+def test_count_matches_counts_a_seam_overlap_once() -> None:
+    from precis.nanopub import snip as sniplib
+
+    a = "first part of text. the unique overlap sentence here"
+    b = "the unique overlap sentence here and then more text"
+    assert sniplib.count_matches("unique overlap sentence", [a, b]) == 1
+    # a genuine repeat elsewhere still counts
+    c = "unrelated. the unique overlap sentence here"
+    assert sniplib.count_matches("unique overlap sentence", [a, b, c]) == 2
+    # no overlap between neighbours: two real occurrences
+    assert (
+        sniplib.count_matches(
+            "alpha beta gamma", ["alpha beta gamma", "x alpha beta gamma"]
+        )
+        == 2
+    )
+
+
+def test_count_matches_identical_or_nested_neighbours_count_separately() -> None:
+    from precis.nanopub import snip as sniplib
+
+    same = "the unique overlap sentence here"
+    assert sniplib.count_matches("unique overlap sentence", [same, same]) == 2
+    nested = "x " + same + " and more"
+    assert sniplib.count_matches("unique overlap sentence", [same, nested]) == 2
+    assert sniplib.count_matches("unique overlap sentence", [nested, same]) == 2
+    # legacy never de-duplicates a seam
+    a = "first part of text. the unique overlap sentence here"
+    b = "the unique overlap sentence here and then more text"
+    assert sniplib.count_matches("unique overlap sentence", [a, b], legacy=True) == 2
+
+
+def test_contains_verbatim_keeps_script_bodies_apart() -> None:
+    from precis.nanopub.snip import contains_verbatim as cv
+
+    assert cv("10\u207b\u2074", "rate 10<sup>\u2212</sup><sup>4</sup> A")
+    assert cv("10<sup>\u2212</sup><sup>4</sup>", "rate 10\u207b\u2074 A")
+    assert not cv("10\u22124", "rate 10<sup>\u2212</sup><sup>4</sup> A")
+    assert not cv("10-4", "rate 10<sup>\u2212</sup><sup>4</sup> A")
+    assert cv("10\u00b3 K", "at 10<sup>3</sup> K")
+    assert not cv("103 K", "at 10<sup>3</sup> K")
+    assert not cv("x\u00b9\u00b2", "x<sup>1</sup> <sup>2</sup>")
+    assert cv("x\u00b9 \u00b2", "x<sup>1</sup> <sup>2</sup>")
+    # unmappable body keeps a boundary instead of gluing
+    assert not cv("x34", "x<sup>3,4</sup>")
+
+
+def test_contains_verbatim_strips_only_emphasis_asterisks() -> None:
+    from precis.nanopub.snip import contains_verbatim as cv
+
+    assert cv("the onset is early", "The **onset** is *early*")
+    assert not cv("2 3", "a 2 * 3 b")
+    assert cv("2 * 3", "a 2 * 3 b")
+    assert not cv("23", "a 2*3 b")
+    assert cv("value* and", "see value* and more")
+    assert not cv("value and", "see value* and more")

@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis.handlers._edgar_accession import parse_accession
 from precis.nanopub.assemble import doi_source_uri
+from precis.nanopub.snip import merge_adjacent_scripts
 from precis.taproot import seniority
 from precis.taproot.hub import EVIDENCE_SRC_KINDS
 
@@ -189,9 +190,17 @@ def _superscript_cites(text: str) -> list[str]:
         nxt = text[m.end()] if m.end() < len(text) else ""
         if prev.isdigit():  # 10<sup>3</sup>
             continue
+        nums = re.findall(r"\d+", m.group(0))
+        if (
+            prev in "\u2212\u2013-"
+            and m.start() >= 2
+            and text[m.start() - 2].isalpha()
+            and len(nums) == 1
+            and nums[0] in _UNIT_EXPONENTS | {"1"}
+        ):
+            continue  # s\u2212<sup>1</sup>: the minus sits outside the tag
         if nxt.isalpha():  # <sup>13</sup>C
             continue
-        nums = re.findall(r"\d+", m.group(0))
         if prev.isalpha() and len(nums) == 1 and nums[0] in _UNIT_EXPONENTS:
             continue  # m<sup>2</sup>, cm<sup>3</sup>, Å<sup>3</sup>
         out.append(m.group(0))
@@ -215,6 +224,10 @@ def citation_markers(text: str) -> list[str]:
     # markdown-link residue) — strip the escapes first or numeric markers
     # slip the net (caught live on fi19981's sim25 prefill, 2026-08-17).
     text = text.replace("\\[", "[").replace("\\]", "]")
+    # ``10<sup>−</sup><sup>4</sup>`` (an exponent the extractor split in two)
+    # must read as ``10<sup>−4</sup>`` or the bare ``<sup>4</sup>`` looks like
+    # a cite.
+    text = merge_adjacent_scripts(text)
     hits = [
         m.group(0)
         for m in _NUMERIC_CITE.finditer(text)

@@ -64,6 +64,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.nanopub.snip import fold_markup
 from precis.taproot.canon import CanonicalClaim, _parse_json_object
 from precis.taproot.grounding import has_grounding_prose
 from precis.taproot.migrate import _content_words, _normalize_number_text
@@ -103,20 +104,9 @@ _HEARSAY_SECTION_RE = re.compile(
 
 _WS_RE = re.compile(r"\s+")
 
-#: Simple markup :func:`_fold_quote_text` strips before whitespace/notation
-#: folding — applied to *both* sides of a quote match (a model's quote and
-#: the chunk's stored text), so symmetric stripping is safe: a chunk's
-#: ``**2350**`` and a model's plain ``2350`` fold to the same thing.
-#: Conservative on purpose (calibration findings,
-#: ``docs/backlog/taproot-atom-regrounding.md``) — only the three markup
-#: shapes actually seen in stored chunk text:
-#: ``<sup>X</sup>``/``<sub>X</sub>`` -> ``X`` (superscript/subscript HTML,
-#: e.g. exponents/isotope labels the ingest pipeline sometimes preserves),
-#: ``[text](url-or-#anchor)`` -> ``text`` (markdown links — footnote/anchor
-#: targets, never the visible content), and bare ``**``/``*`` emphasis
-#: markers dropped outright.
-_SUP_SUB_RE = re.compile(r"(?is)<(sup|sub)>(.*?)</\1>")
-_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# The markup shapes :func:`_fold_quote_text` strips (sup/sub, markdown links,
+# emphasis) are defined once in :mod:`precis.nanopub.snip` — applied to *both*
+# sides of a quote match, so symmetric stripping is safe.
 
 
 def is_hearsay_section(section_path: str | None) -> bool:
@@ -127,13 +117,11 @@ def is_hearsay_section(section_path: str | None) -> bool:
 
 
 def _strip_markup(text: str) -> str:
-    """Conservative markup stripping — see :data:`_SUP_SUB_RE`/
-    :data:`_MD_LINK_RE` for the exact shapes. Never touches a bare
+    """Conservative markup stripping — see
+    :func:`precis.nanopub.snip.fold_markup` for the exact shapes. Never touches a bare
     ``[...]`` that isn't followed by ``(...)`` (e.g. ``"[Fe] complex"``),
     so ordinary bracketed text is left alone."""
-    text = _SUP_SUB_RE.sub(lambda m: m.group(2), text)
-    text = _MD_LINK_RE.sub(lambda m: m.group(1), text)
-    return text.replace("**", "").replace("*", "")
+    return fold_markup(text)
 
 
 def _fold_quote_text(text: str) -> str:

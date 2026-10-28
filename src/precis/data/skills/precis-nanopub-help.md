@@ -67,8 +67,15 @@ exists. Details: [[precis-taproot-help]].
   signed claim. Re-read the current state before acting.
 - `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
   **real** mint gates read-only and get the violation list back. Pass a
-  candidate envelope as `args={'payload': {...}}`; omit it and whatever
-  is frozen or parked on the hub is gated instead. No state change. Use
+  candidate envelope as `args={'payload': {...}}`; omit it and the hub's
+  frozen payload, else its parked proposal, else a payload **derived from
+  the hub's chunk-grounded evidence edges** (the approve-form prefill:
+  per pinned chunk, a claim-relevant quote plus a unique snip) is gated
+  instead, and the derived passages are printed. A hub with only
+  paper-level edges derives nothing; attach with
+  `supporters=[{paper, source_handle:'pc<N>'}]`. An explicit payload
+  overrides: `{passages:[{chunk_id:int, doi, quote, snip}], fields,
+  llm_models}` (`fields` is never derived). No state change. Use
   this instead of reimplementing the gates locally — a hand-rolled
   mirror rots silently the moment a gate changes.
 - **Propose a hypothesis** — see the section below. The one artifact
@@ -200,9 +207,11 @@ failures an extraction agent can avoid up front:
   chunks.
 - **Quantities carry bound semantics** — `exact` / `upper` / `lower` /
   `approx-range`; "up to 400:1" and "400:1" are different claims.
-- **Structured fields must be quote-contained** — a
-  material/method/quantity value the quotes don't state is an
-  overclaim.
+- **Structured fields must be evidence-contained** — a `quantity` must
+  appear in a quote (a number the quote doesn't state is an overclaim);
+  `material` / `method` also pass when the quoted passages' full chunk
+  text, the grounding chunks, or the cited source's title/abstract state
+  them. The violation names where the gate looked.
 - **Composites are derivations** — conjunct-of atoms minted first; the
   composite cites atoms, never papers. Cross-binding (a property from
   system B on a phenomenon from system A) is new content: it needs its

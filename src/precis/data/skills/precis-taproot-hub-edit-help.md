@@ -167,6 +167,13 @@ CLI: `precis taproot refine --from fi<sharper> --to fi<original>`
 
 ### Merge duplicate hubs
 
+Prevention first: a put that is the same as, a component of, or a
+broader/narrower form of an existing hub is refused at mint time with
+options attach (`dedup='attach:fi<N>'`), refine (the reword above — not
+offered once the hub is past `candidate`) and force (`dedup='force'`); see
+`precis-taproot-mint-help` "Search before you mint". Duplicates that got
+through are merged as follows.
+
 The merge door is a CLI verb, human-run: `precis taproot merge --loser fi<dup>
 --winner fi<survivor>` (`--dry-run` prints the plan: edges repointed,
 redundant edges dropped, the loser retired). It refuses a loser past

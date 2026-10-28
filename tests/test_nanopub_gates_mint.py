@@ -673,6 +673,135 @@ def test_field_not_contained_in_quote_fails(store: Any) -> None:
     assert "field-containment" in _gate_slugs(store, hub, payload)
 
 
+def _field_slugs(
+    store: Any, paper: int, chunk: int, fields: dict[str, Any]
+) -> set[str]:
+    hub = _seed_hub(store, "DFT shows MOFs can be anisotropic.", paper, chunk)
+    payload = _payload(chunk)
+    payload["fields"] = {"quantity": "400:1", "quantity_bound": "upper", **fields}
+    return _gate_slugs(store, hub, payload)
+
+
+def test_material_in_source_title_only_passes(store: Any) -> None:
+    paper, chunk, _ = _seed_paper(store, title="Elasticity of Zeolite Frameworks")
+    assert "field-containment" not in _field_slugs(
+        store, paper, chunk, {"material": "zeolite"}
+    )
+
+
+def test_material_in_source_abstract_only_passes(store: Any) -> None:
+    paper, chunk, _ = _seed_paper(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            ('{"abstract": "We study perovskite oxides."}', paper),
+        )
+    assert "field-containment" not in _field_slugs(
+        store, paper, chunk, {"material": "perovskite"}
+    )
+
+
+def test_material_in_chunk_not_quote_passes(store: Any) -> None:
+    paper, chunk, _ = _seed_paper(
+        store, chunk_text=f"Silicalite crystals. {_QUOTE}, in stark contrast."
+    )
+    assert "field-containment" not in _field_slugs(
+        store, paper, chunk, {"material": "silicalite"}
+    )
+
+
+def test_method_in_chunk_not_quote_passes(store: Any) -> None:
+    paper, chunk, _ = _seed_paper(
+        store, chunk_text=f"Using nanoindentation. {_QUOTE}, in stark contrast."
+    )
+    assert "field-containment" not in _field_slugs(
+        store, paper, chunk, {"method": "nanoindentation"}
+    )
+
+
+def test_material_in_grounding_chunk_paper_title_does_not_pass(store: Any) -> None:
+    # Passages are quoted from paper A; the hub's grounding chunk lives in
+    # paper B, whose title names the material. B's title is not the quoted
+    # source's scope statement.
+    paper_a, chunk_a, _ = _seed_paper(store)
+    paper_b, chunk_b, _ = _seed_paper(store, title="Elasticity of Zeolite Frameworks")
+    hub = _seed_hub(store, "DFT shows MOFs can be anisotropic.", paper_a, chunk_a)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper_b,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk_b}"},
+        check_retraction=False,
+    )
+    payload = _payload(chunk_a)
+    payload["fields"] = {"quantity": "400:1", "quantity_bound": "upper"}
+    payload["fields"]["material"] = "zeolite"
+    assert "field-containment" in _gate_slugs(store, hub, payload)
+
+
+def test_material_in_grounding_chunk_text_still_passes(store: Any) -> None:
+    paper_a, chunk_a, _ = _seed_paper(store)
+    paper_b, chunk_b, _ = _seed_paper(store, chunk_text="Silicalite crystals.")
+    hub = _seed_hub(store, "DFT shows MOFs can be anisotropic.", paper_a, chunk_a)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper_b,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk_b}"},
+        check_retraction=False,
+    )
+    payload = _payload(chunk_a)
+    payload["fields"]["material"] = "silicalite"
+    assert "field-containment" not in _gate_slugs(store, hub, payload)
+
+
+@pytest.mark.parametrize(
+    ("value", "chunk_text"),
+    [
+        ("Co", "The cost of synthesis is low."),
+        ("Si", "This is a framework."),
+        ("Au", "Heated in an autoclave."),
+    ],
+)
+def test_short_material_needs_a_whole_token(
+    store: Any, value: str, chunk_text: str
+) -> None:
+    paper, chunk, _ = _seed_paper(
+        store, chunk_text=f"{chunk_text} {_QUOTE}, in stark contrast."
+    )
+    assert "field-containment" in _field_slugs(store, paper, chunk, {"material": value})
+
+
+def test_short_material_whole_token_passes(store: Any) -> None:
+    paper, chunk, _ = _seed_paper(
+        store, chunk_text=f"Co-doped samples. {_QUOTE}, in stark contrast."
+    )
+    assert "field-containment" not in _field_slugs(
+        store, paper, chunk, {"material": "Co"}
+    )
+
+
+def test_material_absent_everywhere_fails(store: Any) -> None:
+    paper, chunk, _ = _seed_paper(store)
+    slugs = _field_slugs(store, paper, chunk, {"material": "graphene"})
+    assert "field-containment" in slugs
+
+
+def test_quantity_outside_quote_still_fails_when_in_chunk(store: Any) -> None:
+    paper, chunk, _ = _seed_paper(
+        store, chunk_text=f"Range 2-30 GPa measured. {_QUOTE}, in stark contrast."
+    )
+    slugs = _field_slugs(
+        store,
+        paper,
+        chunk,
+        {"quantity": "2-30 GPa", "quantity_bound": "approx-range"},
+    )
+    assert "field-containment" in slugs
+
+
 def test_claim_without_quote_needs_explicit_hanging(store: Any) -> None:
     paper, chunk, sha = _seed_paper(store)
     hub = _seed_hub(store, "DFT shows the ungrounded claim persists.", paper, chunk)
@@ -1681,3 +1810,134 @@ def test_approve_freezes_pins_against_a_later_recompute(
     trig = artifact.trig_bytes.decode("utf-8")
     assert f"urn:precis:pathway:{key}" in trig
     assert "evidenceTier" in trig and '"computed"' in trig
+
+
+# ── markup fold, split superscripts, canonical snips (hub-mint-gate-fixes 2) ──
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # real pc782545 / pc782519 shapes: the extractor splits the exponent
+        "at 10<sup>\u2212</sup><sup>4</sup> ng",
+        "scan rate 5 mV s<sup>\u2212</sup><sup>1</sup>",
+        "j / mA cm<sup>\u2212</sup><sup>2</sup>",
+        "50 mV s\u2212<sup>1</sup>",
+    ],
+)
+def test_split_superscript_exponents_are_not_citations(text: str) -> None:
+    assert evidence.citation_markers(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "similar to the previous report.<sup>8</sup>",
+        "as shown before<sup>3,4</sup> in detail",
+        "split cite<sup>3</sup><sup>,4</sup> here",
+        "well-known-<sup>12</sup> results",
+        "text\u2212<sup>3,4</sup> shows",
+        "spaced 10<sup>\u2212</sup> <sup>4</sup> parts",
+    ],
+)
+def test_real_superscript_cites_still_flagged(text: str) -> None:
+    assert evidence.citation_markers(text), text
+
+
+_SPLIT_CHUNK = (
+    "Results. The current density reached 10<sup>\u2212</sup><sup>4</sup> A "
+    "cm<sup>\u2212</sup><sup>2</sup> at 50 mV s\u2212<sup>1</sup>, as is "
+    "well known."
+)
+
+
+def test_quote_with_unicode_exponents_matches_tag_form_chunk(store: Any) -> None:
+    quoted = (
+        "current density reached 10\u207b\u2074 A cm\u207b\u00b2 at 50 mV s\u2212\u00b9"
+    )
+    paper, chunk, sha = _seed_paper(store, chunk_text=_SPLIT_CHUNK)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    payload = _payload(chunk, sha, fields={})
+    payload["passages"][0]["quote"] = quoted
+    payload["passages"][0]["snip"] = "as is well known"
+    assert _gate_slugs(store, hub, payload) == set()
+
+
+def test_quote_in_tag_form_passes_and_has_no_cite_marker(store: Any) -> None:
+    quoted = "reached 10<sup>\u2212</sup><sup>4</sup> A"
+    paper, chunk, sha = _seed_paper(store, chunk_text=_SPLIT_CHUNK)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    payload = _payload(chunk, sha, fields={})
+    payload["passages"][0]["quote"] = quoted
+    payload["passages"][0]["snip"] = "as is well known"
+    assert _gate_slugs(store, hub, payload) == set()
+
+
+def test_plain_quote_against_figure_link_chunk(store: Any) -> None:
+    chunk_text = (
+        "Fig. 1 shows the sweep.[\\[22\\]](#page-11-0) The **onset** is early, "
+        "as is well known."
+    )
+    paper, chunk, sha = _seed_paper(store, chunk_text=chunk_text)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    payload = _payload(chunk, sha, fields={})
+    payload["passages"][0]["quote"] = "The onset is early"
+    payload["passages"][0]["snip"] = "as is well known"
+    assert _gate_slugs(store, hub, payload) == set()
+
+
+def test_snip_with_punctuation_is_canonicalized_before_validation(
+    store: Any,
+) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    payload = _payload(chunk, sha)
+    payload["passages"][0]["snip"] = "Anisotropy can reach a 400:1 ratio."
+    assert _gate_slugs(store, hub, payload) == set()
+
+
+def test_seam_overlap_counts_snip_once(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    # neighbouring chunk repeats the tail of the first (chunker overlap)
+    _add_body_chunk(store, paper, ord=1, text=f"{_QUOTE}, in stark contrast. More.")
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    assert _gate_slugs(store, hub, _payload(chunk, sha)) == set()
+
+
+def test_frozen_payload_passing_only_under_old_rule_still_passes(
+    store: Any,
+) -> None:
+    """A payload approved before the fold: its quote/snip contain a tag
+    shape the new fold reads differently, but old normalization matched."""
+    chunk_text = "Tensorial analysis. The ratio is 4<sub>x</sub>5 here, quite stable."
+    paper, chunk, sha = _seed_paper(store, chunk_text=chunk_text)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    payload = _payload(chunk, sha, fields={})
+    payload["passages"][0]["quote"] = "ratio is 4<sub>x</sub>5 here"
+    payload["passages"][0]["snip"] = "ratio is 4 sub x sub 5"
+    bundle = evidence.load_bundle(store, hub)
+    live = {v.gate for v in gates.run_mint_gates(store, bundle, payload)}
+    frozen = {v.gate for v in gates.run_mint_gates(store, bundle, payload, frozen=True)}
+    assert "snip" in live  # new fold: tags no longer tokens
+    assert "snip" not in frozen  # old rule still validates the frozen bytes
+
+
+def test_approve_stores_canonical_snip(store: Any) -> None:
+    from precis.nanopub import mint as mint_mod
+
+    passages = [{"snip": "Anisotropy can reach a 400:1 ratio.", "quote": "q"}]
+    out = mint_mod._freeze_canonical_snip(passages)
+    assert out[0]["snip"] == "anisotropy can reach a 400 1 ratio"
+    assert passages[0]["snip"].startswith("Anisotropy")  # input untouched

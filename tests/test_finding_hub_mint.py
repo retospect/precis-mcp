@@ -483,6 +483,282 @@ class TestPutHubCascadeNew:
         assert row[0] == "disputes"
 
 
+# ── near-duplicate refusal (hub-mint-gate-fixes.md section 3) ─────────
+
+# Real pair fi530867 vs fi350175 sat at distance 0.294 (< the 0.30 cutoff).
+_COMPOUND = "Pd/C catalyzes Suzuki coupling and Heck coupling at room temperature."
+_ATOM = "Pd/C catalyzes Suzuki coupling at room temperature."
+
+
+def _different(a: str, b: str) -> Verdict:
+    return _verdict("different", 0.9)
+
+
+def _containment(kind: str, calls: list | None = None):
+    def _fn(new: str, existing: str):
+        if calls is not None:
+            calls.append((new, existing))
+        return {"verdict": kind, "confidence": 0.9, "rationale": f"judged {kind}"}
+
+    return _fn
+
+
+def _put_atom(store, **kw):
+    return _finding_hub_mint.put_hub(
+        store,
+        sentence=_ATOM,
+        scope={},
+        supporters=kw.pop("supporters", [{"paper": "miller23a"}]),
+        embedder=object(),
+        block_fn=kw.pop("block_fn"),
+        judge_fn=kw.pop("judge_fn", _different),
+        containment_fn=kw.pop("containment_fn", _never_called),
+        **kw,
+    )
+
+
+class TestNearDuplicateRefusal:
+    def test_component_of_compound_refused_with_handle_in_options(self, store) -> None:
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+        before = store.count_refs(kind="finding")
+
+        with pytest.raises(BadInput) as ei:
+            _put_atom(
+                store,
+                block_fn=_block_hit(compound, _COMPOUND, distance=0.294),
+                containment_fn=_containment("component"),
+            )
+
+        err = ei.value
+        assert f"fi{compound}" in str(err)
+        assert _COMPOUND in str(err)
+        opts = " ".join(err.options or [])
+        assert f"dedup='attach:fi{compound}'" in opts
+        assert "refine" in opts and "dedup='force'" in opts
+        assert "atom" not in opts.lower().replace("atomic", "")
+        assert store.count_refs(kind="finding") == before
+
+    def test_far_neighbour_not_sent_to_containment_judge(self, store) -> None:
+        far = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+        resp = _put_atom(
+            store,
+            block_fn=_block_hit(far, _COMPOUND, distance=0.45),
+            containment_fn=_never_called,
+        )
+        assert "claim hub fi" in resp.body
+
+    def test_at_most_three_ann_candidates_judged(self, store) -> None:
+        hubs = [
+            mint_hub(store, CanonicalClaim(sentence=f"Neighbour claim {i}.", scope={}))
+            for i in range(5)
+        ]
+        _seed_paper(store, cite_key="miller23a")
+
+        def _block(claim_obj, st, emb, **kw):
+            return [
+                MergeCandidate(
+                    hub_ref_id=h, claim=f"Neighbour claim {i}.", distance=0.1 + i / 100
+                )
+                for i, h in enumerate(hubs)
+            ]
+
+        calls: list = []
+        resp = _put_atom(
+            store, block_fn=_block, containment_fn=_containment("different", calls)
+        )
+        assert "claim hub fi" in resp.body
+        assert len(calls) == 3
+
+    def test_same_passage_sibling_without_embedding_found(self, store) -> None:
+        paper = _seed_paper(store, cite_key="miller23a")
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+            ).fetchone()[0]
+        sup = [{"paper": f"pc{chunk_id}", "source_handle": f"pc{chunk_id}"}]
+        sibling = _finding_hub_mint.put_hub(
+            store,
+            sentence=_COMPOUND,
+            scope={},
+            supporters=sup,
+            dedup=False,
+        )
+        sibling_id = int(_search(r"claim hub fi(\d+)", sibling.body).group(1))
+
+        with pytest.raises(BadInput) as ei:
+            _put_atom(
+                store,
+                supporters=sup,
+                block_fn=_block_none,  # no embedding yet: ANN sees nothing
+                containment_fn=_containment("component"),
+            )
+        assert f"fi{sibling_id}" in str(ei.value)
+
+    def test_force_mints_and_stamps_override(self, store) -> None:
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+
+        resp = _put_atom(
+            store,
+            block_fn=_block_hit(compound, _COMPOUND, distance=0.294),
+            containment_fn=_containment("generalization"),
+            dedup="force",
+        )
+        new_hub = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+        assert new_hub != compound
+        meta = store.get_ref(kind="finding", id=new_hub).meta
+        assert meta["dedup_override"] == {
+            "neighbour": f"fi{compound}",
+            "verdict": "generalization",
+            "reason": "judged generalization",
+        }
+
+    def test_attach_choice_attaches_without_search_or_judge(self, store) -> None:
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        paper = _seed_paper(store, cite_key="miller23a")
+        before = store.count_refs(kind="finding")
+
+        resp = _put_atom(
+            store,
+            block_fn=_never_called,
+            judge_fn=_never_called,
+            dedup=f"attach:fi{compound}",
+        )
+        assert "converged onto" in resp.body and f"fi{compound}" in resp.body
+        assert store.count_refs(kind="finding") == before
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (paper, compound),
+            ).fetchone()
+        assert row is not None
+
+    def test_attach_choice_refuses_a_non_claim_hub(self, store) -> None:
+        from tests.workers._helpers import seed_ref
+
+        plain = seed_ref(store, title="Not a claim hub.", kind="finding")
+        _seed_paper(store, cite_key="miller23a")
+        with pytest.raises(BadInput) as ei:
+            _put_atom(
+                store,
+                block_fn=_never_called,
+                judge_fn=_never_called,
+                dedup=f"attach:fi{plain}",
+            )
+        assert "not a live claim hub" in str(ei.value)
+        assert ei.value.options and ei.value.next
+
+    def test_identical_reput_converges_before_containment(self, store) -> None:
+        paper = _seed_paper(store, cite_key="miller23a")
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+            ).fetchone()[0]
+        sup = [{"paper": f"pc{chunk_id}", "source_handle": f"pc{chunk_id}"}]
+        first = _put_atom(store, supporters=sup, block_fn=_never_called, dedup=False)
+        hub_id = int(_search(r"claim hub fi(\d+)", first.body).group(1))
+        before = store.count_refs(kind="finding")
+
+        # hub has no embedding (block sees nothing) but holds the same
+        # passage: containment would name it its own near-duplicate.
+        resp = _put_atom(
+            store,
+            supporters=sup,
+            block_fn=_block_none,
+            containment_fn=_never_called,
+        )
+        assert "converged onto" in resp.body and f"fi{hub_id}" in resp.body
+        assert store.count_refs(kind="finding") == before
+
+    def test_force_survives_containment_judge_outage(self, store) -> None:
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+
+        def _down(new: str, existing: str):
+            return {"verdict": "error", "confidence": 0.0, "rationale": "boom"}
+
+        with pytest.raises(Upstream) as ei:
+            _put_atom(
+                store,
+                block_fn=_block_hit(compound, _COMPOUND, distance=0.2),
+                containment_fn=_down,
+            )
+        assert ei.value.next
+
+        resp = _put_atom(
+            store,
+            block_fn=_block_hit(compound, _COMPOUND, distance=0.2),
+            containment_fn=_down,
+            dedup="force",
+        )
+        new_hub = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+        meta = store.get_ref(kind="finding", id=new_hub).meta
+        assert meta["dedup_override"]["verdict"] == "unjudged"
+
+    def test_bad_dedup_string_refused_with_options(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        with pytest.raises(BadInput) as ei:
+            _put_atom(store, block_fn=_never_called, dedup="sometimes")
+        assert ei.value.options
+
+    def test_refine_not_offered_at_reviewed_or_later(self, store) -> None:
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO nanopub_publish (claim_ref_id, state) VALUES (%s, 'reviewed')",
+                (compound,),
+            )
+            conn.commit()
+
+        with pytest.raises(BadInput) as ei:
+            _put_atom(
+                store,
+                block_fn=_block_hit(compound, _COMPOUND, distance=0.2),
+                containment_fn=_containment("component"),
+            )
+        opts = " ".join(ei.value.options or [])
+        assert "refine:" not in opts
+        assert "refine unavailable" in str(ei.value)
+        assert "reviewed" in str(ei.value)
+        assert f"dedup='attach:fi{compound}'" in opts and "dedup='force'" in opts
+
+    def test_dedup_false_unchanged(self, store) -> None:
+        mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+        resp = _put_atom(
+            store,
+            block_fn=_never_called,
+            judge_fn=_never_called,
+            dedup=False,
+        )
+        assert "dedup skipped" in resp.body
+
+    def test_handler_threads_dedup_string(self, store) -> None:
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store, embedder=object())
+        resp = h.put(
+            title=_ATOM,
+            supporters=[{"paper": "miller23a"}],
+            dedup=f"attach:fi{compound}",
+        )
+        assert "converged onto" in resp.body
+
+    def test_automated_paths_never_reference_containment_judge(self) -> None:
+        import inspect
+
+        from precis.taproot import backfill, canon, directed, hub
+        from precis.workers import chase
+
+        for mod in (backfill, directed, hub, chase):
+            assert "containment" not in inspect.getsource(mod), mod.__name__
+        for fn in (canon.judge_candidates, canon.place, canon.block):
+            assert "containment" not in inspect.getsource(fn), fn.__name__
+
+
 # ── view='similar' ────────────────────────────────────────────────────
 
 
