@@ -766,6 +766,12 @@ def _up_ready(fleet: Fleet) -> None:
     claude = shim_dir / "claude"
     claude.write_text("#!/bin/sh\nexec sleep 600\n", encoding="utf-8")
     claude.chmod(0o755)
+    # `up` launches `$root/scripts/mcp-token-env claude ...`; the scratch repo
+    # only has scripts/fleet, so without a stub the window command fails at
+    # once and the window closes before the test looks (CI Linux).
+    token_env = fleet.repo / "scripts" / "mcp-token-env"
+    token_env.write_text('#!/bin/sh\nexec "$@"\n', encoding="utf-8")
+    token_env.chmod(0o755)
     cp = fleet.tmux("set-environment", "-g", "PATH", fleet.env["PATH"])
     assert cp.returncode == 0, cp.stderr
     fleet.env["PRECIS_FLEET_MCP_WAIT"] = "0"
