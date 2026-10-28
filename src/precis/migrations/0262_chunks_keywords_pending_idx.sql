@@ -1,4 +1,4 @@
--- 0261_chunks_keywords_pending_idx.sql
+-- 0262_chunks_keywords_pending_idx.sql
 --
 -- chunk_keywords drain fix (gr520236): the fresh-backlog claim is
 -- `WHERE keywords IS NULL ... ORDER BY chunk_id DESC` (newest-first, so
@@ -58,7 +58,7 @@ DECLARE
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
                 WHERE c.relname = 'chunks_keywords_pending_idx' AND NOT i.indisvalid) THEN
-        RAISE EXCEPTION '0261: index chunks_keywords_pending_idx exists but is INVALID (a failed CONCURRENTLY build)'
+        RAISE EXCEPTION '0262: index chunks_keywords_pending_idx exists but is INVALID (a failed CONCURRENTLY build)'
             USING HINT = 'DROP INDEX CONCURRENTLY chunks_keywords_pending_idx; ' || rebuild || ' — outside a transaction, then re-apply.';
     END IF;
     -- A pre-built index with a DIFFERENT predicate passes a name-only
@@ -70,13 +70,13 @@ BEGIN
       FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
      WHERE c.relname = 'chunks_keywords_pending_idx';
     IF FOUND AND pred IS DISTINCT FROM want_pred THEN
-        RAISE EXCEPTION '0261: chunks_keywords_pending_idx exists with an unexpected predicate — the claim cannot use it: %',
+        RAISE EXCEPTION '0262: chunks_keywords_pending_idx exists with an unexpected predicate — the claim cannot use it: %',
                 COALESCE(pred, '(none — the index is not partial)')
             USING HINT = 'DROP INDEX CONCURRENTLY chunks_keywords_pending_idx; ' || rebuild || ' — outside a transaction, then re-apply.';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'chunks_keywords_pending_idx')
        AND (SELECT reltuples FROM pg_class WHERE relname = 'chunks') > 1000000 THEN
-        RAISE EXCEPTION '0261: chunks_keywords_pending_idx missing on a large chunks table'
+        RAISE EXCEPTION '0262: chunks_keywords_pending_idx missing on a large chunks table'
             USING HINT = rebuild || ' — outside a transaction, then re-apply.';
     END IF;
 END
@@ -93,4 +93,4 @@ CREATE INDEX IF NOT EXISTS chunks_keywords_pending_idx
 
 COMMIT;
 
--- End of 0261_chunks_keywords_pending_idx.sql
+-- End of 0262_chunks_keywords_pending_idx.sql
