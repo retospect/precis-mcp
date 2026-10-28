@@ -240,6 +240,64 @@ def test_memory_eye_1hop_counts_overflow_against_live_neighbours(hub: Hub) -> No
     assert "more" not in out
 
 
+def test_eye_ring_collapses_parallel_chunk_edges_into_one_source_row(
+    hub: Hub,
+) -> None:
+    """gr524665: N chunk-grounded edges from one source (a claim hub's
+    evidence — ``paper:slug~29``/``~28``/``~21``/``~30`` — or any other
+    passage-level link fan-in) rendered the same source row N times,
+    reading as a duplicate-edge bug. The ring collapses them: one row
+    per neighbour, a ``×N`` count, and the far-end ``pc<id> ~<ord>``
+    handles so each passage stays reachable."""
+    store = hub.live_store
+    note = store.insert_ref(kind="memory", slug=None, title="Focus claim")
+    paper = store.insert_ref(
+        kind="paper",
+        slug="zhu2009magnetism",
+        title="Magnetism in hybrid carbon nanostructures",
+    )
+    store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=i, text=f"passage {i}") for i in range(5)]
+    )
+    for ord_ in range(5):
+        store.add_link(
+            src_ref_id=paper.id,
+            src_pos=ord_,
+            dst_ref_id=note.id,
+            relation="corroborates",
+        )
+    # a second source grounded at one passage …
+    single = store.insert_ref(kind="paper", slug="one-pass", title="One passage")
+    store.chunks.insert_chunks(single.id, [ChunkInsert(ord=0, text="p0")])
+    store.add_link(
+        src_ref_id=single.id,
+        src_pos=0,
+        dst_ref_id=note.id,
+        relation="corroborates",
+    )
+    # … and a plain ref-level edge beside them
+    plain = store.insert_ref(kind="paper", slug="plain", title="Ref-level source")
+    store.add_link(src_ref_id=plain.id, dst_ref_id=note.id, relation="corroborates")
+
+    out = render_eye(
+        store, handle_registry.format_handle("memory", note.id), "fisheye+1hop"
+    )
+
+    # the group count and the rows are unique sources, not raw edges
+    assert "  <-corroborates (3):" in out
+    assert out.count("Magnetism in hybrid carbon nanostructures") == 1
+    row = next(ln for ln in out.splitlines() if "Magnetism" in ln)
+    assert "×5" in row
+    # the passages stay reachable — pc handles ord-suffixed like the doc
+    # eye's rows, first few then a visible +N more
+    assert len(re.findall(r"pc\d+ ~\d", row)) == 4
+    assert "+1 more" in row
+    srow = next(ln for ln in out.splitlines() if "One passage" in ln)
+    assert re.search(r"pc\d+ ~0", srow) and "×" not in srow
+    prow = next(ln for ln in out.splitlines() if "Ref-level source" in ln)
+    assert "×" not in prow and "pc" not in prow
+
+
 def test_ring_registry_names_only_registered_relations(hub: Hub) -> None:
     """Every slug the ring follows is a live relation — a typo in a ring
     group would otherwise render nothing, silently."""

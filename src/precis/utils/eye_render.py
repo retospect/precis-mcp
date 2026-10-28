@@ -105,6 +105,10 @@ _NEIGHBOR_TITLE_CAP = 80
 #: group is replaced by this cap plus a visible overflow line (no silent
 #: truncation).
 _NEIGHBOR_GROUP_CAP = 8
+#: Passage handles a collapsed row prints before its ``· +N more`` tail —
+#: a hub paper can ground a claim at dozens of chunks; the row lists the
+#: first few and counts the rest.
+_RING_PASSAGE_CAP = 4
 _CHUNK_SUMMARY_CAP = 140
 #: Keep the cluster map / label lists skimmable even on a huge doc; the
 #: clusterer already caps the top level, this bounds the collapsed labels.
@@ -644,6 +648,19 @@ def _as_seen_from_here(
     return inverses.get(relation) or f"<-{relation}"
 
 
+@dataclass(frozen=True, slots=True)
+class _RingNeighbour:
+    """One collapsed ring row: the far ref, how many of the focus's edges
+    reach it (parallel chunk-grounded edges — a claim hub's evidence, any
+    passage-level fan-in — fold into one row, gr524665), and the far-end
+    ``(chunk_id, ord)`` passages those edges arrive at, first-seen order.
+    ``edges`` counts every collapsed edge, ref-level ones included."""
+
+    ref_id: int
+    edges: int = 1
+    passages: tuple[tuple[int, int | None], ...] = ()
+
+
 def _link_neighbors(store: Store, ref_id: int) -> str:
     """The ref's one-hop link neighborhood — the ``fisheye+1hop`` layer for a
     non-tree eye. Follows every relation in the ring registry
@@ -665,7 +682,7 @@ def _link_neighbors(store: Store, ref_id: int) -> str:
 def _render_ring(
     store: Store,
     ref_id: int,
-    hop1: dict[tuple[str, str], list[int]],
+    hop1: dict[tuple[str, str], list[_RingNeighbour]],
     refs: dict[int, Any],
     ring: RingFilter | None = None,
 ) -> str:
@@ -676,7 +693,12 @@ def _render_ring(
     # fetched neighbour (retired and ring-filtered included).
     chips = _row_chips(
         store,
-        {o: refs[o] for oids in hop1.values() for o in oids if o in refs},
+        {
+            n.ref_id: refs[n.ref_id]
+            for ns in hop1.values()
+            for n in ns
+            if n.ref_id in refs
+        },
         ring=ring,
     )
     return _render_first_hop(
@@ -707,15 +729,15 @@ def _row_chips(
 
 
 def _more_hint_factory(
-    store: Store, ref_id: int, hop1: dict[tuple[str, str], list[int]]
+    store: Store, ref_id: int, hop1: dict[tuple[str, str], list[_RingNeighbour]]
 ) -> Any:
-    """``(label, member ids) -> ' · get(…) …'`` for a group's ``… +N more``
+    """``(label, neighbours) -> ' · get(…) …'`` for a group's ``… +N more``
     line, or ``None`` when no group overflows (no extra queries then).
 
     The call re-reads the focus with ``q='<label>'``, which lists that whole
     group (:func:`_expand_first_hop`). For a memory whose group members share
     a ``section:<type>`` tag a scoped ``search`` is offered too."""
-    if not any(len(oids) > _NEIGHBOR_GROUP_CAP for oids in hop1.values()):
+    if not any(len(ns) > _NEIGHBOR_GROUP_CAP for ns in hop1.values()):
         return None
     focus = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if focus is None:
@@ -733,7 +755,7 @@ def _more_hint_factory(
             None,
         )
 
-    def hint(label: str, oids: list[int]) -> str:
+    def hint(label: str, ns: list[_RingNeighbour]) -> str:
         out = (
             f" · get(kind={kind!r}, id={handle!r}, extent='fisheye+1hop', q={label!r})"
         )
@@ -744,7 +766,7 @@ def _more_hint_factory(
                 f"args={{'under': {handle!r}}})"
             )
         elif kind == "memory" and space is not None:
-            tagged = store.ref_tags_bulk(oids)
+            tagged = store.ref_tags_bulk([n.ref_id for n in ns])
             shared = set.intersection(
                 *(
                     {
@@ -752,7 +774,7 @@ def _more_hint_factory(
                         for _ns, v in tagged.get(o, [])
                         if v.startswith("section:") and v != _HUB_TAG
                     }
-                    for o in oids
+                    for o in (n.ref_id for n in ns)
                 )
             )
             if shared:
@@ -801,7 +823,7 @@ def _hub_ids(store: Store, ref_ids: list[int]) -> set[int]:
 def _hub_member_notes(
     store: Store,
     ref_id: int,
-    hop1: dict[tuple[str, str], list[int]],
+    hop1: dict[tuple[str, str], list[_RingNeighbour]],
     refs: dict[int, Any],
 ) -> dict[int, str] | None:
     """For a ``section:index`` memory: ``{member id: hook}`` for each live
@@ -813,10 +835,10 @@ def _hub_member_notes(
     if not _is_hub(store, ref_id):
         return None
     members = [
-        oid
-        for (_g, label), oids in hop1.items()
+        n.ref_id
+        for (_g, label), ns in hop1.items()
         if label == _HUB_MEMBER_LABEL
-        for oid in oids
+        for n in ns
     ]
     from precis.utils.memory_hubs import band_order
 
@@ -877,23 +899,71 @@ def _ring_kept(
     store: Store,
     ring: RingFilter,
     refs: dict[int, Any],
-    oids: list[int],
-) -> list[int]:
-    """``oids`` narrowed by ``ring``: kind from the ref row, ``SPACE:`` tags
-    in one bulk read (only when the filter uses the axis)."""
-    out = oids
+    pairs: list[tuple[int, int | None]],
+) -> list[tuple[int, int | None]]:
+    """``pairs`` (``(neighbour ref, far chunk id)`` per edge) narrowed by
+    ``ring``: kind from the ref row, ``SPACE:`` tags in one bulk read (only
+    when the filter uses the axis)."""
+    out = pairs
     if ring.kinds is not None:
-        out = [o for o in out if str(getattr(refs[o], "kind", "")) in ring.kinds]
+        out = [p for p in out if str(getattr(refs[p[0]], "kind", "")) in ring.kinds]
     if ring.spaces is not None:
-        space_of = _space_tags(store, out)
-        out = [o for o in out if space_of.get(o, frozenset()) & ring.spaces]
+        space_of = _space_tags(store, {o for o, _c in out})
+        out = [p for p in out if space_of.get(p[0], frozenset()) & ring.spaces]
     return out
+
+
+def _chunk_ords(store: Store, chunk_ids: Any) -> dict[int, int]:
+    """``{chunk_id: ord}`` for a set of chunk ids in one query — the
+    ``~<ord>`` suffix a collapsed row's ``pc<id>`` handles print. A read
+    failure reads as no ords, never a broken render."""
+    ids = {int(c) for c in chunk_ids}
+    if not ids:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, ord FROM chunks WHERE chunk_id = ANY(%s)",
+                (list(ids),),
+            ).fetchall()
+    except Exception:
+        log.debug("ring passage ord read failed", exc_info=True)
+        return {}
+    return {int(r[0]): int(r[1]) for r in rows}
+
+
+def _collapse_pairs(
+    pairs: list[tuple[int, int | None]], ords: dict[int, int]
+) -> list[_RingNeighbour]:
+    """``(ref, far chunk)`` per edge → one :class:`_RingNeighbour` per ref —
+    first-seen order, every edge counted, far-end chunks deduped (gr524665:
+    a claim hub's ``paper --corroborates--> hub`` fan-in grounds at N chunks
+    of one source and must render as one row, not N identical rows)."""
+    acc: dict[int, tuple[int, list[int]]] = {}
+    order: list[int] = []
+    for oid, ck in pairs:
+        slot = acc.get(oid)
+        if slot is None:
+            acc[oid] = slot = (0, [])
+            order.append(oid)
+        edges, chunks = slot
+        acc[oid] = (edges + 1, chunks)
+        if ck is not None and ck not in chunks:
+            chunks.append(ck)
+    return [
+        _RingNeighbour(
+            oid,
+            edges=acc[oid][0],
+            passages=tuple((c, ords.get(c)) for c in acc[oid][1]),
+        )
+        for oid in order
+    ]
 
 
 def _first_hop(
     store: Store, ref_id: int, *, ring: RingFilter | None = None
-) -> tuple[dict[tuple[str, str], list[int]], dict[int, Any]]:
-    """``(live neighbour ids by (ring group, label), the neighbour refs)`` —
+) -> tuple[dict[tuple[str, str], list[_RingNeighbour]], dict[int, Any]]:
+    """``(live neighbours by (ring group, label), the neighbour refs)`` —
     the collected form of :func:`_link_neighbors`, shared with the second
     hop, which walks out from exactly these neighbours. ``ring`` narrows
     the neighbours kept; ``RING_GROUP_KIND_RANK`` then orders each label
@@ -903,29 +973,39 @@ def _first_hop(
     read), so both surfaces see one neighbour set: retired far ends and
     self-links dropped, an inbound edge's relation read through the
     ``relations.inverse_slug`` map. The ring keeps its own per-label cap,
-    so the read is uncapped here; it is walked oldest link first."""
+    so the read is uncapped here; it is walked oldest link first. Edges
+    sharing a far ref collapse to one :class:`_RingNeighbour` carrying the
+    count and the far-end chunk ids they ground at."""
     by_label = _bucket_edges(store, ref_id, _neighbourhood_edges(store, ref_id))
     if not by_label:
         return {}, {}
-    refs = store.fetch_refs_by_ids({o for oids in by_label.values() for o in oids})
+    refs = store.fetch_refs_by_ids(
+        {o for pairs in by_label.values() for o, _c in pairs}
+    )
     live = {
-        key: [oid for oid in oids if _live(refs, oid)] for key, oids in by_label.items()
+        key: [p for p in pairs if _live(refs, p[0])] for key, pairs in by_label.items()
     }
-    live = {key: oids for key, oids in live.items() if oids}
+    live = {key: pairs for key, pairs in live.items() if pairs}
     if ring is not None:
         live = {
             key: kept
-            for key, oids in live.items()
-            if (kept := _ring_kept(store, ring, refs, oids))
+            for key, pairs in live.items()
+            if (kept := _ring_kept(store, ring, refs, pairs))
         }
-    for (group, _label), oids in live.items():
+    ords = _chunk_ords(
+        store, (c for pairs in live.values() for _o, c in pairs if c is not None)
+    )
+    out = {key: _collapse_pairs(pairs, ords) for key, pairs in live.items()}
+    for (group, _label), ns in out.items():
         rank = RING_GROUP_KIND_RANK.get(group)
         if rank:
             pri = {k: i for i, k in enumerate(rank)}
-            oids.sort(
-                key=lambda o: pri.get(str(getattr(refs[o], "kind", "")), len(rank))
+            ns.sort(
+                key=lambda n: pri.get(
+                    str(getattr(refs[n.ref_id], "kind", "")), len(rank)
+                )
             )
-    return live, refs
+    return out, refs
 
 
 #: ``cap`` for the ring's :meth:`Store.neighbourhood` read: past any real
@@ -933,9 +1013,13 @@ def _first_hop(
 _NBH_UNCAPPED = 1_000_000
 
 
-def _neighbourhood_edges(store: Store, ref_id: int) -> list[tuple[int, int, Any]]:
-    """``ref_id``'s live first-hop edges as stored ``(src, dst, relation)``,
-    oldest link first, read through :meth:`Store.neighbourhood`.
+def _neighbourhood_edges(
+    store: Store, ref_id: int
+) -> list[tuple[int, int, Any, int | None, int | None]]:
+    """``ref_id``'s live first-hop edges as stored ``(src, dst, relation,
+    src_chunk_id, dst_chunk_id)``, oldest link first, read through
+    :meth:`Store.neighbourhood` with ``link_ids=True`` so a chunk-grounded
+    edge keeps the chunk it grounds at (gr524665).
 
     ``neighbourhood`` presents an inbound edge under its inverse slug; the
     inverse map is an involution, so mapping it back gives the stored slug
@@ -944,7 +1028,9 @@ def _neighbourhood_edges(store: Store, ref_id: int) -> list[tuple[int, int, Any]
     if focus is None:
         return []
     try:
-        nbh = store.neighbourhood(str(focus.kind), ref_id, cap=_NBH_UNCAPPED)
+        nbh = store.neighbourhood(
+            str(focus.kind), ref_id, cap=_NBH_UNCAPPED, link_ids=True
+        )
     except NotFound:
         return []
     far_of = {
@@ -954,13 +1040,15 @@ def _neighbourhood_edges(store: Store, ref_id: int) -> list[tuple[int, int, Any]
         for n in nbh["nodes"]
     }
     inverses, _symmetric = _relation_reading(store)
-    edges: list[tuple[int, int, Any]] = []
+    edges: list[tuple[int, int, Any, int | None, int | None]] = []
     for e in reversed(nbh["edges"]):
+        sck = e.get("src_chunk_id")
+        dck = e.get("dst_chunk_id")
         if e["dir"] == "out":
-            edges.append((ref_id, int(far_of[e["dst"]]), e["rel"]))
+            edges.append((ref_id, int(far_of[e["dst"]]), e["rel"], sck, dck))
         else:
             rel = inverses.get(e["rel"], e["rel"])
-            edges.append((int(far_of[e["src"]]), ref_id, rel))
+            edges.append((int(far_of[e["src"]]), ref_id, rel, sck, dck))
     return edges
 
 
@@ -970,14 +1058,18 @@ def _live(refs: dict[int, Any], oid: int) -> bool:
 
 
 def _bucket_edges(
-    store: Store, ref_id: int, edges: list[tuple[int, int, Any]]
-) -> dict[tuple[str, str], list[int]]:
-    """Group ``ref_id``'s ``(src, dst, relation)`` edges by ``(ring group,
-    label as seen from here)``, listing the other endpoint of each — dead
-    ends included; the caller filters by liveness."""
+    store: Store,
+    ref_id: int,
+    edges: list[tuple[int, int, Any, int | None, int | None]],
+) -> dict[tuple[str, str], list[tuple[int, int | None]]]:
+    """Group ``ref_id``'s ``(src, dst, relation, src_chunk, dst_chunk)``
+    edges by ``(ring group, label as seen from here)``, listing the other
+    endpoint of each as ``(ref, far chunk id)`` — the chunk the edge
+    grounds at on the neighbour's side. Dead ends included; the caller
+    filters by liveness and collapses."""
     inverses, symmetric = _relation_reading(store)
-    by_label: dict[tuple[str, str], list[int]] = {}
-    for src, dst, rel in edges:
+    by_label: dict[tuple[str, str], list[tuple[int, int | None]]] = {}
+    for src, dst, rel, sck, dck in edges:
         group = ring_group(str(rel)) if rel is not None else None
         if group is None:
             continue
@@ -985,10 +1077,13 @@ def _bucket_edges(
         other = dst if outbound else src
         if other == ref_id:
             continue
+        other_chunk = dck if outbound else sck
         label = _as_seen_from_here(
             str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
         )
-        by_label.setdefault((group, label), []).append(other)
+        by_label.setdefault((group, label), []).append(
+            (other, int(other_chunk) if other_chunk is not None else None)
+        )
     return by_label
 
 
@@ -1008,26 +1103,27 @@ def first_hop_shape(
     hubs = _hub_ids(store, list(ref_ids))
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT src_ref_id, dst_ref_id, relation FROM links "
+            "SELECT src_ref_id, dst_ref_id, relation, src_chunk_id, dst_chunk_id "
+            "FROM links "
             "WHERE src_ref_id = ANY(%s) OR dst_ref_id = ANY(%s)",
             (ref_ids, ref_ids),
         ).fetchall()
     wanted = set(ref_ids)
-    edges: dict[int, list[tuple[int, int, Any]]] = {r: [] for r in ref_ids}
-    for src, dst, rel in rows:
+    edges: dict[int, list[tuple[int, int, Any, Any, Any]]] = {r: [] for r in ref_ids}
+    for src, dst, rel, sck, dck in rows:
         for end in {int(src), int(dst)} & wanted:
-            edges[end].append((int(src), int(dst), rel))
+            edges[end].append((int(src), int(dst), rel, sck, dck))
     buckets = {r: _bucket_edges(store, r, e) for r, e in edges.items()}
-    others = {o for b in buckets.values() for oids in b.values() for o in oids}
-    refs = store.fetch_refs_by_ids(others | {int(src) for src, _d, _r in rows})
+    others = {o for b in buckets.values() for pairs in b.values() for o, _c in pairs}
+    refs = store.fetch_refs_by_ids(others | {int(src) for src, _d, _r, _s, _k in rows})
     shape: dict[int, tuple[int, int, int]] = {}
     for r, by_label in buckets.items():
         # inbound edges from a retired source are unremovable from this end
         # (the source is Gone), so they are not this ref's dead links
-        removable = {dst for src, dst, _rel in edges[r] if src == r}
+        removable = {dst for src, dst, _rel, _s, _k in edges[r] if src == r}
         orphaned = {
             src
-            for src, dst, _rel in edges[r]
+            for src, dst, _rel, _s, _k in edges[r]
             if dst == r and src not in removable and not _live(refs, src)
         }
         # an outbound ``supersedes`` edge to a retired ref is the merge record
@@ -1035,16 +1131,18 @@ def first_hop_shape(
         # node), not a dead end to repoint
         tombstones = {
             dst
-            for src, dst, rel in edges[r]
+            for src, dst, rel, _s, _k in edges[r]
             if src == r and rel == "supersedes" and not _live(refs, dst)
         }
         live_groups = [
-            {o for o in oids if _live(refs, o)}
-            for (_g, label), oids in by_label.items()
+            {o for o, _c in pairs if _live(refs, o)}
+            for (_g, label), pairs in by_label.items()
             if not (r in hubs and label == _HUB_MEMBER_LABEL)
         ]
-        live_all = [{o for o in oids if _live(refs, o)} for oids in by_label.values()]
-        every = {o for oids in by_label.values() for o in oids}
+        live_all = [
+            {o for o, _c in pairs if _live(refs, o)} for pairs in by_label.values()
+        ]
+        every = {o for pairs in by_label.values() for o, _c in pairs}
         live = set().union(*live_all) if live_all else set()
         shape[r] = (
             len(live),
@@ -1061,7 +1159,7 @@ _FIRST_HOP_EXPAND_CAP = 500
 def _expand_first_hop(
     store: Store,
     ref_id: int,
-    hop1: dict[tuple[str, str], list[int]],
+    hop1: dict[tuple[str, str], list[_RingNeighbour]],
     refs: dict[int, Any],
     label: str,
     ring: RingFilter | None = None,
@@ -1069,27 +1167,58 @@ def _expand_first_hop(
     """One first-hop label's live neighbours, uncapped by the ring's per-group
     cap (bounded by :data:`_FIRST_HOP_EXPAND_CAP`). A ``section:index``
     memory's ``contains`` expansion keeps the hub listing's band order."""
-    ids = [o for (_g, lab), oids in hop1.items() if lab == label for o in oids]
-    if not ids:
+    ns = [n for (_g, lab), group_ns in hop1.items() if lab == label for n in group_ns]
+    if not ns:
         known = ", ".join(sorted({lab for _g, lab in hop1})) or "none"
         raise ValueError(f"eye: no first-hop group {label!r}; groups here: {known}")
     if label == _HUB_MEMBER_LABEL and _is_hub(store, ref_id):
         from precis.utils.memory_hubs import band_order
 
-        ids = band_order(store, ids)
-    chips = _row_chips(store, {o: refs[o] for o in ids if o in refs}, ring=ring)
-    lines = [f"— linked (1 hop) · {label} ({len(ids)}) —"]
-    lines.extend(
-        f"    {_neighbor_label(refs[o], o, chips=chips.get(o, ''))}"
-        for o in ids[:_FIRST_HOP_EXPAND_CAP]
+        ordered = band_order(store, [n.ref_id for n in ns])
+        by_id = {n.ref_id: n for n in ns}
+        ns = [by_id[o] for o in ordered]
+    chips = _row_chips(
+        store, {n.ref_id: refs[n.ref_id] for n in ns if n.ref_id in refs}, ring=ring
     )
-    if len(ids) > _FIRST_HOP_EXPAND_CAP:
-        lines.append(f"    … +{len(ids) - _FIRST_HOP_EXPAND_CAP} more")
+    lines = [f"— linked (1 hop) · {label} ({len(ns)}) —"]
+    lines.extend(
+        f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''))}"
+        for n in ns[:_FIRST_HOP_EXPAND_CAP]
+    )
+    if len(ns) > _FIRST_HOP_EXPAND_CAP:
+        lines.append(f"    … +{len(ns) - _FIRST_HOP_EXPAND_CAP} more")
     return "\n".join(lines)
 
 
+def _passage_suffix(n: _RingNeighbour, kind: str) -> str:
+    """A collapsed row's tail (gr524665): ``  ×N`` when parallel edges folded
+    into it, plus the far-end chunk handles those edges ground at —
+    ``pc<id> ~<ord>``, the doc eye's form — first few, then ``· +N more``.
+    A kind with no chunk code (memory chunks are not agent-addressable)
+    drops the handle but keeps the count."""
+    handles: list[str] = []
+    for cid, ord_ in n.passages:
+        h = handle_registry.try_format(kind, cid, chunk=True)
+        if h is not None:
+            handles.append(f"{h} ~{ord_}" if ord_ is not None else h)
+    shown = handles[:_RING_PASSAGE_CAP]
+    listed = " · ".join(shown)
+    if len(handles) > len(shown):
+        listed += f" · +{len(handles) - len(shown)} more"
+    if n.edges > 1:
+        return f"  ×{n.edges} ({listed})" if listed else f"  ×{n.edges}"
+    return f"  ({listed})" if listed else ""
+
+
+def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "") -> str:
+    """One ring row: the neighbour label plus its collapsed-edge tail."""
+    return _neighbor_label(ref, n.ref_id, chips=chips) + _passage_suffix(
+        n, str(getattr(ref, "kind", "") or "")
+    )
+
+
 def _render_first_hop(
-    by_label: dict[tuple[str, str], list[int]],
+    by_label: dict[tuple[str, str], list[_RingNeighbour]],
     refs: dict[int, Any],
     chips: dict[int, str] | None = None,
     hub_members: dict[int, str] | None = None,
@@ -1106,10 +1235,10 @@ def _render_first_hop(
             lines.append(f"{group}:")
             heading = group
         if hub_members is not None and label == _HUB_MEMBER_LABEL:
-            live = set(live_ids)
+            live = {n.ref_id for n in live_ids}
             listed = [o for o in hub_members if o in live]
             if len(live_ids) == 1:
-                oid = live_ids[0]
+                oid = live_ids[0].ref_id
                 hook = hub_members.get(oid, "")
                 row = _neighbor_label(refs[oid], oid, chips=chips.get(oid, ""))
                 lines.append(
@@ -1129,15 +1258,16 @@ def _render_first_hop(
                     )
             continue
         if len(live_ids) == 1:
+            n = live_ids[0]
             lines.append(
                 f"  {label}: "
-                f"{_neighbor_label(refs[live_ids[0]], live_ids[0], chips=chips.get(live_ids[0], ''))}"
+                f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''))}"
             )
             continue
         lines.append(f"  {label} ({len(live_ids)}):")
-        for oid in live_ids[:_NEIGHBOR_GROUP_CAP]:
+        for n in live_ids[:_NEIGHBOR_GROUP_CAP]:
             lines.append(
-                f"    {_neighbor_label(refs[oid], oid, chips=chips.get(oid, ''))}"
+                f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''))}"
             )
         if len(live_ids) > _NEIGHBOR_GROUP_CAP:
             more = more_hint(label, live_ids) if more_hint is not None else ""
@@ -1184,7 +1314,7 @@ _SECOND_HOP_ROW_CAP = 20000
 def _second_hop(
     store: Store,
     ref_id: int,
-    hop1: dict[tuple[str, str], list[int]],
+    hop1: dict[tuple[str, str], list[_RingNeighbour]],
     *,
     expand: str | None = None,
     ring: RingFilter | None = None,
@@ -1204,7 +1334,7 @@ def _second_hop(
     more``) and has no notion of a named group, so the expansion is the
     same call with a filter — decided 2026-10-02, recorded in the item.
     """
-    hop1_ids = {oid for oids in hop1.values() for oid in oids}
+    hop1_ids = {n.ref_id for ns in hop1.values() for n in ns}
     if not hop1_ids:
         return ""
     inverses, symmetric = _relation_reading(store)

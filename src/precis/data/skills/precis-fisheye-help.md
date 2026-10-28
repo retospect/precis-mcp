@@ -128,7 +128,7 @@ Edges only, both directions, each group capped with a visible
 `+N more — focus to expand` line. A memory merely *about* the section
 but never linked is a `search` hit, not a hop.
 
-## The link neighborhood — one heading per ring, one line per edge
+## The link neighborhood — one heading per ring, one line per neighbour
 
 On a link or document kind, `fisheye+1hop` lists every ref linked to the
 focus, either direction, under one heading per ring group, each
@@ -139,6 +139,11 @@ reads from the focus's side: an edge it is the source of keeps its name
 inverse reads `<-establishes: pa5` ("pa5 establishes this"). A neighbour
 carrying `AUDIT:ungrounded-number` is flagged on its line. A memory with
 a mirrored file reads `me4641 (worker_busy_vs_starved_diagnosis.md)`.
+
+Parallel edges to the **same** neighbour collapse into one row — chunk-
+grounded evidence reads `<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12
+~28 · +2 more)`, not four identical rows. `×N` counts edges; handles are
+the passages to `get`.
 
 | Ring | Relations | Worked example |
 |---|---|---|
