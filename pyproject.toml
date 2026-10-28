@@ -617,7 +617,7 @@ dev = [
     # session-scoped ``_initialise_test_db`` fixture independently — every
     # worker gets its OWN ``precis_test_<uuid>`` clone, so the per-test
     # TRUNCATE isolation never races across workers (see tests/conftest.py).
-    "pytest-xdist>=3.6",
+    "pytest-xdist>=3.8.0",
     # Impact selection for the inner dev loop: `scripts/test --impacted` runs
     # only the tests a working-tree change affects (testmon maps test↔code).
     # Not in the ship gate (which runs the full suite); scripts/test pulls it
