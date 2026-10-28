@@ -3,10 +3,17 @@
 
 Step 1 of docs/backlog/fleet-coordination-via-precis.md. No DB, no precis
 writes: it reads tmux, git worktrees, Claude transcripts
-(`~/.claude/projects/<cwd with non-alphanumerics -> '-'>/*.jsonl`) and Codex
-rollouts (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), then prints a compact
-fisheye (EXCEPTIONS / READY / SHIPPING / WAITING / AGENTS / QUOTA) or
-`--json`.
+(`~/.claude/projects/<cwd with non-alphanumerics -> '-'>/*.jsonl`), Codex
+rollouts (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) and Kimi Code session
+wires (`$KIMI_CODE_HOME/sessions/*/session_*/agents/*/wire.jsonl`, default
+`~/.kimi-code`), then prints a compact fisheye (EXCEPTIONS / READY /
+SHIPPING / WAITING / AGENTS / QUOTA) or `--json`.
+
+Quota: Codex rollouts carry the plan's own `used_percent`. Kimi Code writes
+no plan figure locally (its 5h/weekly limits live in the Kimi Code Console),
+so the kimi QUOTA cell is this host's own rolling usage from the wires'
+`usage.record` events: requests and uncached tokens (input + cache writes +
+output) over the last 5 h and 7 days.
 
 State per row: working | idle | waiting | dead | unknown. `dead` means the
 worktree lock's pid is gone, or no tmux pane exists while the transcript says
@@ -39,6 +46,7 @@ import socket
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -62,7 +70,10 @@ QUESTION_PATTERNS = (
     r"Question \d+/\d+ \(\d+ unanswered\)",
     r"enter to submit answer",
 )
-AGENT_COMMANDS = ("claude", "codex", "devin", "node")
+AGENT_COMMANDS = ("claude", "codex", "devin", "kimi", "node")
+VENDORS = ("claude", "codex", "devin", "kimi")
+#: Rolling windows (minutes) the kimi QUOTA cell sums usage over.
+KIMI_USAGE_WINDOWS = (300, 10080)
 CLAUDE_WINDOW_DEFAULT = 200_000
 #: Context window per Claude model id, from the harness's own model table
 #: (claude-code 2.1.x embeds ``context:{window:…}`` per model): opus-4.7+,
@@ -479,12 +490,169 @@ def window_label(minutes) -> str:
     )
 
 
+def kimi_home() -> Path:
+    return Path(os.environ.get("KIMI_CODE_HOME") or Path.home() / ".kimi-code")
+
+
+def kimi_windows() -> dict[str, int]:
+    """Context window per Kimi model alias (``max_context_size`` in Kimi's
+    config.toml; {} when unreadable). Only the models table is read."""
+    try:
+        with (kimi_home() / "config.toml").open("rb") as f:
+            cfg = tomllib.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {
+        alias: m["max_context_size"]
+        for alias, m in (cfg.get("models") or {}).items()
+        if isinstance(m, dict) and isinstance(m.get("max_context_size"), int)
+    }
+
+
+def kimi_sessions(since_s: float) -> dict[str, dict]:
+    """Newest recent Kimi Code session per cwd: {cwd: session dict}.
+
+    A session dir holds state.json (``cwd``, ``archived``) and one
+    wire.jsonl per agent; the main agent's wire says what the session is
+    doing."""
+    root = kimi_home() / "sessions"
+    cutoff = now_ts() - since_s
+    best: dict[str, tuple[float, Path]] = {}
+    for st in root.glob("*/session_*/state.json") if root.is_dir() else ():
+        wire = st.parent / "agents" / "main" / "wire.jsonl"
+        try:
+            m = max(st.stat().st_mtime, wire.stat().st_mtime if wire.exists() else 0)
+            if m < cutoff:
+                continue
+            meta = json.loads(st.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        cwd = meta.get("cwd") if isinstance(meta, dict) else None
+        if not cwd or meta.get("archived") or not wire.exists():
+            continue
+        if cwd not in best or m > best[cwd][0]:
+            best[cwd] = (m, wire)
+    windows = kimi_windows() if best else {}
+    return {cwd: kimi_wire(wire, m, windows) for cwd, (m, wire) in best.items()}
+
+
+def kimi_wire(wire: Path, mtime: float, windows: dict[str, int]) -> dict:
+    """State and context fill from the tail of a Kimi main-agent wire."""
+    state, ctx, alias, last_ts = "unknown", None, None, mtime
+    pending: dict[str, str] = {}  # open interaction id -> kind
+    entries = json_tail(wire)
+    for d in entries:
+        if d.get("agentId", "main") != "main":
+            continue
+        kind = d.get("type")
+        if isinstance(d.get("time"), (int, float)):
+            last_ts = d["time"] / 1000
+        if kind == "agent.turn.started":
+            state = "working"
+        elif kind == "agent.turn.ended":
+            state = "idle"
+            pending.clear()
+        elif kind == "interaction.request":
+            pending[str(d.get("id"))] = str(d.get("kind") or "")
+        elif kind == "interaction.resolved":
+            pending.pop(str(d.get("id")), None)
+        elif kind in (
+            "token_counting.measured",
+            "token_counting.turn_recorded",
+            "token_counting.rebased",
+        ):
+            ctx = d.get("tokens", ctx)
+        elif kind == "context.apply_compaction":
+            ctx = d.get("tokensAfter", ctx)
+        elif kind == "llm.request":
+            alias = d.get("modelAlias") or d.get("model") or alias
+    if state == "unknown" and entries:
+        # The turn start scrolled out of the tail: a long turn still running.
+        state = "working" if now_ts() - last_ts < RECENT_WORKING_S else "idle"
+    if pending:
+        state = (
+            "asking" if any("question" in k for k in pending.values()) else "waiting"
+        )
+    window = windows.get(alias or "")
+    return {
+        "file": str(wire),
+        "mtime": mtime,
+        "last_event": last_ts,
+        "state": state,
+        "model": alias,
+        "ctx_tokens": ctx,
+        "ctx_pct": round(100 * ctx / window, 1) if ctx and window else None,
+    }
+
+
+def kimi_usage(windows_min: tuple[int, ...] = KIMI_USAGE_WINDOWS) -> dict:
+    """This host's Kimi Code usage per rolling window, from every agent
+    wire's ``usage.record`` events (subagents write their own wire, so
+    nothing is counted twice). {} when there was none."""
+    root = kimi_home() / "sessions"
+    t = now_ts()
+    acc = {
+        w: {"window_minutes": w, "requests": 0, "tokens": 0, "cache_read": 0}
+        for w in windows_min
+    }
+    oldest = t - max(windows_min) * 60
+    for wire in root.glob("*/session_*/agents/*/wire.jsonl") if root.is_dir() else ():
+        try:
+            if wire.stat().st_mtime < oldest:
+                continue
+            f = wire.open("rb")
+        except OSError:
+            continue
+        with f:
+            for line in f:
+                if b'"usage.record"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(d, dict) or d.get("type") != "usage.record":
+                    continue
+                u = d.get("usage")
+                if not isinstance(u, dict) or not isinstance(
+                    d.get("time"), (int, float)
+                ):
+                    continue
+                age = t - d["time"] / 1000
+                fresh = sum(
+                    u.get(k) or 0
+                    for k in ("inputOther", "inputCacheCreation", "output")
+                )
+                for w, a in acc.items():
+                    if age <= w * 60:
+                        a["requests"] += 1
+                        a["tokens"] += fresh
+                        a["cache_read"] += u.get("inputCacheRead") or 0
+    return {window_label(w): a for w, a in acc.items() if a["requests"]}
+
+
+def _tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    return f"{n / 1000:.0f}k" if n >= 1000 else str(n)
+
+
+def quota_cell(w: dict) -> str | None:
+    """One QUOTA value: the plan's % when the vendor reports one, else this
+    host's own usage count (kimi)."""
+    if w.get("used_percent") is not None:
+        return f"{w['used_percent']:.0f}%"
+    if w.get("requests"):
+        return f"{w['requests']} req {_tokens(w.get('tokens') or 0)} tok"
+    return None
+
+
 # ---------------------------------------------------------------- assemble
 
 
 def vendor_of(command: str) -> str:
     c = command.lower()
-    for v in ("claude", "codex", "devin"):
+    for v in VENDORS:
         if v in c:
             return v
     return "claude" if c == "node" else c
@@ -516,13 +684,17 @@ def collect(
         if p["path"]:
             pane_tree[p["pane_id"]] = add(p["path"])
     codex = codex_sessions(since_min * 60)
-    codex_by_tree = {}
-    for cwd, s in codex.items():
-        key = add(cwd) if os.path.isdir(cwd) else None
-        if key and (
-            key not in codex_by_tree or s["mtime"] > codex_by_tree[key]["mtime"]
-        ):
-            codex_by_tree[key] = s
+
+    def by_tree(sessions: dict[str, dict]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for cwd, s in sessions.items():
+            key = add(cwd) if os.path.isdir(cwd) else None
+            if key and (key not in out or s["mtime"] > out[key]["mtime"]):
+                out[key] = s
+        return out
+
+    codex_by_tree = by_tree(codex)
+    kimi_by_tree = by_tree(kimi_sessions(since_min * 60))
 
     rows = []
     seen = set()
@@ -534,6 +706,8 @@ def collect(
             sess = claude_session(wt["path"], window)
         elif vendor == "codex":
             sess = codex_by_tree.get(key)
+        elif vendor == "kimi":
+            sess = kimi_by_tree.get(key)
         mt = [x for x in (sess and sess["mtime"], pane and pane["activity"]) if x]
         latest = max(mt) if mt else None
         state = sess["state"] if sess else ("unknown" if pane else "idle")
@@ -617,10 +791,18 @@ def collect(
                 rows.append(make_row("claude", key, None))
         if ("codex", key) not in seen and key in codex_by_tree:
             rows.append(make_row("codex", key, None))
+        if ("kimi", key) not in seen and key in kimi_by_tree:
+            rows.append(make_row("kimi", key, None))
 
     # Quota is per account: take the newest rollout anywhere, even one whose
     # cwd is not a worktree (an editor session in $HOME still reports it).
     newest_codex = max(codex.values(), key=lambda s: s["mtime"], default=None)
+    quota: dict[str, dict] = {}
+    if newest_codex and newest_codex["rate_limits"]:
+        quota["codex"] = newest_codex["rate_limits"]
+    kimi_used = kimi_usage()
+    if kimi_used:
+        quota["kimi"] = kimi_used
     annotate_done(rows)
     return {
         "host": host,
@@ -628,9 +810,7 @@ def collect(
         "generated": iso(t),
         "rows": rows,
         "exceptions": exceptions(rows, quiet_min),
-        "quota": {"codex": newest_codex["rate_limits"]}
-        if newest_codex and newest_codex["rate_limits"]
-        else {},
+        "quota": quota,
     }
 
 
@@ -864,20 +1044,19 @@ def render(rep: dict) -> str:
         lines.append(f"  {who(r)} · {r['state']} · {q} · {purpose} · {ctx}{done}")
     if not rep["rows"]:
         lines.append("  none")
-    quota = {}
-    for vendor, limits in (rep.get("quota") or {}).items():
-        for w in limits.values():
-            quota[(vendor, window_label(w.get("window_minutes")))] = w["used_percent"]
-    for r in rep["rows"]:
-        for w in (r.get("rate_limits") or {}).values():
-            quota[(r["vendor"], window_label(w.get("window_minutes")))] = w[
-                "used_percent"
-            ]
+    quota: dict[tuple[str, str], str] = {}
+    limit_sets = [(v, lim) for v, lim in (rep.get("quota") or {}).items()]
+    limit_sets += [(r["vendor"], r.get("rate_limits")) for r in rep["rows"]]
+    for vendor, limits in limit_sets:
+        for w in (limits or {}).values():
+            cell = quota_cell(w) if isinstance(w, dict) else None
+            if cell:
+                quota[(vendor, window_label(w.get("window_minutes")))] = cell
     if quota:
         lines.append(
             "QUOTA   "
             + " · ".join(
-                f"{v} {lab} {pct:.0f}%" for (v, lab), pct in sorted(quota.items())
+                f"{v} {lab} {cell}" for (v, lab), cell in sorted(quota.items())
             )
         )
     return "\n".join(lines)
@@ -908,9 +1087,12 @@ HOOK_STATES = {
 def detect_vendor() -> str:
     """Which harness is calling, from the environment (lowest precedence)."""
     agent = (os.environ.get("AI_AGENT") or "").lower()
-    for v in ("claude", "codex", "devin"):
+    for v in VENDORS:
         if agent.startswith(v):
             return v
+    # scripts/hooks/kimi-adapt.py runs the Claude hooks under Kimi with this.
+    if os.environ.get("PRECIS_AGENT") == "kimi":
+        return "kimi"
     if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_PROJECT_DIR"):
         return "claude"
     if os.environ.get("CODEX_HOME"):
@@ -964,6 +1146,10 @@ def hook_report(
             sess = None
         if sess:
             ctx_pct = sess["ctx_pct"]
+    if ctx_pct is None and vendor == "kimi" and state != "dead":
+        for kcwd, sess in kimi_sessions(DEAD_SILENT_MIN * 60).items():
+            if os.path.realpath(kcwd) == wt["path"]:
+                ctx_pct = sess["ctx_pct"]
     live = pane if pane and state != "dead" else None
     row = {
         "vendor": vendor,

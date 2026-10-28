@@ -58,6 +58,27 @@ def _window_label(minutes: Any) -> str:
     )
 
 
+def _quota_cell(w: Any) -> str | None:
+    """One QUOTA value: the plan's ``used_percent`` (codex), else the
+    reporting host's own usage count (kimi: ``requests`` / ``tokens``).
+    Mirrors ``quota_cell`` in scripts/fleet-report."""
+    if not isinstance(w, dict):
+        return None
+    if w.get("used_percent") is not None:
+        return f"{w['used_percent']:.0f}%"
+    if w.get("requests"):
+        n = w.get("tokens") or 0
+        tok = (
+            f"{n / 1_000_000:.1f}M"
+            if n >= 1_000_000
+            else f"{n / 1000:.0f}k"
+            if n >= 1000
+            else str(n)
+        )
+        return f"{w['requests']} req {tok} tok"
+    return None
+
+
 def _who(meta: dict[str, Any]) -> str:
     return (
         f"{meta.get('vendor')}@{meta.get('host')}/"
@@ -388,19 +409,28 @@ class FleetHandler(NumericRefHandler):
                 "args={'state':'all'} shows all)"
             )
 
-        quota: dict[tuple[str, str], Any] = {}
-        for hm in sorted(hosts.values(), key=lambda h: str(h.get("reported_at"))):
+        # A plan % is per account, so the newest host wins; a usage count
+        # covers only the host that measured it, so it keeps vendor@host.
+        quota: dict[tuple[str, str], str] = {}
+        for name, hm in sorted(
+            hosts.items(), key=lambda kv: str(kv[1].get("reported_at"))
+        ):
             for vendor, limits in (hm.get("quota") or {}).items():
                 for w in (limits or {}).values():
-                    if isinstance(w, dict) and w.get("used_percent") is not None:
-                        quota[(vendor, _window_label(w.get("window_minutes")))] = w[
-                            "used_percent"
-                        ]
+                    cell = _quota_cell(w)
+                    if not cell:
+                        continue
+                    who = (
+                        vendor
+                        if w.get("used_percent") is not None
+                        else f"{vendor}@{name}"
+                    )
+                    quota[(who, _window_label(w.get("window_minutes")))] = cell
         if quota:
             lines.append(
                 "QUOTA   "
                 + " · ".join(
-                    f"{v} {lab} {pct:.0f}%" for (v, lab), pct in sorted(quota.items())
+                    f"{v} {lab} {cell}" for (v, lab), cell in sorted(quota.items())
                 )
             )
         return "\n".join(lines)

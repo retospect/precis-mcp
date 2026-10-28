@@ -116,6 +116,7 @@ def env(tmp_path, monkeypatch):
     capture.write_text("", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "kimi"))
     monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_PANES", str(panes))
     monkeypatch.setenv("FAKE_CAPTURE", str(capture))
@@ -352,6 +353,126 @@ def test_codex_footer_without_rollout_and_account_quota(env):
         next(r for r in report(env)["rows"] if r["vendor"] == "codex")["state"]
         == "working"
     )
+
+
+def kimi_session(e, events: dict[str, list[dict]], age_s: float = 0) -> Path:
+    """A Kimi Code session dir for the repo: state.json plus one wire per
+    agent (``events`` maps agent id -> wire rows), shaped as seen 2026-10-28."""
+    sess = e.tmp_path / "kimi" / "sessions" / "wd_proj_abc" / "session_1"
+    sess.mkdir(parents=True, exist_ok=True)
+    (sess / "state.json").write_text(
+        json.dumps(
+            {"id": "session_1", "cwd": str(e.repo.resolve()), "archived": False}
+        ),
+        encoding="utf-8",
+    )
+    for agent, rows in events.items():
+        write_jsonl(sess / "agents" / agent / "wire.jsonl", rows, age_s=age_s)
+    cfg = e.tmp_path / "kimi" / "config.toml"
+    cfg.write_text(
+        '[models."kimi-code/k3"]\nmodel = "k3"\nmax_context_size = 200000\n',
+        encoding="utf-8",
+    )
+    return sess
+
+
+def kimi_ms(age_s: float = 0) -> int:
+    return int((time.time() - age_s) * 1000)
+
+
+def kimi_usage_row(age_s: float, agent: str = "main", fresh: int = 1000) -> dict:
+    return {
+        "type": "usage.record",
+        "agentId": agent,
+        "model": "kimi-code/k3",
+        "usage": {
+            "inputOther": fresh,
+            "output": 0,
+            "inputCacheRead": 50_000,
+            "inputCacheCreation": 0,
+        },
+        "usageScope": "turn",
+        "time": kimi_ms(age_s),
+    }
+
+
+def kimi_turn(age_s: float, ended: bool = True) -> list[dict]:
+    rows = [
+        {"turnId": 1, "type": "agent.turn.started", "time": kimi_ms(age_s + 20)},
+        {
+            "type": "llm.request",
+            "agentId": "main",
+            "model": "k3",
+            "modelAlias": "kimi-code/k3",
+            "time": kimi_ms(age_s + 19),
+        },
+        kimi_usage_row(age_s + 10),
+        {
+            "type": "token_counting.measured",
+            "agentId": "main",
+            "tokens": 50_000,
+            "time": kimi_ms(age_s + 10),
+        },
+    ]
+    if ended:
+        rows.append({"turnId": 1, "type": "agent.turn.ended", "time": kimi_ms(age_s)})
+    return rows
+
+
+def test_kimi_session_state_context_and_usage_quota(env):
+    kimi_session(env, {"main": kimi_turn(30)}, age_s=30)
+    row = next(r for r in report(env)["rows"] if r["vendor"] == "kimi")
+    assert (row["state"], row["model"], row["ctx_pct"]) == (
+        "idle",
+        "kimi-code/k3",
+        25.0,
+    )
+    assert row["attach"] is None
+    rep = report(env)
+    assert rep["quota"]["kimi"]["5h"]["requests"] == 1
+    assert rep["quota"]["kimi"]["5h"]["cache_read"] == 50_000
+    assert "QUOTA   kimi 5h 1 req 1k tok · kimi week 1 req 1k tok" in run_script(env)
+
+
+def test_kimi_open_approval_is_waiting_and_pane_is_kimi(env):
+    approval = {
+        "type": "interaction.request",
+        "agentId": "main",
+        "id": "approval_1",
+        "kind": "approval",
+        "time": kimi_ms(5),
+    }
+    kimi_session(env, {"main": [*kimi_turn(10, ended=False), approval]}, age_s=5)
+    env.panes.write_text(pane_line(env, command="kimi"), encoding="utf-8")
+    row = next(r for r in report(env)["rows"] if r["vendor"] == "kimi")
+    assert row["state"] == "waiting"
+    assert row["attach"] == "tmux attach -t main:3"
+
+    resolved = {**approval, "type": "interaction.resolved", "time": kimi_ms(1)}
+    kimi_session(
+        env, {"main": [*kimi_turn(10, ended=False), approval, resolved]}, age_s=1
+    )
+    assert next(r for r in report(env)["rows"] if r["vendor"] == "kimi")["state"] == (
+        "working"
+    )
+
+
+def test_kimi_usage_counts_subagents_and_windows(env):
+    kimi_session(
+        env,
+        {
+            "main": [kimi_usage_row(60), kimi_usage_row(8 * 3600)],
+            "agent-0": [kimi_usage_row(120, agent="agent-0", fresh=2_000_000)],
+        },
+    )
+    # A record older than the week is out of every window.
+    old = env.tmp_path / "kimi" / "sessions" / "wd_proj_abc" / "session_1"
+    with (old / "agents" / "main" / "wire.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(kimi_usage_row(8 * 86400)) + "\n")
+    q = report(env)["quota"]["kimi"]
+    assert (q["5h"]["requests"], q["5h"]["tokens"]) == (2, 2_001_000)
+    assert (q["week"]["requests"], q["week"]["tokens"]) == (3, 2_002_000)
+    assert "kimi 5h 2 req 2.0M tok" in run_script(env)
 
 
 def test_codex_async_question_beats_ready_footer(env):

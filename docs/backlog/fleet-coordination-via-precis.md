@@ -133,6 +133,12 @@ session past ~60% context finishes its slice and restarts.
   as `rate_limits`; compare the reporter's QUOTA line with `/status` on
   melchior, and fall back to `capture-pane` of `/status` in an idle pane
   only if the rollout lacks a window.
+  Kimi Code (2026-10-28): its session wires carry per-request
+  `usage.record` but no plan figure, so the reporter shows host-local
+  rolling usage (`kimi@<host> 5h N req M tok`). The plan's 5h/weekly %
+  sits behind the Kimi Code Console; third-party tools read it from an
+  undocumented `api.kimi.com/coding/v1/usages` with the login token.
+  Open: whether the reporter may use that token (Reto).
 
 ### Mailbox
 

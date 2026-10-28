@@ -293,6 +293,22 @@ def test_fisheye_blocks_and_filters(h: FleetHandler) -> None:
     assert "proj/main" not in h.get(host="nowhere").body
 
 
+def test_fisheye_kimi_usage_quota_is_per_host(h: FleetHandler) -> None:
+    def kimi(requests: int, tokens: int) -> dict[str, Any]:
+        return {
+            "5h": {"window_minutes": 300, "requests": requests, "tokens": tokens},
+            "week": {"window_minutes": 10080, "requests": 0, "tokens": 0},
+        }
+
+    send(h, rep([row()], quota={"kimi": kimi(12, 2_500_000)}))
+    send(h, rep([row(host="castor")], host="castor", quota={"kimi": kimi(3, 900)}))
+    lines = h.get().body.splitlines()
+    assert (
+        "QUOTA   kimi@castor 5h 3 req 900 tok · kimi@melchior 5h 12 req 2.5M tok"
+        in (lines)
+    )
+
+
 def _section(lines: list[str], title: str, before: str) -> list[str]:
     return lines[lines.index(title) + 1 : lines.index(before)]
 

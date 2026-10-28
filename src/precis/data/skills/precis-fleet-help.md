@@ -38,6 +38,13 @@ transcript's usage against the per-model window. A host that has not
 reported for over 3 minutes marks all its agents `STALE` and appears under
 EXCEPTIONS.
 
+QUOTA line: `vendor window value`. Codex shows the plan's own % used
+(from its rollouts; per account, so the newest host wins). Kimi Code
+keeps no plan figure locally, so `kimi@<host> 5h 458 req 2.0M tok` is
+that host's own usage over the rolling 5 h / 7 days (requests and
+uncached tokens), not a % of the plan; the plan's remaining quota is in
+the Kimi Code Console. Vendors here: `claude codex devin kimi`.
+
 A `.claude/purpose` first line of `<tree> at <sha>: …` is a session's
 done line; the AGENTS line ends `· done@<sha>` for those. The sha is the
 branch head and ship squash-merges it to a new sha, so READY lists the
