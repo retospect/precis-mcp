@@ -26,6 +26,7 @@ from precis.graph.garden.apply import apply_merge
 from precis.store import Store
 from precis.store._links_ops import GARDEN_RELINK_META
 from precis.store.revision_context import revision_context, trust_producer
+from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import link_claims, mint_hub
 
@@ -323,7 +324,7 @@ class TestLinkVerbMeta:
     gate, so a machine writer could not carry the annotation the
     admission gate requires — the hand-driven gardener pilot filed 12
     plain stance edges and parked the why/evidence ledger in a memory.
-    ``meta`` is opt-in per kind: kinds that don't declare it (memory
+    ``meta`` is opt-in per kind: kinds that don't declare it (gripe
     here) still refuse it at the same gate."""
 
     def _finding(self, store: Store, title: str) -> int:
@@ -519,17 +520,27 @@ class TestLinkVerbMeta:
     def test_kind_without_meta_still_refuses_it(
         self, runtime_with_store, store: Store
     ) -> None:
-        """Per-kind opt-in is pinned: ``memory`` does not declare ``meta=``
+        """Per-kind opt-in is pinned: ``gripe`` does not declare ``meta=``
         on its link, so the strictness gate refuses it exactly as it did
         for finding/paper before this change."""
-        a = _ref(store, "memory", "a")
-        b = _ref(store, "memory", "b")
+        # gripe rows need exactly one STATUS tag at commit.
+        ids = []
+        for title in ("a", "b"):
+            with store.tx() as conn:
+                ref = store.insert_ref(
+                    kind="gripe", slug=None, title=title, meta={}, conn=conn
+                )
+                store.add_tag(
+                    ref.id, Tag.closed("STATUS", "open"), set_by="agent", conn=conn
+                )
+            ids.append(int(ref.id))
+        a, b = ids
         out = runtime_with_store.dispatch(
             "link",
             {
-                "kind": "memory",
+                "kind": "gripe",
                 "id": a,
-                "target": f"memory:{b}",
+                "target": f"gripe:{b}",
                 "rel": "related-to",
                 "meta": {"note": "x"},
             },
