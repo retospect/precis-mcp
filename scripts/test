@@ -170,8 +170,11 @@ Env — every knob is documented here, and only here (gr514431):
   PRECIS_TEST_PASSENV=FOO,BAR     forward the named host env vars into the
         container by inheritance (`-e NAME`; values are never printed or put
         in argv — they may be secrets; gr514238). Names are validated.
-  PRECIS_TEST_AUTOBRIDGE=1        bridge missing core deps into the run's uv
-        env automatically when the baked image is stale (opt-in).
+  PRECIS_TEST_AUTOBRIDGE=0        do NOT auto-bridge deps the baked image
+        lacks. Default ON (gr525770): a stale image's missing deps are
+        detected in-container and added to the run's uv env alongside any
+        operator UV_WITH — loudly, one stderr line. Durable fix: an image
+        rebuild by the release owner.
   PRECIS_RANDOM_SEED=N            reproduce a --random order (implies --random).
 
 Every var that crosses uses compose's explicit `-e NAME=value` form —
@@ -841,16 +844,21 @@ done
 #   UV_WITH="--with newdep" scripts/test tests/test_newdep.py
 # (the ship gate itself runs `uv run` WITH sync, so it resolves new deps from
 # uv.lock without an image rebuild; this passthrough gives the fast loop the
-# same reach). PRECIS_TEST_AUTOBRIDGE=1 (gr513760) does the same without
-# naming the deps: inside the container a --with-flags pre-pass on
-# check-core-deps.py AND check-dev-deps.py (gr519535: the dev-group gap is
-# bridgeable the same way) computes the missing deps and adds them to the
-# uv run flags —
-# opt-in and loud, never the default, because bridging should stay a visible
-# workaround and the durable fix (scripts/build-image precis-dev) belongs to
-# the release owner.
+# same reach). Autobridge (gr513760, made the DEFAULT by gr525770 — a stale
+# image otherwise fails every run until the operator remembers the
+# UV_WITH="--with <dep>" bridge) does the same without naming the deps:
+# inside the container a --with-flags pre-pass on check-core-deps.py AND
+# check-dev-deps.py (gr519535: the dev-group gap is bridgeable the same way)
+# computes the missing deps and EXTENDS the uv run flags — an operator-set
+# UV_WITH is kept, never overwritten. It stays loud (one stderr line naming
+# the bridged deps) and PRECIS_TEST_AUTOBRIDGE=0 opts out, because bridging
+# is a visible workaround and the durable fix (scripts/build-image precis-dev)
+# belongs to the release owner. The pre-pass is skipped on a
+# .precis-preflight stamp hit — the stamp already proves every dep was
+# importable under this exact image+lock+pyproject+UV_WITH key — so
+# steady-state runs pay nothing for it.
 UV_WITH="${UV_WITH:-}"
-AUTOBRIDGE="${PRECIS_TEST_AUTOBRIDGE:-}"
+AUTOBRIDGE="${PRECIS_TEST_AUTOBRIDGE:-1}"
 # --coverage: no report artifacts (just the sqlite DB + manifest); pytest-cov
 # is a baked dev dep. Works with or without --impacted.
 COV_ARGS=()
@@ -1083,7 +1091,7 @@ run_pytest() {
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
         "${PASSENV[@]+"${PASSENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'CORE_FLAGS=""; DEV_FLAGS=""; AUTO_WITH=""; export AUTO_WITH; if [ "${PRECIS_TEST_AUTOBRIDGE}" = "1" ]; then CORE_FLAGS="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py --with-flags 2>/dev/null || true)"; DEV_FLAGS="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-dev-deps.py --with-flags 2>/dev/null || true)"; AUTO_WITH="${CORE_FLAGS:+${CORE_FLAGS} }${DEV_FLAGS}"; if [ -n "$AUTO_WITH" ]; then echo "PRECIS_TEST_AUTOBRIDGE: bridging missing dep(s) for this run: ${AUTO_WITH} (durable fix: scripts/build-image precis-dev)" >&2; fi; fi; uv run --no-sync ${UV_WITH} ${AUTO_WITH} bash scripts/lib/pytest-inner.sh "$@"' \
+        bash -lc 'CORE_FLAGS=""; DEV_FLAGS=""; AUTO_WITH=""; export AUTO_WITH; if [ "${PRECIS_TEST_AUTOBRIDGE}" != "0" ]; then _STAMP="${PRECIS_PREFLIGHT_STAMP:-/app/.precis-preflight}"; _STAMP_HIT=""; if [ -n "${PRECIS_PREFLIGHT_KEY:-}" ] && [ -f "$_STAMP" ] && [ "$(cat "$_STAMP" 2>/dev/null)" = "${PRECIS_PREFLIGHT_KEY}" ]; then _STAMP_HIT=1; fi; if [ -z "$_STAMP_HIT" ]; then CORE_FLAGS="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py --with-flags 2>/dev/null || true)"; DEV_FLAGS="$(uv run --no-sync ${UV_WITH} python3 scripts/lib/check-dev-deps.py --with-flags 2>/dev/null || true)"; AUTO_WITH="${CORE_FLAGS:+${CORE_FLAGS} }${DEV_FLAGS}"; if [ -n "$AUTO_WITH" ]; then echo "scripts/test: stale precis-dev image — auto-bridging missing dep(s) for this run: ${AUTO_WITH} (durable fix: scripts/build-image precis-dev; opt out: PRECIS_TEST_AUTOBRIDGE=0)" >&2; fi; fi; fi; uv run --no-sync ${UV_WITH} ${AUTO_WITH} bash scripts/lib/pytest-inner.sh "$@"' \
         _ "${VERBOSITY[@]+"${VERBOSITY[@]}"}" "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
         "${RANDOM_ARGS[@]+"${RANDOM_ARGS[@]}"}" \

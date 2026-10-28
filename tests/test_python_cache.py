@@ -18,6 +18,7 @@ from pathlib import Path
 
 from precis.python_index import RepoCache
 from precis.python_index import cache as cache_mod
+from precis.python_index.cache import _snapshot_path
 
 
 def _write(repo: Path, relpath: str, content: str) -> Path:
@@ -222,3 +223,101 @@ def test_get_on_nonexistent_root_raises(tmp_path: Path) -> None:
     cache = RepoCache()
     with pytest.raises(NotADirectoryError):
         cache.get(tmp_path / "does-not-exist")
+
+
+# ---------------------------------------------------------------------------
+# On-disk snapshot (gr525769): a fresh process skips the full re-parse
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_reseeds_a_fresh_cache(tmp_path: Path) -> None:
+    """A second `RepoCache` over the same snapshot dir reuses the persisted
+    modules — no reparse — after the per-file stat check validates them."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/a.py", "def a(): pass\n")
+    _write(tmp_path, "pkg/b.py", "def b(): pass\n")
+    snap = tmp_path / "snap"
+
+    first = RepoCache(snapshot_dir=snap).get(tmp_path)
+    assert first.observation is not None and first.observation.reparsed == 3
+    assert list(snap.glob("*.pkl.gz"))  # snapshot was written
+
+    second = RepoCache(snapshot_dir=snap).get(tmp_path)
+    assert second.observation is not None
+    assert second.observation.reparsed == 0
+    assert second.observation.reused == 3
+    # Content equality across processes (not object identity).
+    assert second.symbol("pkg.a.a") is not None
+    assert second.module("pkg.a") == first.module("pkg.a")
+
+
+def test_snapshot_validates_changed_files(tmp_path: Path) -> None:
+    """A file edited between sessions is reparsed; the rest comes from
+    the snapshot — staleness degrades to reparse, never to stale content."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    a = _write(tmp_path, "pkg/a.py", "def a(): pass\n")
+    _write(tmp_path, "pkg/b.py", "def b(): pass\n")
+    snap = tmp_path / "snap"
+    RepoCache(snapshot_dir=snap).get(tmp_path)
+
+    a.write_text("def renamed(): pass\n", encoding="utf-8")
+    _bump_mtime(a)
+
+    idx = RepoCache(snapshot_dir=snap).get(tmp_path)
+    assert idx.observation is not None
+    assert idx.observation.reparsed == 1
+    assert idx.observation.reused == 2
+    assert idx.symbol("pkg.a.renamed") is not None
+    assert idx.symbol("pkg.a.a") is None
+
+
+def test_snapshot_drops_deleted_files(tmp_path: Path) -> None:
+    """A file deleted between sessions is gone from the re-seeded index."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/a.py", "def a(): pass\n")
+    b = _write(tmp_path, "pkg/b.py", "def b(): pass\n")
+    snap = tmp_path / "snap"
+    RepoCache(snapshot_dir=snap).get(tmp_path)
+
+    b.unlink()
+    idx = RepoCache(snapshot_dir=snap).get(tmp_path)
+    assert idx.module("pkg.b") is None
+    assert idx.module("pkg.a") is not None
+
+
+def test_corrupt_snapshot_is_a_miss(tmp_path: Path) -> None:
+    """A garbage snapshot file falls through to the usual full parse."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/a.py", "def a(): pass\n")
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    _snapshot_path(snap, tmp_path.resolve()).write_bytes(b"\x00not pickle")
+
+    idx = RepoCache(snapshot_dir=snap).get(tmp_path)
+    assert idx.observation is not None and idx.observation.reparsed == 2
+    assert idx.symbol("pkg.a.a") is not None
+
+
+def test_snapshot_survives_drop(tmp_path: Path) -> None:
+    """`drop()` (LRU/idle eviction) keeps the snapshot: the next `get`
+    re-seeds from disk instead of reparsing (the re-warm path)."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/a.py", "def a(): pass\n")
+    snap = tmp_path / "snap"
+
+    cache = RepoCache(snapshot_dir=snap)
+    cache.get(tmp_path)
+    cache.drop(tmp_path)
+
+    idx = cache.get(tmp_path)
+    assert idx.observation is not None
+    assert idx.observation.reparsed == 0
+    assert idx.observation.reused == 2
+
+
+def test_no_snapshot_dir_writes_nothing(tmp_path: Path) -> None:
+    """The default `RepoCache()` stays process-local — no disk writes."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    cache = RepoCache()
+    cache.get(tmp_path)
+    assert list(tmp_path.glob("*.pkl*")) == []

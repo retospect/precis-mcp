@@ -114,6 +114,12 @@ _EDGE_MM = 0.5
 #: The bound only stops a runaway between the two movers.
 _POST_PASSES = 50
 
+#: Legality-gate slack: a staged move whose courtyard/containment/edge
+#: total exceeds the committed one by more than this is refused. Float
+#: delta arithmetic drifts ~1e-12; violations arrive in discrete
+#: mm²/mm chunks, so anything above noise is a real increase.
+_OV_EPS = 1e-9
+
 
 def _legal_xy(
     d: TopoDesign, lo: np.ndarray, hi: np.ndarray
@@ -273,6 +279,32 @@ def topo_place(
     ladder_rungs = (ladder.rungs if ladder else ()) or ()
     ladder_scores: list[float] = [math.nan] * len(ladder_rungs)
 
+    if not units:
+        # Nothing can move (every part fixed, no live group): the anneal
+        # has no proposal to make — the restart loop below would rebuild
+        # the proxy state per restart and report 0 evals anyway
+        # (gr524239: ~26 s on taz-leaf's all-fixed board). Settle the
+        # authored pose once, score it, and return the honest 0-eval
+        # result; ranked_edits still probes unlocks at a lighter effort
+        # (summary.py) since that is the only lever left on such a board.
+        settled_pose, shoved, legal = _settle_pose(d, d.pose0.copy())
+        final = ProxyState(d, settled_pose, objective)
+        archive.admit(settled_pose, final.cost)
+        return TopoPlaceResult(
+            best_pose=settled_pose,
+            best_cost=float(final.cost),
+            crossings=int(final.crossings),
+            length=float(final.length),
+            evals=0,
+            restarts=0,
+            seed=seed,
+            elites=archive.elites,
+            ladder_scores=tuple(ladder_scores),
+            last_improve_eval=0,
+            legalize=legal,
+            shove=shoved,
+        )
+
     best_pose: np.ndarray | None = None
     best_rank: tuple[float, float] = (math.inf, math.inf)
     last_improve = 0
@@ -320,6 +352,9 @@ def topo_place(
         budget = per_restart if restart < n_restarts - 1 else max(1, effort - evals)
         restart_best_pose = proxy.pose.copy()
         restart_best = (proxy.crossings, proxy.cost)
+        #: the committed violation total — the legality floor for every
+        #: proposal below (a move may reduce debt, never raise it).
+        ov_now = float(proxy.overlap)
 
         # move weights over the options this design actually has —
         # picking a valid move every eval keeps the effort honest.
@@ -460,8 +495,20 @@ def topo_place(
                     )
                 d_rb *= lam / span2
             delta = d_proxy + d_rb
-            if delta < 0 or rng.random() < math.exp(-delta / temp):
+            if proxy.overlap > ov_now + _OV_EPS:
+                # Legality is not a trade. The commit gate refuses any
+                # placement with more DRC violations than the stored
+                # board, so a move that raises courtyard/containment/
+                # edge debt — however good its crossings — strands the
+                # whole run (taz-leaf flow runs: elites at cost 0.30 the
+                # gate refused). Moves that raise overlap debt are
+                # refused outright, temperature or not; overlap
+                # reductions and everything else still face Metropolis
+                # on the full Δ.
+                proxy.revert()
+            elif delta < 0 or rng.random() < math.exp(-delta / temp):
                 proxy.commit()
+                ov_now = float(proxy.overlap)
             else:
                 proxy.revert()
 

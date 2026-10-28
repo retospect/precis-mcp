@@ -890,11 +890,9 @@ def _force_mock_embedder_for_tests() -> None:
     # directly, so this only removes the nondeterministic boot race, never
     # coverage. Per-test opt-in is still possible via monkeypatch.setenv.
     os.environ.setdefault("PRECIS_ORACLE_AUTO_REINGEST", "0")
-    # gr499039 write-time tool-result fold: default-on in prod but the
-    # suite predates it — tests pin exact dispatch bodies and footers.
-    # Pin the knob off here so those keep testing pagination
-    # byte-for-byte; fold tests setenv the cap per-test.
-    os.environ.setdefault("PRECIS_TOOL_RESULT_FOLD_BYTES", "0")
+    # Agent-context result budget: default-on in prod, but many tests pin
+    # exact dispatch bodies. Disable it here; budget tests opt in per-test.
+    os.environ.setdefault("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "0")
 
 
 @pytest.fixture(autouse=True)

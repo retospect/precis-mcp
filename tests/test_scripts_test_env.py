@@ -450,3 +450,32 @@ def test_targeted_run_has_no_bg_hint(tmp_path: Path) -> None:
     rc, _, stderr = _run(tmp_path, args=("-n0", "tests/x.py"), files=("tests/x.py",))
     assert rc == 0, stderr
     assert "--bg" not in stderr
+
+
+# --- autobridge default-on (gr525770) ----------------------------------------
+# A stale precis-dev image (a core dep promoted after the bake) used to fail
+# every run until the operator remembered UV_WITH="--with <dep>". The
+# detect-and-add pre-pass is now the DEFAULT; the host side's observable part
+# is the PRECIS_TEST_AUTOBRIDGE value handed to the container.
+
+
+def test_autobridge_is_on_by_default(tmp_path: Path) -> None:
+    rc, log, stderr = _run(tmp_path)
+    assert rc == 0, stderr
+    assert " -e PRECIS_TEST_AUTOBRIDGE=1 " in f" {_run_line(log)} "
+
+
+def test_autobridge_opt_out(tmp_path: Path) -> None:
+    rc, log, stderr = _run(tmp_path, extra_env={"PRECIS_TEST_AUTOBRIDGE": "0"})
+    assert rc == 0, stderr
+    assert " -e PRECIS_TEST_AUTOBRIDGE=0 " in f" {_run_line(log)} "
+
+
+def test_operator_uv_with_survives_autobridge_default(tmp_path: Path) -> None:
+    """An operator-set UV_WITH is EXTENDED in-container, never overwritten —
+    it must still cross the boundary verbatim with autobridge on."""
+    rc, log, stderr = _run(tmp_path, extra_env={"UV_WITH": "--with simpleeval"})
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert "-e UV_WITH=--with simpleeval" in line
+    assert " -e PRECIS_TEST_AUTOBRIDGE=1 " in f" {line} "

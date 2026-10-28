@@ -52,7 +52,7 @@ search(kind="paper", q="your topic")
 # 4. Widen the frontier with the author's works — a compact table
 #    (year/cites/corpus/title/s2-id, ranked by citations), capped at
 #    the top 50 by default. args={'complete': True} instead walks S2's
-#    full paginated list (up to 2000) — use it before concluding an
+#    bounded result list (up to 2000) — use it before concluding an
 #    author has "no work on X": the capped default has hidden a
 #    highly-cited paper before (gr346833).
 get(kind="semanticscholar", id="author:1741101")

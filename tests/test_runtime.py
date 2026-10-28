@@ -804,230 +804,46 @@ def test_ref_kind_with_a_handle_id_hints_the_kind_free_call(
     assert "get(id='td504852')" in out
 
 
-# ── pagination footer is lifetime-aware (gr267466) ────────────────────
-#
-# A ``PrecisRuntime.pagination`` cursor lives only as long as the
-# process that minted it. The default ``long_lived=False`` (the
-# one-shot `precis eval` assumption) must render a footer that never
-# promises a ``more(cursor=...)`` retry it can't satisfy; the two
-# entry points that build a runtime meant to stick around (`precis
-# serve` boot, `precis repl`) flip ``long_lived=True`` and keep the
-# original cursor footer.
+# ── complete-result budgets ───────────────────────────────────────────
 
 
-def test_short_lived_runtime_footer_has_no_cursor_instruction(
+def test_in_process_dispatch_skips_context_budget(
     runtime: PrecisRuntime, monkeypatch
 ) -> None:
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "1500")
     monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
-    assert runtime.long_lived is False  # the documented default
     out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
     assert is_error is False
+    assert out == "x" * 5000
+
+
+def test_agent_context_oversize_refuses_without_partial_body(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "1500")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    out, is_error = runtime.dispatch_with_status(
+        "get", {"kind": "calc", "id": "2+3"}, fold=True
+    )
+    assert is_error is True
+    assert "no partial result was returned" in out
+    assert "search(kind='calc'" in out
+    assert "xxxx" not in out
     assert "more(cursor=" not in out
+
+
+def test_frame_cap_refuses_even_without_context_budget(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
+    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
+    assert is_error is True
     assert "PRECIS_MAX_BODY_BYTES" in out
-    assert "NOT the complete result" in out
+    assert "xxxx" not in out
 
 
-def test_long_lived_runtime_footer_keeps_cursor_instruction(
-    runtime: PrecisRuntime, monkeypatch
-) -> None:
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
-    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
-    runtime.long_lived = True
-    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
-    assert is_error is False
-    assert "more(cursor='" in out
-
-
-def test_fetch_more_miss_error_never_says_expired(runtime: PrecisRuntime) -> None:
-    """A cursor absent from this process's cache can't be told apart
-    from a genuinely-TTL-expired one (the cache prunes expired entries
-    before ``pop`` sees them) — the miss error must lead with the
-    honest, always-true process-lifetime explanation and never claim
-    "expired", which misdirects a `precis eval` caller toward a timing
-    fix for what's actually a process-lifetime limit."""
-    body, is_error = runtime.fetch_more("definitely-not-a-real-cursor")
-    assert is_error is True
-    assert "expired" not in body.lower()
-    assert "no such cursor in this process" in body
-
-
-# ── gr330197: cached-content fallback + re-derivable cursors ──────────
-#
-# Under fleet load, the few-minute pagination TTL can lapse before a
-# queued ``more(cursor=...)`` follow-up lands — the agent is then stuck
-# holding an unreadable page 1. Three fixes: (1) the footer and the
-# "no such cursor" error both point at ``search(kind=..., q=...)`` as a
-# cached-content fallback; (2) a ``get()``-originated cursor is
-# self-describing enough to survive falling out of the cache entirely,
-# turning expiry into a transparent retry (with a hash-based drift
-# check so a genuinely-changed body errors rather than silently mixing
-# versions); (3) the footer's drain-before-acting warning no longer
-# forbids all use of a partial page, only misrepresenting it as
-# complete (see ``TestDisciplineLine`` in ``test_pagination.py``).
-
-
-def test_footer_names_the_kind_for_search_fallback(
-    runtime: PrecisRuntime, monkeypatch
-) -> None:
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
-    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
-    runtime.long_lived = True
-    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
-    assert is_error is False
-    assert "search(kind='calc', q=" in out
-    assert "cached and searchable" in out
-
-
-def test_fetch_more_miss_hint_mentions_search_fallback(runtime: PrecisRuntime) -> None:
-    """The "no such cursor" ``BadInput`` used to point only at
-    ``PRECIS_MAX_BODY_BYTES`` / a long-lived session — it now also
-    names the cached-content fallback (gr330197)."""
-    body, is_error = runtime.fetch_more("definitely-not-a-real-cursor")
-    assert is_error is True
-    assert "search(kind=" in body
-
-
-def test_fetch_more_rejects_tampered_non_get_recipe_cursor(
-    runtime: PrecisRuntime,
-) -> None:
-    """A recipe cursor is only ever minted for ``get()`` — even a
-    hand-crafted cursor claiming a different verb must never be
-    replayed. It degrades to the ordinary "no such cursor" error, not
-    a live call to whatever verb it names."""
-    from precis._pagination import RecipeSeed, encode_recipe_cursor, hash_body
-
-    seed = RecipeSeed(
-        verb="delete",
-        args={"kind": "calc", "id": "2+3"},
-        body_hash=hash_body("x"),
-        page=2,
-    )
-    cursor = encode_recipe_cursor(seed)
-    body, is_error = runtime.fetch_more(cursor)
-    assert is_error is True
-    assert "no such cursor in this process" in body
-
-
-def test_recipe_cursor_transparent_retry_after_cache_eviction(
-    runtime: PrecisRuntime, monkeypatch
-) -> None:
-    """The core gr330197 scenario: the cursor has fallen out of the
-    process-local cache entirely (simulating TTL expiry under fleet
-    load) by the time the follow-up ``more()`` call lands. For a
-    ``get()``-originated cursor this must transparently serve the
-    correct next page instead of erroring."""
-    import re
-
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
-    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
-    runtime.long_lived = True
-    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
-    assert is_error is False
-    m = re.search(r"more\(cursor='([^']+)'\)", out)
-    assert m is not None
-    cursor = m.group(1)
-
-    # What the fast (still-cached) path would have served, for
-    # comparison — then actually evict it to force the slow path.
-    assert len(runtime.pagination) == 1
-    runtime.pagination._entries.clear()
-    assert len(runtime.pagination) == 0
-
-    body, is_error = runtime.fetch_more(cursor)
-    assert is_error is False
-    assert "[error:" not in body
-    assert body.startswith("x")  # genuine page-2 content, not an error
-
-
-def test_recipe_cursor_drift_detected_not_silently_served(
-    runtime: PrecisRuntime, monkeypatch
-) -> None:
-    """If the underlying content changed between mint and redemption,
-    the transparent retry must refuse rather than silently splice
-    together two different versions of the body."""
-    import re
-    from dataclasses import replace
-
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
-    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
-    runtime.long_lived = True
-    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
-    assert is_error is False
-    m = re.search(r"more\(cursor='([^']+)'\)", out)
-    assert m is not None
-    cursor = m.group(1)
-    runtime.pagination._entries.clear()
-
-    real_dispatch_inner = runtime._dispatch_inner
-
-    def _drifted(verb: str, args: dict) -> object:
-        response = real_dispatch_inner(verb, args)
-        return replace(response, body=response.body + " DRIFTED")
-
-    monkeypatch.setattr(runtime, "_dispatch_inner", _drifted)
-
-    body, is_error = runtime.fetch_more(cursor)
-    assert is_error is True
-    assert "changed since" in body
-    assert "[error:BadInput]" in body
-
-
-def test_in_process_dispatch_does_not_fold(runtime: PrecisRuntime, monkeypatch) -> None:
-    """gr513762: a direct ``runtime.dispatch*`` call is in-process — the
-    fold is a context budget, not a human one, so an over-4 KB body comes
-    back whole instead of head+marker+tail. The frame-cap pagination
-    (``PRECIS_MAX_BODY_BYTES``) still applies above its own limit."""
-    monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "1500")
-    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
-    out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
-    assert is_error is False
-    assert out == "x" * 5000  # whole body, no marker, no footer
-
-
-def test_dispatch_fold_opt_in_folds_and_names_the_lever(
-    runtime: PrecisRuntime, monkeypatch
-) -> None:
-    """An explicit ``fold=True`` (the agent-serving callers' flag) still
-    folds an in-process call — and the footer names the lever that cut,
-    not ``PRECIS_MAX_BODY_BYTES`` (gr513762's wrong-lever report)."""
-    monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "1500")
-    monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
-    runtime.long_lived = True
-    out, is_error = runtime.dispatch_with_status(
-        "get", {"kind": "calc", "id": "2+3"}, fold=True
-    )
-    assert is_error is False
-    assert "⋯ [" in out  # the elision marker — the fold actually cut
-    assert "more(cursor='" in out
-    assert "PRECIS_TOOL_RESULT_FOLD_BYTES" in out
-    assert "PRECIS_MAX_BODY_BYTES" not in out
-
-
-def test_unfolded_response_skips_write_time_fold(
-    runtime: PrecisRuntime, monkeypatch
-) -> None:
-    """gr517274: a response flagged ``unfolded`` (the cache-backed
-    ``view='body'`` read) is served whole even under an explicit
-    ``fold=True`` — the caller asked for the body verbatim, so the
-    context fold must not cut it."""
-    from precis.response import Response
-
-    monkeypatch.setenv("PRECIS_TOOL_RESULT_FOLD_BYTES", "1500")
-    monkeypatch.setattr(
-        runtime,
-        "_dispatch_inner",
-        lambda *a: Response(body="x" * 5000, unfolded=True),
-    )
-    runtime.long_lived = True
-    out, is_error = runtime.dispatch_with_status(
-        "get", {"kind": "calc", "id": "2+3"}, fold=True
-    )
-    assert is_error is False
-    assert out == "x" * 5000  # whole body — no marker, no cursor
-
-
-def test_transient_live_response_never_caches_tail(runtime, monkeypatch):
+def test_transient_live_response_also_refuses_oversize(runtime, monkeypatch):
     from precis.response import Response
 
     monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1000")
@@ -1036,39 +852,9 @@ def test_transient_live_response_never_caches_tail(runtime, monkeypatch):
         "_dispatch_inner",
         lambda *a: Response(body="live supplier fact\n" * 500, transient=True),
     )
-    runtime.long_lived = True
     out, is_error = runtime.dispatch_with_status(
         "get", {"kind": "component", "id": "dogfood"}
     )
-    assert not is_error
-    assert "live supplier fact" in out
-    assert "NOT the complete result" in out
-    assert "not cached" in out
-    assert "more(cursor=" not in out
-    assert len(runtime.pagination) == 0
-    assert len(out.encode()) <= 1000
-
-
-def test_transient_live_response_refuses_matching_recipe_replay(runtime, monkeypatch):
-    from precis._pagination import RecipeSeed, encode_recipe_cursor, hash_body
-    from precis.response import Response
-
-    body = "dogfood live supplier fact\n" * 500
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1000")
-    monkeypatch.setattr(
-        runtime, "_dispatch_inner", lambda *a: Response(body=body, transient=True)
-    )
-    cursor = encode_recipe_cursor(
-        RecipeSeed(
-            verb="get",
-            args={"kind": "component", "id": "dogfood"},
-            body_hash=hash_body(body),
-            page=2,
-        )
-    )
-    out, is_error = runtime.fetch_more(cursor)
     assert is_error
-    assert "live supplier content cannot be continued" in out
-    assert "fresh get()" in out
-    assert len(runtime.pagination) == 0
-    assert "dogfood live supplier fact" not in out
+    assert "no partial result was returned" in out
+    assert "live supplier fact" not in out

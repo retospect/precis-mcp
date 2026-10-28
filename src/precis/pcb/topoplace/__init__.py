@@ -54,10 +54,13 @@ from precis.pcb.topoplace.pins import PinAssignment, assign_pins, check_slots
 from precis.pcb.topoplace.placer import Ladder, TopoPlaceResult, topo_place
 from precis.pcb.topoplace.proxy import (
     ProxyState,
+    backtrack_total,
+    direction_total,
     evaluate,
     overlap_area,
     pin_world,
     spread_total,
+    via_estimate_total,
 )
 
 __all__ = [
@@ -82,9 +85,11 @@ __all__ = [
     "TopoPlaceResult",
     "TopoZone",
     "assign_pins",
+    "backtrack_total",
     "build_mesh",
     "check_slots",
     "design_from_ir",
+    "direction_total",
     "edge_blocks_layer",
     "evaluate",
     "overlap_area",
@@ -92,4 +97,5 @@ __all__ = [
     "pin_world",
     "spread_total",
     "topo_place",
+    "via_estimate_total",
 ]

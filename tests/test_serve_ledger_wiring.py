@@ -159,31 +159,6 @@ def test_dispatch_folds_only_for_a_bound_mcp_session(
     assert rt.fold is False
 
 
-def test_more_uses_ctx_for_recipe_replay_fold_policy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``more`` forwards the same session-derived policy into
-    ``fetch_more`` — it only matters on a recipe-cursor replay, but the
-    drain's minted continuations follow it from there."""
-    seen: dict[str, bool] = {}
-
-    class _Runtime:
-        def fetch_more(self, cursor: str, *, fold: bool = True) -> tuple[str, bool]:
-            seen["fold"] = fold
-            return "page", False
-
-        def render_error(self, err: Exception) -> str:
-            return f"rendered: {err}"
-
-    monkeypatch.setattr(core, "_get_runtime", lambda: _Runtime())
-    monkeypatch.setattr(core, "_log_tool_call", lambda **kw: None)
-
-    core.more("abc")
-    assert seen["fold"] is False
-    core.more("abc", ctx=_fake_ctx(_FakeSession()))
-    assert seen["fold"] is True
-
-
 def test_ctx_excluded_from_wire_schema() -> None:
     """``ctx`` is FastMCP's injected per-request Context — it must not
     leak into the advertised ``inputSchema`` of any tool."""

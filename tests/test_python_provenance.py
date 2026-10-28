@@ -662,19 +662,24 @@ def test_navigation_never_executes_git_filters_or_monitors(tmp_path: Path) -> No
     assert not sentinel.exists()
 
 
-def test_large_source_first_page_keeps_provenance(
+def test_large_source_budget_refusal_offers_targeted_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from precis._pagination import PaginationCache
+    from precis._result_budget import check_result_budget
+    from precis.errors import BadInput
 
     _source(tmp_path, "value = 1\n" * 2000)
     monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "4096")
     body = _handler(tmp_path).get(id="r/m.py", view="source").body
-    page, cursor = PaginationCache().split(body, kind="python")
-    assert cursor is not None
-    assert page.startswith(body.splitlines()[0])
-    assert "checkout: r@" in page and "file m.py " in page
-    assert "details: get(kind='python'" in page
+    with pytest.raises(BadInput) as caught:
+        check_result_budget(
+            body,
+            verb="get",
+            kind="python",
+            context_limited=False,
+            targeted_hint="get(kind='python', id='r/m.py::changed')",
+        )
+    assert caught.value.next == "get(kind='python', id='r/m.py::changed')"
     assert "Python content:" in body
 
 

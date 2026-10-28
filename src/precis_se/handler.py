@@ -2253,11 +2253,9 @@ class SeHandler(Handler):
             slug = str(ref.slug)
             return Response(
                 body=render_ops(tree, ref.title or slug, args, slug=slug),
-                # gr514235: an unsliced export that exceeds the fold is
-                # served with its middle elided, and ``more()`` re-folds —
-                # the footer's alt_hint names the slice call that recovers
-                # the elided ops.
-                pagination_alt_hint=(
+                # An oversized unsliced export refuses with the targeted
+                # slice call rather than returning a partial payload.
+                result_budget_hint=(
                     f"get(kind='se', id={slug!r}, view='ops', "
                     "args={'page': <n>, 'page_size': <count>}) "
                     "fetches one slice of the ops list — the concatenated "

@@ -114,16 +114,15 @@ on every numeric-ref kind. Other filters are per-kind — see the
 relevant `precis-<kind>-help` for the full list (an unknown filter
 errors with the supported set as `options`).
 
-## Page through a listing
-## See more than the first page
-## What if there are more refs than fit on one page?
+## Refine a broad listing
+## What if there are more refs than fit in one result?
 
 ```python
-search(kind="paper", q="perovskite", page=2)  # next page of hits
+search(kind="paper", q="perovskite tandem stability", page_size=10)
 ```
 
-`get(kind='paper')` does not paginate — only `search` does, via
-`page=N`. `exclude=[…]` is for hand-skipping known slugs, not paging.
+Search returns a bounded top-N set. Add distinctive terms or use
+`exclude=[…]` to hand-skip known slugs; there is no continuation page.
 
 ## Address a chunk or sub-range inside a ref
 ## Read just chunk 38, or chunks 38..42

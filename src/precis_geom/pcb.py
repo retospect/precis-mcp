@@ -2492,7 +2492,14 @@ class Board:
         Args:
             name (str): Group name stamped on each member.
             parts (Iterable[Part]): Members of the group.
-            rigid (bool): Rigidity flag — every group is rigid today.
+            rigid (bool): Rigidity flag. Every persisted group is rigid
+                today — ``rigid=False`` stamps NOTHING (the members stay
+                independent) instead of silently building a rigid group
+                the author never asked for: on taz-leaf the sheet labels
+                (``rigid=False``) pinned all 50 parts through
+                ``design_from_ir``'s fixed-anchor group rule. A non-rigid
+                group is a declarative no-op, kept so board scripts can
+                build sheet lists unconditionally.
             pattern (str | None): Pattern name stamped on each member.
             offsets (Iterable[tuple] | None): Per-part ``(x, y, rot)``
                 in the group frame — must match ``parts`` 1:1.
@@ -2505,6 +2512,8 @@ class Board:
                 "offsets",
                 f"group {name!r}: {len(offs)} offsets for {len(parts)} parts",
             )
+        if not rigid:
+            return parts
         for i, p in enumerate(parts):
             p.group = name
             if offs is not None:

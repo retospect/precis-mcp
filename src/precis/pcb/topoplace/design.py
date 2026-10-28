@@ -97,10 +97,13 @@ class ObjectiveShares:
     #: ``route_topology``); 0 here keeps the share vector byte-identical
     #: to slice 1 for every existing run.
     vias: float = 0.0
-    #: Same-side courtyard overlap area in mm² (Reto ruling 2026-10-25:
-    #: a courtyard overlap is a placer violation, priced between rung-2
-    #: evals — slice-2a seam item 6). 0 keeps a share vector identical
-    #: to slice 1's.
+    #: Same-side courtyard overlap area in mm² PLUS pad containment
+    #: violation in mm — pins past the outline edge (Reto ruling
+    #: 2026-10-25: a courtyard collision is a placer violation, priced
+    #: between rung-2 evals — slice-2a seam item 6; containment joined
+    #: the same term 2026-10-27 when the taz-leaf anneal slid 0402s out
+    #: through the leaf neck the bbox clamp cannot see). 0 keeps a
+    #: share vector identical to slice 1's.
     overlap: float = 0.0
     #: Board-fill repulsion (loop-2 quality ask): part pairs that share
     #: NO net and could collide repel each other, so unconnected clumps
@@ -113,6 +116,17 @@ class ObjectiveShares:
     #: only crossings/ratsnest/overlap/spread). 0 keeps a share vector
     #: identical to earlier slices'.
     measures: float = 0.0
+    #: Backtrack (fold-back) length in mm: per net and axis, the wire
+    #: mileage beyond the pin set's extent — "ran north, then doubled
+    #: back south" priced exactly. 0 keeps a share vector identical to
+    #: earlier slices'.
+    backtrack: float = 0.0
+    #: Direction-mix penalty (the inner-layer ask): proximity-weighted
+    #: perpendicular wire pairs of different nets — (1−|cos θ|)·
+    #: exp(−d²/2s²) on segment midpoints, so routed compass headings
+    #: cluster instead of fighting at right angles. 0 keeps a share
+    #: vector identical to earlier slices'.
+    direction: float = 0.0
 
     def __post_init__(self) -> None:
         total = (
@@ -122,6 +136,8 @@ class ObjectiveShares:
             + self.overlap
             + self.spread
             + self.measures
+            + self.backtrack
+            + self.direction
         )
         if total <= 0:
             raise ValueError("objective shares must not all be zero")
@@ -131,23 +147,41 @@ class ObjectiveShares:
         object.__setattr__(self, "overlap", self.overlap / total)
         object.__setattr__(self, "spread", self.spread / total)
         object.__setattr__(self, "measures", self.measures / total)
+        object.__setattr__(self, "backtrack", self.backtrack / total)
+        object.__setattr__(self, "direction", self.direction / total)
 
 
-#: The named share vectors (Decision 18's presets) over the terms slice 1
-#: prices. ``low-via`` and ``2-layer-only`` differ from ``compact`` only on
-#: terms later rungs price (via count, inner-layer direction), so they
-#: collapse onto crossings-heavy shares here — a via exists exactly where
-#: a crossing cannot be resolved on one layer, so crossings are the
+#: The named share vectors (Decision 18's presets) over the terms the
+#: proxy prices. ``low-via`` and ``2-layer-only`` differ from ``compact``
+#: only on terms later rungs price (via count, inner-layer direction), so
+#: they collapse onto crossings-heavy shares here — a via exists exactly
+#: where a crossing cannot be resolved on one layer, so crossings are the
 #: slice-1 proxy for both (spec-call, 1c). Every preset carries the same
 #: overlap share: an authored courtyard collision is a violation on any
 #: objective, never a trade-off (Reto ruling 2026-10-25). ``compact``
 #: — the share vector the ``placer='topo'`` job runs — also carries a
 #: modest ``spread`` share: the loop's ask is whole-board usage, and
-#: repulsion between unconnected parts is what pays for it.
+#: repulsion between unconnected parts is what pays for it. ``flow``
+#: adds the slice-5 route proxies (via estimate, backtrack, direction)
+#: for the route-aware dev loop; crossings stay primary there too.
 PRESETS: dict[str, ObjectiveShares] = {
     "compact": ObjectiveShares(crossings=0.55, ratsnest=0.2, overlap=0.2, spread=0.05),
     "low-via": ObjectiveShares(crossings=0.75, ratsnest=0.05, overlap=0.2),
     "2-layer-only": ObjectiveShares(crossings=0.8, ratsnest=0.0, overlap=0.2),
+    #: The loop's route-aware rung (taz-leaf dev loop): crossings stay
+    #: primary, and the three topology proxies that predict a clean
+    #: route — via estimate, backtrack, direction mix — share the rest
+    #: with ratsnest. The overlap share matches every other preset:
+    #: legality (courtyard + containment) is a violation, never a
+    #: trade-off (Reto ruling 2026-10-25).
+    "flow": ObjectiveShares(
+        crossings=0.4,
+        ratsnest=0.05,
+        vias=0.15,
+        backtrack=0.1,
+        direction=0.1,
+        overlap=0.2,
+    ),
 }
 
 
@@ -275,6 +309,21 @@ class TopoDesign:
     #: intersects this with ``net_layer_force``; an empty intersection
     #: is a ForcedClash certificate, not a refused board.
     net_pin_force: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int8))
+    #: Slice 5 direction term: per ``net_pins`` entry True when the net's
+    #: class rules author an explicit ``track_width_mm`` — a power-class
+    #: RULE width, not a name guess. The net stays in crossings /
+    #: ratsnest / vias / backtrack but skips the direction penalty: a
+    #: rail is poured and widened post-route, so its wires' compass
+    #: heading is nobody's optimisation target (Reto's inner-layer ask).
+    #: Plane-class nets never reach the placer design at all — they are
+    #: dropped unless ``route_planes=True``.
+    net_direction_exempt: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
+    #: (N,) bool — parts AUTHORED as edge-mating (``ir.inst_edge_mate``):
+    #: their mating face is supposed to sit ON the board outline, so the
+    #: edge-clearance legality half charges them nothing — the DRC's
+    #: ``check_edge_mating`` owns their verdict (fable review S5,
+    #: gr530632). Empty (hand-built synthetic designs) means none.
+    part_edge_mate: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
     #: Slice 2 (mesh): non-part constrained regions — authored keepouts,
     #: mounting holes, fixed copper — in build order. The mesh records a
     #: zone-owned constrained edge under owner ``n_parts + zone_index``.
@@ -547,6 +596,31 @@ def _net_pin_force(
         elif (sides == 1).all():
             force[k] = np.int8(n_layers - 1)
     return force
+
+
+def _net_direction_exempt(
+    ir: PcbIR,
+    route_of: dict[int, int],
+    net_classes: Mapping[str, Mapping[str, Any]] | None,
+) -> np.ndarray:
+    """Per ``net_pins`` entry the power-class flag for the direction
+    term: True when the net's class rules author an explicit
+    ``track_width_mm``. By rule, not by name — a class with no authored
+    width (even a current-annotated rail: its IPC-2221 width resolves
+    only against a fab capability the placer design build does not see)
+    stays in the term. Empty/``None`` classes map → nothing exempt."""
+    n_routed = max(route_of.values(), default=-1) + 1
+    ex = np.zeros(n_routed, dtype=bool)
+    if not net_classes:
+        return ex
+    for ir_net, k in route_of.items():
+        cls = str(ir.net_class[ir_net] or "")
+        if not cls:
+            continue
+        rules = net_classes.get(cls)
+        if rules and rules.get("track_width_mm") is not None:
+            ex[k] = True
+    return ex
 
 
 def _circle_ring(x: float, y: float, r: float, n: int = 12) -> np.ndarray:
@@ -1037,6 +1111,18 @@ def design_from_ir(
         part_outline=part_outline,
         net_layer_force=_net_layer_force(ir, route_of, net_classes, names),
         net_pin_force=_net_pin_force(tuple(net_pins), pin_side, ir.n_layers),
+        net_direction_exempt=_net_direction_exempt(ir, route_of, net_classes),
+        part_edge_mate=np.array(
+            [
+                spec is not None
+                for spec in (
+                    ir.inst_edge_mate
+                    if ir.inst_edge_mate is not None
+                    else [None] * ir.n_instances
+                )
+            ],
+            dtype=bool,
+        ),
         zones=_zones(ir, features, fixed_copper, names, pose0),
         net_name=tuple(net_names),
         pin_wh=np.column_stack(

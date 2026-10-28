@@ -15,8 +15,9 @@ pytest ever starts. Run under the SAME `uv run --no-sync ${UV_WITH}` prefix
 as the pytest invocation (see scripts/test) so a UV_WITH bridge that covers
 a gap is honoured here too — a dep added via `--with` is present at run time
 even though the baked venv lacks it. `--with-flags` is the query mode behind
-scripts/test's PRECIS_TEST_AUTOBRIDGE=1 opt-in (gr513760): it prints the
-UV_WITH flags that would cover the gap, nothing else.
+scripts/test's autobridge pre-pass (gr513760; default-on since gr525770,
+`PRECIS_TEST_AUTOBRIDGE=0` opts out): it prints the UV_WITH flags that would
+cover the gap, nothing else.
 
 Distribution name -> import name only needs an explicit entry here when it
 differs from the `name.lower().replace("-", "_")` default guess; keep this

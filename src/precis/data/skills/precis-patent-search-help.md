@@ -18,7 +18,7 @@ kinds: [patent]
 
 Patent search merges local hits with EPO OPS. The patent-specific
 knob is `reach=`; everything else follows the cross-kind search
-shape (`page=`, `page_size=`, `tags=`, `scope=`, `exclude=`).
+shape (`page_size=`, `tags=`, `scope=`, `exclude=`).
 
 ## Search patents
 ## Find a patent by topic
@@ -27,7 +27,7 @@ shape (`page=`, `page_size=`, `tags=`, `scope=`, `exclude=`).
 ```python
 search(kind="patent", q="photocatalytic NOx reduction")
 search(kind="patent", q="Z-scheme photocatalysis", page_size=20)
-search(kind="patent", q="amine carbon capture", page=2)
+search(kind="patent", q="amine carbon capture selectivity", page_size=10)
 ```
 
 Default `reach='both'` — merges local + remote, deduped by DOCDB

@@ -139,8 +139,8 @@ _TITLE_CARD_CHARS = 240
 _BODY_HEAD_CHARS = 1500
 
 #: ``view='full'`` total budget (gr514350): the complete read stays
-#: inside the agent-facing fold (~4 KB, :mod:`precis._pagination`), so
-#: nothing on the page needs a cursor to reach — the body clips at
+#: inside the agent-context budget (~4 KB), so no continuation is needed —
+#: the body clips at
 #: :data:`_BODY_HEAD_CHARS` naming ``view='body'``, and the timeline
 #: renders the whole comments that fit the remainder, then names the
 #: ``args={'comments': 'A-B'}`` window holding the rest.
@@ -1731,7 +1731,7 @@ class GripeHandler(NumericRefHandler):
                     # When the transport fold still cuts (one comment or
                     # the body alone over the budget), name the windowed
                     # reads that reach the rest without a cursor.
-                    pagination_alt_hint=(
+                    result_budget_hint=(
                         f"get(kind='gripe', id={ref.id}, view='comments', "
                         "args={'comments': '<A>-<B>'}) reads the timeline "
                         "in windows; view='body' reads the body uncapped"

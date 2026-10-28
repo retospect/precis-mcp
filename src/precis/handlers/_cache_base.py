@@ -379,14 +379,11 @@ class CacheBackedHandler(Handler):
                 ),
             )
 
-        # ``view='body'`` (gr517274): read one cached ref's body whole —
-        # the render is marked ``unfolded`` so dispatch skips the
-        # write-time context fold (a ~20 KB perplexity-reasoning answer
-        # used to arrive folded at 4 KB, needing 7–9 more() calls to
-        # drain). Read-only: it implies ``no_fetch`` below, so the view
-        # can never fire a provider call. Any other non-None view that
-        # reaches a cache-backed ``get`` is unknown — the dispatcher
-        # consumes the eye-ladder labels before this method runs.
+        # ``view='body'`` reads one cached ref's body through the normal
+        # complete-result budget. Read-only: it implies ``no_fetch`` below,
+        # so the view can never fire a provider call. Any other non-None
+        # view that reaches a cache-backed ``get`` is unknown — the
+        # dispatcher consumes eye-ladder labels before this method runs.
         if view is not None and view != "body":
             raise BadInput(
                 f"unknown view={view!r} for kind={self.spec.kind!r}",
@@ -752,7 +749,7 @@ class CacheBackedHandler(Handler):
             "",
             f"- {self.attribution}",
         ]
-        return Response(body="\n".join(lines), unfolded=view == "body")
+        return Response(body="\n".join(lines))
 
     def _attribute_touch(self, ref_id: int) -> None:
         """Attribute a freshly-created cache ref's chunks to the current
@@ -990,16 +987,9 @@ class CacheBackedHandler(Handler):
     def _render_view(
         self, ref: Ref, cache: CacheEntry, *, hit: bool, view: str | None
     ) -> Response:
-        """``_render`` plus the ``view='body'`` marker (gr517274): the
-        response is flagged ``unfolded`` so dispatch serves the whole
-        body — no head+marker+tail context fold. Plain renders pass
-        through byte-identical. Calls the virtual ``_render`` so a
-        subclass's wrapper (perplexity's citations/escalation trailer)
-        still applies."""
-        resp = self._render(ref, cache, hit=hit)
-        if view == "body":
-            return replace(resp, unfolded=True)
-        return resp
+        """Render through the subclass wrapper, preserving its citations and
+        escalation trailer. Result budgeting is uniform across views."""
+        return self._render(ref, cache, hit=hit)
 
     def _cost_str(self, cache: CacheEntry, *, hit: bool) -> str:
         """Format the cost trailer with a qualitative cost band.

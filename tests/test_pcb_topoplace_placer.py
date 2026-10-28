@@ -13,9 +13,12 @@ from precis.pcb.place import autoplace
 from precis.pcb.topoplace import (
     ObjectiveShares,
     ProxyState,
+    backtrack_total,
+    direction_total,
     evaluate,
     placer,
     topo_place,
+    via_estimate_total,
 )
 from precis.pcb.topoplace.archive import mean_displacement, rotations_differ
 from precis.pcb.topoplace.legalize import LegalizeResult
@@ -58,22 +61,40 @@ def test_try_move_commit_matches_full_recompute_1000_moves() -> None:
 
 def test_proxy_throughput_floor_and_printed_rate() -> None:
     """Proxy evals/s on the 100-part synthetic, printed every run —
-    hard floor 500/s (spec's CI floor; target ≥2000/s on the dev Mac)."""
+    hard floor 500/s (spec's CI floor; target ≥2000/s on the dev Mac).
+    Runs BOTH the default shares and the flow preset: flow turns the
+    route proxies on, and commit() re-derives the direction term (O(W²)
+    per accept — fable review S6) — so a flow-lane regression must trip
+    this floor, not just the compact lane. A 25% forced acceptance keeps
+    commits flowing regardless of pose quality. Floor rationale: the
+    default lane keeps the spec's 500/s; the flow lane gets 150/s —
+    measured ~840/s quiet, ~360/s under the gate's parallel workers,
+    ~220/s on instrumented Linux CI shards (coverage + typeguard), so
+    150 trips only on a genuine ~1.5× regression, not on runner noise."""
+    from precis.pcb.topoplace.design import PRESETS
+
     d, _inst, _nets = synth_design(seed=0)
-    proxy = ProxyState(d, d.pose0, W)
-    rng = np.random.default_rng(1)
     movable = np.flatnonzero(~d.fixed)
     n_evals = 4000
-    t0 = time.perf_counter()
-    for _ in range(n_evals):
-        p = int(movable[rng.integers(len(movable))])
-        row = proxy.pose[p].copy()
-        row[0] += rng.normal(0.0, 3.0)
-        row[1] += rng.normal(0.0, 3.0)
-        (proxy.commit if proxy.try_move(p, row) < 0 else proxy.revert)()
-    rate = n_evals / (time.perf_counter() - t0)
-    print(f"\nproxy throughput: {rate:.0f} evals/s (floor 500, target 2000)")
-    assert rate >= 500.0
+    for shares, label, floor in (
+        (W, "default", 500.0),
+        (PRESETS["flow"], "flow", 150.0),
+    ):
+        proxy = ProxyState(d, d.pose0, shares)
+        rng = np.random.default_rng(1)  # identical move sequence per lane
+        t0 = time.perf_counter()
+        for _ in range(n_evals):
+            p = int(movable[rng.integers(len(movable))])
+            row = proxy.pose[p].copy()
+            row[0] += rng.normal(0.0, 3.0)
+            row[1] += rng.normal(0.0, 3.0)
+            if proxy.try_move(p, row) < 0 or rng.random() < 0.25:
+                proxy.commit()
+            else:
+                proxy.revert()
+        rate = n_evals / (time.perf_counter() - t0)
+        print(f"\nproxy throughput ({label}): {rate:.0f} evals/s (floor {floor:.0f})")
+        assert rate >= floor
 
 
 def test_spread_proxy_term_parity_and_direction() -> None:
@@ -112,6 +133,80 @@ def test_spread_proxy_term_parity_and_direction() -> None:
     for pins in d.net_pins:
         members = np.unique(d.pin_part[pins])
         assert _part_shared(d)[np.ix_(members, members)].all()
+
+
+def test_route_proxy_terms_parity_300_moves() -> None:
+    """The slice-5 route proxies (vias, backtrack, direction) join the
+    exactness contract: with every share on, staged/commit tracks the
+    full recompute over 300 seeded translate/rotate/flip moves. The
+    direction term pins its seed scale like the spread term, so the
+    reference recompute passes ``scale=proxy._d_scale`` (the outline
+    makes that scale pose-independent)."""
+    d, _inst, _nets = synth_design(seed=0)
+    w = ObjectiveShares(
+        crossings=0.4,
+        ratsnest=0.1,
+        overlap=0.1,
+        spread=0.1,
+        vias=0.1,
+        backtrack=0.1,
+        direction=0.1,
+    )
+    proxy = ProxyState(d, d.pose0, w)
+    assert proxy.vias == via_estimate_total(d, d.pose0)
+    assert proxy.backtrack == backtrack_total(d, d.pose0)
+    assert proxy.direction == direction_total(d, d.pose0, scale=proxy._d_scale)
+    rng = np.random.default_rng(7)
+    movable = np.flatnonzero(~d.fixed)
+    for i in range(300):
+        p = int(movable[rng.integers(len(movable))])
+        row = proxy.pose[p].copy()
+        kind = rng.random()
+        if kind < 0.8:
+            row[0] += rng.normal(0.0, 3.0)
+            row[1] += rng.normal(0.0, 3.0)
+        elif kind < 0.9:
+            row[2] = (row[2] + float(rng.integers(1, 4))) % 4
+        else:
+            row[3] = 1.0 - row[3]
+        proxy.try_move(p, row)
+        if rng.random() < 0.5:
+            # The staged values are what the anneal decides on — and
+            # commit() RE-DERIVES vias/backtrack/direction from committed
+            # state, so without this snapshot a wrong try_move Δ would
+            # be invisible to every assertion below (fable review S1:
+            # the parity test was tautological for the three new terms).
+            # Commit must never move a staged number.
+            staged = (
+                proxy.cost,
+                proxy.vias,
+                proxy.backtrack,
+                proxy.direction,
+            )
+            proxy.commit()
+            # Commit re-derives the float terms from committed state in a
+            # different summation order than the staged telescope, so
+            # staged vs committed agrees to ~1e-13 (observed: last-ulp at
+            # move 2), not bit-exactly — that ulp IS the honest contract
+            # (this staged snapshot is fable-review S1; without it a wrong
+            # try_move Δ was invisible). The vias estimate is an int and
+            # stays ==. The every-25 asserts below still pin the
+            # COMMITTED state bit-exactly against the module totals.
+            assert proxy.cost == pytest.approx(staged[0], abs=1e-9), i
+            assert proxy.vias == staged[1], i
+            assert proxy.backtrack == pytest.approx(staged[2], abs=1e-9), i
+            assert proxy.direction == pytest.approx(staged[3], abs=1e-9), i
+        else:
+            proxy.revert()
+        if i % 25 == 0:
+            assert proxy.vias == via_estimate_total(d, proxy.pose), i
+            assert proxy.backtrack == backtrack_total(d, proxy.pose), i
+            assert proxy.direction == direction_total(
+                d, proxy.pose, scale=proxy._d_scale
+            ), i
+    assert proxy.vias == via_estimate_total(d, proxy.pose)
+    assert proxy.backtrack == backtrack_total(d, proxy.pose)
+    assert proxy.direction == direction_total(d, proxy.pose, scale=proxy._d_scale)
 
 
 def test_placer_beats_autoplace_at_equal_evals_median() -> None:
@@ -633,3 +728,17 @@ def test_ungrouped_run_matches_main_golden_pose_bytewise() -> None:
         ]
     )
     np.testing.assert_array_equal(res.best_pose, expected)
+
+
+def test_all_fixed_design_short_circuits_the_anneal() -> None:
+    """gr524239: a design with nothing movable must not burn the restart
+    schedule — the pre-fix loop rebuilt the proxy state per restart and
+    reported 0 evals anyway (~26 s on taz-leaf's all-fixed board).
+    topo_place settles the authored pose once and returns the honest
+    0-eval, 0-restart result."""
+    d, _inst, _nets = synth_design(seed=0, n_parts=10, n_nets=20, n_fixed=10)
+    result = topo_place(d, objective=W, effort=4000, seed=1)
+    assert result.evals == 0
+    assert result.restarts == 0
+    assert result.best_pose is not None
+    assert len(result.best_pose) == 10

@@ -52,7 +52,12 @@ worktree of the main checkout is a root `wt-<tree name>` (e.g.
 `wt-validate-precis-python::pkg.mod.fn`), discovered live (about 5 s lag), no
 restart. They are read-only (write verbs refuse; use your own Edit tool), built
 lazily on first query, and stay indexed until unused for 24 h
-(`PRECIS_PYTHON_WORKTREE_IDLE_HOURS`) or the tree is removed. They are NOT in the default cross-root
+(`PRECIS_PYTHON_WORKTREE_IDLE_HOURS`) or the tree is removed. A tree's very
+first index re-parses every file (seconds for a big repo); the corpus snapshot
+under `~/.cache/precis/python-index/` (`PRECIS_PYTHON_INDEX_CACHE` overrides,
+`off` disables) re-warms later sessions and post-eviction reads from disk after
+a stat revalidation, so only the first-ever read of a tree pays the parse. They
+are NOT in the default cross-root
 search; name one with `scope='wt-x'` (or `wt-x::pkg.mod`). Semantic vectors
 are not warmed for them (cached vectors from main still hit). If the alias does
 not resolve, fall back to Grep.
@@ -153,7 +158,7 @@ only; reach nested ones by qualname.
 
 ```python
 search(kind="python", q="cache attribution", scope="precis")
-search(kind="python", q="where do we handle stale data", scope="precis", page=2)
+search(kind="python", q="stale data cache invalidation", scope="precis", page_size=10)
 ```
 
 Default search is hybrid: lexical score fused with embedding similarity

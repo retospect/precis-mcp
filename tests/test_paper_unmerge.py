@@ -314,13 +314,11 @@ def test_mutation_error_preserves_redirect_notice_without_writes(
         )
 
 
-def test_redirect_receipt_survives_pagination_in_write_footer(
-    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+def test_redirect_receipt_in_write_response(
+    runtime_with_store: PrecisRuntime,
 ) -> None:
     store = runtime_with_store.live_store
     loser, survivor = _merged_pair(store)
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
-    runtime_with_store.long_lived = True
 
     body, is_error = runtime_with_store.dispatch_with_status(
         "edit",
@@ -333,28 +331,12 @@ def test_redirect_receipt_survives_pagination_in_write_footer(
     )
 
     assert not is_error, body
-    assert "more(cursor='" in body
-    # A 200-byte cap is smaller than the pagination footer reserve. Do not
-    # assert a full receipt on page one: reconstruct the response payload.
-    # Subsequent frames use a normal cap so draining stays cheap.
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "4096")
-    payloads = []
-    for _ in range(10):
-        payload, _, footer = body.partition("\n\n---\n⚠️")
-        payloads.append(payload)
-        cursor = re.search(r"more\(cursor='([^']+)'\)", footer)
-        if cursor is None:
-            break
-        body, is_error = runtime_with_store.fetch_more(cursor[1], fold=False)
-        assert not is_error, body
-    else:
-        pytest.fail("write receipt did not finish within ten pages")
-    full = "".join(payloads)
     receipts = re.findall(
-        r"^\[info\] resolved (pa\d+) -> (pa\d+) \(superseded\)$", full, re.MULTILINE
+        r"^\[info\] resolved (pa\d+) -> (pa\d+) \(superseded\)$", body, re.MULTILINE
     )
     assert receipts == [(f"pa{loser}", f"pa{survivor}")]
-    assert full.startswith("DRY RUN"), full
+    assert body.startswith("DRY RUN"), body
+    assert "more(cursor=" not in body
 
 
 @pytest.mark.parametrize("view", ["abstract", "bibtex"])

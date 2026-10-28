@@ -819,8 +819,10 @@ def topo_place(
     ``pins.json``/``summary.txt``/``placement.svg``, byte-deterministic
     per Decision 22). ``preset`` names a share vector
     (:data:`~precis.pcb.topoplace.design.PRESETS`); ``objective=``
-    overrides it with an ``ObjectiveShares`` or a ``{crossings,
-    ratsnest}`` mapping. ``catalog=`` supplies LCSC-keyed footprint
+    overrides it with an ``ObjectiveShares`` or a mapping over any of
+    the share keys (``crossings``/``ratsnest``/``overlap``/``vias``/
+    ``backtrack``/``direction`` — unlisted keys default 0).
+    ``catalog=`` supplies LCSC-keyed footprint
     rows, exactly as :func:`place`. A :class:`PinConflict` surfaces
     unchanged — it is the board script's error, not the run's."""
     from precis.pcb import topoplace as _tp
@@ -840,6 +842,9 @@ def topo_place(
             crossings=float(objective.get("crossings", 0.8)),
             ratsnest=float(objective.get("ratsnest", 0.2)),
             overlap=float(objective.get("overlap", 0.0)),
+            vias=float(objective.get("vias", 0.0)),
+            backtrack=float(objective.get("backtrack", 0.0)),
+            direction=float(objective.get("direction", 0.0)),
         )
 
     design = _design(board, catalog)
@@ -928,11 +933,16 @@ def topo_place(
             fixed_copper=design.fixed_copper,
             route_planes=True,
         )
+        net_rules = pcb_session.route_net_rules(design.graph, design.fab_caps)
+        # gr524334: siting falls back to the fab-minimum via diameter
+        # when the net-rule via (house default) finds no site.
+        _min_via = design.fab_caps.jlc_min.get("via_diameter_mm")
         plan, rres = _tprealise.route_design(
             td_route,
             ir,
             pose=result.best_pose,
-            net_rules=pcb_session.route_net_rules(design.graph, design.fab_caps),
+            net_rules=net_rules,
+            min_via_dia=None if _min_via is None else float(_min_via),
         )
         # The oracle measures the PLACED board — write the winning pose
         # into the local ir first (it is throwaway; ``poses`` above
@@ -972,19 +982,32 @@ def topo_place(
                 if f.severity == "error"
             )
 
+        # See _topo_route for the rationale: targets are the current-derived
+        # IPC-2221 widths (clearance_net_rules) of the current-annotated
+        # nets; the power set is the plane/power rails plus nets whose
+        # target beats their born width. Unannotated nets get no target
+        # and keep the legacy widest-the-oracle-allows ruling (gr520904).
+        targets = {
+            net_id: float(drc_net_rules[name].track_width_mm)
+            for net_id in range(ir.n_nets)
+            if (name := str(ir.net_name[net_id])) in drc_net_rules
+            and not math.isnan(float(ir.net_current_a[net_id]))
+            and float(ir.net_current_a[net_id]) > 0.0
+        }
+        born = {
+            net_id: float(net_rules[name].track_width_mm)
+            for net_id in range(ir.n_nets)
+            if (name := str(ir.net_name[net_id])) in net_rules
+        }
         power_ids = {
             net_id
             for net_id in range(ir.n_nets)
             if str(ir.net_class[net_id] or "").strip().lower() in ratsnest.PLANE_CLASSES
             or str(ir.net_domain[net_id] or "") == "power"
-            or (
-                not math.isnan(float(ir.net_current_a[net_id]))
-                and float(ir.net_current_a[net_id]) > 0.0
-            )
-            or int(ir.net_plane_layers[net_id]) != 0
+            or targets.get(net_id, 0.0) > born.get(net_id, math.inf)
         }
         rres, widths = _tprealise.widen_power(
-            rres, sorted(power_ids), drc_errors=_drc_errors
+            rres, sorted(power_ids), drc_errors=_drc_errors, targets=targets
         )
         rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
         route_pair = (plan, rres)

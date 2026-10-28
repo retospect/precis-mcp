@@ -108,9 +108,7 @@ search(kind="memory", q="kwargs vs modes", tags=["confidence-strong"])
 ## What tags exist across the corpus?
 
 ```python
-get(kind="tag")  # most-used first, paginated
-get(kind="tag", args={"page": 2})  # next page (default 50 per page)
-get(kind="tag", args={"page_size": 20})  # smaller page
+get(kind="tag", args={"page_size": 20})  # top 20, most-used first
 get(kind="tag", scope="paper")  # tags used on papers only
 ```
 
@@ -124,7 +122,7 @@ addressable — paste the `tag` slug back as `id=` to drill in.
 ```python
 search(kind="tag", q="carbon capture")  # hybrid lexical + semantic
 search(kind="tag", q="sustainability")
-search(kind="tag", q="photocatalysis", page=2)
+search(kind="tag", q="photocatalysis water splitting", page_size=10)
 ```
 
 **Before coining a new tag, search for an existing one.** Fragmentation

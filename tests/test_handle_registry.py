@@ -124,12 +124,13 @@ def test_parse_decodes_refs_backed_decimal_handles() -> None:
     assert hr.parse("pa5") == ("paper", False, 5)
     assert hr.parse("me4217") == ("memory", False, 4217)
     assert hr.parse("pc10") == ("paper", True, 10)
+    assert hr.parse("sk42") == ("skill", False, 42)
     # Prefix is case-folded; the decimal body has no case.
     assert hr.parse("ME5") == ("memory", False, 5)
 
 
 def test_parse_rejects_file_backed_and_other_table_codes() -> None:
-    # skill/python are file-backed, tag lives in its own table — they
+    # python/md are file-backed, tag lives in its own table — they
     # carry codes for registry completeness but aren't decimal handles
     # ``parse`` resolves (they keep their kind+id addressing).
     assert hr.parse("sktoc") is None

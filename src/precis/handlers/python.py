@@ -38,6 +38,7 @@ import ast
 import dataclasses
 import difflib
 import logging
+import os
 import re
 import threading
 from contextvars import ContextVar
@@ -45,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from precis.config import cache_root
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_callgraph as cgraph
@@ -129,6 +131,26 @@ _SUPPORTED_PUT_MODES = ("create",)
 # the same set as markdown/plaintext minus ``create`` (lives on ``put``)
 # and ``delete`` (its own verb).
 _SUPPORTED_EDIT_MODES = ("find-replace", "append", "insert", "replace")
+
+#: Env override for the on-disk corpus snapshot dir (``off`` disables).
+_PY_INDEX_CACHE_ENV = "PRECIS_PYTHON_INDEX_CACHE"
+
+
+def _default_snapshot_dir() -> Path | None:
+    """Snapshot root for a handler-constructed ``RepoCache`` (gr525769).
+
+    Default ``cache_root('python-index')`` — under ``~/.cache/precis``,
+    which the prod container bind-mounts from a persistent host dir, so a
+    worktree corpus survives the server restart between sessions and the
+    first navigation read of a session skips the full re-parse.
+    """
+    raw = os.environ.get(_PY_INDEX_CACHE_ENV)
+    if raw is not None:
+        raw = raw.strip()
+        if not raw or raw.lower() == "off":
+            return None
+        return Path(raw).expanduser()
+    return cache_root("python-index")
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +376,7 @@ class PythonHandler(Handler):
                 raise ValueError(f"python repo {alias!r} root is not a directory: {p}")
             resolved[alias] = p
         self.roots = resolved
-        self.cache = cache or RepoCache()
+        self.cache = cache or RepoCache(snapshot_dir=_default_snapshot_dir())
         self.worktrees = worktrees
         # ``ws-<slug>`` aliases — DB-backed workspace code roots
         # (structure-workspaces slice 2p). Default-built from the hub's
@@ -743,6 +765,9 @@ class PythonHandler(Handler):
         ``mode='pattern'`` switches ``q`` to AND-ed structural predicates
         over indexed fields: ``async``, ``@decorator-regex``, or a regex
         on qualname / signature (see ``_python_reverse.compile_pattern``).
+        A multi-token pattern query that matches nothing is retried
+        server-side with its most symbol-ish token (gr525768); the note
+        in the response names the retried token.
 
         ``mode='literal'`` (alias ``verbatim``) answers "every use of
         this string value": it matches ``ast.Constant`` strings by their
@@ -868,11 +893,19 @@ class PythonHandler(Handler):
         # A multi-term pattern query ANDs every token: a natural-language
         # query reads as predicates ("ObjectiveShares via share
         # placement") and self-destructs to zero hits (gr525768). Retry
-        # with the identifier-like tokens, longest first; first token
-        # that hits wins and the response says it was narrowed.
+        # with the identifier-like tokens, symbol-shaped words first;
+        # first token that hits wins and the response says it was narrowed.
         narrowed_to: str | None = None
+        retry_note: str | None = None
+        retried_tokens: list[str] = []
         if not hits and mode == "pattern" and len(q.split()) > 1:
-            hits, narrowed_to = _narrowed_pattern_hits(q, scoped, demote)
+            hits, narrowed_to, retried_tokens = _narrowed_pattern_hits(
+                q, scoped, demote
+            )
+            if narrowed_to is not None:
+                retry_note = (
+                    f"retried server-side with the bare symbol token {narrowed_to!r}"
+                )
 
         if not hits:
             # Empty-search recovery (MCP critic round 2): a bare
@@ -939,6 +972,14 @@ class PythonHandler(Handler):
             body = f"no python symbols match {q!r}\n"
             if sem_note:
                 body += f"({sem_note})\n"
+            if retried_tokens:
+                # The prose-query retry already ran and missed too — name
+                # the tokens tried so the agent doesn't repeat them.
+                tried = ", ".join(repr(t) for t in retried_tokens[:3])
+                body += (
+                    f"(pattern mode ANDs its {len(q.split())} query tokens; "
+                    f"bare-symbol retries {tried} also matched nothing)\n"
+                )
             # An in-scope root that indexed zero modules is empty on disk —
             # the likely reason the query missed (gr520147).
             for empty_alias in empty_roots:
@@ -992,6 +1033,8 @@ class PythonHandler(Handler):
             )
         if sem_note:
             lines.append(f"({sem_note})")
+        if retry_note:
+            lines.append(f"({retry_note})")
         for score, alias, sym in hits:
             indexed = indexed_file(alias, sym.file)
             if indexed is not None:
@@ -3140,8 +3183,8 @@ _PATTERN_NARROW_MAX_RETRIES = 3
 
 
 def _identifier_terms(q: str) -> list[str]:
-    """Identifier-shaped tokens of `q` (CamelCase, snake_case or plain
-    lowercase words), longest first, deduped (gr525768).
+    """Identifier-shaped tokens of `q`, symbol-shaped words before plain
+    lowercase prose, then longest first, deduped (gr525768).
 
     Used by the pattern-mode narrowing retry and the still-empty
     bare-symbol hint. Stopwords and non-identifier shapes (``a.b``,
@@ -3149,18 +3192,23 @@ def _identifier_terms(q: str) -> list[str]:
     regex can only echo the query's own prose back.
     """
     seen = {t for t in q.split() if t.isidentifier() and t.lower() not in _STOPWORDS}
-    return sorted(seen, key=lambda t: (-len(t), t))
+    return sorted(
+        seen,
+        key=lambda t: (not any(c.isupper() for c in t) and "_" not in t, -len(t), t),
+    )
 
 
 def _narrowed_pattern_hits(
     q: str,
     scoped: list[tuple[str, Symbol]],
     demote: dict[int, float],
-) -> tuple[list[tuple[float, str, Symbol]], str | None]:
+) -> tuple[list[tuple[float, str, Symbol]], str | None, list[str]]:
     """Rescan `scoped` with each identifier-like token as a one-term
-    pattern, longest first; first non-empty result wins (gr525768).
+    pattern; first non-empty result wins, with all attempted tokens
+    returned for the still-empty recovery note (gr525768).
     """
-    for token in _identifier_terms(q)[:_PATTERN_NARROW_MAX_RETRIES]:
+    attempted = _identifier_terms(q)[:_PATTERN_NARROW_MAX_RETRIES]
+    for token in attempted:
         preds = reverse.compile_pattern(token)
         retry = [
             (sc * demote.get(id(sym), 1.0), alias, sym)
@@ -3169,8 +3217,8 @@ def _narrowed_pattern_hits(
         ]
         if retry:
             retry.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
-            return retry, token
-    return [], None
+            return retry, token, attempted
+    return [], None, attempted
 
 
 def _enclosing_note(alias: str, mod: ModuleIndex, start: int, end: int) -> str:

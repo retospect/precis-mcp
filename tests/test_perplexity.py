@@ -136,12 +136,9 @@ def research(hub_no_embedder: Hub) -> ResearchHandler:
 # ── basic flow ────────────────────────────────────────────────────────
 
 
-def test_paid_answer_is_served_unfolded(websearch: WebsearchHandler) -> None:
-    """gr521140: a paid Sonar answer is the whole deliverable — the
-    write-time context fold must not cut it to ~4 KB and force a string
-    of re-folding more() drains. The response carries ``unfolded`` so
-    dispatch serves it whole; the ``PRECIS_MAX_BODY_BYTES`` frame cap
-    still pages an oversized body at ~24 KB a page, not ~4 KB."""
+def test_paid_answer_carries_focused_budget_recovery(
+    websearch: WebsearchHandler,
+) -> None:
     _StubClient.response = _StubResp(
         json_data={
             "choices": [{"message": {"content": "x" * 9000}}],
@@ -149,10 +146,10 @@ def test_paid_answer_is_served_unfolded(websearch: WebsearchHandler) -> None:
         }
     )
     resp = websearch.get(id="a long answer please")
-    assert resp.unfolded is True  # fresh fetch
+    assert "narrower question" in (resp.result_budget_hint or "")
     assert _StubClient.call_count == 1
     resp = websearch.get(id="a long answer please")
-    assert resp.unfolded is True  # cache hit
+    assert "narrower question" in (resp.result_budget_hint or "")
     assert _StubClient.call_count == 1
 
 
@@ -1648,17 +1645,10 @@ def test_slug_match_without_stored_query_keeps_legacy_refresh(
     assert (after[1].meta or {}).get("query") == _QUERY_B
 
 
-# ── view='body' — the unfolded whole-body read (gr517274) ────────────
-#
-# The gripe: a ~20 KB perplexity-reasoning answer arrived folded at the
-# ~4 KB context budget (head + elision marker + tail), so reading one
-# cached answer whole took 7–9 sequential more() calls — with no MCP
-# path to the unfolded body at all. view='body' is that path: read-only
-# (implies no_fetch), and the response carries ``unfolded=True`` so the
-# dispatcher skips the write-time fold.
+# ── view='body' — read-only whole-body handler rendering ─────────────
 
 
-def test_body_view_serves_whole_body_unfolded(
+def test_body_view_serves_whole_body_without_fetch(
     research_with_embedder: ResearchHandler,
 ) -> None:
     h = research_with_embedder
@@ -1667,23 +1657,20 @@ def test_body_view_serves_whole_body_unfolded(
 
     resp = h.get(id="catalyst survey", view="body")
 
-    assert resp.unfolded is True
     assert "Cobalt phthalocyanine" in resp.body
     # view='body' implies no_fetch — a read never fires a paid call.
     assert _StubClient.call_count == calls
 
 
-def test_body_view_by_slug_unfolded(
+def test_body_view_by_slug(
     research_with_embedder: ResearchHandler,
 ) -> None:
-    """The /recent-advertised slug round-trips through view='body' too
-    (the verbatim-slug branch of the no_fetch path)."""
+    """The /recent-advertised slug round-trips through view='body' too."""
     h = research_with_embedder
     slug = _import_a(h)
 
     resp = h.get(id=slug, view="body")
 
-    assert resp.unfolded is True
     assert "keep this report" in resp.body
     assert _StubClient.call_count == 0
 

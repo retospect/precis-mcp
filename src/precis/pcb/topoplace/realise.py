@@ -54,8 +54,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+from shapely.geometry import Point, Polygon
 
 from precis.pcb.rules import NetRules
+from precis.pcb.topoplace import proxy as topo_proxy
 from precis.pcb.topoplace.design import TopoDesign, _world_to_local
 from precis.pcb.topoplace.mesh import TopoMesh
 from precis.pcb.topoplace.wires import (
@@ -104,7 +106,10 @@ class ViaSite:
     """A via at ``(edge, t)`` on the mesh — world ``(x, y)`` sits on an
     edge the wire crosses, at or near the taut wire's own crossing point
     (the siting walk may move it to a keepout-clean neighbour edge and
-    clamps ``t`` off the endpoint vertices — gr520901)."""
+    clamps ``t`` off the endpoint vertices — gr520901). ``dia_mm`` is
+    the barrel the site was qualified against — the fab-minimum fallback
+    when the net-rule via found no site (gr524334); ``0.0`` means the
+    net rule's own via_dia (the comfortable house default)."""
 
     net: int
     branch: int
@@ -112,6 +117,7 @@ class ViaSite:
     t: float
     x: float
     y: float
+    dia_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +140,12 @@ class RoutePlan:
     #: honest geometry), and land on the caller's ``pcb_routes`` row as
     #: ``failed: no via site`` (gr520901).
     no_via: tuple[int, ...] = ()
+    #: Nets (net_pins indices) whose emitted copper failed the geometric
+    #: anti-short guard — withdrawn whole (all pieces and vias), never
+    #: committed as shorting copper (gr524239). ``sketch_rows`` reports
+    #: them ``failed: short-risk``. The plan's own ``pieces`` keep the
+    #: withdrawn geometry for the record, exactly like ``crossings``.
+    guarded: tuple[int, ...] = ()
 
     @property
     def n_routed_nets(self) -> int:
@@ -210,10 +222,25 @@ def _yield_rank(d: TopoDesign, b: Any, n_layers: int) -> tuple[int, int]:
 def assign_layers(
     d: TopoDesign, wires: Wires, n_layers: int
 ) -> tuple[list[int], tuple[tuple[int, int], ...]]:
-    """Per-branch outer layer after crossing resolution: greedily flip
-    the Decision-6 yielder to the other outer layer until no same-layer
-    crossing remains, keeping the fewest-crossing state seen. Returns
-    ``(layers, remaining crossing branch pairs)``."""
+    """Per-branch outer layer after crossing resolution: pass-based
+    yielding — each pass walks every unresolved same-layer pair and
+    yields the lower-ranked branch to the other outer layer, keeping
+    the fewest-crossing state ever seen. Returns ``(layers, remaining
+    crossing branch pairs)``.
+
+    Why passes: the pre-gr524239 loop yielded the single minimum pair
+    and stopped the moment that flip failed to improve the count. On a
+    dense board the first yield almost always worsens before it
+    improves — the flipped branch meets new neighbours on the far side
+    before it clears the old ones — so the loop exited after ONE flip
+    with nearly every crossing still live (taz-leaf: 2 branches
+    flipped, 48 of 50 pairs left). A pass resolves each pair in turn,
+    accepting a locally-worse state mid-pass, and the run ends when a
+    full pass finds no new best (bounded by :data:`_MAX_FLIPS` flips,
+    a cap like shove, not the mechanism). Each pair's yield target is
+    the better of the two branches' trials — the higher-ranked side is
+    not always the cheaper move — with the Decision-6 rank breaking
+    ties."""
     branches = wires.branches
     layers = _initial_layers(d, wires, n_layers)
     cross = _crossing_pairs(wires)
@@ -225,26 +252,110 @@ def assign_layers(
             if branches[a].net != branches[b].net and ls[a] == ls[b]
         }
 
+    def flip(ls: list[int], y: int) -> None:
+        ls[y] = n_layers - 1 if ls[y] == 0 else 0
+
     best, best_n = list(layers), len(live(layers))
-    outers = (0, n_layers - 1)
+    flips = 0
     for _ in range(_MAX_FLIPS):
         cur = live(layers)
-        if not cur:
+        if not cur or flips >= _MAX_FLIPS:
             break
-        a, b = min(cur)
-        y = (
-            a
-            if _yield_rank(d, branches[a], n_layers)
-            <= _yield_rank(d, branches[b], n_layers)
-            else b
-        )
-        layers[y] = outers[1] if layers[y] == outers[0] else outers[0]
-        n = len(live(layers))
-        if n < best_n:
-            best, best_n = list(layers), n
-        if n >= len(cur):  # flip made things no better — oscillation
+        improved_this_pass = False
+        for a, b in sorted(cur):
+            if flips >= _MAX_FLIPS:
+                break
+            if branches[a].net == branches[b].net or layers[a] != layers[b]:
+                continue  # resolved (or same-net) since the pass snapshot
+            rank_a = _yield_rank(d, branches[a], n_layers)
+            rank_b = _yield_rank(d, branches[b], n_layers)
+            y = a if rank_a <= rank_b else b
+            other = b if y == a else a
+            trial_y, trial_o = list(layers), list(layers)
+            flip(trial_y, y)
+            flip(trial_o, other)
+            n_y, n_o = len(live(trial_y)), len(live(trial_o))
+            layers, n = (trial_o, n_o) if n_o < n_y else (trial_y, n_y)
+            flips += 1
+            if n < best_n:
+                best, best_n = list(layers), n
+                improved_this_pass = True
+            if n == 0:
+                break
+        if best_n == 0 or not improved_this_pass:
             break
     return best, tuple(sorted(live(best)))
+
+
+def _span_toggles(
+    d: TopoDesign,
+    wires: Wires,
+    layers: list[int],
+    crossings: Sequence[tuple[int, int]],
+    n_layers: int,
+) -> tuple[dict[int, dict[int, int]], set[tuple[int, int]]]:
+    """Crossing-span flips for the pairs the whole-branch yielder left
+    live (gr524239): only the shared, order-inverting run of mesh edges
+    changes layer — bracketed by vias at its ends — never the whole
+    branch. A span flip moves strictly less copper than a whole-branch
+    flip and cannot create a crossing with any branch the shared edges
+    do not already see, so it resolves pairs whose wholesale flip the
+    yielder refused for the new crossings that flip would create.
+
+    Returns ``(branch -> {edge_seq_pos: layer_from_that_pos}, flipped)``
+    — the layer dict feeds :func:`plan_route`'s switch resolver, keyed
+    by edge-sequence position (0 = before the first edge, n = after the
+    last); ``flipped`` is the subset of ``crossings`` resolved here,
+    excluded from the plan's reported crossings. The yielding branch of
+    each pair follows Decision 6's rank, ties to the lower index."""
+
+    def other(layer: int) -> int:
+        return n_layers - 1 if layer == 0 else 0
+
+    out: dict[int, dict[int, int]] = {}
+    flipped: set[tuple[int, int]] = set()
+    for a, b in sorted(crossings):
+        if layers[a] != layers[b]:
+            continue  # resolved since the layer pass
+        if wires.branches[a].net == wires.branches[b].net:
+            continue  # a same-net braid is not a short
+        yielder = (
+            a
+            if _yield_rank(d, wires.branches[a], n_layers)
+            <= _yield_rank(d, wires.branches[b], n_layers)
+            else b
+        )
+        by = wires.branches[yielder]
+        peer_edges = {int(e) for e in wires.branches[b if yielder == a else a].edges}
+        pos_of = {int(e): i for i, e in enumerate(by.edges)}
+        shared = [(pos_of[int(e)], int(e)) for e in by.edges if int(e) in peer_edges]
+        if len(shared) < 2:
+            continue  # Decision 3 needs two shared edges to call a cross
+
+        def sign(e: int, a: int = a, b: int = b) -> int:
+            order = wires.order[e]
+            ia = order.index(a)
+            ib = order.index(b)
+            return 1 if ia < ib else -1
+
+        ref = sign(shared[0][1])
+        # maximal runs of shared edges whose order inverts the reference
+        runs: list[tuple[int, int]] = []
+        for pos, e in shared:
+            if sign(e) == ref:
+                continue
+            if runs and pos == runs[-1][1]:
+                runs[-1] = (runs[-1][0], pos + 1)
+            else:
+                runs.append((pos, pos + 1))
+        if not runs:
+            continue
+        tgt = out.setdefault(yielder, {})
+        for start, end in runs:
+            tgt[start] = other(layers[yielder])
+            tgt[end] = layers[yielder]
+        flipped.add((a, b))
+    return out, flipped
 
 
 def _edge_xy(mesh: TopoMesh, edge: int, t: float) -> tuple[float, float]:
@@ -279,9 +390,65 @@ def _pad_clear(
     return True
 
 
+def _poly_project(
+    pts: Sequence[tuple[float, float]], seg: Sequence[float], q: tuple[float, float]
+) -> float:
+    """Arc length along the polyline of the point nearest ``q``."""
+    best_d, best_dist, acc = 0.0, math.inf, 0.0
+    for i in range(len(seg)):
+        (x0, y0), (x1, y1) = pts[i], pts[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        l2 = dx * dx + dy * dy
+        u = (
+            0.0
+            if l2 <= 0.0
+            else min(max(((q[0] - x0) * dx + (q[1] - y0) * dy) / l2, 0.0), 1.0)
+        )
+        dd = math.dist((x0 + u * dx, y0 + u * dy), q)
+        if dd < best_dist:
+            best_dist, best_d = dd, acc + u * seg[i]
+        acc += seg[i]
+    return best_d
+
+
+def _poly_point_at(
+    pts: Sequence[tuple[float, float]], seg: Sequence[float], d: float
+) -> tuple[float, float]:
+    """The polyline point at arc length ``d`` (clamped to the ends)."""
+    acc = 0.0
+    for i in range(len(seg)):
+        if d <= acc + seg[i] or i == len(seg) - 1:
+            u = 0.0 if seg[i] <= 0.0 else min(max((d - acc) / seg[i], 0.0), 1.0)
+            (x0, y0), (x1, y1) = pts[i], pts[i + 1]
+            return x0 + u * (x1 - x0), y0 + u * (y1 - y0)
+        acc += seg[i]
+    return pts[-1]
+
+
+def _nearest_edge(mesh: TopoMesh, q: tuple[float, float]) -> tuple[int, float]:
+    """The mesh edge (and parameter on it) nearest world point ``q`` —
+    the ViaSite's informational edge/t; realize reads x/y only."""
+    best, best_d = (0, 0.5), math.inf
+    for e in range(len(mesh.edges)):
+        u, v = mesh.edges[e]
+        (ax, ay), (bx, by) = (
+            (float(c[0]), float(c[1])) for c in (mesh.verts[int(u)], mesh.verts[int(v)])
+        )
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = (
+            0.0
+            if l2 <= 0.0
+            else min(max(((q[0] - ax) * dx + (q[1] - ay) * dy) / l2, 0.0), 1.0)
+        )
+        dd = math.dist((ax + t * dx, ay + t * dy), q)
+        if dd < best_d:
+            best, best_d = (e, t), dd
+    return best
+
+
 def _site_via(
     mesh: TopoMesh,
-    wires: Wires,
     b: WirePath,
     ei: int,
     n_layers: int,
@@ -290,50 +457,82 @@ def _site_via(
     placed: list[tuple[float, float, float]],
     pad_sets: tuple[_Pads, _Pads],
     pose: np.ndarray,
-) -> tuple[int, float, float, float] | None:
-    """One keepout-clean via site on the branch (topo S3, gr520901), or
-    ``None`` when no crossed edge qualifies.
+    *,
+    outline: Any = None,
+    keepouts: Sequence[Any] = (),
+    fallback_dia: float | None = None,
+) -> tuple[int, float, float, float, float] | None:
+    """One keepout-clean via site near the branch's join index ``ei``
+    (topo S3, gr520901), or ``None`` when no point qualifies.
 
-    Candidate edges are the branch's crossed edges nearest the intended
-    join index ``ei`` first — an end via walks inward off its pad, a mid
-    via off its mid edge, either way the smallest move that clears the
-    keepout. An edge qualifies when it is not a constrained ring edge,
-    its pad-channel record leaves ``via_dia + 2·clearance`` free on BOTH
-    outer layers (``gap_free_mm`` −1 = no pad reaches the edge — open),
-    and it is long enough to hold the barrel ``via_dia/2 + clearance``
-    off both endpoint vertices (the wire's own ``t`` is clamped into
-    that window — the graze-at-a-vertex case that minted vias at
-    ``t <= eps``). The chosen point must then clear every pad rect on
-    the two outer layers by ``via_dia/2 + clearance`` and sit
-    ``(dia+dia)/2 + clearance`` off every already placed via; failing
-    either, the walk continues."""
-    outers = (0, n_layers - 1)
-    need = via_dia + 2.0 * clearance
-    margin = via_dia / 2.0 + clearance
-    n = len(b.edges)
-    for j in sorted(range(n), key=lambda k: (abs(k - ei), ei - k)):
-        e = int(b.edges[j])
-        if mesh.constrained[e]:
-            continue
-        free = wires.gap_free_mm[e]
-        if any(0.0 <= float(free[l]) < need for l in outers):
-            continue
-        a, b_ = (mesh.verts[int(v)] for v in mesh.edges[e])
-        edge_mm = math.dist((float(a[0]), float(a[1])), (float(b_[0]), float(b_[1])))
-        if edge_mm <= 2.0 * margin:
-            continue
-        t = float(b.t[j]) if j < len(b.t) else 0.5
-        t = min(max(t, margin / edge_mm), 1.0 - margin / edge_mm)
-        xy = _edge_xy(mesh, e, t)
-        if any(
-            math.dist(xy, (px, py)) < (via_dia + pd) / 2.0 + clearance
-            for px, py, pd in placed
-        ):
-            continue
-        if not all(_pad_clear(xy[0], xy[1], s, pose, margin) for s in pad_sets):
-            continue
-        return e, t, xy[0], xy[1]
-    return None
+    The candidate space is the branch's taut polyline, walked in ≈0.05 mm
+    steps outward from the join anchor. The pre-gr524239 walk demanded
+    ONE whole mesh edge hold the via window — and the mesh splits edges
+    at pad channels (sub-mm on a real board), so no edge ever qualified
+    and the stage minted zero vias on taz-leaf. The window is a property
+    of the POINT: it qualifies when the barrel's keep-out
+    (``via_dia/2 + clearance``) clears every pad rect on both outer
+    layers, every already placed via, the board outline, and every
+    keepout/mounting-hole zone — the same bodies the mesh keeps wires
+    out of, which the old walk never checked (a site could land in a
+    keepout or off the board).
+
+    ``fallback_dia`` (gr524334): when the net-rule via (the comfortable
+    house default, 0.75 mm on 4layer) finds no site anywhere on the
+    branch, the walk retries at the fab-minimum diameter — a signal via
+    carries no current, and a smaller legal barrel beats an unconnected
+    branch. The returned site carries the diameter it was qualified
+    against so realize and the emit guard measure the same geometry."""
+    pts = [(float(x), float(y)) for x, y in b.points]
+    if len(pts) < 2 or not len(b.edges):
+        return None
+    ej = min(max(int(ei), 0), len(b.edges) - 1)
+    anchor = _edge_xy(mesh, int(b.edges[ej]), float(b.t[ej]) if ej < len(b.t) else 0.5)
+    seg = [math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+    total = sum(seg)
+    if total <= 0.0:
+        return None
+    anchor_d = _poly_project(pts, seg, anchor)
+
+    def walk(dia: float) -> tuple[int, float, float, float] | None:
+        margin = dia / 2.0 + clearance
+        step = 0.05
+        for k in range(int(total / step) + 1):
+            for s in (0.0,) if k == 0 else (k * step, -k * step):
+                d = anchor_d + s
+                if d < 0.0 or d > total:
+                    continue
+                x, y = _poly_point_at(pts, seg, d)
+                if any(
+                    math.dist((x, y), (px, py)) < (dia + pd) / 2.0 + clearance
+                    for px, py, pd in placed
+                ):
+                    continue
+                if not all(_pad_clear(x, y, pads, pose, margin) for pads in pad_sets):
+                    continue
+                pt = Point(x, y)
+                # inside the board AND the barrel keep-out off the outline
+                # — a polygon's distance() to an interior point is 0, so
+                # the boundary is what measures edge clearance.
+                if outline is not None and (
+                    not outline.covers(pt) or outline.boundary.distance(pt) < margin
+                ):
+                    continue
+                if any(ko.distance(pt) < margin for ko in keepouts):
+                    continue
+                e, t = _nearest_edge(mesh, (x, y))
+                return e, t, x, y
+        return None
+
+    site = walk(via_dia)
+    dia = via_dia
+    if site is None and fallback_dia is not None and fallback_dia < via_dia:
+        site = walk(float(fallback_dia))
+        dia = float(fallback_dia)
+    if site is None:
+        return None
+    e, t, x, y = site
+    return e, t, x, y, dia
 
 
 def plan_route(
@@ -344,6 +543,7 @@ def plan_route(
     *,
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
+    min_via_dia: float | None = None,
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
 
@@ -351,12 +551,21 @@ def plan_route(
     forced layers (the free via, Decision 6); a forced end that disagrees
     with the assigned layer (a crossing yielded the branch to the other
     side) gets an end via at that end's first/last edge so the pad's
-    mount side stays the terminal layer. Each join's site comes from
+    mount side stays the terminal layer; and a crossing the whole-branch
+    yielder left live is settled by a SPAN flip — only the shared,
+    order-inverting run of edges changes layer, via-bracketed, never the
+    whole branch (gr524239). Each join's site comes from
     :func:`_site_via`'s keepout walk — ``net_rules`` (net NAME →
     :class:`NetRules`, as :func:`realize_result` resolves them) sizes
-    the barrel; a join with no qualifying edge mints no via and lands on
+    the barrel, with ``min_via_dia`` (the fab minimum) as the fallback
+    when the rule via finds no site (gr524334); a join with no
+    qualifying point at either diameter mints no via and lands on
     :attr:`RoutePlan.no_via`."""
     layers, crossings = assign_layers(d, wires, n_layers)
+    # Span-flip the pairs the whole-branch pass could not take (gr524239)
+    # and report only what survives both.
+    span_toggles, span_flipped = _span_toggles(d, wires, layers, crossings, n_layers)
+    crossings = tuple(p for p in crossings if p not in span_flipped)
     rules = net_rules or {}
     pose_a = np.asarray(d.pose0 if pose is None else pose)
     # pad rosters per outer layer: top-SMD pads live on layer 0, bottom
@@ -407,6 +616,26 @@ def plan_route(
         else:
             pad_sets[0].append(row)
             pad_sets[1].append(row)
+    # Via siting keeps the barrel out of the same bodies the mesh keeps
+    # wires out of (gr524239): the board outline and every
+    # keepout/mounting-hole zone touching an outer layer — a barrel is
+    # plated through, so an unscoped zone (``layers == ()``) blocks it
+    # too. The pre-gr524239 walk checked none of these: a site could
+    # land in a keepout or off the board.
+    outline_poly = (
+        Polygon(np.asarray(d.outline, dtype=float)) if len(d.outline) >= 3 else None
+    )
+    keepout_geoms: list[Any] = []
+    outer_idx = {0, n_layers - 1}
+    for z in d.zones:
+        if z.kind not in ("keepout", "mounting_hole"):
+            continue
+        zl = {int(l) for l in (z.layers or ())}
+        if zl and not (zl & outer_idx):
+            continue
+        g = Polygon(np.asarray(topo_proxy.zone_world_ring(d, z, pose_a), dtype=float))
+        if not g.is_empty and g.area > 0.0:
+            keepout_geoms.append(g)
     pieces: list[RoutePiece] = []
     vias: list[ViaSite] = []
     placed: list[tuple[float, float, float]] = []
@@ -415,34 +644,58 @@ def plan_route(
         L = layers[bi]
         la = _pin_forced(d, b.pin_a, n_layers)
         lb = _pin_forced(d, b.pin_b, n_layers)
-        # (edge_seq_idx,) joins and the layer each resulting piece takes
-        joins: list[int] = []
-        run_layers = [L]
-        if la is not None and lb is not None and la != lb and len(b.edges) >= 2:
-            joins = [len(b.edges) // 2]
-            run_layers = [la, lb]
-        elif la is not None and la != L and len(b.edges) >= 1:
-            joins = [0]
-            run_layers = [la, L]
-        elif lb is not None and lb != L and len(b.edges) >= 1:
-            joins = [len(b.edges) - 1]
-            run_layers = [L, lb]
-        if not joins:
+        # Layer switches along the branch, in edge-sequence positions
+        # (0 = before the first edge, n = after the last). Three sources:
+        # the Decision-6 F<->B mid split; pad-side stitches at the ends
+        # when the assigned layer disagrees with a forced pad (gr524239 —
+        # EVERY disagreeing end gets its via, else the far piece hangs
+        # unconnected); and crossing-span flips, where only the shared
+        # inverting run changes layer, never the whole branch.
+        n_e = len(b.edges)
+        start_layer = la if la is not None else L
+        end_layer = lb if lb is not None else L
+        targets: dict[int, int] = {}
+        if la is not None and lb is not None and la != lb and n_e >= 2:
+            targets[n_e // 2] = lb
+        elif n_e >= 1:
+            if la is not None and la != L:
+                targets[0] = L
+            if lb is not None and lb != L:
+                targets[n_e] = end_layer
+        for pos, tgt in span_toggles.get(bi, {}).items():
+            targets[pos] = tgt
+        if not targets:
             pieces.append(
-                RoutePiece(b.net, bi, run_layers[0], b.points, b.pin_a, b.pin_b)
+                RoutePiece(b.net, bi, start_layer, b.points, b.pin_a, b.pin_b)
             )
             continue
+        # Resolve switches in position order: a target equal to the
+        # running layer is a no-op, and the branch must END on end_layer,
+        # so a short running layer forces a final stitch at the last edge.
+        layer = start_layer
+        cuts: list[tuple[int, int]] = []
+        for pos in sorted(targets):
+            tgt = targets[pos]
+            if tgt == layer:
+                continue
+            anchor = min(max(pos, 0), n_e - 1)
+            if cuts and cuts[-1][0] == anchor:
+                continue
+            cuts.append((anchor, tgt))
+            layer = tgt
+        if layer != end_layer and (not cuts or cuts[-1][0] != n_e - 1):
+            cuts.append((n_e - 1, end_layer))
         name = str(d.net_name[b.net]) if b.net < len(d.net_name) else str(b.net)
         nr = rules.get(name, _DEFAULT)
         via_dia = float(nr.via_dia_mm or _VIA_DIA_MM)
         clearance = float(nr.clearance_mm)
         pts = list(b.points)
         cut_xy: list[tuple[float, float]] = []
+        run_lays = [start_layer, *(t for _, t in cuts)]
         sited = True
-        for ei in joins:
+        for ei, _tgt in cuts:
             site = _site_via(
                 mesh,
-                wires,
                 b,
                 ei,
                 n_layers,
@@ -451,6 +704,9 @@ def plan_route(
                 placed,
                 (tuple(pad_sets[0]), tuple(pad_sets[1])),
                 pose_a,
+                outline=outline_poly,
+                keepouts=keepout_geoms,
+                fallback_dia=min_via_dia,
             )
             if site is None:
                 sited = False
@@ -461,9 +717,9 @@ def plan_route(
                 t = float(b.t[ei]) if ei < len(b.t) else 0.5
                 cut_xy.append(_edge_xy(mesh, e, t))
                 continue
-            e, t, x, y = site
-            vias.append(ViaSite(b.net, bi, e, t, x, y))
-            placed.append((x, y, via_dia))
+            e, t, x, y, via_d = site
+            vias.append(ViaSite(b.net, bi, e, t, x, y, via_d))
+            placed.append((x, y, via_d))
             cut_xy.append((x, y))
         if not sited:
             no_via.append(bi)
@@ -482,7 +738,7 @@ def plan_route(
                 run.append(cut_xy[pi])
             if len(run) >= 2:
                 pieces.append(
-                    RoutePiece(b.net, bi, run_layers[pi], tuple(run), b.pin_a, b.pin_b)
+                    RoutePiece(b.net, bi, run_lays[pi], tuple(run), b.pin_a, b.pin_b)
                 )
     unrouted = tuple(sorted({u.net for u in wires.unreachable}))
     return RoutePlan(
@@ -574,7 +830,9 @@ def realize_result(
                 net_id=ir_net.get(name, -1),
                 x=v.x,
                 y=v.y,
-                dia_mm=float(nr.via_dia_mm or _VIA_DIA_MM),
+                # a fallback-sited barrel keeps its qualified diameter
+                # (gr524334) — 0.0 means the net rule's own via
+                dia_mm=float(v.dia_mm or nr.via_dia_mm or _VIA_DIA_MM),
                 drill_mm=float(nr.via_drill_mm or _VIA_DRILL_MM),
                 layer_lo=lo,
                 layer_hi=hi,
@@ -584,12 +842,149 @@ def realize_result(
     return RealizeResult(tuple(tracks), tuple(vias), ())
 
 
+def _guarded_nets(
+    emit: RoutePlan,
+    d: TopoDesign,
+    ir: Any,
+    n_layers: int,
+    pose: np.ndarray,
+    net_rules: Mapping[str, NetRules] | None,
+) -> set[int]:
+    """The anti-short guard (gr524239): net indices of the emit set whose
+    copper would violate foreign clearance — a track over a foreign pad,
+    two foreign tracks closer than their widths plus clearance, a via
+    barrel crowding foreign copper. The order-based crossing detector
+    misses these (a taut polyline may cross a foreign pad without an
+    order inversion on shared edges), so the emit set is checked
+    geometrically before it may be realized. ``NO_NET`` pads are foreign
+    to every net — the baseline run's shorts were tracks over unwired
+    pads. A violating net is withdrawn WHOLE (no orphan fragments) and
+    recorded on :attr:`RoutePlan.guarded`. Centerline-vs-centerline
+    distances against both nets' resolved widths and clearances — the
+    same figures the DRC gate measures, so a pass here is a pass there."""
+    from shapely.geometry import LineString
+
+    from precis.pcb.ir import NO_NET
+
+    rules = net_rules or {}
+    names = [str(n) for n in d.net_name]
+
+    def nm(k: int) -> str:
+        return names[k] if 0 <= k < len(names) else str(k)
+
+    def nrules(name: str) -> NetRules:
+        return rules.get(name, _DEFAULT)
+
+    # Foreign pads per layer, world frame (SMD top/bottom, TH spans all).
+    pad_polys: dict[int, list[tuple[str, Polygon]]] = {i: [] for i in range(n_layers)}
+    for p in range(len(d.pin_xy)):
+        part = int(d.pin_part[p])
+        if part >= len(pose) or not np.isfinite(pose[part, :2]).all():
+            continue
+        hw, hh = (float(v) / 2.0 for v in d.pin_wh[p])
+        if hw <= 0.0 or hh <= 0.0:
+            continue
+        px, py = float(d.pin_xy[p][0]), float(d.pin_xy[p][1])
+        corners = np.asarray(
+            [
+                [px - hw, py - hh],
+                [px + hw, py - hh],
+                [px + hw, py + hh],
+                [px - hw, py + hh],
+            ]
+        )
+        poly = Polygon(
+            np.asarray(topo_proxy.local_to_world(corners, pose[part]), float)
+        )
+        if poly.is_empty or poly.area <= 0.0:
+            continue
+        pnet = int(d.pin_net[p])
+        pname = "" if pnet == int(NO_NET) else str(ir.net_name[pnet])
+        side = int(d.pin_side[p])
+        layers: Iterable[int] = (
+            range(n_layers) if side == 2 else (0,) if side == 0 else (n_layers - 1,)
+        )
+        for lay in layers:
+            pad_polys[lay].append((pname, poly))
+
+    lines = {i: LineString(_octilinear(pc.points)) for i, pc in enumerate(emit.pieces)}
+    by_layer: dict[int, list[int]] = {}
+    for i, pc in enumerate(emit.pieces):
+        by_layer.setdefault(pc.layer, []).append(i)
+
+    guarded: set[int] = set()
+    for lay, idxs in by_layer.items():
+        for i in idxs:
+            pi = emit.pieces[i]
+            if pi.net in guarded:
+                continue
+            nri = nrules(nm(pi.net))
+            wi, ci = float(nri.track_width_mm), float(nri.clearance_mm)
+            for pname, poly in pad_polys.get(lay, []):
+                if pname and pname == nm(pi.net):
+                    continue  # own-net pads are where terminals land
+                cp = float(nrules(pname).clearance_mm) if pname else ci
+                if lines[i].distance(poly) < wi / 2.0 + max(ci, cp):
+                    guarded.add(pi.net)
+                    break
+            if pi.net in guarded:
+                continue
+            for j in idxs:
+                if j <= i:
+                    continue
+                pj = emit.pieces[j]
+                if pj.net == pi.net or pj.net in guarded:
+                    continue
+                nrj = nrules(nm(pj.net))
+                gap = (wi + float(nrj.track_width_mm)) / 2.0 + max(
+                    ci, float(nrj.clearance_mm)
+                )
+                if lines[i].distance(lines[j]) < gap:
+                    guarded.add(pi.net)
+                    guarded.add(pj.net)
+    # A via barrel spans every layer: vs foreign pads and foreign pieces.
+    for v in emit.vias:
+        if v.net in guarded:
+            continue
+        nrv = nrules(nm(v.net))
+        dia, cv = (
+            float(v.dia_mm or nrv.via_dia_mm or _VIA_DIA_MM),
+            float(nrv.clearance_mm),
+        )
+        pt = Point(v.x, v.y)
+        hit = False
+        for lay in range(n_layers):
+            for pname, poly in pad_polys[lay]:
+                if pname and pname == nm(v.net):
+                    continue
+                cp = float(nrules(pname).clearance_mm) if pname else cv
+                if poly.distance(pt) < dia / 2.0 + max(cv, cp):
+                    hit = True
+                    break
+            if hit:
+                break
+            for j in by_layer.get(lay, []):
+                pj = emit.pieces[j]
+                if pj.net == v.net:
+                    continue
+                cj = float(nrules(nm(pj.net)).clearance_mm)
+                if lines[j].distance(pt) < dia / 2.0 + max(cv, cj):
+                    hit = True
+                    break
+            if hit:
+                break
+        if hit:
+            guarded.add(v.net)
+    return guarded
+
+
 def route_design(
     d: TopoDesign,
     ir: Any,
     *,
     pose: Any = None,
     net_rules: Mapping[str, NetRules] | None = None,
+    min_via_dia: float | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -630,7 +1025,15 @@ def route_design(
         # honest refusal (gr520904): a channel whose demand exceeds
         # capacity is named with its owners — never silently crammed.
         raise CorridorOverflow(wires.overflow)
-    plan = plan_route(d, mesh, wires, ir.n_layers, net_rules=net_rules, pose=mesh_pose)
+    plan = plan_route(
+        d,
+        mesh,
+        wires,
+        ir.n_layers,
+        net_rules=net_rules,
+        pose=mesh_pose,
+        min_via_dia=min_via_dia,
+    )
     emit = plan
     if plan.crossings:
         bad = {b for pair in plan.crossings for b in pair}
@@ -639,6 +1042,20 @@ def route_design(
             pieces=tuple(p for p in plan.pieces if p.branch not in bad),
             vias=tuple(v for v in plan.vias if v.branch not in bad),
         )
+    # gr524239: the order-based crossing detector misses geometric
+    # shorts (a taut polyline crossing a foreign pad, an overlap without
+    # order inversion), so the emit set is checked against foreign
+    # copper before it may be realized. A flagged net is withdrawn
+    # whole — never commit shorting copper; the plan records it so
+    # sketch_rows reports the net failed.
+    guarded = _guarded_nets(emit, d, ir, ir.n_layers, np.asarray(mesh_pose), net_rules)
+    if guarded:
+        emit = dataclasses.replace(
+            emit,
+            pieces=tuple(p for p in emit.pieces if p.net not in guarded),
+            vias=tuple(v for v in emit.vias if v.net not in guarded),
+        )
+        plan = dataclasses.replace(plan, guarded=tuple(sorted(guarded)))
     return plan, realize_result(emit, d, ir, ir.n_layers, net_rules=net_rules)
 
 
@@ -665,11 +1082,13 @@ def sketch_rows(
     ``same-layer-crossing`` ``fail.problems`` — the same reason strings
     that job emitted, so ``note``-reading consumers (the check view's
     ``unrouted`` findings, ``view='route-status'``) parse it unchanged;
-    a net with emitted pieces — or one a plane layer serves — is
-    ``realized``; anything left is ``sketched``. A net absent from the
-    route design's ``net_pins`` gets no row — under
+    a net the anti-short guard withdrew joins them as ``failed:
+    short-risk`` (gr524239); a net with emitted pieces is ``realized``;
+    anything left is ``sketched``. A net absent from the route
+    design's ``net_pins`` gets no row — under
     ``design_from_ir(route_planes=True)`` only <2-member nets drop, but
-    this never guesses."""
+    this never guesses. A plane assignment realizes nothing (the
+    no-pours ruling) — it is board-script metadata, not copper."""
     from precis.pcb import DANGLING_NET_NOTE
     from precis.pcb.ir import net_member_counts
     from precis.pcb.session import _pin_key
@@ -741,6 +1160,15 @@ def sketch_rows(
                     f"{pin_key(pa)} and {pin_key(pb)}",
                 }
             )
+        # duck-typed plans (the bench tests' SimpleNamespace) predate the
+        # guarded field — absent means nothing was withdrawn.
+        if k in getattr(plan, "guarded", ()):
+            problems.append(
+                {
+                    "reason": "short-risk",
+                    "message": "copper withdrawn: would short another net (emit guard)",
+                }
+            )
         if problems:
             status = "failed"
             kinds = sorted({str(p["reason"]) for p in problems})
@@ -748,7 +1176,7 @@ def sketch_rows(
             note = f"failed: {', '.join(kinds)} — " + "; ".join(details[:3])
             if len(details) > 3:
                 note += f" (+{len(details) - 3} more)"
-        elif branches_k or int(ir.net_plane_layers[net_id]) != 0:
+        elif branches_k:
             status, note = "realized", None
         else:
             status, note = "sketched", None
@@ -780,10 +1208,12 @@ def widen_power(
     power_net_ids: Iterable[int],
     *,
     drc_errors: Callable[[Any], int],
+    targets: Mapping[int, float] | None = None,
     ladder: Sequence[float] = _WIDEN_LADDER,
 ) -> tuple[Any, dict[int, float]]:
-    """The post-route power stage (the ruling): widen GND/power tracks
-    where clearance allows, never below the net's rule width.
+    """The post-route power stage (the ruling): a rail claims its
+    current-derived width where the DRC oracle allows, never below the
+    net's rule width.
 
     ``power_net_ids`` are IR net ids (``RealizedTrack.net_id``);
     ``result``/the oracle traffic in :class:`precis.pcb.realize.
@@ -793,12 +1223,26 @@ def widen_power(
     kept when its error count does not exceed it (a board already
     carrying errors is not asked to heal them to widen a rail).
 
-    Each net's tracks move together down the ladder — one rail, one
-    width. Accepted widths carry into later nets' trials (the first rail
-    widened is copper the next must clear). Returns ``(result,
-    {net_id: width_mm})`` covering every power net that had tracks —
-    widened or not — so the caller can report the delta; a net that
-    never beat the oracle keeps its rule width verbatim."""
+    ``targets`` is the per-net width the net's estimated current asks
+    for — the IPC-2221 width :func:`precis.pcb.session.
+    clearance_net_rules` resolves, keyed by IR net id, carrying ONLY
+    nets with a real current annotation. A rail tries the ladder steps
+    between its rule width and its target (plus the target itself),
+    widest first, and claims the first the oracle accepts; a target at
+    or below the rule width widens nothing — a 1 mA net keeps its rule
+    width instead of eating whatever space is free (gr524239: widening
+    follows estimated current, not available space). A net ABSENT from
+    ``targets`` has no current annotation and keeps the legacy ruling —
+    the widest ladder step the oracle accepts (gr520904's contract).
+    ``targets=None`` legacy-gates the whole stage the same way for
+    synthetic boards that carry no current annotations at all.
+
+    Each net's tracks move together — one rail, one width. Accepted
+    widths carry into later nets' trials (the first rail widened is
+    copper the next must clear). Returns ``(result, {net_id: width_mm})``
+    covering every power net that had tracks — widened or not — so the
+    caller can report the delta; a net that never beat the oracle keeps
+    its rule width verbatim."""
     base = drc_errors(result)
     tracks = list(result.tracks)
     widths: dict[int, float] = {}
@@ -808,9 +1252,19 @@ def widen_power(
             continue
         rule_w = float(tracks[next(iter(idx))].width_mm)
         widths[net_id] = rule_w
-        for w in ladder:
-            if w <= rule_w:
-                break
+        tgt = None if targets is None else targets.get(net_id)
+        if tgt is None:
+            # no current annotation — the legacy ruling: the widest
+            # ladder step the oracle accepts (gr520904's contract)
+            steps = [w for w in ladder if w > rule_w]
+        else:
+            if float(tgt) <= rule_w:
+                continue  # the est current needs no more than the rule width
+            steps = sorted(
+                {w for w in ladder if rule_w < w <= float(tgt)} | {float(tgt)},
+                reverse=True,
+            )
+        for w in steps:
             trial = tuple(
                 dataclasses.replace(t, width_mm=float(w)) if i in idx else t
                 for i, t in enumerate(tracks)

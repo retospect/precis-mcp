@@ -97,7 +97,7 @@ def test_tools_list_over_the_socket_is_the_read_set(served: dict[str, Any]) -> N
     client._connect(30)
     _, msg = client._rpc("tools/list", {}, 30)
     names = {t["name"] for t in msg["result"]["tools"]}
-    assert names == {"get", "search", "more"}
+    assert names == {"get", "search"}
 
 
 @pytest.mark.parametrize("verb", ["put", "edit", "delete", "tag", "link"])
@@ -186,7 +186,7 @@ def test_restrict_removes_every_non_read_tool() -> None:
     for name in ("get", "search", "more", "put", "edit", "delete", "tag", "link", "x"):
         app.add_tool(lambda: None, name=name)
     server._restrict_to_read_verbs(app)
-    assert {t.name for t in app._tool_manager.list_tools()} == {"get", "search", "more"}
+    assert {t.name for t in app._tool_manager.list_tools()} == {"get", "search"}
 
 
 def test_serve_cli_parses_uds_and_read_only() -> None:

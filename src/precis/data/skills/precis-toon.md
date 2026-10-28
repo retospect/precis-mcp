@@ -67,21 +67,12 @@ are the `pc<chunk_id>` handles search hits carry, above). Pass the
 range to `get` to read the span, or to `get(..., view='toc')` to drill
 further.
 
-## Continuing a truncated table — `more(cursor=...)`
+## Recovering an oversized table
 
-A response that overflows the MCP stdio frame budget is split on
-section boundaries; the head ends with a `⚠️ Truncated` footer
-carrying `more(cursor='...')`. Call the `more` tool with that cursor
-verbatim for the tail, and keep following each page's cursor until no
-footer remains.
-
-**Never batch `more()` calls in parallel.** Each cursor is single-use,
-scoped to the backend process that produced it, and expires after a
-few minutes — a parallel-fired second call (or a call after the
-window lapses) fails with "no such cursor in this process", not a
-retryable transient error. Drain a paginated table sequentially, one
-`more()` at a time. If you miss the window, re-issue the *original*
-call to start over — there's no way to resume a lapsed cursor.
+A response that exceeds the complete-result budget refuses without
+returning a partial table. Its `next:` line names a targeted TOC,
+section, or more-specific search call. Use that call to retrieve only
+the rows you need; there is no `more()` continuation.
 
 ## Cell-escape rules — when quoting kicks in
 

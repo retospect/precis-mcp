@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from precis.server import _kinds_loaded_line
 
 
-def test_se_in_server_overview_and_toc(runtime_with_store):
+def test_se_in_server_overview_and_toc(
+    runtime_with_store, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200000")
     runtime = runtime_with_store
     assert "se" in runtime.hub.kinds
     assert "se" in _kinds_loaded_line(runtime).removeprefix("Kinds: ").rstrip(

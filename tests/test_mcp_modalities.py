@@ -171,12 +171,13 @@ def test_prompt_get_for_non_listed_skill(
 
 
 def test_prompt_get_returns_skill_body(
-    runtime_with_store: PrecisRuntime,
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``prompts/get(name='precis-overview')`` returns the same
     markdown body ``get(kind='skill', id='precis-overview')`` does.
     Single source of truth.
     """
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200000")
     from mcp.server.fastmcp import FastMCP
 
     server = FastMCP("test")

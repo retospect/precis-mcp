@@ -4,7 +4,8 @@ The proxy's ``overlap`` share pulls the anneal toward legal poses, but
 on a dense real board the best pose still carries collisions the commit
 gate counts as pre-route DRC errors. This post-pass walks the worst
 same-side overlapping pair per round and separates it exactly — the
-minimum-translation vector from SAT on the (convex) courtyard rings —
+minimum-translation vector from SAT on the courtyard rings' convex
+hulls (gr524238 rings can be concave; SAT hulls them, see ``_mtv``) —
 splitting the push between two free parts, moving only the free one
 against a fixed part, and skipping both-fixed pairs (unresolvable;
 reported). Parts the push shoves outside the board outline are pulled
@@ -63,13 +64,21 @@ def _mtv(ga: np.ndarray, gb: np.ndarray) -> tuple[np.ndarray, float]:
     """Minimum translation vector separating ``gb`` from ``ga`` — axis
     with the smallest projection overlap, direction pushing ``gb`` away
     from ``ga``'s centroid. Returns (vector, depth); depth 0 = already
-    separated. Exact for convex polygons."""
+    separated. Exact for convex polygons.
+
+    Rings are hullled on entry: since gr524238 courtyard rings can be
+    CONCAVE (the union of a comb electrode's pads), and SAT's
+    edge-normal axes are exact only for convex pairs — hulling keeps the
+    MTV the same conservative convex push it has always been. gr525380
+    tracks replacing this with a concave-aware separation."""
     ca = np.asarray(ga, dtype=np.float64)
     cb = np.asarray(gb, dtype=np.float64)
     if np.allclose(ca[0], ca[-1]):
         ca = ca[:-1]
     if np.allclose(cb[0], cb[-1]):
         cb = cb[:-1]
+    ca = np.asarray(Polygon(ca).convex_hull.exterior.coords, dtype=np.float64)[:-1]
+    cb = np.asarray(Polygon(cb).convex_hull.exterior.coords, dtype=np.float64)[:-1]
     cen_a, cen_b = ca.mean(axis=0), cb.mean(axis=0)
     best_axis = np.zeros(2)
     best_ov = np.inf

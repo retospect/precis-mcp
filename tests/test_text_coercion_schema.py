@@ -31,6 +31,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from precis import server
 
 
@@ -134,3 +136,14 @@ def test_edit_arg_model_accepts_both_str_and_dict_for_text() -> None:
 
     uncoerced = arg_model.model_validate({"kind": "structure", "id": "x", "text": "{}"})
     assert uncoerced.model_dump()["text"] == "{}"
+
+
+@pytest.mark.parametrize("verb", ["put", "edit"])
+def test_ref_envelope_is_accepted_by_wire_arg_model(verb: str) -> None:
+    tool = server.mcp._tool_manager.get_tool(verb)
+    assert tool is not None
+    args: dict[str, Any] = {"kind": "memory", "text": {"$ref": "dc123"}}
+    if verb == "edit":
+        args["id"] = "me42"
+    parsed = tool.fn_metadata.arg_model.model_validate(args)
+    assert parsed.model_dump()["text"] == {"$ref": "dc123"}

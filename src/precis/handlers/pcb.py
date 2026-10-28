@@ -2051,6 +2051,22 @@ class PcbHandler(Handler):
                     next="put(args={'op':'place','placer':'topo'})",
                 )
             params["placer"] = placer
+        # Share-vector preset for placer='topo' (default 'compact'):
+        # 'flow' prices the slice-5 route proxies — the via estimate,
+        # backtrack and direction terms — alongside crossings/ratsnest.
+        # Validated HERE, at the boundary, so a typo'd name is a BadInput
+        # with the vocabulary instead of a failed job (fable review S3);
+        # the job's _topo_run check stays as defense in depth.
+        if op == "place" and opts.get("preset") is not None:
+            preset = str(opts["preset"])
+            from precis.pcb.topoplace.design import PRESETS
+
+            if preset not in PRESETS:
+                raise BadInput(
+                    f"pcb: unknown preset {preset!r} for op='place'",
+                    options=sorted(PRESETS),
+                )
+            params["preset"] = preset
         # Route opt-in for placer='topo' (GRIPE_FIX ruling): route=True
         # runs the in-job route stage that writes copper + pcb_routes;
         # absent means place only. Ignored on other placers.

@@ -12,14 +12,13 @@ no handle column, no minting, no backfill, no migration.
 prefix to a table + kind and does a primary-key lookup, validating the
 prefix against the row's kind (typo guard).
 
-Three kinds are *file-backed* (``skill`` → ``sk``, ``python`` → ``py``,
-``md`` → ``mi``) and
-one lives in its own table (``tag`` → ``tg``); they carry codes for
-registry completeness but keep their existing ``kind`` + slug/id
-addressing — folding them into ``resolve_handle`` is a later slice, so
-:func:`parse` / :func:`is_well_formed` treat only the refs-backed
-(record + chunk) decimal codes as resolvable handles. ``random`` is a
-stateless generator and has **no handle**.
+Two kinds are *file-backed* (``python`` → ``py``, ``md`` → ``mi``) and
+one lives in its own table (``tag`` → ``tg``); they keep their existing
+``kind`` + slug/id addressing rather than decimal-handle resolution.
+Skill anchors are refs rows, so ``sk<ref_id>`` resolves like every other
+record handle. :func:`parse` / :func:`is_well_formed` accept only the
+refs-backed (record + chunk) decimal codes. ``random`` is a stateless
+generator and has **no handle**.
 
 Why code-as-SSOT (not a hand-maintained ADR table): kinds slip through
 manual diligence (``news``/``message``/``cron`` all did). The totality
@@ -196,10 +195,9 @@ _CODE_TO_KIND: dict[str, tuple[str, bool]] = {
 
 # Codes that are NOT refs-backed: file-backed (slug/path body) or
 # other-table. They keep their existing ``kind`` + id addressing, so
-# ``resolve_handle`` / :func:`parse` don't treat them as decimal handles
-# (yet). The codes still exist for registry completeness + the totality
-# test.
-_FILE_BACKED_KINDS = frozenset({"skill", "python", "md"})
+# ``resolve_handle`` / :func:`parse` don't treat them as decimal handles.
+# Skill anchors are refs rows and therefore round-trip as ``sk<ref_id>``.
+_FILE_BACKED_KINDS = frozenset({"python", "md"})
 # ``part`` is NOT here: its catalog rows live in ``parts`` (addressed by
 # C-number), but a linked part has a lazy ref, so ``pn<ref_id>`` is a live
 # decimal handle (``precis.handlers.part`` docstring).

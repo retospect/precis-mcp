@@ -6488,7 +6488,7 @@ class PaperHandler(Handler):
             body=body,
             # Same fold-recovery hint as the se export: a folded dump's
             # middle is only reachable by slicing.
-            pagination_alt_hint=(
+            result_budget_hint=(
                 f"get(kind='paper', id={handle!r}, view='ops', "
                 "args={'page': <n>, 'page_size': <count>}) fetches one "
                 "slice of the dump — the concatenated slices' `chunks` "

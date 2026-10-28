@@ -314,24 +314,20 @@ def test_find_kind_via_dispatch(
     assert "# find 'plaza packing' in me" in body
 
 
-# ── paging through more() ────────────────────────────────────────────
+# ── oversize result refuses with a targeted query ─────────────────────
 
 
-def test_long_result_pages_via_more(
+def test_long_result_refuses_without_partial_matches(
     runtime_with_store: PrecisRuntime, store: Store, monkeypatch
 ) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="m")
     text = "\n".join(f"line {i} about plaza packing" for i in range(1, 200))
     store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text)])
     monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "2000")
-    runtime_with_store.long_lived = True
     body, is_error = runtime_with_store.dispatch_with_status(
         "get", {"kind": "memory", "id": ref.id, "q": "plaza"}
     )
-    assert is_error is False
-    assert "more(cursor='" in body
-    cursor = re.search(r"more\(cursor='([^']+)'", body)
-    assert cursor is not None
-    page2, is_error2 = runtime_with_store.fetch_more(cursor.group(1))
-    assert is_error2 is False
-    assert "plaza" in page2
+    assert is_error is True
+    assert "no partial result was returned" in body
+    assert "search(kind='memory'" in body
+    assert "line 1 about plaza" not in body

@@ -29,37 +29,13 @@ class Response:
     #: instead of creating one; ``False`` on a fresh create;
     #: ``None`` when the verb has no idempotency concept.
     reused: bool | None = None
-    #: One-sentence pointer to a cheaper alternative to draining every
-    #: pagination page (e.g. a skill's targeted-section access), passed
-    #: through to :meth:`precis._pagination.PaginationCache.split` as
-    #: ``alt_hint`` when this response gets chunked. ``None`` (the
-    #: default) keeps the pagination footer's loud drain-before-acting
-    #: warning as the only guidance — right for kinds where a partial
-    #: read is genuinely unsafe to act on (e.g. a youtube transcript).
-    pagination_alt_hint: str | None = None
+    #: Concrete targeted-read call(s) offered when the complete rendered
+    #: body exceeds the result budget. No partial body or continuation is
+    #: returned; this hint is the recovery path.
+    result_budget_hint: str | None = None
 
-    #: Live licensed data must never enter the pagination cache.
+    #: Live licensed data is never retained for later continuation.
     transient: bool = False
-
-    #: Agent-facing rows the handler deliberately kept off ``body`` —
-    #: the rendered-search weak-match fold tail (gr514956). The body
-    #: ends with a ``more(cursor=…)`` hint whose cursor token is
-    #: :data:`precis._pagination.FOLD_CURSOR_PLACEHOLDER`; the
-    #: dispatcher resolves it into a real
-    #: :meth:`precis._pagination.PaginationCache.stash` cursor on a
-    #: long-lived runtime, or unwraps the hint and appends this text
-    #: inline on a short-lived one. Contents must already be rendered —
-    #: the dispatcher never inspects them, and a ``transient`` response
-    #: must not set this (live licensed data may not be cached).
-    fold_tail: str | None = None
-
-    #: ``True`` asks the dispatcher to skip the write-time context fold
-    #: (``PRECIS_TOOL_RESULT_FOLD_BYTES``) for this response — set by read
-    #: paths where the caller explicitly asked for the stored body whole,
-    #: e.g. ``view='body'`` on the cache-backed kinds (gr517274).
-    #: Ordinary frame pagination (``PRECIS_MAX_BODY_BYTES``) still
-    #: applies; only the head+marker+tail fold is suppressed.
-    unfolded: bool = False
 
     #: How many items the body enumerates when the response is a result
     #: set — search hits / list rows shown on this page, the batch size

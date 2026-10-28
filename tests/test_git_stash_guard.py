@@ -44,10 +44,15 @@ class TestDenied:
     def test_denied(self, cmd: str) -> None:
         assert evaluate(cmd) is not None, cmd
 
-    def test_pop_reason_names_apply_alternative(self) -> None:
+    def test_pop_reason_prints_recovery_sequence(self) -> None:
+        """gr525771: the refusal is the only doc most agents see — it must
+        carry the full apply-by-sha recovery and the positional-index hazard."""
         reason = evaluate("git stash pop")
         assert reason is not None
-        assert "git stash apply" in reason
+        assert "git stash list --format='%gd %H %gs'" in reason
+        assert "git stash apply <sha>" in reason
+        assert "git stash drop stash@{n}" in reason
+        assert "POSITIONAL" in reason
         assert "ALLOW_GIT_STASH" in reason
 
     def test_bare_reason_demands_a_tag(self) -> None:
@@ -87,6 +92,16 @@ class TestAllowed:
 
     def test_non_string_command_allowed(self) -> None:
         assert evaluate(None) is None
+
+    def test_apply_by_sha_stays_allowed(self) -> None:
+        """Regression (gr525771): pop's replacement must never be denied —
+        apply is the non-destructive half and passes for any target."""
+        for cmd in (
+            "git stash apply",
+            "git stash apply stash@{0}",
+            "git stash apply 9624515120a1524d91f88b71c9514e461883eb53",
+        ):
+            assert evaluate(cmd) is None, cmd
 
 
 class TestMainWiring:

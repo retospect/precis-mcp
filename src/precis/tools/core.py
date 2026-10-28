@@ -13,7 +13,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from precis import serve_ledger
-from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
+from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
 
 if TYPE_CHECKING:
     from precis.runtime import PrecisRuntime
@@ -372,19 +372,13 @@ _SEARCH_PAGE_SIZE_MAX: int = 100
 
 # There is no tool-level page_size default: an unset page_size forwards
 # ``None``, which dispatch strips so each handler's own default applies.
-# ``PaperHandler.search`` uses that gap to pick a mode-aware default
-# (25 on the ``unique_per='paper'`` page, 10 on the chunk drill page);
-# every other handler keeps its declared default. The ``page_size``/``k``/
-# ``limit`` parameters all default to None so "explicitly passed" is
-# still detectable — page_size=10 alongside k=5 must still conflict.
+# ``PaperHandler.search`` uses that gap to pick a mode-aware default;
+# every other handler keeps its declared default.
 
-# Hard cap on ``text=`` payloads to put / edit. The embedder
-# (BGE-M3 / 1024-d) tokenises and forwards the payload in worker
-# passes; an uncapped multi-MB write OOMs the model. 2 MiB is well
-# above any sane note/markdown/abstract while still bounding a
-# malicious or accidental write. Boundary check lives at the tool
-# surface so the runtime + handlers see only validated input.
-_TEXT_PAYLOAD_MAX_BYTES: int = 2 * 1024 * 1024
+# Resolved text references and literal text share one 2 MiB cap. The
+# boundary check lives at the tool surface so the runtime + handlers see
+# only validated input.
+_TEXT_PAYLOAD_MAX_BYTES: int = TEXT_PAYLOAD_MAX_BYTES
 
 
 def _check_text_payload_size(verb: str, text: str | None) -> str | None:
@@ -417,22 +411,17 @@ def _check_text_payload_size(verb: str, text: str | None) -> str | None:
     )
 
 
-def _coerce_text_body(text: str | dict[str, Any] | list[Any] | None) -> str | None:
-    """Re-serialize a client-coerced JSON body back into the documented str.
+def _coerce_text_body(
+    text: str | dict[str, Any] | list[Any] | None,
+) -> str | dict[str, Any] | list[Any] | None:
+    """Preserve a handle envelope; JSON-serialize other coerced containers.
 
-    gr330034 (same root as gr261385): some MCP client bridges auto-parse a
-    ``text=`` value that *looks* JSON into a dict/list before it ever
-    reaches this tool's schema — observed for ``put(kind='structure',
-    text='{...}')``, whose only documented authoring entry point is a JSON
-    string, so the coercion made the kind uninvokable ("Input should be a
-    valid string ... input_type=dict") from those clients while unrelated
-    non-JSON strings (e.g. cad's line language) passed fine. Rather than
-    fight the client, ``put``/``edit`` widen ``text=`` to accept the
-    coerced shape too and normalize it back to the canonical JSON string
-    here, at the top of each verb, before dispatch — handlers keep parsing
-    ``text`` as a plain string exactly as before. A client that did NOT
-    coerce (an ordinary string) passes through this function untouched.
+    Ordinary dict/list text retains the existing bridge workaround. A dict
+    containing ``$ref`` reaches dispatch intact for validation, receipt
+    enforcement, and expansion into the handler's plain string argument.
     """
+    if isinstance(text, dict) and "$ref" in text:
+        return text
     if isinstance(text, (dict, list)):
         return json.dumps(text)
     return text
@@ -593,14 +582,6 @@ def search(
     kind: str | None = None,
     scope: str | None = None,
     page_size: int | None = None,
-    # ``k=`` / ``limit=`` are the two spellings agents reach for out of
-    # habit (top-k retrieval, SQL LIMIT) — declared here rather than left
-    # to gr334695's strict unknown-kwarg rejection, and normalised to
-    # ``page_size`` (the canonical name) just below. Real parameters, not
-    # ``**kw`` tolerance, so the wire schema advertises them too.
-    k: int | None = None,
-    limit: int | None = None,
-    page: int = 1,
     tags: list[str] | None = None,
     reach: str | None = None,
     exclude: list[str] | None = None,
@@ -755,9 +736,9 @@ def search(
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
-    `page_size` ≤ 100 (aliases `k=`/`limit=`); `page=N` paginates. Omit
-    `kind` (or `'*'`) for cross-kind fan-out; `exclude=` skips slugs;
-    `reach=` ('local'|'remote'|'both'; patent/edgar); `folder=` scopes.
+    `page_size` ≤ 100 selects the top-N hits. Omit `kind` (or `'*'`) for
+    cross-kind fan-out; `exclude=` skips slugs; `reach=`
+    ('local'|'remote'|'both'; patent/edgar); `folder=` scopes.
 
     `mode=` 'hybrid' (default) / 'lexical' (exact) / 'semantic' /
     'verbatim' (all query words as chunk keywords). `angle=`+`like=`
@@ -777,40 +758,6 @@ def search(
     # Validate page_size at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.
     from precis.errors import BadInput
-
-    # k=/limit= are aliases for page_size= (gr338443). Collect whichever
-    # of {page_size, k, limit} were actually given a value (all three
-    # default to None, so an explicit page_size=10 still counts as
-    # given). Agreeing values (including a caller passing the same
-    # number twice under different names) are fine; disagreeing ones
-    # are BadInput naming page_size as the one true spelling.
-    _psize_given: list[tuple[str, int]] = []
-    if page_size is not None:
-        _psize_given.append(("page_size", page_size))
-    if k is not None:
-        _psize_given.append(("k", k))
-    if limit is not None:
-        _psize_given.append(("limit", limit))
-    if len({v for _, v in _psize_given}) > 1:
-        runtime = _get_runtime()
-        return _validation_error(
-            runtime.render_error(
-                BadInput(
-                    "search() got conflicting page_size/k/limit values: "
-                    + ", ".join(f"{name}={value}" for name, value in _psize_given),
-                    next="pass one — page_size= is the canonical name",
-                )
-            )
-        )
-    # A deprecated spelling names its reading on the interpreted: first
-    # line (gr514469) — one release, then k=/limit= go away.
-    _psize_reading = (
-        f"'{_psize_given[0][0]}' read as 'page_size' — the deprecated "
-        "alias; 'page_size' is canonical"
-        if _psize_given and _psize_given[0][0] != "page_size"
-        else None
-    )
-    page_size = _psize_given[0][1] if _psize_given else None
 
     if page_size is not None and (not isinstance(page_size, int) or page_size <= 0):
         runtime = _get_runtime()
@@ -835,12 +782,6 @@ def search(
                 )
             )
         )
-
-    # Validate + default page. A positive int >=1; clamp silently
-    # rather than erroring so a stray ``page=0`` doesn't reject the
-    # whole search call.
-    if not isinstance(page, int) or page < 1:
-        page = 1
 
     # Validate the ranking mode at the boundary so an unknown value
     # surfaces as the canonical BadInput envelope, not a silent
@@ -970,7 +911,7 @@ def search(
         "q": q,
         "scope": scope,
         "page_size": page_size,
-        "page": page,
+        "page": 1,
     }
 
     # Only forward optional kwargs when set
@@ -1100,10 +1041,7 @@ def search(
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
-        result = _dispatch("search", payload, ctx=ctx)
-        if _psize_reading is not None and isinstance(result, str):
-            result = f"{_INTERPRETED_PREFIX}{_psize_reading}\n{result}"
-        return result
+        return _dispatch("search", payload, ctx=ctx)
     finally:
         serve_ledger.unbind(token)
 
@@ -1457,7 +1395,7 @@ def put(
     Full reference: get(kind='skill', id='precis-put-help').
     """
     text = _coerce_text_body(text)
-    err = _check_text_payload_size("put", text)
+    err = _check_text_payload_size("put", text if isinstance(text, str) else None)
     if err is not None:
         return err
     if args:
@@ -1880,7 +1818,7 @@ def edit(
     Full reference: get(kind='skill', id='precis-edit-help').
     """
     text = _coerce_text_body(text)
-    err = _check_text_payload_size("edit", text)
+    err = _check_text_payload_size("edit", text if isinstance(text, str) else None)
     if err is not None:
         return err
     payload: dict[str, Any] = {
@@ -2169,56 +2107,6 @@ def link(
         )
     finally:
         serve_ledger.unbind(token)
-
-
-def more(cursor: str, ctx: Context | None = None) -> _ToolReturn:
-    """Fetch the next page of a chunked response.
-
-    Pagination kicks in when a verb's rendered body exceeds the MCP
-    stdio frame budget. The over-large response is split on Markdown
-    section boundaries; the head ends with a ``⚠️ Truncated`` footer
-    carrying a ``more(cursor='...')`` call. Call this tool with that
-    cursor verbatim to retrieve the tail, and keep following each
-    page's cursor until no footer remains before acting on the body.
-
-    Cursors are single-use, expire after a few minutes, and are pinned
-    to the minting backend process — never batch `more()` in parallel
-    with other calls (a parallel call can land on another worker →
-    "no such cursor in this process"). Drain pages sequentially; if
-    the cursor expired, re-issue the original call.
-    """
-    runtime = _get_runtime()
-    started = _monotonic()
-    is_error = False
-    try:
-        # ``ctx`` is FastMCP's injected Context (excluded from the wire
-        # schema, same as the verb functions) — it only steers the
-        # fold policy for a recipe-replay drain; a cached tail keeps
-        # the policy it was minted with either way (gr513762).
-        body, is_error = runtime.fetch_more(cursor, fold=_ctx_session(ctx) is not None)
-        if is_error:
-            return CallToolResult(
-                content=[TextContent(type="text", text=body)],
-                isError=True,
-            )
-        return body
-    except Exception as e:
-        is_error = True
-        error_body = runtime.render_error(e)
-        return CallToolResult(
-            content=[TextContent(type="text", text=error_body)],
-            isError=True,
-        )
-    finally:
-        try:
-            _log_tool_call(
-                verb="more",
-                payload={"cursor": cursor},
-                duration_ms=(_monotonic() - started) * 1000.0,
-                error=is_error,
-            )
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------

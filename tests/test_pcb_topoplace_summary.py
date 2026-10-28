@@ -100,6 +100,38 @@ def test_ranked_edits_are_measured_and_sorted() -> None:
     assert deltas[0] < 0
 
 
+def test_ranked_edits_probe_lighter_when_the_base_run_moved_nothing(
+    monkeypatch,
+) -> None:
+    """gr524239: an all-fixed base run (0 evals) prices its unlock probes
+    at effort/100, not effort/10 — a probe moves ONE part, and the full
+    figure re-ran a settle per try (~26 s of the taz-leaf summary)."""
+    import precis.pcb.topoplace.summary as tps
+
+    d, _inst, _nets = synth_design(seed=0, n_parts=10, n_nets=20, n_fixed=10)
+    result = topo_place(d, objective=W, effort=_EFFORT, seed=1)
+    assert result.evals == 0
+    seen: list[int] = []
+    real = tps.topo_place
+
+    def spy(d_, *, objective, effort, seed, **kw):
+        seen.append(effort)
+        return real(d_, objective=objective, effort=effort, seed=seed, **kw)
+
+    monkeypatch.setattr(tps, "topo_place", spy)
+    ranked_edits(
+        d,
+        result,
+        assign_pins(d, result.best_pose),
+        pair_map(d),
+        objective=W,
+        effort=_EFFORT,
+        seed=1,
+    )
+    assert seen, "no unlock probe ran"
+    assert all(e == max(1, _EFFORT // 100) for e in seen)
+
+
 def test_run_files_byte_deterministic(tmp_path) -> None:
     """Decision 22: same design + same seed → byte-identical run dir."""
     files_a = _files(*_run(seed=7))

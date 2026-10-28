@@ -178,14 +178,14 @@ def test_title_boost_df_exactly_one_bypasses_but_df_two_does_not(
     """``rare_identity_hit`` must fire on catalogue identity-DF ==
     *exactly* 1, not "not 1" or "exactly 2" — a mutant on either the
     ``==`` or the ``1`` would make a DF==2 word bypass identically to a
-    genuine DF==1 word. "pagination" is DF==1 (only
+    genuine DF==1 word. "bounded" is DF==1 (only
     ``precis-search-help``'s title carries it); "anki" is DF==2
     (``precis-anki-help`` and ``precis-cloze`` both do). Both
     queries pad the same way to well under the 70% coverage bar and
     below the 2-word-match floor, so only the DF==1 bypass can explain
     a difference in outcome.
     """
-    out = skill.search(q="pagination banana orange grape mango kiwi")
+    out = skill.search(q="bounded banana orange grape mango kiwi")
     assert _pinned_slugs(out.body) == ["precis-search-help"], out.body
 
     out = skill.search(q="anki banana orange grape mango kiwi")

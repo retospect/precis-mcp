@@ -69,6 +69,12 @@ every kind — there is no per-kind variant to learn.
   `[handle]` in the prose is a reference — it auto-links the writing ref to
   the target (`related-to`). See `precis-memory-help` / `precis-draft-help`.
 
+- **Read once, write by handle.** After a successful exact-handle `get` in the
+  same MCP session, `put`/`edit` accepts `text={'$ref': 'dc123'}`. The server
+  writes the handle's current stored text and acknowledges length + SHA-256,
+  without echoing it. Chunk handles expand to one chunk; record handles join
+  live body chunks with a blank line. Missing/cross-session reads are `Denied`.
+
 ## Relative grammar (navigation sugar — never stored)
 
 Off a stable handle anchor; resolves against *current* structure, yields another
@@ -119,9 +125,9 @@ agent-facing copy.
 | gripe | `gr` | `gc` | | tag | `tg` | — |
 | skill | `sk` | — | | | | |
 
-- **`skill` / `python` / `tag`** carry codes for completeness but are still
-  addressed by their slug/path or `kind=`+id — a bare `sk…`/`py…`/`tg…` is not
-  yet a resolvable handle. Skills: `get(kind='skill', id='precis-todo-tree-help')`.
+- **`skill`** anchors round-trip as `sk<ref_id>` in `get` and `link`; the
+  canonical `skill:<slug>` form also works. **`python` / `tag`** keep their
+  slug/path or `kind=`+id addressing — bare `py…`/`tg…` is not resolvable.
 - **`draft`** refs are `dr<id>` and their chunks `dc<id>` — the live, current
   forms (every `put(kind='draft', …)` returns `dc`-form handles). The
   ADR-0033 legacy `¶<base58>` form still *resolves* as an accepted alias

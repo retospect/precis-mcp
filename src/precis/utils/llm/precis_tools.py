@@ -1,7 +1,7 @@
 """Bridge the precis verb registry + in-process dispatch to the OSS tool loop.
 
 Two adapters, so an open-source model can drive the precis verbs
-(get/search/put/edit/delete/tag/link/more) with **no MCP socket round-trip**:
+(get/search/put/edit/delete/tag/link) with **no MCP socket round-trip**:
 
 * :func:`precis_tool_specs` — render :data:`precis.tools.TOOL_REGISTRY` into
   :class:`~precis.utils.llm.openai_tools.ToolSpec`s (name + doc + a JSON-Schema
@@ -29,12 +29,6 @@ if TYPE_CHECKING:
 
     from precis.utils.llm.openai_tools import ToolExecutor
 
-#: Verbs never worth advertising to a fresh tool-caller. ``more`` used to
-#: live here — it returns "useless without a live prior response" — but the
-#: gr499039 write-time fold mints a continuation cursor on every oversized
-#: response, so the loop now needs it advertised (and routed, see
-#: :func:`runtime_executor`) or the re-fetch handle the fold footer names
-#: is a dead end.
 _DEFAULT_EXCLUDE: frozenset[str] = frozenset()
 
 
@@ -114,25 +108,11 @@ def runtime_executor(
         from precis.tools.core import _get_runtime
 
         runtime = _get_runtime()
-        # fold=True: the loop's tool results land verbatim in the model's
-        # context — the agent-context budget the write-time fold exists
-        # for — even though this caller is in-process (dispatch defaults
-        # the fold off there; gr513762).
         return lambda verb, args: runtime.dispatch(verb, args, fold=True)
 
     resolved = _resolve()
 
     def execute(name: str, args: dict[str, Any]) -> str:
-        if name == "more":
-            # ``more`` is a tool, not a dispatch verb — it drains the
-            # pagination/fold cursor minted by an earlier oversized
-            # response, held on this same process's runtime cache.
-            from precis.tools.core import _get_runtime
-
-            body, _is_error = _get_runtime().fetch_more(
-                str(args.get("cursor", "")), fold=True
-            )
-            return body
         return resolved(name, args)
 
     return execute

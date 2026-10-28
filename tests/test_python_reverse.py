@@ -159,6 +159,55 @@ def test_pattern_bad_regex_and_bad_mode(handler: PythonHandler) -> None:
         handler.search(q="x", mode="bogus")
 
 
+def test_pattern_prose_query_retries_bare_symbol_token(
+    handler: PythonHandler,
+) -> None:
+    """gr525768: a prose pattern query AND-misses ('Box' plus filler words
+    never co-match one symbol); the server retries with the most
+    symbol-ish token and serves those hits with a note, instead of the
+    bare "no matches" that used to send the agent to grep."""
+    body = handler.search(
+        q="Box via container placement objective", mode="pattern"
+    ).body
+    assert "no python symbols match" not in body
+    assert "r::pkg.core.Box" in body
+    assert "retried server-side" in body
+    assert "'Box'" in body
+
+
+def test_pattern_prose_retry_prefers_identifier_shaped_tokens(
+    handler: PythonHandler,
+) -> None:
+    """The retry order ranks CamelCase/dotted/underscored tokens above
+    plain lowercase words: 'Box' (3 chars, uppercase) is tried before
+    'placement' (9 chars, lowercase)."""
+    body = handler.search(q="placement objective Box", mode="pattern").body
+    assert "retried server-side with the bare symbol token 'Box'" in body
+
+
+def test_pattern_prose_query_total_miss_names_retried_tokens(
+    handler: PythonHandler,
+) -> None:
+    """When even the bare-token retries miss, the empty response names
+    the tokens tried (so the agent doesn't repeat them) and keeps the
+    usual Next: recovery trailer."""
+    body = handler.search(q="Zzzthing via nowhere land", mode="pattern").body
+    assert "no python symbols match" in body
+    assert "'Zzzthing'" in body
+    assert "also matched nothing" in body
+    assert "Next:" in body
+
+
+def test_pattern_single_token_miss_has_no_retry_note(
+    handler: PythonHandler,
+) -> None:
+    """A single-token pattern miss is unchanged: no retry happened, so
+    nothing names retried tokens."""
+    body = handler.search(q="Zzznothing", mode="pattern").body
+    assert "no python symbols match" in body
+    assert "also matched nothing" not in body
+
+
 def test_callers_on_own_repo_finds_resolved_edges() -> None:
     """Smoke on the real tree: a well-called helper has resolved callers."""
     root = Path(__file__).resolve().parent.parent

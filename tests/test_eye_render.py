@@ -62,6 +62,51 @@ def test_memory_eye_1hop_shows_link_neighborhood_by_relation(hub: Hub) -> None:
     assert f"related-to: me{mem2.id} — Kinetics vs thermodynamics" in out
 
 
+def test_claim_ring_collapses_source_and_lists_passage_handles(hub: Hub) -> None:
+    store = hub.live_store
+    finding = store.insert_ref(kind="finding", slug=None, title="Nanobud claim")
+    paper = store.insert_ref(kind="paper", slug="nanobuds-one", title="Nanobuds I")
+    other = store.insert_ref(kind="paper", slug="nanobuds-two", title="Nanobuds II")
+    blocks = store.chunks.insert_chunks(
+        paper.id,
+        [
+            ChunkInsert(ord=0, text="first evidence"),
+            ChunkInsert(ord=1, text="second evidence"),
+        ],
+    )
+    other_block = store.chunks.insert_chunks(
+        other.id, [ChunkInsert(ord=0, text="independent evidence")]
+    )[0]
+    for block in blocks:
+        store.add_link(
+            src_ref_id=paper.id,
+            dst_ref_id=finding.id,
+            relation="corroborates",
+            src_pos=block.ord,
+        )
+    store.add_link(
+        src_ref_id=other.id,
+        dst_ref_id=finding.id,
+        relation="corroborates",
+        src_pos=other_block.ord,
+    )
+
+    out = render_eye(
+        store, handle_registry.format_handle("finding", finding.id), "fisheye+1hop"
+    )
+
+    assert out.count(f"pa{paper.id} — Nanobuds I") == 1
+    assert out.count(f"pa{other.id} — Nanobuds II") == 1
+    assert "×2" in out
+    expected = " · ".join(
+        f"{handle_registry.format_handle('paper', block.id, chunk=True)} ~{block.ord}"
+        for block in blocks
+    )
+    assert f"({expected})" in out
+    other_handle = handle_registry.format_handle("paper", other_block.id, chunk=True)
+    assert f"({other_handle} ~{other_block.ord})" in out
+
+
 def test_memory_eye_1hop_marks_an_audit_flagged_neighbour(hub: Hub) -> None:
     store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="Focus")

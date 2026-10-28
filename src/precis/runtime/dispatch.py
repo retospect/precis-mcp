@@ -82,7 +82,6 @@ from precis.store.revision_context import (
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
-    from precis._pagination import RecipeSeed
     from precis.store.types import ResolvedHandle
 
 log = logging.getLogger(__name__)
@@ -466,13 +465,13 @@ CORE_PARAMS: dict[str, tuple[str, ...]] = {
     "search": (
         "kind",
         "q",
-        "page",
         "page_size",
         "mode",
         "view",
         "tags",
         "scope",
         "status",
+        "sort",
         "args",
     ),
 }
@@ -1131,6 +1130,42 @@ class DispatchMixin(RuntimeShape):
         body, _is_error = self.dispatch_with_status(verb, args, fold=fold)
         return body
 
+    def _chunk_exactly_readable(self, resolved: ResolvedHandle) -> bool:
+        handler = self.hub.handler_for(resolved.kind)
+        if (
+            handler is not None
+            and getattr(handler.spec, "supports_chunk_selectors", None) is False
+        ):
+            return True
+        return self._kind_supports_chunk_selectors(
+            resolved.kind, resolved.public_id, resolved.ref_id
+        )
+
+    def _dereference_write_args(
+        self, verb: str, args: dict[str, Any]
+    ) -> tuple[dict[str, Any], str | None]:
+        if verb not in ("put", "edit"):
+            return args, None
+        text = args.get("text")
+        if not isinstance(text, dict) or "$ref" not in text:
+            return args, None
+        store = self.store
+        if store is None:
+            raise BadInput(
+                "text $ref needs a store-backed deployment",
+                next="pass literal text= instead",
+            )
+        from precis.runtime.handle_deref import expand_text_reference
+
+        expanded = expand_text_reference(
+            text, store=store, chunk_readable=self._chunk_exactly_readable
+        )
+        if expanded is None:
+            return args, None
+        dispatch_args = dict(args)
+        dispatch_args["text"] = expanded.text
+        return dispatch_args, expanded.ack
+
     def dispatch_with_status(
         self, verb: str, args: dict[str, Any], *, fold: bool = False
     ) -> tuple[str, bool]:
@@ -1144,20 +1179,11 @@ class DispatchMixin(RuntimeShape):
         for the rendering. (MCP critic MAJOR — errors silently masked
         as content because ``isError`` was never set.)
 
-        ``fold`` opts into the write-time fold
-        (:data:`precis._pagination.DEFAULT_FOLD_BODY_BYTES` —
-        ``PRECIS_TOOL_RESULT_FOLD_BYTES``): the ~4 KB head+marker+tail
-        shape that bounds what lands in an LLM context at write time.
-        It is **off by default here** — a direct ``runtime.dispatch*``
-        caller is in-process (``precis tools``/``eval``, a script, a
-        test), its result goes to a terminal or a pipe, and an elision
-        marker only hides data there (gr513762). Every agent-serving
-        surface passes ``fold=True`` explicitly:
-        ``precis.tools.core._dispatch`` (when a live MCP session is
-        bound), :mod:`precis.mcp_modalities` (MCP resources/prompts),
-        and ``precis.utils.llm.precis_tools.runtime_executor`` (the
-        in-process LLM loop). The ``PRECIS_MAX_BODY_BYTES`` frame
-        pagination applies either way.
+        ``fold`` opts into the agent-context result budget. Agent-serving
+        surfaces pass it explicitly; direct in-process callers leave it off.
+        An oversized result refuses with a targeted-read next step instead
+        of returning a partial body or continuation cursor. The hard
+        ``PRECIS_MAX_BODY_BYTES`` transport cap applies either way.
         """
         started = time.monotonic()
         with self.hub.request_scope(verb=verb):
@@ -1167,9 +1193,12 @@ class DispatchMixin(RuntimeShape):
                         f"unknown verb: {verb}",
                         options=list(_VERBS),
                     )
-                _refuse_envelope_denied_verb(verb, args, self.hub)
-                _refuse_agent_secrets(verb, args, self.hub)
-                response = self._dispatch_with_retry(verb, args)
+                dispatch_args, deref_ack = self._dereference_write_args(verb, args)
+                _refuse_envelope_denied_verb(verb, dispatch_args, self.hub)
+                _refuse_agent_secrets(verb, dispatch_args, self.hub)
+                response = self._dispatch_with_retry(verb, dispatch_args)
+                if deref_ack is not None:
+                    response = replace(response, body=f"{deref_ack}\n{response.body}")
                 # gr515633 ask 2: a ``tags=`` that names a categorizer
                 # axis silently drops the still-unclassified share of the
                 # corpus (the filter is AND/exclusive) — append the
@@ -1177,82 +1206,22 @@ class DispatchMixin(RuntimeShape):
                 # filter-ready bar. Best-effort: never fails a search.
                 if verb == "search":
                     response = _with_categorizer_filter_notes(self, args, response)
-                # ``Response.unfolded`` (a cache-backed ``view='body'``
-                # read, gr517274) opts this body out of the write-time
-                # fold regardless of the serving surface's fold policy —
-                # the caller asked for the stored body whole. Ordinary
-                # frame pagination (``PRECIS_MAX_BODY_BYTES``) still
-                # applies, and the flag rides cursor chains via
-                # ``_CachedTail.fold``.
-                fold = fold and not response.unfolded
-                # Chunk over-large bodies so they don't blow the
-                # MCP stdio frame. On a long-lived runtime (MCP
-                # server / `precis repl`) the pagination cache stashes
-                # the tail under a cursor; the agent calls
-                # ``more(cursor=...)`` to retrieve it. A short-lived
-                # runtime (e.g. `precis eval`, the default) has no
-                # process around to redeem a cursor with, so
-                # ``cursor_capable=False`` skips minting one and the
-                # footer points at PRECIS_MAX_BODY_BYTES / a long-lived
-                # session instead (gr267466). A handler may set
-                # ``response.pagination_alt_hint`` to point at a
-                # cheaper alternative to draining every page (e.g.
-                # the skill handler's targeted-section access).
-                #
-                # ``kind=`` (when the caller passed one explicitly) also
-                # rides along so the footer can point at
-                # ``search(kind=..., q=...)`` as a cached-content
-                # fallback if the cursor falls out of this cache
-                # (gr330197). For ``get()`` specifically — read-only and
-                # deterministic given the same args — a ``RecipeSeed`` is
-                # built too, so the cursor is self-describing (survives
-                # TTL expiry entirely) rather than just an opaque cache
-                # key; see :mod:`precis._pagination`'s module docstring.
-                #
-                # ``fold`` rides through unchanged: agent-serving
-                # callers opt in explicitly (see the signature docs) —
-                # an in-process dispatch returns bodies whole up to the
-                # frame cap (gr513762).
-                recipe = (
-                    None
-                    if response.transient
-                    else self._build_recipe_seed(verb, args, response)
-                )
-                rendered = self._render(response)
-                if response.fold_tail:
-                    # gr514956: the weak-match fold's ``more(cursor=…)``
-                    # placeholder resolves here — the one seam that
-                    # knows both the tail text and whether this process
-                    # can redeem a cursor. A short-lived runtime (or a
-                    # transient body, which may not be cached) unwraps
-                    # the hint to ``below`` and appends the folded rows
-                    # instead of minting a dead pointer, the same rule
-                    # ``split`` applies via ``cursor_capable=False``.
-                    from precis._pagination import FOLD_CURSOR_PLACEHOLDER
+                body = self._render(response)
+                from precis._result_budget import check_result_budget
 
-                    token = f"more(cursor={FOLD_CURSOR_PLACEHOLDER})"
-                    if self.long_lived and not response.transient:
-                        cursor = self.pagination.stash(
-                            response.fold_tail, kind=args.get("kind"), fold=fold
-                        )
-                        rendered = rendered.replace(
-                            token, f"more(cursor='{cursor}')", 1
-                        )
-                    else:
-                        rendered = (
-                            rendered.replace(token, "below", 1)
-                            + "\n"
-                            + response.fold_tail.lstrip("\n")
-                        )
-                body, _cursor = self.pagination.split(
-                    rendered,
-                    alt_hint=response.pagination_alt_hint,
-                    cursor_capable=self.long_lived,
+                check_result_budget(
+                    body,
+                    verb=verb,
                     kind=args.get("kind"),
-                    recipe=recipe,
-                    transient=response.transient,
-                    fold=fold,
+                    context_limited=fold,
+                    targeted_hint=response.result_budget_hint,
                 )
+                if verb == "get" and self.store is not None:
+                    from precis.runtime.handle_deref import record_exact_read
+
+                    record_exact_read(
+                        args.get("id"), store=self.store, explicit_kind=args.get("kind")
+                    )
                 self._record_tool_call(
                     verb, args, body, False, started, response.result_count
                 )
@@ -1463,179 +1432,6 @@ class DispatchMixin(RuntimeShape):
             "migrate` (scripts/deploy does this), then retry."
         )
 
-    def _build_recipe_seed(
-        self, verb: str, args: dict[str, Any], response: Response
-    ) -> RecipeSeed | None:
-        """Build a :class:`~precis._pagination.RecipeSeed` for a
-        re-derivable cursor, or ``None`` when this call isn't eligible.
-
-        Restricted to ``verb == 'get'`` — the one verb assumed
-        side-effect-free and idempotent, so replaying it from a cursor
-        the agent already holds carries no more risk than the agent
-        re-issuing the call itself (the documented manual recovery this
-        automates, gr330197). ``args`` is the caller's own top-level
-        kwargs (JSON-safe by construction — MCP tool args), and
-        ``body_hash`` anchors on ``response.body`` alone (not the full
-        hints/cost-appended render) so a hint-bus cooldown difference
-        between mint and replay can never look like content drift —
-        see :func:`~precis._pagination.hash_body`.
-        """
-        if verb != "get":
-            return None
-        from precis._pagination import RecipeSeed, hash_body
-
-        return RecipeSeed(
-            verb="get",
-            args=dict(args),
-            body_hash=hash_body(response.body),
-            page=2,
-        )
-
-    def fetch_more(self, cursor: str, *, fold: bool = True) -> tuple[str, bool]:
-        """Return the next page for a pagination cursor.
-
-        Mirrors :meth:`dispatch_with_status`'s ``(body, is_error)``
-        return shape so the ``more`` MCP tool's wrapper code is
-        identical to the seven-verb wrappers. Returns
-        ``(error_body, True)`` when ``cursor`` isn't in this
-        process's :class:`~precis._pagination.PaginationCache` *and*
-        can't be transparently re-derived either, so the protocol-level
-        ``isError`` flag flips.
-
-        Recursive cursors: if the popped tail is itself oversized,
-        :class:`PaginationCache` re-splits and embeds the new
-        cursor in the returned body's footer.
-
-        ``fold`` is the *caller's* fold policy — it only steers the
-        recipe-replay path below (a cache-missed cursor has no stored
-        policy). A cached tail drains under the policy it was minted
-        with, recorded on :class:`precis._pagination._CachedTail`, so a
-        ``more`` call can't retroactively fold (or un-fold) a chain.
-        Default ``True`` matches the agent-serving mint paths.
-        """
-        tail = self.pagination.pop(cursor)
-        if tail is not None:
-            return tail, False
-
-        # gr330197: a cursor missing from this process's cache isn't
-        # necessarily unrecoverable — if it decodes as a re-derivable
-        # ``get()`` recipe, re-run the call and serve the requested
-        # page transparently instead of erroring.
-        rederived = self._fetch_more_via_recipe(cursor, fold=fold)
-        if rederived is not None:
-            return rederived
-
-        # gr267466: ``PaginationCache._prune_expired`` drops an
-        # actually-TTL-expired entry *before* ``pop`` can tell "it
-        # expired" apart from "it never existed in this process" —
-        # both land here as a plain miss. Rather than guess, lead
-        # with the true, always-applicable explanation (process
-        # lifetime) and fold the TTL/single-use case in as a
-        # secondary possibility — never claim "expired", which
-        # would misdirect a `precis eval` caller toward a timing
-        # fix when the real problem is that the cursor's cache
-        # died with the process that minted it.
-        err = BadInput(
-            f"no such cursor in this process: {cursor!r}",
-            next=(
-                "pagination cursors live only in the process that "
-                "minted them — a `precis eval` invocation exits (and "
-                "takes its cursor cache with it) the moment it prints "
-                "its result, so a cursor from a prior `precis eval` "
-                "call can never be found here even though it was "
-                "genuinely valid a moment ago. Set PRECIS_MAX_BODY_BYTES "
-                "higher to avoid the truncation in the first place, or "
-                "use a long-lived session (the MCP server, or `precis "
-                "repl`) where cursors are retrievable for a few "
-                "minutes. If you're already in a long-lived session and "
-                "still see this, the cursor was single-use and already "
-                "consumed, or its few-minute window passed — re-issue "
-                "the original call to get a fresh page. Either way, the "
-                "content is also cached and searchable directly: if you "
-                "recall which kind you were reading, "
-                "search(kind='<that kind>', q='<topic keywords>') "
-                "retrieves the relevant section(s) without this cursor "
-                "at all."
-            ),
-        )
-        return self.render_error(err), True
-
-    def _fetch_more_via_recipe(
-        self, cursor: str, *, fold: bool = True
-    ) -> tuple[str, bool] | None:
-        """Transparent-retry fallback for a re-derivable cursor that's
-        fallen out of the in-process cache (gr330197: TTL expiry under
-        fleet load is the common case, but this also covers a
-        genuinely different process).
-
-        Returns ``None`` — not a tuple — when ``cursor`` doesn't decode
-        as a :class:`~precis._pagination.RecipeSeed` at all, so
-        :meth:`fetch_more` falls through to the ordinary "no such
-        cursor" error. Once decoded, ``decoded.verb`` is checked again
-        even though only ``get()`` calls ever mint one of these
-        (:meth:`_build_recipe_seed`) — defense in depth against a
-        tampered cursor string claiming a different verb. Replaying
-        anything but ``get()`` from an opaque client-supplied token
-        would let ``more(cursor=...)`` become a way to invoke a verb
-        the caller didn't actually ask for; ``get()`` alone is safe
-        because it's the verb this module assumes is a side-effect-free
-        read the caller could already invoke directly.
-        """
-        from precis._pagination import decode_recipe_cursor, hash_body
-
-        decoded = decode_recipe_cursor(cursor)
-        if decoded is None or decoded.verb != "get":
-            return None
-
-        with self.hub.request_scope():
-            try:
-                response = self._dispatch_inner("get", dict(decoded.args))
-            except PrecisError as e:
-                return self.render_error(e), True
-            except Exception as e:
-                log.exception("recipe-cursor replay failed for get(%r)", decoded.args)
-                err: PrecisError = Internal(
-                    f"internal error re-deriving cursor content: "
-                    f"{type(e).__name__} (see server log)"
-                )
-                return self.render_error(err), True
-
-            if response.transient:
-                return self.render_error(
-                    BadInput(
-                        "live supplier content cannot be continued from a recipe cursor",
-                        next="make a fresh get() request; narrow the query or increase PRECIS_MAX_BODY_BYTES.",
-                    )
-                ), True
-
-            if hash_body(response.body) != decoded.body_hash:
-                err = BadInput(
-                    "this cursor's content changed since it was issued — "
-                    f"get({', '.join(f'{k}={v!r}' for k, v in decoded.args.items())}) "
-                    "no longer renders the same body (edited, deleted, or "
-                    "regenerated in the meantime), so serving this page "
-                    "would silently mix content from two different "
-                    "versions.",
-                    next="re-issue the original get() call to see the current version.",
-                )
-                return self.render_error(err), True
-
-            full_body = self._render(response)
-            page_body = self.pagination.render_recipe_page(
-                full_body,
-                decoded.page,
-                alt_hint=response.pagination_alt_hint,
-                kind=decoded.args.get("kind"),
-                verb="get",
-                args=decoded.args,
-                body_hash=decoded.body_hash,
-                # An ``unfolded`` replay (the cursor's args carry
-                # ``view='body'``) must not hand a folded chain to the
-                # draining caller.
-                fold=fold and not response.unfolded,
-            )
-        return page_body, False
-
     @staticmethod
     def _hoist_spray_args(args: dict[str, Any]) -> None:
         """``args={'angle':…,'like':…}`` → top-level ``angle=``/``like=``.
@@ -1699,10 +1495,8 @@ class DispatchMixin(RuntimeShape):
         one wrapping call guarantees the footer is never forgotten on a
         future branch.
 
-        The note is **prepended**, not appended: pagination keeps the
-        largest *leading* run that fits the byte cap, stashing the rest
-        behind ``more()`` — a trailing note on a paginated result would
-        strand the filter signal on a page the caller never reads.
+        The note is **prepended** so it leads the complete bounded result
+        rather than appearing after all hits.
         """
         note: str | None = None
         listing_kinds: tuple[list[str] | None] | None = None

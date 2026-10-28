@@ -91,6 +91,55 @@ def deprecation_note(keys: list[str]) -> str:
     return f"note: pass {joined} inside args={{...}}; top-level {joined} is deprecated"
 
 
+def _removed_search_arg_error(
+    verb: str, kind: Any, kwargs: dict[str, Any], args: dict[str, Any]
+) -> Any:
+    if verb != "search":
+        return None
+    supplied = set(kwargs) | set(args)
+    removed = sorted(supplied & {"k", "limit", "offset"})
+    if removed:
+        from precis.errors import BadInput
+        from precis.tools.core import _get_runtime, _validation_error
+
+        return _validation_error(
+            _get_runtime().render_error(
+                BadInput(
+                    f"search no longer accepts {', '.join(removed)}; "
+                    "page_size= is the only result-size spelling",
+                    next="search(kind='paper', q='…', page_size=10)",
+                )
+            )
+        )
+    if "kinds" in supplied and kind != "skill":
+        from precis.errors import BadInput
+        from precis.tools.core import _get_runtime, _validation_error
+
+        return _validation_error(
+            _get_runtime().render_error(
+                BadInput(
+                    "kinds= is only a skill catalogue filter; it does not "
+                    "select search kinds",
+                    next="search(kind='memory,finding', q='…')",
+                )
+            )
+        )
+    if "page" in supplied:
+        from precis.errors import BadInput
+        from precis.tools.core import _get_runtime, _validation_error
+
+        return _validation_error(
+            _get_runtime().render_error(
+                BadInput(
+                    "search no longer paginates; refine the query or reduce "
+                    "page_size instead of requesting another page",
+                    next="search(kind='paper', q='<more specific terms>', page_size=10)",
+                )
+            )
+        )
+    return None
+
+
 def _handler_top_level(verb: str, kind: Any) -> frozenset[str] | None:
     """Top-level kwargs the ``kind`` handler's ``verb`` declares, else ``None``.
 
@@ -131,6 +180,9 @@ def make_slim_verb(verb: str, full: Callable[..., Any]) -> Callable[..., Any]:
     def slim(**kwargs: Any) -> Any:
         call: dict[str, Any] = {}
         args: dict[str, Any] = dict(kwargs.pop("args", None) or {})
+        refused = _removed_search_arg_error(verb, kwargs.get("kind"), kwargs, args)
+        if refused is not None:
+            return refused
         deprecated: list[str] = []
         for key, value in kwargs.items():
             if key in slim_names:

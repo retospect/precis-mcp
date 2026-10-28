@@ -1,14 +1,14 @@
 ---
 id: precis-search-help
 family: core
-title: precis — the search verb (mechanics, pagination, filters)
-summary: hybrid lexical and semantic search — pagination, tag filters, scope, exclude, cross-kind fan-out
+title: precis — the search verb (bounded results, filters)
+summary: hybrid lexical and semantic search — top-N results, tag filters, scope, exclude, cross-kind fan-out
 answers:
   - how do I search for exact text instead of a fuzzy match?
   - how do I filter search results by tag?
   - how do I search inside just one ref instead of the whole corpus?
   - how do I run a broad, high-recall search across many papers?
-  - how do I paginate through search results?
+  - how do I refine a search that returns too many results?
   - why doesn't my query find a claim I know exists?
   - do I have to type kΩ / µ / Å, or will ASCII work?
   - how do I exclude everything a draft already cites from a search?
@@ -37,7 +37,7 @@ lexical rank, comparable within that one response only.
 search(q="photocatalysis")  # fan out across all kinds
 search(kind="paper", q="photocatalysis")  # one kind
 search(kind="paper,patent", q="photocatalysis")  # several kinds
-search(kind="paper", q="X", page=2, page_size=20)  # paginate
+search(kind="paper", q="X", page_size=20)  # bounded top-N results
 search(kind="paper", q="X", tags=["topic:noxrr"])  # tag-filter
 search(kind="paper", q="X", scope="pa1")  # search inside one ref, by handle
 search(kind="paper", q="X", args={"exclude": ["pa1", "pa2"]})  # skip refs by handle
@@ -205,12 +205,10 @@ Rules of thumb:
   alongside `unique_per='chunk'`.
 - Honors `mode=`, `tags=`, `scope=`, `args={'exclude': …}`, and year filters like
   any search (a `'lexical'` broad search fuses only the text legs).
-- **Paginate by repeating the broad knobs** — `page=2` must carry the
-  same `args=`, or it silently switches to single-query ordering and
-  duplicates page 1.
+- **Refine rather than continuing** — add distinctive terms or narrow
+  `scope=` when the fused list is too broad. There is no page 2.
 - The headline shows a returned count with no "of K" total — there's
-  no honest lexical total for a fused set; the trailer offers
-  `page=N+1` while candidates remain.
+  no honest lexical total for a fused set.
 
 ### args={'good': True} — deep search (async campaign)
 
@@ -299,63 +297,44 @@ entry that is not a taxon is refused naming what it is.
 `search(kind='taxon', under=)` keeps its own meaning: the concept
 descendants, one node only.
 
-## See more results
-## Page through search hits beyond the first page
+## Refine a broad result set
 ## What if there are more hits than I see?
 
 ```python
-search(kind="paper", q="photocatalysis", page=2)
-search(kind="paper", q="photocatalysis", page=3, page_size=20)
+search(kind="paper", q="photocatalysis water splitting", page_size=20)
 ```
 
-`page=1` is the default. Bump `page=` to walk results. `page_size=`
-sets the page size (default 10; 25 on paper kind's default
-one-row-per-paper view, max 100) — *not* a quality cutoff
-despite the name. `page_size=` is the canonical spelling
-(repo-wide, with `page=`; `k=`/`limit=`/`offset=` still read as the
-old spellings for one release and say so on an `interpreted:` line).
+`page_size=` is the only result-size spelling (default 10; 25 on paper
+kind's default one-row-per-paper view, max 100). Search returns a bounded
+top-N set, not continuation pages. Add distinctive terms, narrow `scope=`,
+or use `args={'exclude': …}` to remove known-irrelevant refs. Removed
+spellings `k=`, `limit=`, `offset=`, and `page=` refuse with a canonical
+next call instead of executing a broad default.
 
-Broad-retrieval searches paginate the same way, but the `page=N+1`
-call must repeat the same `queries`/`answers`/`per_paper` `args=` keys
-(see "Broad retrieval" above) — dropping them switches to the
-single-query ordering mid-walk. On the paper kind's default view a
-page is 25 *papers*; refine first (above), don't walk the tail.
+`skill` searches trim the default menu when one hit clearly outscores the
+tail. An explicit `page_size=` shows the full bounded set; `mode='verbatim'`
+is never trimmed.
 
-`page=`/`page_size=` above is a **search-level** knob, independent of
-`more(cursor=...)`, the separate MCP-transport pagination mechanism
-for a single oversized response — see [[precis-toon]].
+## Why are some memory hits omitted?
+## Weak memory matches leave the default result
+## The `weak match(es) omitted` line
 
-`skill` searches additionally trim the *default* page for you: when
-the top hit clearly outscores the tail, the menu stops there and ends
-with `…and N more — page=2` (`page=2` returns what was hidden; an
-explicit `page_size=` shows the untrimmed page, `mode='verbatim'` is
-never trimmed).
-
-## Why did some memory hits hide behind a cursor?
-## Weak memory matches fold off the page
-## The `── weak matches below ──` line
-
-`search(kind='memory', ...)` hides the hits prod measured as noise: a
-hit whose embedding distance clears the kind's cut (**0.42** for
-memory) *and* that no lexical leg corroborated folds off the rendered
-page. Shown hits print that distance (`(0.21)`) in place of the opaque
-rank. The page ends with exactly one line:
+`search(kind='memory', ...)` omits hits prod measured as noise: a hit whose
+embedding distance clears **0.42** *and* that no lexical leg corroborated.
+Shown hits print that distance (`(0.21)`) in place of the opaque rank. The
+result ends with a count and a targeted alternative:
 
 ```text
-── weak matches below (distance > 0.42): N more, more(cursor='…') ──
+── N weak match(es) omitted (distance > 0.42); refine q= or use view='ids' for the complete top-N handle list ──
 ```
 
-`more(cursor='…')` returns exactly the folded rows — nothing re-ranked.
-All-weak pages say `no strong match` ahead of the same line. A
-partial-term (OR) lexical match counts as corroboration, so a long
-query is never judged on distance alone. Only `memory` has a measured
-cut (gr514956, prod 2026-10-25); other kinds list all hits until
-measured.
+All-weak results say `no strong match` ahead of the same line. A
+partial-term (OR) lexical match counts as corroboration, so a long query is
+never judged on distance alone. Only `memory` has a measured cut; other
+kinds list all hits until measured.
 
-`search(kind='memory', view='index')` — the session-start recall shape —
-applies 0.42 as a *hard* cut instead: weak hits drop with no hint and
-no cursor, that rendering is read by recall code. `mode='semantic'`
-never folds.
+`search(kind='memory', view='index')` applies 0.42 as a hard cut with no
+hint. `mode='semantic'` uses the same omission rule.
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X
@@ -378,9 +357,9 @@ open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 
 ### Enumerating a tag ≠ searching within it — a counting trap
 
-`tags=` alone is a **complete enumeration** by recency: `search(kind='gripe',
-tags=['STATUS:open'])` returns *every* open gripe (paginated, "N of K"
-header). Add a `q=` and it becomes a **ranked filter**: a ref must *also*
+`tags=` alone is a **bounded recency listing**: `search(kind='gripe',
+tags=['STATUS:open'])` returns the top N open gripes ("N of K" header).
+Add a `q=` and it becomes a **ranked filter**: a ref must *also*
 lexically match `q` to appear, so the result is often far fewer. The mode
 switch is real and easy to miss.
 
@@ -664,7 +643,7 @@ the local store. CQL details in `precis-patent-search-help`.
 
 Without a query or special view, `args={'sort': 'prio'}` lists lower priorities first
 (unset priority sorts at 5); `args={'sort': 'recency'}` lists most recently updated first.
-Status/tag filters and pagination compose with either sort.
+Status/tag filters and `page_size=` compose with either sort.
 
 ```python
 search(kind='gripe', status='open', page_size=20, args={'sort': 'prio'})

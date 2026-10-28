@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from precis._pagination import PaginationCache
     from precis.dispatch import Hub
     from precis.errors import PrecisError
     from precis.hints import HintBus
@@ -83,10 +82,8 @@ class RuntimeShape:
 
     # ── core dataclass fields ────────────────────────────────────────────
     hub: Hub
-    pagination: PaginationCache
     default_tags_resolved: tuple[str, ...]
     boot_migration_head: str | None
-    long_lived: bool
 
     # ``store`` / ``hints`` are read-only properties on ``PrecisRuntime``
     # (delegating to ``self.hub``), not plain settable fields — declared

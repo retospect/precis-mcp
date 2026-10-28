@@ -78,15 +78,16 @@ ensure-script stamps a hash of the env set as a container label and
 recreates on mismatch — without this the knobs in the sizing table below
 are not actually adjustable short of a manual `docker rm`.
 
-Single uvicorn worker — **never** `--workers >1`: the pagination-cursor registry (`_init_runtime`'s
-`long_lived = True`, gr267466) and the DB pool are all per-process.
+Single uvicorn worker — **never** `--workers >1`: the DB pool and other
+process-local runtime state are per-process.
 
 *From mcp-shared-server-multiprocess (folded 2026-10-21): what must leave
 process memory before a second worker.* One worker is not yet the
 bottleneck (12 concurrent searches 4.78 s wall against a 2.06 s single
 call). Per-process today, with what N workers would do to each:
-- **Pagination cursor registry** (`_pagination.py`) — breaks: a cursor
-  minted on worker A is unreadable on B, a user-visible `no such cursor`.
+- **Handle-dereference read receipts** (`runtime/handle_deref.py`) — an
+  exact read on worker A cannot authorize a write landing on worker B;
+  receipts must externalize before multiple workers.
 - **Exit breadcrumb** (`install_watchdog.py`) — the file deletes on first
   read, so N-1 workers report nothing.
 - **DB pool** — N × `max_size`; the pgbouncer arithmetic below assumes one.
@@ -274,10 +275,7 @@ env override (`store/store.py::Store.connect` /
 
 **Blast radius inverts and this is the main cost of the change**: today a
 wedged server kills one session, shared it kills twelve. `KeepAlive`
-plus criterion 1 is the mitigation. Pagination cursors are also now
-shared — better in steady state (a `more(cursor=...)` always finds its
-minting process, where today it is per-container) but a restart
-invalidates every session's cursors at once.
+plus criterion 1 is the mitigation.
 
 ## Verification state (2026-09-29)
 
@@ -531,9 +529,4 @@ item widens its blast radius from one session to all of them.
   2/10 with no env override today, matching both the "today" column and
   the "new knobs required" claim; `server.py::_DEFAULT_TOOL_CONCURRENCY`
   is 4; anyio's default to-thread `CapacityLimiter` is 40
-  (`anyio/_backends/_asyncio.py`). The `PaginationCache`
-  (`_pagination.py`) is thread-safe and shared as designed — cursors are
-  high-entropy `uuid4` (or self-describing recipe cursors for `get()`),
-  so cross-session collision risk is negligible beyond what the spec
-  already discloses (a restart invalidates every session's cursors at
-  once).
+  (`anyio/_backends/_asyncio.py`).

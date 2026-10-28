@@ -13,6 +13,7 @@ import pytest
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.ir import (
+    COURTYARD_MITRE_LIMIT,
     NO_NET,
     Level,
     PlaneConnectivity,
@@ -186,8 +187,8 @@ def test_instance_courtyard_polygon_prefers_pin_poly_over_the_bbox():
 
 @pytest.mark.parametrize("seed", range(12))
 def test_instance_courtyard_polygon_never_touches_its_own_pads(seed: int):
-    """**The structural property the whole hull-courtyard change exists
-    for**: ``hull(own pad outlines) + clearance`` cannot overlap those
+    """**The structural property the courtyard-from-pads change exists
+    for**: ``union(own pad outlines) + clearance`` cannot overlap those
     pads, at any pad count, size, offset or aspect ratio. 18 of 22
     courtyard drops on the reference board were exactly that self-tangent,
     and the point of deriving the shape from the pads rather than from a
@@ -242,6 +243,130 @@ def test_instance_courtyard_polygon_never_touches_its_own_pads(seed: int):
                     f"pin {p}'s pad corner {corner} — inside the {half_stroke}mm "
                     "half-stroke, so the drawn outline lands on its own copper"
                 )
+
+
+def test_instance_courtyard_polygon_hugs_a_concave_electrode():
+    """gr524238: the courtyard is the UNION of the pads' outlines, not
+    their corner-hull — a concave authored electrode (a wetness comb's
+    teeth around a hole) gets a courtyard that hugs the teeth instead of
+    bridging the gaps. The notch mouth the copper never enters must stay
+    OPEN, and the ring must be measurably concave."""
+    from shapely.geometry import MultiPoint, Point, Polygon
+
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    pid = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == 0)
+    # A U opening upward: arms 2mm apart, 5mm tall. The corner-hull is
+    # the full outer rectangle; the union is the U, notch and all.
+    ir.pin_poly[pid] = [
+        (-3.0, -2.0),
+        (3.0, -2.0),
+        (3.0, 3.0),
+        (1.0, 3.0),
+        (1.0, -0.5),
+        (-1.0, -0.5),
+        (-1.0, 3.0),
+        (-3.0, 3.0),
+    ]
+    clearance = 0.3
+    poly = instance_courtyard_polygon(ir, 0, clearance_mm=clearance, pins=[pid])
+    shape = Polygon(poly)
+
+    mouth = Point(float(ir.pin_dx[pid]), float(ir.pin_dy[pid]) + 1.5)
+    assert not shape.covers(mouth), "the notch the electrode never enters got covered"
+    # The corner-hull this replaced WOULD have covered it — so the test
+    # discriminates the two builders rather than passing on any polygon.
+    dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
+    corners = [(dx + vx, dy + vy) for vx, vy in ir.pin_poly[pid]]
+    hull = MultiPoint(corners).convex_hull.buffer(
+        clearance, join_style=2, mitre_limit=2.0
+    )
+    assert hull.covers(mouth)
+    assert shape.area < shape.convex_hull.area
+
+
+def test_instance_courtyard_polygon_decimates_without_under_covering():
+    """A vertex-dense electrode ring (a 96-gon standing in for the
+    ~450-vertex comb pads) is decimated before it reaches consumers whose
+    cost scales with wall-segment count (the topo CDT's constraint
+    recovery above all), and the ``covers`` check keeps the simplified
+    ring a strict superset of the exact keep-out — the self-clearance
+    property survives decimation provably, not by tolerance-stack luck."""
+    from shapely.geometry import Polygon
+
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    pid = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == 0)
+    n = 96
+    ir.pin_poly[pid] = [
+        (
+            2.0 * math.cos(2.0 * math.pi * k / n),
+            2.0 * math.sin(2.0 * math.pi * k / n),
+        )
+        for k in range(n)
+    ]
+    poly = instance_courtyard_polygon(ir, 0, clearance_mm=0.3, pins=[pid])
+    shape = Polygon(poly)
+    # Decimated: the exact mitred offset of an n-gon carries ~2n points;
+    # a 0.05mm chord tolerance on a ~2.3mm-radius ring needs ~15-20.
+    assert len(poly) < n // 2, f"ring kept {len(poly)} points for a {n}-gon pad"
+    exact = Polygon(ir.pin_poly[pid]).buffer(
+        0.3, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
+    )
+    assert shape.covers(exact), "decimated ring under-covers the exact keep-out"
+
+
+def test_instance_courtyard_polygon_disjoint_pads_fall_back_to_the_hull():
+    """Pads that survive the offset as disjoint clusters (a connector's
+    far mounting tabs) break the one-ring contract — the builder falls
+    back to the corner hull of every pad point, bridging the gaps as
+    over-reservation, byte-identical to the pre-gr524238 shape."""
+    from shapely.geometry import MultiPoint, Polygon
+
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    inst = list(ir.instance_refdes).index("U3")  # the two-pin instance
+    pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
+    assert len(pins) == 2
+    # Two pads 30mm apart: their offset rings cannot merge.
+    ir.pin_dx[pins[0]], ir.pin_dy[pins[0]] = -15.0, 0.0
+    ir.pin_w[pins[0]] = ir.pin_h[pins[0]] = 1.0
+    ir.pin_dx[pins[1]], ir.pin_dy[pins[1]] = 15.0, 0.0
+    ir.pin_w[pins[1]] = ir.pin_h[pins[1]] = 1.0
+    clearance = 0.3
+
+    poly = instance_courtyard_polygon(ir, inst, clearance_mm=clearance, pins=pins)
+    shape = Polygon(poly)
+    corners = []
+    for p in pins:
+        cx, cy = float(ir.pin_dx[p]), float(ir.pin_dy[p])
+        hw, hh = float(ir.pin_w[p]) / 2.0, float(ir.pin_h[p]) / 2.0
+        corners += [
+            (cx - hw, cy - hh),
+            (cx + hw, cy - hh),
+            (cx + hw, cy + hh),
+            (cx - hw, cy + hh),
+        ]
+    expected = MultiPoint(corners).convex_hull.buffer(
+        clearance, join_style=2, mitre_limit=2.0
+    )
+    assert shape.equals_exact(expected, tolerance=1e-9)
+
+
+def test_instance_courtyard_polygon_zero_size_pad_still_reserves_space():
+    """A zero-size pad degrades to a point, not a crash or a vanish — the
+    buffered union still yields a real ring around it (the hull-era
+    degenerate behavior, preserved through the union path)."""
+    from shapely.geometry import Point, Polygon
+
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    pid = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == 0)
+    ir.pin_w[pid] = 0.0
+    ir.pin_h[pid] = 0.0
+    poly = instance_courtyard_polygon(ir, 0, clearance_mm=0.3, pins=[pid])
+    shape = Polygon(poly)
+    assert shape.area > 0.0
+    assert (
+        shape.distance(Point(float(ir.pin_dx[pid]), float(ir.pin_dy[pid])))
+        <= 0.3 + 1e-9
+    )
 
 
 def test_instance_courtyard_polygon_grows_with_the_clearance_it_is_given():

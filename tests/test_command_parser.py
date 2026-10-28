@@ -64,7 +64,6 @@ from tests._skill_roots import skill_files
             "link",
             {"kind": "paper", "id": "x", "link": "memory:1", "rel": "cites"},
         ),
-        ("more(cursor='abc123')", "more", {"cursor": "abc123"}),
     ],
 )
 def test_parse_command_accepts_every_verb(
@@ -84,16 +83,9 @@ def test_parse_command_accepts_nested_literals() -> None:
 
 
 def test_parse_command_verb_set_matches_tool_registry() -> None:
-    """The parser's verb set is sourced from ``TOOL_REGISTRY`` — no
-    hard-coded copy. Both directions of that contract, live-checked."""
+    """The parser's verb set is sourced from ``TOOL_REGISTRY``."""
     for verb in TOOL_REGISTRY:
-        # Minimal literal-only call per verb: every verb accepts kind=
-        # except more() (cursor=) — the registry-derived acceptance
-        # check just needs the verb name itself to be recognised.
-        if verb == "more":
-            parse_command("more(cursor='x')")
-        else:
-            parse_command(f"{verb}()")
+        parse_command(f"{verb}()")
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +310,6 @@ _REPRESENTATIVE_NEXT_HINTS: list[tuple[str, str]] = [
         "link(kind='paper', id='gerfen2011', link='memory:123', rel='cites')",
         "link a memory",
     ),
-    ("more(cursor='abc123')", "fetch the next page"),
 ]
 
 

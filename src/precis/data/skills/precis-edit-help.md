@@ -42,6 +42,12 @@ markdown chunk, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
 `id=`. Append a `~<selector>` to scope within it (`~L42`, `~L42-58`, a content
 slug, …).
 
+After a successful exact-handle `get` in the same MCP session, `text=` may be
+`{"$ref": "<handle>"}` instead of literal text. The server resolves current
+bytes at execution, enforces the same receipt and size rules as `put`, and
+prepends the handle/length/SHA-256 ack. `dry_run=True` resolves and reports
+without writing. Other fields and nested reference shapes are not supported.
+
 ## Change one token, cite, or literal in a file
 ## Replace a string somewhere I know exists
 ## Swap a word inside a paragraph

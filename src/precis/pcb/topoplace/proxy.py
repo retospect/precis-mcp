@@ -20,15 +20,34 @@ Cost is the share-weighted, reference-normalised sum — at the seed
 pose each term contributes exactly its share of J (ObjectiveShares /
 Decision 18), which is what makes "0.8 crossings / 0.2 ratsnest" a
 statement about priority rather than unit conversion. The third term,
-``overlap``, is the same-side courtyard overlap AREA in mm² — a real
-violation the placer must price between rung-2 evals (Reto ruling
-2026-10-25), counted with the ``bottom_by_refdes`` split DRC applies
-(parts on opposite faces overlap legally). The fourth term, ``spread``,
+``overlap``, is the same-side courtyard overlap AREA in mm² plus pad
+containment violation in mm — a real violation the placer must price
+between rung-2 evals (Reto ruling 2026-10-25), counted with the
+``bottom_by_refdes`` split DRC applies (parts on opposite faces overlap
+legally) and, since 2026-10-27, the distance of any pad outside the
+outline polygon (the DRC's ``outline_containment`` measure — the
+mover's centre clamp only sees the outline bbox, which on taz leaf's
+non-rectangular outline lets pads slip out through the neck). The
+fourth term, ``spread``,
 is a board-fill repulsion (the loop's whole-board-usage ask): part
 pairs sharing NO net that the same collision predicate admits repel
 each other through a Gaussian on part origins, so unconnected clumps
 disperse over the outline while net-connected parts still cluster
-under the ratsnest pull.
+under the ratsnest pull. The slice-5 rung adds three route proxies
+over the same wires. ``vias`` is the via-count ESTIMATE: per net, the
+distinct board sides spanned by its non-TH pins minus 1 (a TH pin is a
+wildcard — the plated barrel exists on every layer — so it forces
+nothing, the ``_net_pin_force`` mirror); on a 2-layer board that is
+0/1 per net. ``backtrack`` is fold-back mileage: per net and axis,
+Σ|Δ| over the net's wires minus the pin set's extent — "ran north,
+then doubled back south" priced exactly; always ≥ 0 because any tree
+spans min..max. ``direction`` is the inner-layer ask: wire pairs of
+different nets that run at right angles AND pass close score
+(1−|cos θ|)·exp(−d²/2s²) on segment midpoints, so the anneal steers
+placements whose proxy wires share a compass heading; nets carrying an
+authored power width (:attr:`~.design.TopoDesign.net_direction_exempt`)
+skip the term — a rail is poured post-route, its heading is nobody's
+target.
 """
 
 from __future__ import annotations
@@ -37,7 +56,7 @@ import math
 from typing import Any
 
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 from precis.pcb.topoplace.design import ObjectiveShares, TopoDesign
 
@@ -132,16 +151,90 @@ def _ring_overlap_total(geoms: list[Any], pose: np.ndarray, th: np.ndarray) -> f
 
 
 def overlap_area(d: TopoDesign, pose: np.ndarray) -> float:
-    """Total SAME-MOUNT-SIDE courtyard overlap in mm² — the count the
-    mesh's ``conflicts`` reports and placement DRC flags (parts on
-    opposite faces overlap legally; ``_ring_geom`` mirroring makes a
-    bottom part's ring its physical one). Full recompute — the
-    ``ProxyState`` parity-check baseline and the reference magnitude."""
-    return _ring_overlap_total(
-        [_ring_geom(d, pose[i], i) for i in range(len(d.parts))],
-        pose,
-        through_hole_parts(d),
+    """Total SAME-MOUNT-SIDE courtyard overlap in mm² PLUS pad
+    containment violation in mm — the count the mesh's ``conflicts``
+    reports and placement DRC flags (parts on opposite faces overlap
+    legally; ``_ring_geom`` mirroring makes a bottom part's ring its
+    physical one). Containment: Σ over all pins of the distance to the
+    outline polygon — 0 inside, mm-beyond-the-edge outside (the DRC's
+    ``outline_containment`` measure). The mover's centre clamp only
+    sees the outline's BBOX, so on a non-rectangular outline (taz
+    leaf's neck and tip) only this term keeps pads on the board. Full
+    recompute — the ``ProxyState`` overlap reference magnitude."""
+    return (
+        _ring_overlap_total(
+            [_ring_geom(d, pose[i], i) for i in range(len(d.parts))],
+            pose,
+            through_hole_parts(d),
+        )
+        + pad_containment_total(d, all_pin_world(d, pose))
+        + edge_clearance_total(d, pose)
     )
+
+
+def _outline_geom(d: TopoDesign) -> Any | None:
+    """The outline as a shapely polygon — None when the design carries
+    no outline (synthetic designs), where containment prices nothing."""
+    if len(d.outline) < 3:
+        return None
+    g = Polygon(np.asarray(d.outline, dtype=np.float64))
+    return g if not g.is_empty else None
+
+
+#: Courtyard-to-board-edge clearance floor — the DRC's
+#: ``courtyard_edge_clearance`` jlc_min bar (JLC vcut minimum). The
+#: placer design build sees no fab capability row (the same constraint
+#: as net rule widths), so the term holds the flat minimum; the
+#: house-default tier and edge-mate exemptions belong to the rung that
+#: carries capability.
+_EDGE_CLEAR_MM = 0.4
+
+
+def _ring_edge_violation(g: Any, ring: Any) -> float:
+    """``max(0, _EDGE_CLEAR_MM − gap)`` between a courtyard ring and
+    the outline's EXTERIOR ring — the DRC's
+    ``courtyard_edge_clearance`` distance (taz-leaf-b's C12: pads
+    inside, courtyard 0.13 mm off the V-cut). ``Polygon.distance``
+    cannot be used here: it is 0 whenever one polygon contains the
+    other, so the gap must be measured against the boundary, exactly
+    what :func:`precis.pcb.drc.check_courtyard_edge_clearance` does."""
+    if ring is None:
+        return 0.0
+    return max(0.0, _EDGE_CLEAR_MM - float(g.exterior.distance(ring)))
+
+
+def edge_clearance_total(d: TopoDesign, pose: np.ndarray) -> float:
+    """Σ courtyard-to-edge shortfall over all parts — full recompute,
+    the edge half of the overlap term's outline measures. Edge-mated
+    parts are skipped: their mating face is SUPPOSED to sit on the
+    outline, and pricing them would push them inboard where
+    ``check_edge_mating`` refuses the board (gr530632)."""
+    g = _outline_geom(d)
+    if g is None:
+        return 0.0
+    em = d.part_edge_mate
+    return float(
+        sum(
+            _ring_edge_violation(g, _ring_geom(d, pose[i], i))
+            for i in range(len(d.parts))
+            if not (len(em) == len(d.parts) and bool(em[i]))
+        )
+    )
+
+
+def _containment_part(g: Any, pts: np.ndarray) -> float:
+    """Σ ``geom.distance(point)`` over a pin block — 0 inside the
+    outline, mm beyond the nearest edge outside."""
+    return float(sum(g.distance(Point(float(x), float(y))) for x, y in np.asarray(pts)))
+
+
+def pad_containment_total(d: TopoDesign, pw: np.ndarray) -> float:
+    """The pad-containment violation over all pins at world positions
+    ``pw`` — full recompute, the containment half of the overlap term."""
+    g = _outline_geom(d)
+    if g is None or not len(pw):
+        return 0.0
+    return _containment_part(g, pw)
 
 
 def all_pin_world(d: TopoDesign, pose: np.ndarray) -> np.ndarray:
@@ -209,6 +302,133 @@ def spread_total(d: TopoDesign, pose: np.ndarray) -> float:
         noshare,
         _spread_scale(d, pose),
     )
+
+
+def _net_via_est(d: TopoDesign, net_pins: np.ndarray, flipped: np.ndarray) -> int:
+    """One net's via-count estimate: the distinct board sides spanned by
+    its non-TH pins, minus 1. ``pin_side`` is the build-time PHYSICAL
+    side (``_pin_sides`` bakes the instance side in); a flip since the
+    seed toggles it. A TH pin (side 2) is a wildcard — the plated
+    barrel exists on every layer — so it forces nothing, the
+    ``_net_pin_force`` mirror. On the 2-layer taz board: 0/1 per net."""
+    sides: set[int] = set()
+    for p in net_pins:
+        ps = int(d.pin_side[p])
+        if ps == 2:
+            continue
+        phys = ps ^ (1 if flipped[int(d.pin_part[p])] else 0)
+        sides.add(phys)
+    return max(0, len(sides) - 1)
+
+
+def via_estimate_total(d: TopoDesign, pose: np.ndarray) -> int:
+    """The via-count estimate over all routable nets — full recompute,
+    the reference the ``ProxyState`` parity-check runs against."""
+    flipped = (np.asarray(pose)[:, 3] >= 0.5) != (np.asarray(d.pose0)[:, 3] >= 0.5)
+    return sum(_net_via_est(d, pins, flipped) for pins in d.net_pins)
+
+
+def _net_backtrack(wires: np.ndarray, pts: np.ndarray) -> float:
+    """One net's fold-back mileage in mm: per axis, the wire mileage
+    beyond the pin set's extent. Always ≥ 0 — any tree over the points
+    spans min..max, so Σ|Δ| can only exceed the extent. Exactly the
+    "ran north, then doubled back south" measure."""
+    if not len(wires):
+        return 0.0
+    run_x = float(np.abs(wires[:, 2] - wires[:, 0]).sum())
+    run_y = float(np.abs(wires[:, 3] - wires[:, 1]).sum())
+    ext_x = float(pts[:, 0].max() - pts[:, 0].min())
+    ext_y = float(pts[:, 1].max() - pts[:, 1].min())
+    return max(0.0, run_x - ext_x) + max(0.0, run_y - ext_y)
+
+
+def backtrack_total(d: TopoDesign, pose: np.ndarray) -> float:
+    """Fold-back mileage over all routable nets — full recompute, the
+    reference the ``ProxyState`` parity-check runs against."""
+    pw = all_pin_world(d, pose)
+    total = 0.0
+    for k, pins in enumerate(d.net_pins):
+        total += _net_backtrack(_net_wires(d, pins, pw, k), _net_points(d, pins, pw, k))
+    return total
+
+
+def _wire_uv_mid(w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Unit direction vectors and midpoints for an (E, 4) wire block."""
+    v = w[:, 2:] - w[:, :2]
+    L = np.hypot(v[:, 0], v[:, 1])
+    L = np.where(L <= 0.0, 1.0, L)
+    return v / L[:, None], (w[:, :2] + w[:, 2:]) / 2.0
+
+
+def _dir_matrix(
+    a: np.ndarray,
+    an: np.ndarray,
+    b: np.ndarray,
+    bn: np.ndarray,
+    ex: np.ndarray,
+    scale: float,
+) -> np.ndarray:
+    """The (n_a, n_b) direction-pair weight matrix: (1−|cos θ|)·
+    exp(−d²/2s²) between segment midpoints. Same-net pairs and
+    rule-exempt nets score 0 — the ``_cross_matrix`` mask shape."""
+    n_a, n_b = len(a), len(b)
+    if n_a == 0 or n_b == 0:
+        return np.zeros((n_a, n_b), dtype=np.float64)
+    ua, ma = _wire_uv_mid(a)
+    ub, mb = _wire_uv_mid(b)
+    cos = np.clip(np.abs(ua @ ub.T), 0.0, 1.0)
+    d2 = ((ma[:, None, :] - mb[None, :, :]) ** 2).sum(axis=2)
+    wgt = (1.0 - cos) * np.exp(-d2 / (2.0 * scale * scale))
+    mask = (an[:, None] != bn[None, :]) & ~ex[an][:, None] & ~ex[bn][None, :]
+    wgt = wgt * mask
+    # Zero-length wires (coincident same-net pins, an authored anchor
+    # on a pin) carry no direction: their unit vector is (0,0), which
+    # the cosine scores as perpendicular to EVERY neighbour — a phantom
+    # direction-mix debt on a wire that cannot point anywhere. Mask to 0
+    # (fable-review nit; both this reference path and the staged delta
+    # share the helper, so the parity contract is unaffected).
+    la = np.hypot(a[:, 2] - a[:, 0], a[:, 3] - a[:, 1]) > 0.0
+    lb = np.hypot(b[:, 2] - b[:, 0], b[:, 3] - b[:, 1]) > 0.0
+    return wgt * (la[:, None] & lb[None, :])
+
+
+def _dir_exempt(d: TopoDesign) -> np.ndarray:
+    """The per-net exemption flag, defaulting to nothing-exempt for
+    hand-built synthetic designs that predate the field."""
+    if len(d.net_direction_exempt) == len(d.net_pins):
+        return np.asarray(d.net_direction_exempt, dtype=bool)
+    return np.zeros(len(d.net_pins), dtype=bool)
+
+
+def _dir_total(
+    flat: np.ndarray, flat_net: np.ndarray, ex: np.ndarray, scale: float
+) -> float:
+    """Σ direction-pair weights over one flat wire block — strict upper
+    triangle, so each cross-net pair counts once. Same-net entries are
+    already 0 in the matrix, so the triangle is exactly the pair set."""
+    if len(flat) < 2:
+        return 0.0
+    return float(
+        np.triu(_dir_matrix(flat, flat_net, flat, flat_net, ex, scale), 1).sum()
+    )
+
+
+def direction_total(
+    d: TopoDesign, pose: np.ndarray, scale: float | None = None
+) -> float:
+    """The direction-mix penalty over all routable nets — full
+    recompute, the reference the ``ProxyState`` parity-check runs
+    against. ``scale`` defaults to the outline-derived spread scale at
+    ``pose``; a state built earlier pins its seed scale (the spread
+    term's convention — pose-independent whenever the outline exists)."""
+    pw = all_pin_world(d, pose)
+    wires, nets = _concat(
+        [_net_wires(d, np_net, pw, k) for k, np_net in enumerate(d.net_pins)],
+        list(range(len(d.net_pins))),
+    )
+    if scale is None:
+        scale = _spread_scale(d, pose)
+    return _dir_total(wires, nets, _dir_exempt(d), scale)
 
 
 def _mst_edges(pts: np.ndarray) -> list[tuple[int, int]]:
@@ -427,6 +647,8 @@ class ProxyState:
         self._th = through_hole_parts(d)
         self._ov = (
             _ring_overlap_total(self._rings, self.pose, self._th)
+            + pad_containment_total(d, self._pw)
+            + edge_clearance_total(d, self.pose)
             if self._rings
             else 0.0
         )
@@ -477,6 +699,26 @@ class ProxyState:
             else 0.0
         )
         self._ref_meas = max(self._meas, 1.0)
+        #: slice-5 route proxies (the flow rung): the via estimate, the
+        #: fold-back mileage and the direction mix over the same wires.
+        #: Each is built only when its share is on — a zero share keeps
+        #: every earlier run's cost byte-identical, the overlap/spread
+        #: gating convention.
+        self._build_bottom = np.asarray(d.pose0)[:, 3] >= 0.5
+        self._ex = _dir_exempt(d)
+        self._via = via_estimate_total(d, self.pose) if self.w.vias else 0
+        self._back = (
+            self._backtrack_of(self._wires, self._pw) if self.w.backtrack else 0.0
+        )
+        self._d_scale = _spread_scale(d, self.pose) if self.w.direction else 1.0
+        self._dir = (
+            _dir_total(self._flat, self._flat_net, self._ex, self._d_scale)
+            if self.w.direction
+            else 0.0
+        )
+        self._ref_via = max(float(self._via), 1.0)
+        self._ref_back = max(self._back, 1.0)
+        self._ref_dir = max(self._dir, 1.0)
         self._stage: dict[int, np.ndarray] = {}
         self._stage_wires: dict[int, np.ndarray] = {}
         self._stage_rings: dict[int, Any] = {}
@@ -485,6 +727,31 @@ class ProxyState:
         self._d_ov = 0.0
         self._d_sp = 0.0
         self._d_meas = 0.0
+        self._d_via = 0
+        self._d_back = 0.0
+        self._d_dir = 0.0
+
+    def _backtrack_of(self, wires: list[np.ndarray], pw: np.ndarray) -> float:
+        """Fold-back mileage over a per-net wire list against pin world
+        positions ``pw`` — the full-recompute body shared by ``__init__``
+        and ``commit``."""
+        total = 0.0
+        for k, w in enumerate(wires):
+            total += _net_backtrack(w, _net_points(self.d, self.d.net_pins[k], pw, k))
+        return total
+
+    def _bottom_now(self) -> np.ndarray:
+        """Per-part mount side under the current staged-or-committed
+        state — the via estimate's flip input."""
+        bottom = self.pose[:, 3] >= 0.5
+        for p, row in self._stage.items():
+            bottom[p] = row[3] >= 0.5
+        return bottom
+
+    def _via_of(self, nets: set[int], bottom: np.ndarray) -> int:
+        """The via estimate over ``nets`` at mount sides ``bottom``."""
+        flipped = bottom != self._build_bottom
+        return sum(_net_via_est(self.d, self.d.net_pins[k], flipped) for k in nets)
 
     @property
     def crossings(self) -> int:
@@ -496,7 +763,10 @@ class ProxyState:
 
     @property
     def overlap(self) -> float:
-        """Same-side courtyard overlap area, mm²."""
+        """Legality debt: same-side courtyard overlap area (mm²) PLUS
+        pad containment shortfall (mm) PLUS board-edge clearance
+        shortfall (mm) — three additive pieces, one number the placer
+        hard-gates on."""
         return self._ov + self._d_ov
 
     @property
@@ -510,6 +780,21 @@ class ProxyState:
         return self._meas + self._d_meas
 
     @property
+    def vias(self) -> int:
+        """Via-count estimate over all routable nets."""
+        return self._via + self._d_via
+
+    @property
+    def backtrack(self) -> float:
+        """Fold-back mileage total, mm."""
+        return self._back + self._d_back
+
+    @property
+    def direction(self) -> float:
+        """Direction-mix penalty total (weighted pair sum)."""
+        return self._dir + self._d_dir
+
+    @property
     def cost(self) -> float:
         """Share-weighted, reference-normalised J."""
         return (
@@ -518,6 +803,9 @@ class ProxyState:
             + self.w.overlap * self.overlap / self._ref_ov
             + self.w.spread * self.spread / self._ref_sp
             + self.w.measures * self.measures_mm / self._ref_meas
+            + self.w.vias * self.vias / self._ref_via
+            + self.w.backtrack * self.backtrack / self._ref_back
+            + self.w.direction * self.direction / self._ref_dir
         )
 
     def _rest_view(self, affected: set[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -607,11 +895,20 @@ class ProxyState:
         staged_pw = self._pw.copy()
         for p, row in self._stage.items():
             staged_pw[self.d.pin_part == p] = pin_world(self.d, row, p)
+        # Backtrack deltas price the OLD pins against the pre-move staged
+        # state, so the pre-row positions are kept when the share is on
+        # (an O(P) copy, the same cost class as the one above it).
+        pre_pw = staged_pw.copy() if self.w.backtrack else None
         staged_pw[self.d.pin_part == part] = pin_world(self.d, pose_row, part)
 
         affected = set(self._nets_of[part])
         rest_w, rest_n = self._rest_view(affected)
         old_w, old_n = self._aff_view(affected)
+        old_wires = (
+            {k: self._stage_wires.get(k, self._wires[k]) for k in affected}
+            if self.w.backtrack
+            else {}
+        )
         new_wires = {
             k: _net_wires(self.d, self.d.net_pins[k], staged_pw, k) for k in affected
         }
@@ -623,6 +920,19 @@ class ProxyState:
             - _cross_ab(old_w, rest_w, old_n, rest_n)
             - _within(old_w, old_n)
         )
+        if self.w.direction:
+            # The ``d_cross`` telescope with the direction weight matrix:
+            # new-vs-rest plus within-new, minus old-vs-rest and
+            # within-old — each staged move replaces its own pair sums.
+            sc = self._d_scale
+            ex = self._ex
+            d_dir = (
+                _dir_matrix(new_w, new_n, rest_w, rest_n, ex, sc).sum()
+                + np.triu(_dir_matrix(new_w, new_n, new_w, new_n, ex, sc), 1).sum()
+                - _dir_matrix(old_w, old_n, rest_w, rest_n, ex, sc).sum()
+                - np.triu(_dir_matrix(old_w, old_n, old_w, old_n, ex, sc), 1).sum()
+            )
+            self._d_dir += float(d_dir)
         new_len = (
             float(np.hypot(new_w[:, 0] - new_w[:, 2], new_w[:, 1] - new_w[:, 3]).sum())
             if len(new_w)
@@ -636,10 +946,33 @@ class ProxyState:
         staged_row = np.asarray(pose_row, dtype=np.float64)
         if self.w.overlap:
             new_geom = _ring_geom(self.d, staged_row, part)
+            old_ring = self._ring_of(part)
             self._d_ov += self._pair_overlap(
                 part, new_geom, staged_row[3] >= 0.5
-            ) - self._pair_overlap(part, self._ring_of(part), self._side_of(part))
+            ) - self._pair_overlap(part, old_ring, self._side_of(part))
             self._stage_rings[part] = new_geom
+            # Containment and edge clearance telescope per part: only this
+            # part's pins and ring move. The ring pair delta above prices
+            # the courtyard-overlap half; the outline half keeps pads on a
+            # non-rectangular board the bbox clamp can't describe, and
+            # the edge half keeps courtyards off the V-cut line (the
+            # DRC's ``courtyard_edge_clearance``).
+            g = _outline_geom(self.d)
+            if g is not None:
+                old_row = self._stage.get(part, self.pose[part])
+                # Edge-mated parts ride free (gr530632): their face is
+                # supposed to meet the outline — pricing the meeting here
+                # would push them inboard where the DRC refuses them. The
+                # total (edge_clearance_total) skips the same parts, so
+                # the staged delta stays the parity mirror.
+                em = self.d.part_edge_mate
+                if not (len(em) == len(self.d.parts) and bool(em[part])):
+                    self._d_ov += _ring_edge_violation(
+                        g, new_geom
+                    ) - _ring_edge_violation(g, old_ring)
+                self._d_ov += _containment_part(
+                    g, staged_pw[self.d.pin_part == part]
+                ) - _containment_part(g, pin_world(self.d, old_row, part))
         if self.w.spread:
             old_row = self._stage.get(part, self.pose[part])
             self._d_sp += self._pair_spread(
@@ -652,6 +985,27 @@ class ProxyState:
                 self._d_meas += self._meas_eval(
                     spec, part, staged_row
                 ) - self._meas_eval(spec, part, old_row)
+        if self.w.backtrack:
+            assert pre_pw is not None
+            bt_new = 0.0
+            bt_old = 0.0
+            for k in affected:
+                bt_new += _net_backtrack(
+                    new_wires[k],
+                    _net_points(self.d, self.d.net_pins[k], staged_pw, k),
+                )
+                bt_old += _net_backtrack(
+                    old_wires[k],
+                    _net_points(self.d, self.d.net_pins[k], pre_pw, k),
+                )
+            self._d_back += bt_new - bt_old
+        if self.w.vias:
+            bottom_old = self._bottom_now()
+            bottom_new = bottom_old.copy()
+            bottom_new[part] = staged_row[3] >= 0.5
+            self._d_via += self._via_of(affected, bottom_new) - self._via_of(
+                affected, bottom_old
+            )
         self._stage[part] = staged_row.copy()
         self._stage_wires.update(new_wires)
         self._d_cross += d_cross
@@ -659,7 +1013,15 @@ class ProxyState:
         return self.cost - cost_before
 
     def commit(self) -> None:
-        """Apply every staged row (one for a move, two for a swap)."""
+        """Apply every staged row (one for a move, two for a swap).
+
+        The float route proxies are re-derived from the committed state,
+        never delta-accumulated, so the COMMITTED value matches the
+        module-level totals bit-exactly. The STAGED deltas the anneal
+        decided on agree with this re-derivation only up to float
+        summation order (~1e-13 — a different association of the same
+        per-net sums); that ulp is the honest contract and sits far
+        below the Metropolis noise floor."""
         for p, row in self._stage.items():
             self.pose[p] = row
             self._pw[self.d.pin_part == p] = pin_world(self.d, row, p)
@@ -685,6 +1047,16 @@ class ProxyState:
             if len(self._flat)
             else 0.0
         )
+        # Same contract for the float route proxies: the committed values
+        # are re-derived from the committed state, never delta-accumulated
+        # (the vias estimate is an int — delta-accumulation there is
+        # exact, and the recompute is the parity reference anyway).
+        if self.w.vias:
+            self._via = via_estimate_total(self.d, self.pose)
+        if self.w.backtrack:
+            self._back = self._backtrack_of(self._wires, self._pw)
+        if self.w.direction:
+            self._dir = _dir_total(self._flat, self._flat_net, self._ex, self._d_scale)
         self.revert()
 
     def revert(self) -> None:
@@ -697,3 +1069,6 @@ class ProxyState:
         self._d_ov = 0.0
         self._d_sp = 0.0
         self._d_meas = 0.0
+        self._d_via = 0
+        self._d_back = 0.0
+        self._d_dir = 0.0

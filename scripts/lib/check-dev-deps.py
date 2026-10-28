@@ -21,8 +21,9 @@ Run under the SAME `uv run --no-sync ${UV_WITH}` prefix as the pytest
 invocation (pytest-inner.sh chains it), so a UV_WITH/`--with` bridge is
 honoured: uv's overlay env puts bridged dists on sys.path where
 importlib.metadata sees them. `--with-flags` is the query mode behind
-scripts/test's PRECIS_TEST_AUTOBRIDGE=1 opt-in: it prints the UV_WITH
-flags that would cover the gap, nothing else.
+scripts/test's autobridge pre-pass (gr513760; default-on since gr525770,
+`PRECIS_TEST_AUTOBRIDGE=0` opts out): it prints the UV_WITH flags that
+would cover the gap, nothing else.
 """
 
 from __future__ import annotations

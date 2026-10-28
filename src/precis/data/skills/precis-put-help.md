@@ -32,6 +32,24 @@ kinds (finding says `body=`, memory/gripe/files say `text=`). On a kind
 that declares only one spelling the other is accepted as an alias;
 passing both at once is an error.
 
+## Write content you already read without retransmitting it
+
+```python
+get(id="dc2445852")
+put(kind="memory", text={"$ref": "dc2445852"})
+```
+
+The whole `text=` value must be the exact `{"$ref": "<handle>"}` object.
+A successful exact-handle `get` earlier in the **same MCP session** is
+required; search hits and another session's reads do not count. The write
+uses the source's **current** bytes, not a snapshot of the earlier response,
+and leads with `dereferenced text <- <handle> (N chars, sha256:…)` without
+echoing the body. A chunk handle expands to its exact chunk; a record handle
+joins live body chunks in order with a blank line. Unknown, retired,
+bodyless, exact-unreadable, oversized, or unreceived references refuse before
+mutation. Only `put`/`edit` `text=` accepts this envelope; nested fields,
+string interpolation, cursors, and literal-JSON escaping are out of scope.
+
 ## Jot a thought into memory
 ## Capture a quick note I want to keep
 ## How do I record something for later?

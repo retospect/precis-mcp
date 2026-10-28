@@ -216,6 +216,7 @@ from precis.pcb.eyes import (
     parse_align,
 )
 from precis.pcb.geom import (
+    convex_hull_ring,
     convex_polygons_overlap,
     convex_polygons_signed_separation,
     segments_cross,
@@ -2296,11 +2297,22 @@ class OptimizeEngine:
         #: (:func:`~precis.pcb.ir.instance_courtyard_polygon` carries the
         #: measured table). Computed once: only a part's POSE changes
         #: during the anneal, never its footprint.
-        self._keepout_poly = instance_courtyard_polygons(
-            ir,
-            clearance_mm=COURTYARD_CLEARANCE_MM,
-            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
-        )
+        #:
+        #: HULLED HERE, once: since gr524238 a courtyard ring can be
+        #: concave (a shaped electrode's union hugs its teeth), and every
+        #: consumer of this cache feeds the convex-only SAT predicates
+        #: — hulling at the source keeps ``_placement_is_legal`` and the
+        #: graded cost reading conservative hull answers instead of
+        #: silently-wrong concave ones (fable review S4, gr530631; the
+        #: topoplace ``legalize._mtv`` precedent).
+        self._keepout_poly = [
+            convex_hull_ring(poly)
+            for poly in instance_courtyard_polygons(
+                ir,
+                clearance_mm=COURTYARD_CLEARANCE_MM,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        ]
         #: The broad phase for :meth:`_placement_is_legal`, derived FROM
         #: the polygon rather than independently: a rotation-invariant
         #: circumscribed radius (:func:`~precis.pcb.ir.

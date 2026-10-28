@@ -11,8 +11,18 @@ Allowed (untouched): ``git stash push -u -m "<tag>"`` (tagged, findable),
 read/manage verbs ``list`` / ``show`` / ``drop`` / ``branch`` / ``clear``.
 Denied: bare ``git stash`` (or ``push`` without ``-m``) and any ``git stash pop``.
 
+Why pop stays refused (gr525771): pop is apply+drop, and the drop half is
+the irreversible one — a wrong-entry pop destroys a sibling session's stash.
+There is no safe spelling to admit: pop takes only a positional
+``stash@{n}`` (git rejects a sha with "not a stash reference"), and a bare
+pop grabs ``stash@{0}``, the newest entry on the SHARED stack. So the
+refusal prints the recovery instead: list with ``%gd %H %gs`` (index + sha
++ tag), ``apply <sha>``, then re-list and ``drop stash@{n}`` matched by sha
+— the index is positional and shifts under any concurrent push/pop.
+
 Escape hatch: ``ALLOW_GIT_STASH=1``. Prefer a throwaway WIP commit to set work
-aside. See CLAUDE.md's stash note and the worktree discipline.
+aside. See the stash note in ``docs/conventions/shipping.md`` and the
+worktree discipline.
 
 Wired in ``.claude/settings.json`` (PreToolUse, matcher ``Bash``).
 """
@@ -40,10 +50,16 @@ def evaluate(command: str) -> str | None:
             continue
         if sub == "pop":
             return (
-                "Refusing `git stash pop` — the stash stack is SHARED across all "
-                "worktrees and sibling sessions, so pop can apply+drop the wrong "
-                "entry. Use `git stash apply <sha>` (find the sha via "
-                "`git stash list --format='%H %gs'`), or set ALLOW_GIT_STASH=1."
+                "Refusing `git stash pop` — pop is apply+drop on a stash stack "
+                "SHARED across all worktrees and sibling sessions; it takes only "
+                "a positional stash@{n} (git rejects a sha), so a bare pop can "
+                "apply AND DESTROY another session's entry. Recover by sha:\n"
+                "  1. git stash list --format='%gd %H %gs'  # index, sha, tag\n"
+                "  2. git stash apply <sha>                 # restores, entry kept\n"
+                "  3. git stash drop stash@{n}              # re-run step 1 right "
+                "before dropping: the index is POSITIONAL and shifts on any "
+                "push/pop — match the sha, not the line number\n"
+                "Escape: ALLOW_GIT_STASH=1."
             )
         # bare `git stash` or `git stash push` — require an -m tag to stay findable
         if sub in ("", "push", "save") and not re.search(r"(^|\s)-m(\s|=)", m.group(1)):

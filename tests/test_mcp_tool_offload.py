@@ -39,7 +39,6 @@ import time
 from typing import Any
 
 import anyio
-import pytest
 
 from precis import server
 
@@ -289,47 +288,3 @@ def test_hintbus_request_scope_isolated_across_worker_threads() -> None:
     result_a, result_b = asyncio.run(_run())
     assert result_a == ["topic.a"]
     assert result_b == ["topic.b"]
-
-
-# ── concurrency audit: PaginationCache ───────────────────────────────
-
-
-def test_pagination_cache_thread_safe_under_concurrent_split_pop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Audit item (c): ``PaginationCache`` already guards ``self._entries``
-    with its own ``threading.Lock`` (verified by inspection); this
-    exercises it under genuine concurrent worker-thread ``split``/``pop``
-    calls (rather than just trusting the read) — every call must round-
-    trip cleanly and the cache must end up empty.
-
-    ``PRECIS_MAX_BODY_BYTES`` is pinned small so ``big_body`` overflows
-    on the *first* split but its tail comfortably fits the cap on the
-    second — one ``split`` + one ``pop`` per call fully drains it. A
-    body sized to force ``pop``'s own recursive re-split (its tail
-    still too big) would leave a second-generation cursor behind per
-    call, which is a real behaviour of the cache (each ``more()`` page
-    is one-cursor-at-a-time by design) and not what this test is
-    checking — it's checking thread-safety, not pagination depth.
-    """
-    from precis._pagination import PaginationCache
-
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "2000")
-    cache = PaginationCache(max_cursors=256)
-    big_body = "y" * 3000  # no delimiters: exercises the hard-split fallback
-
-    def _split_and_pop(_i: int) -> bool:
-        _head, cursor = cache.split(big_body)
-        if cursor is None:
-            return True  # fit in one page — nothing to pop
-        tail = cache.pop(cursor)
-        return tail is not None
-
-    async def _run() -> list[bool]:
-        return await asyncio.gather(
-            *(anyio.to_thread.run_sync(_split_and_pop, i) for i in range(20))
-        )
-
-    results = asyncio.run(_run())
-    assert all(results), results
-    assert len(cache) == 0

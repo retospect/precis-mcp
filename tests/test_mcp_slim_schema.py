@@ -24,7 +24,7 @@ from precis import server
 from precis.tools import core as tools_core
 from precis.tools.mcp_slim import CORE_PARAMS
 
-#: Total advertised chars (inputSchema JSON + description) across all eight
+#: Total advertised chars (inputSchema JSON + description) across all seven
 #: verbs. Measured 2026-10-08 after the diet (see test output on failure);
 #: the ceiling is ~5% above that. Before the diet: 30.7k (13.1k after).
 #: Raised 13.8k -> 14.0k for delete's args= (hide a gripe/todo comment) and the
@@ -64,7 +64,7 @@ def _call(name: str, arguments: dict[str, Any]) -> str:
 
 
 def test_schema_size_ratchet() -> None:
-    names = ["get", "search", "put", "edit", "delete", "tag", "link", "more"]
+    names = ["get", "search", "put", "edit", "delete", "tag", "link"]
     sizes = {n: _advertised_chars(n) for n in names}
     total = sum(sizes.values())
     assert total <= _SCHEMA_CHAR_CEILING, f"{total} > {_SCHEMA_CHAR_CEILING}: {sizes}"
@@ -272,3 +272,87 @@ def test_handler_declared_args_key_is_still_lifted(mcp_runtime: None) -> None:
     _recording_slim(seen)(kind="pcb", id="b", args={"op": "pins", "source": "s"})
     assert "source" not in seen[0]
     assert seen[0]["args"]["source"] == "s"
+
+
+@pytest.mark.parametrize("key", ["k", "limit", "offset"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_removed_search_size_aliases_refuse_before_dispatch(
+    key: str, nested: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("removed alias reached dispatch")
+
+    monkeypatch.setattr(tools_core, "_dispatch", unexpected)
+    arguments: dict[str, Any] = {"kind": "finding", "q": "nanobuds"}
+    if nested:
+        arguments["args"] = {key: 3}
+    else:
+        arguments[key] = 3
+    out = _call("search", arguments)
+    assert "[error:BadInput]" in out, out
+    assert "page_size= is the only result-size spelling" in out
+
+
+def test_non_skill_kinds_refuses_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("kinds= reached dispatch")
+
+    monkeypatch.setattr(tools_core, "_dispatch", unexpected)
+    out = _call(
+        "search",
+        {"q": "nanobuds", "kinds": ["memory", "finding"]},
+    )
+    assert "[error:BadInput]" in out, out
+    assert "search(kind='memory,finding'" in out
+
+
+def test_canonical_sort_and_page_size_reach_full_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    out = _call(
+        "search",
+        {"kind": "finding", "q": "nanobuds", "sort": "recency", "page_size": 3},
+    )
+    assert out == "ok"
+    assert seen["sort"] == "recency"
+    assert seen["page_size"] == 3
+
+
+def test_skill_kinds_filter_still_reaches_full_search(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    out = _call(
+        "search",
+        {"kind": "skill", "q": "memory", "args": {"kinds": "gripe"}},
+    )
+    assert out == "ok"
+    assert seen["kinds"] == "gripe"
+
+
+def test_search_page_continuation_refuses_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("page continuation reached dispatch")
+
+    monkeypatch.setattr(tools_core, "_dispatch", unexpected)
+    out = _call("search", {"kind": "paper", "q": "nanobuds", "page": 2})
+    assert "[error:BadInput]" in out, out
+    assert "search no longer paginates" in out
+    assert "more specific terms" in out

@@ -144,8 +144,9 @@ def test_footer_and_open_concern_banner(runtime: PrecisRuntime, store: Store) ->
 
 
 def test_usage_view_orders_coldest_first_and_toc_has_read_column(
-    runtime: PrecisRuntime, store: Store
+    runtime: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200000")
     runtime.dispatch("get", {"kind": "skill", "id": SKILL})
     out = runtime.dispatch("get", {"kind": "skill", "view": "usage"})
     lines = [ln for ln in out.splitlines() if SKILL in ln or "never" in ln]

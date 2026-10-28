@@ -52,9 +52,20 @@ from enum import IntEnum
 from typing import Any
 
 import numpy as np
+from shapely.errors import GEOSException as _ShapelyGEOSException
 from shapely.geometry import (
     MultiPoint as _ShapelyMultiPoint,
 )
+from shapely.geometry import (
+    Point as _ShapelyPoint,
+)
+from shapely.geometry import (
+    Polygon as _ShapelyPolygon,
+)
+from shapely.geometry import (
+    box as _shapely_box,
+)
+from shapely.ops import unary_union as _shapely_unary_union
 
 from precis.errors import BadInput
 from precis.pcb import PIN_ETYPES, landpattern, padplace
@@ -2498,6 +2509,68 @@ COURTYARD_CLEARANCE_MM = 0.40
 #: guarantee below survives the clamp.
 COURTYARD_MITRE_LIMIT = 2.0
 
+#: Chord tolerance for courtyard-ring decimation. Dense authored outlines
+#: (shaped electrodes) arrive at the offset with one exterior vertex per
+#: contour feature; consumers scale with wall-segment count — the topo
+#: placer's CDT constraint recovery above all. Measured on taz-leaf-d:
+#: the comb union's exterior is 57 vertices (the interdigitated teeth
+#: merge into the union's interior, NOT its wall) and decimation at this
+#: tolerance halves it, for ~10% off build_mesh. 25µm keeps the total
+#: outward growth (over-buffer + simplify deviation, ≤2×) at half the
+#: smallest real margin on that board (0.08mm) — a ring must never eat
+#: a rule margin its exact form was measured against.
+COURTYARD_SIMPLIFY_MM = 0.025
+
+#: Rings at or under this vertex count are returned exactly — a rect
+#: pad's 4-8 corners cost nothing anywhere, so decimating them would be
+#: pure risk (every distance measured against those rings moves by the
+#: over-buffer). Only dense authored outlines (shaped electrodes) pay
+#: the simplify and gain from it.
+COURTYARD_DENSE_VERTS = 32
+
+
+def _decimate_courtyard(shape: Any) -> Any:
+    """Thin a DENSE courtyard ring (shaped electrode) before it reaches
+    consumers that scale with wall-segment count.
+
+    Mechanism: grow the exact ring by the chord tolerance, Douglas-Peucker
+    at the same tolerance, then prove. Growing first is what makes the
+    proof cheap — DP may move the boundary inward by up to the tolerance,
+    and the grown ring sits a tolerance outside the exact one on every
+    feature wider than ~2×tolerance (the 0.4mm offset leaves no narrower
+    feature behind), so the simplified boundary cannot re-enter the exact
+    keep-out except in exotica the :func:`shapely.covers` gate then
+    catches: any candidate that fails ``covers(exact)`` is discarded and
+    the exact ring stands. Over-reservation is bounded by ~2× the
+    tolerance, only on rings over :data:`COURTYARD_DENSE_VERTS` — every
+    ordinary part's ring is byte-identical to the undecimated output.
+
+    Accepted consequence (gr530664, documented not fixed): consumers
+    that recover a "land hull" and deflate by the exact clearance (drc
+    ``_land_hull_gap_mm``) read a decimated ring as up to ~2× the
+    tolerance fatter, which can flip a warn/error tier for pairs whose
+    true land gap sits under that. The flip is toward error
+    (conservative) and consistent before/after inside
+    ``_judged_mutation`` — both sides recompute with the same code — so
+    it is recorded here rather than worked around."""
+    if len(shape.exterior.coords) <= COURTYARD_DENSE_VERTS:
+        return shape
+    padded = shape.buffer(
+        COURTYARD_SIMPLIFY_MM, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
+    )
+    if padded.geom_type != "Polygon" or padded.is_empty:
+        return shape
+    lean = padded.simplify(COURTYARD_SIMPLIFY_MM, preserve_topology=True)
+    if (
+        lean.geom_type == "Polygon"
+        and not lean.is_empty
+        and lean.is_valid
+        and len(lean.exterior.coords) >= 4
+        and lean.covers(shape)
+    ):
+        return lean
+    return shape
+
 
 def instance_courtyard_polygon(
     ir: PcbIR,
@@ -2512,11 +2585,17 @@ def instance_courtyard_polygon(
     frame (unrotated, unmirrored, centred on the instance origin), closed
     — first point repeated last. The caller places it.
 
-    The convex hull of the instance's own pad OUTLINES, offset outward by
-    ``clearance_mm``. Exact rather than conservative on the hull step:
-    this IR carries no per-pin rotation, so a pad is axis-aligned in the
-    footprint frame and its four corners are its exact extent. A
-    round pad is covered by its bounding square, which over-covers by
+    The UNION of the instance's own pad OUTLINES, offset outward by
+    ``clearance_mm`` (gr524238). Union, not the old corner-hull: a hull
+    bridges the gaps of a concave authored electrode — the leaf wetness
+    comb's teeth curve around the zip hole and follow the leaf edge, and
+    its hull covered hole and edge that the copper never touches, which
+    refused the board at the judged-mutation gate and fenced real estate
+    from the placer. The union hugs the teeth, so the ring is CONCAVE
+    wherever the pads are. Rect pads contribute their exact extent: this
+    IR carries no per-pin rotation, so a pad is axis-aligned in the
+    footprint frame and its four corners are its exact extent. A round
+    pad is covered by its bounding square, which over-covers by
     ``(sqrt(2) - 1) * r`` at the diagonal — over-covering a courtyard is
     always safe, under-covering is what ships a collision.
 
@@ -2527,9 +2606,9 @@ def instance_courtyard_polygon(
     0.6x. No single radius fixes both ends: over-reservation spreads a
     board around slivers, under-reservation collides the chunky parts.
 
-    **``hull(own pads) + clearance`` provably cannot overlap its own
-    pads.** Every pad lies inside the hull; the offset boundary is at
-    distance ``clearance_mm`` from the hull boundary (mitre only ever
+    **``union(own pads) + clearance`` provably cannot overlap its own
+    pads.** Every pad lies inside the union; the offset boundary is at
+    distance ``clearance_mm`` from the union boundary (mitre only ever
     pushes it further out, never in — see
     :data:`COURTYARD_MITRE_LIMIT`), so every point of it clears every one
     of this instance's own pads by at least that much. That is a
@@ -2537,6 +2616,16 @@ def instance_courtyard_polygon(
     self-tangent courtyard drop UNREPRESENTABLE rather than "fixed by a
     good margin" — 18 of 22 courtyard drops on the reference board were
     exactly that class.
+
+    **Concavity is part of the contract.** Shapely-side consumers (DRC,
+    the topo proxy's overlap term, silk) get the tighter truth for free.
+    Consumers that assume convexity must hull at their own boundary — the
+    topo legalizer's SAT does exactly that (gr525380 tracks a
+    concave-aware separation there). And a footprint whose pads survive
+    the offset as DISJOINT clusters — a connector's far mounting tabs —
+    falls back to the corner hull of every pad point: the ring contract
+    is one polygon, and bridging sparse gaps is the same over-reservation
+    this function drew before gr524238.
 
     ``clearance_mm`` is the fab-derived chain
     (:func:`precis.pcb.silk.silk_clearance_mm`), not a convention: this
@@ -2569,6 +2658,7 @@ def instance_courtyard_polygon(
     if pads is None:
         pads = [pad for pad in ir.footprint_pads if pad.instance == inst]
     corners: list[tuple[float, float]] = []
+    geoms: list[Any] = []
     for pad in pads:
         ext = footprint_pad_extent(pad.raw)
         if ext is None:
@@ -2576,17 +2666,27 @@ def instance_courtyard_polygon(
         cx, cy, w, h, ring = ext
         if ring:
             # The pad's OWN outline, not its bounding square — an
-            # authored electrode's hull should hug its real shape (a
+            # authored electrode's courtyard should hug its real shape (a
             # zigzag/crenellated edge is the whole point of one), not a
             # rectangle that over-reserves past every tooth.
-            corners += [(cx + vx, cy + vy) for vx, vy in ring]
+            pts = [(cx + vx, cy + vy) for vx, vy in ring]
+            corners += pts
+            geoms.append(
+                _ShapelyPolygon(pts) if len(set(pts)) >= 3 else _ShapelyMultiPoint(pts)
+            )
             continue
-        corners += [
+        rc = [
             (cx - w / 2.0, cy - h / 2.0),
             (cx + w / 2.0, cy - h / 2.0),
             (cx + w / 2.0, cy + h / 2.0),
             (cx - w / 2.0, cy + h / 2.0),
         ]
+        corners += rc
+        geoms.append(
+            _shapely_box(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+            if w > 0.0 and h > 0.0
+            else _ShapelyPoint(cx, cy)
+        )
     if not corners:
         if pins is None:
             pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
@@ -2594,29 +2694,55 @@ def instance_courtyard_polygon(
             dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
             poly = ir.pin_poly[pid]
             if poly:
-                corners += [(dx + float(vx), dy + float(vy)) for vx, vy in poly]
+                pts = [(dx + float(vx), dy + float(vy)) for vx, vy in poly]
+                corners += pts
+                geoms.append(
+                    _ShapelyPolygon(pts)
+                    if len(set(pts)) >= 3
+                    else _ShapelyMultiPoint(pts)
+                )
                 continue
             hw, hh = float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0
-            corners += [
+            rc = [
                 (dx - hw, dy - hh),
                 (dx + hw, dy - hh),
                 (dx + hw, dy + hh),
                 (dx - hw, dy + hh),
             ]
+            corners += rc
+            geoms.append(
+                _shapely_box(dx - hw, dy - hh, dx + hw, dy + hh)
+                if hw > 0.0 and hh > 0.0
+                else _ShapelyPoint(dx, dy)
+            )
     if not corners:
         h = fallback_half_extent_mm
         if h <= 0.0:
             return []
         return [(-h, -h), (h, -h), (h, h), (-h, h), (-h, -h)]
-    # `MultiPoint(...).convex_hull` rather than a hand-rolled hull: it is
-    # the same shapely already relied on for every other polygon question
-    # in this package, and it degrades correctly where a hull routine
-    # would need special-casing — a single zero-size pad hulls to a Point,
-    # a row of collinear ones to a LineString, and `buffer` turns each
-    # into a real area rather than raising on a degenerate ring.
-    shape = _ShapelyMultiPoint(corners).convex_hull.buffer(
-        clearance_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
-    )
+    shape = None
+    try:
+        grown = _shapely_unary_union(geoms).buffer(
+            clearance_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
+        )
+        # Disjoint pad clusters surviving the offset (a connector's far
+        # tabs) break the one-ring contract — the fallback hull below
+        # bridges them.
+        if grown.geom_type == "Polygon" and not grown.is_empty:
+            shape = _decimate_courtyard(grown)
+    except _ShapelyGEOSException:
+        shape = None
+    if shape is None:
+        # The pre-gr524238 path: corner-hull of every pad point, offset.
+        # Reached only for degenerate or disjoint pad sets, and always the
+        # safe (over-covering) direction — `MultiPoint.convex_hull`
+        # degrades correctly where a hand-rolled hull would need
+        # special-casing: a single zero-size pad hulls to a Point, a row
+        # of collinear ones to a LineString, and `buffer` turns each into
+        # a real area rather than raising on a degenerate ring.
+        shape = _ShapelyMultiPoint(corners).convex_hull.buffer(
+            clearance_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
+        )
     return [(float(x), float(y)) for x, y in shape.exterior.coords]
 
 

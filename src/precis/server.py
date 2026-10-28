@@ -663,13 +663,6 @@ def _init_runtime() -> PrecisRuntime:
     from precis.store.migrate import check_schema_at_startup
 
     check_schema_at_startup(_runtime.config.database_url)
-    # This process sticks around: a pagination cursor minted now is
-    # still retrievable by a later `more(cursor=...)` call against the
-    # same server (gr267466). `build_runtime()` defaults `long_lived`
-    # False (the safe one-shot-`precis eval` assumption) since it has
-    # no way to know its caller's lifetime; the boot path is the one
-    # place that does.
-    _runtime.long_lived = True
     # Share this store-bearing runtime with the tool-dispatch path. Without
     # this, the verb funcs lazily build a SECOND runtime — but build_runtime
     # above already scrubbed PRECIS_DATABASE_URL from the env (secrets
@@ -1578,7 +1571,7 @@ def _install_token_auth(app: Any, *, token: str) -> None:
 
 #: The verbs a ``--read-only`` serve keeps (the sandbox_run read MCP).
 #: Every other registered tool is removed before the transport starts.
-READ_ONLY_VERBS = frozenset({"get", "search", "more"})
+READ_ONLY_VERBS = frozenset({"get", "search"})
 
 
 def _kind_gated(verb: str, fn: Callable[..., Any]) -> Callable[..., Any]:

@@ -96,6 +96,28 @@ def point_in_polygon(p: Point, poly: list[Point]) -> bool:
     return inside
 
 
+def convex_hull_ring(ring: list[Point]) -> list[Point]:
+    """``ring``'s convex hull as a closed coordinate list — the reduction
+    every SAT consumer must apply to a courtyard ring that can be CONCAVE
+    (since gr524238 a courtyard is the union of a part's pad outlines
+    offset outward, hugging shaped electrodes' teeth). SAT predicates
+    (:func:`convex_polygons_overlap`, :func:`convex_polygons_signed_separation`)
+    are exact for convex pairs only; feeding a concave ring reads a
+    conservative hull-ish answer — never a missed collision, but a
+    graded cost that drifts and a placer blind to courtyard notches.
+    Hull once at the consumer's boundary, the topoplace ``legalize._mtv``
+    precedent (fable review S4, gr530631)."""
+    pts = [(float(x), float(y)) for x, y in ring]
+    if len(pts) < 4:
+        return pts
+    from shapely.geometry import Polygon as _ShapelyPolygon
+
+    hull = _ShapelyPolygon(pts).convex_hull
+    if hull.geom_type != "Polygon" or hull.is_empty:
+        return pts
+    return [(float(x), float(y)) for x, y in hull.exterior.coords]
+
+
 def convex_polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
     """Separating Axis Theorem for two CONVEX polygons — exact, and the ONE
     polygon-overlap primitive in this package.
@@ -113,10 +135,15 @@ def convex_polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
     both polygons as candidate separating axes, which is complete for
     convex shapes and silently WRONG for a concave one (two shapes can be
     disjoint while no edge normal separates them, and vice versa). Every
-    caller here passes something convex by construction — a rotated
-    rectangle, a pad, or a courtyard (:func:`precis.pcb.ir.
-    instance_courtyard_polygon` is a convex hull offset outward, which
-    stays convex).
+    caller here must pass something convex — a rotated rectangle, a pad,
+    or a courtyard HULLED first: since gr524238 a courtyard is the UNION
+    of a part's pad outlines offset outward, which can be CONCAVE (a
+    shaped electrode's ring hugs its teeth). SAT consumers of courtyards
+    hull at their own boundary — :func:`precis.pcb.topoplace.legalize.
+    _mtv` does; the legacy engine (``optimize``/``cost``) still feeds
+    these rings raw and reads conservative hull-ish answers (fable
+    review S4 — no collision can ship, but the graded separations and
+    this docstring were wrong until then).
 
     Touching counts as overlapping: the test is a strict ``<`` on the
     projection gap, so two polygons sharing exactly one edge or vertex

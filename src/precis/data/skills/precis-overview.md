@@ -242,8 +242,8 @@ get(kind="paper", id="abazari2024design", view="abstract")
 get(kind="paper", id="10.1038/nature10352")
 get(kind="paper", id="10.1038/nature10352", view="bibtex")
 
-# Paginate.
-search(kind="paper", q="photocatalysis", page=2)
+# Refine a broad search to a bounded top-N set.
+search(kind="paper", q="photocatalysis water splitting", page_size=10)
 
 # Make a todo, mark a different one done.
 put(kind="todo", text="Review section 3 of abazari2024design.", tags=["PRIO:high"])

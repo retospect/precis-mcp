@@ -75,11 +75,10 @@ keyword clustering). It stops sub-grouping only when a range is small
 enough to be a leaf — then it shows those chunks directly. So you never
 hit a wall of undrillable one-row-per-chunk singletons on the way down.
 
-## A drilled-in range came back truncated
+## A drilled-in range exceeds the result budget
 
-A wide `~A..B` range can still overflow the MCP frame budget and
-return a `more(cursor='...')` footer — pagination mechanics:
-[[precis-toon]].
+A wide `~A..B` range can exceed the complete-result budget. It refuses
+without partial content; narrow the range or use a sub-TOC instead.
 
 ## Browse the skill catalogue — id='toc'
 
@@ -103,4 +102,4 @@ the fuzzy alternative when no category name fits.
 - [[precis-paper-help]] — paper-specific TOC + drill-in
 - [[precis-overview]] — address grammar (slug~N, /toc)
 - [[precis-search-help]] — search returns pc<id> chunk handles
-- [[precis-toon]] — the table wire format + more(cursor=...)
+- [[precis-toon]] — the table wire format + oversize-result recovery

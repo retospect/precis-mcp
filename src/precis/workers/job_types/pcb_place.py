@@ -76,6 +76,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # ruling): default False so a topo placement never rewrites the
         # board's derived copper unless the caller asked for it.
         "route": {"type": "boolean"},
+        # Share-vector preset for placer='topo' (default 'compact'; 'flow'
+        # prices the slice-5 route proxies — via estimate, backtrack,
+        # direction). Validated against topoplace.PRESETS in the job.
+        "preset": {"type": "string"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -164,6 +168,7 @@ def _topo_run(
     slug: str,
     features: list[dict[str, Any]] | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
+    preset: str = "compact",
 ) -> tuple[Any, dict[str, Any], str, dict[str, str]] | None:
     """The ``placer='topo'`` run (topo-place spec §1c, Decision 21):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
@@ -179,6 +184,10 @@ def _topo_run(
     from precis_geom.pcb import PinConflict
 
     try:
+        if preset not in _tp.PRESETS:
+            raise ValueError(
+                f"unknown topo-place preset {preset!r} — known: {sorted(_tp.PRESETS)}"
+            )
         td = _tp.design_from_ir(
             ir,
             footprints or {},
@@ -196,10 +205,9 @@ def _topo_run(
         # resolvable measures (an empty tuple would zero-divide its
         # reference magnitude to the 1.0 floor anyway, but the share
         # staying 0 keeps every measureless run's cost byte-identical).
+        base_obj = _tp.PRESETS[preset]
         objective = (
-            dataclasses.replace(_tp.PRESETS["compact"], measures=0.2)
-            if td.measures
-            else _tp.PRESETS["compact"]
+            dataclasses.replace(base_obj, measures=0.2) if td.measures else base_obj
         )
         result = _tp.topo_place(td, objective=objective, effort=effort, seed=seed)
         assignment = _tp.assign_pins(td, result.best_pose)
@@ -310,7 +318,16 @@ def _topo_route(
     keepouts = pcb_session.keepouts_from_features(features or [])
     loaded = ctx.store.pcb_load(pcb_ref_id)
     net_rules = pcb_session.route_net_rules(loaded, capability)
-    plan, rres = _tprealise.route_design(td_route, ir, net_rules=net_rules)
+    # gr524334: the siting walk's fallback diameter — the fab minimum,
+    # tried when a net's rule via (the comfortable house default) finds
+    # no site on a branch.
+    min_via_dia = capability.jlc_min.get("via_diameter_mm")
+    plan, rres = _tprealise.route_design(
+        td_route,
+        ir,
+        net_rules=net_rules,
+        min_via_dia=None if min_via_dia is None else float(min_via_dia),
+    )
 
     # The widen oracle's own map — the FULL clearance resolution (per-net
     # class floors included), not the route map's signal-width variant.
@@ -339,19 +356,35 @@ def _topo_route(
             if f.severity == "error"
         )
 
+    # The widen targets are the nets' current-derived IPC-2221 widths —
+    # clearance_net_rules' resolution, the same map the DRC oracle below
+    # measures against — for nets that carry a real current annotation.
+    # A rail claims its target where the oracle allows; the power set is
+    # the plane/power rails plus any net whose target exceeds the width
+    # it was born at (gr524239: widening follows estimated current, never
+    # free space). Unannotated nets get no target: they keep the legacy
+    # widest-the-oracle-allows ruling (gr520904).
+    targets = {
+        net_id: float(drc_net_rules[name].track_width_mm)
+        for net_id in range(ir.n_nets)
+        if (name := str(ir.net_name[net_id])) in drc_net_rules
+        and not math.isnan(float(ir.net_current_a[net_id]))
+        and float(ir.net_current_a[net_id]) > 0.0
+    }
+    born = {
+        net_id: float(net_rules[name].track_width_mm)
+        for net_id in range(ir.n_nets)
+        if (name := str(ir.net_name[net_id])) in net_rules
+    }
     power_ids = {
         net_id
         for net_id in range(ir.n_nets)
         if str(ir.net_class[net_id] or "").strip().lower() in pcb_ratsnest.PLANE_CLASSES
         or str(ir.net_domain[net_id] or "") == "power"
-        or (
-            not math.isnan(float(ir.net_current_a[net_id]))
-            and float(ir.net_current_a[net_id]) > 0.0
-        )
-        or int(ir.net_plane_layers[net_id]) != 0
+        or targets.get(net_id, 0.0) > born.get(net_id, math.inf)
     }
     rres, widths = _tprealise.widen_power(
-        rres, sorted(power_ids), drc_errors=_drc_errors
+        rres, sorted(power_ids), drc_errors=_drc_errors, targets=targets
     )
     rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
 
@@ -545,6 +578,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # absent/False leaves the stored derived copper untouched.
     route = bool(params.get("route"))
     groups = bool(params.get("groups") or False)
+    # The topo share vector, by preset name (default 'compact'). The
+    # route-aware 'flow' preset prices the slice-5 proxies (via
+    # estimate, backtrack, direction) for boards under active routing
+    # iteration; crossings stay primary on every preset.
+    preset = str(params.get("preset") or "compact")
 
     # The effective netlist (Slice 7): the latest resolved snapshot over
     # the authored graph, so placement's ratsnest is built against the
@@ -798,6 +836,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             slug=(ref.slug if ref is not None and ref.slug else str(pcb_ref_id)),
             features=features,
             fixed_copper=design.fixed_copper,
+            preset=preset,
         )
         if topo_out is None:  # PinConflict already recorded
             return

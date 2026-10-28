@@ -92,6 +92,21 @@ def test_construct_resolves_paths(tmp_path: Path) -> None:
     assert handler.roots["r"] == tmp_path.resolve()
 
 
+def test_default_snapshot_dir_env(tmp_path: Path, monkeypatch) -> None:
+    """``PRECIS_PYTHON_INDEX_CACHE``: unset → the shared cache root, a
+    path → that path, ``off``/empty → snapshots disabled (gr525769)."""
+    from precis.handlers.python import _default_snapshot_dir
+
+    monkeypatch.delenv("PRECIS_PYTHON_INDEX_CACHE", raising=False)
+    assert _default_snapshot_dir() is not None
+    monkeypatch.setenv("PRECIS_PYTHON_INDEX_CACHE", str(tmp_path / "snap"))
+    assert _default_snapshot_dir() == tmp_path / "snap"
+    monkeypatch.setenv("PRECIS_PYTHON_INDEX_CACHE", "off")
+    assert _default_snapshot_dir() is None
+    monkeypatch.setenv("PRECIS_PYTHON_INDEX_CACHE", "")
+    assert _default_snapshot_dir() is None
+
+
 # ---------------------------------------------------------------------------
 # Address parser
 # ---------------------------------------------------------------------------

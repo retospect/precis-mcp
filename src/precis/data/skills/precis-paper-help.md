@@ -103,7 +103,7 @@ Each row is one paper — the best hit's chunk handle `pc<chunk_id>`
 (paste back into `get`/`link`), a `+N` count of that paper's other
 hits, and the best chunk's keywords; order is the relevance signal.
 `unique_per='chunk'` (implied by `scope=`) returns one row per matching
-chunk instead. Mechanics (mode=, pagination, tags=): `precis-search-help`.
+chunk instead. Mechanics (mode=, bounded results, tags=): `precis-search-help`.
 
 When one phrasing isn't finding it, escalate (details in
 `precis-search-help` → Broad retrieval):
@@ -272,16 +272,15 @@ exports cite an SI record as its parent with an SI postnote
 (`\cite[SI]{parent}` in LaTeX, `\cites{a}[SI]{parent}` in a group,
 "[n] (SI)" in docx).
 
-## See additional papers after a search
-## Page through more search results
+## Refine a search that returns too many papers
 ## What if there are more hits than I see?
 
 ```python
-search(kind="paper", q="photocatalytic NOx reduction", page=2)
-search(kind="paper", q="photocatalytic NOx reduction", page=3, page_size=20)
+search(kind="paper", q="photocatalytic NOx reduction selectivity", page_size=20)
 ```
 
-Pagination mechanics (defaults, `page_size=` cap): `precis-search-help`.
+Search returns a bounded top-N set, not continuation pages. Add distinctive
+terms, narrow `scope=`, or reduce `page_size=`: `precis-search-help`.
 
 ## How many papers? Is ingestion landing full text?
 ## Which of these papers are full text, abstract-card only, or stubs?
@@ -436,7 +435,7 @@ above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
 
 ```python
 search(kind="paper", q="Z-scheme", scope="pa40")  # scope by handle
-search(kind="paper", q="Z-scheme", scope="pa40", page=2)
+search(kind="paper", q="Z-scheme band alignment", scope="pa40", page_size=10)
 ```
 
 Same hybrid search as cross-corpus, scoped to one paper's blocks.

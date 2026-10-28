@@ -3301,6 +3301,20 @@ class ChunkStore:
             ).fetchone()
         return str(row[0]) if row is not None and row[0] is not None else None
 
+    def live_body_text_for_ref(self, ref_id: int) -> list[str]:
+        """Live body-chunk text for one live ref, in reading order.
+
+        Unlike ``list_chunks_for_ref``, this also excludes rows retired in
+        place. It is the value-expansion path for exact-handle writes."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT c.text FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE c.ref_id = %s AND c.ord >= 0 "
+                "AND c.retired_at IS NULL AND r.retired_at IS NULL ORDER BY c.ord",
+                (ref_id,),
+            ).fetchall()
+        return [str(row[0]) for row in rows if row[0] is not None]
+
     def get_chunk_vector(self, chunk_id: int) -> list[float] | None:
         """Read a chunk's stored embedding under the default embedder.
 

@@ -37,8 +37,6 @@ def test_init_runtime_wires_the_tool_path(monkeypatch):
     """server._init_runtime shares its built runtime with tools.core."""
     import precis.server as server
 
-    # SimpleNamespace, not object(): _init_runtime stamps
-    # ``long_lived = True`` on the built runtime (gr267466).
     built = types.SimpleNamespace(config=types.SimpleNamespace(database_url=""))
     monkeypatch.setattr(server, "_runtime", None)
     monkeypatch.setattr(core, "_runtime", None)

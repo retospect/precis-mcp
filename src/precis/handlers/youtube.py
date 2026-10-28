@@ -178,9 +178,8 @@ class YouTubeHandler(CacheBackedHandler):
         if view is not None and view != "body":
             # The eye-ladder labels in view= are intercepted by the
             # dispatcher before this method runs, so any view reaching
-            # here other than the base's ``body`` (the unfolded whole-body
-            # read, gr517274) is genuinely unknown — refuse, don't
-            # silently ignore.
+            # here other than the base's ``body`` read is genuinely
+            # unknown — refuse, don't silently ignore.
             raise BadInput(
                 f"unknown view={view!r} for kind='youtube'",
                 options=["languages", "body"],

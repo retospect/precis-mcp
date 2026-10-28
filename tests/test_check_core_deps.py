@@ -2,8 +2,9 @@
 
 gr513760: a stale precis-dev image hard-refused ``scripts/test`` and the only
 escape (``UV_WITH="--with <dep>"``) was undocumented outside the refusal line.
-The refusal now names the exact bridge command, the ``PRECIS_TEST_AUTOBRIDGE=1``
-opt-in and the durable fix (``scripts/build-image precis-dev``, the release
+The refusal now names the exact bridge command, the autobridge
+(``PRECIS_TEST_AUTOBRIDGE=1`` forces it on after an opt-out; default-on since
+gr525770) and the durable fix (``scripts/build-image precis-dev``, the release
 owner's job). ``--with-flags`` is the query mode the autobridge pre-pass
 consumes. Pure tests — a fake pyproject, no docker.
 """

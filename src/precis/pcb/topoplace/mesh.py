@@ -587,6 +587,20 @@ def _split_ring_crossings(
     splits: dict[int, list[tuple[float, tuple[float, float]]]] = {}
     for i in range(len(ring_segs)):
         ax0, ay0, ax1, ay1 = rbbox[i]
+        segs_i = ring_segs[i][1]
+        # Per-segment bboxes of ring i, hoisted out of the j loop — each
+        # is reused against every overlapping ring below.
+        i_x0 = [0.0] * len(segs_i)
+        i_y0 = [0.0] * len(segs_i)
+        i_x1 = [0.0] * len(segs_i)
+        i_y1 = [0.0] * len(segs_i)
+        for si, (a, b) in enumerate(segs_i):
+            ax_a, ay_a = varr[a]
+            bx_b, by_b = varr[b]
+            i_x0[si] = ax_a if ax_a < bx_b else bx_b
+            i_y0[si] = ay_a if ay_a < by_b else by_b
+            i_x1[si] = ax_a if ax_a > bx_b else bx_b
+            i_y1[si] = ay_a if ay_a > by_b else by_b
         for j in range(i + 1, len(ring_segs)):
             bx0, by0, bx1, by1 = rbbox[j]
             if (
@@ -596,16 +610,42 @@ def _split_ring_crossings(
                 or by1 < ay0 - _EPS
             ):
                 continue
-            for si in range(len(ring_segs[i][1])):
-                gi = ring_first[i] + si
-                a, b = flat[gi][0], flat[gi][1]
-                for sj in range(len(ring_segs[j][1])):
-                    gj = ring_first[j] + sj
-                    p, q = flat[gj][0], flat[gj][1]
+            segs_j = ring_segs[j][1]
+            # Segment-level bbox prune: ring bboxes overlap coarse (the
+            # board outline's bbox contains every part, so outline×part
+            # pairs used to test EVERY segment pair — tens of millions of
+            # _proper_cross calls per build). Disjoint segment boxes
+            # cannot properly cross, so the mask rejects them exactly;
+            # survivors go through the same _seg_params as before.
+            j_x0 = [0.0] * len(segs_j)
+            j_y0 = [0.0] * len(segs_j)
+            j_x1 = [0.0] * len(segs_j)
+            j_y1 = [0.0] * len(segs_j)
+            for sj, (p, q) in enumerate(segs_j):
+                px_p, py_p = varr[p]
+                qx_q, qy_q = varr[q]
+                j_x0[sj] = px_p if px_p < qx_q else qx_q
+                j_y0[sj] = py_p if py_p < qy_q else qy_q
+                j_x1[sj] = px_p if px_p > qx_q else qx_q
+                j_y1[sj] = py_p if py_p > qy_q else qy_q
+            for si in range(len(segs_i)):
+                sax0, say0, sax1, say1 = i_x0[si], i_y0[si], i_x1[si], i_y1[si]
+                a, b = flat[ring_first[i] + si][0], flat[ring_first[i] + si][1]
+                for sj in range(len(segs_j)):
+                    if (
+                        j_x1[sj] < sax0 - _EPS
+                        or sax1 < j_x0[sj] - _EPS
+                        or j_y1[sj] < say0 - _EPS
+                        or say1 < j_y0[sj] - _EPS
+                    ):
+                        continue
+                    p, q = segs_j[sj]
                     hit = _seg_params(varr, a, b, p, q)
                     if hit is None:
                         continue
                     t, u, pt = hit
+                    gi = ring_first[i] + si
+                    gj = ring_first[j] + sj
                     splits.setdefault(gi, []).append((t, pt))
                     splits.setdefault(gj, []).append((u, pt))
 

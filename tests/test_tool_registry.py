@@ -17,22 +17,11 @@ import pytest
 # The canonical verb list (per `docs/decisions/0001` and the v1 surface).
 EXPECTED_VERBS = ["get", "search", "put", "edit", "delete", "tag", "link"]
 
-# Auxiliary tools that aren't part of the seven-verb surface but
-# are surfaced as MCP tools for pagination / transport concerns.
-# ``more`` retrieves the next page of a chunked response (see
-# ``precis._pagination``). Listed separately so the canonical
-# seven-verb assertion in ``EXPECTED_VERBS`` keeps its meaning.
-_AUXILIARY_TOOLS = ["more"]
-_EXPECTED_REGISTRY_ENTRIES = EXPECTED_VERBS + _AUXILIARY_TOOLS
+_EXPECTED_REGISTRY_ENTRIES = EXPECTED_VERBS
 
 
 def test_registry_exposes_seven_verbs() -> None:
-    """All seven verbs are registered in `precis.tools.TOOL_REGISTRY`.
-
-    The registry can hold auxiliary tools (``more`` for pagination)
-    in addition to the seven verbs, but every canonical verb must
-    be present.
-    """
+    """All seven verbs are registered in `precis.tools.TOOL_REGISTRY`."""
     from precis.tools import TOOL_REGISTRY, get_tool_names
 
     names = get_tool_names()

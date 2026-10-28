@@ -56,7 +56,6 @@ from psycopg import Connection
 from psycopg.errors import QueryCanceled
 
 from precis import worktree_server
-from precis._pagination import FOLD_CURSOR_PLACEHOLDER
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._eye import is_eye_view
@@ -368,11 +367,9 @@ _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 
 #: Page budget (chars) for the batch ``view=`` read (gr515524): only
 #: whole per-id blocks go on a page, so a block (a gripe's body or
-#: comment timeline) is never cut mid-text behind a ``more()`` cursor.
-#: Sized under the agent-facing fold (~4 KiB,
-#: :data:`precis._pagination.DEFAULT_FOLD_BODY_BYTES`) with headroom
-#: for the batch header and the ``next:`` id list; a single block over
-#: budget still renders whole (same as a singleton ``get``).
+#: comment timeline) is never cut mid-text. Sized under the agent-context
+#: budget (~4 KiB) with headroom for the batch header and ``next:`` ids;
+#: a single block over budget still renders whole.
 BATCH_VIEW_PAGE_CHARS = 3500
 
 
@@ -2267,22 +2264,13 @@ class NumericRefHandler(Handler):
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref.
 
-        Weak-match fold (gr514956): for kinds listed in
-        :data:`SEMANTIC_ONLY_FOLD_DISTANCE`, a hit whose semantic
-        distance clears the kind's threshold *and* that no lexical leg
-        corroborated is folded off the page into
-        ``Response.fold_tail`` — hidden behind the hint's
-        ``more(cursor=…)`` rather than dropped, so it stays reachable.
-        Shown hits render their semantic distance ``(0.21)`` in place of
-        the opaque ``(rank=…)`` — the number the fold cut itself is
-        calibrated on. When nothing on the page passes the threshold the
-        body leads with ``no strong match`` plus the same hint.
-
-        Compact views (``view='ids'``/``'list'``) never fold: they are
-        the complete enumerable handle list the caller asked for
-        (gr514477), so a weak hit lists beside the strong ones rather
-        than hiding behind a cursor the enumeration contract says
-        cannot exist. Only the default rendered page folds.
+        For kinds listed in :data:`SEMANTIC_ONLY_FOLD_DISTANCE`, a hit
+        whose semantic distance clears the kind's threshold *and* that no
+        lexical leg corroborated is omitted from the default rendered
+        results with an explicit count and a refinement hint. Shown hits
+        render their semantic distance ``(0.21)`` in place of the opaque
+        ``(rank=…)``. Compact views (``view='ids'``/``'list'``) keep the
+        complete top-N handle list, so no continuation cursor is needed.
         """
         hits, total, fold_info = self._best_body_hits(
             q,
@@ -2385,7 +2373,6 @@ class NumericRefHandler(Handler):
                 [ref for _, ref, _ in shown], titles=compact == "list"
             )
             lines.extend(id_lines.splitlines())
-            fold_tail = None
         else:
             chip_map = tag_chips.chips_bulk(
                 self.store,
@@ -2404,21 +2391,19 @@ class NumericRefHandler(Handler):
                 return self._render_body_search_hit(ref, block, rank, chips=chips)
 
             lines.extend(_render_hit(*hit) for hit in shown)
-            fold_tail = "".join(_render_hit(*hit) for hit in weak) if weak else None
         if weak:
             lines.append(
-                f"── weak matches below (distance > {fold_distance}): "
-                f"{len(weak)} more, more(cursor={FOLD_CURSOR_PLACEHOLDER}) ──"
+                f"── {len(weak)} weak match(es) omitted "
+                f"(distance > {fold_distance}); refine q= or use view='ids' "
+                "for the complete top-N handle list ──"
             )
         if not shown:
             # Every hit on this page folded — replace the "N of K"
             # headline (it would read as a confident result set) with
             # the honest verdict, ahead of the hint.
             lines[0] = f"no strong match for {q!r}"
-            return Response(body="\n".join(lines), result_count=0, fold_tail=fold_tail)
-        return Response(
-            body="\n".join(lines), result_count=len(shown), fold_tail=fold_tail
-        )
+            return Response(body="\n".join(lines), result_count=0)
+        return Response(body="\n".join(lines), result_count=len(shown))
 
     def _hit_text(self, ref: Ref, block: Any) -> str:
         """Display text for a best-hit chunk. Default: the chunk itself;

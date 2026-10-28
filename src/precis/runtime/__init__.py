@@ -7,8 +7,10 @@ plus ``core`` for the ``PrecisRuntime`` class itself and ``factory`` for
 ``from precis.runtime import X`` call site (in this repo and any caller
 outside it) already relies on — the split is invisible from here down.
 
-Licensed live responses opt out of pagination caching while retaining the
-frame limit. The tool ledger already stores only call metadata, not content.
+Oversized responses refuse with targeted-read recovery rather than partial
+content or continuation cursors. Exact-handle write substitution uses current
+stored bytes and same-session read receipts held only in process memory. The
+tool ledger retains the caller's reference envelope, never expanded content.
 """
 
 from __future__ import annotations

@@ -100,16 +100,15 @@ If you search a DOCDB-shaped string and it misses, the error
 points at `get(kind='patent', id=...)` to fetch it, or
 `put(kind='finding', ...)` to register it as a chase target.
 
-## See additional patents after a search
-## Page through more search results
+## Refine a search that returns too many patents
 ## What if there are more hits than I see?
 
 ```python
-search(kind="patent", q="photocatalysis", page=2)
-search(kind="patent", q="photocatalysis", page=3, page_size=20)
+search(kind="patent", q="photocatalysis water splitting", page_size=20)
 ```
 
-Pagination mechanics: `precis-search-help`.
+Search returns a bounded top-N set, not continuation pages. Refine the
+query or narrow `scope=` (`precis-search-help`).
 
 ## Find a passage in a patent I have
 ## Locate where a topic comes up in a specific patent

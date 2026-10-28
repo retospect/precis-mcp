@@ -274,7 +274,7 @@ def _server_with_profile(
 
 
 def test_typed_profile_is_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``PRECIS_MCP_PROFILE`` unset keeps the eight-tool typed surface."""
+    """``PRECIS_MCP_PROFILE`` unset keeps the seven-tool typed surface."""
     with _server_with_profile(monkeypatch, None) as server:
         names = {tool.name for tool in server.mcp._tool_manager.list_tools()}
     assert names == {
@@ -285,7 +285,6 @@ def test_typed_profile_is_default(monkeypatch: pytest.MonkeyPatch) -> None:
         "delete",
         "tag",
         "link",
-        "more",
     }
 
 

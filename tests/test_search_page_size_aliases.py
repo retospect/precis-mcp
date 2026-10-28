@@ -1,12 +1,9 @@
-"""``search(k=...)`` / ``search(limit=...)`` — aliases for ``page_size=``
-(gr338441 item 3).
+"""Canonical ``search(page_size=...)`` boundary.
 
-Declared as real parameters (not swallowed via ``**kw``) so gr334695's
-strict unknown-kwarg rejection doesn't reject them, then normalised onto
-``page_size`` — the one name every downstream handler actually reads.
-These tests stub ``_dispatch`` to capture the resolved payload rather
-than standing up a full runtime; the behaviour under test is entirely
-in the alias-resolution boundary code, before dispatch.
+The full Python function no longer accepts the removed ``k``/``limit``
+spellings. Real-MCP refusal coverage for those names lives in
+``test_mcp_slim_schema.py``; these tests pin the canonical forwarding and
+validation that remains on the full function.
 """
 
 from __future__ import annotations
@@ -21,9 +18,6 @@ from precis.tools import core as tools_core
 
 @pytest.fixture
 def captured_payload(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Stub ``_dispatch`` to record the payload instead of hitting a
-    real runtime; ``search()``'s alias-resolution runs entirely before
-    this point."""
     captured: dict[str, Any] = {}
 
     def _fake_dispatch(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
@@ -45,59 +39,36 @@ def _is_error(out: Any) -> bool:
     return isinstance(out, CallToolResult) and bool(out.isError)
 
 
-def test_k_behaves_as_page_size(captured_payload: dict[str, Any]) -> None:
-    out = tools_core.search(kind="memory", q="x", k=5)
-    assert not _is_error(out)
-    assert captured_payload["page_size"] == 5
-
-
-def test_limit_behaves_as_page_size(captured_payload: dict[str, Any]) -> None:
-    out = tools_core.search(kind="memory", q="x", limit=7)
+def test_page_size_forwards(captured_payload: dict[str, Any]) -> None:
+    out = tools_core.search(kind="memory", q="x", page_size=7)
     assert not _is_error(out)
     assert captured_payload["page_size"] == 7
 
 
-def test_agreeing_page_size_and_alias_is_fine(captured_payload: dict[str, Any]) -> None:
-    out = tools_core.search(kind="memory", q="x", page_size=5, k=5)
-    assert not _is_error(out)
-    assert captured_payload["page_size"] == 5
-
-
-def test_conflicting_k_and_limit_is_bad_input() -> None:
-    out = tools_core.search(kind="memory", q="x", k=5, limit=10)
-    assert _is_error(out)
-    body = _body(out)
-    assert "[error:BadInput]" in body
-    assert "page_size" in body
-
-
-def test_conflicting_page_size_and_k_names_page_size_as_canonical() -> None:
-    out = tools_core.search(kind="memory", q="x", page_size=20, k=5)
-    assert _is_error(out)
-    body = _body(out)
-    assert "[error:BadInput]" in body
-    assert "page_size" in body
-
-
-def test_explicit_page_size_at_default_value_still_conflicts() -> None:
-    # page_size=10 equals the effective default, but it was explicitly
-    # passed — a disagreeing k= must still be a conflict, not a silent
-    # override (reviewer finding on gr338443).
-    out = tools_core.search(kind="memory", q="x", page_size=10, k=5)
-    assert _is_error(out)
-    body = _body(out)
-    assert "[error:BadInput]" in body
-    assert "page_size=10" in body
-
-
-def test_no_size_args_forwards_none(captured_payload: dict[str, Any]) -> None:
-    # Unset page_size forwards None so each handler's own default applies —
-    # PaperHandler.search uses the gap to pick a mode-aware default: 25
-    # papers on the default unique_per='paper' view, 10 chunks on the
-    # per-hit drill view.
+def test_no_size_arg_forwards_none(captured_payload: dict[str, Any]) -> None:
     out = tools_core.search(kind="memory", q="x")
     assert not _is_error(out)
     assert captured_payload["page_size"] is None
+
+
+def test_removed_size_params_are_not_on_signature() -> None:
+    import inspect
+
+    params = inspect.signature(tools_core.search).parameters
+    assert "k" not in params
+    assert "limit" not in params
+
+
+def test_page_size_must_be_positive() -> None:
+    out = tools_core.search(kind="memory", q="x", page_size=0)
+    assert _is_error(out)
+    assert "page_size must be a positive integer" in _body(out)
+
+
+def test_page_size_cap() -> None:
+    out = tools_core.search(kind="memory", q="x", page_size=101)
+    assert _is_error(out)
+    assert "exceeds maximum 100" in _body(out)
 
 
 def test_unique_per_forwards(captured_payload: dict[str, Any]) -> None:
@@ -106,17 +77,7 @@ def test_unique_per_forwards(captured_payload: dict[str, Any]) -> None:
     assert captured_payload["unique_per"] == "chunk"
 
 
-def test_unique_per_unset_stays_out_of_payload(
-    captured_payload: dict[str, Any],
-) -> None:
-    out = tools_core.search(kind="paper", q="x")
-    assert not _is_error(out)
-    assert "unique_per" not in captured_payload
-
-
-def test_unique_per_unknown_value_is_bad_input(
-    captured_payload: dict[str, Any],
-) -> None:
+def test_unique_per_unknown_value_is_bad_input() -> None:
     out = tools_core.search(kind="paper", q="x", unique_per="chapter")
     assert _is_error(out)
     assert "unique_per" in _body(out)

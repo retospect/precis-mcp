@@ -5,10 +5,26 @@ does not prove current content equality. Changed files get at most two parse
 attempts, with before/after identity checks. Failed/unstable files are omitted
 instead of attaching a successful fresh stamp to an old module. Tree walks
 are not atomic snapshots; partial walks retain earlier entries with a warning.
+
+Optional on-disk snapshot (``snapshot_dir``): the per-root cache is pickled
+to one file per root whenever a ``get`` reparsed or dropped files, and a cold
+in-memory cache is seeded from it. Seeded entries are candidates only — the
+per-file stat check still revalidates every signature, so a stale snapshot
+degrades to the usual reparse, never to stale content. What it skips is the
+full AST re-parse a fresh server process would otherwise pay on its first
+read (~17 s for a ~4000-file worktree corpus, gr525769). The payload is
+gzip-pickle (level 1 — ~3x smaller for negligible CPU; sources dominate):
+the snapshot dir is the same trust domain as the venv and must stay
+user-owned.
 """
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import logging
+import os
+import pickle
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -21,6 +37,17 @@ from precis.python_index.indexer import (
     index_module,
 )
 from precis.python_index.types import IndexObservation, ModuleIndex, RepoIndex
+
+log = logging.getLogger(__name__)
+
+#: Bumped when the snapshot payload shape changes; mismatches are a miss.
+_SNAPSHOT_SCHEMA = 1
+
+
+def _snapshot_path(snapshot_dir: Path, root: Path) -> Path:
+    """One file per root: basename for humans, path hash for uniqueness."""
+    key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return snapshot_dir / f"{root.name}-{key}.pkl.gz"
 
 
 def _signature(path: Path) -> tuple[int, int, int, int, int]:
@@ -42,12 +69,16 @@ class RepoCache:
     concurrent first reads, share one build — the second caller waits
     on the lock and gets the finished index instead of reparsing in
     parallel. Different roots still build concurrently.
+
+    ``snapshot_dir`` enables the on-disk snapshot (module docstring); None
+    keeps the cache process-local (the default, and what tests inject).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, snapshot_dir: Path | None = None) -> None:
         self._cache: dict[Path, dict[str, _CachedFile]] = {}
         self._locks: dict[Path, threading.Lock] = {}
         self._locks_lock = threading.Lock()
+        self._snapshot_dir = snapshot_dir
 
     def _lock_for(self, root: Path) -> threading.Lock:
         with self._locks_lock:
@@ -65,6 +96,8 @@ class RepoCache:
         started = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         root_identity = _signature(root)[3:]
         files_cache = self._cache.setdefault(root, {})
+        if not files_cache:
+            self._load_snapshot(root, files_cache)
         issues: list[str] = []
         current: dict[str, Path] = {}
         try:
@@ -74,9 +107,11 @@ class RepoCache:
             issues.append(
                 f"partial walk: {type(exc).__name__}; retained entries unverified"
             )
+        removed = 0
         if not issues:
             for rel in files_cache.keys() - current.keys():
                 del files_cache[rel]
+                removed += 1
 
         reparsed = reused = 0
         for rel, path in current.items():
@@ -108,6 +143,8 @@ class RepoCache:
         except OSError:
             self.drop(root)
             raise
+        if reparsed or removed:
+            self._save_snapshot(root)
         idx = RepoIndex.build(root, [cf.module for cf in files_cache.values()])
         return replace(
             idx,
@@ -137,8 +174,74 @@ class RepoCache:
             return self._get(root)
 
     def drop(self, root: Path) -> None:
-        """Forget a root; the next read reparses its files."""
+        """Forget a root; the next read reparses its files.
+
+        The on-disk snapshot (when enabled) is kept: the next ``get``
+        re-seeds from it and stat-validates, which is exactly the fast
+        re-warm path wanted after an LRU/idle eviction.
+        """
         self._cache.pop(root.resolve(), None)
+
+    def _load_snapshot(self, root: Path, into: dict[str, _CachedFile]) -> None:
+        """Seed a cold per-root cache from the on-disk snapshot, if any.
+
+        Any read or shape problem is a cache miss — the caller falls
+        through to the usual full parse.
+        """
+        if self._snapshot_dir is None:
+            return
+        path = _snapshot_path(self._snapshot_dir, root)
+        try:
+            with gzip.open(path, "rb") as fh:
+                payload = pickle.load(fh)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema") != _SNAPSHOT_SCHEMA
+                or payload.get("root") != str(root)
+                or not isinstance(payload.get("files"), dict)
+            ):
+                return
+            for rel, (signature, module) in payload["files"].items():
+                if isinstance(module, ModuleIndex):
+                    into[rel] = _CachedFile(module, tuple(signature))
+        except (
+            OSError,
+            EOFError,
+            ValueError,
+            TypeError,
+            AttributeError,
+            ImportError,
+            pickle.UnpicklingError,
+        ) as exc:
+            log.debug("python corpus snapshot load failed for %s: %s", root, exc)
+
+    def _save_snapshot(self, root: Path) -> None:
+        """Persist the per-root cache so the next process skips the reparse.
+
+        Best-effort — a cache that cannot be written only costs the next
+        cold start its speedup. Atomic via a pid-unique tmp + replace, so
+        concurrent servers can race harmlessly (last writer wins).
+        """
+        if self._snapshot_dir is None:
+            return
+        files_cache = self._cache.get(root)
+        if not files_cache:
+            return
+        path = _snapshot_path(self._snapshot_dir, root)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema": _SNAPSHOT_SCHEMA,
+                "root": str(root),
+                "files": {
+                    rel: (cf.signature, cf.module) for rel, cf in files_cache.items()
+                },
+            }
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            tmp.write_bytes(gzip.compress(pickle.dumps(payload), compresslevel=1))
+            tmp.replace(path)
+        except (OSError, pickle.PicklingError, RecursionError) as exc:
+            log.debug("python corpus snapshot write failed for %s: %s", root, exc)
 
     def held_modules(self, root: Path) -> list[ModuleIndex]:
         """Modules currently cached for ``root``; no stat, no reparse."""

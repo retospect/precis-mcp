@@ -157,7 +157,11 @@ def ranked_edits(
     flex slots. Pose edits seed the re-run at the best elite so the
     delta prices the edit, not a fresh search."""
     base = _elite_pose(result)
-    edit_effort = max(1, effort // 10)
+    # A base run that did 0 evals had nothing movable (all-fixed board):
+    # its unlock probes move ONE part, which converges far below the
+    # effort/10 figure — and that figure re-ran a full settle per try
+    # (~26 s of the taz-leaf summary, gr524239). Lighter probe, same sign.
+    edit_effort = max(1, effort // 100) if result.evals == 0 else max(1, effort // 10)
     tries: list[tuple[str, TopoDesign | None, TopoDesign | None]] = []
 
     for part in np.flatnonzero(d.fixed):
@@ -294,7 +298,8 @@ def render_summary(
         f"{result.seed}, effort {effort}, objective crossings "
         f"{objective.crossings:.2f}/ratsnest {objective.ratsnest:.2f}"
         f"/overlap {objective.overlap:.2f}/spread {objective.spread:.2f}"
-        f"/measures {objective.measures:.2f}"
+        f"/measures {objective.measures:.2f}/vias {objective.vias:.2f}"
+        f"/backtrack {objective.backtrack:.2f}/direction {objective.direction:.2f}"
     )
     if result.elites:
         costs = np.asarray([e.cost for e in result.elites])

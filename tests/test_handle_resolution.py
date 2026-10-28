@@ -45,6 +45,46 @@ def test_resolve_handle_slug_kind(store: Store) -> None:
     assert resolved.public_id == "uh36-oracle"  # slug kind → slug
 
 
+def test_skill_handle_resolves_and_links(store: Store) -> None:
+    from precis.utils.link_target import parse_link_target
+
+    ref_id = store.ensure_skill_ref("precis-search-help")
+    handle = handle_registry.format_handle("skill", ref_id)
+    resolved = store.resolve_handle(handle)
+    assert resolved is not None
+    assert resolved.kind == "skill"
+    assert resolved.public_id == "precis-search-help"
+    target = parse_link_target(handle, store=store)
+    assert target.ref_id == ref_id
+    assert target.kind == "skill"
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_skill_by_handle_routes_and_stamps_recall(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200000")
+    ref_id = store.ensure_skill_ref("precis-search-help")
+    handle = handle_registry.format_handle("skill", ref_id)
+    via_handle, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "skill", "id": handle, "view": "toc"}
+    )
+    via_slug, slug_err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "skill", "id": "precis-search-help", "view": "toc"}
+    )
+    assert not err and not slug_err
+    assert via_handle == via_slug
+    body, body_err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "skill", "id": handle}
+    )
+    assert not body_err and "precis-search-help" in body
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT last_recalled_at FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    assert row is not None and row[0] is not None
+
+
 def test_resolve_handle_kind_mismatch_is_rejected(store: Store) -> None:
     # A memory's id under the *todo* code must not resolve — the prefix
     # claims a kind the row doesn't have (typo guard).

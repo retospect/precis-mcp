@@ -44,6 +44,7 @@ have no handle.
 pa5                                # a paper by handle
 pc38                               # block 38 of that paper by handle
 td158                              # a todo by handle
+sk484247                           # a skill anchor by handle
 patent:ep4123456a1                 # DOCDB fetch key, kind: prefix required
 markdown:notes/foo.md
 markdown:notes/foo.md~intro        # block in a file

@@ -95,28 +95,17 @@ args={"no_fetch": True})`; a cache miss refuses to fetch. If absent, find
 the original query. `args={"literal": True}` and `put(mode='import')`
 remain explicit escapes for handle-shaped query text.
 
-## Drain `more()` before any other call on the kind
-## My long report disappeared mid-paging — why?
+## A long answer exceeds the result budget
 
-A long answer comes back paged: the first page ends in a `more(cursor=…)`
-handle. **Read every page through `more(cursor=…)` before you issue any
-other `get` or `put` on that kind.** Pages after the first are held in
-the serving process for a few minutes; a cursor that misses there is
-served by re-running the original `get` against the cache row. If a
-write on that kind has refreshed or replaced the row in between (a
-stale refetch, a `put(mode='import')` of the same query), the remaining
-pages come from the new body, or from a fresh paid call, not from the
-report you started reading.
-
-To read a cached answer **whole** in one call — no 4 KB fold, no
-`more()` drain — use `view='body'`:
+Oversized answers refuse without partial content and name a narrower
+question to try. There is no `more()` continuation. `view='body'` is
+read-only (`no_fetch`) but follows the same complete-result budget:
 
 ```python
 get(kind="perplexity-reasoning", id="<slug>", view="body")
 ```
 
-It is read-only: `view='body'` implies `no_fetch` (a miss just reports
-"not cached yet"), and it refuses to combine with `refresh`.
+Ask a focused question when the full report is too large for one result.
 
 New refs mint `<60-char slug>-<sha8>` — the tail is a hash of the full
 `model:query` key, so two queries that share a long lead-in now get

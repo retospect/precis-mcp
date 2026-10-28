@@ -76,15 +76,13 @@ def test_priority_and_recency_pages(
     assert (old_at < new_at) if oldest_first else (new_at < old_at)
     assert "fixture-sort-cold" not in first
     assert "fixture-sort-closed" not in first
-    second = _text(core.search(**args, sort="prio", page=2))
+    larger = _text(core.search(**{**args, "page_size": 5}, sort="prio"))
     default_at, unset_at = (
-        second.index("fixture-sort-default"),
-        second.index("fixture-sort-unset"),
+        larger.index("fixture-sort-default"),
+        larger.index("fixture-sort-unset"),
     )
     assert (unset_at < default_at) if oldest_first else (default_at < unset_at)
-    assert "fixture-sort-hot-new" not in second
-    last = _text(core.search(**args, sort="prio", page=3))
-    assert "fixture-sort-cold" in last
+    assert "fixture-sort-cold" in larger
     recent = _text(core.search(**args, sort="recency"))
     assert "[error:" not in recent
     assert "by recency" in recent

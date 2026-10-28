@@ -510,13 +510,14 @@ class _PerplexityBase(CacheBackedHandler):
                 )
             )
         body = resp.body + render_next_section(nav)
-        # gr521140: a paid Sonar answer is the whole deliverable — folding
-        # it at ~4 KB forced 4–9 sequential more() drains (a 13 KB answer
-        # used to arrive as "10.3 KB elided", then 7.4, 4.8, 2.3).
-        # ``unfolded`` skips the write-time context fold for this body and
-        # its whole cursor chain; the ``PRECIS_MAX_BODY_BYTES`` frame cap
-        # still pages an oversized report — at ~24 KB a page, not ~4 KB.
-        return Response(body=body, cost=resp.cost, unfolded=True)
+        return Response(
+            body=body,
+            cost=resp.cost,
+            result_budget_hint=(
+                "search(kind='perplexity-research', q='<a narrower question>', "
+                "page_size=1) requests a focused answer"
+            ),
+        )
 
     # ── /recent listing — Perplexity-specific; surfaces imported vs
     #    fetched provenance and points at the import path so Pro users

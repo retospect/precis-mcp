@@ -36,7 +36,7 @@ Scope the search to the one paper and query the claim:
 
 ```python
 search(kind="paper", q="Faradaic efficiency CO2 reduction", scope="<slug>")
-search(kind="paper", q="<claim or key phrase>", scope="<slug>", page=2)
+search(kind="paper", q="<distinctive phrase from claim>", scope="<slug>", page_size=10)
 ```
 
 Restricted to that paper's blocks (mechanics: `precis-search-help`).
