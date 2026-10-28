@@ -1391,6 +1391,8 @@ def put(
     `mode=`: file kinds use 'create'; paid-import kinds use 'import';
     numeric-ref kinds omit it. `tags=`/`untags=` add/remove; `link=`/`unlink=`
     use `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
+    `text={'$ref': '<handle>'}` substitutes that handle's current body —
+    requires an earlier same-session `get` of it.
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -1814,6 +1816,8 @@ def edit(
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
     / `nth=`. `dry_run=True` previews; `reason=` records why.
     Unsupported modes/fields raise `BadInput` with accepted options.
+    `text={'$ref': '<handle>'}` substitutes that handle's current body —
+    requires an earlier same-session `get` of it.
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """
