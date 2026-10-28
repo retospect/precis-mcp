@@ -180,7 +180,7 @@ dependencies = [
     # docx + tex file handlers — python-docx / latex2mathml (pure-Python)
     # over the shared lxml (compiled wheel) + resvg-py (Rust SVG raster,
     # figure→PNG) pair; lxml also backs the patent kind's EPO XML parsing.
-    "python-docx>=1.1",
+    "python-docx>=1.2.0",
     "latex2mathml>=3.77",
     "lxml>=5.0",
     "resvg-py>=0.1",
