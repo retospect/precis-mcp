@@ -328,7 +328,7 @@ paper = [
                             # declared so an ``import cv2`` never rides an
                             # accidental dependency.
     "rapidfuzz>=3.0",       # title/author fuzzy match in verify_metadata
-    "fonttools>=4.40",      # embedded-font outlines for glyph recovery
+    "fonttools>=4.67.0",      # embedded-font outlines for glyph recovery
                             # (ingest/glyph_outline.py, gr228652); also
                             # pulled in by matplotlib.
     # NOTE: ``habanero`` and ``semanticscholar`` moved to the core
