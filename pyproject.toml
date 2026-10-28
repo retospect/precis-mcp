@@ -147,7 +147,7 @@ dependencies = [
     # unverified and the provenance kind stayed dark (gr489310). Same
     # reasoning as ``tenacity`` above.
     "semanticscholar>=0.8",
-    "habanero>=2.0",
+    "habanero>=2.9.2",
     # Deterministic number verbalization for the narration (TTS) path
     # (``precis.draft.verbalize``) — Kokoro/espeak mispronounces raw digits
     # ("1,000" splits into "one zero zero zero" on the comma), so the
