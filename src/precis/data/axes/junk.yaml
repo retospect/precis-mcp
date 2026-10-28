@@ -6,6 +6,11 @@
 id: junk
 level: chunk
 applies_to_kinds: [paper, cfp]
+# Ref-level reuse (gr520915): the same verdict tags a whole paper —
+# JUNK:junk on a paper ref drops it out of default search, browse and
+# stub-chase. level stays 'chunk' (the cascade classifies chunks); this
+# key only whitelists the namespace for ref tags on the listed kinds.
+ref_kinds: [paper]
 version: 1
 question: "Is this chunk junk (publisher furniture / non-prose data) or substantive scientific prose?"
 select: one

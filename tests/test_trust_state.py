@@ -378,6 +378,74 @@ def test_migrate_links_leaves_no_act_behind(store: Store) -> None:
     assert [a["action"] for a in store.trust_acts_for("link", supersedes)] == ["create"]
 
 
+def test_migrate_links_regrounds_chunk_endpoints(store: Store) -> None:
+    """gr520025: a chunk endpoint owned by the migrated-away ref can't
+    follow verbatim — it re-grounds on the survivor's identical-text
+    chunk or de-grounds to ref-level when the survivor has no text
+    twin. A chunk on the unchanged endpoint stays verbatim even when
+    the loser owns it (pre-existing crossed damage isn't compounded),
+    and each de-/re-grounded copy stamps ``meta.prior_*`` with the
+    original ground."""
+    old = _memory(store, body="shared text", title="old")
+    new = _memory(store, body="shared text", title="survivor")
+    anchor = _memory(store, title="anchor")
+    with store.tx() as conn:
+        store.chunks.insert_chunks(
+            old,
+            [
+                ChunkInsert(
+                    ord=1,
+                    text="old only text",
+                    meta={"chunk_kind": "memory_body"},
+                ),
+                ChunkInsert(
+                    ord=2,
+                    text="crossed text",
+                    meta={"chunk_kind": "memory_body"},
+                ),
+            ],
+            conn=conn,
+        )
+        c0 = _one(
+            conn, "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (old,)
+        )
+        c1 = _one(
+            conn, "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 1", (old,)
+        )
+        c2 = _one(
+            conn, "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 2", (old,)
+        )
+        store.add_link(src_ref_id=anchor, dst_ref_id=old, dst_pos=0, conn=conn)
+        store.add_link(src_ref_id=old, dst_ref_id=anchor, src_pos=1, conn=conn)
+        # Pre-existing crossed damage: anchor's endpoint names anchor
+        # but carries a chunk the loser owns — verbatim, not re-grounded.
+        conn.execute(
+            "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, "
+            "dst_chunk_id, relation, set_by) "
+            "VALUES (%s, %s, %s, NULL, 'related-to', 'agent')",
+            (anchor, c2, old),
+        )
+        assert store.migrate_links(old, new, conn=conn) == 3
+        n_twin = _one(
+            conn,
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0",
+            (new,),
+        )
+        rows = conn.execute(
+            "SELECT src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, meta "
+            "FROM links ORDER BY link_id"
+        ).fetchall()
+    assert [r[:4] for r in rows] == [
+        (anchor, None, new, n_twin),
+        (new, None, anchor, None),
+        (anchor, c2, new, None),
+    ]
+    m1, m2, m3 = (r[4] or {} for r in rows)
+    assert m1["prior_ref_id"] == old and m1["prior_dst_chunk_id"] == c0
+    assert m2["prior_ref_id"] == old and m2["prior_src_chunk_id"] == c1
+    assert "prior_ref_id" not in m3 and "prior_src_chunk_id" not in m3
+
+
 def test_stale_expected_version_is_refused(store: Store) -> None:
     with revision_context(trust_origin="generated", trust_actor_type="agent"):
         mid = _memory(store)

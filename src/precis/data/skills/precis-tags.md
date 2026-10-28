@@ -196,7 +196,7 @@ import, so a new axis file registers itself:
 | `STUDYTYPE:` | ref | `experimental-single-entity experimental-ensemble computational synthesis review conceptual mixed unknown` | `axis:studytype` |
 | `TRANSPORT:` | ref | `point-contact few-atom interfacial thin-film bulk-3d unknown n-a` | `axis:transport` |
 | `MOVE:` | ref | `extension analogy contradiction critique transfer other unknown n-a` | `axis:move` (memories) |
-| `JUNK:` | chunk | `junk substantive` | `classify` cascade (junk gate) |
+| `JUNK:` | chunk (+ ref on `paper`) | `junk substantive` | `classify` cascade (junk gate); `JUNK:junk` ref tag is a manual whole-paper verdict |
 | `ROLE:` | chunk | `motivation method result interpretation limitation future-work related-work data boilerplate unknown n-a` | `axis:role` |
 | `ROLE3:` | chunk | `own background furniture` | `classify` cascade (role3) |
 | `OPEN-QUESTION:` | chunk | `yes no unknown n-a` | `axis:open-question` |
@@ -207,6 +207,15 @@ Ref-level axes are writable on the kinds their pass targets (papers +
 findings; `MOVE:` on memory). Chunk-level axes are registered for
 filtering only — they live on `chunk_tags`, not refs. An unknown value
 is refused with close matches.
+
+`JUNK:` is the one exception (gr520915): the axis stays chunk-level,
+but `tag(kind='paper', add=['JUNK:junk'])` is the manual whole-paper
+verdict — furniture-only, never worth surfacing. A `JUNK:junk` ref
+drops out of default paper search, the `tags=` browse, `view='count'`,
+the stub-chase backlog and the metadata-enrich sweep. To see or count
+the bucket, pin the axis yourself — `search(kind='paper',
+tags=['JUNK:junk'])` — an explicit `JUNK:` filter disables the default
+exclusion.
 
 ## Which axes are bookkeeping namespaces?
 

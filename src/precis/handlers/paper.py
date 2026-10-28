@@ -165,6 +165,23 @@ def _dropped_content_ids(identifiers: list[str], kept_pdf: str | None) -> list[s
     ]
 
 
+def _junk_exclude(tags: list[str] | None) -> list[str] | None:
+    """``['JUNK:junk']`` unless the caller pinned a ``JUNK:`` tag.
+
+    The default exclusion for the paper read paths (gr520915): a
+    ``JUNK:junk`` ref verdict drops the paper out of search, browse and
+    count views. An explicit ``JUNK:`` filter — ``tags=['JUNK:junk']``
+    for the audit view, ``tags=['JUNK:substantive']`` — means the caller
+    is deliberately working the axis, so the default stays off. The
+    prefix check is case-sensitive like ``parse_strict``: a lowercase
+    ``junk:x`` is an open tag, not the axis. Raw or normalized tags both
+    work — a closed-axis pin is already uppercase in the input.
+    """
+    if any(t.strip().partition(":")[0] == "JUNK" for t in tags or ()):
+        return None
+    return ["JUNK:junk"]
+
+
 @contextlib.contextmanager
 def _body_op_tx(store: Store, door: str) -> Iterator[Any]:
     """``store.tx()`` with the body doors' DB-error mapping.
@@ -2657,6 +2674,7 @@ class PaperHandler(Handler):
             extra_include_ref_ids=include_ref_ids,
             has_body=has_fulltext,
             chunk_kinds=chunk_kinds,
+            exclude_tags=_junk_exclude(tags),
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
 
@@ -2807,6 +2825,10 @@ class PaperHandler(Handler):
             tag_frag, tag_params = build_tag_filter(normalized_tags, ref_alias="r")
             clauses.append(tag_frag)
             params.extend(tag_params)
+        if _junk_exclude(tags):
+            ex_frag, ex_params = build_tag_filter(["JUNK:junk"], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
         if serves is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM links l WHERE l.dst_ref_id = %s "
@@ -2954,6 +2976,7 @@ class PaperHandler(Handler):
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            exclude_tags=_junk_exclude(tags),
         )
         filters: list[str] = []
         if q and q.strip():
@@ -2989,6 +3012,7 @@ class PaperHandler(Handler):
                     exclude_ref_ids=exclude_ref_ids,
                     since=since_dt,
                     until=until_dt,
+                    exclude_tags=_junk_exclude(tags),
                 )
                 parts.append(f"  passages: {passages} live body chunks")
         else:
@@ -3194,6 +3218,7 @@ class PaperHandler(Handler):
             exclude_ref_ids=sorted(resolved_exclude_ref_ids) or None,
             include_ref_ids=include_ref_ids,
             card_kinds=("card_combined",),
+            exclude_tags=_junk_exclude(tags),
         )
         triples = _dedup_card_hits(triples)
         # Title introducer, as in :meth:`search`: FTS strips an exact-title
@@ -7822,6 +7847,7 @@ class PaperHandler(Handler):
             "year_to": bf["year_to"],
             "created_after": bf["since"],
             "created_before": bf["until"],
+            "exclude_tags": _junk_exclude(tags),
         }
         refs = self.store.list_refs(
             kind=kind,

@@ -106,6 +106,47 @@ def _resolve_chunk_id_for_link(
     return chunk_id
 
 
+def _reground_link_chunk(
+    conn: Connection,
+    chunk_id: int | None,
+    *,
+    endpoint_ref_id: int,
+    old_ref_id: int,
+    new_ref_id: int,
+) -> int | None:
+    """Re-ground a chunk endpoint across a ref merge.
+
+    A merge repoints ``old_ref_id``'s link endpoints onto
+    ``new_ref_id``; copying ``chunk_id`` verbatim *on the repointed
+    endpoint* would cross the edge — ``chunks.ref_id`` stays the loser
+    while the link's endpoint names the winner (gr520025). Only an
+    endpoint whose ref is the loser moves, so only its chunk is
+    re-grounded: onto ``new_ref_id``'s identical-text chunk (min
+    chunk_id on ties), or de-grounded to NULL (ref-level) when the
+    winner has no text twin.
+
+    An endpoint whose ref isn't ``old_ref_id`` isn't repointed, so its
+    chunk stays verbatim even when the loser owns it — a crossed link
+    (``other_ref ~ loser's chunk``) is pre-existing damage, and
+    re-grounding it would pin the winner's chunk on a ref that never
+    named it: more damage, not less. A chunk owned by neither is
+    likewise verbatim. A missing row can't happen: the chunk FK is
+    ``ON DELETE CASCADE``.
+    """
+    if chunk_id is None or endpoint_ref_id != old_ref_id:
+        return chunk_id
+    row = conn.execute(
+        "SELECT ref_id, text FROM chunks WHERE chunk_id = %s", (chunk_id,)
+    ).fetchone()
+    if row is None or int(row[0]) != old_ref_id:
+        return chunk_id
+    match = conn.execute(
+        "SELECT min(chunk_id) FROM chunks WHERE ref_id = %s AND text = %s",
+        (new_ref_id, row[1]),
+    ).fetchone()
+    return int(match[0]) if match and match[0] is not None else None
+
+
 #: ``links`` FK constraint names → the (relation-owning) app-layer
 #: explanation for a caller. Mirrors the ``ADD CONSTRAINT`` names in
 #: ``0001_initial.sql`` — Postgres reports the *name*, not the column,
@@ -1919,20 +1960,31 @@ class LinksMixin:
 
         1. INSERT a substituted copy of every link where ``old_ref_id``
            is on either endpoint, swapping that endpoint to
-           ``new_ref_id`` and keeping ``src_chunk_id`` / ``dst_chunk_id``
-           (memory links are ref-level so those are NULL; a paper→memory
-           link keeps the paper's chunk endpoint, which stays valid).
+           ``new_ref_id``. A chunk on the repointed endpoint is
+           re-grounded onto ``new_ref_id``'s identical-text chunk (or
+           de-grounded to NULL) via :func:`_reground_link_chunk` —
+           verbatim copies would cross the edge (gr520025); the
+           unchanged endpoint's chunk stays verbatim even when the
+           loser owns it (a crossed link is pre-existing damage, not
+           compounded). A copy whose chunk endpoint de-grounded or
+           re-grounded stamps ``meta.prior_ref_id`` +
+           ``meta.prior_src_chunk_id``/``prior_dst_chunk_id`` with what
+           it replaced — the step-2 delete would otherwise lose the
+           original ground, where the garden path keeps the whole
+           original row in ``record.links``.
            ``ON CONFLICT DO NOTHING`` dedups against the
-           ``NULLS NOT DISTINCT`` unique index; rows that would become
-           self-loops after substitution are skipped (the schema CHECK
-           would otherwise raise, not conflict). Each converted copy
-           inserts under its own ``carry`` act naming the row it replaces,
-           so the copy keeps the original's stamp — a considered edge
-           stays considered across the merge rather than re-entering as a
-           ``computed/hunch`` row (0214; graph-node-trust-state slice 1).
-           A copy whose new ends are not trust-converted takes no act and
-           stays unknown/unknown v0; a conflict-skipped copy leaves its
-           act unbound, so the pre-existing twin edge keeps its own stamp.
+           ``NULLS NOT DISTINCT`` unique index — a collapsed copy keeps
+           the pre-existing twin's meta, no merge. Rows that would
+           become self-loops after substitution are skipped (the schema
+           CHECK would otherwise raise, not conflict). Each converted
+           copy inserts under its own ``carry`` act naming the row it
+           replaces, so the copy keeps the original's stamp — a
+           considered edge stays considered across the merge rather
+           than re-entering as a ``computed/hunch`` row (0214;
+           graph-node-trust-state slice 1). A copy whose new ends are
+           not trust-converted takes no act and stays unknown/unknown
+           v0; a conflict-skipped copy leaves its act unbound, so the
+           pre-existing twin edge keeps its own stamp.
         2. DELETE the original rows touching ``old_ref_id``.
 
         Returns the number of old rows deleted (the migrated count;
@@ -1960,7 +2012,8 @@ class LinksMixin:
             )
         rows = conn.execute(
             """
-            SELECT link_id, src_chunk_id, dst_chunk_id, relation, set_by, meta,
+            SELECT link_id, src_ref_id, dst_ref_id,
+                   src_chunk_id, dst_chunk_id, relation, set_by, meta,
                    CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END,
                    CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END,
                    precis_trust_link_converted(ARRAY[
@@ -1986,6 +2039,8 @@ class LinksMixin:
             try:
                 for (
                     link_id,
+                    src_ref,
+                    dst_ref,
                     src_chunk,
                     dst_chunk,
                     relation,
@@ -1995,8 +2050,29 @@ class LinksMixin:
                     new_dst,
                     converted,
                 ) in rows:
-                    if new_src == new_dst and src_chunk == dst_chunk:
+                    new_src_chunk = _reground_link_chunk(
+                        conn,
+                        src_chunk,
+                        endpoint_ref_id=int(src_ref),
+                        old_ref_id=old_ref_id,
+                        new_ref_id=new_ref_id,
+                    )
+                    new_dst_chunk = _reground_link_chunk(
+                        conn,
+                        dst_chunk,
+                        endpoint_ref_id=int(dst_ref),
+                        old_ref_id=old_ref_id,
+                        new_ref_id=new_ref_id,
+                    )
+                    if new_src == new_dst and new_src_chunk == new_dst_chunk:
                         continue  # a self-loop after substitution
+                    new_meta = dict(meta or {})
+                    if new_src_chunk != src_chunk:
+                        new_meta["prior_ref_id"] = old_ref_id
+                        new_meta["prior_src_chunk_id"] = src_chunk
+                    if new_dst_chunk != dst_chunk:
+                        new_meta["prior_ref_id"] = old_ref_id
+                        new_meta["prior_dst_chunk_id"] = dst_chunk
                     act = ""
                     if converted:
                         act = TrustAct(
@@ -2022,12 +2098,12 @@ class LinksMixin:
                         "  dst_chunk_id, relation) DO NOTHING",
                         (
                             new_src,
-                            src_chunk,
+                            new_src_chunk,
                             new_dst,
-                            dst_chunk,
+                            new_dst_chunk,
                             relation,
                             set_by,
-                            Jsonb(meta or {}),
+                            Jsonb(new_meta),
                         ),
                     )
             finally:

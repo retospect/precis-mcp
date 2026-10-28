@@ -682,6 +682,13 @@ def run(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                 print("fill incomplete: index phase skipped.", file=sys.stderr)
+                if ready:
+                    print(
+                        f"re-run with --skip-fill to build indexes for the "
+                        f"{len(ready)} fill-complete kinds: "
+                        + ", ".join(sorted(ready)),
+                        file=sys.stderr,
+                    )
                 sys.exit(1)
             if unready:
                 print(

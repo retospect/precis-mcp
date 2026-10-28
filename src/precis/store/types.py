@@ -1510,17 +1510,21 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
 #   kind's ``_KIND_ALLOWED_AXES`` set when that kind has one, so
 #   ``tag(add=['MATERIAL:mof'])``/``search(kind='paper', tags=...)``
 #   accept what the pass writes. Chunk-level axes stay registered for
-#   filters but are never ref-tag writable.
+#   filters but are never ref-tag writable — except the yaml's
+#   ``ref_kinds`` opt-in, which whitelists a chunk-level namespace as a
+#   ref tag on the listed kinds (``JUNK:`` on ``paper``, gr520915).
 #
 # Bookkeeping namespaces (``<NS>CASCADE`` markers, CHASETRIG, BIBMARK,
 # SEV, NOTE, ...) are DECLARED_AXES — parse-checked only.
 _CATEGORIZER_AXES = load_categorizer_axes()
 for _axis_ns, _axis in _CATEGORIZER_AXES.items():
     _CLOSED_VOCAB[_axis_ns] = _CLOSED_VOCAB.get(_axis_ns, frozenset()) | _axis.values
-    if _axis.level == "ref":
-        for _kind in _axis.kinds:
-            if _kind in _KIND_ALLOWED_AXES:
-                _KIND_ALLOWED_AXES[_kind] = _KIND_ALLOWED_AXES[_kind] | {_axis_ns}
+    _ref_writable = _axis.ref_kinds | (
+        _axis.kinds if _axis.level == "ref" else frozenset()
+    )
+    for _kind in _ref_writable:
+        if _kind in _KIND_ALLOWED_AXES:
+            _KIND_ALLOWED_AXES[_kind] = _KIND_ALLOWED_AXES[_kind] | {_axis_ns}
 # _RESERVED_FLAGS is built above over the static table; rebuild it now that
 # the yaml axes are merged, so a bare flag colliding with an axis value
 # (``mof`` -> ``MATERIAL:mof``) still points at the closed form.

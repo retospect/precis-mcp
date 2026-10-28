@@ -81,9 +81,21 @@ def test_ref_level_axes_join_their_kinds_allowed_sets() -> None:
     assert "MOVE" in _KIND_ALLOWED_AXES["memory"]
 
 
+def test_junk_axis_ref_kinds_whitelists_paper() -> None:
+    """gr520915: ``ref_kinds:`` in junk.yaml whitelists the chunk-level
+    JUNK namespace as a ref tag on paper — the furniture-only verdict a
+    human stamps. A chunk-level axis without ``ref_kinds`` stays
+    filter-only."""
+    assert "JUNK" in _KIND_ALLOWED_AXES["paper"]
+    assert str(Tag.parse_strict("JUNK:junk", kind="paper")) == "JUNK:junk"
+    with pytest.raises(BadInput, match="axis not allowed on kind 'paper'"):
+        Tag.parse_strict("ROLE:motivation", kind="paper")
+
+
 def test_chunk_level_axes_stay_ref_read_only_on_paper() -> None:
-    """JUNK/ROLE3/OPEN-QUESTION are chunk tags — registered for filters,
-    never ref-tag writable on paper."""
+    """ROLE3/OPEN-QUESTION are chunk tags — registered for filters,
+    never ref-tag writable on paper. (JUNK is the one ``ref_kinds``
+    exception — covered above.)"""
     assert "JUNK" in _CLOSED_VOCAB
     with pytest.raises(BadInput, match="axis not allowed on kind 'paper'"):
         Tag.parse_strict("ROLE3:own", kind="paper")

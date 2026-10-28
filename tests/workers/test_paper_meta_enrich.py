@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from precis.ingest import paper_meta_enrich
 from precis.store import Store
+from precis.store.types import Tag
 from precis.workers.paper_meta_enrich import (
     _DEFAULT_BATCH_LIMIT,
     _DEFAULT_REFRESH_HOURS,
@@ -81,6 +83,40 @@ class TestBatchAndThrottle:
 
         r2 = run_paper_meta_enrich_pass(store)  # not due yet
         assert r2.claimed == 0
+
+    def test_junk_verdict_paper_is_not_claimed(
+        self, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        """gr520915: a JUNK-verdict paper gets no metadata sweep — the
+        claim query drops it like the stub-chase paths do."""
+        junk = _paper(store, slug="junkenrich")
+        keep = _paper(store, slug="keepenrich")
+        store.add_tag(junk, Tag.closed("JUNK", "junk"))
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+
+        result = run_paper_meta_enrich_pass(store)
+
+        assert result.claimed == 1
+        assert paper_meta_enrich.RESOLVED_AT_KEY in _meta(store, keep)
+        assert paper_meta_enrich.RESOLVED_AT_KEY not in _meta(store, junk)
+
+    def test_expired_junk_verdict_is_still_claimed(
+        self, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        """A lapsed JUNK verdict doesn't exclude — the claim leg mirrors
+        ``build_tag_filter``'s TTL clause."""
+        lapsed = _paper(store, slug="junklapsed")
+        store.add_tag(
+            lapsed,
+            Tag.closed("JUNK", "junk"),
+            expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+
+        result = run_paper_meta_enrich_pass(store)
+
+        assert result.claimed == 1
+        assert paper_meta_enrich.RESOLVED_AT_KEY in _meta(store, lapsed)
 
 
 class TestFailureIsolation:

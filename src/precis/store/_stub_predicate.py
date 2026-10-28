@@ -151,6 +151,7 @@ def stub_predicate_sql(
     id_kinds: Iterable[str] = _STUB_ID_KIND_ORDER,
     *,
     exclude_retracted: bool = True,
+    exclude_junk: bool = True,
     pin_meta_key: str | None = None,
     kind: str = "paper",
 ) -> str:
@@ -184,6 +185,11 @@ def stub_predicate_sql(
     stubs back (none exist today; this is the opt-out valve, not a
     conditional default).
 
+    ``exclude_junk`` (default ``True``, gr520915) drops rows stamped
+    ``JUNK:junk`` — the ref-level verdict a human writes when a paper
+    is furniture-only, so no fetch pass should keep chasing its PDF.
+    Same opt-out-valve posture as ``exclude_retracted``.
+
     ``pin_meta_key`` (default ``None``) widens the ``pdf_sha256 IS
     NULL`` leg with an OR: a ref that DOES carry a PDF but is stamped
     ``meta.<pin_meta_key>`` still qualifies. The one caller today is
@@ -216,4 +222,14 @@ def stub_predicate_sql(
         # least once; a plain <> comparison drops NULLs (three-valued
         # logic), which would silently exclude every never-checked stub.
         predicate += f" AND {alias}.retraction_status IS DISTINCT FROM 'retracted'"
+    if exclude_junk:
+        # The expires_at leg mirrors build_tag_filter: a lapsed verdict
+        # doesn't exclude.
+        predicate += (
+            " AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+            "ON t.tag_id = rt.tag_id "
+            f"WHERE rt.ref_id = {alias}.ref_id "
+            "AND t.namespace = 'JUNK' AND t.value = 'junk' "
+            "AND (rt.expires_at IS NULL OR rt.expires_at > now()))"
+        )
     return predicate

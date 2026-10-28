@@ -718,6 +718,7 @@ class FusedBlockSearch:
         extra_include_ref_ids: list[int] | None = None,
         has_body: bool | None = None,
         chunk_kinds: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
     ) -> BlockSearchResult:
         # Local import — paper.py imports this module lazily, so by the
         # time ``run`` executes paper.py is fully loaded; see this
@@ -1076,6 +1077,7 @@ class FusedBlockSearch:
                 prefer_body=capped_body_search,
                 chunk_kinds=chunk_kinds,
                 ref_counts_out=ref_counts if paper_rows else None,
+                exclude_tags=exclude_tags,
             )
             _log.debug(
                 "paper search: SQL legs stage (broad, mode=%s, %d legs) took %.3fs",
@@ -1121,6 +1123,7 @@ class FusedBlockSearch:
                 card_kinds=("card_combined",),
                 has_body=has_body,
                 chunk_kinds=chunk_kinds,
+                exclude_tags=exclude_tags,
             )
             _log.debug(
                 "paper search: SQL legs stage (single-leg, mode=%s) took %.3fs",

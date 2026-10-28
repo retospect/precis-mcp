@@ -329,6 +329,45 @@ class TestAC4MergeApplyUndo:
         _link(store, loser, winner)  # loser↔winner → dropped self-loop
         return winner, loser, mentioner, target
 
+    def _chunk(self, store: Store, ref_id: int, ord_: int, text: str) -> int:
+        with store.tx() as conn:
+            row = conn.execute(
+                "INSERT INTO chunks (ref_id, ord, text, chunk_kind) "
+                "VALUES (%s, %s, %s, 'paragraph') RETURNING chunk_id",
+                (ref_id, ord_, text),
+            ).fetchone()
+            assert row is not None
+            return int(row[0])
+
+    def _links_chunked(
+        self, store: Store
+    ) -> list[tuple[int, int | None, int, int | None, str]]:
+        with store.pool.connection() as conn:
+            return [
+                (int(r[0]), r[1], int(r[2]), r[3], str(r[4]))
+                for r in conn.execute(
+                    "SELECT src_ref_id, src_chunk_id, dst_ref_id, "
+                    "dst_chunk_id, relation FROM links ORDER BY link_id"
+                ).fetchall()
+            ]
+
+    def _crossed(self, store: Store) -> list[int]:
+        """link_ids whose chunk endpoint is owned by a different ref
+        than the link column names — the gr520025 damage shape."""
+        with store.pool.connection() as conn:
+            return [
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT l.link_id FROM links l JOIN chunks c "
+                    "  ON c.chunk_id = l.src_chunk_id "
+                    "WHERE c.ref_id <> l.src_ref_id "
+                    "UNION ALL "
+                    "SELECT l.link_id FROM links l JOIN chunks c "
+                    "  ON c.chunk_id = l.dst_chunk_id "
+                    "WHERE c.ref_id <> l.dst_ref_id"
+                ).fetchall()
+            ]
+
     def test_apply_repoints_mentions_loser_resolves_as_alias(
         self, store: Store
     ) -> None:
@@ -407,6 +446,79 @@ class TestAC4MergeApplyUndo:
         apply_merge(store, loser, winner, actor="reto")
         with pytest.raises(BadInput, match="retired"):
             apply_merge(store, loser, winner, actor="reto")
+
+    def test_merge_regrounds_chunk_endpoints(self, store: Store) -> None:
+        """gr520025: a chunk endpoint owned by the loser can't be copied
+        verbatim — the merged row would read ``winner~<loser's chunk>``.
+        The winner's identical-text chunk takes the ground, no text twin
+        de-grounds to ref-level, a chunk owned by the unchanged endpoint
+        stays verbatim (even when the loser owns it — pre-existing
+        crossed damage isn't compounded), a copy that lands on an
+        existing winner edge dedupes, and undo replays the originals."""
+        winner, loser, mentioner, target = self._pair(store)
+        outside = _ref(store, "concept", "outside note")
+        l_twin = self._chunk(store, loser, 0, "shared text")
+        l_solo = self._chunk(store, loser, 1, "loser only text")
+        l_cross = self._chunk(store, loser, 2, "crossed text")
+        w_twin = self._chunk(store, winner, 0, "shared text")
+        o_chunk = self._chunk(store, outside, 0, "outside text")
+        store.add_link(src_ref_id=outside, dst_ref_id=loser, dst_pos=0)
+        store.add_link(src_ref_id=loser, dst_ref_id=outside, src_pos=1)
+        store.add_link(
+            src_ref_id=outside, dst_ref_id=loser, src_pos=0, relation="supports"
+        )
+        # The winner already carries the edge the merge's re-grounded
+        # copy of ``outside -> loser~l_twin`` would land on: the copy
+        # dedupes into this pre-existing row.
+        store.add_link(src_ref_id=outside, dst_ref_id=winner, dst_pos=0)
+        # Pre-existing crossed damage: the src endpoint names ``outside``
+        # but its chunk belongs to the loser. The endpoint isn't
+        # repointed, so the chunk stays verbatim — re-grounding it would
+        # pin the winner's chunk on a ref that never named it.
+        with store.tx() as conn:
+            conn.execute(
+                "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, "
+                "dst_chunk_id, relation, set_by) "
+                "VALUES (%s, %s, %s, NULL, 'related-to', 'agent')",
+                (outside, l_cross, loser),
+            )
+
+        rec = apply_merge(store, loser, winner, actor="reto")
+
+        assert [lk["disposition"] for lk in rec.links] == [
+            "repointed",
+            "repointed",
+            "dropped_selfloop",
+            "deduped",
+            "repointed",
+            "repointed",
+            "repointed",
+        ]
+        assert self._links_chunked(store) == [
+            (outside, None, winner, w_twin, "related-to"),
+            (mentioner, None, winner, None, "related-to"),
+            (winner, None, target, None, "supports"),
+            (winner, None, outside, None, "related-to"),
+            (outside, o_chunk, winner, None, "supports"),
+            (outside, l_cross, winner, None, "related-to"),
+        ]
+        # Only the carried crossed row is crossed — damage verbatim,
+        # none new.
+        assert len(self._crossed(store)) == 1
+
+        counts = undo_merge(store, rec.merge_id)
+        assert counts["links_restored"] == 7 and counts["links_deleted"] == 5
+        assert self._links_chunked(store) == [
+            (outside, None, winner, w_twin, "related-to"),
+            (mentioner, None, loser, None, "related-to"),
+            (loser, None, target, None, "supports"),
+            (loser, None, winner, None, "related-to"),
+            (outside, None, loser, l_twin, "related-to"),
+            (loser, l_solo, outside, None, "related-to"),
+            (outside, o_chunk, loser, None, "supports"),
+            (outside, l_cross, loser, None, "related-to"),
+        ]
+        assert len(self._crossed(store)) == 1
 
 
 # ── AC 5: clean graph → zero proposals, zero writes; cooling ──────────────

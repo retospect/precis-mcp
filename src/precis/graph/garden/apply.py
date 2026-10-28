@@ -53,6 +53,7 @@ from precis.errors import BadInput, NotFound
 from precis.store._links_ops import (
     GARDEN_RELINK_META,
     MACHINE_EDGE_STRUCTURAL,
+    _reground_link_chunk,
     relink_apply_door,
 )
 from precis.store.revision_context import (
@@ -329,7 +330,27 @@ def apply_merge(
             }
             new_src = winner_id if int(src_ref) == loser_id else int(src_ref)
             new_dst = winner_id if int(dst_ref) == loser_id else int(dst_ref)
-            if new_src == new_dst and src_chunk == dst_chunk:
+            # A chunk on the repointed (loser) endpoint can't follow
+            # verbatim — the copy would read <winner>~<loser's chunk>
+            # (gr520025). Re-ground on the winner's identical-text
+            # chunk, de-ground to ref-level when the winner has no text
+            # twin. The unchanged endpoint keeps its chunk even when
+            # the loser owns it — crossed damage stays verbatim.
+            new_src_chunk = _reground_link_chunk(
+                conn,
+                src_chunk,
+                endpoint_ref_id=int(src_ref),
+                old_ref_id=loser_id,
+                new_ref_id=winner_id,
+            )
+            new_dst_chunk = _reground_link_chunk(
+                conn,
+                dst_chunk,
+                endpoint_ref_id=int(dst_ref),
+                old_ref_id=loser_id,
+                new_ref_id=winner_id,
+            )
+            if new_src == new_dst and new_src_chunk == new_dst_chunk:
                 orig["disposition"] = "dropped_selfloop"
                 record.links.append(orig)
                 continue
@@ -348,9 +369,9 @@ def apply_merge(
                 "  dst_chunk_id, relation) DO NOTHING RETURNING link_id",
                 {
                     "s": new_src,
-                    "sc": src_chunk,
+                    "sc": new_src_chunk,
                     "d": new_dst,
-                    "dc": dst_chunk,
+                    "dc": new_dst_chunk,
                     "rel": relation,
                     "by": set_by,
                     "m": Jsonb(new_meta),

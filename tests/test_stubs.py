@@ -14,6 +14,8 @@ Shared by ``precis stubs`` (CLI) and the MCP view, so this guards both
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.store.types import Tag
@@ -412,6 +414,32 @@ def test_stub_backlog_count_excludes_retracted(store: Store) -> None:
     retracted = _stub(store, cite_key="cnt_retracted2024", doi="10.1/cntretracted")
     store.set_retraction_status(retracted, status="retracted")
     _stub(store, cite_key="cnt_want2024", doi="10.1/cntwant")
+    assert store.stub_backlog_count() == 1
+
+
+def test_stub_backlog_excludes_junk_verdict(store: Store) -> None:
+    """gr520915: a JUNK-verdict stub has no PDF worth chasing — it
+    drops out of the backlog like a retracted row."""
+    junk = _stub(store, cite_key="junk2024", doi="10.1/junk")
+    keep = _stub(store, cite_key="keep2024x", doi="10.1/keepx")
+    store.add_tag(junk, Tag.closed("JUNK", "junk"))
+    assert [r["ref_id"] for r in store.stub_backlog()] == [keep]
+    assert store.stub_backlog_count() == 1
+
+
+def test_stub_backlog_expired_junk_verdict_does_not_exclude(
+    store: Store,
+) -> None:
+    """A lapsed JUNK verdict is inert — the exclusion leg carries
+    ``build_tag_filter``'s TTL clause, so an expired tag row stays for
+    audit without keeping the stub out of the backlog."""
+    lapsed = _stub(store, cite_key="lapsed2024", doi="10.1/lapsed")
+    store.add_tag(
+        lapsed,
+        Tag.closed("JUNK", "junk"),
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    assert [r["ref_id"] for r in store.stub_backlog()] == [lapsed]
     assert store.stub_backlog_count() == 1
 
 

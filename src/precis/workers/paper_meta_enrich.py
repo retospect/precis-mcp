@@ -73,6 +73,13 @@ def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
          WHERE r.kind = 'paper'
            AND r.retired_at IS NULL
            AND r.meta->>'authors_resolved_at' IS NULL
+           -- gr520915: a JUNK-verdict paper gets no metadata sweep; an
+           -- expired verdict doesn't exclude (build_tag_filter's TTL leg).
+           AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t
+             ON t.tag_id = rt.tag_id
+             WHERE rt.ref_id = r.ref_id
+             AND t.namespace = 'JUNK' AND t.value = 'junk'
+             AND (rt.expires_at IS NULL OR rt.expires_at > now()))
          ORDER BY r.ref_id DESC
          LIMIT %s
     """

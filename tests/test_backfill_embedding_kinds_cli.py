@@ -152,17 +152,25 @@ def test_until_pass_bounded_run_with_unready_kind_exits_1(
     err = capsys.readouterr().err
     assert "still have unfilled rows" in err
     assert "fill incomplete" in err
+    assert "--skip-fill" in err
+    assert "fill-complete kinds:" in err
+    assert "gripe" not in err.split("fill-complete kinds:")[1]
 
 
 def test_full_fill_with_unready_kind_still_exits_1(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The failure path is kept for a run that was meant to fill
     everything (default ``--until-pass paper``): unready partial kinds
-    still refuse the index phase with exit 1."""
+    still refuse the index phase with exit 1, and the hint still names
+    --skip-fill and only the fill-complete kinds."""
     built, _marked = _bounded_fill_stub(monkeypatch)
 
     with pytest.raises(SystemExit) as e:
         bf.run(_args(until_pass="paper", no_btree=True))
     assert e.value.code == 1
     assert built == []
+    err = capsys.readouterr().err
+    assert "re-run with --skip-fill" in err
+    assert "fill-complete kinds:" in err
+    assert "gripe" not in err.split("fill-complete kinds:")[1]

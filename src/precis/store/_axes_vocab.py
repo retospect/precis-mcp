@@ -36,11 +36,16 @@ _AXES_DIR: Final[Path] = Path(__file__).resolve().parent.parent / "data" / "axes
 class AxisDef:
     """One ``data/axes/<id>.yaml``: namespace, closed values, level and the
     kinds the pass writes them on (``applies_to_kinds ∪ opt_in_kinds``,
-    ``["paper"]`` when the file says neither)."""
+    ``["paper"]`` when the file says neither). ``ref_kinds`` whitelists
+    the namespace as a *ref-level* tag on those kinds even when the axis
+    itself is chunk-level — ``junk.yaml`` (gr520915) is the one caller:
+    a ``JUNK:junk`` verdict on a paper ref is the "don't surface this
+    paper by default" stamp the chunk gate implies at corpus level."""
 
     values: frozenset[str]
     level: str
     kinds: frozenset[str]
+    ref_kinds: frozenset[str]
 
 
 def load_categorizer_axes() -> dict[str, AxisDef]:
@@ -62,6 +67,7 @@ def load_categorizer_axes() -> dict[str, AxisDef]:
             values=frozenset(str(v) for v in data["values"]),
             level=str(data.get("level") or "ref"),
             kinds=frozenset(kinds),
+            ref_kinds=frozenset(str(k) for k in (data.get("ref_kinds") or [])),
         )
     return out
 
