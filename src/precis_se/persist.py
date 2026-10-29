@@ -114,7 +114,9 @@ from psycopg.types.json import Jsonb
 
 from precis.blocktree.types import TEMPLATE_SEP, parse_template_ref
 from precis.design.uids import mint_uids
+from precis.errors import NotFound
 from precis.pcb import export as pcb_export
+from precis.utils.file_id import nearest_slugs
 from precis_se import catalog
 from precis_se.atomic.vocab import ThreadingSpec
 from precis_se.board import BoardDerived, derive_board
@@ -2263,3 +2265,42 @@ def retire_design(store: Any, ref_id: int) -> tuple[int, list[str], dict[str, st
     for sid in to_retire.values():
         store.structure_delete(sid)
     return len(rows), sorted(to_retire), kept
+
+
+#: ``store.list_refs`` page size while collecting every live se design
+#: slug for a not-found suggestion — a guessed slug must not cap the
+#: candidate set at the 50-row default page.
+_SLUG_PAGE = 200
+
+#: ``next=`` on a design-not-found names the listing call — the door that
+#: answers "which designs DO exist" without another guessed slug.
+_DESIGN_LIST_NEXT = "get(kind='se') — lists every live se design"
+
+
+def design_not_found(store: Any, slug: Any, *, next: Any = None) -> NotFound:
+    """``NotFound`` for an unknown ``se`` design id, carrying the up-to-5
+    closest live design slugs as ``options=`` and the design listing as
+    ``next=`` when the caller didn't supply a more specific one.
+
+    A bare "not found" dead-ends the caller into retrying the same
+    lookup (gr528152: agents guessed ``boxmake-molding``/``boxmake-fdm``
+    with no way to discover the real ``box3-fdm``); the close matches
+    turn the refusal into "did you mean one of these".
+    """
+    slugs: list[str] = []
+    offset = 0
+    while True:
+        refs = store.list_refs(
+            kind="se", order_by="id_desc", limit=_SLUG_PAGE, offset=offset
+        )
+        if not refs:
+            break
+        slugs.extend(str(r.slug) for r in refs)
+        offset += _SLUG_PAGE
+        if len(refs) < _SLUG_PAGE:
+            break
+    return NotFound(
+        f"se design {slug!r} not found",
+        options=nearest_slugs(str(slug), slugs) or None,
+        next=next if next is not None else _DESIGN_LIST_NEXT,
+    )

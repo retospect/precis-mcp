@@ -1026,6 +1026,31 @@ def test_missing_design_lists_nothing_helpful(handler: SeHandler) -> None:
     assert "no se designs yet" in listing.body
 
 
+def test_missing_design_suggests_close_ids(handler: SeHandler) -> None:
+    """gr528152: a guessed id (``boxmake-molding`` for the real
+    ``box3-fdm``) gets the close live slugs back as ``options=`` and the
+    design listing as ``next=`` — a refusal that names a way forward, not
+    an invitation to retry the same miss."""
+    handler.put(id="box3-fdm", text="{}")
+    handler.put(id="caster-nf", text=_CASTER)
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="box3-fdn")
+    assert "box3-fdm" in (exc.value.options or [])
+    assert exc.value.next == "get(kind='se') — lists every live se design"
+    # the hint is a call this handler accepts: a bare get lists designs.
+    assert "box3-fdm" in handler.get().body
+
+
+def test_delete_and_edit_suggest_close_ids_too(handler: SeHandler) -> None:
+    handler.put(id="box3-fdm", text="{}")
+    with pytest.raises(NotFound) as exc:
+        handler.delete(id="box3-fdn")
+    assert "box3-fdm" in (exc.value.options or [])
+    with pytest.raises(NotFound) as exc:
+        handler.edit(id="box3-fdn", ops=[])
+    assert "box3-fdm" in (exc.value.options or [])
+
+
 # ── ports + connects ─────────────────────────────────────────────────────
 
 

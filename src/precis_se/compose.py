@@ -382,7 +382,7 @@ def resolve_compose(store: Any, compose: str) -> tuple[ComposeBox, dict[str, Any
         from_state, to_state = from_part.strip(), to_part.strip()
     ref = store.get_ref(kind="se", id=slug)
     if ref is None:
-        raise NotFound(f"se design {slug!r} not found")
+        raise persist.design_not_found(store, slug)
     tree = persist.load_tree(store, ref.id)
     key = tree.resolve_key(block_token)
     if key is None:

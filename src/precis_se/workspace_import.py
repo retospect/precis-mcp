@@ -1298,7 +1298,7 @@ def import_workspace_run(
 
     ref = store.get_ref(kind="se", id=design)
     if ref is None:
-        raise NotFound(f"se design {design!r} not found")
+        raise persist.design_not_found(store, design)
     if target == "fork":
         fork_slug = f"{design}--{run_job if run_job is not None else workspace}"
         with store.tx() as conn:

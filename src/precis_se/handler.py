@@ -909,7 +909,7 @@ class SeHandler(Handler):
         design."""
         ref = self.store.get_ref(kind="se", id=str(design).strip())
         if ref is None:
-            raise NotFound(f"se design {design!r} not found")
+            raise persist.design_not_found(self.store, design)
         tree = persist.load_tree(self.store, ref.id)
         return {
             name: str(n.bound)
@@ -1174,7 +1174,7 @@ class SeHandler(Handler):
                 )
                 else None
             )
-            raise NotFound(f"se design {id!r} not found", next=nxt)
+            raise persist.design_not_found(self.store, str(id).strip(), next=nxt)
         if not op_list and "prefunits" not in payload:
             raise BadInput(
                 "edit(kind='se') requires ops=",
@@ -1733,7 +1733,7 @@ class SeHandler(Handler):
             )
         other = self.store.get_ref(kind="se", id=other_slug)
         if other is None:
-            raise NotFound(f"se design {other_slug!r} not found")
+            raise persist.design_not_found(self.store, other_slug)
         mine = _blocks_by_uid(persist.load_tree(self.store, ref.id))
         theirs = _blocks_by_uid(persist.load_tree(self.store, other.id))
         lines = [f"# se diff '{other_slug}' → '{slug}' (joined on block uid)", ""]
@@ -1997,7 +1997,7 @@ class SeHandler(Handler):
                 id=id if completion_read and isinstance(id, int) else str(id).strip(),
             )
         if ref is None:
-            raise NotFound(f"se design {id!r} not found")
+            raise persist.design_not_found(self.store, str(id).strip())
         if completion_view in ("completion", "completion_digest"):
             from precis_se.completion import read_se_completion
 
@@ -3600,7 +3600,7 @@ class SeHandler(Handler):
             raise BadInput("delete(kind='se') requires id= (the design slug)")
         ref = self.store.get_ref(kind="se", id=str(id).strip())
         if ref is None:
-            raise NotFound(f"se design {id!r} not found")
+            raise persist.design_not_found(self.store, str(id).strip())
         # gr459058: the retire cascades to the structures this design's
         # blocks minted/bound, except ones another live design still binds
         # or the (undecided) building-block promotion protects.
