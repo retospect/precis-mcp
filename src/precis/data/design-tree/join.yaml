@@ -884,6 +884,7 @@ join:
               directness: direct
               implies:
                 class: rigid
+                mechanism: fuse
               summary: Fuse the parts permanently, by fusion or resistance welding for metals, or ultrasonic, hot-plate, vibration
                 and similar for thermoplastics. Joint strength is governed by weld detail and workmanship, not parent metal.
               when:
@@ -1150,6 +1151,7 @@ join:
               directness: indirect
               implies:
                 class: rigid
+                mechanism: fuse
               summary: Join metals with a filler that melts below the base metal, drawn into a controlled gap by capillary
                 action. Brazing is above 450 C filler liquidus, soldering below. Design as a shear or lap joint with a set
                 gap.
@@ -1336,6 +1338,7 @@ join:
               directness: indirect
               implies:
                 class: rigid
+                mechanism: adhesive
               summary: Bond with epoxy, acrylic, cyanoacrylate or PSA tape. Design so the adhesive sees shear or compression,
                 never peel or cleavage, with a controlled bondline and prepared surfaces.
               when:
@@ -1572,6 +1575,7 @@ join:
               directness: direct
               implies:
                 class: rigid
+                mechanism: fuse
               summary: Soften both mating faces with a solvent or solvent cement so the polymer chains interdiffuse and fuse
                 as the solvent leaves. Only for plastics the same solvent dissolves (ABS, PMMA, PVC, PS, SAN, some PC), with
                 a close fit and a broad overlap.
@@ -1746,6 +1750,7 @@ join:
               directness: indirect
               implies:
                 class: rigid
+                mechanism: rivet
               summary: Permanent, shear-loaded joint of thin sheet; solid rivet if both sides reachable, blind rivet if one
                 side only. Weak for clamp load, sealing, creep-prone plastic, and anything needing disassembly.
               when:
@@ -4504,6 +4509,7 @@ join:
               directness: indirect
               implies:
                 class: revolute
+                mechanism: pin
               summary: Detachable transverse-load pivot or link; the pin carries shear and bearing, the clip only stops axial
                 escape. Not a preload joint.
               when:
@@ -5800,6 +5806,7 @@ locate:
       coverage: deep
       implies:
         class: rigid
+        mechanism: pin
       summary: Locate a part with one round dowel (position) plus a diamond pin or slot (clocking), so hole-spacing error
         does not bind. Pins locate; bolts clamp and carry load.
       when:

@@ -34,6 +34,7 @@ rotate:
           coverage: deep
           implies:
             class: revolute
+            mechanism: pin
           summary: A pin turning directly in a drilled, reamed or printed hole. Cheapest pivot; the housing is the wear part,
             so it suits low load, low speed, oscillating or hand-operated motion. Past that, put a replaceable bushing or
             rolling bearing in the hole.
@@ -3205,8 +3206,7 @@ rotate:
           coverage: deep
           implies:
             class: rigid
-            mechanism: key
-            rank: 4
+            mechanism: pin
           summary: 'Transverse pin (solid, taper, dowel, spring, coiled) through hub and shaft: cheap, compact positive drive
             and axial retention for light to moderate torque, or a deliberate shear fuse. The cross hole is the main fatigue
             risk.'

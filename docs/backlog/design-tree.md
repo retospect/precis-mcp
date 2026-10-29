@@ -1,6 +1,6 @@
 ---
 status: in-progress
-title: "design tree: function → decision trees for se/cad agents — remaining slices (DRC, rerun, mechanism leaves, red-list review, scale-out)"
+title: "design tree: function → decision trees for se/cad agents — remaining slices (DRC, import, red-list review, rerun, scale-out)"
 pillar: 3d-design
 prio: normal
 model: sonnet
@@ -22,6 +22,7 @@ code and its docs:
 | S3 skill | `precis-se-dtree-help` | `cef15ed25` |
 | S4 se hints | `precis_se.dtree_hints`, principles notes, STATUS:done gate | `fa4876f6a` |
 | S6 processes | `processes.yaml` | with S1 |
+| mechanism leaves | `implies.mechanism` fuse/adhesive/rivet/pin on 10 leaves; `test_packaged_export_pin_leaves` | `feat(dtree): mechanism on pin/fuse/rivet/adhesive leaves` |
 
 - **Rulings** (Reto, 2026-10-25/26, the full list): gr516958 comment 9.
 - **Pipeline metrics** (pilot, run 2, run 3): gr516958 comment 10, with
@@ -67,29 +68,23 @@ descended.
      DOF of every part is intended or stopped in both directions, and
      friction-only retention under vibration is flagged.
    - Opus reviews the DOF rule (shared with se-design-plan batch 3c).
-2. **Mechanism leaves.** Set `implies.mechanism` on the leaves listed in
-   [mechanism-leaves-followup.yaml](../runbooks/design-tree-pipeline/mechanism-leaves-followup.yaml).
-   The vocabulary (`fuse`, `adhesive`, `rivet`, `pin`) landed in
-   `85c53b689`; the manifests don't use it yet (weld, braze-solder,
-   adhesive and rivet carry `class: rigid` only). Drop the stale per-leaf
-   "no … token" notes.
-3. **Import to prod.** No `SPACE:design-conventions` finding exists on
+2. **Import to prod.** No `SPACE:design-conventions` finding exists on
    prod (checked 2026-10-26). Steps: run the importer on the dev DB,
    dogfood one fisheye walk, then prod.
-4. **Red-list review.** The red lists (`REVIEW*.md`, 40 + 52 + 167 rows)
+3. **Red-list review.** The red lists (`REVIEW*.md`, 40 + 52 + 167 rows)
    were lost in the /tmp wipe. They are regenerated as a query over the
    manifests: rules with `confidence` shop-rule or unverified, or
    `corrected: true`, that a designer dimensions from. Reto reviews them
-   once item 3 has made them findings, through the staging home asked for
+   once item 2 has made them findings, through the staging home asked for
    in gr520907 or as a checklist over the imported findings. Each "use X"
    becomes `shop-rule (Reto)`.
-5. **S7 rerun.** A fresh se design run with the trees (gr516957 batch 5).
+4. **S7 rerun.** A fresh se design run with the trees (gr516957 batch 5).
    Each gap becomes a gripe and then a manifest entry. Builders start from
    the three worked walks in
    [worked-walks.md](../runbooks/design-tree-pipeline/worked-walks.md).
    Check their rule ids against the current manifests; S2 split and
    renumbered some.
-6. **Scale-out** of the remaining goal roots to deep coverage, on Reto's
+5. **Scale-out** of the remaining goal roots to deep coverage, on Reto's
    go. Pre-fill goes through the `perplexity-research` /
    `perplexity-reasoning` kinds, never through dumped files (Reto
    2026-10-26); the runbook has the procedure.
@@ -99,15 +94,12 @@ descended.
 1. S5: a design that declares `params.leaf: join/service/threaded/clearance-tapped`
    on a connect gets that leaf's thresholds checked. A DRC finding names
    `join.yaml#…#c<n>`. A part with a free DOF raises `unretained_dof`.
-2. Mechanisms: `design_rules.json` has `implies.mechanism` on the 10
-   leaves in the follow-up file, and `dtree_hints` ranks them for a
-   `rigid+pin` / `revolute+pin` connect.
-3. Import: `search(kind='finding', tags=['SPACE:design-conventions','dt:goal'])`
+2. Import: `search(kind='finding', tags=['SPACE:design-conventions','dt:goal'])`
    lists every goal root on prod, and a re-run of the importer is a no-op.
-4. Red list: one query returns the red-list rules with node id, value,
+3. Red list: one query returns the red-list rules with node id, value,
    confidence and source. Reto's verdicts are stored in precis, not in a
    file.
-5. S7: the rerun's gap gripes link gr516958.
+4. S7: the rerun's gap gripes link gr516958.
 
 ## Explicitly NOT in scope
 

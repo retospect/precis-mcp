@@ -443,7 +443,8 @@
       "coverage": "shallow",
       "domain": "mech",
       "implies": {
-        "class": "revolute"
+        "class": "revolute",
+        "mechanism": "pin"
       },
       "parents": [
         "close/hinged"
@@ -3962,7 +3963,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "rigid"
+        "class": "rigid",
+        "mechanism": "adhesive"
       },
       "parents": [
         "join/permanent/material-bond"
@@ -4143,7 +4145,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "rigid"
+        "class": "rigid",
+        "mechanism": "fuse"
       },
       "parents": [
         "join/permanent/material-bond"
@@ -4270,7 +4273,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "rigid"
+        "class": "rigid",
+        "mechanism": "fuse"
       },
       "parents": [
         "join/permanent/material-bond"
@@ -4375,7 +4379,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "rigid"
+        "class": "rigid",
+        "mechanism": "fuse"
       },
       "parents": [
         "join/permanent/material-bond"
@@ -5294,7 +5299,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "rigid"
+        "class": "rigid",
+        "mechanism": "rivet"
       },
       "parents": [
         "join/permanent/permanent-mechanical"
@@ -5864,7 +5870,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "revolute"
+        "class": "revolute",
+        "mechanism": "pin"
       },
       "parents": [
         "join/service/pinned-retained"
@@ -7618,7 +7625,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "rigid"
+        "class": "rigid",
+        "mechanism": "pin"
       },
       "parents": [
         "locate"
@@ -23307,7 +23315,8 @@
       "coverage": "deep",
       "domain": "mech",
       "implies": {
-        "class": "revolute"
+        "class": "revolute",
+        "mechanism": "pin"
       },
       "parents": [
         "rotate/plain-bearing"
@@ -25145,8 +25154,7 @@
       "domain": "mech",
       "implies": {
         "class": "rigid",
-        "mechanism": "key",
-        "rank": 4
+        "mechanism": "pin"
       },
       "parents": [
         "rotate/shaft-hub"

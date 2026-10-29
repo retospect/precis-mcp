@@ -199,6 +199,26 @@ def test_leaf_candidates_broad_class_drops_class_only(
     assert dtree_hints.leaf_candidates("rigid", None) == []
 
 
+def test_packaged_export_pin_leaves() -> None:
+    """The packaged export carries the mechanism follow-up (DESIGN
+    rulings 2026-10-25): pin leaves rank for pin connects, the cross-pin
+    hub no longer poses as a key."""
+    from precis_se import dtree_hints
+
+    assert dtree_hints.leaf_candidates("revolute", "pin") == [
+        "close/hinged/pin-hinge",
+        "join/service/pinned-retained/pin-and-clip",
+        "rotate/plain-bearing/pin-in-hole",
+    ]
+    assert dtree_hints.leaf_candidates("rigid", "pin") == [
+        "locate/dowel-pin-and-slot",
+        "rotate/shaft-hub/cross-pin",
+    ]
+    assert "rotate/shaft-hub/cross-pin" not in dtree_hints.leaf_candidates(
+        "rigid", "key"
+    )
+
+
 def test_leaf_rows_none_for_unknown_class(
     handler: SeHandler, export: dict[str, Any]
 ) -> None:

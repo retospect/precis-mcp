@@ -1458,6 +1458,7 @@ close:
           coverage: shallow
           implies:
             class: revolute
+            mechanism: pin
           summary: Knuckle hinge with a separate pin carries lid load best; use metal pin and leaves for load and life, print-in-place
             only for light prototype lids. Size pin for bending, bearing and tear-out, not shear alone.
           when:
