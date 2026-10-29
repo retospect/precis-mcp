@@ -35,7 +35,11 @@ from precis.pcb.capabilities import (
 )
 from precis.pcb.furniture import board_furniture
 from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
-from precis.pcb.ir import from_graph, instance_courtyard_polygon
+from precis.pcb.ir import (
+    COURTYARD_SIMPLIFY_MM,
+    from_graph,
+    instance_courtyard_polygon,
+)
 from precis.pcb.planes import plane_pours, point_in_pour
 from precis.pcb.profiles import profile_rules
 from precis.pcb.silk import (
@@ -1170,8 +1174,20 @@ def test_silk_must_clear_the_mask_opening_not_merely_the_bare_copper():
     assert silk.outline_offsets_mm(with_mask, stroke_width_mm=stroke) == pytest.approx(
         silk.outline_offsets_mm(no_mask, stroke_width_mm=stroke)
     )
-    top = 0.2 + silk.outline_offsets_mm(with_mask, stroke_width_mm=stroke)[1]
-    ink_top = top + stroke / 2.0
+    # Fixture moved: the two 0.4mm pads stay disjoint at the target
+    # offset, so the courtyard is the corridor-bridged union ring, which
+    # the decimate pass draws COURTYARD_SIMPLIFY_MM proud of the analytic
+    # 0.2 + target top edge -- measure the ink band off the drawn ring,
+    # not the formula.
+    baseline = build_silk(ir, pads=own, capability=with_mask)
+    ring_top = max(
+        p[1]
+        for d in baseline.draws["top"]
+        if d["role"] == "outline"
+        for s in d["segments"]
+        for p in (s["start"], s["end"])
+    )
+    ink_top = ring_top + stroke / 2.0
     # Copper starting 0.01mm above the ink; its 0.05mm opening reaches
     # 0.04mm INTO it.
     foreign = {
@@ -2660,6 +2676,14 @@ def test_a_crowded_label_falls_back_in_the_documented_order():
     # the spots): the top and bottom side spots then have room of their own
     # between the two corner spots.
     ir = from_graph(_graph("R1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    # Fixture moved: the synthesized 0.325mm pads (1.3mm pitch) stay
+    # disjoint at zero clearance, so the corridor-bridged union ring is
+    # drawn COURTYARD_SIMPLIFY_MM proud of the ring the label spots key
+    # off, which priced every named spot out (the label always laddered);
+    # widening the pads past the pitch merges the row into one bar, no
+    # bridge is needed, and the fallback-ladder premise holds again.
+    for pid in range(ir.n_pins):
+        ir.pin_w[pid] = 1.4
     boxes = _spot_boxes(ir, 0, "R1")
     # Each blocker: a 0.1 mm pad at the first point of a grid over its own
     # spot's box whose mask opening touches that box and no other.
@@ -3011,16 +3035,24 @@ def _pad_shape(pad: dict):
 
 
 @pytest.mark.parametrize(
-    ("n_pins", "rot", "side"),
+    ("n_pins", "rot", "side", "slack"),
     [
-        (2, 0.0, "top"),
-        (4, 0.0, "top"),
-        (8, 37.0, "top"),
-        (16, 90.0, "bottom"),
-        (200, 180.0, "top"),
+        # ``slack``: the 2/4/8/16-pin fixtures' pads stay disjoint at zero
+        # clearance, so their outline is the corridor-bridged union ring
+        # (ir.py's minimal-corridor bridge), which the decimate pass draws
+        # COURTYARD_SIMPLIFY_MM proud of the exact target offset; the
+        # 200-pin rows merge at zero clearance, need no bridge, and keep
+        # the exact target.
+        (2, 0.0, "top", COURTYARD_SIMPLIFY_MM),
+        (4, 0.0, "top", COURTYARD_SIMPLIFY_MM),
+        (8, 37.0, "top", COURTYARD_SIMPLIFY_MM),
+        (16, 90.0, "bottom", COURTYARD_SIMPLIFY_MM),
+        (200, 180.0, "top", 0.0),
     ],
 )
-def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(n_pins, rot, side):
+def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(
+    n_pins, rot, side, slack
+):
     """gr495393 (Reto 2026-10-17): a part's outline is ONE closed line,
     never clipped into pieces by its own pads, and its ink keeps at least
     two silk line widths of clear board from every pad's copper. Checked
@@ -3039,13 +3071,13 @@ def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(n_pins, rot,
         # centreline to copper >= 2 widths of clear board + half the stroke
         assert ink.distance(_pad_shape(pad)) >= 2.0 * _W + _W / 2.0 - 1e-6
     # and where nothing is in the way, the full target: the legal chain
-    # plus two widths
+    # plus two widths (plus the bridge fixture's decimate slack, above)
     floor, target = silk.outline_offsets_mm(None, stroke_width_mm=_W)
     assert floor >= 2.0 * _W + _W / 2.0
     assert target == pytest.approx(silk_clearance_mm(None, stroke_width_mm=_W) + 2 * _W)
     # (pads_for_ir rounds an oblique pad's polygon to 0.1 um)
     assert min(ink.distance(_pad_shape(p)) for p in pads) == pytest.approx(
-        target, abs=1e-3
+        target + slack, abs=1e-3
     )
 
 

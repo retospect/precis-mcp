@@ -314,12 +314,16 @@ def test_instance_courtyard_polygon_decimates_without_under_covering():
     assert shape.covers(exact), "decimated ring under-covers the exact keep-out"
 
 
-def test_instance_courtyard_polygon_disjoint_pads_fall_back_to_the_hull():
+def test_instance_courtyard_polygon_disjoint_pads_bridge_without_hulling():
     """Pads that survive the offset as disjoint clusters (a connector's
-    far mounting tabs) break the one-ring contract — the builder falls
-    back to the corner hull of every pad point, bridging the gaps as
-    over-reservation, byte-identical to the pre-gr524238 shape."""
-    from shapely.geometry import MultiPoint, Polygon
+    far mounting tabs, a two-electrode comb at zero clearance) break the
+    one-ring contract — the builder joins them with a minimal corridor
+    (:func:`precis.pcb.ir._bridge_pad_clusters`), NOT the corner hull.
+    The hull covered every notch between the clusters; at zero clearance
+    that priced copper the fab never sees (the taz combs' zip-hole cut,
+    8.22mm² against the keep-out where the drawn union clears it). One
+    ring, both pads covered, the mid gap uncovered but for a whisker."""
+    from shapely.geometry import MultiPoint, Point, Polygon
 
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     inst = list(ir.instance_refdes).index("U3")  # the two-pin instance
@@ -344,10 +348,17 @@ def test_instance_courtyard_polygon_disjoint_pads_fall_back_to_the_hull():
             (cx + hw, cy + hh),
             (cx - hw, cy + hh),
         ]
-    expected = MultiPoint(corners).convex_hull.buffer(
+    hull = MultiPoint(corners).convex_hull.buffer(
         clearance, join_style=2, mitre_limit=2.0
     )
-    assert shape.equals_exact(expected, tolerance=1e-9)
+    # one ring covering both pads...
+    for corner in corners:
+        assert shape.covers(Point(*corner))
+    # ...but not the hull's sweep: a mid-gap point well away from the
+    # thin corridor stays uncovered, and the area is the pads' offset
+    # plus a whisker, never the hull's.
+    assert not shape.covers(Point(0.0, clearance + 0.6))
+    assert shape.area < hull.area
 
 
 def test_instance_courtyard_polygon_zero_size_pad_still_reserves_space():

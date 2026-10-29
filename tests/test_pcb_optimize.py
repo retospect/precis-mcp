@@ -1188,10 +1188,18 @@ def test_soft_pin_zero_behaves_like_fixed_both():
 
 def _taz15_headers_graph(*, pin: float | None, fixed: bool) -> dict:
     """Two frozen/placed 1x4 THT headers whose courtyard polygons overlap
-    0.225mm while their 1.0mm pads stay 0.575mm clear — the shape the
-    prod `taz15` board carries (Reto 2026-10-14): locked in by hand, so
+    0.275mm while their 1.0mm pads stay 0.575mm clear — the shape the
+    prod `taz15` board carries (Reto 2026-10-14). Locked in by hand, so
     the placer could never separate them. A soft pin gives legalize_start
-    room to fix what 'both' cannot."""
+    room to fix what 'both' cannot.
+
+    The overlap was 0.225 until the disjoint-cluster bridge landed in
+    :func:`precis.pcb.ir.instance_courtyard_polygon`: the old corner-hull
+    fallback measured ``hull(pad points) + clearance`` (hull first), the
+    new path ``hull(union(pads) + clearance)`` (buffer first) — buffer
+    first fills the inter-pad notches before any hull sees them, which is
+    the SAME shape DRC's exact check measures, so the graded cost and the
+    rule stop drifting (the drift this fixture's number used to encode)."""
 
     def hdr(refdes: str, y: float) -> dict:
         inst = {"refdes": refdes, "label": "Pin Header 1x4", "x": 10.0, "y": y}
@@ -1222,7 +1230,7 @@ def test_soft_pin_taz15_headers_clear_the_courtyard_overlap():
             engine._world_courtyard(0), engine._world_courtyard(1)
         )
 
-    assert overlap_mm() == pytest.approx(0.225, abs=1e-3)
+    assert overlap_mm() == pytest.approx(0.275, abs=1e-3)
 
     # The frozen arm stays overlapped forever — the fixture's premise.
     frozen = from_graph(

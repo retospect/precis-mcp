@@ -121,7 +121,7 @@ import numpy as np
 from precis.pcb import objectives as obj
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.drc import DEFAULT_COURTYARD_RADIUS_MM
-from precis.pcb.geom import convex_hull_ring, convex_polygons_signed_separation
+from precis.pcb.geom import convex_polygons_signed_separation
 from precis.pcb.ir import (
     COURTYARD_CLEARANCE_MM,
     UNSET_LAYER,
@@ -1313,13 +1313,11 @@ def _world_courtyard_polygon(
     keep-outs (``COURTYARD_CLEARANCE_MM`` clearance, the nominal
     half-courtyard floor for a pinless part, ``place_points`` for the
     affine) so the cached and derived answers are the same shape."""
-    local = convex_hull_ring(
-        instance_courtyard_polygon(
-            ir,
-            inst,
-            clearance_mm=COURTYARD_CLEARANCE_MM,
-            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
-        )
+    local = instance_courtyard_polygon(
+        ir,
+        inst,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
     )
     rot = float(ir.inst_rot[inst])
     return place_points(

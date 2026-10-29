@@ -65,6 +65,7 @@ from shapely.geometry import (
 from shapely.geometry import (
     box as _shapely_box,
 )
+from shapely.ops import nearest_points as _shapely_nearest_points
 from shapely.ops import unary_union as _shapely_unary_union
 
 from precis.errors import BadInput
@@ -2529,6 +2530,45 @@ COURTYARD_SIMPLIFY_MM = 0.025
 COURTYARD_DENSE_VERTS = 32
 
 
+def _bridge_pad_clusters(grown: Any) -> Any | None:
+    """Join a MultiPolygon's clusters into one ring with a minimal
+    corridor between each nearest pair — the tight over-cover that keeps
+    the one-ring contract without the corner-hull's notch-filling.
+
+    Why not the hull: the hull bridges sparse clusters (a connector's far
+    mounting tabs) by covering EVERYTHING between them; at
+    ``clearance_mm=0.0`` (the gr529963 body measure) a two-electrode
+    part's pads stay disjoint (the taz combs' inter-electrode gap is
+    0.1016mm) and the hull body swallowed the electrodes' own zip-hole
+    cut — priced 8.22mm² of copper against the hole keep-out where the
+    drawn union clears it (found on taz-leaf 2026-10-29). A 0.02mm
+    half-width corridor adds ~0.04mm of fake copper along one segment,
+    nothing like a hull's sweep.
+
+    Returns the merged Polygon, or ``None`` when no progress is made
+    (the caller's corner-hull fallback then answers, still the safe
+    over-covering direction)."""
+    from shapely.geometry import LineString
+
+    shape = grown
+    for _ in range(16):
+        if shape.geom_type != "MultiPolygon":
+            break
+        polys = sorted(shape.geoms, key=lambda g: g.area, reverse=True)
+        if len(polys) < 2:
+            shape = polys[0] if polys else None
+            break
+        pa, pb = _shapely_nearest_points(polys[0], polys[1])
+        corridor = LineString([(pa.x, pa.y), (pb.x, pb.y)]).buffer(0.02)
+        merged = _shapely_unary_union([shape, corridor])
+        if merged.geom_type == "MultiPolygon" and len(merged.geoms) >= len(polys):
+            return None
+        shape = merged
+    if shape is not None and shape.geom_type == "Polygon" and not shape.is_empty:
+        return shape
+    return None
+
+
 def _decimate_courtyard(shape: Any) -> Any:
     """Thin a DENSE courtyard ring (shaped electrode) before it reaches
     consumers that scale with wall-segment count.
@@ -2622,10 +2662,13 @@ def instance_courtyard_polygon(
     Consumers that assume convexity must hull at their own boundary — the
     topo legalizer's SAT does exactly that (gr525380 tracks a
     concave-aware separation there). And a footprint whose pads survive
-    the offset as DISJOINT clusters — a connector's far mounting tabs —
-    falls back to the corner hull of every pad point: the ring contract
-    is one polygon, and bridging sparse gaps is the same over-reservation
-    this function drew before gr524238.
+    the offset as DISJOINT clusters — a connector's far mounting tabs, a
+    shaped electrode's two pads at zero clearance — gets one ring by
+    bridging the clusters with a minimal corridor
+    (:func:`_bridge_pad_clusters`); the pre-gr524238 corner-hull remains
+    only as the degenerate-set fallback, bridging sparse gaps being the
+    same over-reservation this function drew before gr524238, but a
+    corridor wide instead of a hull wide.
 
     ``clearance_mm`` is the fab-derived chain
     (:func:`precis.pcb.silk.silk_clearance_mm`), not a convention: this
@@ -2726,8 +2769,19 @@ def instance_courtyard_polygon(
             clearance_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
         )
         # Disjoint pad clusters surviving the offset (a connector's far
-        # tabs) break the one-ring contract — the fallback hull below
-        # bridges them.
+        # tabs, or a shaped electrode's two pads at zero clearance) break
+        # the one-ring contract. Bridge them with a minimal corridor —
+        # NOT the corner-hull: the hull fills every notch between the
+        # clusters, and at clearance_mm=0.0 (the gr529963 BODY measure)
+        # a two-electrode wetness comb's hull swallows its own zip-hole
+        # cut and prices copper the fab never sees (measured 2026-10-29:
+        # SNS1 body∩zip-hole 8.22mm² from the hull where the drawn
+        # union is clear by 0.09mm). A thin corridor joins the ring
+        # while adding ~nothing to the measure.
+        if grown.geom_type == "MultiPolygon":
+            bridged = _bridge_pad_clusters(grown)
+            if bridged is not None:
+                grown = bridged
         if grown.geom_type == "Polygon" and not grown.is_empty:
             shape = _decimate_courtyard(grown)
     except _ShapelyGEOSException:
