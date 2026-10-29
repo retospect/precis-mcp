@@ -53,26 +53,29 @@ def _coerce_vector(value: Any) -> list[float] | None:
 
 
 def _upsert_tag(conn: Connection, namespace: str, value: str) -> int:
-    """Upsert ``tags(namespace, value)`` and return the ``tag_id``.
+    """Return the ``tag_id`` of ``tags(namespace, value)``, inserting it once.
 
-    Uses the ``DO UPDATE SET namespace = EXCLUDED.namespace``
-    no-op trick so RETURNING fires on both the insert and the
-    conflict paths. A ``None`` row out of RETURNING here would
-    mean either a race condition that DELETEd the tag between our
-    INSERT and the implicit RETURNING (Postgres semantics
-    preclude this for the conflict path) or a schema invariant
-    violation; assertion raises loudly so the failure is fixable
-    rather than silently propagating a bogus tag_id downstream.
+    Read-first, never an UPDATE: the old ``ON CONFLICT DO UPDATE SET
+    namespace = EXCLUDED.namespace`` no-op took a FOR UPDATE row lock on
+    the shared tag row (a key column), held to commit. Every transaction
+    tagging ``STATUS:open`` then serialized on that one row, and any open
+    ``ref_tags`` insert's FK KEY SHARE lock blocked it too — gripe filing
+    hit prod's 5s lock_timeout (gr537784). A SELECT takes no row lock;
+    the insert path runs only for a brand-new tag, and ``DO NOTHING``
+    plus a re-SELECT covers a concurrent first insert.
     """
-    row = conn.execute(
-        "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
-        "ON CONFLICT (namespace, value) "
-        "DO UPDATE SET namespace = EXCLUDED.namespace "
-        "RETURNING tag_id",
-        (namespace, value),
-    ).fetchone()
+    select = "SELECT tag_id FROM tags WHERE namespace = %s AND value = %s"
+    row = conn.execute(select, (namespace, value)).fetchone()
+    if row is None:
+        row = conn.execute(
+            "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
+            "ON CONFLICT (namespace, value) DO NOTHING RETURNING tag_id",
+            (namespace, value),
+        ).fetchone()
+    if row is None:
+        row = conn.execute(select, (namespace, value)).fetchone()
     assert row is not None, (
-        f"tags upsert returned no row for ({namespace!r}, {value!r}) — "
+        f"tags lookup returned no row for ({namespace!r}, {value!r}) — "
         "schema invariant violated"
     )
     return int(row[0])

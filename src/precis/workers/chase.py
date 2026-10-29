@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from precis.store._mappers import _upsert_tag
 from precis.store.revision_context import trust_door
 from precis.taproot.canon import (
     TAPROOT_CLAIM,
@@ -2120,18 +2121,12 @@ def _set_status(
         """,
         (finding_ref_id, _STATUS_NAMESPACE),
     )
-    # Upsert the new tag and link it.
-    new_tag_row = conn.execute(
-        "INSERT INTO tags (namespace, value) VALUES (%s, %s) "
-        "ON CONFLICT (namespace, value) DO UPDATE SET namespace = EXCLUDED.namespace "
-        "RETURNING tag_id",
-        (_STATUS_NAMESPACE, value),
-    ).fetchone()
-    assert new_tag_row is not None
+    # Look up (or first-insert) the new tag and link it — no UPDATE on the
+    # shared tag row (gr537784, see _upsert_tag).
     conn.execute(
         "INSERT INTO ref_tags (ref_id, tag_id, set_by) "
         "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-        (finding_ref_id, int(new_tag_row[0]), "chase"),
+        (finding_ref_id, _upsert_tag(conn, _STATUS_NAMESPACE, value), "chase"),
     )
     if reason:
         conn.execute(
@@ -2169,13 +2164,7 @@ def _release_dead_waiters(conn: Connection, finding_ref_id: int) -> None:
     ).fetchall()
     if not rows:
         return
-    dead_row = conn.execute(
-        "INSERT INTO tags (namespace, value) VALUES ('OPEN', %s) "
-        "ON CONFLICT (namespace, value) DO UPDATE SET namespace = EXCLUDED.namespace "
-        "RETURNING tag_id",
-        (f"waited-dead:finding-{finding_ref_id}",),
-    ).fetchone()
-    assert dead_row is not None
+    dead_tag_id = _upsert_tag(conn, "OPEN", f"waited-dead:finding-{finding_ref_id}")
     for (todo_id,) in rows:
         conn.execute(
             """
@@ -2188,7 +2177,7 @@ def _release_dead_waiters(conn: Connection, finding_ref_id: int) -> None:
         conn.execute(
             "INSERT INTO ref_tags (ref_id, tag_id, set_by) "
             "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (todo_id, int(dead_row[0]), "chase"),
+            (todo_id, dead_tag_id, "chase"),
         )
         conn.execute(
             "INSERT INTO ref_events (ref_id, source, event, payload) "
