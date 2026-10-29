@@ -128,7 +128,26 @@ class NebUnsupported(RuntimeError):
 
 class NebTimeout(RuntimeError):
     """The runner self-aborted on the wall-clock cap (failure_class
-    ``timeout``, same contract as struct_relax's _RelaxDeadline)."""
+    ``timeout``, same contract as struct_relax's _RelaxDeadline).
+
+    Two shapes, told apart on the recorded outcome: the cap was already
+    spent when a calculator call was attempted (``overrun_s=None`` — a
+    normal between-calls timeout), or one call returned AFTER the
+    deadline — ``overrun_s`` seconds over, ``call`` naming the
+    evaluation entry point that ran long (gr518100: a blocked C call
+    can't be preempted, so the check can only fire between calls and the
+    overrun is what the job records)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        overrun_s: float | None = None,
+        call: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.overrun_s = overrun_s
+        self.call = call
 
 
 class _DeadlineCalc:
@@ -151,7 +170,12 @@ class _DeadlineCalc:
     can't be preempted, so one long or hung call overruns the cap by
     that call's own length plus the lease's +1 h margin. A hung call
     ends as a lease-expiry zombie — dead job, live ``running`` row —
-    that ``struct_neb_reap_dead`` clears (gr518100)."""
+    that ``struct_neb_reap_dead`` clears (gr518100).
+
+    A call that RETURNS past the deadline raises :class:`NebTimeout`
+    carrying ``overrun_s`` + ``call`` — the dispatch stamps both on the
+    job meta, so the recorded outcome says which evaluation ran long and
+    by how much, not just "timeout" (gr518100)."""
 
     def __init__(self, inner: Any, deadline: float, timeout_s: float) -> None:
         self._inner = inner
@@ -161,6 +185,19 @@ class _DeadlineCalc:
     def _check(self) -> None:
         if time.monotonic() > self._deadline:
             raise NebTimeout(f"edge exceeded the {self._timeout_s:.0f}s wall-clock cap")
+
+    def _check_overrun(self, call: str) -> None:
+        """The post-call check: the call just returned past the
+        deadline — the overrun case the outcome must name (which call,
+        how far over), told apart from a cap already spent at entry."""
+        over = time.monotonic() - self._deadline
+        if over > 0:
+            raise NebTimeout(
+                f"one calculator call ({call}) returned {over:.1f}s past "
+                f"the {self._timeout_s:.0f}s wall-clock cap",
+                overrun_s=over,
+                call=call,
+            )
 
     @property
     def results(self) -> dict[str, Any]:
@@ -175,7 +212,7 @@ class _DeadlineCalc:
     ) -> Any:
         self._check()
         out = self._inner.get_property(name, atoms, allow_calculation)
-        self._check()
+        self._check_overrun(f"get_property({name})")
         return out
 
     def get_potential_energy(
@@ -183,19 +220,19 @@ class _DeadlineCalc:
     ) -> Any:
         self._check()
         out = self._inner.get_potential_energy(atoms, force_consistent)
-        self._check()
+        self._check_overrun("get_potential_energy")
         return out
 
     def get_forces(self, atoms: Any = None) -> Any:
         self._check()
         out = self._inner.get_forces(atoms)
-        self._check()
+        self._check_overrun("get_forces")
         return out
 
     def get_stress(self, atoms: Any = None) -> Any:
         self._check()
         out = self._inner.get_stress(atoms)
-        self._check()
+        self._check_overrun("get_stress")
         return out
 
     def calculate(
@@ -206,7 +243,7 @@ class _DeadlineCalc:
     ) -> None:
         self._check()
         self._inner.calculate(atoms, properties, system_changes)
-        self._check()
+        self._check_overrun("calculate")
 
     def __getattr__(self, name: str) -> Any:
         # Everything non-evaluative — set_atoms, implemented_properties,
@@ -653,6 +690,14 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
             timeout_s=timeout_s,
         )
     except NebTimeout as exc:
+        if exc.overrun_s is not None:
+            # One call returned past the deadline — stamp the overrun on
+            # the job meta (seconds over + which call) so the harvest
+            # reads it structured, not just inside the reason (gr518100).
+            ctx.set_meta(
+                deadline_overrun_s=round(float(exc.overrun_s), 3),
+                deadline_overrun_call=exc.call,
+            )
         _fail(
             f"struct_neb: edge exceeded the {timeout_s:.0f}s wall-clock cap "
             f"({exc}) — raise PRECIS_STRUCT_NEB_TIMEOUT_S, lower max_steps, "

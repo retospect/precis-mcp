@@ -860,7 +860,24 @@ class _RelaxDeadline(RuntimeError):
     flight can't be preempted, so one long or hung call overruns by that
     call's own length plus the lease's +1 h margin. A hung call ends as
     a lease-expiry kill (``struct_runs`` is written only on completion,
-    so no zombie row is left to reap)."""
+    so no zombie row is left to reap).
+
+    ``overrun_s``/``call`` carry the measured overrun — seconds past
+    the deadline and the evaluation entry point that returned late —
+    which :func:`_dispatch_inproc` stamps on the job meta so the outcome
+    says WHICH call ran long, not just "cap exceeded" (gr518100).
+    ``None`` on a hand-raised deadline."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        overrun_s: float | None = None,
+        call: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.overrun_s = overrun_s
+        self.call = call
 
 
 def _default_ml_runner(
@@ -923,8 +940,15 @@ def _default_ml_runner(
     def _record() -> None:
         f = atoms.get_forces()
         curve.append(round(float((f**2).sum(axis=1).max() ** 0.5), 4))
-        if time.monotonic() > deadline:
-            raise _RelaxDeadline(f"exceeded {timeout:.0f}s after {len(curve)} steps")
+        over = time.monotonic() - deadline
+        if over > 0:
+            raise _RelaxDeadline(
+                f"exceeded {timeout:.0f}s after {len(curve)} steps — "
+                "deadline overrun inside one calculator call "
+                f"(get_forces returned {over:.1f}s past the cap)",
+                overrun_s=over,
+                call="get_forces",
+            )
 
     target = _cell_filter(atoms, cell) if cell else atoms
     # FIRE maxstep 0.1 Å is the xtb recipe (the local _relax_xtb rung and the
@@ -1040,6 +1064,14 @@ def _dispatch_inproc(
             f"relax[{fidelity}] in-process: {exc} -- self-aborted, nothing to "
             "reap (no container, no GPU reset attempted)",
         )
+        if exc.overrun_s is not None:
+            # One call returned past the deadline — stamp the overrun on
+            # the job meta (seconds over + which call) so the harvest
+            # reads it structured, not just inside the reason (gr518100).
+            ctx.set_meta(
+                deadline_overrun_s=round(float(exc.overrun_s), 3),
+                deadline_overrun_call=exc.call,
+            )
         ctx.record_failure(
             f"struct_relax: relax[{fidelity}] model={model} exceeded the "
             f"{timeout:.0f}s wall-clock cap ({exc}) -- raise "

@@ -1358,6 +1358,44 @@ def test_deadline_calc_raises_past_the_deadline() -> None:
         dead.calculate()
 
 
+class _SleepyInnerCalc(_InnerCalc):
+    """First force call sleeps past the deadline — the overrun case the
+    post-call check must name: the call returns AFTER the cap, then the
+    wrapper raises carrying which call and how far over (gr518100)."""
+
+    def __init__(self, sleep_s: float) -> None:
+        super().__init__()
+        self._sleep_s = sleep_s
+        self.force_calls = 0
+
+    def get_forces(self, atoms: Any = None) -> Any:
+        self.force_calls += 1
+        time.sleep(self._sleep_s)
+        return np.zeros((1, 3))
+
+
+def test_deadline_calc_call_returning_late_carries_the_overrun() -> None:
+    """A call that returns past the deadline stops the edge right there
+    and raises a NebTimeout recording the overrun — which evaluation
+    entry point, how many seconds over — told apart from a cap already
+    spent at call entry (``overrun_s=None``)."""
+    inner = _SleepyInnerCalc(0.05)
+    calc = struct_neb._DeadlineCalc(inner, time.monotonic() + 0.01, 0.01)
+    with pytest.raises(struct_neb.NebTimeout) as ei:
+        calc.get_forces()
+    exc = ei.value
+    assert inner.force_calls == 1  # stopped after that one call
+    assert exc.call == "get_forces"
+    assert exc.overrun_s is not None and exc.overrun_s > 0
+    assert "one calculator call" in str(exc)
+
+    # The converse: cap already spent at entry → a plain timeout.
+    dead = struct_neb._DeadlineCalc(_InnerCalc(), time.monotonic() - 1.0, 60.0)
+    with pytest.raises(struct_neb.NebTimeout) as ei2:
+        dead.get_forces()
+    assert ei2.value.overrun_s is None and ei2.value.call is None
+
+
 # -- more job_type write-back paths --------------------------------------------
 
 
@@ -1384,6 +1422,47 @@ def test_job_runner_timeout_fails_with_timeout_class(
 
     fails = [p for k, p in events if k == "fail"]
     assert len(fails) == 1 and fails[0]["failure_class"] == "timeout"
+    assert _get(store, run_id)["status"] == "failed"
+
+
+def test_job_call_overrun_records_seconds_and_call_on_the_job(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The end-to-end overrun path (gr518100): the runner's first
+    calculator call returns past the deadline, the job stops right
+    there, and the outcome says WHICH call and HOW far over — stamped on
+    the job meta and named in the failure reason — told apart from a
+    between-calls timeout (``test_job_runner_timeout_…``)."""
+    is_ref, fs_ref, _order = _endpoint_refs(store)
+    run_id = store.struct_neb_record_run(
+        is_ref_id=is_ref.id,
+        fs_ref_id=fs_ref.id,
+        fidelity="ml",
+        model="mace_mp",
+        params=normalize_neb_params({}),
+        cache_key="k-job-test",
+        job_ref_id=None,
+    )
+    inner = _SleepyInnerCalc(0.05)
+
+    def _runner(**kw: Any) -> dict[str, Any]:
+        calc = struct_neb._DeadlineCalc(inner, time.monotonic() + 0.01, 0.01)
+        calc.get_forces()
+        return {}
+
+    monkeypatch.setattr(struct_neb, "NEB_RUNNER", _runner)
+    ctx, events = _fake_ctx(store, _job_params(store, is_ref, fs_ref, run_id))
+    struct_neb._dispatch(ctx, struct_neb.SPEC)
+
+    assert inner.force_calls == 1  # the job stopped after that call
+    fails = [p for k, p in events if k == "fail"]
+    assert len(fails) == 1 and fails[0]["failure_class"] == "timeout"
+    assert "one calculator call" in fails[0]["reason"]
+    metas = [kw for k, kw in events if k == "meta"]
+    overrun = next((m for m in metas if "deadline_overrun_s" in m), None)
+    assert overrun is not None
+    assert overrun["deadline_overrun_call"] == "get_forces"
+    assert overrun["deadline_overrun_s"] > 0
     assert _get(store, run_id)["status"] == "failed"
 
 

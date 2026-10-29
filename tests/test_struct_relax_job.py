@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1472,6 +1473,89 @@ def test_default_ml_runner_honours_the_wall_clock_cap(structure, monkeypatch):
             cell=None,
             timeout=-1.0,
         )
+
+
+def _sleepy_emt(sleep_s: float) -> Any:
+    """An EMT calculator whose force call sleeps past a tiny deadline —
+    the overrun case (gr518100): the call returns AFTER the cap, so the
+    between-steps check records WHICH call and how far over."""
+    from ase.calculators.emt import EMT
+
+    class _Calc(EMT):
+        def get_forces(self, atoms=None):
+            time.sleep(sleep_s)
+            return super().get_forces(atoms)
+
+    return _Calc()
+
+
+def test_default_ml_runner_call_overrun_carries_the_overrun(structure, monkeypatch):
+    """A calculator call that returns past the deadline stops the relax
+    after that call, and the raised _RelaxDeadline records the overrun —
+    which evaluation entry point, how many seconds over (gr518100)."""
+    from precis.structure import export
+
+    if not export.ase_available():
+        pytest.skip("ASE not installed in this environment")
+    import sys
+
+    sleepy = _sleepy_emt(0.05)
+    # Same sys.modules patch as _use_emt — the dotted path resolves to
+    # the re-exported *function* relax, not the module.
+    monkeypatch.setattr(
+        sys.modules["precis.structure.relax"],
+        "_ml_calculator",
+        lambda *a, **kw: sleepy,
+    )
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+    with pytest.raises(struct_relax._RelaxDeadline) as ei:
+        struct_relax._default_ml_runner(
+            poscar=params["poscar"],
+            fidelity="ml",
+            model="mace_mp",
+            steps=200,
+            cell=None,
+            timeout=0.01,
+        )
+    exc = ei.value
+    assert exc.call == "get_forces"
+    assert exc.overrun_s is not None and exc.overrun_s > 0
+    assert "one calculator call" in str(exc)
+
+
+def test_inproc_call_overrun_stamps_seconds_and_call_on_the_job(structure, monkeypatch):
+    """Dispatch-level (gr518100): the call that returns past the
+    deadline records ``deadline_overrun_s``/``deadline_overrun_call`` on
+    the job meta and names the in-call overrun in the reason — distinct
+    from a plain cap-exceeded timeout."""
+    from precis.structure import export
+
+    if not export.ase_available():
+        pytest.skip("ASE not installed in this environment")
+    import sys
+
+    sleepy = _sleepy_emt(0.05)
+    monkeypatch.setattr(
+        sys.modules["precis.structure.relax"],
+        "_ml_calculator",
+        lambda *a, **kw: sleepy,
+    )
+    # A sub-second cap the env reader's 60s floor can't express.
+    monkeypatch.setattr(struct_relax, "_relax_timeout_s", lambda: 0.01)
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    fails = [e for e in events if e[0] == "fail"]
+    assert len(fails) == 1
+    assert "one calculator call" in fails[0][1]["reason"]
+    metas = [kw for k, kw in events if k == "meta"]
+    overrun = next((m for m in metas if "deadline_overrun_s" in m), None)
+    assert overrun is not None
+    assert overrun["deadline_overrun_call"] == "get_forces"
+    assert overrun["deadline_overrun_s"] > 0
 
 
 def test_omp_threads_env_reaches_the_container_argv(
