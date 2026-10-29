@@ -80,7 +80,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
 
-from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported
+from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported, Upstream
 from precis.handlers import _comment_timeline as tl
 from precis.handlers import _gripe_fix as gf
 from precis.handlers._gripe_themes import THEME_TAG_PREFIX, match_themes
@@ -103,6 +103,7 @@ from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Store, Tag
 from precis.store.types import ChunkInsert, Ref
+from precis.utils.db_retry import retry_locked
 from precis.utils.secret_scan import mask_secrets
 
 # Chunk-kind slugs we own. Match the seed in 0005.
@@ -1334,38 +1335,61 @@ class GripeHandler(NumericRefHandler):
             )
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
 
-        with self.store.tx() as conn:
-            try:
-                row = conn.execute(
-                    "SELECT public.file_gripe_readonly(%s, %s)",
-                    (text, _ro_gripe_source() if ro else None),
-                ).fetchone()
-            except psycopg.errors.RaiseException as exc:
-                refusal = _filing_refusal(exc)
-                if refusal is not None:
-                    raise refusal from exc
-                raise
-            assert row is not None
-            ref_id = int(row[0])
-            short = self._shorten_title(conn, ref_id, text)
-            if not ro and prio_from_tag is not None:
-                self.store.set_prio(ref_id, prio_from_tag, conn=conn)
-            for tag in parsed_extra_tags:
-                self.store.add_tag(
-                    ref_id,
-                    tag,
-                    set_by="agent",
-                    replace_prefix=(tag.namespace == "closed"),
-                    conn=conn,
-                )
-            if target is not None:
-                self.store.add_link(
-                    src_ref_id=ref_id,
-                    dst_ref_id=target.ref_id,
-                    dst_pos=target.pos,
-                    relation=relation,
-                    conn=conn,
-                )
+        def _write() -> tuple[int, str | None]:
+            # One fresh transaction per attempt — the retry_locked contract
+            # (an aborted transaction can never be continued).
+            with self.store.tx() as conn:
+                try:
+                    row = conn.execute(
+                        "SELECT public.file_gripe_readonly(%s, %s)",
+                        (text, _ro_gripe_source() if ro else None),
+                    ).fetchone()
+                except psycopg.errors.RaiseException as exc:
+                    refusal = _filing_refusal(exc)
+                    if refusal is not None:
+                        raise refusal from exc
+                    raise
+                assert row is not None
+                ref_id = int(row[0])
+                short = self._shorten_title(conn, ref_id, text)
+                if not ro and prio_from_tag is not None:
+                    self.store.set_prio(ref_id, prio_from_tag, conn=conn)
+                for tag in parsed_extra_tags:
+                    self.store.add_tag(
+                        ref_id,
+                        tag,
+                        set_by="agent",
+                        replace_prefix=(tag.namespace == "closed"),
+                        conn=conn,
+                    )
+                if target is not None:
+                    self.store.add_link(
+                        src_ref_id=ref_id,
+                        dst_ref_id=target.ref_id,
+                        dst_pos=target.pos,
+                        relation=relation,
+                        conn=conn,
+                    )
+            return ref_id, short
+
+        # Prod roles run lock_timeout=5s; a filing that waited on a sibling
+        # writer surfaced as a bare Upstream LockNotAvailable and the gripe
+        # text was lost (gr537784). Gripe filing is the error escape hatch,
+        # so it retries in-process like memory writes (gr504486).
+        try:
+            ref_id, short = retry_locked(_write, label="gripe create")
+        except (
+            psycopg.errors.LockNotAvailable,
+            psycopg.errors.DeadlockDetected,
+        ) as exc:
+            raise Upstream(
+                "gripe filing is still blocked by another writer "
+                "(lock-retry budget exhausted); nothing was filed",
+                next=(
+                    "resubmit the same text in a few seconds — your draft "
+                    f"was: {text[:500]!r}"
+                ),
+            ) from exc
         return _CreatedGripe(
             ref_id=ref_id,
             readings=readings,
