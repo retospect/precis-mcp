@@ -41,7 +41,7 @@ import os
 import re
 import sys
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 from precis.errors import BadInput, NotFound
 from precis.store import Store
 
@@ -447,6 +447,7 @@ def _stats(args: argparse.Namespace, store: Store) -> None:
 
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.dsn))
+    bind_process_store(store)
     try:
         {
             "proposals": _proposals,

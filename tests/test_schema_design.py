@@ -99,6 +99,11 @@ PLUGIN_TABLE_PREFIXES: tuple[str, ...] = ("se_",)
 #: keep/promote/index judgment is docs/backlog/jsonb-column-review.md.
 JSONB_COLUMNS: frozenset[str] = frozenset(
     {
+        # 0264: per-call snapshot of what autoskill injected / what the
+        # session used (slug and memory-id lists, variable length); read
+        # whole for attribution reports, never queried by key.
+        "autoskill_sessions.injected",
+        "autoskill_sessions.used",
         "cache_state.meta",
         "cad_nodes.pattern",
         "chunk_events.source",

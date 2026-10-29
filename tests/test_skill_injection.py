@@ -45,6 +45,11 @@ def _hermetic_injection_index(
     ``SkillHandler`` does, so tests need an explicit reset between runs.
     """
     monkeypatch.setenv("PRECIS_CACHE_DIR", str(tmp_path))
+    # 543814513: the prompt assemblers skip the bimodal block while
+    # autoskill is active (enabled AND a store bound to route_log). A store
+    # bound by an earlier test in the same worker would silently disable
+    # the injection under test, so pin it off here.
+    monkeypatch.setenv("PRECIS_AUTOSKILL", "off")
     injection._reset_index_for_tests()
     yield
     injection._reset_index_for_tests()
