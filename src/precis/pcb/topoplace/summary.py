@@ -300,6 +300,7 @@ def render_summary(
         f"/overlap {objective.overlap:.2f}/spread {objective.spread:.2f}"
         f"/measures {objective.measures:.2f}/vias {objective.vias:.2f}"
         f"/backtrack {objective.backtrack:.2f}/direction {objective.direction:.2f}"
+        f"/silkroom {objective.silkroom:.2f}"
     )
     if result.elites:
         costs = np.asarray([e.cost for e in result.elites])

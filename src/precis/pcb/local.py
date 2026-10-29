@@ -853,7 +853,7 @@ def topo_place(
     (:data:`~precis.pcb.topoplace.design.PRESETS`); ``objective=``
     overrides it with an ``ObjectiveShares`` or a mapping over any of
     the share keys (``crossings``/``ratsnest``/``overlap``/``vias``/
-    ``backtrack``/``direction`` — unlisted keys default 0).
+    ``backtrack``/``direction``/``silkroom`` — unlisted keys default 0).
     ``catalog=`` supplies LCSC-keyed footprint
     rows, exactly as :func:`place`. A :class:`PinConflict` surfaces
     unchanged — it is the board script's error, not the run's."""
@@ -877,6 +877,7 @@ def topo_place(
             vias=float(objective.get("vias", 0.0)),
             backtrack=float(objective.get("backtrack", 0.0)),
             direction=float(objective.get("direction", 0.0)),
+            silkroom=float(objective.get("silkroom", 0.0)),
         )
 
     design = _design(board, catalog)

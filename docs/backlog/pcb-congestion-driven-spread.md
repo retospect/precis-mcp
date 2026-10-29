@@ -6,7 +6,7 @@ model: opus
 pillar: 3d-design
 ---
 
-shipped: congestion digest view + congestion_cells (65f4e27fa), tile-capacity map in view='congestion' (78bad67ae), route-feedback terms + anneal_route_loop loop= (7a5cf4db2); open: route-independent density prior + shove-apart move class, corrected esp32c3 fixture reapply + hard-zero at all 5 seeds
+shipped: congestion digest view + congestion_cells (65f4e27fa), tile-capacity map in view='congestion' (78bad67ae), route-feedback terms + anneal_route_loop loop= (7a5cf4db2), silk-room margin term (ObjectiveShares.silkroom, 6c5717cb8 — the silk draw rule priced pairwise at placement; NOT the density prior: it prices outline room, not board fill); open: route-independent density prior + shove-apart move class, corrected esp32c3 fixture reapply + hard-zero at all 5 seeds
 
 # pcb congestion-driven spread
 

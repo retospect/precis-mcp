@@ -127,6 +127,15 @@ class ObjectiveShares:
     #: cluster instead of fighting at right angles. 0 keeps a share
     #: vector identical to earlier slices'.
     direction: float = 0.0
+    #: Silk-room margin (mm of pair separation shortfall below
+    #: :func:`precis.pcb.silk.outline_pair_separation_mm`, measured on the
+    #: placer's courtyard rings): two parts closer than two full outline
+    #: rings plus the ruled gap force silk to bend, share one wall, or
+    #: drop — and push refdes labels outward along the relocation ladder.
+    #: Priced like ``spread`` (a quality margin, not legality — silk
+    #: yields by design). 0 keeps a share vector identical to earlier
+    #: slices'.
+    silkroom: float = 0.0
 
     def __post_init__(self) -> None:
         total = (
@@ -138,6 +147,7 @@ class ObjectiveShares:
             + self.measures
             + self.backtrack
             + self.direction
+            + self.silkroom
         )
         if total <= 0:
             raise ValueError("objective shares must not all be zero")
@@ -149,6 +159,7 @@ class ObjectiveShares:
         object.__setattr__(self, "measures", self.measures / total)
         object.__setattr__(self, "backtrack", self.backtrack / total)
         object.__setattr__(self, "direction", self.direction / total)
+        object.__setattr__(self, "silkroom", self.silkroom / total)
 
 
 #: The named share vectors (Decision 18's presets) over the terms the
@@ -181,6 +192,7 @@ PRESETS: dict[str, ObjectiveShares] = {
         backtrack=0.1,
         direction=0.1,
         overlap=0.2,
+        silkroom=0.2,
     ),
 }
 

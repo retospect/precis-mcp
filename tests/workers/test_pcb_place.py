@@ -620,7 +620,7 @@ def test_pcb_place_topo_writes_poses_and_stores_the_run(store: Store) -> None:
     assert all(x is not None for x in placed.values())
     files = ctx.meta["topo_run"]["files"]
     m = files["manifest.json"]
-    assert m["schema"] == "precis.topo-run/1"
+    assert m["schema"] == "precis.topo-run/2"
     assert m["result"]["crossings"] >= 0
     assert m["seed"] == 1 and m["effort"] == 500
     assert {p["refdes"] for p in m["parts"]} == {"A", "B", "C", "D"}

@@ -443,12 +443,64 @@ def test_placer_legality_gate_never_raises_violations(
     assert overlap_area(d, res.best_pose) <= seed_ov + 1e-9
 
 
+# -- silk room (the outline-pair margin) ------------------------------------
+
+
+def test_silkroom_shortfall_priced_exactly_and_tracked() -> None:
+    """Two same-side courtyard squares (10×6 mm) 0.5 mm apart: the term
+    pays ``_SILK_ROOM_REQ_MM − 0.5`` exactly at init, and the ProxyState
+    property tracks the full recompute through a try_move/commit that
+    spreads the pair past the requirement."""
+    from precis.pcb.topoplace import ProxyState
+    from precis.pcb.topoplace.proxy import _SILK_ROOM_REQ_MM, _ring_silkroom_total
+
+    assert 0.0 < _SILK_ROOM_REQ_MM < 2.0  # 0.65 under module fallbacks
+    d = _design(
+        ["A", "B"],
+        [(0, 0.0, 0.0, 0), (0, 10.0, 0.0, 0), (1, 20.0, 0.0, 1), (1, 30.0, 0.0, 1)],
+        [0, 0, 0, 0],
+        [(5.0, 20.0, 0.0, 0.0), (15.5, 20.0, 0.0, 0.0)],  # edges 0.5 mm apart
+        part_rings=True,
+    )
+    w = ObjectiveShares(crossings=0.5, ratsnest=0.2, overlap=0.2, silkroom=0.1)
+    proxy = ProxyState(d, d.pose0, w)
+    expected = _ring_silkroom_total(proxy._rings, d.pose0, proxy._th, _SILK_ROOM_REQ_MM)
+    assert proxy.silkroom == pytest.approx(expected)
+    assert proxy.silkroom == pytest.approx(_SILK_ROOM_REQ_MM - 0.5)
+    row = proxy.pose[1].copy()
+    row[0] = 10.0 + _SILK_ROOM_REQ_MM + 5.0  # gap exactly at requirement
+    proxy.try_move(1, row)
+    proxy.commit()
+    assert proxy.silkroom == pytest.approx(
+        _ring_silkroom_total(proxy._rings, proxy.pose, proxy._th, _SILK_ROOM_REQ_MM)
+    )
+    assert proxy.silkroom == pytest.approx(0.0, abs=1e-9)
+
+
+def test_silkroom_opposite_sides_exempt() -> None:
+    """The same 0.5 mm gap across the board's two faces prices nothing —
+    the ``_collides`` rule the overlap term uses."""
+    from precis.pcb.topoplace import ProxyState
+
+    d = _design(
+        ["A", "B"],
+        [(0, 0.0, 0.0, 0), (0, 10.0, 0.0, 0), (1, 20.0, 0.0, 1), (1, 30.0, 0.0, 1)],
+        [0, 0, 0, 0],
+        [(5.0, 20.0, 0.0, 0.0), (15.5, 20.0, 0.0, 1.0)],  # B on the bottom face
+        part_rings=True,
+    )
+    w = ObjectiveShares(crossings=0.5, ratsnest=0.2, overlap=0.2, silkroom=0.1)
+    proxy = ProxyState(d, d.pose0, w)
+    assert proxy.silkroom == pytest.approx(0.0, abs=1e-9)
+
+
 def test_flow_preset_is_crossings_primary() -> None:
     f = PRESETS["flow"]
     assert f.crossings > f.vias
     assert f.crossings > f.ratsnest
     assert f.crossings > f.backtrack
     assert f.crossings > f.direction
+    assert f.crossings > f.silkroom
     assert (
         f.crossings
         + f.ratsnest
@@ -458,5 +510,6 @@ def test_flow_preset_is_crossings_primary() -> None:
         + f.overlap
         + f.spread
         + f.measures
+        + f.silkroom
         == pytest.approx(1.0)
     )

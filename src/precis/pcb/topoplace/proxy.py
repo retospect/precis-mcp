@@ -47,7 +47,13 @@ different nets that run at right angles AND pass close score
 placements whose proxy wires share a compass heading; nets carrying an
 authored power width (:attr:`~.design.TopoDesign.net_direction_exempt`)
 skip the term — a rail is poured post-route, its heading is nobody's
-target.
+target. ``silkroom`` is the draw-side silk rule priced at placement:
+same-side courtyard pairs whose separation falls short of
+:func:`precis.pcb.silk.outline_pair_separation_mm` (two full outline
+rings plus the ruled outline-to-outline gap, minus the clearance the
+courtyard polygons already carry) pay the shortfall in mm — so the
+anneal spreads parts before the silk pass must bend an outline, share
+one wall, or push a refdes label out along its relocation ladder.
 """
 
 from __future__ import annotations
@@ -58,6 +64,8 @@ from typing import Any
 import numpy as np
 from shapely.geometry import Point, Polygon
 
+from precis.pcb.ir import COURTYARD_CLEARANCE_MM
+from precis.pcb.silk import outline_pair_separation_mm
 from precis.pcb.topoplace.design import ObjectiveShares, TopoDesign
 
 #: Same straddle epsilon as ``geom.segments_cross`` — parity between the
@@ -147,6 +155,45 @@ def _ring_overlap_total(geoms: list[Any], pose: np.ndarray, th: np.ndarray) -> f
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                 continue
             total += float(gi.intersection(gj).area)
+    return total
+
+
+#: The separation two courtyard rings must keep so BOTH parts draw their
+#: full silk outline with the ruled outline-to-outline gap
+#: (:func:`precis.pcb.silk.outline_pair_separation_mm` on the zero-clearance
+#: pad hulls, minus the clearance the placer's courtyard polygons already
+#: inflate by). 0.80 mm under the module fallbacks (1.60 − 2×0.40) — the
+#: same "no capability row in the placer design build" constraint
+#: :data:`_EDGE_CLEAR_MM` documents; the rung that carries capability can
+#: scale the term without a second formula.
+_SILK_ROOM_REQ_MM = max(
+    0.0, outline_pair_separation_mm(None) - 2.0 * COURTYARD_CLEARANCE_MM
+)
+
+
+def _ring_silkroom_total(
+    geoms: list[Any], pose: np.ndarray, th: np.ndarray, req_mm: float
+) -> float:
+    """Σ same-side ``max(0, req_mm − ring separation)`` over a placed ring
+    list — the silk-room shortfall the anneal pays toward zero. The bbox
+    prescreen keeps ``req_mm`` of slack: a pair more than ``req_mm`` apart
+    cannot score, exactly the margin the shortfall can reach."""
+    sides = np.asarray(pose)[:, 3] >= 0.5
+    total = 0.0
+    for i, gi in enumerate(geoms):
+        if gi is None:
+            continue
+        x0, y0, x1, y1 = gi.bounds
+        for j in range(i + 1, len(geoms)):
+            gj = geoms[j]
+            if gj is None or not _collides(sides, th, i, j):
+                continue
+            bx0, by0, bx1, by1 = gj.bounds
+            if x1 + req_mm < bx0 or bx1 + req_mm < x0:
+                continue
+            if y1 + req_mm < by0 or by1 + req_mm < y0:
+                continue
+            total += max(0.0, req_mm - float(gi.distance(gj)))
     return total
 
 
@@ -638,10 +685,12 @@ class ProxyState:
         #: overlap term re-touches only the moved part's pairs. A zero
         #: overlap share skips the ring work entirely — the polygons
         #: and pair scan were the whole marginal cost (3136→1319
-        #: evals/s regression, seam fix2).
+        #: evals/s regression, seam fix2). The silkroom term reads the
+        #: same rings (its shortfall is the same pair scan with a
+        #: separation margin), so either share keeps them alive.
         self._rings = (
             [_ring_geom(d, self.pose[i], i) for i in range(len(d.parts))]
-            if self.w.overlap
+            if (self.w.overlap or self.w.silkroom)
             else []
         )
         self._th = through_hole_parts(d)
@@ -649,7 +698,14 @@ class ProxyState:
             _ring_overlap_total(self._rings, self.pose, self._th)
             + pad_containment_total(d, self._pw)
             + edge_clearance_total(d, self.pose)
-            if self._rings
+            if self.w.overlap
+            else 0.0
+        )
+        #: silk-room margin: same rings, separation shortfall below the
+        #: outline-pair requirement. Built only when the share is on.
+        self._sk = (
+            _ring_silkroom_total(self._rings, self.pose, self._th, _SILK_ROOM_REQ_MM)
+            if self.w.silkroom
             else 0.0
         )
         #: spread term: the no-shared-net pair mask, kernel scale and
@@ -676,6 +732,7 @@ class ProxyState:
         self._ref_len = max(self._len, 1.0)
         self._ref_ov = max(self._ov, 1.0)
         self._ref_sp = max(self._sp, 1.0)
+        self._ref_sk = max(self._sk, 1.0)
         #: authored-measure pull (gr520546): per-part spec index list for
         #: the try_move delta, the committed violation total and its
         #: reference magnitude. Built only when the design carries
@@ -730,6 +787,7 @@ class ProxyState:
         self._d_via = 0
         self._d_back = 0.0
         self._d_dir = 0.0
+        self._d_sk = 0.0
 
     def _backtrack_of(self, wires: list[np.ndarray], pw: np.ndarray) -> float:
         """Fold-back mileage over a per-net wire list against pin world
@@ -795,6 +853,12 @@ class ProxyState:
         return self._dir + self._d_dir
 
     @property
+    def silkroom(self) -> float:
+        """Silk-room margin total: mm of same-side ring-separation
+        shortfall below the outline-pair requirement."""
+        return self._sk + self._d_sk
+
+    @property
     def cost(self) -> float:
         """Share-weighted, reference-normalised J."""
         return (
@@ -806,6 +870,7 @@ class ProxyState:
             + self.w.vias * self.vias / self._ref_via
             + self.w.backtrack * self.backtrack / self._ref_back
             + self.w.direction * self.direction / self._ref_dir
+            + self.w.silkroom * self.silkroom / self._ref_sk
         )
 
     def _rest_view(self, affected: set[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -855,6 +920,34 @@ class ProxyState:
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                 continue
             total += float(geom.intersection(gj).area)
+        return total
+
+    def _pair_silkroom(self, part: int, geom, side: bool) -> float:
+        """``part``'s silk-room shortfall against every OTHER part under
+        the current staged-or-committed state — the telescoping unit
+        :meth:`try_move` deltas on, the separation-margin mirror of
+        :meth:`_pair_overlap` (same rings, same side rule, ``req_mm`` of
+        bbox slack instead of contact)."""
+        if geom is None:
+            return 0.0
+        req = _SILK_ROOM_REQ_MM
+        x0, y0, x1, y1 = geom.bounds
+        total = 0.0
+        part_th = self._th[part]
+        for j in range(len(self.d.parts)):
+            if j == part:
+                continue
+            gj = self._ring_of(j)
+            if gj is None or (
+                side != self._side_of(j) and not (part_th or self._th[j])
+            ):
+                continue
+            bx0, by0, bx1, by1 = gj.bounds
+            if x1 + req < bx0 or bx1 + req < x0:
+                continue
+            if y1 + req < by0 or by1 + req < y0:
+                continue
+            total += max(0.0, req - float(geom.distance(gj)))
         return total
 
     def _pair_spread(self, part: int, cent: np.ndarray, side: bool) -> float:
@@ -944,13 +1037,18 @@ class ProxyState:
             else 0.0
         )
         staged_row = np.asarray(pose_row, dtype=np.float64)
-        if self.w.overlap:
+        if self.w.overlap or self.w.silkroom:
             new_geom = _ring_geom(self.d, staged_row, part)
             old_ring = self._ring_of(part)
+            self._stage_rings[part] = new_geom
+        if self.w.silkroom:
+            self._d_sk += self._pair_silkroom(
+                part, new_geom, staged_row[3] >= 0.5
+            ) - self._pair_silkroom(part, old_ring, self._side_of(part))
+        if self.w.overlap:
             self._d_ov += self._pair_overlap(
                 part, new_geom, staged_row[3] >= 0.5
             ) - self._pair_overlap(part, old_ring, self._side_of(part))
-            self._stage_rings[part] = new_geom
             # Containment and edge clearance telescope per part: only this
             # part's pins and ring move. The ring pair delta above prices
             # the courtyard-overlap half; the outline half keeps pads on a
@@ -1015,19 +1113,22 @@ class ProxyState:
     def commit(self) -> None:
         """Apply every staged row (one for a move, two for a swap).
 
-        The float route proxies are re-derived from the committed state,
-        never delta-accumulated, so the COMMITTED value matches the
-        module-level totals bit-exactly. The STAGED deltas the anneal
-        decided on agree with this re-derivation only up to float
-        summation order (~1e-13 — a different association of the same
-        per-net sums); that ulp is the honest contract and sits far
-        below the Metropolis noise floor."""
+        The wire-route proxies (vias, backtrack, direction) and length
+        are re-derived from the committed state, never delta-accumulated,
+        so the COMMITTED value matches the module-level totals up to
+        float summation order (~1e-13 — a different association of the
+        same per-net sums); that ulp is the honest contract and sits far
+        below the Metropolis noise floor. The geometric proxies (overlap,
+        spread, measures, silkroom) delta-accumulate their staged deltas
+        instead — a telescoped float sum the parity tests pin against the
+        module totals."""
         for p, row in self._stage.items():
             self.pose[p] = row
             self._pw[self.d.pin_part == p] = pin_world(self.d, row, p)
             if self._rings:
                 self._rings[p] = self._stage_rings.get(p, self._rings[p])
         self._ov += self._d_ov
+        self._sk += self._d_sk
         self._sp += self._d_sp
         self._meas += self._d_meas
         self._wires = [self._stage_wires.get(k, w) for k, w in enumerate(self._wires)]
@@ -1047,7 +1148,7 @@ class ProxyState:
             if len(self._flat)
             else 0.0
         )
-        # Same contract for the float route proxies: the committed values
+        # Same contract for the wire-route proxies: the committed values
         # are re-derived from the committed state, never delta-accumulated
         # (the vias estimate is an int — delta-accumulation there is
         # exact, and the recompute is the parity reference anyway).
@@ -1072,3 +1173,4 @@ class ProxyState:
         self._d_via = 0
         self._d_back = 0.0
         self._d_dir = 0.0
+        self._d_sk = 0.0

@@ -1469,6 +1469,37 @@ def outline_offsets_mm(
     return max(legal, gap + stroke_width_mm / 2.0), legal + gap
 
 
+def outline_pair_separation_mm(
+    capability: CapabilityRow | None, *, stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM
+) -> float:
+    """How far apart two parts' own-pad hulls (silk's outline base, zero
+    extra clearance) must sit for BOTH to draw their FULL outline ring with
+    the ruled outline-to-outline breathing room: each ring is its hull
+    grown by the ``target`` offset (:func:`outline_offsets_mm`), and two
+    rings keep :data:`OUTLINE_GAP_STROKES` stroke widths between them
+    (gr495393, Reto 2026-10-17: "the white lines are at least 2 white line
+    widths apart"). 1.80 mm with a real JLC 4-layer house-default
+    capability row (legal 0.375 = 0.05 + 0.25 + 0.075); 1.60 mm under
+    this module's no-capability fallbacks (silk-to-mask 0.15).
+
+    This is the PLACEMENT-side statement of the same rule
+    :func:`part_outlines` enforces draw-side (bend in, share one wall, or
+    drop): a placer holding every same-side pair at or beyond this
+    separation guarantees un-squished outlines and room for a refdes label
+    at the first ladder ring, instead of discovering the squeeze after the
+    silk pass. Consumers measuring on the placer's courtyard polygons
+    (already inflated by ``ir.COURTYARD_CLEARANCE_MM``) subtract twice
+    that clearance — one formula here, the inflation arithmetic at the
+    consumer, same convention ``courtyard_overlap_pair_term`` documents."""
+    _, target = outline_offsets_mm(capability, stroke_width_mm=stroke_width_mm)
+    # One (1 + OUTLINE_GAP_STROKES) stroke term, not OUTLINE_GAP_STROKES:
+    # ``part_outlines`` draws two full rings only when the hull gap reaches
+    # 2*reach = 2*target + spacing (centreline to centreline). Priced with
+    # the shorter 2*target + 2*sw, the rings would sit one stroke width
+    # apart ink-to-ink and still merge into a shared wall.
+    return 2.0 * target + (1.0 + OUTLINE_GAP_STROKES) * stroke_width_mm
+
+
 @dataclass(frozen=True, slots=True)
 class PartOutline:
     """One part's body-outline silk, before obstacle clipping.
