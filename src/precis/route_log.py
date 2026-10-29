@@ -56,11 +56,26 @@ _CALL_GC_BUDGET = 250_000
 _BLOB_GC_BATCH = 2_000
 _BLOB_GC_BUDGET = 100_000
 
+#: ``autoskill_sessions`` retention (days, migration 0264; spec
+#: docs/backlog/autoskill.md) and its per-statement / per-pass row limits.
+#: Rows are small and ts-indexed, so the same batched-delete shape as the
+#: call-log phase applies.
+AUTOSKILL_RETENTION_DAYS = 60
+_AUTOSKILL_GC_BATCH = 5_000
+_AUTOSKILL_GC_BUDGET = 100_000
+
 
 def bind_store(store: Store | None) -> None:
     """Bind (or clear) the process store the logger writes through."""
     global _STORE
     _STORE = store
+
+
+def bound_store() -> Store | None:
+    """The process-bound store (``None`` when unbound) — for sibling
+    best-effort writers (:mod:`precis.utils.llm.autoskill`) that ride the
+    same boot-time binding instead of needing their own."""
+    return _STORE
 
 
 def enabled() -> bool:
@@ -411,6 +426,9 @@ def gc(
       actually deleted call rows. No deleted calls → no newly-orphaned blobs,
       so the sweep is skipped entirely on the common no-op pass.
 
+    Also prunes ``autoskill_sessions`` past :data:`AUTOSKILL_RETENTION_DAYS`
+    (batched the same way, under the same lock; not counted in the return).
+
     The orphan check is two separate ``NOT EXISTS`` probes, not one ``OR`` —
     an OR'd join filter is unsargable, so the planner nested-looped a full
     seq scan of ``llm_call_log`` per blob row (cost ~2e10 at 11.5M rows) even
@@ -439,6 +457,22 @@ def gc(
             deleted += n
             if n < batch:
                 break
+        pruned = 0
+        while pruned < _AUTOSKILL_GC_BUDGET:
+            batch = min(_AUTOSKILL_GC_BATCH, _AUTOSKILL_GC_BUDGET - pruned)
+            cur = conn.execute(
+                "DELETE FROM autoskill_sessions WHERE id IN ("
+                "  SELECT id FROM autoskill_sessions"
+                "   WHERE ts < now() - (%s || ' days')::interval"
+                "   ORDER BY ts LIMIT %s)",
+                (AUTOSKILL_RETENTION_DAYS, batch),
+            )
+            n = cur.rowcount or 0
+            pruned += n
+            if n < batch:
+                break
+        if pruned:
+            log.info("route_log: GC'd %d autoskill_sessions row(s)", pruned)
         if deleted:
             swept = 0
             while swept < blob_budget:
@@ -466,12 +500,14 @@ def gc(
 
 
 __all__ = [
+    "AUTOSKILL_RETENTION_DAYS",
     "DEFAULT_RETENTION_DAYS",
     "RETENTION_DAYS_ENV",
     "LlmCallRecord",
     "SpendRow",
     "annotate_local_first",
     "bind_store",
+    "bound_store",
     "enabled",
     "gc",
     "record_call",

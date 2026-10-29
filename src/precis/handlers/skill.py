@@ -1007,6 +1007,8 @@ class SkillHandler(Handler):
             if conn_scope == "write"
             else _MISLED_LINE_READ.format(slug=slug)
         )
+        if slug != _GRIPE_GUIDE_SLUG:
+            misled += _GRIPE_GUIDE_PTR
         if not was_shown(misled):
             text = text.rstrip() + "\n\n" + misled
         text += f"\n\nskill rev {rev}"
@@ -4149,6 +4151,11 @@ _MISLED_LINE_READ = (
     "misled by this skill? put(kind='gripe', text='skill {slug}: <what "
     "misled you, what is actually true, where you checked>')"
 )
+
+#: Appended to the misled line so the existing footer also says where the
+#: filing guide lives; dropped when serving that guide itself.
+_GRIPE_GUIDE_PTR = " — guide: get(kind='skill', id='precis-gripe-help')"
+_GRIPE_GUIDE_SLUG = "precis-gripe-help"
 
 
 def _age_label(last: Any, now: datetime) -> str:

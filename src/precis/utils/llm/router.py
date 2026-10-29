@@ -68,6 +68,7 @@ from precis.utils.claude_p import (
     call_claude_p,
     unwrap_envelope,
 )
+from precis.utils.llm import autoskill as _autoskill
 from precis.utils.llm import failure as _failure
 from precis.utils.llm import keyword_route as _keyword_route
 from precis.utils.llm.quota import (
@@ -2783,7 +2784,26 @@ def route(req: LlmRequest) -> LlmResult:
     slot, an emptied chain) is still logged to the route-log —
     :func:`_gate_result` — so a paused call is visible in
     ``llm_call_log`` with its ``reason_class`` (gr516941).
+
+    A tool-using call (``tools_needed``) is first warm-started by
+    :mod:`precis.utils.llm.autoskill` — skills/memories similar past sessions
+    used are appended to the end of the user prompt, and the finished call is
+    recorded so the history builds itself. Autoskill never fails a call: any
+    fault routes the request unchanged; ``PRECIS_AUTOSKILL=off`` disables it.
     """
+    if req.tools_needed and _autoskill.enabled():
+        started = datetime.now(UTC)
+        plan = _autoskill.prepare(req)
+        if plan is not None:
+            req = _autoskill.apply(plan, req)
+            result = _route_inner(req)
+            _autoskill.record(plan, req, result, started)
+            return result
+    return _route_inner(req)
+
+
+def _route_inner(req: LlmRequest) -> LlmResult:
+    """The routing body behind :func:`route` (autoskill wraps it there)."""
 
     entered = time.monotonic()
     backend = resolve_backend()

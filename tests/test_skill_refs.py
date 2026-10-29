@@ -178,6 +178,27 @@ def test_skills_render_without_a_database() -> None:
     )
 
 
+_GUIDE = "guide: get(kind='skill', id='precis-gripe-help')"
+
+
+def test_served_skill_footer_names_the_gripe_guide_once() -> None:
+    # The gripe line rides the existing misled footer, not a second block.
+    h = SkillHandler(hub=Hub())
+    body = h.get(id="precis-random-help", full=True).body
+    assert body.count(_GUIDE) == 1
+    misled = [ln for ln in body.splitlines() if ln.startswith("misled by this skill?")]
+    assert len(misled) == 1
+    assert "put(kind='gripe', text=" in misled[0] and misled[0].endswith(_GUIDE)
+    assert body.count("put(kind='gripe'") == 1  # no second footer
+
+
+def test_gripe_guide_skill_does_not_point_at_itself() -> None:
+    h = SkillHandler(hub=Hub())
+    body = h.get(id=SKILL, full=True).body
+    assert _GUIDE not in body
+    assert "misled by this skill?" in body  # the misled line itself stays
+
+
 def test_fixer_brief_names_skill_file_and_quotes_notes() -> None:
     entries = [
         _TimelineEntry("gripe_body", 0, "the skill says X\nbut it is Y"),

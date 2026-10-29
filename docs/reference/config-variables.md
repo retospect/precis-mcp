@@ -252,7 +252,11 @@ are bulk CLI passes via `build_runtime(interactive=False)`.
 (`PRECIS_TRANSCRIPT_RETENTION_DAYS`, `PRECIS_AGENTLOG_RETENTION_DAYS`,
 `PRECIS_LLM_LOG_RETENTION_DAYS`, `PRECIS_KIND_PROVIDER_RETENTION_DAYS`
 30 — prunes `kind_provider` boot-roster rows a still-live process keeps
-refreshing, so only genuinely-gone identities age out), reconcile refresh
+refreshing, so only genuinely-gone identities age out), autoskill
+(`PRECIS_AUTOSKILL` on by default, `=off` stops the router injecting the
+skills/memories similar past sessions used and restores the planner /
+quest-tick bimodal skill call; `PRECIS_AUTOSKILL_HOLDOUT` 0.05 — fraction
+of calls recorded with no block as the control group), reconcile refresh
 windows
 (`PRECIS_PAPER_RECONCILE_REFRESH_HOURS`,
 `PRECIS_CORPUS_RECONCILE_REFRESH_HOURS`), the log-handler batching

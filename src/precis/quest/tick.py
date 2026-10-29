@@ -993,10 +993,17 @@ def _skill_injection_section(stmt: str) -> str:
     path (guarded by the module-level assembler's try/except), this is the
     only call site in the tick path, so the guard lives here — any
     exception from ``match_skill``/``render_injection`` degrades to no
-    injection rather than aborting the tick."""
+    injection rather than aborting the tick.
+
+    Skipped (``""``) while autoskill is active — the router injects the
+    skills similar sessions used, with this same bimodal match as its
+    thin-history fallback, so a tick never gets both."""
     try:
         from precis.skill_index.injection import match_skill, render_injection
+        from precis.utils.llm import autoskill
 
+        if autoskill.active():
+            return ""
         match = match_skill(stmt)
         if match is None:
             return ""

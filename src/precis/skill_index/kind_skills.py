@@ -65,6 +65,18 @@ def _graph() -> tuple[SkillGraph, frozenset[str]]:
     return _GRAPH_CACHE, _PERSONA_SLUGS_CACHE
 
 
+def kind_skill_slugs(kind: str, *, cap: int = _HINT_CAP) -> list[str]:
+    """The skill slugs :func:`kind_skill_hint` would name for ``kind`` —
+    same persona filter, order and cap — as a list; ``[]`` when none or on
+    any graph-build failure (never raises). Autoskill reads this to
+    attribute a kind's use to its skills."""
+    try:
+        graph, personas = _graph()
+        return [s for s in graph.by_kind(kind) if s not in personas][:cap]
+    except Exception:
+        return []
+
+
 def kind_skill_hint(kind: str, *, cap: int = _HINT_CAP) -> str | None:
     """One-line ``skills for kind='<kind>': get(...) · get(...)``
     breadcrumb, or ``None`` when there's nothing to say — an unwired
