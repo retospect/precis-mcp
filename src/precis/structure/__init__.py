@@ -50,6 +50,10 @@ Compute-adjacent seams, each with its own module docstring:
 - `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
   spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
   faults, never physical verdicts.
+- `check` — the DB-free chemistry check: `validate` + `vsepr.advisories` +
+  `probe.fragments` + open valences not declared as a port or radical, with
+  the nearest user frame per finding. `Run.finish()` and the workspace
+  importer call the same function (molecular-workspace-code slice 4).
 - `cache` — content-addressed relax memoisation; forces are stored
   label-paired, never canonical-rank-indexed (see ``serialize_forces``).
 - `georelax` — the shared graph-first geometry core behind the `geo` rung

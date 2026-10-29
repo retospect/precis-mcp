@@ -15,7 +15,10 @@
    "nodes": 1
   }
  },
- "findings": [],
+ "findings": [
+  "block 'p': mol.check angle_strain [warn]: aC1-aC2-aC3 measures 180.0\u00b0, 70.5\u00b0 off the 109.5\u00b0 sp3 ideal for C \u2014 displace an atom or run relax fidelity='geo' (restores angles; 'clean' only fixes pair distances); if the double/single bond intent is wrong, fix the bond orders instead. (+1 more) at main.py:12",
+  "block 'p': mol.check open_valence [error]: 3 atom(s) below their valence budget and neither a port nor a declared radical: aC1 (C, 3 open), aC2 (C, 2 open), aC3 (C, 2 open) \u2014 cap them, declare a port on the atom, or set magmom for a radical at main.py:12"
+ ],
  "trace_keys": [
   "ab9691805d3650fe",
   "c1510c4cc05ff2d5",

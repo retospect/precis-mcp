@@ -133,6 +133,7 @@ from precis.design import scenarios as design_scenarios
 from precis.errors import BadInput, NotFound
 from precis.provenance import refs as prov_refs
 from precis.store.types import ChunkInsert
+from precis.structure import check as chem_check
 from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
 from precis.utils.md_parse import _normalize_segment
 from precis.utils.units import UnitRequiredError, parse_quantity
@@ -1483,6 +1484,18 @@ def import_workspace_run(
             # echo them so an import, not just manifest.json, shows a
             # mirrored hand.
             result.findings.extend(f"block {entry.name!r}: {f}" for f in entry.findings)
+            if kind == "atomic":
+                # The DB-free chemistry check ``Run.finish()`` ran at the
+                # script — same function, same text, nearest user frame.
+                result.findings.extend(
+                    f"block {entry.name!r}: {f.text()}"
+                    for f in chem_check.locate(
+                        chem_check.check(
+                            payload, ports=entry.ports, block_frame=entry.frame
+                        ),
+                        trace.frames if trace is not None else None,
+                    )
+                )
             existing = tree.blocks.get(entry.name)
             if existing is not None and entry.name not in owned:
                 raise BadInput(

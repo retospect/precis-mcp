@@ -400,6 +400,11 @@ class Run:
         #: default run-at-``finish()``.
         self._check_opt: bool | dict[str, Any] = True
         self._check_done = False
+        #: Atomic block name → the chemistry check's findings, taken when
+        #: :meth:`block` wrote the geometry (the check sees exactly the
+        #: written scene); :meth:`check_chem` / ``finish()`` resolve their
+        #: trace frames and write ``check.json``.
+        self._chem: dict[str, list[Any]] = {}
         self._fit_rules: dict[str, Any] = {}
         #: The design's governing production scenario id, once
         #: :meth:`scenario` declares it — lands as the manifest's
@@ -497,6 +502,10 @@ class Run:
             entry["frame"] = int(fr)
         self._blocks.append(entry)
         self._names.add(n)
+        if kind == "atomic" and self._check_opt is not False:
+            from precis.structure import check as _chem
+
+            self._chem[n] = _chem.check(geom, ports=ports, block_frame=fr)
         made: dict[str, int] = {"blocks": 1}
         if ports:
             made["ports"] = len(ports)
@@ -739,7 +748,55 @@ class Run:
             print(
                 f"{self.root}: fit: {'ok' if not n else f'{n} finding(s) -> fit.json'}"
             )
+            if self._chem:
+                self.check_chem(strict=bool(opts.get("strict")))
         return self.root
+
+    def check_chem(self, *, strict: bool = False) -> dict[str, Any]:
+        """The atomic chemistry check over this run's atomic blocks
+        (``precis.structure.check``: validate + vsepr advisories +
+        fragments + open valences not declared as a port or radical; the
+        importer runs the same function on arrival). The findings were
+        taken per block as :meth:`block` wrote it; this resolves each
+        finding's trace frame to its ``main.py:<line>`` and writes
+        ``check.json`` (a previous one rotates to ``check.prev.json``, the
+        ``fit.json`` pattern). ``out.run(..., check=False)`` opts out with
+        the fit check. ``strict=True`` raises
+        :class:`precis.structure.check.ChemCheckError` on any error
+        finding — ``manifest.json`` is already written either way."""
+        from precis.structure import check as _chem
+
+        tr = _trace.current()
+        frames = (tr.dump({}) or {}).get("frames") if tr is not None else None
+        blocks = {
+            name: _chem.locate(found, frames)
+            for name, found in sorted(self._chem.items())
+        }
+        errors = sum(f.severity == "error" for fs in blocks.values() for f in fs)
+        warns = sum(f.severity != "error" for fs in blocks.values() for f in fs)
+        doc = {
+            "schema": 1,
+            "summary": {"blocks": len(blocks), "errors": errors, "warnings": warns},
+            "blocks": {
+                name: [f.to_json() for f in fs] for name, fs in blocks.items() if fs
+            },
+        }
+        cur = self.root / "check.json"
+        if cur.is_file():
+            cur.replace(self.root / "check.prev.json")
+        cur.write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
+        verdict = (
+            "ok"
+            if not (errors or warns)
+            else (f"{errors} error(s), {warns} warning(s) -> check.json")
+        )
+        print(f"{self.root}: chem: {verdict}")
+        if strict and errors:
+            raise _chem.ChemCheckError(
+                f"chemistry check failed: {errors} error finding(s) — "
+                f"see {self.root}/check.json"
+            )
+        return doc
 
     def check(
         self,

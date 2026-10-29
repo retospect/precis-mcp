@@ -216,10 +216,17 @@ print(sorted(p.name for p in (o.root / "blocks").iterdir()))
 
 ```text
 scratch/out/hexprism: fit: ok
+scratch/out/hexprism: chem: 1 error(s), 0 warning(s) -> check.json
 scratch/out/hexprism
-['.fitcache', 'blocks', 'fit.json', 'manifest.json', 'trace.json']
+['.fitcache', 'blocks', 'check.json', 'fit.json', 'manifest.json', 'trace.json']
 ['prism.bonds.json', 'prism.extxyz']
 ```
+
+`finish()` also runs the atomic chemistry check (`check.json`, each finding
+naming its `main.py:<line>`; `out.run(..., check=False)` opts out together
+with the fit check) — here the bare tube's open edges are reported as
+`open_valence` until they are capped or declared ports. The importer runs the
+same function on arrival and echoes the same text.
 
 `pga.geom(net)` exports `net.seed3` — the seed placement, NOT a relaxed
 geometry; relaxation is the SE side's job after import.
