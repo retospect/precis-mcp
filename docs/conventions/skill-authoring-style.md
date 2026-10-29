@@ -410,28 +410,37 @@ needed cutting anyway. Keep each H2 section at or under 4000 characters: a
 skill is served chunked by H2 and an oversize section breaks the chunk
 budget.
 
-### File size vs the serve fold
+### File size vs the transport cap
 
-A whole-skill serve is folded at `PRECIS_TOOL_RESULT_FOLD_BYTES`
-(default 4096 bytes, `src/precis/_pagination.py`), measured on the
-**served** body — not the file. Serve prepends a `family:`/`tags:`
-header and appends a graph footer, the misled-by line and a
-`skill rev <sha8>` trailer: ~0.4–1.5 KB of overhead on a reference
-skill (personas skip the header/footer, ~0.2 KB), plus `[[wikilink]]`
-expansion (~40 B per link) and a concern banner when open gripes link
-the skill. A file under ~2.5–3.4 KB serves whole depending on that
-footer weight; past the fold the first fetch returns head + elision
-marker + tail, and the middle only comes back via `more(cursor=…)` or
-`id='<slug>~N'`. When sizing a skill to the fold, measure
-`get(kind='skill', id='<slug>').body`, not `wc -c` on the file
-(gr514726).
+A whole-skill serve is bounded by `DEFAULT_MAX_BODY_BYTES` (24 KiB,
+`src/precis/_result_budget.py`), measured on the **served** body — not
+the file. Serve prepends a `family:`/`tags:` header and appends a graph
+footer, the misled-by line and a `skill rev <sha8>` trailer: ~0.6–1.3 KB
+of overhead on a reference skill, plus `[[wikilink]]` expansion (~40 B
+per link) and a concern banner when open gripes link the skill. A
+rendered response over the cap *refuses* with a targeted-read hint —
+there is no `more` to fall back on (removed 04ef78736), so a file that
+size is only reachable via `id='<slug>/toc'` + `id='<slug>~N'`.
 
-Above the fold sits the file-size gate: `tests/test_skill_size.py`
-fails a file over `FAIL_BYTES` (32 KiB) unless allowlisted, and warns
-past `WARN_BYTES` (= `FAIL_BYTES // 2`, 16 KiB). Past the warn line a
-skill should already be splitting into topic skills — the fix is
-restructuring for `/toc` + `~N` section access, not raising the cap
-(gr515088).
+The file-size gate sits under the cap: `tests/test_skill_size.py` fails
+a file over `FAIL_BYTES` (= `DEFAULT_MAX_BODY_BYTES − 2 KiB`, the
+serve-overhead margin) unless the slug is on the shrink-only
+grandfather list, and warns past `WARN_BYTES` (= `FAIL_BYTES // 2`).
+Past the warn line a skill should already be splitting into topic
+skills — the fix is restructuring for `/toc` + `~N` section access, not
+raising the cap (gr515088).
+
+### Block rules
+
+Each `## ` block is a `slug~N`-addressable chunk, linted by
+`tests/test_skill_blocks.py` on the same `chunk_by_h2` split the
+handler serves: target 500–2000 tokens, hard cap ~4k tokens (chars/4
+estimate; over-cap needs a slot on the shrink-only list). One H1 (or
+`title:` front matter on flat skills), no skipped heading levels, no
+empty sections — stacked `##` alias groups are the sanctioned
+exception. Every `get(kind='skill', id=…)`, `[[wikilink]]`, `skill:slug`
+handle and `slug~N`/`slug~A..B` mention must resolve — dead xrefs fail
+the gate.
 
 ## Cross-reference and classification axes (tags:, kinds:, [[wikilink]])
 

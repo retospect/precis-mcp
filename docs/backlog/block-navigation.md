@@ -38,8 +38,9 @@ which TOC line quality sets, not block size.
 - **Hard rule for blocks, not responses.** Designed blocks: target
   500–2000 tokens, hard cap ~4k, enforced by an authoring lint. Responses
   take `budget=`; over budget the server refuses with an outline of block
-  ids instead of paginating. `more` survives only for straight-through
-  reads of ingested content, as skippable offset ranges.
+  ids instead of paginating. `more` is already gone (04ef78736 removed
+  it): an over-cap read refuses with a targeted-read hint, so ingested
+  content is read straight through via `~N` ranges or views.
 - **Tree for identity, web for links.** One canonical parent per block
   (breadcrumb, ~30 tokens); typed links `requires` / `see-also` /
   `detail-of`, each with a line saying what is behind it.
@@ -66,14 +67,19 @@ which TOC line quality sets, not block size.
 
 ## What exists (code view, 2026-10-28)
 
-- Pagination: `_pagination.py` splits at `DEFAULT_MAX_BODY_BYTES` (24 KiB)
-  on section boundaries, folds weak search tails at 4 KiB, carries an
-  `alt_hint`; it always paginates, never refuses.
+- Bounded results: `_result_budget.py` refuses a rendered response over
+  `DEFAULT_MAX_BODY_BYTES` (24 KiB) — or `DEFAULT_CONTEXT_BODY_BYTES`
+  (4 KiB) on a context-limited call — with the handler's
+  `result_budget_hint` as the next step. No partial body, no cursor;
+  `_pagination.py` and `more()` were removed (04ef78736).
 - Skills: `handlers/skill.py` serves one file per slug; `slug~N` is a flat
   chunk index (no parent, no summary); `slug/toc` lists sections;
-  `have=` returns an unchanged stub. `tests/test_skill_size.py` fails at
-  32 KiB — above the split point, so it allows skills that need `more`.
-  18 skill files exceed 24 KiB; the largest five sit at ~32 KiB.
+  `have=` returns an unchanged stub. `tests/test_skill_size.py` fails a
+  file over `DEFAULT_MAX_BODY_BYTES − 2 KiB` (serve-overhead margin)
+  unless the slug is on the shrink-only grandfather list — 22 entries.
+  `tests/test_skill_blocks.py` lints per-block size (~4k-token cap),
+  heading structure and xref validity, all measured on the same
+  `chunk_by_h2` blocks `~N` serves.
 - md kind: heading outline and section selectors (`handlers/md.py`).
 - No `budget=` anywhere; `tests/test_token_budget.py` pins cold-start
   bytes only.
@@ -106,9 +112,9 @@ Perplexity survey (`perplexity-research:529881`, `529960`, `529961`,
   GPT-4o at 69.7% of baseline by 32K (`pa529978`); distractor
   sensitivity (`pa529977`) backs the residency argument. Exception:
   Self-Route found full context wins when evidence is dispersed
-  (`pa529982`) — which is why `more` survives for straight-through
-  ingested reads and over-budget refuses with an outline instead of
-  truncating.
+  (`pa529982`) — which is why over-budget reads refuse with an outline
+  instead of truncating, and targeted `~N` reads stay the way into
+  long ingested bodies.
 - **A cheap categorizer is enough for pack selection** — Adaptive-RAG
   routed none/single/multi-step at near-parity accuracy in ~1 step
   (`pa529990`); RAG-MCP retrieved the relevant MCP schema at ~half the
@@ -150,10 +156,11 @@ Contradictions to fold in, not around:
 
 1. **Authoring lint** (S). Extend `test_skill_size.py` into a block lint:
    block size, heading structure, link validity. Report-only first; then
-   drop `FAIL_BYTES` below the 24 KiB split point so no skill can need
-   `more`.
+   drop `FAIL_BYTES` below the transport cap so a whole-skill read always
+   fits (landed 2026-10-29 — the 22 over-cap files are grandfathered on
+   the shrink-only list).
 2. **Telemetry** (S). `resp_bytes` and per-session roll-up on
-   `tool_calls`: hops, bytes and `more` calls per session. The before
+   `tool_calls`: hops, bytes and budget refusals per session. The before
    number, and the acceptance test's meter.
 3. **Block metadata** (S–M). Heading or frontmatter conventions for
    parent, summary and typed links; `~N` and `/toc` reads show the
