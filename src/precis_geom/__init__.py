@@ -20,6 +20,10 @@ package — the pieces that are *the script's own surface*:
   capture of nested geometry without breaking producer/consumer joins.
   PCB parts/nets carry run-local maker stamps and primitive creation counts;
   stamps stay outside the authored batch so tracing cannot change its bytes.
+- :mod:`precis_geom.pcb` — the PCB workspace builder. Routing-layer/net
+  assignments use ``Board.plane_assignment`` and serialize as ``planes``;
+  keeping them separate from ``Board.plane`` pour features prevents a
+  batch-to-script round trip from inventing copper geometry.
 - :mod:`precis_geom.out` — the dev-loop ``out/`` writer: a scratch script
   on the host records blocks/instances/connects and gets the same
   ``manifest.json`` + ``trace.json`` + ``blocks/…`` tree the importer

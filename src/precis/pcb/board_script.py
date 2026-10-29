@@ -1,7 +1,7 @@
 """precis.pcb.board_script — a pcb batch dict -> a readable workspace script.
 
 The ``put(kind='pcb')`` batch (``components``/``nets``/``connections``/
-``features``/``footprints``/``net_classes``/``roles``/``generators``/
+``features``/``footprints``/``planes``/``net_classes``/``roles``/``generators``/
 ``measures``/``meta``/``profile`` — :meth:`PcbMixin.pcb_apply`'s contract)
 becomes a ``main.py`` whose ``build().to_batch()`` is byte-equal to the
 source (gr514048). ``scripts/pcb-batch-to-board`` is a thin CLI over
@@ -20,6 +20,8 @@ Readability within byte-equality:
   binding per distinct pad set, referenced by name and marked as a
   synthesized footprint fallback. Supplied local geometry is retained:
   a library name alone cannot prove equivalent pads without a lookup.
+* ``planes`` rows become ``b.plane_assignment(net, layer)`` calls, retaining
+  routing-layer assignments without creating pour features or copper zones.
 * A catalog reference spells ``lcsc=`` — never ``part=``, which would
   fire a catalog read at rebuild time and break byte-equality on a
   client-less run; a catalog *footprint* name is a plain
@@ -546,6 +548,7 @@ def emit(
         "connections",
         "features",
         "footprints",
+        "planes",
         "net_classes",
         "roles",
         "generators",
@@ -556,6 +559,19 @@ def emit(
     if unknown:
         raise BoardScriptError(f"batch: unknown top-level keys {sorted(unknown)}")
     loss: list[str] = []
+    net_names = {n["name"] for n in batch["nets"]}
+    for plane in batch.get("planes") or []:
+        if not isinstance(plane, dict) or not {"net", "layer"} <= plane.keys():
+            raise BoardScriptError("plane assignment needs net and layer")
+        if not isinstance(plane["net"], str) or plane["net"] not in net_names:
+            raise BoardScriptError(f"plane assignment: unknown net {plane['net']!r}")
+        if not isinstance(plane["layer"], str) or not plane["layer"].strip():
+            raise BoardScriptError("plane assignment: layer must be a nonempty name")
+        extra = set(plane) - {"net", "layer"}
+        if extra:
+            loss.append(
+                f"plane assignment {plane['net']!r}: unknown keys {sorted(extra)}"
+            )
     for g in batch.get("generators") or []:
         extra = set(g) - {"name", "generator", "params"}
         if extra:
@@ -672,6 +688,14 @@ def emit(
             body.append(f"{var} = b.net(")
             body += [f"    {a}," for a in args]
             body.append(")")
+
+    if batch.get("planes"):
+        body.append("")
+        body.append("# routing-layer net assignments")
+        for plane in batch["planes"]:
+            body.append(
+                f"b.plane_assignment({net_var[plane['net']]}, {plane['layer']!r})"
+            )
 
     part_var: dict[str, str] = {}
     emitted_mods: set[str] = set()

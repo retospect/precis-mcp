@@ -90,6 +90,9 @@ Map, in pipeline order (design doc:
   geometry offline. The CLI locks supplied positions by default; ``omit``
   removes poses and their constraints for local placement. The emitter's
   original default still preserves authored placement flags for readback.
+  Batch ``planes`` remain routing-layer/net assignments through
+  ``Board.plane_assignment``; converting them to the existing ``plane``
+  pour feature would create copper the source did not request.
 * **Argue** — :mod:`~precis.pcb.argue`: the handle grammar (``U1``,
   ``U1.3``, ``net:GND``, ``feature:outline``) the fab render stamps as
   ``data-handle`` and the board page's text box submits; resolution

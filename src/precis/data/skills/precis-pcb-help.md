@@ -88,6 +88,8 @@ file).
 
 The batch `put` keys and the construction ops (`class_rules`, `stackup`, `plane_net`, `profile`, `pins`, `pin_rename`, `pin_remove`, `corner_nuts`) still work but are being retired when pcb workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the design), not new ops.
 
+Plane assignments, pours and the stackup: `get(kind='skill', id='precis-pcb-planes-help')`.
+
 **Batch, re-runnable.** One `put` lays down components (with pins), nets, and
 connections in one transaction; re-`put`ting the same slug **extends** it
 (existing refdes/net names are reused, not duplicated).
@@ -235,18 +237,10 @@ Field notes:
   free-form dict (`clearance_mm`, track width, via drill/annular, permitted
   layers…); a net's `net_class` joins this by name, a missing row means
   built-in defaults.
-- Every design gets a default **board** (`pcb_boards`, name `'main'`, the
-  4-layer rigid FR-4 stackup `F.Cu`/`In1.Cu`/`In2.Cu`/`B.Cu`) on first
-  `put` — the netlist≠board hedge for future multi-board work; v1 is one
-  board per design. The 2026-10-23
-  ruling is no flood fill by default: copper area comes from routed traces
-  or authored pours. A board
-  that wants a pour authors one with `put(args={'op':'plane_net', ...})`,
-  `put(args={'op':'stackup', ...})`, or
-  `args={'op':'stackup','preset':'4l-two-sided'}` for the hybrid that pours
-  every layer. On a board whose front is spoken for,
-  opening an inner signal layer is usually the difference between routing
-  and not.
+- Every design gets a default **board** (`pcb_boards`, name `'main'`) on
+  first `put` — the netlist≠board hedge for future multi-board work; v1 is
+  one board per design. Its stackup, plane nets and pours:
+  [[precis-pcb-planes-help]].
 - **`nets[].domain`** — only `'electrical'` (the default) is accepted
   today; any other value is rejected.
 
@@ -381,14 +375,6 @@ get(
 )  # the last stored route run's warnings (if any) + the topo
    # portal-capacity map
 get(
-    kind="pcb", id="s", view="planes"
-)  # authored plane assignments (op='plane_net', or an import's pour-carried
-#  net — a board-covering source fill lands the same row) — which nets are
-#  plane-served
-get(
-    kind="pcb", id="s", view="stackup"
-)  # every layer in order: role, plane net, routable, the unroutable nets
-get(
     kind="pcb", id="s", view="proximity", args={"a": "U1", "b": "C1"}
 )  # centroid gap (mm)
 get(
@@ -406,10 +392,8 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 ```
 
 - **crossings** is the objective the placer minimises — fewer crossed wires =
-  easier route. **Plane nets** (`gnd/ground/power/pwr/plane`) are excluded from
-  the metric by class — they're the nets that pour or return through vias, not
-  point-to-point airwires — but stay fully in the
-  netlist.
+  easier route. Plane nets are excluded from the metric by class
+  ([[precis-pcb-planes-help]]).
 - **trace** walks series 2-pin parts (a resistor/cap in line) automatically; a
   multi-pin part terminates the auto-walk — you supply the next hop from the
   datasheet ([[precis-datasheet-help]]).

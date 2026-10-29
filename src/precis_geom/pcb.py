@@ -5,7 +5,7 @@ container, no DB").
 A board script builds ``Board``/``Net``/``Part``/``Pin``/``Footprint``
 objects purely in memory and calls :meth:`Board.to_batch` to get the
 same dict shape ``store.PcbMixin.pcb_apply`` already accepts
-(``components``/``nets``/``connections``/``features``/``footprints``/
+(``components``/``nets``/``connections``/``features``/``footprints``/``planes``/
 ``net_classes``/``roles``/``generators``/``measures``/``meta``/
 ``profile``) — see that method's docstring for the per-key field
 contract. ``to_batch`` emits only what the script said: a key the script
@@ -35,6 +35,11 @@ key, so authored batches stay byte-stable.
 store's bool shorthand (``{"name": "2", "unused": true}``,
 ``_pcb_insert_pins`` §1j), not a tag — the same bytes the batch put
 authors wrote.
+
+**Plane assignments.** :meth:`Board.plane_assignment` carries named routing
+layer/net assignments in ``planes``. They contain no copper geometry and
+remain separate from :meth:`Board.plane`, the existing whole-layer pour
+feature API, so importing assignment rows cannot create copper pours.
 """
 
 from __future__ import annotations
@@ -1512,8 +1517,9 @@ class Board:
     F.Cu/In1.Cu/In2.Cu/B.Cu, all routable — and emits no stackup key.
     A list of names is refused: say ``stackup=4`` or a preset; the dict
     form belongs to ``op='stackup'`` (R-d, gr514459). Copper layers are
-    addressed by INDEX everywhere in code — ``plane(1, …)``,
-    ``keepout(layers=[0])``; the standard names are what export emits."""
+    addressed by INDEX for geometry — ``plane(1, …)``,
+    ``keepout(layers=[0])``; ``plane_assignment`` carries named routing
+    layers verbatim for batch round trips."""
 
     def __init__(
         self,
@@ -1558,6 +1564,7 @@ class Board:
         #: ``_connections``.
         self._conn_sites: list[str] = []
         self._features: list[dict[str, Any]] = []
+        self._planes: list[dict[str, str]] = []
         self._footprints: dict[str, Footprint] = {}
         self._footprint_order: list[str] = []
         self._net_classes: dict[str, dict[str, Any]] = {}
@@ -1991,6 +1998,27 @@ class Board:
                 f"not a name{hint}",
             )
         return _layer_name(layer, n)
+
+    @traced
+    def plane_assignment(self, net: Net, layer: str) -> dict[str, str]:
+        """Assign a net to a named routing layer, without creating copper.
+
+        Args:
+            net (Net): Net declared on this board.
+            layer (str): Routing-layer name, preserved verbatim in ``planes``.
+                This assignment carries no pour or zone geometry.
+        """
+        if net.board is not self:
+            raise _bad_kwarg(
+                Board.plane_assignment, "net", "net must belong to this board"
+            )
+        if not isinstance(layer, str) or not layer.strip():
+            raise _bad_kwarg(
+                Board.plane_assignment, "layer", "layer must be a nonempty name"
+            )
+        entry = {"net": net.name, "layer": layer}
+        self._planes.append(entry)
+        return entry
 
     @traced
     def plane(self, layer: int, *, net: Net, priority: int = 0) -> dict[str, Any]:
@@ -3367,6 +3395,8 @@ class Board:
         }
         if self._features:
             out["features"] = [copy.deepcopy(f_) for f_ in self._features]
+        if self._planes:
+            out["planes"] = [dict(plane) for plane in self._planes]
         if self._footprints:
             out["footprints"] = [
                 self._footprints[n].to_dict() for n in self._footprint_order

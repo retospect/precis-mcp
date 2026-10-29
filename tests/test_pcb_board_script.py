@@ -374,6 +374,7 @@ def _row_set(rows: list[dict[str, Any]]) -> set[str]:
 def _assert_board_rows_equal(actual: dict[str, Any], expected: dict[str, Any]) -> None:
     for key in ("components", "nets", "connections"):
         assert _row_set(actual[key]) == _row_set(expected[key]), key
+    assert _row_set(actual.get("planes", [])) == _row_set(expected.get("planes", []))
     actual_footprints = {fp["name"]: fp for fp in actual.get("footprints", [])}
     expected_footprints = {fp["name"]: fp for fp in expected.get("footprints", [])}
     assert actual_footprints.keys() == expected_footprints.keys()
@@ -382,7 +383,13 @@ def _assert_board_rows_equal(actual: dict[str, Any], expected: dict[str, Any]) -
 
 
 @pytest.mark.parametrize(
-    "fixture", ["esp32c3_reference.json", "nano_usb_pd_testboard.py"]
+    "fixture",
+    [
+        "esp32c3_reference.json",
+        "nano_usb_pd_testboard.py",
+        "motor_power_reference.json",
+        "nano_oc_switch.json",
+    ],
 )
 def test_reference_batch_to_workspace(tmp_path: Path, fixture: str) -> None:
     source = Path(__file__).parent / "fixtures" / "pcb" / fixture
@@ -391,12 +398,89 @@ def test_reference_batch_to_workspace(tmp_path: Path, fixture: str) -> None:
         if source.suffix == ".py"
         else json.loads(source.read_text(encoding="utf-8"))
     )
-    assert "planes" not in batch
+    if fixture == "nano_oc_switch.json":
+        # Legacy strength/reason measure rows are separately unsupported.
+        # This round trip covers the netlist, pads and plane assignments.
+        batch.pop("measures")
     script = tmp_path / "main.py"
     script.write_text(emit(batch, source.stem, str(source)), encoding="utf-8")
     rebuilt = load_module(script).build().to_batch()
     _assert_board_rows_equal(rebuilt, batch)
+    assert rebuilt.get("features", []) == batch.get("features", [])
     assert str(source) in script.read_text(encoding="utf-8")
+
+
+def test_plane_assignments_are_rows_without_pour_features() -> None:
+    import precis_geom.pcb as pcb
+
+    board = pcb.Board("assignments")
+    ground = board.net("GND")
+    supply = board.net("VBAT")
+    assert "planes" not in board.to_batch()
+    board.plane_assignment(ground, "F.Cu")
+    board.plane_assignment(supply, "In2.Cu")
+    expected = [
+        {"net": "GND", "layer": "F.Cu"},
+        {"net": "VBAT", "layer": "In2.Cu"},
+    ]
+    batch = board.to_batch()
+    assert batch["planes"] == expected
+    assert "features" not in batch
+    batch["planes"][0]["net"] = "mutated snapshot"
+    assert board.to_batch()["planes"] == expected
+
+
+def test_legacy_plane_pour_stays_separate_from_assignments() -> None:
+    import precis_geom.pcb as pcb
+
+    board = pcb.Board("mixed")
+    ground = board.net("GND")
+    board.plane_assignment(ground, "B.Cu")
+    board.plane(1, net=ground, priority=2)
+    batch = board.to_batch()
+    assert batch["planes"] == [{"net": "GND", "layer": "B.Cu"}]
+    assert batch["features"] == [
+        {"ftype": "plane_net", "layer": "In1.Cu", "net": "GND", "priority": 2}
+    ]
+    text = _roundtrip(batch)
+    assert "b.plane_assignment(gnd, 'B.Cu')" in text
+    assert "b.plane(" not in text
+
+
+def test_plane_assignment_refuses_foreign_net() -> None:
+    import precis_geom.pcb as pcb
+
+    board = pcb.Board("local")
+    board.net("GND")
+    foreign_ground = pcb.Board("other").net("GND")
+    with pytest.raises(pcb.PcbBuilderError):
+        board.plane_assignment(foreign_ground, "F.Cu")
+    assert "planes" not in board.to_batch()
+
+
+@pytest.mark.parametrize("layer", ["", 0, None])
+def test_plane_assignment_refuses_invalid_layer(layer: Any) -> None:
+    import precis_geom.pcb as pcb
+
+    board = pcb.Board("local")
+    ground = board.net("GND")
+    with pytest.raises(pcb.PcbBuilderError):
+        board.plane_assignment(ground, layer)
+    assert "planes" not in board.to_batch()
+
+
+@pytest.mark.parametrize(
+    "plane",
+    [
+        {"net": "MISSING", "layer": "F.Cu"},
+        {"net": "GND", "layer": "F.Cu", "priority": 2},
+    ],
+)
+def test_unexpressible_plane_assignment_refused(plane: dict[str, Any]) -> None:
+    batch = _tiny_batch()
+    batch["planes"] = [plane]
+    with pytest.raises(BoardScriptError):
+        emit(batch, "tiny", "plane fixture")
 
 
 def test_synthesized_pad_geometry_roundtrip(tmp_path: Path) -> None:
