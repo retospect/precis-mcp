@@ -262,6 +262,63 @@ def _v2_tof(v2: dict[str, Any]) -> float | None:
     return None
 
 
+_MF_FAILED = re.compile(r"mean-field MKM failed \((.*)\)")
+_ERR_PREFIX = re.compile(r"^\w*Error:\s*(?:mkm:\s*)?")
+
+
+def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
+    """The v2 solve status the panel headlines: which rung of the ranked
+    ladder produced the TOF (``kmc``/``mf``/``chain``/``none``), the
+    mean-field failure reason pulled from the record's warnings, whether
+    the TOF is a positive steady state, the legacy-environment flag, and
+    whether the target's selectivity is on the record. Re-derives
+    ``precis_pathway.toon_views._v2_status_lines``'s reading (the web side
+    never imports the pathway side)."""
+    med = _fin(_dict(v2.get("tof_kmc")).get("median"))
+    mf = _fin(v2.get("tof_mf"))
+    chain = _fin(v2.get("tof_chain"))
+    if math.isfinite(med) and med > 0:
+        rung, tof = "kmc", med
+    elif math.isfinite(mf):
+        rung, tof = "mf", mf
+    elif math.isfinite(chain):
+        rung, tof = "chain", chain
+    else:
+        rung, tof = "none", None
+    failure = None
+    for w in _strlist(v2.get("warnings")):
+        if m := _MF_FAILED.search(w):
+            failure = _ERR_PREFIX.sub("", m.group(1)).strip() or "unknown error"
+            break
+    sel = _dict(v2.get("selectivity"))
+    target = product if isinstance(product, str) and product else None
+    positive = tof is not None and tof > 0
+    if failure is not None and rung != "mf":
+        head = f"mean-field solve failed: {failure}"
+        head += (
+            f" — showing {rung} estimate" if rung != "none" else " — no TOF estimate"
+        )
+    else:
+        head = f"TOF from the {rung} rung" if rung != "none" else "no TOF on record"
+    if tof is not None and not positive:
+        head += "; no positive steady state (TOF ≤ 0, not a rate)"
+    return {
+        "rung": rung,
+        "tof": tof,
+        "positive": positive,
+        "mf_failure": failure,
+        "legacy": bool(_dict(v2.get("environment")).get("legacy")),
+        "bep_flux_share": (
+            share if math.isfinite(share := _fin(v2.get("bep_flux_share"))) else None
+        ),
+        "selectivity_target": target,
+        "selectivity_known": (
+            None if target is None else math.isfinite(_fin(sel.get(target)))
+        ),
+        "headline": head,
+    }
+
+
 def _target(results: dict[str, Any]) -> Any:
     """The pathway's product gas under a v2-only record — the record holds
     no ``product`` field; the aggregate's score block and the sweep both
@@ -374,7 +431,13 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
     d = dict(rec) if isinstance(rec, dict) else {}
     v2 = results.get("kinetics_v2")
     if isinstance(v2, dict):
-        d.update(_v2_overlay(v2, product=d.get("product") or _target(results)))
+        product = d.get("product") or _target(results)
+        d.update(_v2_overlay(v2, product=product))
+        d["v2_solve"] = _v2_solve(v2, product)
+        if d["v2_solve"]["mf_failure"] and not _dict(v2.get("coverages")):
+            # the MF solve left no steady state: v1's coverages belong to a
+            # different solve, so showing them beside the chain TOF misleads
+            d["coverages"] = {}
     if "tof" not in d:
         return None
     cov = _dict(d.get("coverages"))
@@ -441,5 +504,6 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
                 if isinstance(t, dict)
             ],
             "verdict": kinetics_verdict(d),
+            "v2_solve": d.get("v2_solve"),
         }
     }

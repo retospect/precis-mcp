@@ -103,6 +103,25 @@
   // covered the measured numbers
   const V = (K.ml && K.ml.verdict) || (K.dft && K.dft.verdict);
   const vTier = K.ml ? "ML tier" : "DFT tier";
+  // the v2 solve status, ahead of the verdict: which rung produced the TOF,
+  // why the mean-field solve failed, and what the answer is priced against
+  const S = (K.ml && K.ml.v2_solve) || (K.dft && K.dft.v2_solve);
+  if (S) {
+    const bad = S.mf_failure || !S.positive || S.rung === "none";
+    h += "<div class='verdict " + (bad ? "dead" : "ok") + "'><span class='vhead'>" +
+         "v2 solve: " + esc2(S.headline) + "</span><ul>" +
+         "<li>TOF rung: " + esc2(S.rung) + "</li>" +
+         (S.legacy
+           ? "<li>no pressures stated &mdash; gases priced at 1 bar " +
+             "reference</li>" : "") +
+         (S.bep_flux_share != null
+           ? "<li>BEP-priced flux share: " +
+             esc2(String(S.bep_flux_share)) + "</li>" : "") +
+         (S.selectivity_target && !S.selectivity_known
+           ? "<li>selectivity to " + esc2(S.selectivity_target) +
+             ": unknown (not on the record)</li>" : "") +
+         "</ul></div>";
+  }
   if (V) {
     h += "<div class='verdict " + esc2(V.tone || "") + "'><span class='vhead'>" +
          esc2(vTier) + ": " + esc2(V.headline) + "</span>" +
@@ -125,7 +144,10 @@
       const d = K[pair[0]];
       if (!d) return;
       const band = d.sensitivity && d.sensitivity.tof;
-      h += "<tr><td>" + esc2(pair[1]) + "</td><td>" + sci(d.tof) +
+      h += "<tr><td>" + esc2(pair[1]) + "</td><td>" +
+           (d.v2_solve && !d.v2_solve.positive
+             ? "no positive steady state (" + sci(d.tof) + ")"
+             : sci(d.tof)) +
            "</td><td>" +
            (band ? "[" + sci(band.p5) + ", " + sci(band.p95) + "]"
                  : "&mdash;") +

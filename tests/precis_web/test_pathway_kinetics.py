@@ -388,3 +388,57 @@ def test_payload_v2_fields_outrank_v1_but_v1_only_fields_survive() -> None:
     }
     out2 = kinetics_payload({"kinetics": rec, "kinetics_v2": kmc})
     assert out2 is not None and out2["ml"]["tof"] == 5.5
+
+
+def _failed_mf_record() -> dict[str, Any]:
+    """Shaped like prod pathway 527720: MF Newton failed, only the chain
+    TOF (negative) survives, legacy environment, no NH3 selectivity."""
+    return {
+        "tof_mf": None,
+        "tof_kmc": None,
+        "tof_chain": -6.77e-9,
+        "coverages": None,
+        "drc": {},
+        "bep_flux_share": 1.0,
+        "environment": {"legacy": True},
+        "selectivity": {"H2O": 1.0},
+        "warnings": [
+            "kinetics: mean-field MKM failed (MKMError: mkm: Newton did not converge)",
+            "kinetics: DRC is undefined -- the steady-state TOF is not positive",
+        ],
+    }
+
+
+def test_payload_reports_a_failed_mf_solve() -> None:
+    out = kinetics_payload(
+        {
+            "kinetics": _record(coverages={"X*": 0.9}),
+            "kinetics_v2": _failed_mf_record(),
+            "score": {"target": "NH3"},
+        }
+    )
+    assert out is not None
+    d = next(iter(out.values()))
+    s = d["v2_solve"]
+    assert s["rung"] == "chain"
+    assert s["mf_failure"] == "Newton did not converge"
+    assert s["headline"].startswith(
+        "mean-field solve failed: Newton did not converge — showing chain estimate"
+    )
+    assert s["positive"] is False
+    assert "no positive steady state" in s["headline"]
+    assert s["legacy"] is True
+    assert s["bep_flux_share"] == 1.0
+    assert s["selectivity_target"] == "NH3"
+    assert s["selectivity_known"] is False
+    assert d["coverages"] == {}  # v1 coverages do not ride beside a failed MF
+
+
+def test_payload_healthy_v2_solve_names_its_rung() -> None:
+    out = kinetics_payload({"kinetics_v2": _v2_record(), "score": {"target": "NH3"}})
+    assert out is not None
+    s = next(iter(out.values()))["v2_solve"]
+    assert s["rung"] == "mf"
+    assert s["mf_failure"] is None
+    assert s["positive"] is True
+    assert s["headline"] == "TOF from the mf rung"

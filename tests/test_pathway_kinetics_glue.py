@@ -925,3 +925,38 @@ def test_run_kinetics_sweep_records_error_never_raises(monkeypatch):
     runner._run_kinetics_sweep({}, results)
     assert results["kinetics_sweep_error"] == "engine exploded"
     assert "kinetics_sweep" not in results
+
+
+def test_kinetics_view_leads_with_the_v2_solve_status():
+    """A failed MF solve (prod 527720 shape) is stated before the v1 Eyring
+    table: rung, failure reason, non-positive TOF, legacy flag, BEP share,
+    and the target's missing selectivity."""
+    from precis_pathway.toon_views import kinetics_text
+
+    v2 = {
+        "tof_mf": None,
+        "tof_kmc": None,
+        "tof_chain": -6.77e-9,
+        "coverages": None,
+        "drc": {},
+        "bep_flux_share": 1.0,
+        "environment": {"legacy": True},
+        "selectivity": {"H2O": 1.0},
+        "warnings": [
+            "kinetics: mean-field MKM failed (MKMError: mkm: Newton did not converge)"
+        ],
+    }
+    meta = {
+        "graph": _GRAPH,
+        "results": {"pathway": ["A", "B"], "target": "NH3", "kinetics_v2": v2},
+    }
+    body = kinetics_text(meta)
+    assert body.startswith(
+        "v2 solve: mean-field solve failed: Newton did not converge"
+        " — showing chain estimate"
+    )
+    assert "no positive steady state" in body
+    assert "no pressures stated — gases priced at 1 bar reference" in body
+    assert "bep_flux_share = 1" in body
+    assert "selectivity to NH3: unknown" in body
+    assert body.index("v2 solve:") < body.index("microkinetics (Eyring TST")

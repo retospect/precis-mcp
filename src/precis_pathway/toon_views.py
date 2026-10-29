@@ -744,6 +744,57 @@ def _rate_str(x: float) -> str:
     return "—" if math.isnan(x) else f"{x:.2e}"
 
 
+def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
+    """The v2 solve's status ahead of any v1 detail: which rung of the ranked
+    ladder (KMC median > MF > chain) produced the TOF, the mean-field
+    failure reason pulled from the record's warnings, a non-positive TOF
+    called what it is, the legacy-environment flag, ``bep_flux_share`` and
+    an unknown target selectivity. The web panel re-derives the same
+    reading (``precis_web.pathway_kinetics._v2_solve``)."""
+
+    def _f(x: Any) -> float | None:
+        return float(x) if isinstance(x, (int, float)) and math.isfinite(x) else None
+
+    med = _f((v2.get("tof_kmc") or {}).get("median"))
+    mf, chain = _f(v2.get("tof_mf")), _f(v2.get("tof_chain"))
+    if med is not None and med > 0:
+        rung, tof = "kmc", med
+    elif mf is not None:
+        rung, tof = "mf", mf
+    elif chain is not None:
+        rung, tof = "chain", chain
+    else:
+        rung, tof = "none", None
+    failure = None
+    for w in v2.get("warnings") or []:
+        m = re.search(r"mean-field MKM failed \((.*)\)", str(w))
+        if m:
+            failure = re.sub(r"^\w*Error:\s*(?:mkm:\s*)?", "", m.group(1)).strip()
+            break
+    if failure is not None and rung != "mf":
+        head = f"mean-field solve failed: {failure or 'unknown error'}" + (
+            f" — showing {rung} estimate" if rung != "none" else " — no TOF estimate"
+        )
+    else:
+        head = f"TOF from the {rung} rung" if rung != "none" else "no TOF on record"
+    out = [f"v2 solve: {head}"]
+    if tof is not None:
+        out.append(
+            f"TOF ({rung}) = {_num_str(tof)}"
+            + ("" if tof > 0 else " — no positive steady state, not a rate")
+        )
+    if (v2.get("environment") or {}).get("legacy"):
+        out.append("no pressures stated — gases priced at 1 bar reference")
+    share = _f(v2.get("bep_flux_share"))
+    if share is not None:
+        out.append(f"bep_flux_share = {share:g} (BEP-priced fraction of target flux)")
+    raw_sel = v2.get("selectivity")
+    sel: dict[str, Any] = raw_sel if isinstance(raw_sel, dict) else {}
+    if product and _f(sel.get(product)) is None:
+        out.append(f"selectivity to {product}: unknown (not on the record)")
+    return out
+
+
 def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     """Microkinetics digest for a computed pathway (Simulation step deep-links,
     docs/backlog/quest-dossier-dialectic.md): Eyring rates + residence times +
@@ -779,7 +830,15 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
         )
     table = toon.dump(rows, schema=["reaction", "Ea_eV", "k_f_/s", "tau_s", "conf"])
 
-    lines = [
+    results = meta.get("results") or {}
+    v2_rec = results.get("kinetics_v2")
+    lines = []
+    if isinstance(v2_rec, dict):
+        lines += [
+            *_v2_status_lines(v2_rec, results.get("target") or target),
+            "",
+        ]
+    lines += [
         f"{root} → {target} — microkinetics (Eyring TST, T = {T_k:.0f} K)",
         "",
         table,
@@ -800,7 +859,6 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
         "A = k_B·T/h ≈ 6.2e12 /s at 300 K; residence times ignore reverse "
         "reactions and surface-coverage effects."
     )
-    results = meta.get("results") or {}
     kin = results.get("kinetics")
     v2 = results.get("kinetics_v2")
     # D8 reader flip: the v2 record answers first; the v1 block fills what
